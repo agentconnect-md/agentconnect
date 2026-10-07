@@ -1689,9 +1689,9 @@ export class HttpBotOrchestrator {
     // last-hop admission backstop (§14.3), and EVERY install carries its Off channels
     // for the same backstop. The compile already read the bot's rows; they are keyed
     // per install, so filter by integrationId.
-    for (const { integration, agent, gated } of compiled.placed) {
+    for (const { integration, agent } of compiled.placed) {
       const channels = compiled.botChannels.filter((c) => c.integrationId === integration.id)
-      const spec = await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, gated)
+      const spec = await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, agent)
       // No deliverable spec ⇒ the provider's own credential for this bot is gone (a revoked or
       // swept grant). PULL the send-only bundle instead of leaving the daemon on the last good
       // one — the same teardown `revokeBot` performs for a credential the workspace revoked.

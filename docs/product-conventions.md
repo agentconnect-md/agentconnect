@@ -806,6 +806,26 @@ choice. The resolved classification is durable — it lives on the conversation 
 in daemon memory, so a daemon restart that re-reports the conversation provisionally as
 a channel cannot reset a later operator choice.
 
+## Assistant-mode places
+
+An agent in assistant mode answers only where an editor enabled it, whatever its
+visibility: its conversations are gated exactly like a Restricted agent's. Turning the
+mode on resets nothing — every conversation already enabled, DMs included, stays enabled
+— and new conversations start Off. Switching it off restores the agent's ordinary
+defaults.
+
+Each enabled place keeps one long session while the mode is on: every room, and a 1:1 DM
+on a platform whose DMs otherwise open a session per message. A conversation gated By
+decision keeps its own session mode, and a platform whose rooms never append (a Linear
+team) is left as it is. The row shows `Single session` and offers no other choice; the
+stored choice returns when the mode is switched off.
+
+Enabling a room or group DM of such an agent asks first: everyone in it will be able to get
+the content of the agent's other places out of it, so it should be enabled only if everyone
+there is fully trusted. Turning the mode on while rooms or group DMs are already enabled
+names them in the same warning. A 1:1 DM and webchat carry no warning. Rooms are enabled
+one at a time: a decision's Apply to all reaches only the rooms already enabled.
+
 ## No-response control marker
 
 Every agent session receives the same standing response-choice instruction, independent

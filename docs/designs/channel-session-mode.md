@@ -553,6 +553,15 @@ session. That also makes `!new` visible in the console, since two generations ar
 indistinguishable in a list. The date carries its year outside the current one, the rule the
 list's own timestamps follow.
 
+**Assistant mode fixes the mode at projection.** For an agent in assistant mode
+([assistant-mode.md](assistant-mode.md) §5.2), the spec projection keys every row on one
+long session where its platform's manifest lists the conversation kind in `appendKinds` —
+rooms on every platform but Linear, 1:1 DMs on Slack — except a By decision row, which
+keeps its own mode. The stored rows are not rewritten, so switching the mode off restores
+each row's own choice. The console shows those rows as `Single session`, with no other
+choice, while the mode is on. `appendKinds` and the web module's `sessionModes` /
+`dmSessionModes` state one fact; a web test keeps them in agreement.
+
 **Linear declares `createNew` only.** A Linear row is a team and every issue in it is its own
 thread, so appending would pool a whole team into one session — a meaning this setting has
 nowhere else. It is the first use of the per-platform narrowing this section describes.

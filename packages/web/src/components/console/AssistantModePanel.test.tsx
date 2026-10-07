@@ -7,9 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const AGENT = '22222222-2222-4222-8222-222222222222'
 const INTEGRATION = '33333333-3333-4333-8333-333333333333'
 
+type Row = { channelId: string; name: string; kind?: 'channel' | 'im' | 'mpim'; trigger: string }
+
 const mocks = vi.hoisted(() => ({
   updateAgent: vi.fn(),
-  admission: { admitted: true, refusals: [] as string[] }
+  admission: { admitted: true, refusals: [] as string[] },
+  channels: [] as Row[]
 }))
 
 vi.mock('@/lib/data-context', () => ({
@@ -37,7 +40,9 @@ vi.mock('@/lib/data-context', () => ({
         daemon: 'edge',
         status: 'online',
         revoked: false,
-        channels: [{ channelId: 'C1', name: 'general', trigger: 'mention' }]
+        get channels() {
+          return mocks.channels
+        }
       }
     ]
   })
@@ -58,6 +63,10 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 beforeEach(() => {
   mocks.updateAgent.mockReset().mockResolvedValue(undefined)
   mocks.admission = { admitted: true, refusals: [] }
+  mocks.channels = [
+    { channelId: 'C1', name: 'general', trigger: 'off' },
+    { channelId: 'D1', name: '@ada', kind: 'im', trigger: 'any' }
+  ]
 })
 
 afterEach(async () => {
@@ -165,6 +174,64 @@ describe('AssistantModePanel', () => {
     expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT, {
       assistantMode: { enabled: true, responsibleUserId: 'usr_1' }
     })
+  })
+
+  // assistant-mode.md §5.1: turning on trusts the rooms and group DMs already enabled, so the switch names them first.
+  it('warns before turning on over enabled rooms and group DMs, and saves only once confirmed', async () => {
+    mocks.channels = [
+      { channelId: 'C1', name: 'general', trigger: 'mention' },
+      { channelId: 'C2', name: 'random', trigger: 'off' },
+      { channelId: 'G1', name: '@ada, bob', kind: 'mpim', trigger: 'mention' },
+      { channelId: 'D1', name: '@ada', kind: 'im', trigger: 'any' }
+    ]
+    const host = await mount()
+    await clickButton(host, 'Edit')
+    await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click())
+    await select(host.querySelectorAll<HTMLSelectElement>('select')[0]!, 'usr_1')
+    await clickButton(host, 'Save assistant mode')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    const dialog = host.querySelector('[role="dialog"]')
+    expect(dialog?.textContent).toContain('Turn on assistant mode?')
+    expect(dialog?.textContent).toContain('Everyone here will be able to get the content of this agent’s other places')
+    expect([...host.querySelectorAll('[data-assistant-place-list] li')].map((li) => li.textContent)).toEqual([
+      'team · #general',
+      'team · ada, bob'
+    ])
+    await clickButton(host, 'Turn on')
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT, {
+      assistantMode: { enabled: true, responsibleUserId: 'usr_1' }
+    })
+    expect(host.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('saves without the warning when already on, and when cancelled saves nothing', async () => {
+    mocks.channels = [{ channelId: 'C1', name: 'general', trigger: 'mention' }]
+    const on = await mount({ assistantMode: { enabled: true, responsibleUserId: 'usr_1' } })
+    await clickButton(on, 'Edit')
+    await act(async () => {
+      const input = on.querySelector<HTMLInputElement>('input[data-assistant-mode-limit="dailyPatrolBudget"]')!
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, '10')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await clickButton(on, 'Save assistant mode')
+    expect(on.querySelector('[role="dialog"]')).toBeNull()
+    expect(mocks.updateAgent).toHaveBeenCalledTimes(1)
+
+    await act(async () => root?.unmount())
+    root = undefined
+    mocks.updateAgent.mockClear()
+    const off = await mount()
+    await clickButton(off, 'Edit')
+    await act(async () => off.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click())
+    await select(off.querySelectorAll<HTMLSelectElement>('select')[0]!, 'usr_1')
+    await clickButton(off, 'Save assistant mode')
+    expect(off.querySelector('[role="dialog"]')).toBeTruthy()
+    const cancel = [...off.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+      (b) => b.textContent?.trim() === 'Cancel'
+    )
+    await act(async () => cancel?.click())
+    expect(off.querySelector('[role="dialog"]')).toBeNull()
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
   })
 
   it('warns when the agent asks before every action', async () => {

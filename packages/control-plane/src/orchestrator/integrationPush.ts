@@ -1,11 +1,4 @@
-/**
- * Integration-gating convergence (resource-visibility.md §14.4): when an agent's
- * visibility flips, its derived conversation-gating flag changes, so every
- * integration of the agent must be re-converged — an HTTP bot recompiles
- * its relay routes + re-pushes send-only specs (`syncBot` covers both), a direct
- * install gets a fresh token-bearing spec push. Best-effort per integration: a
- * missed push self-heals from the reconcile roster on the daemon's next connect.
- */
+// Integration-gating convergence (§14.4): a visibility or assistant-mode flip re-pushes every integration of the agent; the roster heals a miss.
 import type {
   AgentRecord,
   AgentRepo,
@@ -17,7 +10,7 @@ import type {
 } from '../persistence/ports.js'
 import { NoConnection } from './outbound.js'
 import type { AgentDelivery } from './agentDelivery.js'
-import { integrationToSpec, isGatedAgent } from './placement.js'
+import { integrationToSpec } from './placement.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { AgentId, type IntegrationId } from '../domain/ids.js'
 
@@ -105,7 +98,7 @@ async function convergeIntegration(
     // Every daemon serving the agent, not just its placement: a gating flip that
     // reaches only the placement leaves a holder admitting conversations the
     // agent's new visibility forbids.
-    const spec = await integrationToSpec(deps.platforms, i, bot, secret, channels, isGatedAgent(agent))
+    const spec = await integrationToSpec(deps.platforms, i, bot, secret, channels, agent)
     // No deliverable payload ⇒ nothing to converge; the reconcile roster prunes it, like a
     // missing secret. Pushing a config-less spec would only be refused and ignored by the daemon.
     if (!spec) return

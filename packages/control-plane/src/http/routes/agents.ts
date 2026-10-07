@@ -150,6 +150,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
 import { AgentWakeCoordinator, agentWakeRequest } from '../../orchestrator/agentWake.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
+import { isAssistantModeAgent } from '../../orchestrator/placement.js'
 import { reconcileAgentLinkedDms } from '../../orchestrator/linkedDmReconcile.js'
 import { ProtocolError } from '../../domain/errors.js'
 import {
@@ -2815,6 +2816,10 @@ export function agentRoutes(deps: HttpDeps) {
           }
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent)
+          // Assistant mode gates conversations and fixes session modes, both projected into every integration's spec.
+          if (isAssistantModeAgent(existing) !== isAssistantModeAgent(agent)) {
+            await convergeIntegrationGating(deps, agent, req.log)
+          }
           // Pause decides whether this agent's hooks belong in the relay pool at all, so a toggle
           // needs the rule convergence a placement change gets — nothing else recomputes it.
           if ((existing.pause === true) !== (agent.pause === true)) {

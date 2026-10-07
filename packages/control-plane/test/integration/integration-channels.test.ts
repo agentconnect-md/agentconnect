@@ -696,6 +696,44 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(triggers.get('D_DAVE')).toBe('off')
   })
 
+  it('starts an assistant-mode agent Off everywhere and opens no DM for a share set it kept', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await install(running)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    // Everyone visibility, with a share set left from an earlier Selected audience.
+    await prisma.agent.update({
+      where: { id: integration.agentId },
+      data: {
+        visibility: 'org',
+        sharedWith: [DEFAULT_OWNER_ID],
+        assistantMode: { enabled: true, responsibleUserId: DEFAULT_OWNER_ID }
+      }
+    })
+    await prisma.bot.update({ where: { id: integration.botId }, data: { teamId: 'T_ACME' } })
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: ALICE_SUB } })
+
+    await report(
+      DAEMON,
+      id,
+      [
+        { id: 'C1', name: 'deploys' },
+        { id: 'G1', name: '@@alice, bob', kind: 'mpim' },
+        { id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' }
+      ],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { [ALICE_SUB]: { teamId: 'T_ACME', userId: 'U_ALICE' } }
+    )
+
+    const triggers = await triggersOf(id)
+    expect(triggers.get('C1')).toBe('off')
+    expect(triggers.get('G1')).toBe('off')
+    expect(triggers.get('D_ALICE')).toBe('off')
+  })
+
   // The other regression the review caught. On a direct/socket integration this handler
   // is the ONLY path where a REPORT creates an enabled row: the reporting daemon still
   // holds bindRules with no scoped rule for that DM, and it has already cached the

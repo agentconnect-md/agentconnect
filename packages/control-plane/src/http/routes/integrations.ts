@@ -144,14 +144,7 @@ export function integrationRoutes(deps: HttpDeps) {
         deps.repos.bot.get(i.orgId, i.botId)
       ])
       if (!secret || !bot) return
-      const spec = await integrationToSpec(
-        deps.platforms,
-        i,
-        bot,
-        secret,
-        channels,
-        owner ? isGatedAgent(owner) : false
-      )
+      const spec = await integrationToSpec(deps.platforms, i, bot, secret, channels, owner ?? undefined)
       // The provider had no deliverable payload — same exit as a missing secret above.
       if (!spec) return
       await deps.agentDelivery.integrationUpsert(owningAgent, spec, (err, target) => {

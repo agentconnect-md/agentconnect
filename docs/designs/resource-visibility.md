@@ -730,7 +730,9 @@ So authorization must live in AgentConnect's own routing layer.
 | **Mention**      | Activates on explicit @-mention (today's default).       |
 | **All messages** | Activates on any message (today's `any`).                |
 
-**Gating applies only to restricted agents.**
+**Gating applies only to restricted agents** — and to an agent in assistant mode
+([assistant-mode.md](assistant-mode.md) §5.1), which is gated the same way whatever its
+visibility.
 
 - **Org-visible agents keep the same routing defaults.** Unscoped mention
   default everywhere, DMs open to the whole workspace, per-channel "All
@@ -897,8 +899,9 @@ remains forbidden for gated agents.
   owner. Mutations are serialized per bot/channel and fenced to the owner that
   passed authorization, so a concurrent in-Slack owner move makes the Console
   request retry instead of applying its trigger to the new owner.
-- `gated` is **derived** from `agent.visibility === 'restricted'` at spec
-  assembly; there is no separate stored toggle (see §14.7).
+- `gated` is **derived** from `agent.visibility === 'restricted'` or an enabled
+  assistant mode at spec assembly (`isGatedAgent`); there is no separate stored
+  toggle (see §14.7).
 - Web `IntegrationChannelList`: tri-state segmented control per conversation row
   (Off / Mention / All messages) — offered for every agent, not only a gated
   one — a Direct-messages section with binary rows, pending badges, and a
@@ -945,6 +948,10 @@ remains forbidden for gated agents.
   their trigger values persist so flipping back restores the previous
   decisions — the same preservation principle as Decision 4. Direct and channel
   rows remain visible and effective, including Off.
+- **assistant mode on / off:** gating follows the switch, and every integration of
+  the agent is re-projected. Unlike org → restricted, no row is reset: every
+  enabled row, DMs included, keeps its trigger. §14.8 still reads only a restricted
+  agent's share set, so assistant mode alone opens no DM.
 
 ### 14.5 Rollout / migration
 

@@ -61,7 +61,7 @@ import {
 } from '../domain/placement.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import { convergeAgentRouting } from './agentRouting.js'
-import { cronToUpsert, integrationToSpec, isGatedAgent, httpIntegrationToSpec } from './placement.js'
+import { cronToUpsert, integrationToSpec, httpIntegrationToSpec } from './placement.js'
 import {
   mcpDefsForAgents,
   memoryDefsForAgents,
@@ -914,10 +914,9 @@ export class AgentMoveService {
         if (!bot) throw new AgentMoveConflict(`integration ${integration.id} has no bot`)
         if (!secret) throw new AgentMoveConflict(`integration ${integration.id} has no credentials`)
         const isHttp = bot.transport === 'http'
-        const gated = isGatedAgent(agent)
         const spec = isHttp
-          ? await httpIntegrationToSpec(this.deps.platforms, integration, bot, secret, channels, gated)
-          : await integrationToSpec(this.deps.platforms, integration, bot, secret, channels, gated)
+          ? await httpIntegrationToSpec(this.deps.platforms, integration, bot, secret, channels, agent)
+          : await integrationToSpec(this.deps.platforms, integration, bot, secret, channels, agent)
         // A provider-held credential that is gone is the same blocker as a missing secret row: the
         // move bundle is atomic, so it must not carry an integration the target cannot serve.
         if (!spec) throw new AgentMoveConflict(`integration ${integration.id} has no credentials`)

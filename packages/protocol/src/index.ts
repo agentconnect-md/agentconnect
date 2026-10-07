@@ -215,7 +215,7 @@ export { APPEND_COORDINATE_PREFIX, isAppendCoordinate } from './append-coordinat
 
 // ── §5 platform manifest — pre-dispatch capability table, read by every host ──
 export { DEFAULT_MANIFEST, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'
-export type { MembershipEnumeration, PlatformManifest } from './platform-manifest.js'
+export type { AppendConversationKind, MembershipEnumeration, PlatformManifest } from './platform-manifest.js'
 
 // ── exact money — the decimal amount every reported/stored/served cost uses ──
 export {

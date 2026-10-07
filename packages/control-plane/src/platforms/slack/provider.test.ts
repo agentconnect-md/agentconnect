@@ -25,7 +25,7 @@ import {
   SlackCpEnvSchema,
   SlackCreateCredentials
 } from './provider.js'
-import { integrationToSpec, httpIntegrationToSpec } from '../../orchestrator/placement.js'
+import { integrationToSpec, httpIntegrationToSpec, type SpecOwner } from '../../orchestrator/placement.js'
 import { SLACK_BOT_SCOPES } from '../../http/slack-manifest.js'
 import { HttpBotOrchestrator } from '../../orchestrator/httpBot.js'
 import { AgentDelivery } from '../../orchestrator/agentDelivery.js'
@@ -51,6 +51,9 @@ import type {
 } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { IntegrationSlackConfig, type RcBotAssign, type RelayCpFrameType } from '@agentconnect.md/protocol'
+
+/** A restricted owner: the projection's gated arm. */
+const RESTRICTED: SpecOwner = { visibility: 'restricted' }
 
 const verifierOk = (over: Partial<Extract<SlackBotVerification, { status: 'ok' }>> = {}) =>
   vi.fn(
@@ -517,14 +520,11 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
   // emitted for these inputs — frozen here so the flip to the provider projector
   // is provably byte-identical rather than merely self-consistent.
   it('emits the byte-identical direct payload the pre-adoption slack arm produced', async () => {
-    const spec = await integrationToSpec(
-      PLATFORMS,
-      INTEGRATION,
-      SOCKET_BOT,
-      SOCKET_SECRET,
-      [channel('C1', 'any'), channel('C2', 'mention'), channel('C3', 'off')],
-      false
-    )
+    const spec = await integrationToSpec(PLATFORMS, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [
+      channel('C1', 'any'),
+      channel('C2', 'mention'),
+      channel('C3', 'off')
+    ])
     const bindRules = [
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
@@ -560,7 +560,14 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
   // wrong envelope, the wrong secret, or the wrong direct/shared arm into the seam.
   for (const { label, channels, gated } of cases) {
     it(`routes the live path through the slack projector unchanged — ${label}`, async () => {
-      const spec = await integrationToSpec(PLATFORMS, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, channels, gated)
+      const spec = await integrationToSpec(
+        PLATFORMS,
+        INTEGRATION,
+        SOCKET_BOT,
+        SOCKET_SECRET,
+        channels,
+        gated ? RESTRICTED : undefined
+      )
       if (!spec) throw new Error('expected a deliverable spec')
       expect(spec.core.mode).toBe('direct')
       expect(spec.config).toEqual(slackIntegrationConfig(SOCKET_SECRET))
@@ -601,14 +608,10 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
   // arm emitted. Send-only by credential domaining — xoxb but NEVER the appToken.
   it('emits the byte-identical shared payload the pre-adoption slack arm produced', async () => {
     const httpBot = bot({ transport: 'http', shareable: true, slackAppId: 'A0TESTAPP' })
-    const spec = await httpIntegrationToSpec(
-      PLATFORMS,
-      INTEGRATION,
-      httpBot,
-      HTTP_SECRET,
-      [channel('C1', 'any'), channel('C2', 'off')],
-      false
-    )
+    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, [
+      channel('C1', 'any'),
+      channel('C2', 'off')
+    ])
     expect(spec).toEqual({
       orgId: INTEGRATION.orgId,
       integrationId: INTEGRATION.id,
@@ -639,7 +642,14 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       // The bot row is passed WHOLE now: `shareable` / the provider app id /
       // `botUserId` are read off it by the projector instead of being forwarded
       // positionally by each call site.
-      const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, channels, gated)
+      const spec = await httpIntegrationToSpec(
+        PLATFORMS,
+        INTEGRATION,
+        httpBot,
+        HTTP_SECRET,
+        channels,
+        gated ? RESTRICTED : undefined
+      )
       if (!spec) throw new Error('expected a deliverable spec')
       expect(spec.core.mode).toBe('shared')
       expect(spec.config).toEqual(
@@ -651,13 +661,13 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
 
   it('carries the operator’s join-public-channels switch from the bot row on both arms', async () => {
     // Absent from the bag ⇒ true (the behaviour bots predating the switch keep).
-    const socketOn = await integrationToSpec(PLATFORMS, INTEGRATION, bot(), SOCKET_SECRET, [], false)
+    const socketOn = await integrationToSpec(PLATFORMS, INTEGRATION, bot(), SOCKET_SECRET, [])
     expect(socketOn?.config).toMatchObject({ joinPublicChannels: true })
     const off = { platformConfig: { joinPublicChannels: false } }
-    const socketOff = await integrationToSpec(PLATFORMS, INTEGRATION, { ...bot(), ...off }, SOCKET_SECRET, [], false)
+    const socketOff = await integrationToSpec(PLATFORMS, INTEGRATION, { ...bot(), ...off }, SOCKET_SECRET, [])
     expect(socketOff?.config).toMatchObject({ joinPublicChannels: false })
     const httpBotOff = { ...bot({ transport: 'http', shareable: true, slackAppId: 'A0TESTAPP' }), ...off }
-    const httpOff = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBotOff, HTTP_SECRET, [], false)
+    const httpOff = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBotOff, HTTP_SECRET, [])
     expect(httpOff?.config).toMatchObject({ joinPublicChannels: false })
   })
 })

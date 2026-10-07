@@ -42,7 +42,6 @@ import type {
 import { AgentId, IntegrationId, OrgId } from '../domain/ids.js'
 import type { SlackIdentity } from '../github/logto-identity.js'
 import { linkedMemberIds, type LinkedDmDeps } from './linkedDm.js'
-import { isGatedAgent } from './placement.js'
 
 export interface LinkedDmReconcileDeps extends LinkedDmDeps {
   orgs: Pick<OrgRepo, 'listForUser'>
@@ -67,7 +66,8 @@ async function openDirectRows(
   admits: (bot: BotRecord) => Promise<ReadonlySet<string>>,
   deps: LinkedDmReconcileDeps
 ): Promise<number> {
-  if (!isGatedAgent(agent)) return 0
+  // The §14.8 audience is a restricted agent's share set; assistant mode alone opens no DM.
+  if (agent.visibility !== 'restricted') return 0
   let opened = 0
   for (const integration of await deps.integrations.listForAgent(AgentId(agent.id))) {
     if (integration.status !== 'active') continue

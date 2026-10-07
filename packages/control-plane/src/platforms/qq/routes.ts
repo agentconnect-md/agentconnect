@@ -6,7 +6,7 @@ import { Tag } from '../../http/plugins/openapi.js'
 import { ErrorDto, IdParam } from '../../http/dto/index.js'
 import { denyViewerWrite, orgOf } from '../../http/rbac.js'
 import { BotId } from '../../domain/ids.js'
-import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
+import { integrationToSpec } from '../../orchestrator/placement.js'
 import { verifyQQBot } from './provider.js'
 
 export function QQCredentialRoutes(deps: HttpDeps): FastifyPluginAsync {
@@ -47,14 +47,7 @@ export function QQCredentialRoutes(deps: HttpDeps): FastifyPluginAsync {
           const agent = await deps.repos.agent.get(orgId, integration.agentId)
           if (!agent) continue
           const channels = await deps.repos.integrationChannel.listForIntegration(integration.id)
-          const spec = await integrationToSpec(
-            deps.platforms,
-            integration,
-            bot,
-            material,
-            channels,
-            isGatedAgent(agent)
-          )
+          const spec = await integrationToSpec(deps.platforms, integration, bot, material, channels, agent)
           if (spec)
             await deps.agentDelivery.integrationUpsert(agent, spec, () => {
               req.log.info('QQ credential update will be applied when the agent reconnects')

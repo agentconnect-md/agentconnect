@@ -30,7 +30,8 @@ import {
   supportsModes,
   workspaceStatus,
   type IntegrationRow,
-  workspaceSourceOf
+  workspaceSourceOf,
+  conversationGate
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import { agentStrategyValue } from '@/lib/execution-strategy'
@@ -1829,7 +1830,8 @@ function AgentDetail() {
                               agentId={da.id}
                               platform={g.platform}
                               shareable={g.shareable}
-                              gated={da.visibility === 'restricted'}
+                              gate={conversationGate(da)}
+                              assistantMode={da.assistantMode?.enabled === true}
                               padX={16}
                             />
                           )}
@@ -2150,7 +2152,8 @@ function AgentDetail() {
                               agentId={da.id}
                               platform={g.platform}
                               shareable={g.shareable}
-                              gated={da.visibility === 'restricted'}
+                              gate={conversationGate(da)}
+                              assistantMode={da.assistantMode?.enabled === true}
                               padX={14}
                             />
                           )}
