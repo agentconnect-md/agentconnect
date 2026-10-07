@@ -531,6 +531,17 @@ the trigger's — `WebPlatformModule`'s `channelListSemantics`
 `sessionModes` list — so a platform opts out by omitting it rather than having core branch
 on a platform name.
 
+**A 1:1 DM row gets the control where its platform's DMs are not continuous already.**
+Telegram, Discord and Feishu key a DM as one session (`thread-keys.ts`); Slack keys a session
+per top-level message, like a channel. A module opts its DM rows in with `dmSessionModes`,
+which Slack declares ([assistant-mode.md](assistant-mode.md) §5.2). Nothing on the daemon or
+the CP branches on the conversation kind: an `append` DM keys on its reservation exactly as a
+channel does, and each answer still posts into the physical thread its question came from.
+Slack's Assistant "new chat" (`assistant_thread_started`) rotates an `append` DM's
+reservation as `!new` would (§7.1), over both the Socket Mode and the relay ingress; a
+`createNew` DM ignores it, since its new thread is a new session already. Group DMs keep no
+control.
+
 **An `append` session is labelled by its room, not by a person.** The session list and
 detail header render a session's `user` column from `triggeredBy`/`triggeredByName`, which
 is frozen first-wins on the daemon ("the sender that created the session keeps the credit
@@ -641,8 +652,8 @@ open question about transcript retention in §12, not to a read that does not ex
   dormant owner is still revived, and peer fan-out still reaches the second agent so §3.4's
   mutual visibility holds.
 - `packages/web` — the row renders both controls, a platform that omits `sessionModes`
-  renders only the trigger, a direct conversation renders no session-mode control, and the
-  `PATCH` carries the chosen mode.
+  renders only the trigger, a direct conversation renders no session-mode control unless its
+  platform declares `dmSessionModes`, and the `PATCH` carries the chosen mode.
 
 ## 12. Open questions
 

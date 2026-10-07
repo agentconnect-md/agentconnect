@@ -21,7 +21,12 @@ import type { Logger } from '../log.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { routeRules, type RouteVia } from '../router/routing-table.js'
-import { conversationAdmitted, integrationRouting, type RoutingRule } from '../router/routing-rule.js'
+import {
+  conversationAdmitted,
+  conversationSessionMode,
+  integrationRouting,
+  type RoutingRule
+} from '../router/routing-rule.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
 import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { transcriptCoords } from '../session/session-manager.js'
@@ -1148,6 +1153,31 @@ export class CommandHandlers {
     return (
       await this.latestAdmittedSession('slack', shortcut.channel, srcIntegrationIds, transportScope, shortcut.thread)
     )?.key
+  }
+
+  /** A platform's own "new chat" gesture: rotate each append conversation it reaches, as `!new` does; returns how many rotated. */
+  async startNewAppendSessions(
+    platform: string,
+    channel: string,
+    srcIntegrationIds: readonly string[],
+    actor?: InteractionActor
+  ): Promise<number> {
+    const transportScope = this.host.transportScopeForIntegrationIds(srcIntegrationIds)
+    let rotated = 0
+    for (const [agentId, agent] of this.host.agents()) {
+      const integration = agent.integrations.find(
+        (candidate) => candidate.platform === platform && srcIntegrationIds.includes(candidate.id)
+      )
+      if (!integration || conversationSessionMode(integration, channel) !== 'append') continue
+      if (!conversationAdmitted(integrationRouting(integration), channel)) continue
+      // Read-only first: a conversation nobody has spoken in has nothing to rotate, and its first message mints anyway.
+      const current = await this.host.store().currentAppendCoordinate(agentId, channel, transportScope)
+      if (current === undefined) continue
+      await this.host.store().advanceAppendCoordinate(agentId, channel, current, transportScope)
+      this.logSessionAction('new', sessionKey(platform, channel, current, agentId, transportScope), actor)
+      rotated++
+    }
+    return rotated
   }
 
   /** Every addressable session in one Slack conversation, newest first — the native

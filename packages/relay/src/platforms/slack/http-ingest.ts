@@ -44,7 +44,10 @@ import {
 import type { Logger } from '../../log.js'
 
 export { normalizeSlackMessage } from '@agentconnect.md/message'
-export type SlackMessageEvent = SlackMessageLike & { tab?: string }
+export type SlackMessageEvent = SlackMessageLike & {
+  tab?: string
+  assistant_thread?: { user_id?: string; channel_id?: string; thread_ts?: string }
+}
 
 /** block_id / action_id of the modal's agent selector (local to this file). */
 const CONFIG_BLOCK = 'agent_block'
@@ -94,11 +97,17 @@ export type HttpSlackSessionAction = HttpSlackInteractionReceipt & {
   /** Who tapped it (Slack `body.user`), forwarded so the daemon can attribute the
    *  session change. Absent when the payload names no user. */
   userId?: string
-} & Exclude<RdSlackAction, { kind: 'open-config-for-thread' | 'app-home-opened' }>
+} & Exclude<RdSlackAction, { kind: 'open-config-for-thread' | 'app-home-opened' | 'assistant-thread-started' }>
 
 export interface HttpSlackAppHomeOpened extends HttpSlackInteractionReceipt {
   channelId: string
   userId: string
+}
+
+/** A user started a new Assistant thread ("new chat") in a DM with the app. */
+export interface HttpSlackAssistantThreadStarted extends HttpSlackInteractionReceipt {
+  channelId: string
+  userId?: string
 }
 
 export interface HttpSlackSessionShortcut extends HttpSlackInteractionReceipt {
@@ -398,6 +407,8 @@ export interface SlackHttpIngestDeps {
   /** Forward the native agent-session Stop to the daemon owning that conversation. */
   onSessionStopped: (stop: HttpSlackSessionStop) => void
   onAppHomeOpened?: (opened: HttpSlackAppHomeOpened) => void
+  /** Forward an Assistant "new chat" to the DM's owning daemon, which starts a fresh session where the DM appends. */
+  onAssistantThreadStarted?: (started: HttpSlackAssistantThreadStarted) => void
   /** The bot's credential is definitively dead (an uninstall, a token revocation, or a probe saying so); report it so the CP revokes the bot. */
   onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', proof: SlackRevocationProof) => void
   /** A probe answer that does not revoke: `ok` clears an earlier rejection, `rejected` only marks the bot. */
@@ -520,6 +531,16 @@ export class SlackHttpIngest {
       if (event?.type === 'app_home_opened') {
         if (event.tab === 'messages' && event.channel?.startsWith('D') && event.user && eventId)
           this.deps.onAppHomeOpened?.({ channelId: event.channel, userId: event.user, interactionId: eventId })
+        return
+      }
+      if (event?.type === 'assistant_thread_started') {
+        const thread = event.assistant_thread
+        if (thread?.channel_id && thread.thread_ts)
+          this.deps.onAssistantThreadStarted?.({
+            channelId: thread.channel_id,
+            interactionId: eventId ?? `${thread.channel_id}:${thread.thread_ts}`,
+            ...(thread.user_id ? { userId: thread.user_id } : {})
+          })
         return
       }
       // App lifecycle: the workspace pulled the app / revoked its tokens. Not a

@@ -58,6 +58,7 @@ import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 import { CredentialRevocationReporter } from './credential-revocation.js'
+import type { InteractionActor } from './contract.js'
 
 /** Deadline on the detached Linear team-list refresh — long enough for a slow answer, short
  *  enough that a stalled provider does not leave a request hanging for the next reconcile. */
@@ -99,6 +100,12 @@ export interface PlatformActionSink {
     shortcut: { channel: string; thread: string },
     srcIntegrationIds: readonly string[]
   ): Promise<string[]>
+  startNewAppendSessions(
+    platform: string,
+    channel: string,
+    srcIntegrationIds: readonly string[],
+    actor?: InteractionActor
+  ): Promise<number>
   settleSlackSlot(conn: unknown, a: { channel: string; thread: string; exclude?: string }): void
 }
 
@@ -312,6 +319,10 @@ export class ConnectionReconciler {
               .map((integration) => ({ agent, integration }))
           )
         if (bindings.length === 1) await conn().welcomeBuiltin(channel, bindings[0]!.agent, bindings[0]!.integration)
+      },
+      onAssistantThreadStarted: async (channel, userId) => {
+        const actor = userId ? { userId } : undefined
+        await this.host.startNewAppendSessions('slack', channel, this.host.srcIntegrationIds(conn()), actor)
       },
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
       onCredentialRevoked: (revocation) =>

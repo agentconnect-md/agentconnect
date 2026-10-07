@@ -410,6 +410,8 @@ export interface SlackDeps {
   group: ConsolidatedGroup
   onMessage: (msg: NormalizedMessage) => void
   onAppHomeOpened?: (channel: string) => Promise<void>
+  /** Fired when a user starts a new Assistant thread ("new chat") in a DM — a fresh session where the DM appends. */
+  onAssistantThreadStarted?: (channel: string, userId?: string) => Promise<void>
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
@@ -716,6 +718,7 @@ export type AppLike = {
 
 type AssistantThreadStartedEvent = {
   assistant_thread?: {
+    user_id?: string
     channel_id?: string
     thread_ts?: string
   }
@@ -1105,12 +1108,14 @@ export class SlackConnection implements PlatformConnection {
       if (!ev.channel) return
       deliver(ev, 'app_mention')
     })
-    // Agent/assistant DM threads expose their canonical thread root through this
-    // event. Normal message.im payloads remain the source of user text; this event
-    // only preserves routing coordinates for those messages.
+    // An Assistant DM thread names its root here (message.im stays the source of user text).
     this.app.event('assistant_thread_started', async ({ event }) => {
-      const thread = this.rememberAssistantThread(event as AssistantThreadStartedEvent)
-      if (thread) log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
+      const ev = event as AssistantThreadStartedEvent
+      const thread = this.rememberAssistantThread(ev)
+      if (!thread) return
+      log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
+      // "New chat" is Slack's own `!new`: a DM on one session starts a fresh one.
+      await this.deps.onAssistantThreadStarted?.(thread.channel, ev.assistant_thread?.user_id)
     })
     this.app.event('app_home_opened', async ({ event }) => {
       const ev = event as { channel?: string; tab?: string }

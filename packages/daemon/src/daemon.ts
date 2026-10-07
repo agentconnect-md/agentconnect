@@ -2325,6 +2325,8 @@ export class Daemon {
         this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
       slackThreadSessions: (shortcut, srcIntegrationIds) =>
         this.commands.slackThreadSessions(shortcut, srcIntegrationIds),
+      startNewAppendSessions: (platform, channel, srcIntegrationIds, actor) =>
+        this.commands.startNewAppendSessions(platform, channel, srcIntegrationIds, actor),
       settleSlackSlot: (conn, a) => this.settleSlackSlot(conn as SlackConnection, a.channel, a.thread, a.exclude)
     }
   }
@@ -10350,6 +10352,12 @@ export class Daemon {
     const payload = msg.payload
     if (payload.kind === 'app-home-opened') {
       await conn.welcomeBuiltin(payload.channelId, agent, integration)
+      return { msgId: msg.msgId, accepted: true }
+    }
+    // The HTTP arm of Slack's "new chat": the Socket Mode arm reaches the same rotation from the connection.
+    if (payload.kind === 'assistant-thread-started') {
+      const actor = msg.userId ? { userId: msg.userId } : undefined
+      await this.commands.startNewAppendSessions('slack', payload.channelId, [integration.id], actor)
       return { msgId: msg.msgId, accepted: true }
     }
     if (payload.kind === 'open-config-for-thread') {
