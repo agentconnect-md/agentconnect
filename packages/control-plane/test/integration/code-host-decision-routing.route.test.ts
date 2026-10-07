@@ -498,7 +498,8 @@ describe('repository Decision routing — configuration', () => {
     await vi.waitFor(() =>
       expect(w.spy.lastSpec(w.late)?.hookRoutings?.[0]?.members).toEqual([{ agentId: w.late, hookId: w.lateHook }])
     )
-    expect(w.spy.lastSpec(w.early)?.hookRoutings ?? []).toEqual([])
+    // Each daemon's spec push lands independently, so the early one's retraction is awaited too.
+    await vi.waitFor(() => expect(w.spy.lastSpec(w.early)?.hookRoutings ?? []).toEqual([]))
   })
 
   it('marks the routing Needs review after an incompatible Decision edit, holds it, and protects the Decision', async () => {
