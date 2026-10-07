@@ -255,6 +255,19 @@ interface DreamRecord {
    session and overall, newest first until the byte budget is spent. The dream
    policy prompt — not a hard pre-filter — keeps a person's private/personal
    conversation from becoming shared organization knowledge.
+
+   **Assistant-mode agents are the exception** ([assistant-mode.md](assistant-mode.md)
+   §5.5), and for them this is a deliberate retreat from the carve-out above: their
+   dreams skip every session the per-turn capture gate excludes. The gate is the
+   same one capture reads — the CP-confirmed `private` bit once it has arrived, the
+   daemon's local verdict (DM, webchat, A2A child, launch-correlated) before that,
+   and excluded when neither is known — applied in the source query, before the cap,
+   so a skipped session neither takes a slot nor counts as new activity for a
+   scheduled tick. What a person says to an assistant in a DM therefore never
+   reaches its shared memory through a dream; the per-person memory space (P1) is
+   where such conversations will be remembered. Other agents keep the behavior
+   above.
+
 3. **Dream.** Run an isolated ACP session on the agent's runtime host through
    the shared extraction-session helper (§8): cwd `input/`, a verified read-only
    / plan permission mode (a runtime without one fails the dream before any

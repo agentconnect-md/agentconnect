@@ -596,6 +596,9 @@ view the agent, bypassing every gate in the table above.
 > personal conversation as organization knowledge (org knowledge must be general,
 > reusable convention). This is an owner-accepted trade-off favoring dream
 > usefulness for DM/external-centric agents over the strict capture gate.
+> **Assistant-mode agents do not get the carve-out**
+> ([assistant-mode.md](assistant-mode.md) §5.5): their dreams skip every session
+> this gate excludes ([memory-dreaming.md](memory-dreaming.md) §4).
 
 Origin inference alone cannot carry this: effective visibility can change, and
 a cross-daemon A2A child cannot infer its inherited privacy or external source
@@ -683,7 +686,11 @@ memory and forgotten on restart), and **Deny**. A denied, dismissed, or
 cancelled ask returns a read-only refusal to the model. When there is no human
 to ask — a headless cron run, an A2A child, a suppressed or ended turn — the
 write is refused at once rather than left waiting. Reads, post-turn
-distillation, and dream capture are unchanged by this.
+distillation, and dream capture are unchanged by this. An assistant-mode agent
+has no such exception ([assistant-mode.md](assistant-mode.md) §5.5): its write
+from a capture-excluded session is refused without a card, so **Allow for this
+session** is never offered on any of its sessions — its `append` long sessions
+included — and a grant held from before the switch no longer applies.
 
 **Already-captured memory is not scrubbed.** Distilled memory cannot be
 reliably attributed back to source turns, so tightening a session stops

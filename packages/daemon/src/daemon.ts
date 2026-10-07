@@ -909,6 +909,7 @@ import * as webchatTurnOutput from './webchat/turn-output.js'
 import {
   activationKey,
   assertExclusiveAgentWorkspaces,
+  assistantModeOn,
   configuredControlPlane,
   dreamingPolicyOf,
   ignoreAgentWatchPath,
@@ -7528,15 +7529,15 @@ export class Daemon {
     await Promise.all([...selected].map((lifecycle) => lifecycle.stop(0)))
   }
 
-  /** The memory-tool gate (#653): reads always pass; a private session's write asks unless it holds a session grant. */
+  /** The memory-tool gate (#653): reads always pass; a private session's write asks unless it holds a session grant, or is closed in assistant mode. */
   private async memoryAccessDecisionFor(ctx: SessionContext, mode: 'read' | 'write'): Promise<MemoryAccessDecision> {
     if (mode === 'read') return 'allow'
-    // A daemon-minted binding (distillation) carries its own authorization: it has no persisted
-    // row, so the capture gate would fail closed on it, and queueMemoryPostTurn already refused
-    // to distill a capture-excluded turn. Never model-supplied, so it cannot be forged.
+    // A daemon-minted binding (distillation) is never model-supplied and has no row for the gate to read.
     if (ctx.memoryBinding) return 'allow'
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
     if (!(await this.store.isCaptureExcluded(ctx.agentId, key))) return 'allow'
+    // Assistant mode keeps private sessions out of shared memory: nobody is asked, no earlier grant applies (assistant-mode.md §5.5).
+    if (assistantModeOn(this.agents.get(ctx.agentId))) return 'closed'
     return this.memoryWriteGrants.has(key) ? 'allow' : 'ask'
   }
 
@@ -8585,6 +8586,7 @@ export class Daemon {
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       memoryHomePortsFor: (id) => this.memoryHomePortsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
+      skipsPrivateSessions: (id) => assistantModeOn(this.agents.get(id)),
       operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>

@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { DreamRunner } from '../src/dream/runner.js'
 import { DreamScheduler } from '../src/scheduler/dream-scheduler.js'
 import { Daemon } from '../src/daemon.js'
+import { sessionKey, type LocalStore } from '../src/store/local-store.js'
+import { openTestStore } from './store-support.js'
 import { waitBudget } from './wait-support.js'
 
 /** A cron that fires every second, so a real tick is observable in a test. */
@@ -226,6 +228,35 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     expect(await fire(daemon, 'bot-a')).toBe(true)
     inner.runtimeFacts = { modelCatalog: () => undefined }
     expect(await fire(daemon, 'bot-a')).toBe(true)
+  })
+
+  it('leaves the private sessions of an agent in assistant mode out of its dream sources (assistant-mode.md §5.5)', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => ({}) as any, dreamOperationPolicy: 'test-only' })
+    const inner = daemon as unknown as {
+      agents: Map<string, object>
+      store: LocalStore
+      dreamRunner(): DreamRunner
+    }
+    inner.store = await openTestStore()
+    const key = sessionKey('slack', 'D1', 'D1', 'bot-a')
+    await inner.store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'D1',
+      thread: 'D1',
+      acpSessionId: 'acp-dm',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await inner.store.setLocalCaptureGate('bot-a', key, true)
+    const memory = { provider: 'managed', dreaming: { enabled: true } }
+    inner.agents.set('bot-a', { id: 'bot-a', memory })
+    expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(true)
+    inner.agents.set('bot-a', { id: 'bot-a', memory, assistantMode: { enabled: true, responsibleUserId: 'user-1' } })
+    expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
+    await inner.store.close()
   })
 
   it('suppresses schedules without the explicit test-only policy and rejects a stale tick before state', async () => {

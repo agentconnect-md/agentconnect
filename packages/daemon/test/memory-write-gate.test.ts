@@ -17,7 +17,7 @@ import {
   type MemoryWriteAsk,
   type MemoryWriteVerdict
 } from '../src/mcp/ops/memory.js'
-import { MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../src/memory/tools.js'
+import { MEMORY_WRITE_CLOSED, MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../src/memory/tools.js'
 
 const ctx = (): SessionContext => ({
   agentId: 'bot-a',
@@ -82,6 +82,16 @@ describe('a private session asks the human before writing file memory', () => {
     await expect(executeTool(ctx(), 'writeMemory', { content: 'x' }, denied)).rejects.toThrow(MEMORY_WRITE_NO_APPROVER)
     expect(unwired.memory.write).not.toHaveBeenCalled()
     expect(denied.memory.write).not.toHaveBeenCalled()
+  })
+
+  it('refuses a closed session without asking, and says why', async () => {
+    const asker = vi.fn(async () => 'allowed' as const)
+    const d = deps('closed', { requestMemoryWriteApproval: asker })
+    await expect(executeTool(ctx(), 'writeMemory', { content: 'x' }, d)).rejects.toThrow(MEMORY_WRITE_CLOSED)
+    await executeTool(ctx(), 'readMemory', {}, d)
+    expect(asker).not.toHaveBeenCalled()
+    expect(d.memory.write).not.toHaveBeenCalled()
+    expect(d.memory.read).toHaveBeenCalled()
   })
 
   it('asks once per call, for THAT call: two writes are two asks', async () => {

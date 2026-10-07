@@ -10,6 +10,9 @@ export const MEMORY_WRITE_NOT_APPROVED = `${MEMORY_READ_ONLY_HERE} The user did 
 /** Refusal surfaced to the model when a private session's write has nobody who could approve it. */
 export const MEMORY_WRITE_NO_APPROVER = `${MEMORY_READ_ONLY_HERE} No one could be asked to approve this write; keep the information in this conversation and do not retry.`
 
+/** Refusal surfaced to the model when its agent keeps private sessions out of shared memory (assistant mode). */
+export const MEMORY_WRITE_CLOSED = `${MEMORY_READ_ONLY_HERE} This agent never saves what is said in a private conversation, and no one can approve it; keep the information in this conversation and do not retry.`
+
 /** The agent's long-term memory tools, for EVERY agent: `<agent-root>/memory/` with a `MEMORY.md` index plus topic files. */
 export const MEMORY_TOOLS: ToolDescriptor[] = [
   ...MEMORY_ENTRY_TOOLS,

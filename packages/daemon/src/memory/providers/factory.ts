@@ -12,19 +12,30 @@ export function memoryKindOf(agent: { memory?: { provider?: MemoryProviderKind }
   return agent.memory?.provider ?? 'managed'
 }
 
-/** One agent's memory env at spawn; throws `MemoryProviderUnavailableError` for an unbuildable provider (external without admission, native on an unverified runtime). */
+/** One agent's memory env at spawn; throws `MemoryProviderUnavailableError` for an unbuildable provider (external without admission, native on an unverified runtime or in assistant mode). */
 export function memoryProviderFor(
   agent: {
     runtime?: string
     memory?: { provider?: MemoryProviderKind; connectionId?: string }
+    assistantMode?: { enabled: boolean }
   },
   runtime: RuntimeDef,
   effectiveEnv: NodeJS.ProcessEnv = {},
   externalAdmission?: { assertReady(connectionId: string): void }
 ): { runtimeEnv(): Record<string, string> } {
   const kind = memoryKindOf(agent)
+  // Assistant mode needs the runtime's own cross-session memory off (assistant-mode.md §4.1), so its off-switch is required.
+  const assistant = agent.assistantMode?.enabled === true
+  if (assistant && kind === 'native') {
+    throw new MemoryProviderUnavailableError(
+      "assistant mode needs the runtime's own memory turned off, not native memory"
+    )
+  }
   // Managed keeps a single store: turn OFF any verified runtime-owned memory (see ManagedMemoryProvider.runtimeEnv).
-  if (kind === 'managed') return { runtimeEnv: () => disabledRuntimeMemoryEnv(runtime, effectiveEnv, agent.runtime) }
+  if (kind === 'managed') {
+    const requiredFor = assistant ? ('assistant-mode' as const) : undefined
+    return { runtimeEnv: () => disabledRuntimeMemoryEnv(runtime, effectiveEnv, agent.runtime, requiredFor) }
+  }
   if (kind === 'none') {
     const p = new NoMemoryProvider()
     return { runtimeEnv: () => p.runtimeEnv(runtime, effectiveEnv, agent.runtime) }

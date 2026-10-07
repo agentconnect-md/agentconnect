@@ -625,6 +625,11 @@ const AGENT_DELIVERY_SCOPE_SQL = `(sender = ? OR EXISTS (
         SELECT 1 FROM transcript_recipient tr_a
         WHERE tr_a.seq = transcript.seq AND tr_a.agentId = ?))`
 
+// isCaptureExcluded's verdict says open for the `sessions` row in scope: the CP-confirmed bit wins, then the local verdict; no gate row ⇒ excluded.
+const CAPTURE_OPEN_SQL = `COALESCE((
+        SELECT COALESCE(g.cpPrivate, g.localExcluded) FROM session_gates g
+        WHERE g.agentId = sessions.agentId AND g.sessionKey = sessions.key), 1) = 0`
+
 /** Retention floor (§8 rule 2): an unadmitted row survives while it is above the Nth-newest text
  *  row. Deliberately separate from §9's read window, which happens to share the number today. */
 export const OBSERVATION_FLOOR_TEXT_ROWS = 100
@@ -4943,10 +4948,11 @@ export class LocalStore {
     ).map((row) => this.dreamFromRow(row))
   }
 
-  /** Newest-first addressable sessions to mine as dream transcript sources. */
+  /** Newest-first addressable sessions to mine as dream transcript sources; `skipPrivate` leaves out those the capture gate excludes. */
   async dreamSessionSources(
     agentId: string,
-    limit: number
+    limit: number,
+    opts: { skipPrivate?: boolean } = {}
   ): Promise<
     {
       sessionId: string
@@ -4959,12 +4965,11 @@ export class LocalStore {
   > {
     const rows = (await this.db
       .prepare(
-        // Outward ids (§1.1): these become the citations the model grounds a skill candidate in,
-        // and from there the dream's durable, CP-visible provenance. A pre-v12 row answers with
-        // its ACP id, which is what that session was reported under.
+        // Outward ids (§1.1) become the dream's durable provenance; a pre-v12 row answers with the ACP id it was reported under.
         `SELECT COALESCE(sessionId, acpSessionId) AS sessionId, key, channel, thread, transportScope, updatedAt
          FROM sessions
          WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
+         ${opts.skipPrivate ? `AND ${CAPTURE_OPEN_SQL}` : ''}
          ORDER BY updatedAt DESC LIMIT ?`
       )
       .all(agentId, limit)) as {
