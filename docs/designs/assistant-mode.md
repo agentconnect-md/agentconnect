@@ -14,6 +14,9 @@ and asks before it acts.
 tool set for AI tools. That design gives an agent tools to administer the platform; this one
 describes how an agent behaves.
 
+**Console:** the switch is offered behind the `assistant-mode` flag (`features.assistantMode` in
+the chart, off by default) until it changes behavior; an agent already switched on keeps it shown.
+
 **Builds on:** [resource-visibility.md](resource-visibility.md) §14 (conversation gating:
 authorize places), [session-visibility.md](session-visibility.md) (session visibility, the
 private-session memory exclusion), [channel-session-mode.md](channel-session-mode.md) (`append`

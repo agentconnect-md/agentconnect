@@ -152,6 +152,8 @@ features:
   googleChatDeploymentApp: false
   # The By decision checkout for additional repositories; off hides it for new choices, existing ones stay shown.
   repositoryDecision: false
+  # The assistant mode switch on the agent page; off hides it, and an agent already switched on keeps it shown.
+  assistantMode: false
 
 # The install-wide daemon pool, whose Pods are pool members. Every member serves agents
 # from every organization and derives the org from the CP agent registry. The fixed
