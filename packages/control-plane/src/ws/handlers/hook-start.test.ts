@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
 import { handleHookStart } from './hook-start.js'
+import { countReviewCheckout } from '../../observability/review-checkout.js'
+
+vi.mock('../../observability/review-checkout.js', () => ({ countReviewCheckout: vi.fn() }))
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const HOOK_ID = '11111111-1111-4111-8111-111111111111'
@@ -227,5 +230,35 @@ describe('hook/start provider one-of (gitlab-com-integration.md §17.2)', () => 
 
     expect(deps.githubRunCoordinator!.afterStart).toHaveBeenCalledWith(HOOK_ID, 'delivery-1')
     expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'hook/start/ok', { accepted: true, amendment })
+  })
+
+  it('counts a github review checkout only once the barrier is acknowledged', async () => {
+    const github = {
+      repoId: '42',
+      repoFullName: 'acme/repo',
+      sourceInstallationId: '77',
+      subjectKind: 'pull_request',
+      pullNumber: 9,
+      headSha: 'head',
+      baseSha: 'base',
+      reportSha: 'head'
+    }
+    const reviewCheckout = { outcome: 'degraded', reason: 'fetch_timeout' }
+    vi.mocked(countReviewCheckout).mockClear()
+
+    await handleHookStart(
+      startFrame({ event: 'pull_request:synchronize', github, reviewCheckout }),
+      fakeConn(),
+      gitlabDeps()
+    )
+    expect(countReviewCheckout).toHaveBeenCalledExactlyOnceWith(reviewCheckout, 'org')
+
+    const refused = gitlabDeps({ githubReviewBroker: { start: vi.fn(async () => Promise.reject(new Error('down'))) } })
+    await handleHookStart(
+      startFrame({ event: 'pull_request:synchronize', github, reviewCheckout }),
+      fakeConn(),
+      refused
+    )
+    expect(countReviewCheckout).toHaveBeenCalledOnce()
   })
 })

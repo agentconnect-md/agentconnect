@@ -43,6 +43,7 @@ import type {
   OrganizationKnowledgeRepo,
   SkillSourceRepo
 } from '../persistence/ports.js'
+import { isHonoredRepoGrant } from '../persistence/ports.js'
 import { AgentId, OrgId } from '../domain/ids.js'
 import { gitlabManagedProjectPath } from '../domain/git-host.js'
 import { codeHostProviders } from '../codehost/registry.js'
@@ -236,7 +237,9 @@ export class AgentSpecAssembler {
    *  Pinned into the move {@link MoveBundle} for the same reason as skills. */
   async additionalReposOf(a: Pick<AgentRecord, 'id'>): Promise<AgentAdditionalRepo[]> {
     const rows = (await this.agentRepoAuth?.listForAgent(a.id)) ?? []
+    // A stale grant is neither cloned nor offered to the selector until it is honored again.
     return rows
+      .filter(isHonoredRepoGrant)
       .map((row) => ({
         repoFullName: row.repoFullName,
         repoId: row.repoId.toString(),
@@ -555,6 +558,8 @@ export function agentRecordToSpec(
     // Ship the memory backend only when set (like pause) — a switch isn't a
     // per-runtime-vocabulary reset, so absent ⇒ the daemon leaves agent.json alone.
     ...(a.memory !== null ? { memory: a.memory } : {}),
+    // Value or null, so switching assistant mode off by clearing it replicates.
+    assistantMode: a.assistantMode ?? null,
     // §24.4: pre-spawn host carriage. Present only when a GitLab consumer is, so a spec
     // with none stays byte-identical to what a pre-§24 control plane projected.
     ...(host !== undefined ? { gitlabHost: host } : {}),

@@ -1,15 +1,10 @@
 'use client'
 
-// Holds a conversation-owner move behind the platform's own warning when the move takes
-// the default off a RESTRICTED agent. On a platform whose owner compiles to a
-// per-conversation DEFAULT rather than an ownership route, that seat is the only grant a
-// gated agent holds in the room, so moving it withdraws the grant and the agent's bound
-// sessions there become stoppable but not continuable (linear-integration.md §6.2).
-// Both owner selectors — the agent page's rows and the org Bots roster — run through
-// this, so the two cannot warn differently about the same write.
+// Holds moving a default seat off a gated agent behind the platform's warning: that seat is its only grant there (linear-integration.md §6.2).
 
 import { useCallback, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
+import type { ConversationGate } from '@/lib/data'
 import { ConfirmationDialog } from './ConfirmationDialog'
 import { channelListSemantics } from './platforms/registry'
 
@@ -18,7 +13,7 @@ export interface OwnerChangeMove {
   /** The bot's platform — carried per move, because one Bots card lists several. */
   platform?: string
   /** The row's current owner; absent when the console cannot resolve one. */
-  from?: { id: string; label: string; restricted: boolean }
+  from?: { id: string; label: string; gate: ConversationGate | null }
   toId: string
   /** The row, named the way the operator reads it. */
   room: string
@@ -28,19 +23,16 @@ export interface OwnerChangeMove {
 interface Pending {
   copy: NonNullable<ReturnType<typeof channelListSemantics>['ownerChangeWarning']>
   owner: string
+  reason: ConversationGate
   room: string
   apply: () => Promise<void>
   done: () => void
 }
 
-/**
- * Whether this move needs the platform's confirmation at all. Exported because the rule —
- * a declared warning, a resolvable outgoing owner that is restricted, and a genuinely
- * different incoming one — is the whole design and belongs in a test.
- */
+/** A declared warning, a resolvable gated outgoing owner, and a different incoming one; exported for its test. */
 export function ownerChangeNeedsWarning(move: OwnerChangeMove): boolean {
   if (!channelListSemantics(move.platform).ownerChangeWarning) return false
-  return !!move.from && move.from.restricted && move.from.id !== move.toId
+  return !!move.from?.gate && move.from.id !== move.toId
 }
 
 export function useOwnerChangeGuard(): {
@@ -56,8 +48,9 @@ export function useOwnerChangeGuard(): {
   const guard = useCallback((move: OwnerChangeMove, apply: () => Promise<void>): Promise<void> => {
     const copy = channelListSemantics(move.platform).ownerChangeWarning
     const from = move.from
-    if (!copy || !ownerChangeNeedsWarning(move) || !from) return apply()
-    return new Promise<void>((done) => setPending({ copy, owner: from.label, room: move.room, apply, done }))
+    if (!copy || !ownerChangeNeedsWarning(move) || !from?.gate) return apply()
+    const reason = from.gate
+    return new Promise<void>((done) => setPending({ copy, owner: from.label, reason, room: move.room, apply, done }))
   }, [])
 
   // Cancelling resolves the caller's promise without writing — its picker stops spinning
@@ -94,7 +87,12 @@ export function useOwnerChangeGuard(): {
         onConfirm={confirm}
         onClose={close}
       >
-        {t(pending.copy.body.key, { ...pending.copy.body.values, owner: pending.owner, room: pending.room })}
+        {t(pending.copy.body.key, {
+          ...pending.copy.body.values,
+          owner: pending.owner,
+          reason: pending.reason,
+          room: pending.room
+        })}
       </ConfirmationDialog>
     ) : null
   }

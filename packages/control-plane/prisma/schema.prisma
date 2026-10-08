@@ -131,6 +131,7 @@ model Org {
   codeHostReviewOutcomes    CodeHostReviewAttemptOutcome[]
   agentMemoryFiles          AgentMemoryFile[]
   agentMemoryMutations      AgentMemoryMutation[]
+  agentMemoryStoreOperations AgentMemoryStoreOperation[]
   agentMemoryHistory        AgentMemoryHistory[]
 
   @@index([createdByUserId])
@@ -207,6 +208,7 @@ model User {
   modifiedHooks                    HookDef[]                  @relation("HookModifiedBy")
   addedTrustedActors               CodeHostTrustedActor[]     @relation("CodeHostTrustedActorAddedBy")
   createdRepoAuths                 AgentRepoAuthorization[]   @relation("AgentRepoAuthCreatedBy")
+  attestedRepoAuths                AgentRepoAuthorization[]   @relation("AgentRepoAuthAttestedBy")
   createdInstallationAuths         AgentInstallationAuthorization[] @relation("AgentInstallationAuthCreatedBy")
   gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
   githubRepoIdentity               GithubRepoIdentity?
@@ -474,6 +476,7 @@ model Daemon {
   /// hash). Only the newest live generation of a set claims vacated duty groups; null never excludes.
   generation      String?
   generationSince DateTime? @db.Timestamptz(6) // when this row first reported its current generation
+  bootId        String? @db.Uuid // RegisterReq.bootId of the process that last registered; null for an older daemon
   mcpServers    Json    @default("[]") @db.JsonB // facts/daemon-runtimes MCP-server list (FactsMcpServer[] = {name,transport}); replaced whole per frame
   maxAgents     Int     @default(0)
 
@@ -574,6 +577,8 @@ model DaemonLifecycleOp {
   // whose epoch is STRICTLY GREATER (the daemon re-authed after draining + relaunching),
   // so a coincidental reconnect at the same epoch can never close it.
   commandEpoch  BigInt                  @default(0) @db.BigInt
+  // The daemon boot a restart was sent to: the op settles only once a different boot registers. Null: the epoch gate alone.
+  commandBootId String?                 @db.Uuid
   // Set when the daemon ACKs `accepted:true` (the op is "armed"). A READY before this
   // must NOT settle the op — the command hadn't been accepted/executed yet.
   acceptedAt    DateTime?               @db.Timestamptz(6)
@@ -916,6 +921,7 @@ model Agent {
   capabilities          String[]           @default([]) // → AgentLaunch.activeCapabilities
   permissions           Json               @default("{}") @db.JsonB // {policy:"ask",autoApprove:[...]}
   runtimeOverrides      Json?              @db.JsonB // {model, reasoningEffort, outputMode, fastMode, env{K:V}, mcpServers[], skills[]} — NO secret values (those live in agent_secret)
+  assistantMode         Json?              @db.JsonB // protocol AssistantModePolicy (assistant-mode.md §5.1); null ⇒ never configured, off
   managedSkills         String[]           @default([]) // centrally accepted managed_skill ids, explicitly enabled
   createdByUserId       String? // WebUI user who created the agent (immutable audit; null for daemon/CLI-created). Surfaced in the console "Created" row.
   // Last-modification audit (human edits only): stamped on create + PATCH. Kept
@@ -975,6 +981,7 @@ model Agent {
   organizationEnvironmentAssignments OrganizationEnvironmentAssignment[]
   memoryFiles           AgentMemoryFile[]
   memoryMutations       AgentMemoryMutation[]
+  memoryStoreOperations AgentMemoryStoreOperation[]
   memoryHistory         AgentMemoryHistory[]
   hostedHookRoutings    CodeHostDecisionRouting[]
 
@@ -1082,13 +1089,29 @@ model AgentRepoAuthorization {
   materialize RepoMaterialization @default(always) // projected beside the entry; a change re-projects the spec
   createdByUserId String? // audit: who authorized (the identity-assertion subject)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
+  /// Who vouched for the current tier: the creator, or whoever last raised it; re-attestation re-checks this member.
+  attestedByUserId String?
+  /// When re-attestation last examined the row (null = never); the sweep takes the oldest first.
+  attestationCheckedAt DateTime? @db.Timestamptz(6)
+  /// Set while the attester fails the access check; the grant is not honored meanwhile.
+  staleSince DateTime? @db.Timestamptz(6)
+  staleReason RepoGrantStaleReason?
 
-  agent     Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  createdBy User? @relation("AgentRepoAuthCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  agent      Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  createdBy  User? @relation("AgentRepoAuthCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  attestedBy User? @relation("AgentRepoAuthAttestedBy", fields: [attestedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([agentId, provider, repoId])
   @@index([agentId])
+  @@index([provider, attestationCheckedAt])
   @@map("agent_repo_authorization")
+}
+
+/// Why re-attestation stopped honoring a repository grant (agent-multi-repo-authorization.md, Re-attestation).
+enum RepoGrantStaleReason {
+  access_lost // the attester no longer holds the permission the tier needs
+  identity_unlinked // the attester has no linked GitHub identity to check
+  attester_removed // the attester's account was deleted
 }
 
 /// Agent access to every repository a GitHub App installation covers, at one tier (agent-multi-repo-authorization.md decision 10).
@@ -1339,6 +1362,10 @@ model SessionMeta {
   /// nobody else can read. Session-bound on purpose: the agent's CURRENT placement is no evidence
   /// about where a past session ran (`domain/session-content.ts`).
   contentSetId        String?             @db.Uuid
+  /// The recorder's shared store id (`capabilities.contentStore`), stamped beside `contentSetId`. In an
+  /// org set only the members still reporting this id hold the rows; null for the pool's older rows,
+  /// where every member does.
+  contentStoreId      String?             @db.Uuid
   // Session-pinned checkout choice. Null is a legacy row whose daemon never
   // reported it; `session` identifies a daemon-local worktree eligible for the
   // authorized Workspace viewer.
@@ -2796,6 +2823,8 @@ model IntegrationChannel {
   decisionId          String?  @db.Uuid
   // A Decision edit invalidated this gate; a router's review state lives on BotDecisionRouting instead.
   decisionNeedsReview Boolean  @default(false)
+  // Why the platform detected this place as external (`PlaceExternalReason`, assistant-mode.md §5.3); null is internal.
+  externalReason      String?
   firstSeenAt   DateTime         @default(now()) @db.Timestamptz(6)
   updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
 
@@ -2849,9 +2878,8 @@ model SlackInstall {
 // org/agent/bot delete is harmless.
 model SlackPlatformInstall {
   id              String                     @id @db.Uuid // == OAuth state
-  orgId           String
-  // Generic installs bind a target agent. A bot-bound Settings reauthorization
-  // leaves this null so a freed bot stays free.
+  orgId           String?
+  // Public installs defer binding; bot-bound reauthorization preserves existing memberships.
   agentId         String?                    @db.Uuid
   // Terminal state of the OAuth round trip — the row IS the console's completion
   // signal. It must survive the callback (not be deleted) because a successful
@@ -2875,6 +2903,23 @@ model SlackPlatformInstall {
   settledAt       DateTime?                  @db.Timestamptz(6)
 
   @@map("slack_platform_install")
+}
+
+// An authorized workspace awaiting its first organization and agent binding.
+model SlackWorkspaceInstall {
+  id                 String   @id @db.Uuid
+  appId              String
+  teamId             String
+  teamName           String?
+  botUserId          String
+  installerUserId    String
+  botToken           String
+  grantedScopes      String[] @default([])
+  credentialRevision Int      @default(1)
+  installedAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([appId, teamId])
+  @@map("slack_workspace_install")
 }
 
 /**
@@ -4101,6 +4146,22 @@ model AgentMemoryHistory {
   @@index([agentId, root, path, at])
   @@index([orgId])
   @@map("agent_memory_history")
+}
+
+// The reply to each `memory/store` write sent with an operation id, so a re-send across a CP handoff is answered, not re-applied.
+model AgentMemoryStoreOperation {
+  agentId String @db.Uuid
+  operationId String @db.Uuid
+  orgId String
+  requestHash String
+  reply Json
+  createdAt DateTime @db.Timestamptz(3)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  @@id([agentId, operationId])
+  @@index([createdAt])
+  @@index([orgId])
+  @@map("agent_memory_store_operation")
 }
 
 // Durable, body-free receipts; history retention cannot erase whether a mutation already committed.

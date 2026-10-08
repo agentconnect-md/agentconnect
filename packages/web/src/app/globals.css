@@ -2724,30 +2724,27 @@
    Mobile / responsive layer
    ----------------------------------------------------------------------------
    The console is a fixed desktop shell (240px rail + fluid main). Below the
-   tablet breakpoint we swap the rail for a bottom tab bar, turn the top bar into
-   a compact app bar (logo + section), tighten gutters, and float modals up as
+   tablet breakpoint we hide the rail behind a full-screen drawer, bring in a
+   compact app bar (menu + section), tighten gutters, and float modals up as
    bottom sheets. Driven purely by CSS media queries so SSR markup is identical
    on both — no viewport JS, no hydration mismatch. Mirrors the "AgentConnect
-   Mobile" design (app bar h-14 · bottom nav · scrim + rounded-t sheets).
+   Mobile Nav" design (app bar h-14 · plum drawer · scrim + rounded-t sheets).
    ============================================================================ */
 
-  /* Mobile-only chrome — present in the DOM on every viewport (app bar + nav render
-   always; sheets/search render on demand), revealed only inside the media query. */
+  /* Mobile-only chrome — the app bar is in the DOM on every viewport (the drawer,
+   sheets and search render on demand), revealed only inside the media query. */
   .mtop {
-    display: none;
-  }
-  .mnav {
     display: none;
   }
 
   @media (max-width: 768px) {
-    /* ----- rail → bottom nav ----- */
+    /* ----- rail → drawer (`.mdrawer`, below) ----- */
     .rail {
       display: none;
     }
 
     /* ----- app bar: desktop has no top bar at all (v2 is a pure left/right split),
-     so mobile brings its own (.mtop), in two variants (list-tab vs push) ----- */
+     so mobile brings its own (.mtop), in two variants (section vs push) ----- */
     .mtop {
       display: flex;
       align-items: center;
@@ -2758,24 +2755,17 @@
       background: var(--surface-card);
       border-bottom: 1px solid var(--border-subtle);
     }
-    .mtop-logo {
-      display: inline-flex;
-      align-items: center;
-      flex: none;
-      line-height: 0;
-      margin-left: 8px;
-    }
     .mtop-title {
       flex: 1;
       min-width: 0;
-      font: 600 16px var(--font-sans);
+      font: 600 17px var(--font-sans);
       color: var(--text-primary);
-      margin-left: 8px;
+      margin-left: 4px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    /* Push variant: back button sits flush-left, so the title needs no logo gutter. */
+    /* Push variant: the back button reads as the gutter, so the title sits flush. */
     .app.pushed .mtop-title {
       margin-left: 0;
     }
@@ -2799,11 +2789,8 @@
 
     /* ----- content: full-bleed on mobile (the mobile view branches own their own
      12px×16px card gutters, matching the design's edge insets) — only reserve the
-     bottom inset that clears the fixed nav (list routes) or the safe area (push). ----- */
+     bottom inset that clears the safe area. ----- */
     .content {
-      padding: 0 0 calc(76px + env(safe-area-inset-bottom, 0px));
-    }
-    .app.pushed .content {
       padding: 0 0 calc(24px + env(safe-area-inset-bottom, 0px));
     }
     /* Until the client mounts, useIsMobile is still false, so `.content` holds the
@@ -2814,43 +2801,44 @@
       visibility: hidden;
     }
 
-    /* ----- bottom tab bar: plum, fixed 5-slot grid (4 tabs + More) + home pill ----- */
-    .mnav {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      z-index: 60;
-      display: block;
-      background: var(--surface-inverse);
-      padding: 6px 8px calc(0px + env(safe-area-inset-bottom, 0px));
+    /* ----- full-screen drawer (the menu button's target): the rail's `.navitem`
+     rows and `.navsep` rule at phone size, on the rail's plum. Active row adds the
+     design's 3px bar; the rail's rule already tints its glyph. ----- */
+    .mdrawer .navitem {
+      position: relative;
+      width: 100%;
+      min-height: 48px;
+      margin: 0;
+      padding: 0 12px;
+      gap: 14px;
+      border-radius: 10px;
+      font-size: 15.5px;
+      color: var(--text-inverse);
     }
-    .mnav-tabs {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-    }
-    .mnavitem {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 4px;
-      padding: 6px 0 4px;
-      border: 0;
-      background: none;
-      cursor: pointer;
-      text-decoration: none;
-      color: var(--text-inverse-dim);
-      font: 500 12px var(--font-sans);
-    }
-    .mnavitem.on {
-      color: #fff;
+    .mdrawer .navitem.on {
       font-weight: 600;
     }
-    .mnavitem span {
-      white-space: nowrap;
+    .mdrawer .navitem.on::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 12px;
+      bottom: 12px;
+      width: 3px;
+      border-radius: 2px;
+      background: var(--magenta-300);
     }
-    /* Home-indicator pill row — shared between nav (translucent white) and sheets. */
-    .mnav-home,
+    .mdrawer .navitem svg {
+      color: var(--text-inverse-dim);
+    }
+    .mdrawer .navitem.on svg {
+      color: var(--magenta-300);
+    }
+    .mdrawer .navsep {
+      margin: 8px 12px;
+    }
+
+    /* Home-indicator pill row under a sheet. */
     .msheet-home {
       height: 20px;
       display: flex;
@@ -2861,13 +2849,10 @@
       width: 134px;
       height: 5px;
       border-radius: 999px;
-      background: rgba(255, 255, 255, 0.3);
-    }
-    .home-pill.dark {
       background: var(--gray-300);
     }
 
-    /* ----- mobile bottom sheets (More / Org), reached from the nav's "More" tab ----- */
+    /* ----- mobile bottom sheets (account / help / filters), over the drawer or a view ----- */
     .msheet-scrim {
       position: fixed;
       inset: 0;
@@ -3012,7 +2997,7 @@
     }
     /* ----- page subtitle: hide the long descriptive blurb under each view's title
      (Agents/Sessions/Daemons/… list headers) — it eats vertical space on phones
-     and the section is already clear from the title + bottom-nav tab. */
+     and the section is already clear from the app-bar title. */
     .psub {
       display: none;
     }

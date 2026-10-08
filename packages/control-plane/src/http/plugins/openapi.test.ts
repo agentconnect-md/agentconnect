@@ -144,6 +144,23 @@ describe('openapi plane', () => {
     }
   })
 
+  it('documents the session file download as raw bytes, not JSON', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const op = doc.paths?.['/api/v1/orgs/{orgId}/agents/{id}/workspace/file/download']?.get
+      expect(op).toMatchObject({ tags: ['Agent workspace'], operationId: 'downloadAgentSessionFile' })
+      expect(op?.summary).toBeTruthy()
+      expect(op?.responses?.['200']?.content?.['application/octet-stream']?.schema).toMatchObject({
+        type: 'string',
+        format: 'binary'
+      })
+      expect(op?.responses?.['413']).toBeTruthy()
+    } finally {
+      await app.close()
+    }
+  })
+
   it('names every git write route and documents its body and session scope', async () => {
     const app = await buildReady()
     try {

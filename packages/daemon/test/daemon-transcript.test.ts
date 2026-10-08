@@ -307,6 +307,45 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   })
 
+  // A cancel that lands while session/new is still running keeps the new row (state idle, no
+  // ACP id). That row must still carry its Slack binding, or every later message in the
+  // thread is rejected as a source mismatch.
+  it('keeps the Slack source binding on a new session cancelled before its first prompt', async () => {
+    const { factory, host } = replyingHost('here is my answer')
+    let releaseSession!: () => void
+    const sessionBlocked = new Promise<void>((resolve) => (releaseSession = resolve))
+    host.newSession.mockImplementationOnce(async () => {
+      await sessionBlocked
+      return 'acp-1'
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const agent = (daemon as any).agents.get('bot-a')
+
+    const cancelled = (daemon as any).dispatch('bot-a', channelMsg('100', 'first'), 'int-a')
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledOnce(), WAIT)
+    agent.pause = true
+    releaseSession()
+    await cancelled
+    expect(host.prompt).not.toHaveBeenCalled()
+
+    agent.pause = false
+    await (daemon as any).dispatch('bot-a', channelMsg('200', 'follow-up'), 'int-a')
+
+    expect(conn.postMessage).not.toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('already belongs to a session created from another source'),
+      'T1'
+    )
+    expect(host.prompt).toHaveBeenCalledOnce()
+    await daemon.stop()
+  })
+
   it('reuses an external runtime only for the same inherited Slack source', async () => {
     const { factory, host } = replyingHost('here is my answer')
     const daemon = new Daemon({
@@ -525,34 +564,48 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   })
 
-  it('uses session-scoped model metadata refreshed at turn completion', async () => {
-    const { factory, host } = replyingHost('the answer')
-    let model = 'model-before-prompt'
-    ;(host as any).modelOptions = vi.fn(() => ({ current: model }))
-    const prompt = host.prompt
-    host.prompt = vi.fn(async (sid: string) => {
-      const result = await prompt(sid)
-      model = 'model-after-prompt'
-      return result
-    })
-    const daemon = new Daemon({
-      slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold('medium'),
-      hostFactory: factory
-    })
-    await daemon.start()
-    const conn = makeRoutable(daemon)
+  it.each([undefined, 'model-before-prompt'])(
+    'refreshes the final session model unless execution reports %s',
+    async (reportedModel) => {
+      const { factory, host } = streamingHost([
+        ...(reportedModel
+          ? [{ sessionUpdate: 'usage_update', used: 100, size: 200_000, _meta: { '_claude/model': reportedModel } }]
+          : []),
+        text('the answer')
+      ])
+      let model = 'model-before-prompt'
+      ;(host as any).modelOptions = vi.fn(() => ({ current: model }))
+      const prompt = host.prompt
+      host.prompt = vi.fn(async (sid: string) => {
+        const result = await prompt(sid)
+        model = 'model-after-prompt'
+        return result
+      })
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold('medium'),
+        hostFactory: factory
+      })
+      await daemon.start()
+      const conn = makeRoutable(daemon)
 
-    await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
+      await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
 
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'the answer', 'T1', {
-      username: 'bot-a',
-      agentAuthorId: 'bot-a',
-      response: streamingResponse(),
-      trailingBlocks: [classicFooter('bot-a', 'claude', 'model-after-prompt')]
-    })
-    await daemon.stop()
-  })
+      expect(conn.postMessage).toHaveBeenCalledWith('C1', 'the answer', 'T1', {
+        username: 'bot-a',
+        agentAuthorId: 'bot-a',
+        response: streamingResponse(),
+        trailingBlocks: [classicFooter('bot-a', 'claude', reportedModel ?? 'model-after-prompt')]
+      })
+      const internal = daemon as any
+      const session = await internal.store.getSessionByAcpId('acp-1')
+      expect(await internal.store.getObservedModel(session.key)).toBe(reportedModel ?? 'model-after-prompt')
+      expect(await internal.githubReviews.githubCommentAttribution('bot-a', 'acp-1', 'github')).toMatchObject({
+        model: reportedModel ?? 'model-after-prompt'
+      })
+      await daemon.stop()
+    }
+  )
 
   it('never resends linked footer blocks when model metadata changes after an early flush', async () => {
     let onUpdate!: (sid: string, update: unknown) => void

@@ -69,20 +69,6 @@ describe('the shim read capability', () => {
     expect(content).toMatchObject({ exists: true, type: 'file', encoding: 'utf8', content: '# hello\nsecond line\n' })
   })
 
-  it('carries a raw-bytes read across the channel as base64', async () => {
-    const { mount, checkout } = volume()
-    const bytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x57, 0x45, 0x42, 0x50])
-    writeFileSync(join(checkout, 'shot.webp'), bytes)
-    const reply = await handlerFor(mount)('read', {
-      op: 'read',
-      root: checkout,
-      req: { agentId: AGENT, path: 'shot.webp', offset: 0, limit: 65_536, encoding: 'base64' }
-    })
-    const content = (WorkspaceFilesReplySchema.parse(reply) as { ok: true; value: WorkspaceReadContent }).value
-    expect(content).toMatchObject({ exists: true, encoding: 'base64', size: 9, truncated: false })
-    expect(Buffer.from(content.content!, 'base64')).toEqual(bytes)
-  })
-
   it('refuses a root outside the sandbox workspace, whatever the daemon asked for', async () => {
     const { mount } = volume()
     // The daemon's own root resolution is not a control on this side: this is the check that stops a
@@ -430,5 +416,87 @@ describe('ShimWorkspaceFiles', () => {
     const remote = await loopback(mount).list(checkout, { agentId: AGENT, path: 'src', limit: 50 })
     expect(remote).toMatchObject({ agentId: AGENT, path: 'src', exists: true })
     expect(remote.entries.map((entry) => entry.name)).toEqual(['index.ts'])
+  })
+})
+
+describe('byte reads (the console file download)', () => {
+  /** A client whose far side may be a shim that predates byte reads and strips `encoding`. */
+  function client(mount: string, stale = false): ShimWorkspaceFiles {
+    const requester: ShimRequester = {
+      request: async (_capability, payload) => {
+        const p = payload as { op: string; req: Record<string, unknown> }
+        if (!stale || p.op !== 'read') return applyWorkspaceFilesPayload(payload, mount)
+        const { encoding: _dropped, ...req } = p.req
+        return applyWorkspaceFilesPayload({ ...p, req }, mount)
+      }
+    }
+    return new ShimWorkspaceFiles(requester)
+  }
+
+  /** Every byte of a file, paged the way the control plane pages it. */
+  async function readAll(read: (offset: number) => Promise<WorkspaceReadContent>): Promise<Buffer> {
+    const parts: Buffer[] = []
+    let offset = 0
+    let size = -1
+    do {
+      const slice = await read(offset)
+      expect(slice).toMatchObject({ exists: true, type: 'file', encoding: 'base64', offset })
+      size = slice.size!
+      parts.push(Buffer.from(slice.content!, 'base64'))
+      offset = slice.nextOffset!
+    } while (offset < size)
+    return Buffer.concat(parts)
+  }
+
+  it('returns a binary file byte for byte, identically on the daemon and in the sandbox', async () => {
+    const { mount, checkout } = volume()
+    // NULs make the text read refuse it; a byte read must not sniff, trim or re-encode anything.
+    const bytes = Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.alloc(70_000, 0), Buffer.from([0xc3, 0x28, 0xff])])
+    mkdirSync(join(checkout, 'uploads'))
+    writeFileSync(join(checkout, 'uploads', 'spec.pdf'), bytes)
+    const req = (offset: number) => ({
+      agentId: AGENT,
+      path: 'uploads/spec.pdf',
+      offset,
+      limit: 65_536,
+      encoding: 'base64' as const
+    })
+
+    expect(await readAll((offset) => localWorkspaceFiles.read(checkout, req(offset)))).toEqual(bytes)
+    expect(await readAll((offset) => client(mount).read(checkout, req(offset)))).toEqual(bytes)
+    await expect(
+      localWorkspaceFiles.read(checkout, { agentId: AGENT, path: 'uploads/spec.pdf', offset: 0, limit: 65_536 })
+    ).resolves.toMatchObject({ encoding: 'none' })
+  })
+
+  it('keeps every containment refusal of the text read', async () => {
+    const { mount, checkout } = volume()
+    writeFileSync(join(mount, 'PROVIDER_SECRET.env'), 'token=abc\n')
+    symlinkSync(mount, join(checkout, 'vendor'), 'dir')
+    mkdirSync(join(checkout, '.git'))
+    writeFileSync(join(checkout, '.git', 'config'), '[core]\n')
+    const cases: Array<[string, string]> = [
+      ['../PROVIDER_SECRET.env', 'path-escape'],
+      ['vendor/PROVIDER_SECRET.env', 'path-escape'],
+      ['.git/config', 'git-internals']
+    ]
+    for (const [path, reason] of cases) {
+      const req = { agentId: AGENT, path, offset: 0, limit: 65_536, encoding: 'base64' as const }
+      await expect(localWorkspaceFiles.read(checkout, req), path).rejects.toMatchObject({ reason })
+      await expect(client(mount).read(checkout, req), path).rejects.toMatchObject({ reason })
+    }
+  })
+
+  it('refuses a sandbox that answers a byte read with text, rather than passing it off as the bytes', async () => {
+    const { mount, checkout } = volume()
+    const req = { agentId: AGENT, path: 'README.md', offset: 0, limit: 65_536, encoding: 'base64' as const }
+    await expect(client(mount, true).read(checkout, req)).rejects.toMatchObject({
+      name: 'WorkspaceViolationError',
+      reason: 'sandbox-outdated'
+    })
+    // Absence needs no bytes, so an older sandbox still answers it.
+    await expect(client(mount, true).read(checkout, { ...req, path: 'nope.md' })).resolves.toMatchObject({
+      exists: false
+    })
   })
 })

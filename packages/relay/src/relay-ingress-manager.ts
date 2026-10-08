@@ -284,6 +284,7 @@ export class RelayIngressManager {
         this.selectThreadAgent(botId, channelId, threadTs, agentId),
       reportBotUserId: (botId, botUserId) => this.router.setBotUserId(botId, botUserId),
       publicRelayUrl: () => this.publicRelayUrl,
+      webAppUrl: () => this.webAppUrl,
       clock: { now: () => this.deps.clock.now() },
       log: this.deps.log
     }
@@ -293,6 +294,7 @@ export class RelayIngressManager {
   private readonly deploymentBots = new Set<string>()
   /** The relay pool's public origin from the latest deployment snapshot. */
   private publicRelayUrl: string | undefined
+  private webAppUrl: string | undefined
   /** The host a deployment-owned ingest gets: every forward is refused and every report to the CP is dropped. */
   private get deploymentHost(): RelayIngressHost {
     return (this.deploymentHostMemo ??= {
@@ -316,6 +318,7 @@ export class RelayIngressManager {
   /** Replace the deployment-owned assignments with those the plugins derive from `snapshot`; run on every registration, as bot assignments are replayed then too. */
   async applyDeploymentSnapshot(snapshot: RcDeploymentConfig | undefined): Promise<void> {
     this.publicRelayUrl = snapshot?.publicRelayUrl
+    this.webAppUrl = snapshot?.webAppUrl
     const next = new Map<string, BotAssignment>()
     for (const { plugin } of this.ingressPlugins.values()) {
       for (const a of plugin.deploymentAssignments?.(snapshot) ?? []) next.set(a.botId, a)
@@ -765,6 +768,8 @@ export class RelayIngressManager {
 
   /** `rc/bot-assign` — (re)load the routing table + (re)build the bot's HTTP ingest. */
   async assign(a: BotAssignment): Promise<void> {
+    const heldRevision = this.router.get(a.botId)?.credentialRevision
+    if (heldRevision !== undefined && a.credentialRevision !== undefined && a.credentialRevision < heldRevision) return
     // A full (re)assignment can mean new installs. Stale report latches would starve
     // a later install of its own configurable direct row.
     this.clearConversationReportLatches(a.botId)
@@ -777,6 +782,7 @@ export class RelayIngressManager {
     this.router.upsert(a)
     // Rebuild the ingest (secrets or transport may have rotated). Idempotent.
     await this.stopIngest(a.botId)
+    if (this.router.get(a.botId) !== a) return
     this.forgetDemux(a.botId)
 
     // §8 plugin registry: the platform's plugin validates the assignment shape
@@ -1619,7 +1625,7 @@ export class RelayIngressManager {
    */
   private resolveConversationTarget(
     botId: string,
-    coords: { channelId: string; threadTs: string }
+    coords: { channelId: string; threadTs?: string }
   ): RouteTarget | undefined {
     const sessionKey = sessionKeyOf({ channel: coords.channelId, thread: coords.threadTs })
     const assignment = this.router.get(botId)
@@ -1630,7 +1636,7 @@ export class RelayIngressManager {
     const allowedInChannel = (agentId: string): boolean =>
       !assignment.gatedAgentIds?.includes(agentId) ||
       assignment.routes.some((route) => route.agentId === agentId && route.scope?.channel === coords.channelId)
-    const affinity = this.router.peekAffinity(botId, sessionKey)
+    const affinity = coords.threadTs ? this.router.peekAffinity(botId, sessionKey) : undefined
     const affinityRoute =
       affinity && allowedInChannel(affinity.agentId)
         ? this.router.targetForAgent(botId, affinity.agentId, affinity.integrationId)

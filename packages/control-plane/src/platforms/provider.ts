@@ -80,7 +80,7 @@
  */
 import type { FastifyPluginAsync } from 'fastify'
 import type { ZodRawShape, ZodType } from 'zod'
-import type { IntegrationCoreEnvelope, IntegrationRevoked } from '@agentconnect.md/protocol'
+import type { IntegrationCoreEnvelope, IntegrationRevoked, RcBotAssign } from '@agentconnect.md/protocol'
 import type {
   BotIdentityChange,
   BotIdentityColumns,
@@ -521,6 +521,16 @@ export interface CpPlatformProvider<TCredentials = unknown> {
 
   /** Whether an HTTP row may take a relay assignment now; false ⇒ core releases it and replays nothing for it. Absent ⇒ every row may. */
   relayAssignable?(bot: BotRecord): boolean
+
+  // Keep installation UI and lifecycle ingress alive without an agent binding or placement.
+  retainUnboundIngress?: boolean
+
+  // Provider installations can serve setup UI before belonging to an organization.
+  unclaimedIngress?: {
+    get(id: string): Promise<RcBotAssign | null>
+    list(): Promise<RcBotAssign[]>
+    revoke(id: string, fence: { revision?: number; eventAtMs?: number }): Promise<boolean>
+  }
 
   /** Whether a daemon socket's `integration/revoked` is about this bot's CURRENT credential: the socket identity it reports must match the stored one; absent ⇒ every report refused. */
   socketLifecycleRevocation?(bot: BotRecord, reported: Pick<IntegrationRevoked, 'botUserId' | 'workspaceId'>): boolean

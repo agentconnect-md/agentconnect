@@ -89,6 +89,11 @@ full diagnostic stays in the daemon log.
 A runtime that failed to start because its own installation is incomplete is repaired
 and retried automatically before the agent is reported as unavailable at all.
 
+When a runtime offers model selection but rejects an explicitly selected model, the
+turn stops and reports the requested model with the runtime's detailed cause. It must
+not silently run on a different model. Session metadata, usage, and reply attribution
+prefer the concrete model reported during execution over a selector's `default` alias.
+
 A runtime-reported terminal failure is a failed turn even when its prompt response says
 `end_turn`. When the runtime explicitly offers a retry and no tool or answer has started,
 the daemon retries once after five seconds within the same admitted task. A review keeps
@@ -702,7 +707,52 @@ or automatic fallback to a restricted agent instead leaves the conversation Off,
 because only an authorized Console editor may enable it. This same owner boundary
 applies to observed 1:1 and group DMs; classic integrations remain per-agent.
 
+## Slack Home tab
+
+Every AgentConnect Slack app offers a Home tab with public getting-started guidance,
+organization and agent configuration links, and documentation, support, and privacy links.
+This includes custom agents: the page belongs to the Slack app, so agents sharing
+one bot also share one Home tab. When the app serves one agent, its configuration
+button opens that agent's Config tab. Shared HTTP apps use the visiting user's DM
+route when available; without an unambiguous target, the button opens the organization's
+agents list. Older assignments without an organization slug retain the generic console
+entry point. The view never lists private agent names, configuration, organization
+membership, or conversation history. Console access remains subject to the console's
+normal authentication and authorization.
+
+An HTTP Slack installation keeps serving Home after its last agent is disconnected.
+Home then explains that no agent is connected and offers **Reconnect**, which opens
+a focused dialog with the app and organization fixed. When the organization's
+editable built-in agent is available, a built-in app targets it automatically;
+other reconnections ask for an agent without preselecting the first one. Reconnecting
+does not require another Slack authorization while the installation's token remains
+valid, and does not enable sharing. A bound agent with no available daemon is not
+shown as disconnected. Uninstalling the app in Slack or revoking its token stops
+ingress; deleting the saved bot or its organization still deletes its credentials.
+
+The distributed app can also be installed before an AgentConnect organization is
+chosen. Its public install entry is `/v1/integrations/slack/install`. The unconnected
+installation serves Home with **Connect AgentConnect**, and DMs or mentions explain
+how to finish setup without starting a model turn. The installing Slack user signs
+in, chooses an organization they can edit and an agent they can configure, and
+connects the workspace using the authorization already granted. This binding applies
+to the workspace, not to individual Slack accounts. It starts with one agent and
+does not enable sharing or change the agent's access and trigger settings. Reinstalling
+an already connected workspace preserves its organization and agent memberships.
+
+Home opens publish a view for the visiting Slack user without starting a model
+turn, posting a message, or requiring admission to a conversation. HTTP installs
+serve this page from the relay even when no daemon can receive a task; Socket
+Mode serves the same view from its connection. Existing apps enable Home through
+the normal manifest refresh, after the serving component is upgraded.
+
 ## Direct messages
+
+Opening Slack's Messages tab shows a short welcome in an empty DM and two suggested
+prompts only when its current agent is the built-in preset. This is application UI:
+it never starts a model turn or spends credits. Existing conversations receive no
+new greeting, including after a daemon restart. Custom agents and conversations
+whose replies are Off or restricted without a grant receive no built-in onboarding.
 
 Every observed direct conversation appears under **Direct messages** on the Agent's
 integration card, for both Everyone and Restricted visibility. A 1:1 DM has one binary
@@ -756,6 +806,26 @@ choice. The resolved classification is durable — it lives on the conversation 
 in daemon memory, so a daemon restart that re-reports the conversation provisionally as
 a channel cannot reset a later operator choice.
 
+## Assistant-mode places
+
+An agent in assistant mode answers only where an editor enabled it, whatever its
+visibility: its conversations are gated exactly like a Restricted agent's. Turning the
+mode on resets nothing — every conversation already enabled, DMs included, stays enabled
+— and new conversations start Off. Switching it off restores the agent's ordinary
+defaults.
+
+Each enabled place keeps one long session while the mode is on: every room, and a 1:1 DM
+on a platform whose DMs otherwise open a session per message. A conversation gated By
+decision keeps its own session mode, and a platform whose rooms never append (a Linear
+team) is left as it is. The row shows `Single session` and offers no other choice; the
+stored choice returns when the mode is switched off.
+
+Enabling a room or group DM of such an agent asks first: everyone in it will be able to get
+the content of the agent's other places out of it, so it should be enabled only if everyone
+there is fully trusted. Turning the mode on while rooms or group DMs are already enabled
+names them in the same warning. A 1:1 DM and webchat carry no warning. Rooms are enabled
+one at a time: a decision's Apply to all reaches only the rooms already enabled.
+
 ## No-response control marker
 
 Every agent session receives the same standing response-choice instruction, independent
@@ -779,6 +849,17 @@ into the turn as separate system context, so an opaque raw identifier such as Sl
 `<@U…>` cannot be mistaken for another participant merely because it does not resemble the
 agent's AgentConnect name. Implicit thread, keyword, and auto routes never receive that
 assertion, and the original user text is not rewritten.
+
+## Assistant-mode item ledger
+
+An agent in assistant mode keeps a ledger of what people asked of it. It takes an item only
+after restating what it will do, what counts as done and when it will check next, and the
+person confirming. When an open item already covers a request, it asks whether to attach the
+request to that item instead, and the asker follows the existing item on a yes. The ledger is
+visible to the whole organization: an item records who asked for what and where it stands,
+never the wording of a direct message, and the agent says so when it takes an item asked in a
+DM. Every conversation of the agent is reminded of the same list of open items. An agent
+outside assistant mode is offered no item tools.
 
 ## Directional agent visibility
 
@@ -950,7 +1031,17 @@ platform's own card, otherwise the Agent-editor queue); when nobody can be asked
 headless run, an agent-to-agent child) or the answer is no, the tool refuses with an
 explanation that says the memory is read-only here rather than failing silently. Reads
 stay available — recalling what the agent already knows is not a disclosure of the
-current conversation. Dream sessions skip private transcripts entirely.
+current conversation. Dreams consolidate the agent's own private transcripts too, under a
+policy that keeps a person's private conversation out of organization knowledge.
+
+An agent in assistant mode keeps private conversations out of its shared memory
+altogether, because whatever enters it can be recalled in every other place: direct
+messages, webchat, group DMs and channels the platform reports private. Their turns are
+not distilled, its dreams skip them, and an explicit write from one is refused with that
+explanation instead of asking, so Allow for this session is never offered on any of its
+conversations. A conversation counts as private until its platform has said it is not —
+also right after a restart, before that answer comes back — and a platform that cannot
+tell whether a channel is private says it is not.
 
 **Agents on native runtime memory are the exception, and the product must say so.** With
 that backend the runtime persists memory inside its own process for the whole agent, with
@@ -1108,6 +1199,11 @@ failure names the usage limit in the Check title. A submitted formal verdict
 remains authoritative (`REQUEST_CHANGES` stays `action_required`), and an ambiguous
 formal-review write remains a visible failure until it is reconciled. An active
 terminal failure keeps the `Request review` action for a new attempt after the cause is resolved.
+
+An inline review comment must name a line or range in the pull request's diff. Invalid
+positions return an actionable error before publication, so the Agent can correct them
+or move the finding into the review body and retry within the same authorized turn.
+GitHub rejection details are returned to the Agent without changing the review verdict.
 
 A review turn the platform itself ended — the Agent stopped being served where it was
 running — is a distinct outcome from a review that ran and could not conclude, and must not

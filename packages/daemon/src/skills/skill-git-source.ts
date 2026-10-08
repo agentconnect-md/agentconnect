@@ -7,9 +7,12 @@ import { createGunzip } from 'node:zlib'
 import { workspaceGitOriginOf, type AgentSkillEntry } from '@agentconnect.md/protocol'
 import { extract as extractTar, list as listTar, type ReadEntry } from 'tar'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
-import { daemonLocalGitEnv, workspaceGitEnvBase } from '../workspace/git-injection.js'
+import { daemonLocalGitEnv, openDaemonSkillCredentialWindow, workspaceGitEnvBase } from '../workspace/git-injection.js'
+import { GITCRED_CAPABILITY_ENV } from '../gitcred/env.js'
 import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 import { MAX_SKILL_FILE_BYTES } from './skill-limits.js'
+import { discardResponse, fetchWithRedirectPolicy, readBoundedBody, retryAfterMs } from '../codehost/rest-read.js'
+import { GITHUB_API_BASE, githubApiHeaders, parseGithubRepositoryIdentity } from '../github/rest.js'
 
 const GITHUB_SHORTHAND = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/
 const GITHUB_TREE = /^\/([^/]+)\/([^/]+)\/tree\/([^/]+)(?:\/(.*))?$/
@@ -17,7 +20,6 @@ const SCP_SOURCE = /^([\w.-]+)@([\w.-]+):(.+)$/
 const SAFE_REF = /^[^\0\r\n]{1,256}$/
 const GITHUB_REPOSITORY_COMPONENT = /^[A-Za-z0-9_.-]+$/
 const COMMIT_SHA = /^[a-f0-9]{40}$/i
-const GITHUB_API_VERSION = '2022-11-28'
 const MAX_ARCHIVE_LOCATION_BYTES = 8 * 1024
 const MAX_CREDENTIAL_OUTPUT_BYTES = 16 * 1024
 const MAX_REPOSITORY_METADATA_BYTES = 128 * 1024
@@ -170,14 +172,15 @@ export function buildSkillGitAcquisitionEnv(opts: {
   cloneUrl: string
   privateHome: string
   useGitCredential: boolean
+  /** A skill credential window's capability, presented in place of the agent's (source-cache.md §8). */
+  windowCapability?: string
 }): Record<string, string> {
+  const credentialed = opts.useGitCredential && workspaceGitOriginOf(opts.cloneUrl) === 'https://github.com'
   const configured = {
     ...workspaceGitEnvBase(opts.cloneUrl),
-    // Acquisition runs on THIS daemon even for a cluster agent, so the helper pointers must name
-    // the daemon's own shim and socket, never the sandbox pod's (see daemonLocalGitEnv).
-    ...(opts.useGitCredential && workspaceGitOriginOf(opts.cloneUrl) === 'https://github.com'
-      ? daemonLocalGitEnv(opts.agentId, opts.cloneUrl)
-      : {})
+    // Acquisition runs on THIS daemon even for a cluster agent, so the helper names the daemon's own shim and socket.
+    ...(credentialed ? daemonLocalGitEnv(opts.agentId, opts.cloneUrl) : {}),
+    ...(credentialed && opts.windowCapability ? { [GITCRED_CAPABILITY_ENV]: opts.windowCapability } : {})
   }
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
@@ -275,11 +278,25 @@ function parseCredentialOutput(output: Buffer): GitSkillCredential {
 /** Ask only the daemon-configured, GitHub URL-scoped helper. Stdout is bounded
  * and never included in errors because it carries the short-lived token. */
 export async function loadScopedGitSkillCredential(request: GitSkillCredentialRequest): Promise<GitSkillCredential> {
+  // The daemon's own window for exactly this repository while this fill runs; none for the agent's workspace repo (source-cache.md §8).
+  const window = openDaemonSkillCredentialWindow(request.agentId, request.repositoryPath)
+  try {
+    return await fillScopedGitSkillCredential(request, window?.capability)
+  } finally {
+    window?.close()
+  }
+}
+
+async function fillScopedGitSkillCredential(
+  request: GitSkillCredentialRequest,
+  windowCapability: string | undefined
+): Promise<GitSkillCredential> {
   const env = buildSkillGitAcquisitionEnv({
     agentId: request.agentId,
     cloneUrl: request.cloneUrl,
     privateHome: request.privateHome,
-    useGitCredential: true
+    useGitCredential: true,
+    ...(windowCapability ? { windowCapability } : {})
   })
   return await new Promise<GitSkillCredential>((resolve, reject) => {
     let child
@@ -345,68 +362,6 @@ export async function loadScopedGitSkillCredential(request: GitSkillCredentialRe
     child.stdin.on('error', () => fail('skill GitHub credential helper failed'))
     child.stdin.end(`protocol=https\nhost=github.com\npath=${request.repositoryPath}.git\n\n`, 'utf8')
   })
-}
-
-async function discardResponse(response: Response): Promise<void> {
-  await response.body?.cancel().catch(() => undefined)
-}
-
-// A read repeats an unreachable host or a 5xx: immediately once, then after 300–600ms; an abort is final.
-const READ_RETRY_DELAYS_MS = [0, 300]
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-
-async function fetchWithRedirectPolicy(
-  fetchImpl: typeof globalThis.fetch,
-  url: URL,
-  init: RequestInit,
-  redirect: 'error' | 'manual',
-  label: string
-): Promise<Response> {
-  for (let attempt = 0; ; attempt += 1) {
-    const delay = READ_RETRY_DELAYS_MS[attempt]
-    let response: Response
-    try {
-      response = await fetchImpl(url, { ...init, redirect })
-    } catch {
-      if (delay === undefined || init.signal?.aborted) throw new Error(`${label} request failed`)
-      await sleep(delay + Math.floor(Math.random() * delay))
-      continue
-    }
-    // Every caller here is a GET, so a 5xx is safe to repeat; the last answer stays the caller's to classify.
-    if (response.status < 500 || delay === undefined) return response
-    await discardResponse(response)
-    await sleep(delay + Math.floor(Math.random() * delay))
-  }
-}
-
-async function readBoundedBody(response: Response, maxBytes: number, label: string): Promise<Buffer> {
-  const contentLength = response.headers.get('content-length')
-  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > maxBytes) {
-    await discardResponse(response)
-    throw new Error(`${label} exceeded the byte limit`)
-  }
-  if (!response.body) throw new Error(`${label} returned no body`)
-
-  const reader = response.body.getReader()
-  const chunks: Buffer[] = []
-  let total = 0
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      total += value.byteLength
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined)
-        throw new Error(`${label} exceeded the byte limit`)
-      }
-      chunks.push(Buffer.from(value))
-    }
-    return Buffer.concat(chunks, total)
-  } catch (error) {
-    if (error instanceof Error && error.message === `${label} exceeded the byte limit`) throw error
-    throw new Error(`${label} response body failed`)
-  }
 }
 
 async function* bufferChunks(buffer: Buffer, signal: AbortSignal): AsyncGenerator<Buffer> {
@@ -802,14 +757,11 @@ async function githubApiRequest(opts: {
       {
         method: 'GET',
         signal: opts.signal,
-        headers: {
+        headers: githubApiHeaders({
           accept: opts.accept,
-          'accept-encoding': 'identity',
-          'user-agent': 'agentconnect-daemon',
-          'x-github-api-version': GITHUB_API_VERSION,
-          ...(opts.ifNoneMatch ? { 'if-none-match': opts.ifNoneMatch } : {}),
-          ...(opts.state.token ? { authorization: `Bearer ${opts.state.token}` } : {})
-        }
+          ...(opts.ifNoneMatch ? { ifNoneMatch: opts.ifNoneMatch } : {}),
+          ...(opts.state.token ? { token: opts.state.token } : {})
+        })
       },
       opts.redirect,
       'skill GitHub API'
@@ -858,8 +810,7 @@ type GithubApiCallOptions = {
   state: GitHubApiState
 }
 
-/** Fence the name-based operations against a rename/delete + squatter at the old
- *  owner/name: the numeric endpoint cannot be captured that way. */
+/** Fence name-based reads against a rename/delete plus squatter: the numeric endpoint cannot be captured. */
 async function verifyGithubRepositoryIdentity(
   api: GithubApiCallOptions,
   githubRepoId: string,
@@ -867,7 +818,7 @@ async function verifyGithubRepositoryIdentity(
 ): Promise<void> {
   const identityResponse = await githubApiRequest({
     ...api,
-    url: new URL(`https://api.github.com/repositories/${githubRepoId}`),
+    url: new URL(`${GITHUB_API_BASE}/repositories/${githubRepoId}`),
     accept: 'application/vnd.github+json',
     redirect: 'error'
   })
@@ -880,35 +831,19 @@ async function verifyGithubRepositoryIdentity(
   const raw = (
     await readBoundedBody(identityResponse, MAX_REPOSITORY_METADATA_BYTES, 'skill GitHub repository identity lookup')
   ).toString('utf8')
-  let metadata: unknown
-  try {
-    // JSON.parse rounds sufficiently large numeric GitHub ids. Preserve
-    // every object `id` token as a decimal string before parsing so the
-    // comparison remains exact even beyond Number.MAX_SAFE_INTEGER.
-    metadata = JSON.parse(raw.replace(/("id"\s*:\s*)([1-9]\d*)/g, '$1"$2"'))
-  } catch {
-    throw new Error('skill GitHub repository identity lookup returned invalid metadata')
-  }
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-    throw new Error('skill GitHub repository identity lookup returned invalid metadata')
-  }
-  const record = metadata as Record<string, unknown>
+  const identity = parseGithubRepositoryIdentity(raw)
+  if (!identity) throw new Error('skill GitHub repository identity lookup returned invalid metadata')
   if (
-    record.id !== githubRepoId ||
-    typeof record.full_name !== 'string' ||
-    record.full_name.toLowerCase() !== repositoryPath.toLowerCase()
+    identity.id !== githubRepoId ||
+    identity.fullName === undefined ||
+    identity.fullName.toLowerCase() !== repositoryPath.toLowerCase()
   ) {
     throw new Error('skill GitHub repository identity does not match the configured source')
   }
-  // A private repository is admitted: the CP marked the entry `private` and the
-  // credential fallback above already authenticated this read with the agent's
-  // repository-scoped installation token (shared-skills.md §3). The identity and
-  // name checks above are what fence a private source; visibility is not a gate.
+  // A private repository is admitted: identity and name fence it, not visibility (shared-skills.md §3).
 }
 
-/** The exact `owner/repo` a Git skill entry acquires from, or undefined when the entry is not a
- *  bounded GitHub source. Used to recognize the daemon's own credential ask for a private source
- *  (cp/gitcred-server.ts `privateGithubSkillRepoOf`). */
+/** The exact `owner/repo` a bounded GitHub skill entry acquires from; gitcred matches window asks against it. */
 export function gitSkillRepositoryPath(entry: Pick<AgentSkillEntry, 'source' | 'ref' | 'subDir'>): string | undefined {
   try {
     // Only the source string decides the repository; the numeric id is verified at acquisition.
@@ -937,6 +872,17 @@ export interface ResolveGitSkillCommitOptions {
 }
 
 export type GitSkillCommitResolution = { status: 'resolved'; commit: string; etag?: string } | { status: 'unchanged' }
+
+/** A refused commit lookup, carrying how long the host asked us to wait when it said. */
+export class GitSkillCommitResolutionError extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterMs?: number
+  ) {
+    super(message)
+    this.name = 'GitSkillCommitResolutionError'
+  }
+}
 
 /** What `entry.ref` points at right now — one bounded API read (a bare SHA),
  * conditional when the caller carries an etag. This deliberately SKIPS the
@@ -977,8 +923,9 @@ export async function resolveGitSkillCommit(
     }
     if (response.status !== 200) {
       const status = response.status
+      const wait = retryAfterMs(response)
       await discardResponse(response)
-      throw new Error(`skill GitHub commit resolution failed with status ${status}`)
+      throw new GitSkillCommitResolutionError(`skill GitHub commit resolution failed with status ${status}`, wait)
     }
     const etag = response.headers.get('etag') ?? undefined
     const commit = (await readBoundedBody(response, 128, 'skill GitHub commit resolution')).toString('utf8').trim()

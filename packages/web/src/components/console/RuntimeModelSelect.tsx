@@ -267,7 +267,7 @@ export function RuntimeModelSelect({
             type="button"
             className={
               compact
-                ? 'inline-flex h-7 max-w-[400px] cursor-pointer items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal hover:bg-(--surface-hover)'
+                ? 'inline-flex h-7 w-full max-w-[400px] cursor-pointer items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal hover:bg-(--surface-hover)'
                 : dense
                   ? `inp h-[30px] min-h-0 w-full cursor-pointer gap-2 px-[9px] py-0 text-left text-[12px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
                   : `inp h-8 min-h-0 w-full cursor-pointer gap-2 px-[10px] py-0 text-left text-[12.5px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
@@ -295,7 +295,10 @@ export function RuntimeModelSelect({
               <span className="min-w-0 flex-1 truncate text-left">
                 {decision?.selected ? decision.name : modelName || label(value.runtime) || t('choose')}
                 {summary && (
-                  <span className="font-mono text-[11px] font-normal text-(--text-tertiary)"> · {summary}</span>
+                  <span className="font-mono text-[11px] font-normal text-(--text-tertiary) max-desktop:hidden">
+                    {' '}
+                    · {summary}
+                  </span>
                 )}
               </span>
             ) : (

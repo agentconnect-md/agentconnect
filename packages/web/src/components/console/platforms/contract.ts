@@ -579,21 +579,16 @@ export interface WebChannelListSemantics {
    *  platform that has channels. A platform opts out by omitting one rather than core
    *  branching on a platform name. */
   sessionModes?: readonly ('createNew' | 'append')[]
-  /**
-   * Confirmation shown before a row's default dispatch moves OFF a RESTRICTED agent.
-   * Where an owner compiles to a per-conversation default rather than an ownership
-   * route, that seat is the only grant a gated agent holds in the room, so moving it
-   * withdraws the grant. Absent ⇒ the move applies straight away, which is every
-   * platform whose owner compiles to a route.
-   */
+  /** Session modes a 1:1 DM row offers. Absent ⇒ none: the platform's DMs are one continuous session already. */
+  dmSessionModes?: readonly ('createNew' | 'append')[]
+  /** Confirmation before a default seat moves off a gated agent, whose only grant it is (body gets `owner`, `room`, `reason`); absent ⇒ no warning. */
   ownerChangeWarning?: {
     title: WebChannelListMessage
     body: WebChannelListMessage
     /** Bare verb — the console's modal convention. */
     confirmLabel: WebChannelListMessage
   }
-  /** The private-agent banner's sentence, where enabling a row is not the whole gate —
-   *  Linear's gated member acts in a team only as its default (§4.3). Absent ⇒ the host's. */
+  /** The gated-agent banner (gets `reason`), where enabling a row is not the whole gate (Linear, §4.3); absent ⇒ the host's. */
   gatedNote?: WebChannelListMessage
   /**
    * Splits a stored row label into the name the row leads with and an optional dim tail after

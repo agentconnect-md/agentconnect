@@ -1,12 +1,13 @@
 import { z } from 'zod'
 
-export const ProviderKeyProvider = z.enum(['typesafe', 'openrouter', 'cloudflare'])
+export const ProviderKeyProvider = z.enum(['typesafe', 'openrouter', 'cloudflare', 'openai'])
 export type ProviderKeyProvider = z.infer<typeof ProviderKeyProvider>
 
 export const PROVIDER_KEY_PROFILES: Record<
   ProviderKeyProvider,
   { name: string; defaultEndpoint: string | null; endpointRequired: boolean }
 > = {
+  openai: { name: 'OpenAI', defaultEndpoint: 'https://api.openai.com/v1', endpointRequired: false },
   typesafe: { name: 'TypeSafe (Jev)', defaultEndpoint: 'https://api.typesafe.ai', endpointRequired: false },
   openrouter: { name: 'OpenRouter', defaultEndpoint: 'https://openrouter.ai/api/v1', endpointRequired: false },
   cloudflare: { name: 'Cloudflare AI Gateway', defaultEndpoint: null, endpointRequired: true }

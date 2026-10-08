@@ -72,6 +72,17 @@ describe('tunnel binder', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
+  it('records on the binding whether the pod serves a tunnel', async () => {
+    const subject = binder()
+    const { session } = fakeSession(1)
+    expect(subject.serves('agent-a', 'gitcred')).toBe(false)
+    await subject.ensure('agent-a', session)
+    expect(subject.serves('agent-a', 'gitcred')).toBe(true)
+    expect(subject.serves('agent-a', 'mcp')).toBe(false)
+    subject.release('agent-a', 'gone')
+    expect(subject.serves('agent-a', 'gitcred')).toBe(false)
+  })
+
   it('stops the agent proxy when the launch is no longer served here', async () => {
     const subject = binder()
     const { session, offEvent } = fakeSession(1)

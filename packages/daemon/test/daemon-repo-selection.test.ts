@@ -150,7 +150,11 @@ async function start(root: string) {
     entry: {
       agentId,
       initAbort: new AbortController(),
-      msg: { source: 'agent', text: 'Please update the infrastructure tooling' }
+      msg: {
+        source: 'agent',
+        sender: { id: 'example-caller', isBot: true },
+        text: 'Please update the infrastructure tooling'
+      }
     }
   })
   return { daemon, internal, clock, evaluate, repoCandidates, select, timeline, turn, run }

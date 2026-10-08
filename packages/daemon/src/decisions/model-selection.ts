@@ -70,16 +70,18 @@ export function agentWithRuntime(agent: LoadedAgent, target: DecisionRuntimeTarg
   return selected
 }
 
+// A dispatched start (another agent's brief or a schedule's prompt) judges its own text, with no conversation history.
 export function modelSelectionState(
-  source: 'chat',
+  source: 'chat' | 'agent' | 'cron',
   text: string,
-  agent?: DecisionAgentContext
+  agent?: DecisionAgentContext,
+  sender?: { id: string; name?: string }
 ): Record<string, unknown> {
   const content = decisionTextPrefix(text, 8 * 1024)
   return {
     source,
     ...(agent ? { agent } : {}),
-    currentMessage: { text: content },
+    currentMessage: { ...(sender ? { sender } : {}), text: content },
     history: [],
     truncated: content !== text
   }

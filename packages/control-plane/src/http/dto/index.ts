@@ -9,6 +9,8 @@ import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentDecisionIds,
+  AssistantModeAdmission,
+  AssistantModePolicy,
   AgentModelSelection,
   AgentRepositorySelector,
   AgentMemoryBinding,
@@ -27,6 +29,7 @@ import {
   MemoryFileHistoryEvent,
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
+  PlaceExternalReason,
   RESERVED_MCP_SERVER_NAME,
   SESSION_RETENTION_RE,
   GitCloneUrlError,
@@ -776,6 +779,8 @@ export const UpdateAgentBody = z
     // Memory backend; null clears (revert to managed). A managed `home` moves one way, `daemon` → `control-plane`;
     // the reverse is refused unless `force` is set, and never accepted on the managed pool.
     memory: MemoryConfigInputBody.nullable().optional(),
+    // Assistant mode (assistant-mode.md §5.1), replaced wholesale; null clears. Turning it on runs the admission checks.
+    assistantMode: AssistantModePolicy.nullable().optional(),
     // Confirms the one destructive edit: returning a memory home from the Control Plane to the daemon keeps nothing.
     force: z.boolean().optional()
   })
@@ -882,6 +887,7 @@ export const AgentDto = z.object({
   // Memory backend (null ⇒ managed default). A managed binding carries its resolved `home` and, while a
   // `daemon` → `control-plane` copy is under way, the read-only `homeMigration: 'pending'`.
   memory: MemoryConfigBody.nullable(),
+  assistantMode: AssistantModePolicy.nullable(), // null ⇒ never configured, off
   status: z.string(),
   // What the placement NAMES. `set` carries a null `daemonId` on purpose: no member id is
   // durable, so the console must read readiness from `placementReady` rather than from a machine.
@@ -930,6 +936,9 @@ export const AgentDto = z.object({
   hookKinds: z.array(z.enum(HOOK_KINDS))
 })
 export const AgentListDto = z.array(AgentDto)
+
+/** Whether the agent may switch assistant mode on as it stands, and every reason it may not. */
+export const AssistantModeAdmissionDto = AssistantModeAdmission
 
 /** Live, daemon-owned approval queue exposed only to editors of the Agent. */
 export const AgentPermissionRequestDto = AgentPermissionRequestRecord
@@ -1003,7 +1012,9 @@ export const IntegrationChannelDto = z.object({
   sessionMode: z.enum(['createNew', 'append']),
   /** Effective per-conversation owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */
-  agentId: z.string().nullable()
+  agentId: z.string().nullable(),
+  /** Why the platform detected this place as external (assistant-mode.md §5.3); null when it detected nothing. */
+  externalReason: PlaceExternalReason.nullable()
 })
 
 /** Console view of an integration — metadata only, NEVER the tokens. */
@@ -2319,7 +2330,14 @@ export const AgentRepoAuthDto = z.object({
   access: RepoAccessDto,
   materialize: RepoMaterializationDto,
   createdBy: z.string().nullable(), // app_user id (member directory resolves display)
-  createdAt: z.string() // ISO-8601
+  createdAt: z.string(), // ISO-8601
+  /** Set while re-attestation finds the member who vouched for the grant below its tier; the grant is not honored meanwhile. */
+  stale: z
+    .object({
+      since: z.string(), // ISO-8601
+      reason: z.enum(['access_lost', 'identity_unlinked', 'attester_removed'])
+    })
+    .nullable()
 })
 export const AgentRepoAuthListDto = z.array(AgentRepoAuthDto)
 export type AgentRepoAuthDtoT = z.infer<typeof AgentRepoAuthDto>
@@ -3545,6 +3563,22 @@ export const WorkspaceFileDto = z.object({
   nextOffset: z.number().nullable(), // byte offset to request next; clients must NOT recompute from content
   truncated: z.boolean().nullable() // true ⇒ nextOffset < size (more bytes remain)
 })
+
+/** `GET /agents/:id/workspace/file/download` query — one session file's bytes. */
+export const WorkspaceDownloadQueryDto = z.object({
+  sessionId: z.string().min(1), // the session whose working root holds the file
+  path: z.string().min(1).max(4096), // workspace-relative POSIX path
+  sha256: z
+    .string()
+    .regex(/^[0-9a-fA-F]{16,64}$/)
+    .optional() // the digest prefix a share recorded; required outside uploads/
+})
+
+/** The download's 200 for the docs: the file's raw bytes, not JSON. */
+export const WorkspaceDownloadBody = {
+  description: 'The file’s bytes, sent as an attachment.',
+  content: { 'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) } }
+}
 
 /** `PUT /agents/:id/workspace/file` query — one scratch-workspace file. */
 export const PutWorkspaceFileQueryDto = z.object({

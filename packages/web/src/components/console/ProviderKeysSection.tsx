@@ -21,7 +21,7 @@ export default function ProviderKeysSection() {
 }
 
 // Only providers something consumes are offered; OpenRouter and Cloudflare AI Gateway have no consumer yet.
-const OFFERED_PROVIDERS: ReadonlySet<ProviderKeyProvider> = new Set(['typesafe'])
+const OFFERED_PROVIDERS: ReadonlySet<ProviderKeyProvider> = new Set(['typesafe', 'openai'])
 
 type HeaderDraft = { name: string; value: string; saved: boolean; removed: boolean }
 

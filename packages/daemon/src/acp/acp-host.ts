@@ -31,7 +31,7 @@ import {
   ULTRACODE_EFFORT
 } from '../runtime-defs/claude-runtime.js'
 import { isCodexRuntimeDef, runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
-import { codexConfigWithUserInputTool } from '../runtimes/codex-config.js'
+import { codexConfigWithMcpStartupGrace, codexConfigWithUserInputTool } from '../runtimes/codex-config.js'
 import {
   LocalDriver,
   type AcpSandboxLaunch,
@@ -164,7 +164,7 @@ export type { AcpSandboxLaunch, SpawnDriver, SpawnedRuntime } from './spawn-driv
 export type { SteeringIdleBehavior, SteeringOutcome } from './steering.js'
 
 /** The `session/set_config_option` call that applies a desired value, or the reason none is needed. */
-export type ConfigSelectionPlan = { configId: string; value: string } | { skip: string }
+export type ConfigSelectionPlan = { configId: string; value: string } | { current: true } | { skip: string }
 
 /**
  * Distill the human-actionable reason from a failed ACP request. Adapters wrap
@@ -189,6 +189,14 @@ export function turnFailureReason(err: unknown): string {
   const generic =
     /^(parse error|invalid request|invalid params|internal error|request cancelled|authentication required|resource not found)$/i
   return generic.test(msg) ? detail : `${msg}: ${detail}`
+}
+
+// A configured model rejection must not trigger an unrelated session or MCP fallback.
+export class ModelSelectionError extends Error {
+  constructor(model: string, cause: unknown) {
+    super(`Could not select model "${model}": ${turnFailureReason(cause)}`, { cause })
+    this.name = 'ModelSelectionError'
+  }
 }
 
 /** The runtime no longer knows the prompted session (claude-agent-acp: -32603 "Session not found"); retrying cannot help (#1915). */
@@ -368,11 +376,7 @@ export function turnFailureCode(err: unknown): TurnFailureCode {
     : 'turn_failed'
 }
 
-/**
- * Resolve how to apply `desired` to the select config option tagged `category`.
- * `{skip}` (with the reason) means nothing should be sent: the runtime
- * advertises no such selector, doesn't offer the value, or already has it set.
- */
+/** Resolve `desired` for the `category` select: send it, it is already `current`, or `skip` (not offered). */
 export function planConfigSelection(
   configOptions: SessionConfigOption[] | null | undefined,
   category: string,
@@ -384,7 +388,7 @@ export function planConfigSelection(
   if (!values.includes(desired)) {
     return { skip: `value "${desired}" not offered (available: ${values.join(', ')})` }
   }
-  if (opt.currentValue === desired) return { skip: `already "${desired}"` }
+  if (opt.currentValue === desired) return { current: true }
   return { configId: opt.id, value: desired }
 }
 
@@ -441,6 +445,8 @@ export interface AcpToolSandbox {
   claudeProtectedSettings?: ClaudeProtectedSettings
   /** Writable mount targets reopened in the runtime-native tool sandbox. */
   sharedWriteRoots?: string[]
+  /** The runtime's private state (a session HOME's `.claude`): model-authored tools may read it, never change it. */
+  readOnlyStateRoots?: string[]
 }
 
 interface ClaudeSessionSettings {
@@ -462,7 +468,8 @@ export function claudeSessionMeta(
   protectedSettings?: ClaudeProtectedSettings,
   allowModelToolUnixSockets = false,
   extraDisallowedTools: readonly string[] = [],
-  sharedWriteRoots: readonly string[] = []
+  sharedWriteRoots: readonly string[] = [],
+  readOnlyStateRoots: readonly string[] = []
 ):
   | {
       claudeCode: {
@@ -481,11 +488,15 @@ export function claudeSessionMeta(
   // Append the system prompt and memory together, omitting an empty result.
   const append = [systemPrompt, memoryAppend].filter(Boolean).join('\n\n')
   const ultracode = reasoningEffort === ULTRACODE_EFFORT
-  const deny = [...new Set(protectedCredentialRoots)].flatMap((root) => {
-    // Claude uses gitignore patterns with // for absolute paths; cover the root and its descendants.
-    const pattern = `/${root.replace(/\/+$/, '').replace(/[\\*?[\] ]/g, (char) => `\\${char}`)}`
-    return ['Read', 'Edit'].flatMap((tool) => [`${tool}(${pattern})`, `${tool}(${pattern}/**)`])
-  })
+  // Claude uses gitignore patterns with // for absolute paths; cover the root and its descendants.
+  const rules = (roots: readonly string[] | undefined, tools: readonly string[]): string[] =>
+    [...new Set(roots)].flatMap((root) => {
+      const pattern = `/${root.replace(/\/+$/, '').replace(/[\\*?[\] ]/g, (char) => `\\${char}`)}`
+      return tools.flatMap((tool) => [`${tool}(${pattern})`, `${tool}(${pattern}/**)`])
+    })
+  // Credentials are neither read nor changed; the runtime's own state is read back (its saved tool results, its
+  // synced skills) but never changed, so the model cannot plant settings or hooks the trusted parent would load.
+  const deny = [...rules(protectedCredentialRoots, ['Read', 'Edit']), ...rules(readOnlyStateRoots, ['Edit'])]
   const settings: ClaudeSessionSettings = {
     ...(protectedSettings ?? {}),
     // Claude requires custom plans inside the workspace; its default HOME/.claude/plans is protected above.
@@ -500,7 +511,12 @@ export function claudeSessionMeta(
         disallowedTools: [...CLAUDE_DISALLOWED_BUILTIN_TOOLS, ...extraDisallowedTools],
         ...(protectedCredentialRoots
           ? {
-              sandbox: claudeInnerSandboxSettings(protectedCredentialRoots, allowModelToolUnixSockets, sharedWriteRoots)
+              sandbox: claudeInnerSandboxSettings(
+                protectedCredentialRoots,
+                allowModelToolUnixSockets,
+                sharedWriteRoots,
+                readOnlyStateRoots
+              )
             }
           : {}),
         ...(protectedSettings || ultracode || deny.length > 0 ? { settings } : {})
@@ -741,12 +757,21 @@ export class AcpHost {
           `signed-in account apps/connectors may be inherited${detail}`
       )
     }
+    const isCodex = this.opts.runtimeId === 'codex-acp' || isCodexRuntimeDef(this.runtime)
     // Codex offers `request_user_input` only when configured on; enable it exactly when this host services session elicitations.
-    if (this.opts.onElicit && (this.opts.runtimeId === 'codex-acp' || isCodexRuntimeDef(this.runtime))) {
+    if (this.opts.onElicit && isCodex) {
       try {
         env.CODEX_CONFIG = codexConfigWithUserInputTool(env.CODEX_CONFIG)
       } catch (err) {
         this.opts.log?.warn(`acp: leaving Codex's request_user_input tool off — ${(err as Error).message}`)
+      }
+    }
+    // Codex leaves an MCP server still starting after 1 s out of the turn, so a remote server misses the first turn.
+    if (isCodex) {
+      try {
+        env.CODEX_CONFIG = codexConfigWithMcpStartupGrace(env.CODEX_CONFIG)
+      } catch (err) {
+        this.opts.log?.warn(`acp: leaving Codex's MCP startup grace at its default — ${(err as Error).message}`)
       }
     }
     // The memory-backend env arrives in `opts.env` from memoryProviderFor at spawn; a host built without it keeps the runtime's default memory.
@@ -976,7 +1001,8 @@ export class AcpHost {
       this.opts.toolSandbox?.claudeProtectedSettings,
       this.opts.toolSandbox?.allowModelToolUnixSockets,
       extraDisallowedTools,
-      this.opts.toolSandbox?.sharedWriteRoots
+      this.opts.toolSandbox?.sharedWriteRoots,
+      this.opts.toolSandbox?.readOnlyStateRoots
     )
     const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
     const res = await this.conn!.agent.request(methods.agent.session.new, {
@@ -987,56 +1013,40 @@ export class AcpHost {
     })
     announce?.(res.sessionId)
     this.live.set(res.sessionId, cwd)
-    const configOptions = await this.applySessionConfig(res.sessionId, res.configOptions)
-    this.refreshOptionCaches(configOptions)
-    this.sessionConfigs.set(res.sessionId, configOptions)
+    try {
+      const configOptions = await this.applySessionConfig(res.sessionId, res.configOptions)
+      this.refreshOptionCaches(configOptions)
+      this.sessionConfigs.set(res.sessionId, configOptions)
+    } catch (err) {
+      this.discardSession(res.sessionId)
+      throw err
+    }
     return res.sessionId
   }
 
-  /**
-   * Apply the desired session preferences to a fresh or restored session via ACP
-   * `session/set_config_option`. Model first — the effort and fast-mode vocabularies
-   * depend on the selected model, and each response returns the reconciled option set
-   * the next step plans against. Best-effort by design: a runtime without the selector,
-   * an unoffered value, or a failed request logs and moves on — the session still runs
-   * on the runtime's defaults. Returns the final option set.
-   */
+  /** Apply model first, then dependent preferences; a rejected model stops session setup. */
   private async applySessionConfig(
     sessionId: string,
     initial: SessionConfigOption[] | null | undefined
   ): Promise<SessionConfigOption[] | null | undefined> {
     let options = initial
-    // ultracode rides `_meta` on session/new|load (see claudeSessionMeta), not the
-    // thought_level select — the runtime rejects effort="ultracode". When it's
-    // requested, skip thought_level entirely (it would only `{skip}` anyway, and
-    // ultracode already forces effort to xhigh).
+    // ultracode rides session metadata and forces xhigh; it is not a thought_level select value.
     const ultracode = this.isClaudeRuntime() && this.opts.configPrefs?.reasoningEffort === ULTRACODE_EFFORT
     const fastMode = this.opts.configPrefs?.fastMode
     const prefs: Array<[category: string, desired: string | undefined]> = [
       ['model', this.opts.configPrefs?.model],
       ['mode', this.opts.configPrefs?.permissionMode],
       ['thought_level', ultracode ? undefined : this.opts.configPrefs?.reasoningEffort],
-      // Fast mode comes AFTER model: the option is only advertised (and the
-      // reconciled option set only carries it) once a fast-capable model is set.
+      // The runtime advertises fast mode only after selecting a capable model.
       ['model_config', fastMode === undefined ? undefined : fastMode ? 'on' : 'off']
     ]
     for (const [category, desired] of prefs) {
       if (!desired) continue
-      const plan = planConfigSelection(options, category, desired)
-      if ('skip' in plan) {
-        this.opts.log?.debug(`acp: session config ${category}="${desired}" not applied — ${plan.skip}`)
-        continue
-      }
       try {
-        const res = await this.conn!.agent.request(methods.agent.session.setConfigOption, {
-          sessionId,
-          configId: plan.configId,
-          value: plan.value
-        })
-        options = res.configOptions
-        this.opts.log?.info(`acp: session config ${category} set to "${desired}"`)
+        options = (await this.selectSessionConfig(sessionId, options, category, desired)) ?? options
       } catch (err) {
-        this.opts.log?.warn(`acp: failed to set session config ${category}="${desired}": ${(err as Error).message}`)
+        if (err instanceof ModelSelectionError) throw err
+        this.opts.log?.warn(`acp: failed to set session config ${category}="${desired}": ${turnFailureReason(err)}`)
       }
     }
     return options
@@ -1084,27 +1094,46 @@ export class AcpHost {
     return this.lastFastOption
   }
 
-  /**
-   * Apply one select config option to an ALREADY-RUNNING session via ACP
-   * `session/set_config_option`, refreshing the cached option set + selector caches on
-   * success. Returns true iff applied: false when the session isn't live here, the
-   * runtime advertises no such selector, the value isn't offered, or it's already set.
-   */
+  /** Reconcile a selection with the runtime; model requests must succeed when a selector exists. */
+  private async selectSessionConfig(
+    sessionId: string,
+    options: SessionConfigOption[] | null | undefined,
+    category: string,
+    value: string
+  ): Promise<SessionConfigOption[] | undefined> {
+    const plan = planConfigSelection(options, category, value)
+    // Already in effect is success: read-only gates re-assert a mode the session may already hold (#2774).
+    if ('current' in plan) return options ?? undefined
+    if ('skip' in plan) {
+      const models = category === 'model' ? modelOptionsFrom(options) : null
+      if (models && models.current !== value) throw new ModelSelectionError(value, new Error(plan.skip))
+      this.opts.log?.debug(`acp: set ${category}="${value}" on ${sessionId} not applied — ${plan.skip}`)
+      return undefined
+    }
+    try {
+      const res = await this.conn!.agent.request(methods.agent.session.setConfigOption, {
+        sessionId,
+        configId: plan.configId,
+        value: plan.value
+      })
+      if (category === 'model' && modelOptionsFrom(res.configOptions)?.current !== value) {
+        throw new Error('The runtime did not confirm the requested model')
+      }
+      this.opts.log?.info(`acp: session ${sessionId} ${category} set to "${value}"`)
+      return res.configOptions
+    } catch (err) {
+      if (category === 'model') throw new ModelSelectionError(value, err)
+      throw err
+    }
+  }
+
+  /** Apply a live selection and refresh caches; true once the value is in effect, false when it is not offered. */
   private async setSessionConfig(sessionId: string, category: string, value: string): Promise<boolean> {
     if (!this.live.has(sessionId)) return false
-    const plan = planConfigSelection(this.sessionConfigs.get(sessionId), category, value)
-    if ('skip' in plan) {
-      this.opts.log?.debug(`acp: set ${category}="${value}" on ${sessionId} not applied — ${plan.skip}`)
-      return false
-    }
-    const res = await this.conn!.agent.request(methods.agent.session.setConfigOption, {
-      sessionId,
-      configId: plan.configId,
-      value: plan.value
-    })
-    this.sessionConfigs.set(sessionId, res.configOptions)
-    this.refreshOptionCaches(res.configOptions)
-    this.opts.log?.info(`acp: session ${sessionId} ${category} set to "${value}"`)
+    const options = await this.selectSessionConfig(sessionId, this.sessionConfigs.get(sessionId), category, value)
+    if (!options) return false
+    this.sessionConfigs.set(sessionId, options)
+    this.refreshOptionCaches(options)
     return true
   }
 
@@ -1233,7 +1262,8 @@ export class AcpHost {
         this.opts.toolSandbox?.claudeProtectedSettings,
         this.opts.toolSandbox?.allowModelToolUnixSockets,
         [],
-        this.opts.toolSandbox?.sharedWriteRoots
+        this.opts.toolSandbox?.sharedWriteRoots,
+        this.opts.toolSandbox?.readOnlyStateRoots
       )
       const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
       const res = await this.conn!.agent.request(methods.agent.session.load, {
@@ -1254,7 +1284,8 @@ export class AcpHost {
       this.sessionConfigs.set(sessionId, configOptions)
       this.opts.log?.info(`acp: resumed session ${sessionId} via session/load`)
     } catch (err) {
-      this.opts.log?.debug(`acp: session/load failed for ${sessionId} (${(err as Error).message}) — will recreate`)
+      this.discardSession(sessionId)
+      this.opts.log?.debug(`acp: session/load failed for ${sessionId}: ${turnFailureReason(err)}`)
       throw err
     } finally {
       this.loadingSessions.delete(sessionId)

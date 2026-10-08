@@ -4,6 +4,7 @@ import {
   resolveCpRule,
   resolveAgentIntegration,
   conversationAdmitted,
+  conversationTrustLevel,
   integrationRouting,
   type CpRule
 } from '../src/router/routing-rule.js'
@@ -98,6 +99,7 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
         mutedChannels: ['C9'],
         gated: true,
         sessionModes: [],
+        externalChannels: [],
         decisions: { bindings: [], definitions: [] }
       })
       expect(configuredBotSelfId(int)).toBe(selfId)
@@ -433,5 +435,27 @@ describe('conversationAdmitted', () => {
       bindRules: [{ channel: 'C1', match: { kind: 'mention' } }]
     })
     expect(conversationAdmitted(r, 'C1')).toBe(false)
+  })
+})
+
+// assistant-mode.md §5.3: enabling a place trusts it; only a platform-detected external is the exception.
+describe('conversationTrustLevel', () => {
+  const int = (externalChannels?: string[]) =>
+    ({
+      id: 'i-trust',
+      platform: 'slack',
+      core: {
+        mode: 'direct',
+        bindRules: [],
+        mutedChannels: [],
+        gated: true,
+        ...(externalChannels ? { externalChannels } : {})
+      }
+    }) as unknown as Integration
+
+  it('reads a detected external conversation as external and every other one as internal', () => {
+    expect(conversationTrustLevel(int(['C1']), 'C1')).toBe('external')
+    expect(conversationTrustLevel(int(['C1']), 'C2')).toBe('internal')
+    expect(conversationTrustLevel(int(), 'C1')).toBe('internal')
   })
 })

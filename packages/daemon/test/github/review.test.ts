@@ -26,6 +26,14 @@ const comment: SubmitGithubReviewInput = {
   comments: [{ path: 'src/index.ts', body: 'Please rename this.', line: 12, side: 'RIGHT' }]
 }
 
+const pullFiles = [
+  {
+    filename: 'src/index.ts',
+    patch: '@@ -10,3 +10,4 @@\n before\n-old\n+new\n+added\n after\n@@ -30 +31 @@\n-old\n+new'
+  },
+  { filename: 'image.png' }
+]
+
 const attribution = {
   agentName: 'review-bot',
   agentUrl: 'https://app.example.test/acme/agents/review-bot',
@@ -85,6 +93,7 @@ describe('GithubReviewClient', () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(json(200, []))
+      .mockResolvedValueOnce(json(200, pullFiles))
       .mockResolvedValueOnce(
         json(200, {
           state: 'open',
@@ -110,7 +119,7 @@ describe('GithubReviewClient', () => {
       commitId: target.expectedHeadSha
     })
 
-    const [, init] = fetchImpl.mock.calls[2]!
+    const [, init] = fetchImpl.mock.calls[3]!
     const body = JSON.parse(String(init?.body)) as {
       commit_id: string
       body: string
@@ -193,10 +202,11 @@ describe('GithubReviewClient', () => {
     expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
   })
 
-  it('refuses a stale head/base without issuing the review POST', async () => {
+  it('refuses a head changed during file reads without issuing the review POST', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(json(200, []))
+      .mockResolvedValueOnce(json(200, pullFiles))
       .mockResolvedValueOnce(
         json(200, {
           state: 'open',
@@ -212,7 +222,9 @@ describe('GithubReviewClient', () => {
       state: 'not_submitted',
       code: 'revision_changed'
     })
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(String(fetchImpl.mock.calls[1]![0])).toContain('/files?')
+    expect(String(fetchImpl.mock.calls[2]![0])).toMatch(/\/pulls\/42$/)
   })
 
   it('recovers an ambiguous POST by listing the correlation marker instead of retrying', async () => {
@@ -231,6 +243,7 @@ describe('GithubReviewClient', () => {
           ? json(200, [{ id: '12345678901234567', body: marker, commit_id: target.expectedHeadSha }])
           : json(200, [])
       }
+      if (url.includes('/files?')) return json(200, pullFiles)
       return json(200, {
         state: 'open',
         merged: false,
@@ -244,6 +257,38 @@ describe('GithubReviewClient', () => {
     await expect(client.submit(target, comment)).resolves.toMatchObject({
       state: 'submitted',
       reviewId: '12345678901234567'
+    })
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+  })
+
+  it.each([
+    ['a 5xx', () => json(502, { message: 'Bad Gateway' }), 'GitHub POST 502: Bad Gateway'],
+    [
+      'a network failure',
+      () => {
+        throw new TypeError('fetch failed', { cause: Object.assign(new Error('read'), { code: 'ECONNRESET' }) })
+      },
+      'GitHub request failed: fetch failed (ECONNRESET)'
+    ]
+  ])('names the cause of an unrecovered ambiguous POST after %s', async (_, post, cause) => {
+    const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+      if (init?.method === 'POST') return post()
+      if (String(url).includes('/reviews?')) return json(200, [])
+      if (String(url).includes('/files?')) return json(200, pullFiles)
+      return json(200, {
+        state: 'open',
+        merged: false,
+        draft: false,
+        head: { sha: target.expectedHeadSha },
+        base: { sha: target.expectedBaseSha }
+      })
+    })
+    const client = new GithubReviewClient({ fetchImpl })
+
+    await expect(client.submit(target, comment)).resolves.toEqual({
+      state: 'ambiguous',
+      code: 'ambiguous_write',
+      message: `GitHub review outcome is unknown (${cause}); automatic retry is blocked`
     })
     expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
   })
@@ -264,8 +309,7 @@ describe('GithubReviewClient', () => {
   it('reconciles a later-visible marker through GETs only', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
     const client = new GithubReviewClient({ fetchImpl })
-    // Generate the marker from a first submit call body without relying on its
-    // opaque encoding format in the assertion.
+    // Capture a real submission marker without depending on its encoding.
     let marker = ''
     const capture = new GithubReviewClient({
       fetchImpl: vi.fn<typeof fetch>(async (_url, init) => {
@@ -276,6 +320,7 @@ describe('GithubReviewClient', () => {
           return json(200, { id: '1', commit_id: target.expectedHeadSha })
         }
         if (String(_url).includes('/reviews?')) return json(200, [])
+        if (String(_url).includes('/files?')) return json(200, pullFiles)
         return json(200, {
           state: 'open',
           merged: false,
@@ -297,10 +342,11 @@ describe('GithubReviewClient', () => {
     expect(fetchImpl.mock.calls.every(([, init]) => (init?.method ?? 'GET') === 'GET')).toBe(true)
   })
 
-  it('classifies a received 422 as a definite no-effect rejection', async () => {
+  it('preserves GitHub validation details in a definite no-effect rejection', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(json(200, []))
+      .mockResolvedValueOnce(json(200, pullFiles))
       .mockResolvedValueOnce(
         json(200, {
           state: 'open',
@@ -310,12 +356,101 @@ describe('GithubReviewClient', () => {
           base: { sha: target.expectedBaseSha }
         })
       )
-      .mockResolvedValueOnce(json(422, { message: 'Validation Failed' }))
+      .mockResolvedValueOnce(
+        json(422, {
+          message: 'Validation Failed',
+          errors: [
+            'Review comments is invalid',
+            {
+              resource: 'PullRequestReviewComment',
+              field: 'line',
+              code: 'invalid',
+              message: 'Line must be part of the diff',
+              value: 'unrelated provider data'
+            }
+          ]
+        })
+      )
     const client = new GithubReviewClient({ fetchImpl })
 
-    await expect(client.submit(target, comment)).resolves.toMatchObject({
+    await expect(client.submit(target, comment)).resolves.toEqual({
       state: 'not_submitted',
-      code: 'github_rejected'
+      code: 'github_rejected',
+      message:
+        'GitHub POST 422: Validation Failed; Review comments is invalid; ' +
+        'PullRequestReviewComment: line: invalid: Line must be part of the diff'
     })
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+  })
+
+  it.each([
+    { line: 15, side: 'RIGHT' as const },
+    { line: 13, side: 'LEFT' as const },
+    { line: 31, side: 'RIGHT' as const, startLine: 13, startSide: 'RIGHT' as const },
+    { line: 12, side: 'RIGHT' as const, startLine: 9, startSide: 'RIGHT' as const },
+    { path: 'missing.ts', line: 12, side: 'RIGHT' as const },
+    { path: 'image.png', line: 1, side: 'RIGHT' as const }
+  ])('refuses an inline comment outside the available diff: %j', async (position) => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(200, []))
+      .mockResolvedValueOnce(json(200, pullFiles))
+      .mockResolvedValueOnce(
+        json(200, {
+          state: 'open',
+          head: { sha: target.expectedHeadSha },
+          base: { sha: target.expectedBaseSha }
+        })
+      )
+    const client = new GithubReviewClient({ fetchImpl })
+
+    await expect(
+      client.submit(target, { ...comment, comments: [{ ...comment.comments![0]!, ...position }] })
+    ).resolves.toMatchObject({
+      state: 'not_submitted',
+      code: 'invalid_input',
+      message: expect.stringMatching(/comments\[0\].*review body, then retry/)
+    })
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('finds renamed files on later pages and submits valid additions, deletions and ranges', async () => {
+    const files = [
+      { ...pullFiles[0], previous_filename: 'src/old.ts' },
+      { filename: 'removed.ts', patch: '@@ -1,2 +0,0 @@\n-first\n-last' },
+      { filename: 'added.ts', patch: '@@ -0,0 +1 @@\n+first\n\\ No newline at end of file' }
+    ]
+    const comments: NonNullable<SubmitGithubReviewInput['comments']> = [
+      { path: 'src/index.ts', body: 'Addition', line: 12, side: 'RIGHT' },
+      { path: 'src/index.ts', body: 'Deletion', line: 11, side: 'LEFT' },
+      { path: 'src/index.ts', body: 'Range', line: 13, side: 'RIGHT', startLine: 10, startSide: 'RIGHT' },
+      { path: 'removed.ts', body: 'Removed file', line: 2, side: 'LEFT' },
+      { path: 'added.ts', body: 'Added file', line: 1, side: 'RIGHT' }
+    ]
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(200, []))
+      .mockResolvedValueOnce(
+        json(
+          200,
+          Array.from({ length: 100 }, (_, i) => ({ filename: `other-${i}.ts` }))
+        )
+      )
+      .mockResolvedValueOnce(json(200, files))
+      .mockResolvedValueOnce(
+        json(200, {
+          state: 'open',
+          head: { sha: target.expectedHeadSha },
+          base: { sha: target.expectedBaseSha }
+        })
+      )
+      .mockResolvedValueOnce(json(200, { id: '456', commit_id: target.expectedHeadSha }))
+    const client = new GithubReviewClient({ fetchImpl })
+
+    await expect(client.submit(target, { ...comment, comments })).resolves.toMatchObject({ state: 'submitted' })
+    expect(String(fetchImpl.mock.calls[2]![0])).toContain('/files?per_page=100&page=2')
+    const submitted = JSON.parse(String(fetchImpl.mock.calls[4]![1]?.body))
+    expect(submitted.comments[2]).toMatchObject({ line: 13, start_line: 10, start_side: 'RIGHT' })
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
   })
 })

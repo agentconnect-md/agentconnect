@@ -1,14 +1,22 @@
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt'
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
-import { decodeSlackStatusOverflowValue, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
+import {
+  buildSlackAppHomeView,
+  decodeSlackStatusOverflowValue,
+  SLACK_APP_HOME_ACTION_PREFIX,
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  type SlackAppHomeContext
+} from '@agentconnect.md/protocol'
 import {
   extractSlackMessageText,
   isSlackSystemMessage,
-  normalizeSlackResponseFinalization
+  normalizeSlackResponseFinalization,
+  slackExternalReason
 } from '@agentconnect.md/message'
-import type { Agent } from '../agents/agent-schema.js'
+import type { Agent, Integration } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
+import { conversationAdmitted, integrationRouting } from '../router/routing-rule.js'
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
 import { SLACK_LIFECYCLE_EVENTS, slackLifecycleRevocation } from './lifecycle.js'
 import type { CredentialRevocation } from '../platforms/credential-revocation.js'
@@ -40,6 +48,7 @@ import type {
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
   PlatformChannelInfo,
+  PlatformChannelRef,
   PlatformConnection,
   PlatformConversationSpec,
   PlatformReactionIntent,
@@ -408,6 +417,10 @@ export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGrou
 export interface SlackDeps {
   group: ConsolidatedGroup
   onMessage: (msg: NormalizedMessage) => void
+  onAppHomeOpened?: (channel: string) => Promise<void>
+  /** Fired when a user starts a new Assistant thread ("new chat") in a DM — a fresh session where the DM appends. */
+  onAssistantThreadStarted?: (channel: string, userId?: string, startedAtMs?: number) => Promise<void>
+  appHomeContext?: () => SlackAppHomeContext
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
@@ -550,6 +563,7 @@ export type AppLike = {
     views: {
       open: (a: unknown) => Promise<unknown>
       update: (a: unknown) => Promise<unknown>
+      publish: (a: unknown) => Promise<unknown>
     }
     // auth.test also returns the team id and `url`, the workspace's base Slack
     // URL (e.g. "https://acme.slack.com/").
@@ -701,13 +715,11 @@ export type AppLike = {
         rename: (a: unknown) => Promise<unknown>
       }
     }
-    // The Data Access API — the ONLY workspace search a bot token can make, and only with the
-    // ephemeral `action_token` from the message that triggered the turn (`search:read.*`).
-    // `assistant.search.context` has no binding in `@slack/web-api` (8.1.x exposes only
-    // `assistant.threads.*`), so it goes through the client's generic `apiCall`: a dotted
-    // member access would throw `TypeError` before Slack was ever asked, which surfaced as a
-    // code-less "searching messages failed".
-    apiCall: (method: 'assistant.search.context', a: unknown) => Promise<SlackSearchContextResponse>
+    // Generic calls cover the search endpoint and channel-level Agent prompts without a legacy thread timestamp.
+    apiCall: (
+      method: 'assistant.search.context' | 'assistant.threads.setSuggestedPrompts',
+      a: unknown
+    ) => Promise<SlackSearchContextResponse>
   }
   init?: () => Promise<void>
   start: () => Promise<void>
@@ -716,6 +728,7 @@ export type AppLike = {
 
 type AssistantThreadStartedEvent = {
   assistant_thread?: {
+    user_id?: string
     channel_id?: string
     thread_ts?: string
   }
@@ -965,6 +978,13 @@ function realSocketModeApp(o: { token: string; appToken: string }, boltDebug?: b
   }) as unknown as AppLike
 }
 
+/** A Slack message ts (`seconds.micros`) as epoch milliseconds; undefined when it is not one. */
+export function slackTsToMs(ts: string | undefined): number | undefined {
+  const match = ts === undefined ? null : /^(\d+)\.(\d{1,6})$/.exec(ts)
+  if (!match) return undefined
+  return Number(match[1]) * 1000 + Math.floor(Number(match[2]!.padEnd(6, '0')) / 1000)
+}
+
 export class SlackConnection implements PlatformConnection {
   private app: AppLike
   // §9.1: all outbound writes (post/update/setStatus/setTitle) funnel through one queue so
@@ -985,6 +1005,8 @@ export class SlackConnection implements PlatformConnection {
   // assistant_thread_started, while later message.im payloads may arrive without
   // thread_ts. Keep the active DM thread root so replies stay inside that thread.
   private assistantDmThreads = new Map<string, string>()
+  private appHomeOpens = new Map<string, Promise<void>>()
+  private welcomedAppHomes = new Set<string>()
   /** Last agent-session lifecycle state per `channel:thread`, so an unchanged one refires nothing. */
   private sessionLifecycle = new Map<string, string>()
   /** The slot's displayed owner per `channel:thread`: the sessionKey of the last `processing`
@@ -1103,13 +1125,33 @@ export class SlackConnection implements PlatformConnection {
       if (!ev.channel) return
       deliver(ev, 'app_mention')
     })
-    // Agent/assistant DM threads expose their canonical thread root through this
-    // event. Normal message.im payloads remain the source of user text; this event
-    // only preserves routing coordinates for those messages.
+    // An Assistant DM thread names its root here (message.im stays the source of user text).
     this.app.event('assistant_thread_started', async ({ event }) => {
-      const thread = this.rememberAssistantThread(event as AssistantThreadStartedEvent)
-      if (thread) log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
+      const ev = event as AssistantThreadStartedEvent
+      const thread = this.rememberAssistantThread(ev)
+      if (!thread) return
+      log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
+      // "New chat" is Slack's own `!new`: a DM on one session starts a fresh one.
+      await this.deps.onAssistantThreadStarted?.(
+        thread.channel,
+        ev.assistant_thread?.user_id,
+        slackTsToMs(thread.threadTs)
+      )
     })
+    this.app.event('app_home_opened', async ({ event }) => {
+      const ev = event as { channel?: string; tab?: string; user?: string }
+      if (ev.tab === 'home' && ev.user)
+        await this.queue
+          .enqueue(() =>
+            this.app.client.views.publish({
+              user_id: ev.user,
+              view: buildSlackAppHomeView(this.botUserId, this.deps.appHomeContext?.())
+            })
+          )
+          .catch((err) => log?.warn(`slack: Home tab publish failed: ${(err as Error).message}`))
+      if (ev.tab === 'messages' && ev.channel?.startsWith('D')) await this.deps.onAppHomeOpened?.(ev.channel)
+    })
+    this.app.action(new RegExp(`^${SLACK_APP_HOME_ACTION_PREFIX}`), async ({ ack }) => void (await ack()))
     // Native stop button, Socket Mode arm. The HTTP arm reaches the same method through the relay.
     this.app.event('agent_session_stopped', async ({ event }) => {
       const ev = event as { channel?: string; thread_ts?: string; user?: string }
@@ -1460,6 +1502,58 @@ export class SlackConnection implements PlatformConnection {
       await this.postPermissionUpdateCard(channel, threadTs)
       throw err
     }
+  }
+
+  // Slack history survives daemon restarts; an existing conversation never receives a new greeting.
+  async welcomeBuiltin(channel: string, agent: Agent, integration: Integration): Promise<void> {
+    if (
+      !channel.startsWith('D') ||
+      !agent.builtin ||
+      agent.status !== 'active' ||
+      agent.pause ||
+      !conversationAdmitted(integrationRouting(integration), channel) ||
+      this.welcomedAppHomes.has(channel)
+    )
+      return
+    const pending = this.appHomeOpens.get(channel)
+    if (pending) return pending
+    const work = this.queue
+      .enqueue(async () => {
+        const history = await this.app.client.conversations.history({ channel, limit: 1 })
+        if (!history.messages) return
+        if (history.messages.length === 0) {
+          await this.app.client.chat.postMessage({
+            channel,
+            text: "Hi! I'm your AgentConnect agent. Send me a task here, or invite me to a channel and @mention me to get started.\n\nI can help with research, code, and documents. For setup and support, open Help in your AgentConnect console.",
+            ...slackMessageMetadata({ chrome: true, chromeOwnerAgentId: agent.id }),
+            unfurl_links: false,
+            unfurl_media: false
+          })
+        }
+        // Agent messaging requires channel-level prompts; thread_ts silently fails on this surface.
+        await this.app.client.apiCall('assistant.threads.setSuggestedPrompts', {
+          channel_id: channel,
+          prompts: [
+            {
+              title: 'Plan a task',
+              message: 'Help me turn an idea into a practical plan. Start by asking what I want to accomplish.'
+            },
+            {
+              title: 'Work with a file',
+              message: 'Help me review a document or code file. Ask me to share it and explain what I want to change.'
+            }
+          ]
+        })
+        this.welcomedAppHomes.add(channel)
+      })
+      .catch((err) => {
+        this.deps.log?.warn(`slack: app home welcome failed: ${(err as Error).message}`)
+      })
+      .finally(() => {
+        this.appHomeOpens.delete(channel)
+      })
+    this.appHomeOpens.set(channel, work)
+    return work
   }
 
   async postMessage(
@@ -2472,8 +2566,8 @@ export class SlackConnection implements PlatformConnection {
    * group DMs are excluded (they are not configurable channels). Returns null on
    * any API failure so the caller never mistakes an error for "left all channels".
    */
-  async listBotChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[] | null> {
-    const out: { id: string; name?: string; isPrivate?: boolean }[] = []
+  async listBotChannels(): Promise<PlatformChannelRef[] | null> {
+    const out: PlatformChannelRef[] = []
     let cursor: string | undefined
     try {
       do {
@@ -2485,7 +2579,13 @@ export class SlackConnection implements PlatformConnection {
         })
         for (const c of res.channels ?? []) {
           if (!c.id || c.is_im || c.is_mpim) continue
-          out.push({ id: c.id, ...(c.name ? { name: c.name } : {}), ...(c.is_private ? { isPrivate: true } : {}) })
+          out.push({
+            id: c.id,
+            ...(c.name ? { name: c.name } : {}),
+            // Explicit either way, so the membership snapshot answers privacy without a lookup.
+            isPrivate: c.is_private === true,
+            externalReason: slackExternalReason(c)
+          })
         }
         cursor = res.response_metadata?.next_cursor || undefined
       } while (cursor)
@@ -2517,7 +2617,7 @@ export class SlackConnection implements PlatformConnection {
       for (const c of res.channels ?? []) if (c.id) out.push({ id: c.id, ...(c.name ? { name: c.name } : {}) })
       cursor = res.response_metadata?.next_cursor || undefined
     } while (cursor)
-    return [...out, ...members.filter((c) => c.isPrivate)]
+    return [...out, ...members.filter((c) => c.isPrivate).map(({ id, name, isPrivate }) => ({ id, name, isPrivate }))]
   }
 
   /**

@@ -50,6 +50,7 @@ export const canonicalColumns = [
   'cpRev',
   'createdAt',
   'credentialEpoch',
+  'cronId',
   'daemonId',
   'defaultModel',
   'detailJson',
@@ -75,6 +76,7 @@ export const canonicalColumns = [
   'externalResourceKind',
   'failedAttempts',
   'fastModeOverride',
+  'firedAt',
   'globalRules',
   'groupId',
   'headSha',
@@ -214,7 +216,25 @@ export const canonicalColumns = [
   'finishedAt',
   'bodiesStrippedAt',
   'messageId',
-  'releasedSeq'
+  'releasedSeq',
+  'repoClass',
+  'repoId',
+  'refHash',
+  'lastReadAt',
+  'unpointedAt',
+  'targetKey',
+  'committedBytes',
+  'pendingBytes',
+  'doneWhen',
+  'nextCheck',
+  'originPlatform',
+  'originChannel',
+  'originTransportScope',
+  'observationVersion',
+  'itemId',
+  'addedAt',
+  'refId',
+  'linkedAt'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

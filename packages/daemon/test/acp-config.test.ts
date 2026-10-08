@@ -105,8 +105,8 @@ describe('planConfigSelection', () => {
     expect((plan as { skip: string }).skip).toContain('default, low, medium, high, xhigh, max')
   })
 
-  it('skips when the value is already current', () => {
-    expect(planConfigSelection(claudeLike({ effort: 'high' }), 'thought_level', 'high')).toHaveProperty('skip')
+  it('reports a value that is already current without planning a request', () => {
+    expect(planConfigSelection(claudeLike({ effort: 'high' }), 'thought_level', 'high')).toEqual({ current: true })
   })
 
   it('ignores non-select options in the category', () => {
@@ -141,8 +141,8 @@ describe('planConfigSelection', () => {
       configId: 'fast-mode',
       value: 'off'
     })
-    // already current / model without fast support (no option) → skip
-    expect(planConfigSelection(fastSelect('fast', 'on'), 'model_config', 'on')).toHaveProperty('skip')
+    // already current → no request; model without fast support (no option) → skip
+    expect(planConfigSelection(fastSelect('fast', 'on'), 'model_config', 'on')).toEqual({ current: true })
     expect(planConfigSelection(claudeLike(), 'model_config', 'on')).toHaveProperty('skip')
   })
 })

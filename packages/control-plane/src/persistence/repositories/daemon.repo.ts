@@ -49,6 +49,7 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     maxAgents: d.maxAgents,
     sessionEpoch: d.sessionEpoch,
     routingEpoch: d.routingEpoch,
+    bootId: d.bootId,
     status: d.status as DaemonStatus,
     health: d.health as HealthState,
     load: d.load,
@@ -190,6 +191,7 @@ export class PgDaemonRepo implements DaemonRepo {
         host: reg.host,
         capabilities: reg.capabilities as Prisma.InputJsonValue,
         maxAgents: reg.maxAgents,
+        bootId: reg.bootId ?? null,
         status: 'ready',
         // The `facts/daemon-runtimes.seq` counter is per-connection: reset the
         // fence so the reconnecting daemon's fresh count is accepted from 1.

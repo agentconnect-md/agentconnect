@@ -18,6 +18,7 @@ import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 import { localMemoryHome } from '../src/memory/home.js'
 import { buildParentReplyAppend } from '../src/session/turn/standing-context.js'
 import { planReplay } from '../src/session/turn/replay-plan.js'
+import { ModelSelectionError } from '../src/acp/acp-host.js'
 
 /** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
  *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
@@ -1780,6 +1781,40 @@ describe('SessionManager', () => {
     ])
     expect(host2.newSession).not.toHaveBeenCalled()
     await (await store).close()
+  })
+
+  it('keeps a rejected model visible without retrying MCP or recreating a resumed session', async () => {
+    const store = await newStore()
+    const host = {
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: vi.fn(() => true),
+      loadSupported: () => true,
+      loadSession: vi.fn(async () => {
+        throw new ModelSelectionError('model-b', new Error('Usage credits required'))
+      })
+    } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    try {
+      await sm.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
+      host.hasSession.mockReturnValue(false)
+      await expect(
+        sm.handle(
+          'bot-a',
+          msg({ ts: '100.2', text: 'second turn' }),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { additionalMcpServers: [{ name: 'extra', command: 'example-mcp', args: [], env: [] }] }
+        )
+      ).rejects.toThrow('Could not select model "model-b": Usage credits required')
+      expect(host.loadSession).toHaveBeenCalledOnce()
+      expect(host.newSession).toHaveBeenCalledOnce()
+      expect((await store.getSessionByAcpId('acp-1'))?.acpSessionId).toBe('acp-1')
+    } finally {
+      await store.close()
+    }
   })
 
   it('reports the additional descriptor attached when failed loads recreate a session with it', async () => {

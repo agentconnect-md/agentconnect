@@ -51,11 +51,7 @@ function codexConfigWithMemories(raw: string | undefined, enabled: boolean): str
   })
 }
 
-/**
- * One source of truth for both suppression (`managed` / `none`) and native
- * redirection. Every switch below was verified against official docs or shipped
- * code; never guess a flag for an unregistered harness.
- */
+// Register only memory controls or absence of native memory verified against upstream docs or shipped code.
 const RUNTIME_MEMORY_POLICIES: RuntimeMemoryPolicy[] = [
   {
     // NousResearch/hermes-agent@30c7913617a63773c15a11900d24ac362b7609c8:
@@ -94,9 +90,15 @@ const RUNTIME_MEMORY_POLICIES: RuntimeMemoryPolicy[] = [
     disabledEnv: () => ({})
   },
   {
-    // @openma/deepseek-harness-acp@0.4.33 (dsh 0.1.5-rc.1): memory MCP and session references are opt-in overlays.
+    // @openma/deepseek-harness-acp@0.4.35 (dsh 0.1.7-rc.2): memory MCP and session references are opt-in overlays.
     id: 'dsh-acp',
     sig: /(?:^|[\\/])dsh-acp(?:@[^\\/]*)?$/,
+    disabledEnv: () => ({})
+  },
+  {
+    // anomalyco/opencode@v1.18.32: ACP has session history and explicit rule files, but no automatic native memory store.
+    id: 'opencode',
+    sig: /(?:^|[\\/])opencode(?:-ai)?(?:\.exe)?(?:@[^\\/]*)?$/,
     disabledEnv: () => ({})
   },
   {

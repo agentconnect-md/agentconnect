@@ -12,6 +12,7 @@ import type {
   AgentInstallationAuthorizationRecord,
   AgentRepoAuthorizationRecord,
   GithubInstallationRecord,
+  RepoAccess,
   SkillSourceRecord
 } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
@@ -1159,6 +1160,8 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       materialize: 'always',
       createdAt: new Date(0),
       createdBy: null,
+      attestedByUserId: null,
+      stale: null,
       ...over
     }
   }
@@ -1531,6 +1534,65 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     })
     await expect(suspended.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
       code: 'LEASE_DENIED'
+    })
+  })
+
+  describe('stale grants (agent-multi-repo-authorization.md, Re-attestation)', () => {
+    const STALE = { since: new Date(0), reason: 'access_lost' as const }
+    const TOOLS = { 'acme/tools': { id: 111, full_name: 'acme/tools' } }
+    const acmeGrant = (access: RepoAccess): AgentInstallationAuthorizationRecord => ({
+      id: 'ia-1',
+      agentId: 'agent-1' as never,
+      provider: 'github',
+      installationId: 42n,
+      accountLogin: 'acme',
+      access,
+      materialize: 'on-demand',
+      createdAt: new Date(0),
+      createdBy: null
+    })
+
+    it('refuses a stale row by name, says why, and mints nothing', async () => {
+      const { svc, mintBodies } = harness({ rows: [grantRow({ access: 'write', stale: STALE })], repoRefs: TOOLS })
+
+      const denied = svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')
+
+      await expect(denied).rejects.toMatchObject({ code: 'SCOPE_DENIED', retryable: false })
+      await expect(denied).rejects.toThrow(
+        "acme/tools's authorization for this agent is suspended because the member who authorized it no longer has that access on GitHub"
+      )
+      expect(mintBodies).toEqual([])
+    })
+
+    it('an installation grant still authorizes the repository, at its own tier', async () => {
+      const { svc, mintBodies } = harness({
+        rows: [grantRow({ access: 'write', stale: STALE })],
+        installationGrants: [acmeGrant('read')],
+        repoRefs: TOOLS
+      })
+
+      const grant = await svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')
+
+      expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'read', repoId: 111n })
+      expect(mintBodies).toEqual([{ repository_ids: [111], permissions: { metadata: 'read', contents: 'read' } }])
+    })
+
+    it('the by-id resolver behind reviews, auto-merge and Checks refuses a stale row', async () => {
+      const { svc } = harness({ rows: [grantRow({ access: 'write', stale: STALE })], repoRefs: TOOLS })
+
+      await expect(svc.resolveAgentRepoAuthorization(SCRATCH_AGENT, 111n, 'acme/tools')).rejects.toThrow(
+        'authorization for this agent is suspended'
+      )
+      await expect(svc.canArmAutoMerge(SCRATCH_AGENT, 111n, 'acme/tools')).resolves.toBe(false)
+    })
+
+    it('an honored row on the same repository still mints', async () => {
+      const { svc, mintBodies } = harness({ rows: [grantRow({ access: 'write' })], repoRefs: TOOLS })
+
+      await expect(svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).resolves.toMatchObject({
+        access: 'write'
+      })
+      expect(mintBodies[0]).toMatchObject({ repository_ids: [111], permissions: { contents: 'write' } })
     })
   })
 

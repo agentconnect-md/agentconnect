@@ -40,6 +40,7 @@ import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-run
 import type { GitRunner } from '../workspace/git-runner.js'
 import { deferredGitRunner } from '../workspace/git-runner.js'
 import type { ExecutionPlane } from '../execution/plane.js'
+import { ShimBundleClient } from '../shim/bundle-client.js'
 
 const SILENT = { info: () => {}, warn: () => {} }
 
@@ -203,14 +204,19 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   workspaceRootFor: (subject: string) => string | undefined
   /** The session directory of one confined session, in the coordinates of ITS pod (§11). */
   sessionDirFor: (agentId: string, leaf: string) => string
-  skillClientFor?: (subject: string) => ClusterSkillClient | undefined
+  /** `cwd` aims the installs at the runtime's checkout (a placed session); the pool's pods take none and install at their workspace root. */
+  skillClientFor?: (subject: string, cwd?: string) => ClusterSkillClient | undefined
   workspaceIncarnationFor?: (subject: string) => string | undefined
   shimGenerationFor?: (subject: string) => number | undefined
+  /** Whether the subject's bound pod serves `tunnel` (S5b routes private skill Sources of a pod without `gitcred` through the daemon). */
+  servesTunnel?: (subject: string, tunnel: TunnelName) => boolean
   /** Subjects this daemon holds a Sandbox for, and since when — the idle sweep's candidates. Read from
    *  the driver, not inferred from live hosts: a launch outlives the host it was made for. */
   launched: () => Array<{ subject: SandboxSubject; agentId: string; since: number }>
   /** Take over an agent's pods from the cluster (claim → Sandbox → mode) so this member can suspend them. */
   adoptAgent: (agentId: string) => Promise<void>
+  /** Take over the Running pods of agents `serves` admits that no launch here tracks; resolves the subjects it took. */
+  adoptUntracked: (serves: (agentId: string) => boolean) => Promise<string[]>
   /** No longer served here: launches, channels, tunnels and loss watches of every pod of the agent go; claims and volumes stay. */
   releaseAgent: (agentId: string) => void
   /** Stop every pod of an agent this member is handing over, keeping the claims and volumes. What
@@ -515,6 +521,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     sandboxBound: (subject) => boundSession(subject) !== undefined,
     // Bound-then-retain in one synchronous step, as the sweep's own gate reads it: a caller that checked and then awaited would have its pod suspended underneath it.
     holdIfBound: (subject) => (boundSession(subject) ? driver.retainLaunched(subject) : undefined),
+    bundleStagerFor: async (agentId, path) => {
+      const session = await sessionForPath(agentId, path).catch(() => undefined)
+      return session?.hasCapability('bundle') ? new ShimBundleClient(session) : undefined
+    },
     clearPath: async (agentId, root) => {
       const session = await sessionForPath(agentId, root).catch(() => undefined)
       if (!session) return `agent ${agentId} has no bound sandbox channel for ${root}`
@@ -529,11 +539,13 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         session,
         session.hasCapability('skills-wide'),
         false,
-        session.hasCapability('skills-receipts')
+        session.hasCapability('skills-receipts'),
+        session.hasCapability('skills-git')
       )
     },
     workspaceIncarnationFor: (subject) => driver.currentLaunch(subject)?.claimUid,
     shimGenerationFor: (subject) => driver.currentLaunch(subject)?.generation,
+    servesTunnel: (subject, tunnel) => tunnels.serves(subject, tunnel),
     launched: () => driver.launched(),
     suspendIdle: (subject) => driver.suspendIfIdle(subject),
     suspendStalled: (subject) => driver.suspendIfStalled(subject),
@@ -553,6 +565,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       // orphan sweep's version fence would have nothing to refuse a collection in flight with.
       await driver.markServed(agentId)
     },
+    adoptUntracked: (serves) => driver.adoptUntracked(serves),
     releaseAgent,
     suspendAgent: async (agentId) => {
       // Adoption records only Running pods and creates nothing, so this wakes none and skips the rest.

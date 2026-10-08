@@ -18,7 +18,8 @@ import type {
   RcMcpAssign,
   RcMcpUnassign,
   RcMemoryConnectionAssign,
-  RcMemoryConnectionUnassign
+  RcMemoryConnectionUnassign,
+  RcSnapshotKind
 } from '@agentconnect.md/protocol'
 import {
   CODEHOST_FEEDBACK_FEATURE,
@@ -46,7 +47,27 @@ export function hookRuleSupported(
 }
 
 export class RelayControlSender {
+  // Live projection frames for a relay that is replaying that projection, flushed in order when the replay ends.
+  private readonly held = new WeakMap<RelayChannel, Map<RcSnapshotKind, { depth: number; queue: Array<() => void> }>>()
+
   constructor(private readonly relays: RelayRegistry) {}
+
+  /** Hold live `kind` changes for one relay until the returned release, so none lands before a replayed frame it supersedes. */
+  hold(ch: RelayChannel, kind: RcSnapshotKind): () => void {
+    let byKind = this.held.get(ch)
+    if (!byKind) this.held.set(ch, (byKind = new Map()))
+    const entry = byKind.get(kind) ?? { depth: 0, queue: [] }
+    byKind.set(kind, entry)
+    entry.depth++
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--entry.depth > 0) return
+      byKind.delete(kind)
+      for (const send of entry.queue) send()
+    }
+  }
 
   feedbackWatch(watch: RcCodeHostFeedbackWatch): void {
     this.broadcast((ch) => {
@@ -74,34 +95,34 @@ export class RelayControlSender {
       const features = codeHostProviders[host.provider].features
       if (!advertises(ch.features, features.required(features.ruleHost(host)))) return
       ch.send('rc/hook-assign', rule)
-    })
+    }, 'hook')
   }
 
   /** Drop one hook rule pool-wide (hook disabled / deleted / agent unplaced). */
   hookRemove(hookId: string): void {
-    this.broadcast((ch) => ch.send('rc/hook-remove', { hookId }))
+    this.broadcast((ch) => ch.send('rc/hook-remove', { hookId }), 'hook')
   }
 
   /** Load an MCP provider's proxy binding onto every relay (whole-pool BROADCAST —
    *  any relay may serve the agent's HTTPS request). `headers` carry the UPSTREAM
    *  credential — the frame is NEVER logged (centralized-tool-management.md §5.2). */
   mcpAssign(a: RcMcpAssign): void {
-    this.broadcast((ch) => ch.send('rc/mcp-assign', a))
+    this.broadcast((ch) => ch.send('rc/mcp-assign', a), 'mcp')
   }
 
   /** Drop an MCP proxy binding pool-wide: whole provider (`{providerId}`) or a single
    *  retired grant hash (`{providerId, grantKeyHash}`). */
   mcpUnassign(u: RcMcpUnassign): void {
-    this.broadcast((ch) => ch.send('rc/mcp-unassign', u))
+    this.broadcast((ch) => ch.send('rc/mcp-unassign', u), 'mcp')
   }
 
   /** Purpose-separated external-memory proxy binding (upstream-secret-bearing). */
   memoryConnectionAssign(a: RcMemoryConnectionAssign): void {
-    this.broadcast((ch) => ch.send('rc/memoryconnection-assign', a))
+    this.broadcast((ch) => ch.send('rc/memoryconnection-assign', a), 'memory')
   }
 
   memoryConnectionUnassign(u: RcMemoryConnectionUnassign): void {
-    this.broadcast((ch) => ch.send('rc/memoryconnection-unassign', u))
+    this.broadcast((ch) => ch.send('rc/memoryconnection-unassign', u), 'memory')
   }
 
   /** Ship one org's bot-agnostic collaboration routing snapshot to EVERY relay
@@ -122,13 +143,18 @@ export class RelayControlSender {
     }
   }
 
-  private broadcast(send: (ch: RelayChannel) => void): void {
+  private broadcast(send: (ch: RelayChannel) => void, kind?: RcSnapshotKind): void {
     for (const ch of this.relays.all()) {
-      try {
-        send(ch)
-      } catch {
-        // dead socket — its onClose removes it from the registry
+      const run = () => {
+        try {
+          send(ch)
+        } catch {
+          // dead socket — its onClose removes it from the registry
+        }
       }
+      const queue = kind === undefined ? undefined : this.held.get(ch)?.get(kind)?.queue
+      if (queue) queue.push(run)
+      else run()
     }
   }
 }

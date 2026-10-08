@@ -49,47 +49,6 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.migrate.enabled }}
-      volumes:
-        - name: prisma-migration-files
-          emptyDir: {}
-      initContainers:
-        # The CP image owns the versioned schema and migration SQL. Export only
-        # those files into a shared volume; no application process is started.
-        - name: export-prisma-files
-          image: "{{ .Values.image.registry }}/{{ .Values.controlPlane.image }}:{{ .Values.controlPlane.tag | default (include "agentconnect.imageTag" .) }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -eu
-              mkdir -p /migration/prisma
-              cp /app/packages/control-plane/prisma/schema.prisma /migration/prisma/schema.prisma
-              cp -R /app/packages/control-plane/prisma/migrations /migration/prisma/migrations
-          volumeMounts:
-            - name: prisma-migration-files
-              mountPath: /migration
-        - name: migrate
-          image: "{{ .Values.image.registry }}/{{ .Values.migrate.image }}:{{ .Values.migrate.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # Retry until Postgres accepts connections, then apply migrations.
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              until node_modules/.bin/prisma migrate deploy; do
-                echo "migrate: database not ready, retrying in 3s..."; sleep 3;
-              done
-          volumeMounts:
-            - name: prisma-migration-files
-              mountPath: /migration
-              readOnly: true
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.secrets.existingSecret }}
-                  key: {{ .Values.secrets.databaseUrlKey }}
-      {{- end }}
       containers:
         - name: control-plane
           image: "{{ .Values.image.registry }}/{{ .Values.controlPlane.image }}:{{ .Values.controlPlane.tag | default (include "agentconnect.imageTag" .) }}"
@@ -257,16 +216,14 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-          # readiness = "should this pod get traffic?" — /readyz pings the DB and
-          # goes 503 the moment SIGTERM lands (before the WS drain), so a rolling
-          # update removes the pod from the Service endpoints while it can still
-          # finish in-flight requests.
+          # /readyz: DB ping, 503 from SIGTERM. A 2s period lists a new pod seconds after it listens; 10 misses (~20s) ride out a DB blip.
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            failureThreshold: 10
           # liveness = "is the process alive?" — /livez is static and NEVER gated by
           # shutdown, so the kubelet won't restart a pod that is merely draining.
           livenessProbe:
@@ -300,3 +257,18 @@ spec:
     - name: http
       port: {{ .Values.controlPlane.port }}
       targetPort: http
+{{- if .Values.controlPlane.podDisruptionBudget }}
+---
+# At one replica this blocks every voluntary eviction; move the CP with a completed rollout restart before draining its node.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-control-plane
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "control-plane") | nindent 6 }}
+{{- end }}

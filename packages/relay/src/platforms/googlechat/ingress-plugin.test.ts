@@ -79,6 +79,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   selectThreadAgent: () => {},
   reportBotUserId: vi.fn(),
   publicRelayUrl: () => PUBLIC_RELAY_URL,
+  webAppUrl: () => undefined,
   clock: { now: () => NOW },
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   ...over

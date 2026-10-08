@@ -26,7 +26,14 @@ import {
   initGitInjection,
   workspaceGitLocalEnv
 } from '../src/workspace/git-injection.js'
-import { LocalGitRunner, type GitRunner, type GitLogEntry, type GitPullSummary } from '../src/workspace/git-runner.js'
+import {
+  GitTransportError,
+  LocalGitRunner,
+  type GitCloneOutput,
+  type GitRunner,
+  type GitLogEntry,
+  type GitPullSummary
+} from '../src/workspace/git-runner.js'
 import { ALLOWED_GIT_SUBCOMMANDS, createExecHandler } from '../src/shim/exec-handler.js'
 import { ShimGitRunner, type GitExecPayload } from '../src/shim/git-exec.js'
 import type { ShimRequester } from '../src/shim/channels.js'
@@ -202,7 +209,7 @@ class SeamRunner implements GitRunner {
         env[`GIT_CONFIG_VALUE_${index}`] = substitute(env[`GIT_CONFIG_VALUE_${index}`] ?? '')
       }
     }
-    const make = (value: Record<string, string>) => gitFor(this.cwd, this.abort).env(value)
+    const make = (value: Record<string, string>) => gitFor(this.cwd, this.abort, value)
     return new LocalGitRunner(gitFor(this.cwd, this.abort), this.cwd, make).withEnv(env)
   }
 
@@ -211,9 +218,9 @@ class SeamRunner implements GitRunner {
     return this.delegate().raw(args[0] === 'ls-remote' ? args.map(substitute) : args)
   }
 
-  clone(repo: string, target: string, options?: string[]): Promise<void> {
+  async clone(repo: string, target: string, options?: string[]): Promise<GitCloneOutput | undefined> {
     gitRuns.push({ args: ['clone', repo, target, ...(options ?? [])], env: this.env })
-    return this.delegate().clone(substitute(repo), target, options)
+    return await this.delegate().clone(substitute(repo), target, options)
   }
 
   pull(remote: string, branch: string, options?: string[]): Promise<GitPullSummary> {
@@ -387,6 +394,25 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(git(cwd, ['symbolic-ref', '--short', 'HEAD'])).toBe(branch)
     expect(existsSync(join(cwd, 'notes.md'))).toBe(true)
     expect(workspaces.sessionWorktreePath(agent, KEY)).toBe(join(leafOf(agent), 'workspace'))
+  })
+
+  it('keeps the clone when its Git never ran, instead of reading that as no clone and cloning over it', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    writeFileSync(join(cwd, 'notes.md'), 'kept\n')
+    const clones = () => gitRuns.filter(({ args }) => args[0] === 'clone').length
+    const cloned = clones()
+    const refused = new GitTransportError('environment configuration changed while active')
+    const raw = SeamRunner.prototype.raw
+    vi.spyOn(SeamRunner.prototype, 'raw').mockImplementation(function (this: SeamRunner, args: string[]) {
+      return args[0] === 'rev-parse' ? Promise.reject(refused) : raw.call(this, args)
+    })
+
+    await expect(workspaces.prepareSessionWorkspace(agent, confined())).rejects.toBe(refused)
+
+    expect(readFileSync(join(cwd, 'notes.md'), 'utf8')).toBe('kept\n')
+    expect(clones()).toBe(cloned)
   })
 
   it.each(['shared', 'worktree', 'clone'] as const)(
@@ -867,6 +893,12 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     )
     expect(inClone.length).toBeGreaterThan(0)
     for (const run of inClone) expect(run.env.GIT_NO_LAZY_FETCH).toBe('0')
+    // The fetch itself is filtered like the clone: unfiltered, the changed blobs arrive as deltas against
+    // bases the clone never had and are lazily fetched one round trip per changed file.
+    for (const run of inClone) expect(run.args).toContain('--filter=blob:none')
+    // A filtered fetch from a remote Git did not know as a promisor writes that mark into the checkout's
+    // config; declared at command scope, no daemon-named remote is left behind, review after review.
+    expect(readFileSync(join(cwd, '.git', 'config'), 'utf8')).not.toMatch(/\[remote "agentconnect-/)
     // Retirement is the other side of the rule: it judges the clone with no network target at all.
     gitRuns.length = 0
     await workspaces.removeSessionWorktree(agent, KEY)

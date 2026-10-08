@@ -13,6 +13,7 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { provisionPresetAgents } from '../../src/persistence/index.js'
 import { SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
+import type { LogtoIdentityService } from '../../src/github/logto-identity.js'
 import type {
   SlackConfigApi,
   SlackAppCreateResult,
@@ -56,7 +57,8 @@ class StubExchangeApi implements SlackConfigApi {
       appId: PLATFORM.appId,
       teamId: 'T0WORKSPACE',
       teamName: 'Acme',
-      botUserId: 'U0BOT'
+      botUserId: 'U0BOT',
+      installerUserId: 'U0INSTALLER'
     }
   }
   exchangeCalls: Array<{ clientId: string; clientSecret: string; code: string; redirectUri: string }> = []
@@ -268,7 +270,9 @@ describe('GET /integrations/slack/platform/callback', () => {
     expect(replay.body).toContain('expired')
     expect(await prisma.bot.count({ where: { slackAppId: PLATFORM.appId } })).toBe(1)
     // …and the replay did not advance the credential generation.
-    expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot!.id } })).credentialRevision).toBe(1)
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot!.id } })).credentialRevision).toBe(
+      bot!.credentialRevision
+    )
   })
 
   it('serves the public /v1 alias too (direct-hit deploys)', async () => {
@@ -625,7 +629,7 @@ describe('GET /integrations/slack/platform/callback', () => {
         }
       }
     })
-    expect(bot.credentialRevision).toBe(1)
+    expect(bot.credentialRevision).toBeGreaterThan(0)
     // The workspace uninstalls — the event is generated NOW but not delivered yet.
     const uninstalledAt = Date.now()
 
@@ -636,14 +640,18 @@ describe('GET /integrations/slack/platform/callback', () => {
       url: `/api/v1/integrations/slack/platform/callback?code=c2&state=${second.id}`
     })
     const reinstalled = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })
-    expect(reinstalled.credentialRevision).toBe(2)
+    expect(reinstalled.credentialRevision).toBe(bot.credentialRevision + 1)
     expect(reinstalled.credentialInstalledAt).toBeInstanceOf(Date)
 
-    // NOW the stale event lands. A relay that missed the re-assign echoes revision 1;
-    // one that already applied it echoes revision 2 with the OLD occurrence time.
-    // Both must be refused.
-    await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled', { revision: 1, eventAtMs: uninstalledAt })
-    await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled', { revision: 2, eventAtMs: uninstalledAt })
+    // Old revisions and old events under the current revision must both be refused.
+    await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled', {
+      revision: bot.credentialRevision,
+      eventAtMs: uninstalledAt
+    })
+    await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled', {
+      revision: reinstalled.credentialRevision,
+      eventAtMs: uninstalledAt
+    })
 
     const after = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })
     expect(after.revokedAt).toBeNull()
@@ -651,7 +659,7 @@ describe('GET /integrations/slack/platform/callback', () => {
 
     // A genuine LATER uninstall of the current generation still works.
     await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled', {
-      revision: 2,
+      revision: reinstalled.credentialRevision,
       eventAtMs: after.credentialInstalledAt!.getTime() + 1000
     })
     const finallyRevoked = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })
@@ -719,7 +727,9 @@ describe('GET /integrations/slack/platform/callback', () => {
     expect(installs).toHaveLength(1)
     expect(installs[0]).toMatchObject({ agentId: first, status: 'active' })
     // …and the credential still rotated, so the workspace keeps working.
-    expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).credentialRevision).toBe(2)
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).credentialRevision).toBe(
+      bot.credentialRevision + 1
+    )
 
     // The §5.5 opt-in: once the user flips the workspace bot SHAREABLE
     // (Settings → Bots), the same re-install ADDS the new agent instead.
@@ -973,11 +983,8 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
     expect(await prisma.bot.count()).toBe(0)
   })
 
-  // `inUseByAgentId` clears with the last install, so both of these look "free"
-  // to the generic bot picker. Reusing them through POST /integrations would flip
-  // the platform bot to shareable (breaking §5.5) or mint an install on a token
-  // Slack already rejects.
-  it('the generic reuse path refuses a platform-app bot and a revoked bot', async () => {
+  // Disconnecting keeps a usable installation; revoking its token does not.
+  it('reconnects a freed workspace app without widening its one-agent cap or reauthorizing', async () => {
     const { app } = withPlatform()
     // The generic reuse route requires a PLACED agent before it reaches the
     // bot checks, so give the reuse target a daemon.
@@ -991,9 +998,6 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
       url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${started.id}`
     })
     const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
-    // Free it: remove the install, exactly as the console's "remove integration" does.
-    await prisma.integration.deleteMany({ where: { botId: bot.id } })
-
     const other = randomUUID()
     await seedAgent(prisma, other, { daemonId })
     const reuse = await app.app.inject({
@@ -1005,18 +1009,21 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
     expect((reuse.json() as { message: string }).message).toMatch(/one agent per workspace/)
     // Not widened behind our back.
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).shareable).toBe(false)
-    expect(await prisma.integration.count({ where: { botId: bot.id } })).toBe(0)
+    expect(await prisma.integration.count({ where: { botId: bot.id } })).toBe(1)
 
-    // Flipping the bot shareable (the Settings → Bots opt-in) lifts the guard:
-    // the platform bot then reuses like any shared http bot.
-    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
-    const reuseShared = await app.app.inject({
+    const integration = await prisma.integration.findFirstOrThrow({ where: { botId: bot.id } })
+    const removed = await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${integration.id}` })
+    expect(removed.statusCode).toBe(204)
+    expect(await app.deps.repos.bot.listHttpActive()).toEqual([])
+    expect((await app.deps.repos.bot.listHttpActive(['slack'])).map((b) => b.id)).toContain(bot.id)
+    const reconnected = await app.app.inject({
       method: 'POST',
       url: `${ORG}/integrations`,
       payload: { platform: 'slack', agentId: other, botId: bot.id }
     })
-    expect(reuseShared.statusCode).toBe(201)
+    expect(reconnected.statusCode).toBe(201)
     expect(await prisma.integration.count({ where: { botId: bot.id, status: 'active', agentId: other } })).toBe(1)
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).shareable).toBe(false)
 
     // A revoked NON-platform bot is refused too — its token is dead.
     const plain = await prisma.bot.create({
@@ -1179,5 +1186,197 @@ describe('GET /slack/config platform flag', () => {
     const { app } = withPlatform({ configured: false })
     const off = await app.app.inject({ method: 'GET', url: `${ORG}/slack/config` })
     expect((off.json() as { platformInstallAvailable: boolean }).platformInstallAvailable).toBe(false)
+  })
+})
+
+describe('workspace installation before organization binding', () => {
+  async function startPublic(app: HttpApp) {
+    const res = await app.app.inject({ method: 'GET', url: '/v1/integrations/slack/install' })
+    expect(res.statusCode).toBe(302)
+    const state = new URL(res.headers.location!).searchParams.get('state')!
+    const cookie = String(res.headers['set-cookie']).split(';')[0]!
+    expect(res.headers['set-cookie']).toContain('HttpOnly; Secure; SameSite=Lax')
+    return { state, cookie }
+  }
+
+  async function installPublic(app: HttpApp) {
+    const { state, cookie } = await startPublic(app)
+    const res = await app.app.inject({
+      method: 'GET',
+      url: `/v1/integrations/slack/platform/callback?code=example&state=${state}`,
+      headers: { cookie }
+    })
+    expect(res.statusCode).toBe(302)
+    return new URL(res.headers.location!).searchParams.get('installation')!
+  }
+
+  async function identifyInstaller(app: HttpApp) {
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: 'example-installer' } })
+    const identity = vi.fn(async () => ({ teamId: 'T0WORKSPACE', userId: 'U0INSTALLER' }))
+    app.deps.logtoIdentity = { slackIdentityFor: identity } as unknown as LogtoIdentityService
+    return identity
+  }
+
+  it('keeps setup alive across relay reconnects, then binds the selected agent without another OAuth exchange', async () => {
+    const { app, stub } = withPlatform()
+    const send = vi.fn()
+    const relay = { relayId: 'setup-relay', send, close: () => {} } as RelayChannel
+    app.relayReg.add(relay)
+    const id = await installPublic(app)
+    expect(await prisma.bot.count()).toBe(0)
+    expect(await prisma.integration.count()).toBe(0)
+    expect(send).toHaveBeenCalledWith(
+      'rc/bot-assign',
+      expect.objectContaining({
+        botId: id,
+        credentialRevision: 1,
+        installedAgentIds: [],
+        agents: [],
+        routes: [],
+        ingress: expect.objectContaining({ claimUrl: `https://console.example/slack/connect?installation=${id}` })
+      })
+    )
+    send.mockClear()
+    await app.deps.httpBot.replayTo(relay)
+    expect(send).toHaveBeenCalledWith('rc/bot-assign', expect.objectContaining({ botId: id }))
+
+    await identifyInstaller(app)
+    const meta = await app.app.inject({ method: 'GET', url: `/api/v1/integrations/slack/workspace-install/${id}` })
+    expect(meta.statusCode).toBe(200)
+    expect(meta.json()).toEqual({
+      workspaceName: 'Acme',
+      slackUrl: 'https://slack.com/app_redirect?app=A0PLATFORM&team=T0WORKSPACE'
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const connected = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/workspace-install/${id}/connect`,
+      payload: { agentId }
+    })
+    expect(connected.statusCode).toBe(200)
+    expect(connected.json()).toEqual({ botId: id })
+    expect(stub.exchangeCalls).toHaveLength(1)
+    expect(await prisma.slackWorkspaceInstall.count()).toBe(0)
+    expect(await prisma.bot.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      orgId: DEFAULT_ORG_ID,
+      prebuilt: true,
+      shareable: false,
+      transport: 'http',
+      credentialRevision: 2
+    })
+    expect(await prisma.integration.findFirstOrThrow({ where: { botId: id } })).toMatchObject({
+      agentId,
+      status: 'active'
+    })
+    expect(send).toHaveBeenLastCalledWith(
+      'rc/bot-assign',
+      expect.objectContaining({ botId: id, installedAgentIds: [agentId], credentialRevision: 2 })
+    )
+    expect(JSON.stringify(send.mock.calls.at(-1))).not.toContain('claimUrl')
+    const spec = (await app.app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json()
+    expect(spec.paths).not.toHaveProperty('/api/v1/integrations/slack/workspace-install/{id}')
+    expect(spec.paths).not.toHaveProperty('/api/v1/orgs/{orgId}/integrations/slack/workspace-install/{id}/connect')
+  })
+
+  it('rejects callback CSRF, expiration and replay before exchanging a code', async () => {
+    const { app, stub } = withPlatform()
+    const { state, cookie } = await startPublic(app)
+    const url = `/v1/integrations/slack/platform/callback?code=example&state=${state}`
+    await app.app.inject({ method: 'GET', url })
+    expect(stub.exchangeCalls).toHaveLength(0)
+    expect((await prisma.slackPlatformInstall.findUniqueOrThrow({ where: { id: state } })).status).toBe('pending')
+    await app.app.inject({ method: 'GET', url, headers: { cookie } })
+    await app.app.inject({ method: 'GET', url, headers: { cookie } })
+    expect(stub.exchangeCalls).toHaveLength(1)
+    const expired = await startPublic(app)
+    await prisma.slackPlatformInstall.update({ where: { id: expired.state }, data: { createdAt: new Date(0) } })
+    await app.app.inject({
+      method: 'GET',
+      url: `/v1/integrations/slack/platform/callback?code=expired&state=${expired.state}`,
+      headers: { cookie: expired.cookie }
+    })
+    expect(stub.exchangeCalls).toHaveLength(1)
+  })
+
+  it('requires the installer identity and refuses an agent outside the selected organization', async () => {
+    const { app } = withPlatform()
+    const id = await installPublic(app)
+    const identity = await identifyInstaller(app)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    identity.mockResolvedValue({ teamId: 'T0WORKSPACE', userId: 'UOTHER' })
+    const url = `${ORG}/integrations/slack/workspace-install/${id}/connect`
+    expect((await app.app.inject({ method: 'POST', url, payload: { agentId } })).statusCode).toBe(403)
+    expect(
+      (await app.app.inject({ method: 'GET', url: `/api/v1/integrations/slack/workspace-install/${id}` })).statusCode
+    ).toBe(403)
+    identity.mockResolvedValue({ teamId: 'TOTHER', userId: 'U0INSTALLER' })
+    expect((await app.app.inject({ method: 'POST', url, payload: { agentId } })).statusCode).toBe(403)
+    identity.mockResolvedValue({ teamId: 'T0WORKSPACE', userId: 'U0INSTALLER' })
+    const otherOrg = await prisma.org.create({ data: { slug: 'example-other' } })
+    const foreignAgent = randomUUID()
+    await seedAgent(prisma, foreignAgent, { orgId: otherOrg.id })
+    expect((await app.app.inject({ method: 'POST', url, payload: { agentId: foreignAgent } })).statusCode).toBe(404)
+    expect(await prisma.bot.count()).toBe(0)
+    expect(await prisma.slackWorkspaceInstall.count()).toBe(1)
+  })
+
+  it('allows only one concurrent claim and keeps the original binding on public reauthorization', async () => {
+    const { app } = withPlatform()
+    const id = await installPublic(app)
+    await identifyInstaller(app)
+    const agentIds = [randomUUID(), randomUUID()]
+    for (const agentId of agentIds) await seedAgent(prisma, agentId)
+    const results = await Promise.all(
+      agentIds.map((agentId) =>
+        app.app.inject({
+          method: 'POST',
+          url: `${ORG}/integrations/slack/workspace-install/${id}/connect`,
+          payload: { agentId }
+        })
+      )
+    )
+    expect(results.filter((res) => res.statusCode === 200)).toHaveLength(1)
+    expect(results.filter((res) => [404, 409].includes(res.statusCode))).toHaveLength(1)
+    const bound = await prisma.integration.findFirstOrThrow({ where: { botId: id } })
+    const reauth = await startPublic(app)
+    const res = await app.app.inject({
+      method: 'GET',
+      url: `/v1/integrations/slack/platform/callback?code=again&state=${reauth.state}`,
+      headers: { cookie: reauth.cookie }
+    })
+    expect(res.statusCode).toBe(302)
+    expect(res.headers.location).toContain('https://slack.com/app_redirect?')
+    expect(await prisma.integration.findMany({ where: { botId: id } })).toEqual([bound])
+    expect(await prisma.slackWorkspaceInstall.count()).toBe(0)
+  })
+
+  it('finishes the same pending installation when the user connects from the console instead', async () => {
+    const { app } = withPlatform()
+    const id = await installPublic(app)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const { id: state } = await startInstall(app, agentId)
+    await app.app.inject({ method: 'GET', url: `/v1/integrations/slack/platform/callback?code=again&state=${state}` })
+    expect(await prisma.slackWorkspaceInstall.count()).toBe(0)
+    expect(await prisma.bot.findUniqueOrThrow({ where: { id } })).toMatchObject({ credentialRevision: 3 })
+    expect(await prisma.integration.findFirstOrThrow({ where: { botId: id } })).toMatchObject({ agentId })
+  })
+
+  it('fences uninstall reports after a pending installation is reauthorized', async () => {
+    const { app } = withPlatform()
+    const id = await installPublic(app)
+    expect(await installPublic(app)).toBe(id)
+    expect(await app.deps.httpBot.revokeBot(id, 'tokens_revoked', { revision: 1 })).toEqual({ applied: false })
+    const row = await prisma.slackWorkspaceInstall.findUniqueOrThrow({ where: { id } })
+    expect(
+      await app.deps.httpBot.revokeBot(id, 'app_uninstalled', {
+        revision: 2,
+        eventAtMs: row.installedAt.getTime() - 1000
+      })
+    ).toEqual({ applied: false })
+    expect(await app.deps.httpBot.revokeBot(id, 'tokens_revoked', { revision: 2 })).toEqual({ applied: true })
+    expect(await prisma.slackWorkspaceInstall.count()).toBe(0)
   })
 })

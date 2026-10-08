@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { WORKSPACE_UPLOADS_DIR } from '@agentconnect.md/protocol'
 import type { PlatformThreadMessage } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
 import type { McpContentResult, MessageGateway, SessionContext } from './context.js'
@@ -99,7 +100,7 @@ export type SaveAttachmentResult =
   | { ok: false; reason: 'no-workspace' | 'sandboxed' | 'escape' | 'write-failed'; detail?: string }
 
 /** Every attachment saved to the workspace lands under this directory (design §2.1). */
-export const ATTACHMENT_UPLOADS_DIR = 'uploads'
+export const ATTACHMENT_UPLOADS_DIR = WORKSPACE_UPLOADS_DIR
 
 /** Best-effort MIME guess from a Slack file URL's extension (used when the caller
  *  doesn't pass a mimeType hint). */

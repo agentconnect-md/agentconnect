@@ -17,7 +17,13 @@ import {
   type HookKind
 } from '@agentconnect.md/protocol/code-host'
 import { CODE_HOST_PROJECTION } from './code-hosts'
-import type { DaemonLifecyclePhase, McpAppCsp, McpAppDimensions, McpAppOutcome } from '@agentconnect.md/protocol'
+import type {
+  AssistantModePolicy,
+  DaemonLifecyclePhase,
+  McpAppCsp,
+  McpAppDimensions,
+  McpAppOutcome
+} from '@agentconnect.md/protocol'
 import type {
   ChannelDecisionView,
   DaemonSessionRetention,
@@ -33,6 +39,8 @@ import { randomUuid } from '@/lib/random-uuid'
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
 export type ConnectionStatusKey = 'online' | 'paused' | 'offline'
 export type StatusKey = ConnectionStatusKey | LifecycleStatusKey
+/** Daemons only: `reconnecting` presents a control link still recovering within the liveness grace. */
+export type DaemonStatusKey = StatusKey | 'reconnecting'
 
 export interface StatusInfo {
   dot: string
@@ -41,7 +49,7 @@ export interface StatusInfo {
   text: string
 }
 
-const STATUS_MAP: Record<StatusKey, StatusInfo> = {
+const STATUS_MAP: Record<DaemonStatusKey, StatusInfo> = {
   online: { dot: 'var(--status-online)', label: 'online', bg: 'var(--status-online-soft)', text: '#0f7a48' },
   paused: { dot: 'var(--status-paused)', label: 'paused', bg: 'var(--status-paused-soft)', text: '#9a6500' },
   offline: {
@@ -61,11 +69,17 @@ const STATUS_MAP: Record<StatusKey, StatusInfo> = {
     label: 'restarting',
     bg: 'var(--status-paused-soft)',
     text: '#9a6500'
+  },
+  reconnecting: {
+    dot: 'var(--status-paused)',
+    label: 'reconnecting',
+    bg: 'var(--status-paused-soft)',
+    text: '#9a6500'
   }
 }
 
 export function status(s: string): StatusInfo {
-  return STATUS_MAP[s as StatusKey] ?? STATUS_MAP.offline
+  return STATUS_MAP[s as DaemonStatusKey] ?? STATUS_MAP.offline
 }
 
 export function lifecycleStatus(
@@ -77,8 +91,10 @@ export function lifecycleStatus(
   return op.op === 'upgrade' ? 'upgrading' : 'restarting'
 }
 
-export function presentedDaemonStatus(daemon: Pick<DaemonRow, 'status' | 'lifecycleStatus'>): StatusKey {
-  return daemon.lifecycleStatus ?? daemon.status
+export function presentedDaemonStatus(
+  daemon: Pick<DaemonRow, 'status' | 'lifecycleStatus' | 'reconnecting'>
+): DaemonStatusKey {
+  return daemon.lifecycleStatus ?? (daemon.reconnecting ? 'reconnecting' : daemon.status)
 }
 
 /** What a MANAGED deployment calls the pool: it is AgentConnect's own infrastructure, so it is
@@ -240,14 +256,13 @@ export interface MemberSetRow {
   spreadSessions: boolean
 }
 
-/** One status for a group: online while any of its members is serving — the same rule the pool
- *  uses, and for the same reason (whichever member holds the duty is the one serving). */
+/** One status for a group, by the pool's rule: whichever member holds the duty is the one serving. */
 export function groupFleetStatus(
   group: Pick<MemberSetRow, 'memberDaemonIds'>,
-  daemons: readonly Pick<DaemonRow, 'daemonId' | 'status'>[]
-): ConnectionStatusKey {
+  daemons: readonly Pick<DaemonRow, 'daemonId' | 'status' | 'reconnecting'>[]
+): DaemonStatusKey {
   const members = new Set(group.memberDaemonIds)
-  return daemons.some((d) => members.has(d.daemonId) && d.status === 'online') ? 'online' : 'offline'
+  return poolFleetStatus(daemons.filter((d) => members.has(d.daemonId)))
 }
 
 /** The daemons that are MACHINES this org connected. Pool members are install-wide, replaceable
@@ -257,9 +272,10 @@ export function localDaemons<T extends { pool?: boolean }>(daemons: readonly T[]
   return daemons.filter((daemon) => !daemon.pool)
 }
 
-/** One status for the whole pool: online while any member is serving. */
-export function poolFleetStatus(members: Pick<DaemonRow, 'status'>[]): ConnectionStatusKey {
-  return members.some((m) => m.status === 'online') ? 'online' : 'offline'
+/** One status for the whole pool: online while any member serves, else reconnecting while any link recovers. */
+export function poolFleetStatus(members: Pick<DaemonRow, 'status' | 'reconnecting'>[]): DaemonStatusKey {
+  if (members.some((m) => m.status === 'online')) return 'online'
+  return members.some((m) => m.reconnecting) ? 'reconnecting' : 'offline'
 }
 
 // An agent runs *inside* its owning daemon, so it can't really be online when that
@@ -580,6 +596,8 @@ export interface Agent {
     timeoutMs: number
   }
   memoryCaptureMode?: 'turn' | 'manual'
+  /** Assistant mode policy (assistant-mode.md §5.1); absent ⇒ never configured, off. */
+  assistantMode?: AssistantModePolicy
   /** Runtime permission/approval mode; 'default' means the runtime default. */
   permissionMode: string
   /** Explicit opt-in for chat-side runtime changes and approval controls. */
@@ -784,14 +802,11 @@ export function effortLabel(runtime: string, v: string): string {
 
 export function permissionModeOptions(runtime: string): { v: string; l: string }[] {
   if (runtimeLabel(runtime) === 'Codex') {
-    // Labels are copied verbatim from codex-acp's own AgentMode names, so this fallback reads
-    // the same as the catalog path that prefers what the runtime reports. Values are codex-acp's
-    // runtime-owned ids: `agent` is Codex's default (its own reviewer approves what it judges
-    // safe), `agent-full-access` is danger-full-access — out-of-workspace + network, and
-    // `read-only` runs the daemon's read-only sandbox profile.
+    // Match Codex ACP's mode names until the runtime catalog arrives.
     return [
-      { v: 'read-only', l: 'Ask for approval' },
-      { v: 'agent', l: 'Approve for me' },
+      { v: 'read-only', l: 'Read-only' },
+      { v: 'workspace-write', l: 'Workspace access' },
+      { v: 'agent', l: 'Auto review' },
       { v: 'agent-full-access', l: 'Full access' }
     ]
   }
@@ -2204,6 +2219,17 @@ export function isDirectConversation(kind: IntegrationChannelRow['kind']): boole
   return kind === 'im' || kind === 'mpim'
 }
 
+/** Why an agent answers only where enabled (resource-visibility.md §14, assistant-mode.md §5.1). */
+export type ConversationGate = 'private' | 'assistant'
+
+/** The agent's conversation gate, if any; a restricted agent reads as private whatever its mode. */
+export function conversationGate(
+  agent: Pick<Agent, 'visibility' | 'assistantMode'> | undefined
+): ConversationGate | null {
+  if (agent?.visibility === 'restricted') return 'private'
+  return agent?.assistantMode?.enabled ? 'assistant' : null
+}
+
 export interface IntegrationRow {
   /** Integration id (present on live rows; absent on demo rows). Needed to delete. */
   id?: string
@@ -2367,6 +2393,8 @@ export interface DaemonRow {
   memberSetId: string | null
   /** Planned lifecycle presentation while the durable operation is pending. */
   lifecycleStatus: LifecycleStatusKey | null
+  /** Presentation only: the control link is recovering within the liveness grace, while `status` stays offline. */
+  reconnecting?: boolean
   host: string
   cpu: number // 0-100 CPU utilization
   mem: number // 0-100 memory utilization

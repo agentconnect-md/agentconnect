@@ -495,8 +495,8 @@ export default function HomeView() {
     // Every block here is content-sized: the dashboard picks a row count that fits the
     // leftover viewport (useAvailableHeight), so the page fills a roomy window without
     // stretching a card past its rows, and scrolls rather than squashing when it can't.
-    // Mobile keeps normal flow + the bottom-nav padding.
-    <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-24">
+    // Mobile keeps normal flow.
+    <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-6">
       {/* Centered greeting above the composer (design: 32px mark, 27px title). */}
       <div className="mt-[22px] mb-[22px] flex items-center justify-center gap-[13px]">
         <LogoMark size={32} />
@@ -631,17 +631,10 @@ export default function HomeView() {
               </>
             )}
           </div>
-          {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
-            instead of wrapping into a second toolbar line. Except with a
-            multi-agent roster: those chips are unbounded in count, so no amount
-            of truncation bounds one line — let that case wrap. */}
-          <div
-            className={
-              multi
-                ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
-                : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
-            }
-          >
+          {/* Wraps: a roster's chips are unbounded in count, and on phones even one
+            agent + model + isolation do not fit one line legibly — pills still
+            truncate (min-w-0) when a single one is wider than the line. */}
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             {agent ? (
               <>
                 {multi ? (

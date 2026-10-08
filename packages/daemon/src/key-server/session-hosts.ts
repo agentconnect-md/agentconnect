@@ -8,10 +8,10 @@ import type { ModelSessionHost, SelectedTurnHost } from '../daemon/turn-types.js
 import type { Logger } from '../log.js'
 import { shareStartup, awaitStartup } from '../session/startup-progress.js'
 import {
+  modelCredentialRuntime,
   modelProviderTarget,
   type ModelCredential,
   type ModelProviderTarget,
-  type ModelRuntimeKind,
   type StaticModelCredentials
 } from '../runtimes/model-provider-config.js'
 import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, parseModelKeyTtlSeconds, type KeyGrant } from './client.js'
@@ -29,6 +29,7 @@ export interface ModelSessionHostPoolHost {
   log(): Logger
   agent(agentId: string, sessionKey?: string): LoadedAgent | undefined
   runtime(kind: string): RuntimeDef | undefined
+  defaultModel(runtime: string): string | undefined
   orgForAgent(agentId: string): string | undefined
   modelOverride(sessionKey: string): Promise<string | undefined>
   acpSessionId(sessionKey: string): Promise<string | null | undefined>
@@ -178,14 +179,15 @@ export class ModelSessionHostPool {
     return [...this.entries.keys()]
   }
 
-  staticCredential(runtime: ModelRuntimeKind): ModelCredential | undefined {
-    return this.staticModelCredentials?.[runtime]
+  staticCredential(target: ModelProviderTarget): ModelCredential | undefined {
+    return (
+      this.staticModelCredentials?.[modelCredentialRuntime(target)] ?? this.staticModelCredentials?.[target.runtime]
+    )
   }
 
-  /** The deployment's base for a target, and the only source of one: the contract defines no
-   *  `baseUrl`, and an issuer that sends one is stripped rather than read. */
+  /** Base URLs come only from deployment configuration; key-server grants carry no endpoint. */
   staticBaseUrl(target: ModelProviderTarget): { baseUrl?: string } {
-    const baseUrl = this.staticModelCredentials?.[target.runtime]?.baseUrl
+    const baseUrl = this.staticCredential(target)?.baseUrl
     return baseUrl ? { baseUrl } : {}
   }
 
@@ -231,9 +233,16 @@ export class ModelSessionHostPool {
     if (!keyServer) throw new Error('key-server is not configured')
     const runtime = this.host.runtime(agent.runtime)
     if (!runtime) throw new Error(`runtime "${agent.runtime}" is unavailable`)
-    const model = effectiveModel ?? (await this.host.modelOverride(sessionKey)) ?? agent.runtimeOverrides?.model
+    const model =
+      effectiveModel ??
+      (await this.host.modelOverride(sessionKey)) ??
+      agent.runtimeOverrides?.model ??
+      this.host.defaultModel(agent.runtime)
     const target = modelProviderTarget(agent, runtime, model)
     if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
+    if (target.runtime === 'opencode' && !model) {
+      throw new Error('OpenCode model list is not ready; select a model or retry after it loads')
+    }
     const now = this.opts.now()
     let entry = this.entries.get(sessionKey)
     if (entry?.stopping) {
@@ -329,18 +338,17 @@ export class ModelSessionHostPool {
     const runtime = agent ? this.host.runtime(agent.runtime) : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime) : undefined
     // A partial map binds only the providers it configures; the rest keep their runtime-owned auth.
-    return target && this.staticModelCredentials[target.runtime] ? target : undefined
+    return target && this.staticCredential(target) ? target : undefined
   }
 
-  /** Whether a model resolves to a different provider than the one the session's host was
-   *  started for. OpenCode model ids are provider-prefixed, so such a pick would land on a
-   *  provider whose options never received a key or base URL. */
+  /** Issued keys bind one provider; static OpenCode hosts carry every configured provider. */
   crossesHostProvider(sessionKey: string, agentId: string, model: string): boolean {
     const bound = this.boundTarget(sessionKey, agentId)
     if (!bound) return false
     const agent = this.host.agent(agentId, sessionKey)
     const runtime = agent ? this.host.runtime(agent.runtime) : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime, model) : undefined
+    if (!this.keyServer && target?.runtime === 'opencode' && this.staticCredential(target)?.key) return false
     return !target || JSON.stringify(target) !== JSON.stringify(bound)
   }
 

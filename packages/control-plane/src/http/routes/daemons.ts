@@ -558,9 +558,12 @@ export function daemonRoutes(deps: HttpDeps) {
           .code(409)
           .send({ error: 'Conflict', statusCode: 409, message: 'a restart or upgrade is already in progress' })
       }
+      // The boot this restart reaches; the op settles only once a different one registers.
+      const commandBootId = op === 'restart' ? await deps.registry.currentBootId(DaemonId(id)) : null
       const opRow = await deps.repos.daemonLifecycleOp.open({
         daemonId: DaemonId(id),
         op,
+        ...(commandBootId ? { commandBootId } : {}),
         ...(targetVersion ? { targetVersion } : {}),
         ...(req.principal?.userId ? { initiator: req.principal.userId } : {}),
         // Live delivery replaces this estimate with the sender's actual connection epoch.

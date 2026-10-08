@@ -58,6 +58,7 @@ import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 import { CredentialRevocationReporter } from './credential-revocation.js'
+import type { InteractionActor } from './contract.js'
 
 /** Deadline on the detached Linear team-list refresh — long enough for a slow answer, short
  *  enough that a stalled provider does not leave a request hanging for the next reconcile. */
@@ -99,6 +100,13 @@ export interface PlatformActionSink {
     shortcut: { channel: string; thread: string },
     srcIntegrationIds: readonly string[]
   ): Promise<string[]>
+  startNewAppendSessions(
+    platform: string,
+    channel: string,
+    srcIntegrationIds: readonly string[],
+    actor?: InteractionActor,
+    notBefore?: number
+  ): Promise<number>
   settleSlackSlot(conn: unknown, a: { channel: string; thread: string; exclude?: string }): void
 }
 
@@ -111,6 +119,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   boltDebug(): boolean
   /** The test seam that swaps Bolt's App for a fake; undefined in production. */
   slackAppFactory(): SlackAppFactory | undefined
+  webAppUrl(): string | undefined
+  orgSlug(): string | undefined
   /** The daemon's per-app Google Chat write budgets (§10.8), shared by every connection of one app. */
   googleChatWriteBudgets(): GoogleChatWriteBudgets
   agents(): Map<string, LoadedAgent>
@@ -298,9 +308,41 @@ export class ConnectionReconciler {
   private slackSocketDeps(conn: () => SlackConnection, group: ConsolidatedGroup): Omit<SlackDeps, 'group'> {
     return {
       newTraceId: () => randomUUID(),
+      appHomeContext: () => {
+        const ids = this.host.srcIntegrationIds(conn())
+        const agents = this.host
+          .transportAgents()
+          .filter((agent) => agent.integrations.some((integration) => ids.includes(integration.id)))
+        return {
+          webAppUrl: this.host.webAppUrl(),
+          orgSlug: this.host.orgSlug(),
+          agentId: agents.length === 1 ? agents[0]!.id : undefined
+        }
+      },
       onMessage: (msg) => {
         this.host.slackNameResolver()?.noteMessage(conn(), msg)
         this.host.onInbound(msg, this.host.srcIntegrationIds(conn()))
+      },
+      onAppHomeOpened: async (channel) => {
+        const ids = this.host.srcIntegrationIds(conn())
+        const bindings = this.host
+          .transportAgents()
+          .flatMap((agent) =>
+            agent.integrations
+              .filter((integration) => ids.includes(integration.id))
+              .map((integration) => ({ agent, integration }))
+          )
+        if (bindings.length === 1) await conn().welcomeBuiltin(channel, bindings[0]!.agent, bindings[0]!.integration)
+      },
+      onAssistantThreadStarted: async (channel, userId, startedAtMs) => {
+        const actor = userId ? { userId } : undefined
+        await this.host.startNewAppendSessions(
+          'slack',
+          channel,
+          this.host.srcIntegrationIds(conn()),
+          actor,
+          startedAtMs
+        )
       },
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
       onCredentialRevoked: (revocation) =>

@@ -480,7 +480,10 @@ An HTTP `202` means the command was accepted or may have been accepted; it does
 not mean the daemon has returned successfully.
 
 Completion requires a later authenticated connection epoch to reach `READY`.
-Restart accepts any reported daemon version. Upgrade additionally requires the
+Restart accepts any reported daemon version, but a daemon that reported a boot
+identity at registration must come back as a different boot, so the same
+process reconnecting, for example across a Control Plane restart, does not
+complete it. Upgrade additionally requires the
 daemon's reported version to equal the requested target. This prevents the
 original connection or an old-version relaunch from being recorded as a
 successful upgrade.

@@ -57,6 +57,7 @@ import type {
   BotDecisionRoutingRecord,
   BotDecisionRoutingRepo,
   DaemonRepo,
+  OrgRepo,
   ViewCtx
 } from '../persistence/ports.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
@@ -269,19 +270,20 @@ export class HttpBotOrchestrator {
     private readonly routing?: {
       routings: Pick<BotDecisionRoutingRepo, 'getUnscoped' | 'save'>
       daemons: Pick<DaemonRepo, 'getUnscoped'>
-    }
+    },
+    private readonly orgs?: Pick<OrgRepo, 'slugById'>
   ) {}
 
-  /**
-   * Converge one bot: BROADCAST `rc/bot-assign` to every connected relay (whole-pool
-   * ingress — any pod may receive an inbound Events API POST via the stable
-   * PUBLIC_RELAY_URL LB) + deliver the send-only spec to each member daemon. A
-   * non-http / empty bot is released. Safe to call for a socket bot (no-op after
-   * the release check).
-   */
+  // Broadcast installation ingress to the relay pool and send-only specs to placed members.
   async syncBot(botId: string): Promise<void> {
     const bot = await this.bots.getUnscoped(BotId(botId))
-    if (!bot) return
+    if (!bot) {
+      for (const provider of this.platforms.all()) {
+        const assign = await provider.unclaimedIngress?.get(botId)
+        if (assign) this.broadcast((ch) => ch.send('rc/bot-assign', assign))
+      }
+      return
+    }
     if (!this.relayHosted(bot)) {
       await this.unassign(bot)
       return
@@ -437,9 +439,21 @@ export class HttpBotOrchestrator {
     proof: { evidence?: BotRevocationEvidence; code?: string } = {}
   ): Promise<{ applied: boolean }> {
     const bot = await this.bots.getUnscoped(BotId(botId))
-    // Unknown bot: nothing to apply and nothing that will ever change that, so
-    // this is terminal for the reporting relay — not a reason to keep retrying.
-    if (!bot) return { applied: false }
+    // Unclaimed installations belong to their provider; an unknown id is terminal for the reporting relay.
+    if (!bot) {
+      for (const provider of this.platforms.all()) {
+        if (await provider.unclaimedIngress?.revoke(botId, fence)) {
+          this.broadcast((ch) =>
+            ch.send('rc/bot-unassign', {
+              botId,
+              ...(fence.revision !== undefined ? { credentialRevision: fence.revision } : {})
+            })
+          )
+          return { applied: true }
+        }
+      }
+      return { applied: false }
+    }
     // Snapshot members BEFORE the flip — listForBot is active-only.
     const installs = await this.integrations.listForBot(bot.id)
     // A reporter that names no evidence predates the field, and only lifecycle events existed then.
@@ -530,9 +544,14 @@ export class HttpBotOrchestrator {
     return { applied }
   }
 
-  /** Converge EVERY http+active bot — the failover / broad-change worklist. */
+  // Converge active HTTP bots and provider-owned installation UI without bindings.
   async reconcileAll(): Promise<void> {
-    const http = await this.bots.listHttpActive()
+    for (const provider of this.platforms.all()) {
+      for (const assign of (await provider.unclaimedIngress?.list()) ?? []) {
+        this.broadcast((ch) => ch.send('rc/bot-assign', assign))
+      }
+    }
+    const http = await this.bots.listHttpActive(this.unboundIngressPlatforms())
     for (const b of http) await this.syncBot(b.id)
   }
 
@@ -549,7 +568,10 @@ export class HttpBotOrchestrator {
    * next reconnect; not worth a per-binding version on the wire.
    */
   async replayTo(ch: RelayChannel): Promise<void> {
-    const bots = await this.bots.listHttpActive()
+    for (const provider of this.platforms.all()) {
+      for (const assign of (await provider.unclaimedIngress?.list()) ?? []) ch.send('rc/bot-assign', assign)
+    }
+    const bots = await this.bots.listHttpActive(this.unboundIngressPlatforms())
     for (const bot of bots) {
       if (!this.relayHosted(bot)) continue
       const compiled = await this.compile(bot)
@@ -1349,7 +1371,7 @@ export class HttpBotOrchestrator {
   /** Compile the attributed routing table after converging conversation ownership, then record its holds. */
   private async compile(bot: BotRecord): Promise<Compiled | null> {
     const integrations = await this.integrations.listForBot(bot.id)
-    if (integrations.length === 0) return null
+    if (integrations.length === 0 && !this.platforms.get(bot.platform)?.retainUnboundIngress) return null
     await this.ensureConversationOwners(bot.id, integrations)
     const compiled = await this.plan(bot, integrations)
     this.recordDecisionHolds(bot.id, compiled?.heldFor ?? new Set())
@@ -1452,7 +1474,7 @@ export class HttpBotOrchestrator {
   /** The attributed routing table from the current reads; no writes and no hold bookkeeping. */
   private async plan(bot: BotRecord, integrations: IntegrationRecord[]): Promise<Compiled | null> {
     const { agentById, placed } = await this.readPlacement(integrations)
-    if (placed.length === 0) return null
+    if (placed.length === 0 && !this.platforms.get(bot.platform)?.retainUnboundIngress) return null
     // linear-integration.md §6.2: a row's owner rides the relay's PER-CONVERSATION default
     // rung instead of a channel-scoped route — which would otherwise shadow keyword selection
     // and thread continuity on a platform whose every event marks the app as mentioned.
@@ -1489,6 +1511,8 @@ export class HttpBotOrchestrator {
     // A routed conversation is held unless its plan names a supported, live evaluation host.
     const routing = await this.planRouting(bot, integrations, chans, placed)
     const routedPlan = new Map((routing?.plan ?? []).map((entry) => [entry.channel, entry]))
+    // The agents the routing can select: saving it needed edit rights on each, so a gated one is enabled where it routes.
+    const routingTargets = routing?.record ? decisionRoutingAgentIds(routing.record.config).slice(0, 64) : []
     for (const c of chans) {
       if (!isRoutedChannel(c)) continue
       const entry = routedPlan.get(c.channelId)
@@ -1538,7 +1562,8 @@ export class HttpBotOrchestrator {
           routedConversations.push({
             channel: c.channelId,
             decisionId: entry.decisionId,
-            evaluationDaemonId: entry.evaluationDaemonId
+            evaluationDaemonId: entry.evaluationDaemonId,
+            ...(routingTargets.length > 0 ? { targetAgentIds: routingTargets } : {})
           })
           continue
         }
@@ -1664,9 +1689,9 @@ export class HttpBotOrchestrator {
     // last-hop admission backstop (§14.3), and EVERY install carries its Off channels
     // for the same backstop. The compile already read the bot's rows; they are keyed
     // per install, so filter by integrationId.
-    for (const { integration, agent, gated } of compiled.placed) {
+    for (const { integration, agent } of compiled.placed) {
       const channels = compiled.botChannels.filter((c) => c.integrationId === integration.id)
-      const spec = await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, gated)
+      const spec = await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, agent)
       // No deliverable spec ⇒ the provider's own credential for this bot is gone (a revoked or
       // swept grant). PULL the send-only bundle instead of leaving the daemon on the last good
       // one — the same teardown `revokeBot` performs for a credential the workspace revoked.
@@ -1721,8 +1746,17 @@ export class HttpBotOrchestrator {
 
   /** An installed HTTP bot its platform lets the relay host; any other is released. */
   private relayHosted(bot: BotRecord): boolean {
-    if (bot.transport !== 'http' || bot.agentIds.length === 0) return false
-    return this.platforms.get(bot.platform)?.relayAssignable?.(bot) !== false
+    if (bot.transport !== 'http' || bot.revokedAt) return false
+    const provider = this.platforms.get(bot.platform)
+    if (bot.agentIds.length === 0 && !provider?.retainUnboundIngress) return false
+    return provider?.relayAssignable?.(bot) !== false
+  }
+
+  private unboundIngressPlatforms(): string[] {
+    return this.platforms
+      .all()
+      .filter((provider) => provider.retainUnboundIngress)
+      .map((provider) => provider.platformId)
   }
 
   /**
@@ -1776,8 +1810,11 @@ export class HttpBotOrchestrator {
     const bags = await this.platforms.get(bot.platform)?.projectBotAssign?.(bot, secret)
     if (!bags) return null
     const { secrets, ingress } = bags
+    const orgSlug = await this.orgs?.slugById(bot.orgId)
     return {
       botId: bot.id,
+      ...(orgSlug ? { orgSlug } : {}),
+      installedAgentIds: bot.agentIds,
       platform: compiled.platform,
       // §6.1: a bot assignment is always a CHAT platform; carried so an older
       // relay can classify an id a newer CP introduces.

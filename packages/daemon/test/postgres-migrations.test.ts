@@ -26,6 +26,8 @@ describe('PostgreSQL data-plane migrations', () => {
       'INSERT INTO',
       'DROP TABLE',
       'INSERT INTO',
+      'CREATE TABLE',
+      'INSERT INTO',
       'COMMIT'
     ])
     expect(queries.at(-2)?.values).toEqual([DATA_PLANE_SCHEMA_VERSION])
@@ -44,6 +46,14 @@ describe('PostgreSQL data-plane migrations', () => {
     await migrateDataPlaneSchema(client)
     expect(queries.some(({ text }) => text.includes('CREATE TABLE transcript'))).toBe(false)
     expect(queries.some(({ text }) => /DROP TABLE IF EXISTS transcript\b/.test(text))).toBe(true)
+    expect(queries.at(-2)?.values).toEqual([DATA_PLANE_SCHEMA_VERSION])
+  })
+
+  it('creates the store identity once when upgrading a data plane that predates it', async () => {
+    const { client, queries } = clientWithVersions([1, 2])
+    await migrateDataPlaneSchema(client)
+    expect(queries.some(({ text }) => text.includes('DROP TABLE'))).toBe(false)
+    expect(queries.some(({ text }) => text.includes('CREATE TABLE store_identity'))).toBe(true)
     expect(queries.at(-2)?.values).toEqual([DATA_PLANE_SCHEMA_VERSION])
   })
 

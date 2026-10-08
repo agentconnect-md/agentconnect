@@ -14,7 +14,10 @@ export interface CodexPermissionProfileConfig {
 }
 
 export interface CodexPermissionProfileOptions {
+  /** Denied outright: credentials, and the files and links that hold them. */
   protectedRoots: readonly string[]
+  /** Runtime state the model's tools read back but must not change (a private `.codex`): `read` in every profile. */
+  readOnlyRoots?: readonly string[]
   /** Owner checkouts' `.git`, whose `worktrees/**` hold the session worktrees' admin dirs. */
   writableGitMetadataRoots?: readonly string[]
   /** A session's own clones' `.git` (git-workspace-model §11): exact entries, nothing hangs off them. */
@@ -65,8 +68,19 @@ export function codexPermissionProfileConfig(
   const sessionGitMetadataRoots = [...new Set((opts.sessionGitMetadataRoots ?? []).map((root) => normalize(root)))]
   const sessionHomeRoot = opts.sessionHomeRoot === undefined ? undefined : normalize(opts.sessionHomeRoot)
   const sharedWriteRoots = [...new Set((opts.sharedWriteRoots ?? []).map((root) => normalize(root)))]
+  // The session's own `.codex` is read-only by default, whatever the caller names: its HOME is writable, and the
+  // ACP parent's state below it must not be. Read-only and not denied, because Codex execs its linux-sandbox helper
+  // from `$CODEX_HOME/tmp/arg0` through its own bwrap, which masks a denied directory — in every profile, including
+  // the read-only one automatic approval review runs under.
+  const readOnlyRoots = [
+    ...new Set([
+      ...(opts.readOnlyRoots ?? []).map((root) => normalize(root)),
+      ...(sessionHomeRoot === undefined ? [] : [join(sessionHomeRoot, '.codex')])
+    ])
+  ]
   const policyRoots = [
     ...protectedRoots,
+    ...readOnlyRoots,
     ...writableGitMetadataRoots,
     ...sessionGitMetadataRoots,
     ...(sessionHomeRoot === undefined ? [] : [sessionHomeRoot]),
@@ -77,6 +91,15 @@ export function codexPermissionProfileConfig(
     throw new Error('Codex permission roots must be absolute paths')
   }
 
+  // A caller that cannot list the session's `.codex` (an executor's HOME, on another machine) denies it whole; Codex
+  // then finds its linux-sandbox helper only through a WRITABLE carve-out, since its bwrap masks a denied directory
+  // and reopens writable descendants alone. The read-only derivative approval review runs under keeps no write, so
+  // only the read-only state directory above serves that review.
+  const deniedCodexHome = sessionHomeRoot === undefined ? undefined : join(sessionHomeRoot, '.codex')
+  const helperCarveOut: Array<[string, string]> =
+    deniedCodexHome !== undefined && protectedRoots.includes(deniedCodexHome)
+      ? [[join(deniedCodexHome, 'tmp', 'arg0'), 'write']]
+      : []
   const readOnlyFilesystem =
     protectedRoots.length > 0
       ? [
@@ -98,16 +121,14 @@ export function codexPermissionProfileConfig(
       [join(root, 'hooks'), 'read'],
       [join(root, 'config'), 'read']
     ]),
-    // §11's per-session HOME holds the package caches and runtime state; `.codex` is carved back whole because its `auth.json` LINKS to the shared host credential and the rest is the ACP parent's state, written outside this sandbox.
-    ...(sessionHomeRoot === undefined
-      ? []
-      : ([
-          [sessionHomeRoot, 'write'],
-          [join(sessionHomeRoot, '.codex'), 'deny']
-        ] as Array<[string, string]>)),
+    // §11's per-session HOME holds the package caches and runtime state.
+    ...(sessionHomeRoot === undefined ? [] : ([[sessionHomeRoot, 'write']] as Array<[string, string]>)),
+    // Most specific wins: the private state is read-only below the writable HOME, and its credentials are denied below that.
+    ...readOnlyRoots.map((root): [string, string] => [root, 'read']),
     // A shared store sits outside the cwd, so `:workspace` alone would refuse the very install it exists for; the read-only mode keeps refusing it.
     ...sharedWriteRoots.map((root): [string, string] => [root, 'write']),
-    ...protectedRoots.map((root): [string, string] => [root, 'deny'])
+    ...protectedRoots.map((root): [string, string] => [root, 'deny']),
+    ...helperCarveOut
   ]
   const agentFilesystem =
     agentFilesystemEntries.length > 0
@@ -115,7 +136,7 @@ export function codexPermissionProfileConfig(
       : []
   // A writable `:root` beside a deny takes Codex's restricted Linux sandbox, whose root rebind remounts `/dev` nodev (openai/codex#16451), so with a deny full access keeps the workspace profile's writes.
   const fullAccessFilesystem =
-    protectedRoots.length > 0
+    protectedRoots.length > 0 || readOnlyRoots.length > 0
       ? [
           `permissions.${PROFILE_IDS['agent-full-access']}.extends=":workspace"`,
           ...(agentFilesystemEntries.length > 0

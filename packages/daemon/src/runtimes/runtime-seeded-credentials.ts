@@ -14,6 +14,7 @@ export interface SeededCredentialFile {
   format:
     | 'grok'
     | 'grok-config'
+    | 'kimi-config'
     | 'pi'
     | 'pi-models'
     | 'opencode'
@@ -41,11 +42,11 @@ function nonempty(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
 }
 
-export function grokConfigApiKeys(data: unknown, path: string[] = []): { path: string[]; value: string }[] {
+export function fileConfigApiKeys(data: unknown, path: string[] = []): { path: string[]; value: string }[] {
   return Object.entries(data && typeof data === 'object' ? data : {}).flatMap(([field, value]) => {
     const next = [...path, field]
     if (field === 'api_key' && nonempty(value)) return [{ path: next, value }]
-    return grokConfigApiKeys(value, next)
+    return fileConfigApiKeys(value, next)
   })
 }
 
@@ -180,8 +181,15 @@ function hermesCredentialProviders(data: unknown): string[] {
 }
 
 function credentialsInFile(text: string, file: SeededCredentialFile): { present: boolean; providers: string[] } {
+  if (file.format === 'kimi-config') {
+    const providers = Object.values(record(parseToml(text).providers) ?? {}).flatMap((raw) => {
+      const provider = record(raw)
+      return provider && nonempty(provider.api_key) && nonempty(provider.type) ? [provider.type] : []
+    })
+    return { present: providers.length > 0, providers }
+  }
   if (file.format === 'grok-config') {
-    const present = grokConfigApiKeys(parseToml(text)).some(
+    const present = fileConfigApiKeys(parseToml(text)).some(
       ({ path }) =>
         (path.length === 3 && path[0] === 'model') ||
         (path.length === 5 && path[0] === 'version_overrides' && path[2] === 'model')

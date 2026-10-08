@@ -5,6 +5,8 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AF_UNIX_PATH_MAX } from '../acp/sandbox-temp.js'
+import { renderGhWrapper, shQuote } from '../cp/gh-shim.js'
+import { renderGlabWrapper } from '../cp/glab-shim.js'
 import type { Logger } from '../log.js'
 import { sweepMarkedUntilClear } from '../shim/marked-sweep.js'
 import {
@@ -33,6 +35,7 @@ const INHERITED_ENV = ['PATH', 'LANG', 'LC_ALL', 'TZ'] as const
 const HELPER_KEYS: ReadonlyArray<Exclude<keyof ShimPaths, 'tunnels'>> = [
   'gitCredentialHelper',
   'ghTokenEntry',
+  'glabTokenEntry',
   'autoMergeEntry',
   'mcpBridgeEntry',
   'ghWrapperDir',
@@ -152,6 +155,22 @@ export function hostShimEnv(input: {
   return env
 }
 
+/** The gh and glab wrappers a shim's runtimes find first on PATH, written per launch: npm packs no executable bit, and a PATH lookup needs one. */
+export async function writeRuntimeWrappers(paths: ShimPaths): Promise<void> {
+  const dir = paths.runtimeWrapperDir
+  // Only a wrapper whose token entry this installation has: one naming a missing entry would fail every call on stderr.
+  const wrappers = [
+    { name: 'gh', entry: paths.ghTokenEntry, render: renderGhWrapper },
+    { name: 'glab', entry: paths.glabTokenEntry, render: renderGlabWrapper }
+  ].filter((wrapper) => existsSync(wrapper.entry))
+  if (wrappers.length === 0) return
+  await mkdir(dir, { mode: 0o755 })
+  for (const { name, entry, render } of wrappers) {
+    const tokenCommand = `${shQuote(process.execPath)} ${shQuote(entry)} "$AC_AGENT_ID" -- "$@"`
+    await writeFile(join(dir, name), render({ selfDir: dir, tokenCommand }), { mode: 0o755 })
+  }
+}
+
 /** Runtime roots whose shim this process started and has not seen go. */
 const liveRoots = new Set<string>()
 /** A fixed root's last removal, which the next start of that root waits out. */
@@ -227,6 +246,7 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
     await mkdir(runtimeRoot, { mode: 0o700 })
     // Written before the shim exists, so no crash leaves a marked process a restart cannot find.
     await writeFile(join(runtimeRoot, MARK_FILE), mark, { mode: 0o600 })
+    await writeRuntimeWrappers(shimPaths(runtimeRoot, helperRoot))
     for (const dir of ['workspace', 'repos', 'home'])
       await mkdir(join(workspaceRoot, dir), { recursive: true, mode: 0o700 })
   } catch (error) {

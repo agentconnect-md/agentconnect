@@ -152,6 +152,8 @@ features:
   googleChatDeploymentApp: false
   # The By decision checkout for additional repositories; off hides it for new choices, existing ones stay shown.
   repositoryDecision: false
+  # The assistant mode switch on the agent page; off hides it, and an agent already switched on keeps it shown.
+  assistantMode: false
 
 # The install-wide daemon pool, whose Pods are pool members. Every member serves agents
 # from every organization and derives the org from the CP agent registry. The fixed
@@ -261,8 +263,8 @@ daemonPool:
   # Install-wide model credentials, referenced BY NAME like every other secret here — the chart
   # never holds the value. Create the Secret with one entry per variable the daemon reads:
   # `<PREFIX>MODEL_TOKEN` and `<PREFIX>MODEL_BASE_URL`, where PREFIX is `ANTHROPIC_` (claude),
-  # `OPENAI_` (codex), `DEEPSEEK_`, or empty for the shared fallback of those recognized runtimes
-  # and OpenCode. Other ACP runtimes need `runtimeEnvironment` below. A token
+  # `OPENAI_` (codex), `DEEPSEEK_`, or empty for the shared fallback of those recognized runtimes.
+  # OpenCode reuses these three provider pairs; other ACP runtimes need `runtimeEnvironment` below. A token
   # with no base URL is a plain provider key on that provider's own endpoint; a base URL with no
   # token aims a runtime at an endpoint that issues its own credential. Every entry is optional,
   # so the Secret names only the providers this install pays for and may land in either order
@@ -461,6 +463,8 @@ controlPlane:
   # This protects public browser callbacks from a transient no-healthy-upstream
   # response during a single-replica rollout.
   minReadySeconds: 15
+  # true adds a minAvailable:1 PDB so a drain cannot evict the CP; move it with a completed rollout restart first (README "Node maintenance").
+  podDisruptionBudget: false
   port: 8080
   # Non-secret env for the Fastify app (agentconnect-md/agentconnect,
   # packages/control-plane/src/config/env.ts).
@@ -800,6 +804,43 @@ objectStore:
   # SigV4 region — "auto" for R2; a concrete region for real S3 / MinIO.
   region: auto
 
+# Source Cache (docs/designs/source-cache.md, chart README): rendered into daemon-pool members only; pods get presigned URLs alone.
+# Apply the bucket lifecycle rules yourself (chart README "Bucket lifecycle rules"); without them members stop writing bundles.
+sourceCache:
+  enabled: false
+  # S3 API origin; must be https:// (the shim admits only https bundle URLs). Empty => AWS regional S3.
+  endpoint: ''
+  region: ''
+  bucket: ''
+  # Optional key prefix inside the bucket; must not start with snapshots/.
+  prefix: ''
+  # Path-style addressing (MinIO and most self-hosted stores). Dotted buckets and IP endpoints use it anyway.
+  forcePathStyle: false
+  credentials:
+    # serviceAccount (STS web identity, e.g. IRSA) or secret (static keys mounted as files).
+    source: serviceAccount
+    serviceAccount:
+      # Set => a token for this role is projected onto members only; empty => webhook-injected AWS_ROLE_ARN/AWS_WEB_IDENTITY_TOKEN_FILE.
+      roleArn: ''
+      audience: sts.amazonaws.com
+      # Empty => https://sts.<region>.amazonaws.com.
+      stsEndpoint: ''
+    secret:
+      # Existing Secret in the release namespace, mounted read-only into members.
+      name: ''
+      accessKeyIdKey: AWS_ACCESS_KEY_ID
+      secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+      # Optional key holding a session token for temporary keys.
+      sessionTokenKey: ''
+  # Section 10 limits plus the presigned URL lifetimes.
+  limits:
+    maxBundleBytes: 2Gi
+    orgQuotaBytes: 20Gi
+    pendingReservation: 1h
+    unreadPointerDays: 30
+    getUrlLifetime: 5m
+    putUrlLifetime: 15m
+
 # Bootstrap/runtime roots are read from an existing Secret you create in the
 # namespace (the chart never holds their values). Provider credentials are not
 # injected from this Secret; Setup Server seals them in deployment_secret.
@@ -828,9 +869,10 @@ secrets:
   #     -p "{\"stringData\":{\"OPEN_CONNECTOR_ENCRYPTION_KEY\":\"$(openssl rand -hex 32)\"}}"
   openConnectorEncryptionKeyKey: OPEN_CONNECTOR_ENCRYPTION_KEY
 
-# Before boot, copy the version-matched schema/migrations from the control-plane
-# image into an emptyDir, then run them with this stable, generic Prisma CLI
-# image. The CLI image changes only when Prisma/Node is deliberately upgraded.
+# A pre-install/pre-upgrade hook Job copies the version-matched schema/migrations from the
+# control-plane image into an emptyDir, then runs them with this stable, generic Prisma CLI
+# image, before any new CP pod starts. The CLI image changes only when Prisma/Node is
+# deliberately upgraded.
 migrate:
   enabled: true
   image: prisma-cli

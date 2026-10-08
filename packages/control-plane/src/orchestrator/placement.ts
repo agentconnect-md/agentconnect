@@ -24,6 +24,7 @@
  * repository ports).
  */
 import type {
+  AppendConversationKind,
   RegisterReq,
   RegisterOk,
   RouteAssign,
@@ -37,7 +38,7 @@ import type {
   McpServerSpec,
   MemoryConnectionSpec
 } from '@agentconnect.md/protocol'
-import { SessionRetentionSetting } from '@agentconnect.md/protocol'
+import { SessionRetentionSetting, manifestFor } from '@agentconnect.md/protocol'
 import type {
   AgentRepo,
   AgentRecord,
@@ -179,9 +180,15 @@ function leaseToGrant(l: LeaseRecord): SecretsGrant {
  */
 const DEFAULT_BIND_RULES: IntegrationBindRule[] = [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
 
-/** Conversation gating (resource-visibility.md §14): derived from restricted
- *  visibility at spec-assembly time — no stored toggle, no identities on the wire. */
-export const isGatedAgent = (a: { visibility: AgentRecord['visibility'] }): boolean => a.visibility === 'restricted'
+/** What the spec projection reads off an integration's agent: its gating and its places' session modes. */
+export type SpecOwner = Pick<AgentRecord, 'visibility' | 'assistantMode'>
+
+/** Assistant mode is on (assistant-mode.md §5.1). */
+export const isAssistantModeAgent = (a: Pick<AgentRecord, 'assistantMode'>): boolean =>
+  a.assistantMode?.enabled === true
+
+/** Conversation gating (resource-visibility.md §14), derived from restricted visibility or assistant mode; never stored. */
+export const isGatedAgent = (a: SpecOwner): boolean => a.visibility === 'restricted' || isAssistantModeAgent(a)
 
 /** One member of a shared bot a daemon is currently SERVING — what the route compile routes to. */
 export interface PlacedMember<T> {
@@ -274,45 +281,41 @@ function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): 
   return channels.filter((c) => c.trigger === 'off').map((c) => c.channelId)
 }
 
-/**
- * Per-conversation session modes for the core envelope (channel-session-mode.md §4).
- *
- * Sparse — only conversations that depart from `createNew` are listed, so a large
- * conversation list costs the common spec nothing. Emitted UNCONDITIONALLY, unlike
- * `bindRules`: a relay-managed shared bot ships no bind rules, but session keying stays on
- * the daemon in every mode, so the daemon needs this in both.
- */
-function sessionModeEntries(channels: IntegrationChannelRecord[]): IntegrationSessionMode[] {
+/** Sparse per-conversation session modes (channel-session-mode.md §4), sent in both modes; `appendKinds` forces one session per place. */
+function sessionModeEntries(
+  channels: IntegrationChannelRecord[],
+  appendKinds: readonly AppendConversationKind[] = []
+): IntegrationSessionMode[] {
   return channels
-    .filter((c) => c.sessionMode !== 'createNew')
-    .map((c) => ({ channel: c.channelId, mode: c.sessionMode }))
+    .map((c) => ({ channel: c.channelId, mode: forcedAppend(c, appendKinds) ? ('append' as const) : c.sessionMode }))
+    .filter((entry) => entry.mode !== 'createNew')
 }
 
-/**
- * Assemble the wire {@link IntegrationSpec} the daemon opens its socket from —
- * metadata from the `integration` row + tokens from the {@link BotSecretStore}
- * (keyed by the integration's bot) + the per-channel trigger config folded into
- * `bindRules`. Shared by the reconcile roster (`register/ok.integrations`) and
- * the live `integration/upsert` REST emit. Token-bearing: NEVER log the result.
- *
- * Non-gated: bindRules = the defaults (@-mention anywhere + DMs) ∪ one
- * channel-scoped `auto` rule per channel the operator switched to "any message".
- * A 'mention' channel needs no extra rule — the unscoped mention default already
- * covers it. Gated (`gated`, derived from the owning agent's restricted
- * visibility): NO unscoped defaults — only {@link gatedBindRules}.
- *
- * `null` ⇒ the platform provider has no deliverable payload for this row (see
- * {@link projectSpec}); every caller withholds the integration instead of
- * pushing a spec the daemon would refuse and then ignore.
- */
+/** An assistant-mode place keys one session (assistant-mode.md §5.2) where its kind appends, unless a Decision gates it. */
+function forcedAppend(c: IntegrationChannelRecord, appendKinds: readonly AppendConversationKind[]): boolean {
+  return c.trigger !== 'decision' && appendKinds.includes(c.kind)
+}
+
+/** The conversation kinds an owner's rows are forced to append: its platform's, in assistant mode only. */
+function forcedAppendKinds(i: IntegrationRecord, owner: SpecOwner | undefined): readonly AppendConversationKind[] {
+  return owner && isAssistantModeAgent(owner) ? manifestFor(i.platform).appendKinds : []
+}
+
+/** Conversations the platform detected as external (assistant-mode.md §5.3); the daemon reads every other one as internal. */
+function externalChannelIds(channels: IntegrationChannelRecord[]): string[] {
+  return channels.filter((c) => c.externalReason).map((c) => c.channelId)
+}
+
+/** The direct-mode {@link IntegrationSpec} (gating and session modes read off `owner`); `null` ⇒ nothing deliverable. Token-bearing: NEVER log. */
 export async function integrationToSpec(
   platforms: CpPlatformRegistry,
   i: IntegrationRecord,
   bot: BotRecord,
   secret: BotSecretMaterial,
   channels: IntegrationChannelRecord[] = [],
-  gated = false
+  owner?: SpecOwner
 ): Promise<IntegrationSpec | null> {
+  const gated = owner ? isGatedAgent(owner) : false
   // A 1:1 DM's On state is already covered by the unscoped dm default. A group DM
   // set to Any needs its own auto rule; Mention is covered by the default mention rule.
   const channelRules: IntegrationBindRule[] = [
@@ -338,35 +341,23 @@ export async function integrationToSpec(
     bindRules,
     mutedChannels,
     gated,
-    sessionModes: sessionModeEntries(channels),
+    sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
+    externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels)
   }
   return projectSpec(platforms, i, bot, core, secret)
 }
 
-/**
- * Assemble the send-only {@link IntegrationSpec} for a member agent of an HTTP bot
- * (shared-bot-relay.md §7.3). The wire keeps `mode: 'shared'` for compatibility.
- * The daemon keeps provider API credentials for send/download operations, but
- * opens no inbound socket. The relay arbitrates callback ingress and delivers
- * it pre-addressed. Token-bearing — NEVER log.
- *
- * GATED exception (resource-visibility.md §14.3): a restricted agent's install
- * ships its conversation-scoped rules + `gated: true` even in relay-managed mode — the
- * relay is still the arbiter, but the daemon uses these for its last-hop
- * admission backstop in `handleRelayIm` (it must not trust a stale relay route
- * snapshot to keep a private agent fail-closed). `mutedChannels` rides along for the
- * same reason and for every install, gated or not: an Off channel must survive a
- * relay snapshot that has not caught up yet.
- */
+/** A shared bot member's send-only {@link IntegrationSpec}: a gated one's scoped rules and every one's Off channels back the relay at the daemon's last hop (§14.3). Token-bearing: NEVER log. */
 export async function httpIntegrationToSpec(
   platforms: CpPlatformRegistry,
   i: IntegrationRecord,
   bot: BotRecord,
   secret: BotSecretMaterial,
   channels: IntegrationChannelRecord[] = [],
-  gated = false
+  owner?: SpecOwner
 ): Promise<IntegrationSpec | null> {
+  const gated = owner ? isGatedAgent(owner) : false
   // §6.4 final shape (see integrationToSpec): envelope + opaque config only.
   // The shared-mode payload's remaining inputs — `shareable` (the daemon's
   // in-thread "Switch agent" control), the provider app id, the bot's own user
@@ -380,7 +371,8 @@ export async function httpIntegrationToSpec(
     bindRules: gated ? gatedBindRules(channels) : [],
     mutedChannels: [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))],
     gated,
-    sessionModes: sessionModeEntries(channels),
+    sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
+    externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels)
   }
   return projectSpec(platforms, i, bot, httpCore, secret)
@@ -527,10 +519,8 @@ export class Placement implements ReconcileService {
       )
     }
     const deliverableAgents = ownedAgents.filter((a) => !quarantinedAgentIds.has(a.id))
-    // Conversation gating (§14): derived per-agent from restricted visibility. This
-    // is a data-plane read of the DERIVED boolean only — identities never ride the
-    // wire, and the roster itself stays unfiltered (§9 graceful degradation).
-    const gatedAgentIds = new Set(ownedAgents.filter((a) => a.visibility === 'restricted').map((a) => a.id))
+    // Gating (§14) and session modes are derived from each owner at projection; identities never ride the wire.
+    const ownerById = new Map(ownedAgents.map((a) => [a.id, a]))
     const [assembledAgents, assembledIntegrations] = await Promise.all([
       this.specs.assembleAll(deliverableAgents, (agent) => {
         quarantinedAgentIds.add(agent.id)
@@ -556,10 +546,10 @@ export class Placement implements ReconcileService {
           // An http-transport bot's ingest is on the relay pool — the daemon
           // reconciles it send-only (no Socket Mode). Socket bots reconcile as direct.
           // Both arms await the SAME provider projector; only the envelope differs.
-          const gated = gatedAgentIds.has(i.agentId)
+          const owner = ownerById.get(i.agentId)
           return bot.transport === 'http'
-            ? await httpIntegrationToSpec(this.platforms, i, bot, secret, channels, gated)
-            : await integrationToSpec(this.platforms, i, bot, secret, channels, gated)
+            ? await httpIntegrationToSpec(this.platforms, i, bot, secret, channels, owner)
+            : await integrationToSpec(this.platforms, i, bot, secret, channels, owner)
         })
       )
     ])

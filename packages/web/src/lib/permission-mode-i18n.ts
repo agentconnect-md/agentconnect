@@ -1,12 +1,22 @@
 export type PermissionModeLabelKey =
-  'askForApproval' | 'approveForMe' | 'fullAccess' | 'manual' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions'
+  | 'readOnly'
+  | 'workspaceAccess'
+  | 'autoReview'
+  | 'fullAccess'
+  | 'manual'
+  | 'acceptEdits'
+  | 'plan'
+  | 'auto'
+  | 'bypassPermissions'
 
 export function permissionModeLabelKey(mode: string): PermissionModeLabelKey | null {
   switch (mode) {
     case 'read-only':
-      return 'askForApproval'
+      return 'readOnly'
+    case 'workspace-write':
+      return 'workspaceAccess'
     case 'agent':
-      return 'approveForMe'
+      return 'autoReview'
     case 'agent-full-access':
       return 'fullAccess'
     case 'default':

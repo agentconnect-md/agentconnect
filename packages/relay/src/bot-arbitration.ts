@@ -35,6 +35,8 @@ import { isThreadRootMessage } from '@agentconnect.md/message'
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
 export interface BotAssignment {
   botId: string
+  orgSlug?: string
+  installedAgentIds?: string[]
   // S1a open reader (protocol route.ts Platform policy): the wire field is an
   // open string; the assign handler refuses an unsupported platform gracefully.
   platform: string
@@ -718,9 +720,12 @@ export class BotArbitrationRouter {
     if (!daemonId) return null
     // A conversation-GATED agent (§14) is reachable only while it still holds a
     // channel-scoped route here — a binding made before the gate was applied must not keep
-    // routing a private agent into a now-Off conversation.
+    // routing a private agent into a now-Off conversation — or is a target of this routed
+    // conversation's routing, which only an editor of that agent could have saved.
     if (a.gatedAgentIds?.includes(agentId)) {
-      const scoped = a.routes.some((r) => r.agentId === agentId && r.scope?.channel === channelId)
+      const scoped =
+        a.routes.some((r) => r.agentId === agentId && r.scope?.channel === channelId) ||
+        !!a.routedConversations?.find((c) => c.channel === channelId)?.targetAgentIds?.includes(agentId)
       if (!scoped) return null
     }
     const integrationId = route?.integrationId ?? a.agents.find((x) => x.agentId === agentId)?.integrationId
@@ -918,6 +923,8 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
   const routes = usableRoutes(a.routes)
   return {
     botId: a.botId,
+    ...(a.orgSlug ? { orgSlug: a.orgSlug } : {}),
+    ...(a.installedAgentIds ? { installedAgentIds: a.installedAgentIds } : {}),
     platform: a.platform,
     secrets,
     ...(apiAppId ? { apiAppId } : {}),

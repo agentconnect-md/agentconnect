@@ -164,16 +164,47 @@ The current Helm deployment already has surge-first rolling updates, readiness,
 session-metadata outbox. It still has process-local daemon/relay registries,
 control broadcasts, SSE fan-out, and some mutation gates. Those mechanisms do
 not yet satisfy this section; increasing `replicas` alone is insufficient.
-Relay reconnect replay is also incomplete: MCP and hook replay is additive,
-while memory bindings are cleared before asynchronous replay. Neither is the
-atomic replacement snapshot required below. Relay readiness follows its CP
-link. Daemon turn-path requests wait up to 10 seconds for a replacement link,
+A relay reconnect replays MCP bindings, hook rules and memory bindings as
+snapshots: the relay keeps serving its tables during the replay and, at the
+end, drops what the replay no longer names unless the CP withheld it after
+failing to produce it. The CP holds live changes to a projection for a relay
+until that relay's replay of it ends, so a stale replayed assign cannot revive
+an entry removed during the replay. That ordering holds only within one CP:
+MCP bindings and hook rules still lack the per-resource revisions that
+multiple CPs need. Relay readiness follows its CP link. Daemon turn-path requests wait up to 10 seconds for a replacement link,
 only within 30 seconds of a READY link dropping; idempotent reads are re-sent
-once over the new link, and `memory/store` still lacks operation IDs. Relay
+once over the new link, and so are memory transactions and `memory/store`
+writes, which a CP advertising `agent-memory-store-operation-id-v1` applies at
+most once per operation ID. Relay
 credential checks and thread lookups also wait up to 10 seconds, and each is
 re-sent once over a replaced link. After a `1012` close of a READY link,
 daemons and relays redial every 250-500 ms with a 1-second handshake cap for
-10 seconds before ordinary backoff resumes.
+10 seconds before ordinary backoff resumes. The CP readiness probe runs every
+2 seconds from 1 second after start, so a replacement is listed within about
+2 seconds of listening; this matters most when a pod is evicted and no surge
+replacement is already ready. Migrations run in a pre-install/pre-upgrade hook
+Job, so a replacement pod starts without them. An evicted pod stops serving the
+API at once, so a single-replica eviction leaves the API down until the
+replacement is ready. The optional `controlPlane.podDisruptionBudget` stops a
+drain from evicting the pod; a rollout restart completed before the drain moves
+it without that gap. A drain left waiting through the restart does not: the
+budget counts the replacement once it is Ready, so the drain can evict the old
+pod inside the `minReadySeconds` window kept for Gateway discovery.
+
+A daemon handshake (`auth` through `register/ok`) costs about 50 database round
+trips. In a load test, a CP on pg's own pool of 10 connections completed about
+75 handshakes a second against a database on another host, at every load step.
+A storm of 2,000 simultaneous redials left half of them failing after 21
+seconds, and the CP's background work failed with them for want of a
+connection. The pool is now `DATABASE_POOL_MAX` (default 20), and a CP runs at
+most `DAEMON_HANDSHAKE_CONCURRENCY` `auth` or `register` steps at once (default
+three quarters of the pool). A step holds its slot only while the CP works on
+it, until `READY` for `register`, so an idle socket or a daemon installing a
+bootstrap upgrade holds none. A further `auth` is refused with a retryable
+`RATE_LIMITED` and close `4429`, so a storm backs off at the socket edge instead
+of queuing on the pool. A `register` waits for a slot instead, so a daemon past
+`auth` never repeats it. That rate still bounds how many peers the reconnect
+budget below can cover.
 
 ### Connection ownership and forwarding
 
@@ -258,8 +289,9 @@ requests such as `executor/prepare` across owner changes.
 
 Connection epochs identify transports, not daemon boots. Placement, duty terms,
 launch IDs, and resource revisions retain their own fences. In particular,
-restart completion must use a reported daemon boot identity, not a higher
-`sessionEpoch`; the current lifecycle settlement needs that correction.
+restart completion uses the boot identity a daemon reports at registration,
+not a higher `sessionEpoch`; only a daemon too old to report one falls back to
+the epoch.
 
 ### Owner failure and database loss
 
@@ -322,8 +354,9 @@ socket timers. Include a frozen process or packet loss without FIN in the drill.
 Endpoint withdrawal runs concurrently with detection; planned retirement waits
 for it before release. Budget at most 5 seconds from a failed renewal/readiness
 probe through load-balancer propagation, inside the 10-second detection/release
-window. Step 3 must configure and measure that path; today's 10-second probe
-with the default failure threshold cannot meet it. On a fault, the release
+window. Step 3 must configure and measure that path; today's CP probe keeps a
+failing replica listed for about 20 seconds (ten misses at a 2-second period)
+and cannot meet it. On a fault, the release
 deadline wins if withdrawal is late. A redial into a still-listed CP gets a
 retryable refusal or a timeout: both use capped jitter without increasing
 backoff inside the handoff deadline. Only those handoff redials use an initial
@@ -555,11 +588,11 @@ not retried and that peer/version cannot pass the continuity gate. Queues and
 deadlines are bounded; overload has a typed outcome, never a false acceptance.
 
 The acknowledged `event/session-sync` outbox remains the session-metadata
-mechanism. `cron/report` completion and `usage/report` are currently best-effort:
-reconnect restates cron fire stamps, not completion, and usage has no guaranteed
-reconnect replay. Step 3 must preserve terminal cron outcomes across handoff
-through acknowledged, deduplicated reporting; usage gaps remain observable
-telemetry gaps rather than a claim that all reports are durable.
+mechanism. Terminal cron outcomes use the same pattern: the daemon keeps each
+run's completion in a local outbox and sends it as `cron/report-sync`, releasing
+it on the ACK, and the CP's `(cronId, firedAt)` upsert deduplicates a re-send.
+`usage/report` stays best-effort with no guaranteed reconnect replay; usage gaps
+remain observable telemetry gaps rather than a claim that all reports are durable.
 Reconnection must converge unchanged configuration without restarting agents or
 platform connections. All member-set duties retain self-fence on a prolonged
 outage; standalone daemons retain their local-autonomy behavior.
@@ -652,9 +685,10 @@ incrementing the shared counter does not reconcile two different renderers.
 ### Daemon status during handoff
 
 Control connection status is distinct from daemon execution health. The current
-API already has a bounded `connecting` grace, but the Console mapper collapses
-it into `offline`. The HA implementation must preserve that distinction through
-the API and UI, using the shared liveness view:
+API already has a bounded `connecting` grace, which the Console shows as
+Reconnecting on daemon rows while their agents still read offline. The HA
+implementation must preserve that distinction through the API and UI, using the
+shared liveness view:
 
 | Observation                                                                   | Console behavior                                                                                                        |
 | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |

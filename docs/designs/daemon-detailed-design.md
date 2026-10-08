@@ -1145,7 +1145,10 @@ former `sendPlatformMessage` and `messageAgent`); collaboration `listAgents` (de
 alias `listChannelAgents`) and `viewSessionStatus`; channel/user information
 `getCurrentChannel`, `listChannels`, `listKnownUsers`, `listChannelMembers`,
 `getUserProfile`; attachment readers `readSlackFile`, `readTelegramFile`;
-memory `readMemory`, `writeMemory`, `searchMemory`; and others.
+memory `readMemory`, `writeMemory`, `searchMemory`; and others. An agent in assistant mode also
+gets its item ledger tools `takeItem`, `listItems`, `updateItem` and `followItem`
+(`src/mcp/ops/assistant-items.ts`, [assistant-mode.md](assistant-mode.md) §5.4); each call
+re-checks the mode, and the asker is the sender of the message that started the live turn.
 
 A second group is gated by a **declared port** rather than by a platform name
 (`platforms/read-ports.ts`, §7.1 of
@@ -1251,12 +1254,10 @@ column's TYPE, and Slack publishes no schema endpoint for a list. So the columns
 from the rows a read returns and handed back with them — the read is not a convenience before
 the write, it is the only source of the ids and types the write needs.
 
-Three scopes in that same change had NO caller and said so: `channels:join`, `team:read`, and
-`users:read.email`. That is a deliberate exception to the scope-arrives-with-its-feature rule,
-taken because one list means every scope addition costs a reinstall of every installation —
-batching the ones already in view is one reinstall instead of three. The exception is worth
-making once, with the reason recorded, and is not a precedent for declaring scopes speculatively.
-`channels:join` has since found its caller (channel reach, below); the two directory reads still wait.
+The manifest requests only scopes with implemented callers. `channels:join` backs channel
+reach, below. The unused `team:read` and `users:read.email` scopes are no longer requested;
+existing installations that already granted them still pass the scope check. A future
+directory feature must add its scope alongside its implementation.
 
 **Channel reach.** Slack requires bot membership for `conversations.history` / `.replies` and
 `chat.postMessage` even in a public channel, and a bot is a member only of the channels a human
@@ -1282,6 +1283,22 @@ DM form names a user, not a channel, and is not gated. Slack's `listChannels` en
 public channel of the workspace (`conversations.list`) plus the private channels the bot is in, so
 an agent can find the id of a channel it was never added to; the console's membership snapshot
 stays `listBotChannels`. Platforms that declare nothing keep their previous reach.
+
+For an agent in assistant mode one more gate sits in front of every bridge tool
+(`mcp/ops/place-gate.ts`, [assistant-mode.md](assistant-mode.md) §5.5), on every platform. The
+channel-addressed reads (`getChannelHistory`, `getThreadHistory`, `getReactions`,
+`listBookmarks`) pass the place rule that `recall` uses: a DM, and a channel or group DM whose
+platform `isPrivate` is true, is read only from itself. Privacy comes from the integration's
+conversation snapshot (the membership listing and observed chats) and otherwise from
+`getChannelInfo`; a place whose privacy cannot be read is refused. A DM refusal tells the model to
+answer "ask me in a DM"; every other refusal is the same opaque "I can't share that here" and never
+says that a private place exists or where content lives. The platform writes stay in the current
+conversation: `sendMessage` to a channel or a user, `scheduleMessage`,
+reactions, message deletion and bookmarks name only the session's own conversation and bot,
+`createCanvas` only into it, and `createConversation`, `updateCanvas` and the list writes are
+refused because their conversation is new or cannot be confirmed. The agent-to-agent forms of
+`sendMessage` and the parent-session reply are not platform writes and pass. The gate is an
+intersection: it never widens the reach above.
 
 The join is an **operator switch**, per bot: `Bot.platformConfig.joinPublicChannels` (the
 generic bag, so no migration), flipped by `PATCH /bots/:id` and rendered by the Slack module's

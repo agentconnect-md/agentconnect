@@ -22,6 +22,7 @@ import {
 } from '../runtimes/read-roots.js'
 import { sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import { runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
+import { CLAUDE_STATE_SECRETS, CODEX_STATE_SECRETS, privateRuntimeState } from '../runtimes/private-runtime-state.js'
 import { SANDBOX_TUNNEL_PATHS } from '../shim/sandbox-paths.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
 import { OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT } from './overlay.js'
@@ -221,7 +222,22 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
         ? [join(runtimeHome, '.claude'), join(runtimeHome, '.claude.json')]
         : [])
   ]
-  const privateState = privateStateTargets.filter(existsSync).map((path) => realpathSync(path))
+  // The state directory is read-only to the model's tools and only its secrets are denied (privateRuntimeState);
+  // the whole directory still guards the overlap check above.
+  const runtimeState =
+    credentialProfile === 'codex'
+      ? privateRuntimeState(join(runtimeHome, '.codex'), CODEX_STATE_SECRETS)
+      : claudeRuntime
+        ? privateRuntimeState(join(runtimeHome, '.claude'), CLAUDE_STATE_SECRETS)
+        : { readOnly: [], secret: [] }
+  const stateDirs = new Set([join(runtimeHome, '.codex'), join(runtimeHome, '.claude')])
+  const privateState = [
+    ...privateStateTargets
+      .filter((path) => !stateDirs.has(path))
+      .filter(existsSync)
+      .map((path) => realpathSync(path)),
+    ...runtimeState.secret
+  ]
   const credentialSources = [...(credentials?.writablePaths ?? []), ...privateState].map((path) =>
     existsSync(path) ? realpathSync(path) : path
   )
@@ -246,9 +262,12 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
       )
     )
   ])
+  const readOnlyStateRoots = runtimeState.readOnly
   const sharedWriteRoots = configured
     .filter(
-      ({ mode, target }) => mode !== 'readonly' && !protectedCredentialRoots.some((root) => contains(root, target))
+      ({ mode, target }) =>
+        mode !== 'readonly' &&
+        ![...protectedCredentialRoots, ...readOnlyStateRoots].some((root) => contains(root, target))
     )
     .map(({ target }) => target)
   const gitMetadataWriteRoots = runtimeGitMetadataRoots(scopeDir, opts.trustedPrimaryCheckout, sessionDir).filter(
@@ -257,6 +276,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   if (credentialProfile === 'codex') {
     applyCodexPermissionProfile(env, {
       protectedRoots: protectedCredentialRoots,
+      readOnlyRoots: readOnlyStateRoots,
       ...(sessionDir
         ? { sessionGitMetadataRoots: gitMetadataWriteRoots }
         : { writableGitMetadataRoots: gitMetadataWriteRoots }),
@@ -273,6 +293,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
     runtimeHome,
     toolSandbox: {
       protectedCredentialRoots,
+      ...(readOnlyStateRoots.length > 0 ? { readOnlyStateRoots } : {}),
       ...(opts.allowModelToolUnixSockets ? { allowModelToolUnixSockets: true } : {}),
       ...(claudeSettings ? { claudeProtectedSettings: claudeSettings } : {}),
       ...(sharedWriteRoots.length > 0 ? { sharedWriteRoots } : {})

@@ -25,6 +25,18 @@ export interface ModelProviderTarget {
   opencodeProvider?: string
 }
 
+const OPENCODE_PROVIDERS: Record<string, { runtime: ModelRuntimeKind; keyEnv: string }> = {
+  anthropic: { runtime: 'claude', keyEnv: 'ANTHROPIC_API_KEY' },
+  openai: { runtime: 'codex', keyEnv: 'OPENAI_API_KEY' },
+  deepseek: { runtime: 'deepseek', keyEnv: 'DEEPSEEK_API_KEY' }
+}
+
+export function modelCredentialRuntime(target: ModelProviderTarget): ModelRuntimeKind {
+  return target.runtime === 'opencode'
+    ? (OPENCODE_PROVIDERS[target.opencodeProvider ?? 'openai']?.runtime ?? 'opencode')
+    : target.runtime
+}
+
 function isOpenCodeRuntime(runtimeId: string, runtime: RuntimeDef): boolean {
   if (runtimeId === 'opencode') return true
   return [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])opencode(?:@[^\/]*)?$/.test(part.toLowerCase()))
@@ -57,10 +69,45 @@ export function modelProviderTarget(
   const configuredProvider = effectiveModel?.includes('/') ? effectiveModel.split('/', 1)[0]?.trim() : undefined
   const opencodeProvider = configuredProvider || 'openai'
   return {
-    provider: opencodeProvider === 'anthropic' ? 'anthropic' : 'openai',
+    provider: opencodeProvider === 'anthropic' || opencodeProvider === 'deepseek' ? opencodeProvider : 'openai',
     runtime: 'opencode',
     opencodeProvider
   }
+}
+
+function applyOpenCodeCredential(
+  target: ModelProviderTarget,
+  env: Record<string, string>,
+  credential: ModelCredential
+): void {
+  const providerId = target.opencodeProvider ?? 'openai'
+  const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
+  const providers = record(config.provider, 'OPENCODE_CONFIG_CONTENT.provider')
+  const provider = record(providers[providerId], `OPENCODE_CONFIG_CONTENT.provider.${providerId}`)
+  const options = record(provider.options, `OPENCODE_CONFIG_CONTENT.provider.${providerId}.options`)
+  const keyEnv = OPENCODE_PROVIDERS[providerId]?.keyEnv ?? 'MODEL_TOKEN'
+  if (credential.key) env[keyEnv] = credential.key
+  let baseURL = credential.baseUrl
+  // Claude Code appends /v1/messages; OpenCode's Anthropic SDK appends only /messages.
+  if (baseURL && providerId === 'anthropic') {
+    const url = new URL(baseURL)
+    url.pathname = `${url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '')}/v1`
+    baseURL = url.toString()
+  }
+  env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+    ...config,
+    provider: {
+      ...providers,
+      [providerId]: {
+        ...provider,
+        options: {
+          ...options,
+          ...(credential.key ? { apiKey: `{env:${keyEnv}}` } : {}),
+          ...(baseURL ? { baseURL } : {})
+        }
+      }
+    }
+  })
 }
 
 // Translate the daemon-neutral model pair into the runtime's supported configuration surface.
@@ -101,26 +148,7 @@ export function applyModelCredential(
     return
   }
 
-  const providerId = target.opencodeProvider ?? 'openai'
-  const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
-  const providers = record(config.provider, 'OPENCODE_CONFIG_CONTENT.provider')
-  const provider = record(providers[providerId], `OPENCODE_CONFIG_CONTENT.provider.${providerId}`)
-  const options = record(provider.options, `OPENCODE_CONFIG_CONTENT.provider.${providerId}.options`)
-  env.MODEL_TOKEN = credential.key
-  env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
-    ...config,
-    provider: {
-      ...providers,
-      [providerId]: {
-        ...provider,
-        options: {
-          ...options,
-          apiKey: '{env:MODEL_TOKEN}',
-          ...(credential.baseUrl ? { baseURL: credential.baseUrl } : {})
-        }
-      }
-    }
-  })
+  applyOpenCodeCredential(target, env, credential)
 }
 
 // The deployment's codex session-config floor, applied by the DAEMON at spawn — not only by the
@@ -183,9 +211,7 @@ export function configuredCodexSessionFloor(env: NodeJS.ProcessEnv): string | un
 
 export type StaticModelCredentials = Partial<Record<ModelRuntimeKind, ModelCredential>>
 
-// One gateway, one variable per runtime: each runtime speaks its vendor's dialect at its own
-// path, so the deployment composes the exact base each one needs and the daemon never guesses.
-// OpenCode has no variable of its own — it selects a provider per model and takes the shared pair.
+// OpenCode reuses each provider's runtime pair, including its shared fallback.
 const RUNTIME_ENV_PREFIX: Partial<Record<ModelRuntimeKind, string>> = {
   claude: 'ANTHROPIC_',
   codex: 'OPENAI_',
@@ -223,6 +249,10 @@ export function applyStaticModelConfig(
   env: Record<string, string>,
   configured: ModelCredential
 ): void {
+  if (target.runtime === 'opencode') {
+    applyOpenCodeCredential(target, env, configured)
+    return
+  }
   if (configured.key) {
     applyModelCredential(target, env, configured)
     return
@@ -231,18 +261,31 @@ export function applyStaticModelConfig(
   if (target.runtime === 'claude') env.ANTHROPIC_BASE_URL = configured.baseUrl
   else if (target.runtime === 'deepseek') env.DEEPSEEK_BASE_URL = configured.baseUrl
   else if (target.runtime === 'codex') applyCodexBaseUrl(env, configured.baseUrl)
-  else {
-    const providerId = target.opencodeProvider ?? 'openai'
-    const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
-    const providers = record(config.provider, 'OPENCODE_CONFIG_CONTENT.provider')
-    const provider = record(providers[providerId], `OPENCODE_CONFIG_CONTENT.provider.${providerId}`)
-    const options = record(provider.options, `OPENCODE_CONFIG_CONTENT.provider.${providerId}.options`)
-    env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
-      ...config,
-      provider: {
-        ...providers,
-        [providerId]: { ...provider, options: { ...options, baseURL: configured.baseUrl } }
-      }
-    })
+}
+
+// Probe and launch the same provider set; each provider keeps its own credential and endpoint.
+export function applyConfiguredModelProviders(
+  target: ModelProviderTarget,
+  env: Record<string, string>,
+  credentialFor: (target: ModelProviderTarget) => ModelCredential | undefined
+): void {
+  const targets: ModelProviderTarget[] =
+    target.runtime === 'opencode'
+      ? [...new Set([...Object.keys(OPENCODE_PROVIDERS), target.opencodeProvider ?? 'openai'])].map((provider) => ({
+          runtime: 'opencode',
+          opencodeProvider: provider,
+          provider: provider === 'anthropic' || provider === 'deepseek' ? provider : 'openai'
+        }))
+      : [target]
+  let configured = false
+  for (const providerTarget of targets) {
+    const credential = credentialFor(providerTarget)
+    if (!credential) continue
+    applyStaticModelConfig(providerTarget, env, credential)
+    configured = true
   }
+  if (target.runtime !== 'opencode' || !configured) return
+  const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
+  config.enabled_providers ??= Object.keys(record(config.provider, 'OPENCODE_CONFIG_CONTENT.provider'))
+  env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config)
 }

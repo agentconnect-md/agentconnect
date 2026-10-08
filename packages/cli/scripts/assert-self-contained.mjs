@@ -27,7 +27,7 @@ if (leaked.length > 0) {
     '✗ cli bundle is not self-contained — these workspace imports were left external:\n' +
       unique.map((s) => `    ${s}`).join('\n') +
       '\n  tsdown must inline them. Ensure workspace deps are built before tsdown runs\n' +
-      "  (the build's `pnpm --filter '{.}^...' build` step needs `dependencies` intact).\n"
+      '  (the build dependency selector needs `dependencies` intact).\n'
   )
   process.exit(1)
 }

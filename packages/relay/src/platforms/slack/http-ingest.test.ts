@@ -498,7 +498,7 @@ describe('SlackHttpIngest.handleInteraction', () => {
   })
 })
 
-describe('SlackHttpIngest channel membership events', () => {
+describe('SlackHttpIngest events', () => {
   const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
   const deps = (web: object, over: Partial<SlackHttpIngestDeps> = {}): SlackHttpIngestDeps => ({
     onMessage: vi.fn(async () => {}),
@@ -514,6 +514,120 @@ describe('SlackHttpIngest channel membership events', () => {
     webClientFactory: () => web as never,
     log: silentLog,
     ...over
+  })
+
+  it('publishes Home for each visitor without an agent route or a chat message', async () => {
+    const publish = vi.fn(async (_body: unknown) => ({}))
+    const web = { auth: { test: async () => ({ user_id: 'U-BOT' }) }, views: { publish } }
+    let webAppUrl: string | undefined = 'https://console.example.test'
+    const d = deps(web, { appHomeContext: () => ({ webAppUrl }), onAppHomeOpened: vi.fn() })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR' })
+    expect(publish).toHaveBeenCalledWith({ user_id: 'U-VISITOR', view: expect.objectContaining({ type: 'home' }) })
+    expect(JSON.stringify(publish.mock.calls[0])).toContain('https://console.example.test')
+    expect(d.onMessage).not.toHaveBeenCalled()
+    expect(d.onAppHomeOpened).not.toHaveBeenCalled()
+    webAppUrl = undefined
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-OTHER' })
+    expect(publish).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(publish.mock.calls[1])).not.toContain('https://console.example.test')
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home' })
+    expect(publish).toHaveBeenCalledTimes(2)
+    await ingest.stop()
+  })
+
+  it('publishes the current DM agent configuration link, or the organization agent list without a target', async () => {
+    const publish = vi.fn(async (_body: unknown) => ({}))
+    const web = { auth: { test: async () => ({ user_id: 'U-BOT' }) }, views: { publish } }
+    let agentId: string | undefined = 'agent-1'
+    const context = vi.fn(() => ({ webAppUrl: 'https://console.example.test/', orgSlug: 'example-org', agentId }))
+    const d = deps(web, { appHomeContext: context })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR', channel: 'D1' })
+    expect(context).toHaveBeenCalledWith('D1')
+    expect(JSON.stringify(publish.mock.calls[0])).toContain('https://console.example.test/example-org/home')
+    expect(JSON.stringify(publish.mock.calls[0])).toContain(
+      'https://console.example.test/example-org/agents/agent-1?tab=config'
+    )
+    agentId = undefined
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR', channel: 'D1' })
+    expect(JSON.stringify(publish.mock.calls[1])).toContain('https://console.example.test/example-org/agents')
+    expect(JSON.stringify(publish.mock.calls[1])).not.toContain('?tab=config')
+    expect(d.onMessage).not.toHaveBeenCalled()
+    await ingest.stop()
+  })
+
+  it('replaces the agent links with a reconnect flow when the installation has no bindings', async () => {
+    const publish = vi.fn(async (_body: unknown) => ({}))
+    const web = { auth: { test: async () => ({ user_id: 'U-BOT' }) }, views: { publish } }
+    let connected = false
+    const d = deps(web, {
+      appHomeContext: () => ({
+        webAppUrl: 'https://console.example.test',
+        orgSlug: 'example-org',
+        botId: 'bot-1',
+        connected,
+        agentId: 'agent-1'
+      })
+    })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    const event = { type: 'app_home_opened', tab: 'home', user: 'U-VISITOR', channel: 'D1' }
+    await ingest.handleEvent(event)
+    const disconnected = JSON.stringify(publish.mock.calls[0])
+    expect(disconnected).toContain('No agent connected')
+    expect(disconnected).toContain('https://console.example.test/example-org/integrations?reconnect=bot-1')
+    expect(disconnected).not.toContain('Configure agent')
+    connected = true
+    await ingest.handleEvent(event)
+    const reconnected = JSON.stringify(publish.mock.calls[1])
+    expect(reconnected).toContain('Configure agent')
+    expect(reconnected).not.toContain('Reconnect')
+    expect(d.onMessage).not.toHaveBeenCalled()
+    await ingest.stop()
+  })
+
+  it('offers workspace setup in Home and DMs before an organization is connected, without forwarding chat', async () => {
+    const publish = vi.fn(async (_body: unknown) => ({}))
+    const postMessage = vi.fn(async (_body: unknown) => ({}))
+    const web = {
+      auth: { test: async () => ({ user_id: 'U-BOT', bot_id: 'B-BOT' }) },
+      views: { publish },
+      chat: { postMessage }
+    }
+    const connectUrl = 'https://console.example.test/slack/connect?installation=example'
+    const d = deps(web, { appHomeContext: () => ({ webAppUrl: 'https://console.example.test', connectUrl }) })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR' })
+    expect(JSON.stringify(publish.mock.calls[0])).toContain('Connect AgentConnect')
+    expect(JSON.stringify(publish.mock.calls[0])).toContain(connectUrl)
+    expect(postMessage).not.toHaveBeenCalled()
+    await ingest.handleEvent({
+      type: 'message',
+      user: 'U-VISITOR',
+      channel: 'D1',
+      channel_type: 'im',
+      ts: '1.1',
+      text: 'hello'
+    })
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'D1', text: expect.stringContaining('Home tab') })
+    )
+    await ingest.handleEvent({
+      type: 'app_mention',
+      user: 'U-VISITOR',
+      channel: 'C1',
+      ts: '2.1',
+      text: '<@U-BOT> hello'
+    })
+    expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 'C1', thread_ts: '2.1' }))
+    await ingest.handleEvent({ type: 'message', user: 'U-VISITOR', channel: 'C1', ts: '3.1', text: 'chatter' })
+    expect(postMessage).toHaveBeenCalledTimes(2)
+    expect(d.onMessage).not.toHaveBeenCalled()
+    await ingest.stop()
   })
 
   it('refreshes the complete paginated snapshot only when the bot itself joins', async () => {
@@ -544,9 +658,31 @@ describe('SlackHttpIngest channel membership events', () => {
     await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C1' })
     expect(conversations).toHaveBeenCalledTimes(2)
     expect(onChannelsChanged).toHaveBeenCalledWith([
-      { id: 'C1', name: 'deploys' },
-      { id: 'C2', name: 'ops', isPrivate: true },
-      { id: 'C3' }
+      { id: 'C1', name: 'deploys', externalReason: null },
+      { id: 'C2', name: 'ops', isPrivate: true, externalReason: null },
+      { id: 'C3', externalReason: null }
+    ])
+  })
+
+  // assistant-mode.md §5.3: the same snapshot marks a Slack Connect channel external.
+  it('reports a Slack Connect channel external from the listing', async () => {
+    const conversations = vi.fn(async () => ({
+      channels: [{ id: 'C1', name: 'partners', is_ext_shared: true }, { id: 'C2' }]
+    }))
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }
+    const onChannelsChanged = vi.fn()
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onChannelsChanged })
+    )
+    await ingest.start()
+
+    await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C1' })
+
+    expect(onChannelsChanged).toHaveBeenCalledWith([
+      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C2', externalReason: null }
     ])
   })
 
@@ -563,7 +699,7 @@ describe('SlackHttpIngest channel membership events', () => {
 
     await ingest.handleEvent({ type, channel: 'CLEFT' })
 
-    expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining' }])
+    expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining', externalReason: null }])
   })
 
   // The native Stop. Also not a chat event, and the event id is the receipt a Slack

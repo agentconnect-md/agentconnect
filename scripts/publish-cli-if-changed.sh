@@ -1,18 +1,6 @@
 #!/bin/sh
-# Publishes the CLI (@agentconnect.md/cli) to npm ONLY when something that lands
-# in its bundle changed since the previous release on this channel. The CLI is
-# the thin, stable bin — it changes far less often than the daemon — so most
-# releases skip its publish, keeping npm versions meaningful.
-#
-# Called by release.config.js's prepareCmd/publishCmd (cwd = repo root) with:
-#   $1 = previous release git tag on this channel ('' on a channel's first
-#        release; rc releases diff against the previous rc, stable against
-#        the previous stable)
-#   $2 = next version (prepare) or npm dist-tag (publish)
-#   $3 = prepare | publish (defaults to publish for backwards compatibility)
-#
-# A skip must never mask a failure: set -eu aborts the release on any git
-# error, and an unknown/unfetchable tag falls through to publishing.
+# publish-npm.mjs passes the last published npm tag, the next version or dist-tag, and prepare|publish.
+# Unknown baseline tags rebuild; Git errors fail the job.
 set -eu
 
 LAST_TAG="${1:-}"
@@ -30,8 +18,7 @@ case "$MODE" in
     ;;
   publish)
     SKIP_LABEL="npm publish"
-    # prepare temporarily bumps the CLI version and strips its dependencies.
-    # Restore the manifest before later release steps use the workspace.
+    # Restore the manifest before the next package uses the workspace.
     trap restore_manifest EXIT
     ;;
   *)
@@ -66,21 +53,13 @@ fi
 
 if [ "$MODE" = prepare ]; then
   cd "$REPO_ROOT/packages/cli"
-  # Set the version by editing package.json directly rather than `pnpm version`.
-  # The prepare steps run in sequence (daemon prepare runs first and dirties the
-  # tree by bumping + stripping its own manifest), and pnpm's workspace-aware
-  # `version` command aborts on an unclean working tree
-  # (ERR_PNPM_UNCLEAN_WORKING_TREE). A plain manifest edit has no such check and
-  # is equivalent here — the bundle is already built by tsdown and deps are
-  # stripped below.
+  # Build with the release version and dependencies intact, then strip the self-contained package's dependencies.
   pnpm exec json -I -f package.json -e "this.version='$VALUE'"
   pnpm run build
   pnpm exec json -I -f package.json -e 'this.dependencies={}'
   exit 0
 fi
 
-# dist/ was already built by prepareCmd; --ignore-scripts skips prepack so it
-# is NOT rebuilt with dependencies now stripped (which would re-break the
-# bundle).
+# Skip prepack: rebuilding after prepare stripped dependencies would break the bundle.
 cd "$REPO_ROOT/packages/cli"
 pnpm publish --no-git-checks --ignore-scripts --tag "$VALUE"

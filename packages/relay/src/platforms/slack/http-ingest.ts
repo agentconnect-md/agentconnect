@@ -21,9 +21,11 @@ import {
   isSlackSystemMessage,
   normalizeSlackMessage,
   normalizeSlackResponseFinalization,
+  slackExternalReason,
   type SlackMessageLike
 } from '@agentconnect.md/message'
 import {
+  buildSlackAppHomeView,
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
@@ -36,7 +38,9 @@ import {
   decodeSlackStatusOverflowValue,
   decodeSharedSlackStatusTarget,
   elicitFormViewValues,
+  type PlaceExternalReason,
   type RdSlackAction,
+  type SlackAppHomeContext,
   type SlackViewState,
   type SharedSlackStatusTarget,
   type WireNormalizedMessage
@@ -44,7 +48,10 @@ import {
 import type { Logger } from '../../log.js'
 
 export { normalizeSlackMessage } from '@agentconnect.md/message'
-export type SlackMessageEvent = SlackMessageLike
+export type SlackMessageEvent = SlackMessageLike & {
+  tab?: string
+  assistant_thread?: { user_id?: string; channel_id?: string; thread_ts?: string }
+}
 
 /** block_id / action_id of the modal's agent selector (local to this file). */
 const CONFIG_BLOCK = 'agent_block'
@@ -94,7 +101,19 @@ export type HttpSlackSessionAction = HttpSlackInteractionReceipt & {
   /** Who tapped it (Slack `body.user`), forwarded so the daemon can attribute the
    *  session change. Absent when the payload names no user. */
   userId?: string
-} & Exclude<RdSlackAction, { kind: 'open-config-for-thread' }>
+} & Exclude<RdSlackAction, { kind: 'open-config-for-thread' | 'app-home-opened' | 'assistant-thread-started' }>
+
+export interface HttpSlackAppHomeOpened extends HttpSlackInteractionReceipt {
+  channelId: string
+  userId: string
+}
+
+/** A user started a new Assistant thread ("new chat") in a DM with the app. */
+export interface HttpSlackAssistantThreadStarted extends HttpSlackInteractionReceipt {
+  channelId: string
+  threadTs: string
+  userId?: string
+}
 
 export interface HttpSlackSessionShortcut extends HttpSlackInteractionReceipt {
   channelId: string
@@ -367,6 +386,14 @@ export interface SlackIngestSidecar {
   searchActionToken?: string
 }
 
+/** One channel of a membership snapshot, with whether Slack reports it shared externally (assistant-mode.md §5.3). */
+export interface SlackReportedChannel {
+  id: string
+  name?: string
+  isPrivate?: boolean
+  externalReason?: PlaceExternalReason | null
+}
+
 export interface SlackHttpIngestDeps {
   /** Hand a normalized message to the router/forwarder; resolves once the delivery
    *  outcome is known (delivered or dropped). NEVER throws — runs after the HTTP 200. */
@@ -375,7 +402,7 @@ export interface SlackHttpIngestDeps {
   onBotUserId: (botUserId: string) => void
   /** Report the bot's complete Slack channel-membership snapshot after an event
    *  says the bot itself joined or left a channel. */
-  onChannelsChanged: (channels: { id: string; name?: string; isPrivate?: boolean }[]) => void
+  onChannelsChanged: (channels: SlackReportedChannel[]) => void
   /** Candidate agents for the config modal's "default agent" selector (bot members). */
   agents: () => { agentId: string; name: string }[]
   /** This channel's current default agent (initial modal selection), if any. */
@@ -392,6 +419,10 @@ export interface SlackHttpIngestDeps {
   onSessionShortcut: (shortcut: HttpSlackSessionShortcut) => boolean
   /** Forward the native agent-session Stop to the daemon owning that conversation. */
   onSessionStopped: (stop: HttpSlackSessionStop) => void
+  onAppHomeOpened?: (opened: HttpSlackAppHomeOpened) => void
+  /** Forward an Assistant "new chat" to the DM's owning daemon, which starts a fresh session where the DM appends. */
+  onAssistantThreadStarted?: (started: HttpSlackAssistantThreadStarted) => void
+  appHomeContext?: (channelId?: string) => SlackAppHomeContext
   /** The bot's credential is definitively dead (an uninstall, a token revocation, or a probe saying so); report it so the CP revokes the bot. */
   onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', proof: SlackRevocationProof) => void
   /** A probe answer that does not revoke: `ok` clears an earlier rejection, `rejected` only marks the bot. */
@@ -503,14 +534,30 @@ export class SlackHttpIngest {
     }
   }
 
-  /** Handle one verified `/slack/events` envelope after demux + HMAC. Forwards
-   *  top-level chat after removing this app's own echo. Never throws — HTTP 200 was
-   *  already sent; a forward miss is bounded loss at the forwarder. `eventId` is the
-   *  envelope's `event_id`, the receipt a redelivery reuses. Every event this app
-   *  subscribes to but does not act on (agent-session title, assistant thread context)
-   *  falls through to the drop at the end. */
+  // Handle verified events after acknowledgement, dropping own echoes and unsupported event types.
   async handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number, eventId?: string): Promise<void> {
     try {
+      if (event?.type === 'app_home_opened') {
+        if (event.tab === 'home' && event.user)
+          await this.web?.views.publish({
+            user_id: event.user,
+            view: buildSlackAppHomeView(this.botUserId, this.deps.appHomeContext?.(event.channel))
+          })
+        if (event.tab === 'messages' && event.channel?.startsWith('D') && event.user && eventId)
+          this.deps.onAppHomeOpened?.({ channelId: event.channel, userId: event.user, interactionId: eventId })
+        return
+      }
+      if (event?.type === 'assistant_thread_started') {
+        const thread = event.assistant_thread
+        if (thread?.channel_id && thread.thread_ts)
+          this.deps.onAssistantThreadStarted?.({
+            channelId: thread.channel_id,
+            threadTs: thread.thread_ts,
+            interactionId: eventId ?? `${thread.channel_id}:${thread.thread_ts}`,
+            ...(thread.user_id ? { userId: thread.user_id } : {})
+          })
+        return
+      }
       // App lifecycle: the workspace pulled the app / revoked its tokens. Not a
       // chat event (no user/bot_id — isRoutableEvent would drop it), so branch
       // before the chat filters. `tokens_revoked` is treated as a full revoke —
@@ -557,6 +604,15 @@ export class SlackHttpIngest {
       const ownMessage = event.user === this.botUserId || event.bot_id === this.slackBotId
       if (ownMessage || !isRoutableEvent(event)) return
       if (event.type !== 'message' && event.type !== 'app_mention') return
+      if (this.deps.appHomeContext?.(event.channel)?.connectUrl) {
+        if (event.channel && (event.channel_type === 'im' || event.type === 'app_mention'))
+          await this.web?.chat.postMessage({
+            channel: event.channel,
+            text: 'This workspace is not connected yet. Ask the person who installed this app to open its Home tab and select Connect AgentConnect.',
+            ...(event.thread_ts || event.type === 'app_mention' ? { thread_ts: event.thread_ts ?? event.ts } : {})
+          })
+        return
+      }
       const msg = normalizeSlackMessage(event)
       if (msg)
         await this.deps.onMessage(msg, event.action_token ? { searchActionToken: event.action_token } : undefined)
@@ -600,7 +656,7 @@ export class SlackHttpIngest {
   private async refreshChannelsOnce(): Promise<void> {
     const web = this.web
     if (!web) return
-    const channels: { id: string; name?: string; isPrivate?: boolean }[] = []
+    const channels: SlackReportedChannel[] = []
     let cursor: string | undefined
     do {
       const res = await web.users.conversations({
@@ -614,7 +670,8 @@ export class SlackHttpIngest {
         channels.push({
           id: channel.id,
           ...(channel.name ? { name: channel.name } : {}),
-          ...(channel.is_private ? { isPrivate: true } : {})
+          ...(channel.is_private ? { isPrivate: true } : {}),
+          externalReason: slackExternalReason(channel)
         })
       }
       cursor = res.response_metadata?.next_cursor || undefined

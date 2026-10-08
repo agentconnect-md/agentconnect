@@ -338,6 +338,8 @@ export const FRAME_SCHEMAS = {
   'cron/upsert': CronUpsert,
   'cron/remove': CronRemove,
   'cron/report': CronReport,
+  // Acknowledged terminal cron outcome — D→C REQ, replied with `ack`.
+  'cron/report-sync': CronReport,
   'cron/run': CronRunNow,
   // ── hooks (content fires ride rd/*; only metadata/effect control is here) ──
   'hook/report': HookReport,
@@ -687,6 +689,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('cron/upsert', FRAME_SCHEMAS['cron/upsert']),
   frame('cron/remove', FRAME_SCHEMAS['cron/remove']),
   frame('cron/report', FRAME_SCHEMAS['cron/report']),
+  frame('cron/report-sync', FRAME_SCHEMAS['cron/report-sync']),
   frame('cron/run', FRAME_SCHEMAS['cron/run']),
   frame('hook/report', FRAME_SCHEMAS['hook/report']),
   frame('hook/preparing', FRAME_SCHEMAS['hook/preparing']),

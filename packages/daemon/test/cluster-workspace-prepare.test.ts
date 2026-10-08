@@ -16,9 +16,20 @@ import { SANDBOX_CHECKOUT_DIR } from '../src/shim/sandbox-paths.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
 import { wireTestPlane } from './workspace-plane-support.js'
+import type { ExecutionPlane } from '../src/execution/plane.js'
+import { observeStartup, type StartupPhase } from '../src/session/startup-progress.js'
+import { bundleRefsOf } from '../src/workspace/bundled-clone.js'
 import { GitTransportError, type GitRunner } from '../src/workspace/git-runner.js'
 import { WorkspaceViolationError } from '../src/workspace/workspace-files.js'
 import type { Agent } from '../src/agents/agent-schema.js'
+import type {
+  SourceCacheReadOutcome,
+  SourceCacheWorkspaceReader,
+  SourceCacheWriter,
+  SourceCacheWriteRequest,
+  SourceCacheWriteTarget,
+  WorkspaceBundleRequest
+} from '../src/source-cache/index.js'
 
 /**
  * Preparing a git-repo workspace for a CLUSTER agent, which `--k8s` refused outright until now.
@@ -58,6 +69,10 @@ let checkoutExists = false
 /** A one-shot failure of that probe which never reached git; the channel is back for whatever runs next. */
 let probeFailure: Error | undefined
 let cloneFails = false
+/** A bundled clone failing in-band while the same clone without the bundle succeeds. */
+let bundledCloneFails = false
+/** The refs a clone left, as `show-ref` prints them; undefined keeps the fake's refusal. */
+let showRefOut: string | undefined
 /** What the pod's checkout reports as its origin — a resumed volume carries the previous launch's. */
 let originUrl = 'https://github.com/acme/private.git'
 /** The branch the pod's checkout is ON. `pull` does not switch branches, so this can differ from
@@ -147,6 +162,20 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
       if (sha === undefined) throw new Error(`unknown revision ${ref}`)
       return sha
     }
+    // The bundle-ref listing: the glob names what `showRefOut` holds, then `show-ref --` reads those names.
+    if (args[0] === 'rev-parse' && args[1] === '--symbolic-full-name' && showRefOut !== undefined) {
+      return bundleRefsOf(showRefOut)
+        .map((ref) => `${ref}\n`)
+        .join('')
+    }
+    if (args[0] === 'show-ref' && args[1] === '--' && showRefOut !== undefined) {
+      const named = new Set(args.slice(2))
+      return showRefOut
+        .split('\n')
+        .filter((line) => named.has(line.split(' ')[1] ?? ''))
+        .map((line) => `${line}\n`)
+        .join('')
+    }
     // No branch of that name yet, so the first drawn one is the one `worktree add` gets.
     if (args[0] === 'show-ref') throw new Error('no such ref')
     // `worktree add` is what CREATES the directory on the volume, so the fake pod learns about it here.
@@ -189,6 +218,9 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
     clone: async (repo, target, options = []) => {
       calls.push({ cwd, args: ['clone', repo, target, ...options], env })
       if (cloneFails || cloneRefusals.has(repo)) throw new Error('remote hung up')
+      if (bundledCloneFails && options.some((option) => option.startsWith('--bundle-uri='))) {
+        throw new Error('unable to parse commit')
+      }
       // What git does to a clone into the checkout that is already there.
       if (target === SANDBOX_CHECKOUT_DIR && checkoutExists) throw new Error('destination path already exists')
       // A secondary root stages into an absolute path on the volume, and the seam has to SEE the
@@ -199,6 +231,7 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
         if (options.includes('--filter=blob:none')) void pod.mkdir(`${target}/.git`)
         else void pod.writeFile(`${target}/.git`, 'gitdir: ...')
       }
+      return { stderr: '' }
     },
     pull: async (remote, branch, options = []) => {
       calls.push({ cwd, args: ['pull', remote, branch, ...options], env })
@@ -245,6 +278,8 @@ beforeEach(() => {
   checkoutExists = false
   probeFailure = undefined
   cloneFails = false
+  bundledCloneFails = false
+  showRefOut = undefined
   originUrl = 'https://github.com/acme/private.git'
   headBranch = 'main'
   pullFails = false
@@ -293,7 +328,11 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => workspaces.setPlaneResolver(undefined))
+afterEach(() => {
+  workspaces.setPlaneResolver(undefined)
+  workspaces.setSourceCacheReader(undefined)
+  workspaces.setSourceCacheWriter(undefined)
+})
 
 describe('clusterWorkspaceCwd', () => {
   it('puts a checkout one level below the mount, away from the runtime HOME', () => {
@@ -2068,5 +2107,278 @@ describe('a confined preparation reaches the agent pod only for work due there (
     expect(calls.some((call) => call.cwd === POD_ROOT && call.args[0] === 'clone')).toBe(true)
     expect(await pod.stat(`${INFRA}/.materialization.json`)).toBe('file')
     expect(reaches).toBe(0)
+  })
+})
+
+describe('workspace clones read the Source Cache (source-cache.md §7)', () => {
+  const BUNDLE_URL = 'https://cache.example/src/o/anon/r/bundles/b.bundle?X-Amz-Signature=s'
+  const BUNDLE_KEY = 'src/o/anon/r/bundles/b.bundle'
+  const SESSION = { sessionKey: 'sess-1', isolation: 'session' as const, initiatedBy: 'alice' }
+  const SHA = 'f'.repeat(40)
+
+  function reader(
+    hit = true,
+    target?: SourceCacheWriteTarget
+  ): SourceCacheWorkspaceReader & {
+    asked: WorkspaceBundleRequest[]
+    outcomes: SourceCacheReadOutcome[]
+  } {
+    const asked: WorkspaceBundleRequest[] = []
+    const outcomes: SourceCacheReadOutcome[] = []
+    return {
+      asked,
+      outcomes,
+      plan: async (request) => {
+        asked.push(request)
+        const bundle = hit
+          ? {
+              url: BUNDLE_URL,
+              bundleKey: BUNDLE_KEY as never,
+              pointerKey: 'p' as never,
+              repoClass: 'anon' as const,
+              shape: request.shape,
+              bundleCreatedAt: 0,
+              bytes: 4096
+            }
+          : undefined
+        return { ...(bundle ? { bundle } : {}), ...(target ? { target: { ...target, shape: request.shape } } : {}) }
+      },
+      record: (outcome) => outcomes.push(outcome)
+    }
+  }
+
+  const clones = () => calls.filter((call) => call.args[0] === 'clone')
+
+  const TARGET: SourceCacheWriteTarget = {
+    orgId: 'o',
+    repoClass: 'cred',
+    repoId: 'github:42',
+    ref: 'refs/heads/main',
+    shape: 'full',
+    pointerKey: 'p' as never,
+    observedTargetKey: null
+  }
+
+  // A writer that records each request and settles only when told to, so a test can prove nothing waited on it.
+  function writer(behavior: 'hang' | 'reject' = 'hang'): SourceCacheWriter & { requests: SourceCacheWriteRequest[] } {
+    const requests: SourceCacheWriteRequest[] = []
+    return {
+      requests,
+      consider: (request) => {
+        requests.push(request)
+        return behavior === 'reject' ? Promise.reject(new Error('boom')) : new Promise(() => {})
+      }
+    }
+  }
+
+  const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+  it('schedules a write-back of the agent pod’s clone without waiting on it, in the class the clone used', async () => {
+    const w = writer()
+    workspaces.setSourceCacheWriter(w)
+    workspaces.setSourceCacheReader(reader(true, TARGET))
+    showRefOut = `${SHA} refs/bundles/heads/main\n`
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
+    await settle()
+
+    expect(w.requests).toHaveLength(1)
+    expect(w.requests[0]).toMatchObject({
+      target: { ...TARGET, shape: 'full' },
+      read: { kind: 'hit', tip: SHA, bundleCreatedAt: 0 },
+      checkout: CHECKOUT,
+      credentialed: true,
+      stager: undefined
+    })
+  })
+
+  it('schedules a session clone’s write-back at its published path, never the staged one', async () => {
+    const w = writer('reject')
+    workspaces.setSourceCacheWriter(w)
+    workspaces.setSourceCacheReader(reader(false, TARGET))
+    const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    await settle()
+
+    expect(w.requests).toHaveLength(1)
+    expect(w.requests[0]).toMatchObject({ checkout: cwd, read: { kind: 'uncached' }, credentialed: true })
+    expect(w.requests[0]!.target.shape).toBe('blobless')
+  })
+
+  it('schedules nothing without a target', async () => {
+    const w = writer()
+    workspaces.setSourceCacheWriter(w)
+    workspaces.setSourceCacheReader(reader(false))
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
+    await settle()
+    expect(w.requests).toEqual([])
+  })
+
+  it('keeps today’s exact clone argv when the reader plans nothing', async () => {
+    const cache = reader(false)
+    workspaces.setSourceCacheReader(cache)
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
+
+    expect(cache.asked).toMatchObject([
+      { shape: 'full', branch: 'main', cloneUrl: 'https://github.com/acme/private.git' }
+    ])
+    expect(clones().map((call) => call.args)).toEqual([
+      ['clone', 'https://github.com/acme/private.git', SANDBOX_CHECKOUT_DIR, '--branch', 'main', '--single-branch']
+    ])
+    expect(calls.some((call) => ['fsck', 'update-ref'].includes(call.args[0]!))).toBe(false)
+  })
+
+  it('seeds the agent pod’s full clone from the bundle and deletes the bundle refs in the checkout', async () => {
+    const cache = reader()
+    workspaces.setSourceCacheReader(cache)
+    showRefOut = `${SHA} refs/heads/main\n${SHA} refs/bundles/heads/main\n`
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
+
+    expect(cache.asked).toMatchObject([{ shape: 'full' }])
+    expect(clones().map((call) => call.args)).toEqual([
+      [
+        'clone',
+        'https://github.com/acme/private.git',
+        SANDBOX_CHECKOUT_DIR,
+        `--bundle-uri=${BUNDLE_URL}`,
+        '--branch',
+        'main',
+        '--single-branch'
+      ]
+    ])
+    expect(calls.find((call) => call.args[0] === 'update-ref')).toMatchObject({
+      cwd: CHECKOUT,
+      args: ['update-ref', '-d', 'refs/bundles/heads/main']
+    })
+    // Both shapes verify connectivity: an incomplete bundle can leave a full clone exit 0 with broken history.
+    expect(calls.some((call) => call.args[0] === 'fsck')).toBe(true)
+    expect(cache.outcomes).toEqual([
+      { kind: 'hit', bundleKey: BUNDLE_KEY, shape: 'full', repoClass: 'anon', bytes: 4096 }
+    ])
+  })
+
+  it('empties the checkout and clones once without the bundle when the bundled clone fails', async () => {
+    const cache = reader()
+    workspaces.setSourceCacheReader(cache)
+    bundledCloneFails = true
+    showRefOut = `${SHA} refs/heads/main\n`
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
+
+    expect(clones().map((call) => call.args.some((arg) => arg.startsWith('--bundle-uri=')))).toEqual([true, false])
+    expect(cleared).toEqual([CHECKOUT])
+    expect(cache.outcomes).toMatchObject([
+      { kind: 'fallback', reason: 'clone-failed', bundleKey: BUNDLE_KEY, repoClass: 'anon' }
+    ])
+  })
+
+  it('surfaces only the retry’s failure, through the existing clear-and-rethrow', async () => {
+    workspaces.setSourceCacheReader(reader())
+    cloneFails = true
+    await expect(workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)).rejects.toThrow('remote hung up')
+    expect(clones()).toHaveLength(2)
+    // Once to empty for the retry, once by the clone's own cleanup.
+    expect(cleared).toEqual([CHECKOUT, CHECKOUT])
+  })
+
+  it('seeds a session’s blobless clone, checks connectivity, and cleans its bundle refs in the staged clone', async () => {
+    const cache = reader()
+    workspaces.setSourceCacheReader(cache)
+    showRefOut = `${SHA} refs/bundles/main\n`
+    const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+
+    expect(cache.asked).toMatchObject([{ shape: 'blobless' }])
+    const clone = clones().find((call) => call.args.includes('--filter=blob:none'))!
+    expect(clone.args.slice(3)).toEqual([
+      `--bundle-uri=${BUNDLE_URL}`,
+      '--filter=blob:none',
+      '--no-checkout',
+      '--branch',
+      'main',
+      '--single-branch'
+    ])
+    const staged = clone.args[2]
+    expect(calls.find((call) => call.args[0] === 'fsck')).toMatchObject({
+      cwd: staged,
+      args: ['fsck', '--connectivity-only', '--no-dangling']
+    })
+    // The check runs under the local env, so it can never fetch the missing objects it is looking for.
+    expect(calls.find((call) => call.args[0] === 'fsck')!.env.GIT_NO_LAZY_FETCH).toBe('1')
+    expect(calls.find((call) => call.args[0] === 'update-ref')).toMatchObject({ cwd: staged })
+    expect(cwd).toBe(sessionCloneOf('sess-1'))
+  })
+
+  it('empties a session’s staged clone through the pod before its bundle-less retry', async () => {
+    workspaces.setSourceCacheReader(reader())
+    bundledCloneFails = true
+    showRefOut = ''
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+
+    const sessionClones = clones().filter((call) => call.args.includes('--filter=blob:none'))
+    expect(sessionClones).toHaveLength(2)
+    expect(cleared).toEqual([sessionClones[0]!.args[2]])
+    expect(sessionClones[1]!.args.some((arg) => arg.startsWith('--bundle-uri='))).toBe(false)
+  })
+
+  it('plans inside the clone phase, so a credentialed plan’s resolveRef shows in startup progress', async () => {
+    const phases: Array<StartupPhase | undefined> = []
+    const cache = reader()
+    const plan = cache.plan
+    let planningPhase: StartupPhase | undefined
+    cache.plan = async (request) => {
+      planningPhase = phases.at(-1)
+      return await plan(request)
+    }
+    workspaces.setSourceCacheReader(cache)
+    showRefOut = `${SHA} refs/bundles/main\n`
+    await observeStartup(
+      (phase) => phases.push(phase),
+      () => workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    )
+
+    expect(planningPhase).toBe('clone')
+  })
+
+  // The wired plane with its clearer removed, so a fallback could not empty the checkout.
+  function stripClearPath(): void {
+    const plane = (workspaces as unknown as { planeFor(scope: { agentId: string }): ExecutionPlane }).planeFor({
+      agentId: clusterAgent().id
+    })
+    workspaces.setPlaneResolver(() => ({ ...plane, clearPath: undefined }))
+  }
+
+  it('plans no bundle on a plane that cannot empty the checkout', async () => {
+    stripClearPath()
+    const cache = reader()
+    workspaces.setSourceCacheReader(cache)
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
+
+    expect(cache.asked).toEqual([])
+    expect(clones().some((call) => call.args.some((arg) => arg.startsWith('--bundle-uri=')))).toBe(false)
+  })
+
+  it('fails the fallback loudly, without a retry, when the clearer is gone by then', async () => {
+    const cache = reader()
+    const plan = cache.plan
+    cache.plan = async (request) => {
+      stripClearPath()
+      return await plan(request)
+    }
+    workspaces.setSourceCacheReader(cache)
+    bundledCloneFails = true
+    await expect(workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)).rejects.toThrow(
+      /cannot empty .* before a cache fallback retry/
+    )
+    expect(clones()).toHaveLength(1)
+  })
+
+  it('never asks the reader for a secondary root’s session clone', async () => {
+    remoteDefaultBranch = { 'acme/infra': 'trunk' }
+    const cache = reader(false)
+    workspaces.setSourceCacheReader(cache)
+    const agent = clusterAgent({ additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }] } as Partial<
+      Agent['workspace']
+    >)
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT, SESSION)
+
+    expect(clones().some((call) => call.args[1] === 'https://github.com/acme/infra')).toBe(true)
+    expect(cache.asked.map((request) => request.cloneUrl)).toEqual(['https://github.com/acme/private.git'])
   })
 })

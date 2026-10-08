@@ -23,13 +23,15 @@ import {
   MOCK_MODE,
   MOCK_PREFIX,
   runtimeCanDream,
+  permissionModeDefault,
   runtimeLabel,
   selectedModelId,
   status,
   supportsModes,
   workspaceStatus,
   type IntegrationRow,
-  workspaceSourceOf
+  workspaceSourceOf,
+  conversationGate
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import { agentStrategyValue } from '@/lib/execution-strategy'
@@ -87,6 +89,8 @@ import { resolveWorkspaceRepoScope, workspaceRepoParamRewrite } from '@/componen
 import { WorkspaceScopePicker } from '@/components/console/WorkspaceScopePicker'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
+import { AssistantModePanel } from '@/components/console/AssistantModePanel'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
@@ -1826,7 +1830,8 @@ function AgentDetail() {
                               agentId={da.id}
                               platform={g.platform}
                               shareable={g.shareable}
-                              gated={da.visibility === 'restricted'}
+                              gate={conversationGate(da)}
+                              assistantMode={da.assistantMode?.enabled === true}
                               padX={16}
                             />
                           )}
@@ -2147,7 +2152,8 @@ function AgentDetail() {
                               agentId={da.id}
                               platform={g.platform}
                               shareable={g.shareable}
-                              gated={da.visibility === 'restricted'}
+                              gate={conversationGate(da)}
+                              assistantMode={da.assistantMode?.enabled === true}
                               padX={14}
                             />
                           )}
@@ -2861,6 +2867,24 @@ function AgentDetail() {
           sessionBasePath={orgPath('/sessions')}
           sandboxed={isPoolPlacementKind(da.placementKind)}
           memberSetPlaced={isSetPlacementKind(da.placementKind)}
+          besideSettings={
+            (featureFlagEnabled('assistant-mode') || da.assistantMode?.enabled) && (
+              <AssistantModePanel
+                agentId={id}
+                canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
+                assistantMode={da.assistantMode}
+                runtime={da.runtime}
+                memoryProvider={da.memoryProvider}
+                placement={`${da.placementKind ?? 'daemon'}:${da.setId ?? da.daemon}`}
+                askEveryTime={
+                  (da.permissionMode ||
+                    capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog
+                      ?.defaultPermissionMode ||
+                    permissionModeDefault(da.runtime)) === 'default'
+                }
+              />
+            )
+          }
         />
       )}
 

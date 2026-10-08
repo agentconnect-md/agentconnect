@@ -11,6 +11,8 @@ import {
 } from '../platforms/read-ports.js'
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
 import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
+import { RECALL_TOOL } from './recall-tool.js'
+import { ASSISTANT_ITEM_TOOLS } from './ops/assistant-items.js'
 
 /**
  * The single unified send tool (session-concept §3). It merges the former
@@ -1166,7 +1168,10 @@ export const GITHUB_REVIEW_TOOLS: ToolDescriptor[] = [
         },
         comments: {
           type: 'array',
-          description: 'Optional inline review comments, submitted atomically with the top-level review.',
+          description:
+            'Optional inline review comments, submitted atomically with the top-level review. On GitHub, use lines ' +
+            'in the pull request diff and keep each range within one hunk. After invalid_input with not_submitted, ' +
+            'correct the positions or move the findings into body, then call this tool again.',
           items: obj(
             {
               path: { type: 'string' },
@@ -1397,7 +1402,9 @@ export const ALL_TOOL_NAMES = [
       // the old descriptor, or an in-flight orchestration, must not start hitting approval).
       ...RETIRED_ORCHESTRATION_TOOLS,
       ...GITHUB_REVIEW_TOOLS,
-      ...CODE_HOST_EFFECT_TOOLS
+      ...CODE_HOST_EFFECT_TOOLS,
+      RECALL_TOOL,
+      ...ASSISTANT_ITEM_TOOLS
     ]
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.
@@ -1416,7 +1423,12 @@ export const ALL_TOOL_NAMES = [
  */
 export function toolsForIntegrations(
   integrations: Integration[],
-  options: { organizationKnowledge?: boolean; decisions?: boolean; currentPlatform?: string } = {}
+  options: {
+    organizationKnowledge?: boolean
+    decisions?: boolean
+    currentPlatform?: string
+    assistantMode?: boolean
+  } = {}
 ): ToolDescriptor[] {
   const tools: ToolDescriptor[] = []
   const seen = new Set<string>()
@@ -1431,6 +1443,8 @@ export function toolsForIntegrations(
   if (options.organizationKnowledge) add(KNOWLEDGE_TOOLS)
   if (options.decisions) add(DECISION_TOOLS)
   add(COLLABORATION_TOOLS)
+  // Assistant mode's cross-place recall (assistant-mode.md §5.4 ③).
+  if (options.assistantMode) add([RECALL_TOOL])
   // The unified `sendMessage` tool is ALWAYS present (session-concept §3): even a
   // memory-only agent with no platform integration can wake a peer (`toAgent`) or reply to
   // its origin (`sessionId`). The `platform` enum is narrowed to the agent's own platforms

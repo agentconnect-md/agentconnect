@@ -40,6 +40,8 @@ import type {
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
 import type {
   AgentApiProtocol,
+  AssistantModeAdmission,
+  AssistantModePolicy,
   HookKind,
   SessionStayedHomeReason,
   ProviderKeyProvider,
@@ -67,6 +69,7 @@ import { chatRoomSigil } from '@/lib/platform-labels'
 import { track } from '@/lib/analytics'
 import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
+import { cpBase } from '@/lib/endpoints'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 /** A non-2xx CP response. `status` lets callers branch without parsing strings;
@@ -87,33 +90,11 @@ export class ApiError extends Error {
   }
 }
 
-// The CP's **versioned API base** — origin + version path (e.g.
-// `https://api.example.test/v1`, or direct-to-CP `http://cp.example.com:8080/api/v1`).
-// REST calls, including the webchat token mint, append resource paths to this.
-// The browser then dials the relay URL returned by that mint.
-//
-// The CP always serves its routes under `/api/v1` (see
-// `packages/control-plane/src/http/version.ts`); WHERE that surfaces publicly is a
-// DEPLOY/ingress choice — a subdomain can rewrite `/v1/*` → CP `/api/v1/*`. So the
-// version segment lives HERE in CP_URL, not hard-coded in the client, and the
-// deployment fully controls the public URL shape. See docs/designs/api-versioning.md.
-// (`/health` and the daemon `/daemon/ws` channel stay unversioned and are never
-// reached from the console.)
-//
-// Resolved at RUNTIME (not build time) so one prebuilt image can target any CP via
-// plain container env: the server injects CP_URL into window.__AC_ENV in the root
-// layout (see lib/public-env), mirroring the Logto config. NEXT_PUBLIC_CP_URL is a
-// build-time fallback for local dev/SSR. api.ts runs client-side, so __AC_ENV is set.
-// NOTE: an overriding CP_URL MUST include the version path — a bare origin 404s.
-function cpBase(): string {
-  const runtime = typeof window !== 'undefined' ? window.__AC_ENV?.CP_URL : process.env.CP_URL
-  return (runtime || process.env.NEXT_PUBLIC_CP_URL || 'http://localhost:8080/api/v1').replace(/\/+$/, '')
-}
-
 /** The CP REST base (`http(s)://…/api/v1`), so an agent's API Quickstart shows the exact mint endpoint. */
 export function cpRestBase(): string {
   return cpBase()
 }
+
 // Static bearer token (e.g. CI/service token). When OIDC is configured the live
 // per-user token from `@/lib/auth` takes precedence; with both unset the CP runs
 // its zero-config devAuth stub (admits all) — the OSS no-auth default.
@@ -376,6 +357,7 @@ export interface AgentDto {
   modelSelection?: AgentModelSelection | null
   repositorySelector?: AgentRepositorySelector | null // the evaluator that chooses `decision` repositories; absent on an older CP
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
+  assistantMode?: AssistantModePolicy | null // null ⇒ never configured, off; absent on an older CP
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
   lastModifiedAt: string // ISO-8601
@@ -1082,6 +1064,8 @@ export interface UpdateAgentInput {
   repositorySelector?: AgentRepositorySelector | null
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
+  /** Assistant mode, replaced wholesale; turning it on is refused with a 409 when admission fails. */
+  assistantMode?: AssistantModePolicy | null
   /** Accept a change the CP otherwise refuses with a 409, such as moving the memory home back to `daemon` (keeps no memory). */
   force?: boolean
 }
@@ -2049,6 +2033,7 @@ export function agentFromDto(d: AgentDto): Agent {
           memoryCaptureMode: d.memory.capture?.mode ?? 'manual'
         }
       : {}),
+    ...(d.assistantMode ? { assistantMode: d.assistantMode } : {}),
     permissionMode: d.permissionMode ?? '',
     allowRuntimeChangesInChat: d.allowRuntimeChangesInChat ?? false,
     env: Object.entries(d.env ?? {}).map(([k, v]) => ({ k, v })),
@@ -2385,9 +2370,9 @@ export function daemonFromDto(
     canManageLifecycle: d.canManageLifecycle ?? false,
     // Flag an available upgrade only when both versions parse and latest > running.
     upgradeAvailable: isUpgradeAvailable(d.agentVersion, d.latestVersion),
-    // Keep connection/readiness operational. Presentation surfaces combine this
-    // with lifecycleStatus without changing onboarding or reconnect decisions.
+    // Operational readiness, so `connecting` stays offline for every decision; only presentation reads `reconnecting`.
     status: toStatusKey(d.status),
+    reconnecting: d.status === 'connecting',
     host: d.host ?? PLACEHOLDER,
     // `load.{cpu,mem}` are 0..1 fractions; surface them as percentages.
     cpu: d.load ? Math.round(d.load.cpu * 100) : 0,
@@ -2876,6 +2861,19 @@ export async function fetchWorkspaceFile(
   return apiGet<WorkspaceFileDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`)
 }
 
+/** A session file's original bytes (an upload, or a share named by its digest); the CP proxies and stores nothing. */
+export async function downloadSessionFile(
+  agentId: string,
+  opts: { sessionId: string; path: string; sha256?: string }
+): Promise<Blob> {
+  const q = new URLSearchParams({ sessionId: opts.sessionId, path: opts.path })
+  if (opts.sha256) q.set('sha256', opts.sha256)
+  const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file/download?${q.toString()}`
+  const res = await authenticatedFetch(path, { cache: 'no-store' })
+  if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
+  return await res.blob()
+}
+
 /** Read one workspace text file whole before editing it. Every slice must describe
  * the same mtime so a multi-page load cannot assemble two agent revisions. */
 export async function fetchWorkspaceFileFull(
@@ -3014,6 +3012,11 @@ export interface MemoryChannelDto {
 }
 export interface MemoryChannelsDto {
   channels: MemoryChannelDto[]
+}
+
+/** Whether the agent may switch assistant mode on as it stands, and every reason it may not. */
+export async function fetchAgentAssistantModeAdmission(agentId: string): Promise<AssistantModeAdmission> {
+  return apiGet<AssistantModeAdmission>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/assistant-mode/admission`)
 }
 
 /** List the channels that have their own memory folder (empty for agent scope). */
@@ -5014,6 +5017,16 @@ export async function fetchOrgs(): Promise<OrgDto[]> {
   return apiGet<OrgDto[]>('/orgs')
 }
 
+export async function fetchSlackWorkspaceInstall(id: string): Promise<{ workspaceName: string; slackUrl: string }> {
+  return apiGet(`/integrations/slack/workspace-install/${encodeURIComponent(id)}`)
+}
+
+export async function connectSlackWorkspace(orgId: string, id: string, agentId: string): Promise<{ botId: string }> {
+  return apiPost(`${orgBase(orgId)}/integrations/slack/workspace-install/${encodeURIComponent(id)}/connect`, {
+    agentId
+  })
+}
+
 // Persist the caller's active org on their membership. The browser cookie is
 // only a stale-link fallback; this preference restores bare entries after
 // sign-out and on other devices.
@@ -6402,7 +6415,12 @@ export interface AgentRepoAuthDto {
   materialize?: RepoMaterialize
   createdBy: string | null // authorizer's userId (resolved to a name / "You" in the UI); null for key-created
   createdAt: string // ISO-8601
+  /** Set while the member who vouched for the grant fails re-attestation; absent on an older CP. */
+  stale?: { since: string; reason: RepoGrantStaleReason } | null
 }
+
+/** Why re-attestation suspended a grant. */
+export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed'
 
 /** Which host a grant row names — an older CP omits the field and means GitHub. */
 export function repoAuthProvider(row: AgentRepoAuthDto): CodeHostProvider {

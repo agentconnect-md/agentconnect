@@ -540,6 +540,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
   it('emits session metadata snapshots on create and turn completion', async () => {
     const root = scaffold()
+    let reportModel: (model: string) => void = () => {}
     const fakeHost = {
       __started: true,
       start: vi.fn(async () => {}),
@@ -555,11 +556,28 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         .mockResolvedValueOnce({
           stopReason: 'end_turn',
           usage: { totalTokens: 200, inputTokens: 160, outputTokens: 40 }
+        })
+        .mockImplementationOnce(async () => {
+          reportModel('claude-opus-4-6')
+          return { stopReason: 'end_turn', usage: { totalTokens: 200, inputTokens: 160, outputTokens: 40 } }
         }),
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: (_agent, onUpdate) => {
+        reportModel = (model) =>
+          onUpdate('acp-sess-1', {
+            sessionUpdate: 'usage_update',
+            used: 160,
+            size: 200_000,
+            _meta: { '_claude/model': model }
+          })
+        return fakeHost as any
+      }
+    })
     await daemon.start()
     // Inject a fake CP client so the fire-and-forget emit is observable (no real WS).
     const emitEventSession = vi.fn()
@@ -580,10 +598,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
 
     await (daemon as any).dispatch('bot-a', mk('100.1', 'first'))
-    // The configured model is deliberately rejected by the runtime selector on
-    // the warm turn. The end snapshot/report must clear to observed unknown,
-    // never fabricate this configured value or retain the prior named model.
-    ;(daemon as any).agents.get('bot-a').runtimeOverrides = { model: 'configured-but-rejected' }
+    // A default selector without runtime evidence must clear the previous turn's concrete model.
     fakeHost.modelOptions.mockReturnValue({ current: 'default', models: ['default'] })
     // Second (warm) turn on the SAME session re-emits a start snapshot too: the
     // CP-stored state is the only active-turn signal a console watching a platform
@@ -647,6 +662,31 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
     expect(final.model).toBeUndefined()
     expect(emitUsageReport.mock.calls.map(([report]) => report.observedModel)).toEqual(['claude-sonnet-4-5', null])
+
+    await (daemon as any).dispatch('bot-a', mk('100.3', 'third'))
+    expect(fakeHost.modelOptions().current).toBe('default')
+    expect(emitEventSession.mock.calls.at(-1)![0]).toMatchObject({
+      phase: 'end',
+      model: 'claude-opus-4-6',
+      observedModel: 'claude-opus-4-6'
+    })
+    expect(emitUsageReport.mock.calls.at(-1)![0].observedModel).toBe('claude-opus-4-6')
+    expect(await (daemon as any).githubReviews.githubCommentAttribution('bot-a', 'acp-sess-1', 'github')).toMatchObject(
+      { model: 'claude-opus-4-6' }
+    )
+
+    // Late native evidence corrects both projections after Pending is gone; synthetic messages cannot replace it.
+    reportModel('claude-sonnet-4-6')
+    await vi.waitFor(() => expect(emitUsageReport.mock.calls.at(-1)![0].observedModel).toBe('claude-sonnet-4-6'), WAIT)
+    expect(emitEventSession.mock.calls.at(-1)![0]).toMatchObject({
+      phase: 'plan',
+      model: 'claude-sonnet-4-6',
+      observedModel: 'claude-sonnet-4-6'
+    })
+    const reports = emitUsageReport.mock.calls.length
+    reportModel('<synthetic>')
+    await vi.waitFor(() => expect(emitUsageReport).toHaveBeenCalledTimes(reports + 1), WAIT)
+    expect(emitUsageReport.mock.calls.at(-1)![0].observedModel).toBe('claude-sonnet-4-6')
     await daemon.stop()
   })
 

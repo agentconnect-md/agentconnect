@@ -82,6 +82,20 @@ describe('platform manifest', () => {
     expect(manifestFor('some-future-platform').addressedByConstruction).toBe(false)
   })
 
+  it('lets rooms append everywhere but Linear, DMs only on Slack, and group DMs nowhere', () => {
+    // The spec projection reads it to give an assistant-mode agent one session per place; an unknown id forces nothing.
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM])
+      expect(manifestFor(p).appendKinds, p).toContain('channel')
+    expect(manifestFor('linear').appendKinds).toEqual([])
+    for (const p of ['telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, 'linear'])
+      expect(manifestFor(p).appendKinds, p).not.toContain('im')
+    expect(manifestFor('slack').appendKinds).toContain('im')
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, 'linear'])
+      expect(manifestFor(p).appendKinds, p).not.toContain('mpim')
+    expect(manifestFor('some-future-platform').appendKinds).toEqual([])
+    expect(DEFAULT_MANIFEST.appendKinds).toEqual([])
+  })
+
   it('keeps Linear on the fail-closed arm of every axis it did not earn', () => {
     // Linear's row exists for `multiAgentShareable`, `ownerAsDefault` and `addressedByConstruction` alone: no
     // membership snapshot API, no bot-sender admission, nothing but a conversation to leave.
@@ -97,8 +111,8 @@ describe('platform manifest', () => {
     // An explicit row, so a later change to the defaults cannot move Google Chat onto a path it has not earned.
     const { platform, ...axes } = manifestFor(GOOGLE_CHAT_PLATFORM)
     expect(platform).toBe('googlechat')
-    // The one earned axis: Google delivers only addressed Space traffic, so a mention is no fresh address.
-    expect(axes).toEqual({ ...DEFAULT_MANIFEST, addressedByConstruction: true })
+    // Google delivers only addressed Space traffic, so a mention is no fresh address; a Space may append like any room.
+    expect(axes).toEqual({ ...DEFAULT_MANIFEST, addressedByConstruction: true, appendKinds: ['channel'] })
     expect(axes.consoleContinuation).toBe(false)
     expect(axes.dmChannelPattern).toBeUndefined()
     // A chat origin the console composer may not continue.

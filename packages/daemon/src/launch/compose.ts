@@ -15,6 +15,7 @@ import {
 } from '../memory/runtime/capabilities.js'
 import { MemoryProviderUnavailableError, type MemoryProviderKind } from '../memory/provider.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
+import type { PrivateRuntimeState } from '../runtimes/private-runtime-state.js'
 import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
@@ -177,7 +178,7 @@ export function composeRuntimeLaunch(opts: {
     trustedMounts?: SandboxMount[]
   }
   /** A session placed on another machine: its HOME there (see prepareRuntimeLaunch). */
-  executor?: { home: string }
+  executor?: { home: string; codexState?: PrivateRuntimeState }
   /** A session whose clones are off this disk: their `.git` where they are (see prepareRuntimeLaunch). */
   sessionGitDirs?: string[]
   /** A confined session launched through the SRT-wrapped shim rooted here (see prepareRuntimeLaunch). */

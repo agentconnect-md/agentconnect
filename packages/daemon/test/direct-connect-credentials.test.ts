@@ -92,10 +92,12 @@ describe('provider credentials in the direct-connect stage', () => {
     expect([...RUNTIME_GRANTS].sort()).toEqual([
       'acp',
       'automerge',
+      'bundle',
       'exec',
       'materialize',
       'read',
       'skills',
+      'skills-git',
       'skills-receipts',
       'skills-wide',
       'tunnel'

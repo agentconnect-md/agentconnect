@@ -34,7 +34,7 @@
  * MANIFEST (§5, pure data) is genuinely cross-host, and it goes to protocol when
  * the registry lands. This one is daemon-owned.
  */
-import type { RdMsgIm } from '@agentconnect.md/protocol'
+import type { PlaceExternalReason, RdMsgIm } from '@agentconnect.md/protocol'
 import type { NormalizedMessage } from '../messages/normalized.js'
 
 /** The human behind one interactive click (button / select / modal submit). Carried
@@ -84,6 +84,8 @@ export interface PlatformChannelRef {
   id: string
   name?: string
   isPrivate?: boolean
+  /** Detected external on a membership listing (assistant-mode.md §5.3); null when the listing found no share. */
+  externalReason?: PlaceExternalReason | null
   /** Display glyph and tint where the platform gives the conversation one (a Linear team). */
   icon?: string
   color?: string

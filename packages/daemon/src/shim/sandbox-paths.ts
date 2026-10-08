@@ -17,14 +17,19 @@ export const SANDBOX_DSH_PRESET_ID = 'standard-no-search'
 export interface ShimPaths {
   gitCredentialHelper: string
   ghTokenEntry: string
+  glabTokenEntry: string
   autoMergeEntry: string
   mcpBridgeEntry: string
   ghWrapperDir: string
+  /** Where a host shim writes its gh and glab wrappers at launch: an installation ships no `pathbin` it could run. */
+  runtimeWrapperDir: string
   dshPresetDir: string
   gitConfigDir: string
   /** Where a launch's config-file secrets (`KUBECONFIG_DATA`, …) are written; per launch, like the Git config. */
   configFilesDir: string
   skillStagingDir: string
+  /** Shim-owned 0700 directory the only admitted `git bundle create` writes into. */
+  bundleStagingDir: string
   tunnels: Readonly<Record<SandboxTunnelName, string>>
 }
 
@@ -37,13 +42,16 @@ export function shimPaths(runtimeRoot = DEFAULT_SHIM_RUNTIME_ROOT, helperRoot = 
   return Object.freeze({
     gitCredentialHelper: `${helperRoot}/bin/git-credential`,
     ghTokenEntry: `${helperRoot}/shim/gh-token.js`,
+    glabTokenEntry: `${helperRoot}/shim/glab-token.js`,
     autoMergeEntry: `${helperRoot}/shim/auto-merge.js`,
     mcpBridgeEntry: `${helperRoot}/shim/mcp-bridge.js`,
     ghWrapperDir: `${helperRoot}/pathbin`,
+    runtimeWrapperDir: `${runtimeRoot}/pathbin`,
     dshPresetDir: `${helperRoot}/dsh/agent-presets/${SANDBOX_DSH_PRESET_ID}`,
     gitConfigDir: `${runtimeRoot}/git`,
     configFilesDir: `${runtimeRoot}/config-files`,
     skillStagingDir: `${runtimeRoot}/skills-staging`,
+    bundleStagingDir: `${runtimeRoot}/bundle-staging`,
     tunnels: Object.freeze({ gitcred: `${runtimeRoot}/gitcred.sock`, mcp: `${runtimeRoot}/mcp.sock` })
   })
 }
@@ -82,6 +90,9 @@ export const SANDBOX_GIT_CONFIG_DIR = DEFAULT_SHIM_PATHS.gitConfigDir
 
 /** Shim-owned scratch space for bounded skill snapshots; callers receive opaque handles only. */
 export const SANDBOX_SKILL_STAGING_DIR = DEFAULT_SHIM_PATHS.skillStagingDir
+
+/** Shim-owned staging for Source Cache write-back bundles; outside the workspace so the runtime never sees them. */
+export const SANDBOX_BUNDLE_STAGING_DIR = DEFAULT_SHIM_PATHS.bundleStagingDir
 
 /**
  * Where a git-repo workspace is checked out, relative to the pod's workspace mount.

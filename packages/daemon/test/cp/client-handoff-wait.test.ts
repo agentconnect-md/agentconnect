@@ -1,6 +1,10 @@
 // A CP handoff closes the control socket for seconds: turn-path requests wait it out, and only idempotent reads are re-sent.
 import { describe, it, expect, vi } from 'vitest'
-import { buildEnvelope, AGENT_MEMORY_STORE_V1_FEATURE } from '@agentconnect.md/protocol'
+import {
+  buildEnvelope,
+  AGENT_MEMORY_STORE_V1_FEATURE,
+  AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE
+} from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
@@ -55,7 +59,11 @@ function harness() {
   return { clock, transports, connect, client: new CpClient(deps) }
 }
 
-async function handshake(t: FakeTransport, epoch: number): Promise<void> {
+async function handshake(
+  t: FakeTransport,
+  epoch: number,
+  serverFeatures: string[] = [AGENT_MEMORY_STORE_V1_FEATURE]
+): Promise<void> {
   const auth = t.lastSent()
   t.pushInbound(
     JSON.stringify(
@@ -78,7 +86,7 @@ async function handshake(t: FakeTransport, epoch: number): Promise<void> {
           crons: [],
           leases: [],
           drop: { assignments: [], crons: [] },
-          serverFeatures: [AGENT_MEMORY_STORE_V1_FEATURE]
+          serverFeatures
         },
         { corr: register.id }
       )
@@ -91,11 +99,11 @@ function sentOf(t: FakeTransport, type: string): Array<{ id: string; type: strin
   return t.sent.map((text) => JSON.parse(text)).filter((frame) => frame.type === type)
 }
 
-async function readyHarness() {
+async function readyHarness(serverFeatures?: string[]) {
   const h = harness()
   h.client.start()
   await tick()
-  await handshake(h.transports[0]!, 1)
+  await handshake(h.transports[0]!, 1, serverFeatures)
   expect(h.client.state).toBe('READY')
   return h
 }
@@ -168,6 +176,54 @@ describe('CpClient turn-path requests across a CP handoff', () => {
     expect(sentOf(transports[1]!, 'memory/store')).toHaveLength(0)
   })
 
+  it('re-sends a duty claim that was in flight when the link closed, once, over the replaced link', async () => {
+    const { clock, transports, client } = await readyHarness()
+    const pending = client.claimDuty(AGENT)
+    await tick()
+    expect(sentOf(transports[0]!, 'duty/claim')).toHaveLength(1)
+    transports[0]!.simulateClose(1012, 'restarting')
+    await tick()
+    clock.advance(1000)
+    await tick()
+    await handshake(transports[1]!, 2)
+    const [resent] = sentOf(transports[1]!, 'duty/claim')
+    expect(resent).toBeDefined()
+    const holder = '33333333-3333-4333-8333-333333333333'
+    transports[1]!.pushInbound(
+      JSON.stringify(buildEnvelope('duty/claim/ok', { granted: false, holder }, { corr: resent!.id }))
+    )
+    await expect(pending).resolves.toEqual({ granted: false, holder })
+  })
+
+  it('re-sends a memory/store write once over the replaced link, under the operation id the CP deduplicates', async () => {
+    const features = [AGENT_MEMORY_STORE_V1_FEATURE, AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE]
+    const { clock, transports, client } = await readyHarness(features)
+    const pending = client.memoryStore({
+      agentId: AGENT,
+      op: { op: 'memory-append', root: '.', rel: 'notes.md.tmp', content: 'x', create: true }
+    })
+    await tick()
+    const [first] = sentOf(transports[0]!, 'memory/store') as unknown as Array<{
+      id: string
+      payload: { operationId?: string }
+    }>
+    expect(first!.payload.operationId).toBeDefined()
+    transports[0]!.simulateClose(1012, 'restarting')
+    await tick()
+    clock.advance(1000)
+    await tick()
+    await handshake(transports[1]!, 2, features)
+    const [resent] = sentOf(transports[1]!, 'memory/store') as unknown as Array<{
+      id: string
+      payload: { operationId?: string }
+    }>
+    expect(resent!.payload.operationId).toBe(first!.payload.operationId)
+    transports[1]!.pushInbound(
+      JSON.stringify(buildEnvelope('memory/store/ok', { ok: true, value: { size: 1 } }, { corr: resent!.id }))
+    )
+    await expect(pending).resolves.toEqual({ ok: true, value: { size: 1 } })
+  })
+
   it('fails fast when the link never came up, so a startup without a CP stays local-first', async () => {
     const { client } = harness()
     client.start()
@@ -211,6 +267,32 @@ describe('CpClient turn-path requests across a CP handoff', () => {
     expect(settled).toBe(false)
     await client.stop()
     await expect(outcome).resolves.toMatchObject({ message: expect.stringMatching(/control plane unreachable/) })
+  })
+})
+
+describe('CpClient turn-path deadlines', () => {
+  it('spends the handoff wait out of the request budget instead of adding it on top', async () => {
+    const { clock, transports, client } = await readyHarness()
+    transports[0]!.simulateClose(1006, 'gone')
+    let settled = false
+    const outcome = client
+      .channelAgents({ platform: 'slack', requesterAgentId: AGENT })
+      .catch((err: unknown) => err)
+      .finally(() => (settled = true))
+    // The replacement link takes 9 of the 10 seconds a request waits for one.
+    for (let elapsed = 0; elapsed < 9_000; elapsed += 1000) {
+      clock.advance(1000)
+      await tick()
+    }
+    await handshake(transports.at(-1)!, 2)
+    expect(sentOf(transports.at(-1)!, 'channel/agents')).toHaveLength(1)
+    // Unanswered, it gives up with the 25 seconds it had before the wait existed, not 25 more.
+    for (let elapsed = 9_000; elapsed < 24_000; elapsed += 500) {
+      clock.advance(500)
+      await tick()
+    }
+    expect(settled).toBe(true)
+    await expect(outcome).resolves.toBeInstanceOf(Error)
   })
 })
 

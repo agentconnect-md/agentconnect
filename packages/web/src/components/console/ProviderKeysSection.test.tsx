@@ -75,6 +75,24 @@ afterEach(async () => {
 })
 
 describe('Provider keys configuration', () => {
+  it('offers OpenAI keys for Decisions while hiding providers without consumers', async () => {
+    mocks.fetchProviderKeys.mockResolvedValue([
+      { ...empty, provider: 'openai', name: 'OpenAI' },
+      { ...empty, provider: 'openrouter', name: 'OpenRouter' }
+    ])
+    await render()
+    expect(element.textContent).toContain('OpenAI')
+    expect(element.textContent).not.toContain('OpenRouter')
+    await click('Add key')
+    await enterKey('example-openai-key')
+    await click('Save')
+    expect(mocks.setProviderKey).toHaveBeenCalledWith('example-org', 'openai', {
+      apiKey: 'example-openai-key',
+      endpoint: null,
+      headers: {}
+    })
+  })
+
   it('keeps optional connection settings open while editing the endpoint and headers', async () => {
     await render()
     await click('Add key')

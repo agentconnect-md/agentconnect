@@ -135,7 +135,7 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     const otherPosted = JSON.stringify((other.conn.postBlocks.mock.calls[0] as unknown[])[1])
     expect(otherPosted).toContain('https://console.example/sessions/outward-1')
     expect(otherPosted).not.toContain('please run ls /')
-    await other.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
+    await other.coordinator.releaseApprovals(OWNER, ACP_SESSION)
     await other.store.close()
     const requestId = requestIdOf(w.route)
 
@@ -150,6 +150,31 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     const rows = await w.store.listPermissionRequests(AGENT)
     expect(rows).toMatchObject([{ status: 'allowed', resolvedBy: 'slack:T1:U1', resolvedByName: 'Ada' }])
     expect(w.conn.updateBlocks).toHaveBeenCalled()
+    await w.store.close()
+  })
+
+  it('settles a console decision on the DM card with the chosen option and its decider (#2592)', async () => {
+    const w = await world({ platform: 'slack', requesterId: 'U1' })
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
+    await vi.waitFor(() => expect(w.coordinator.dmNotifiedVia(requestIdOf(w.route), AGENT, 'int-1')).toBe(true))
+    const requestId = requestIdOf(w.route)
+    const ack = await w.coordinator.decideEditorPermission({
+      agentId: AGENT,
+      requestId,
+      decision: 'deny',
+      optionId: 'o-deny',
+      decidedBy: 'user:cu-2',
+      decidedByName: 'Grace'
+    })
+    expect(ack).toEqual({ ok: true })
+    await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-deny' } })
+    const rewritten = JSON.stringify((w.conn.updateBlocks.mock.calls[0] as unknown[])[2])
+    expect(rewritten).toContain('Deny — Grace')
+    expect(rewritten).toContain('https://console.example/sessions/outward-1')
+    // Settled once: a late DM tap finds nothing to decide.
+    await w.coordinator.handlePermissionChoice({ requestId, optionId: 'o-allow', actor: { userId: 'U1' } })
+    const rows = await w.store.listPermissionRequests(AGENT)
+    expect(rows).toMatchObject([{ status: 'denied', resolvedBy: 'user:cu-2', resolvedByName: 'Grace' }])
     await w.store.close()
   })
 
@@ -186,7 +211,7 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     expect(JSON.stringify(overBlocks[0])).toContain('https://console.example/sessions/outward-1|Open session')
     // The request itself is untouched: still open on the editor path, exactly as before.
     expect((await over.store.listPermissionRequests(AGENT))[0]!.status).toBe('pending')
-    await over.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
+    await over.coordinator.releaseApprovals(OWNER, ACP_SESSION)
     await over.store.close()
   })
 
@@ -269,7 +294,7 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     const w = await world()
     const decided = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
-    await w.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
+    await w.coordinator.releaseApprovals(OWNER, ACP_SESSION)
     await expect(decided).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     expect(w.conn.updateBlocks).toHaveBeenCalledTimes(1)
     expect((await w.store.listPermissionRequests(AGENT))[0]!.status).toBe('expired')
@@ -319,7 +344,7 @@ describe('approval activity (slack-approval-dm.md §7)', () => {
     expect(activity).toHaveBeenCalledTimes(1)
     expect(activity).toHaveBeenLastCalledWith(OWNER, ACP_SESSION, 'awaiting_permission')
 
-    await w.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
+    await w.coordinator.releaseApprovals(OWNER, ACP_SESSION)
     await expect(parked).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     expect(activity).toHaveBeenLastCalledWith(OWNER, ACP_SESSION, 'idle')
     expect(w.coordinator.isAwaitingApproval(OWNER, ACP_SESSION)).toBe(false)

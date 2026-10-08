@@ -142,6 +142,19 @@ const accessOf = (title: 'Read only' | 'Read & write', name = 'example-org/examp
   )
 
 describe('EditWorkspaceModal repository access toggle', () => {
+  it('names a suspended row beside its repository, with the reason on hover', async () => {
+    await render([
+      row({ stale: { since: '2026-09-20T00:00:00.000Z', reason: 'identity_unlinked' } }),
+      row({ id: 'repo-auth-2', repoFullName: 'example-org/second', stale: null })
+    ])
+    const badges = Array.from(document.querySelectorAll<HTMLElement>('span[title]')).filter((el) =>
+      el.textContent?.includes('Suspended')
+    )
+    expect(badges).toHaveLength(1)
+    expect(badges[0]?.title).toBe('The member who authorized it no longer has a linked GitHub account')
+    expect(badges[0]?.parentElement?.textContent).toContain('example-org/example-repo')
+  })
+
   it('replaces the static tier badge, pressing neither segment for a legacy comment row', async () => {
     await render([row(), row({ id: 'repo-auth-2', repoFullName: 'example-org/legacy', access: 'comment' })])
     expect(accessOf('Read only')?.getAttribute('aria-pressed')).toBe('true')

@@ -150,10 +150,11 @@ transcript is still sitting there, so the new session would inherit the retired
 conversation's history. A timestamp needs no surviving state: the clock only moves
 forward, so a coordinate minted after a purge is one that has never been used.
 
-The same property answers what happens to a conversation that goes quiet past the
-retention window: its session row, ACP session id, and worktree are gone, so its model
+The same property is what keeps a superseded coordinate from being reused: once `!new` or
+retention retires a session, its row, ACP session id, and worktree are gone, so its model
 context is gone regardless. Minting a fresh coordinate reports that honestly instead of
-presenting a continuation that cannot continue.
+presenting a continuation that cannot continue. A conversation's current coordinate is not
+reclaimed for idleness at all (§6.3).
 
 Two mechanics follow:
 
@@ -352,9 +353,19 @@ per-agent coordinate buys is that `!new` stays a per-agent command like every ot
   worktree, and leaves transcript rows behind. For an `append` conversation it also clears
   the reservation row naming the purged coordinate, inside `deleteSession` itself and
   conditionally on it still naming that coordinate (§3.3) — otherwise the next message
-  would rejoin a coordinate whose session is gone but whose transcript is not. An actively
-  used `append` session is never a GC candidate; a conversation quiet past the window loses
-  its session and the next message mints a fresh coordinate.
+  would rejoin a coordinate whose session is gone but whose transcript is not.
+- **The current `append` session is exempt from idle reclaim.** Choosing `append` promises
+  one conversation, so the sweep skips a session whose conversation is still `append` on
+  one of the agent's live integrations and whose coordinate is the one the reservation
+  names, however long it has been quiet. Each condition is how the session retires
+  instead: deleting the agent or the integration, flipping the conversation back to
+  `createNew`, or `!new` rotating the reservation makes it an ordinary session, which the
+  next sweep past the window deletes and whose reservation it clears as above. The cost is
+  that the run state stays with the row — the ACP session, the worktree on a daemon host,
+  and on the pool the per-session volume when the agent uses session isolation — bounded by
+  one session per agent per `append` conversation. Keeping the row while reclaiming idle run
+  state, then rebuilding the worktree and resuming the ACP session by id, is a follow-up
+  that first needs every runtime verified to resume that way.
 - **Thread affinity and peer fan-out need their own record** — see §6.4. This is the one
   place `append` does not leave activation alone.
 - **Unaffected.** The trigger, gating, and mute fences all key on `channel`, never on a
@@ -520,6 +531,17 @@ the trigger's — `WebPlatformModule`'s `channelListSemantics`
 `sessionModes` list — so a platform opts out by omitting it rather than having core branch
 on a platform name.
 
+**A 1:1 DM row gets the control where its platform's DMs are not continuous already.**
+Telegram, Discord and Feishu key a DM as one session (`thread-keys.ts`); Slack keys a session
+per top-level message, like a channel. A module opts its DM rows in with `dmSessionModes`,
+which Slack declares ([assistant-mode.md](assistant-mode.md) §5.2). Nothing on the daemon or
+the CP branches on the conversation kind: an `append` DM keys on its reservation exactly as a
+channel does, and each answer still posts into the physical thread its question came from.
+Slack's Assistant "new chat" (`assistant_thread_started`) rotates an `append` DM's
+reservation as `!new` would (§7.1), over both the Socket Mode and the relay ingress; a
+`createNew` DM ignores it, since its new thread is a new session already. Group DMs keep no
+control.
+
 **An `append` session is labelled by its room, not by a person.** The session list and
 detail header render a session's `user` column from `triggeredBy`/`triggeredByName`, which
 is frozen first-wins on the daemon ("the sender that created the session keeps the credit
@@ -530,6 +552,15 @@ its own column, so the person column reads `Since Mar 4` and the two together id
 session. That also makes `!new` visible in the console, since two generations are otherwise
 indistinguishable in a list. The date carries its year outside the current one, the rule the
 list's own timestamps follow.
+
+**Assistant mode fixes the mode at projection.** For an agent in assistant mode
+([assistant-mode.md](assistant-mode.md) §5.2), the spec projection keys every row on one
+long session where its platform's manifest lists the conversation kind in `appendKinds` —
+rooms on every platform but Linear, 1:1 DMs on Slack — except a By decision row, which
+keeps its own mode. The stored rows are not rewritten, so switching the mode off restores
+each row's own choice. The console shows those rows as `Single session`, with no other
+choice, while the mode is on. `appendKinds` and the web module's `sessionModes` /
+`dmSessionModes` state one fact; a web test keeps them in agreement.
 
 **Linear declares `createNew` only.** A Linear row is a team and every issue in it is its own
 thread, so appending would pool a whole team into one session — a meaning this setting has
@@ -555,7 +586,9 @@ conversation's long-lived session, and flipping it to `private` would move every
 participant's messages into a session only that person can read and only that person can
 continue from the console, with the privacy bit pushed to the daemon to exclude those
 turns from memory capture. An `append` session's audience follows its conversation, so it
-is not one person's to change.
+is not one person's to change. The `session.visibility.change` policy enforces this from
+the session's recorded `thread`, treating an unread coordinate as `append`, and the console
+shows the tier read-only for such a session.
 
 The eventual home for "audience = the conversation" is the existing external tier —
 `externalProvider` + `externalScopeId` bound to an `ExternalScope`, which nulls
@@ -602,6 +635,9 @@ open question about transcript retention in §12, not to a read that does not ex
 - `packages/daemon`, minting — the maximum lookup ignores the ACP-id filter; a mint after
   every append session was retention-purged produces a coordinate that no surviving
   transcript row uses; a clock moved backwards still mints above the current maximum.
+- `packages/daemon`, retention — the current append session survives the idle window; one
+  superseded by `!new`, or in a conversation no longer on `append`, is purged with its
+  reservation.
 - `packages/daemon`, concurrency — two messages arriving together into a conversation with
   no append session resolve to ONE coordinate, enter one inbox lane, and claim one serial
   gate; two simultaneous `!new` commands advance the conversation once and the CAS loser
@@ -625,8 +661,8 @@ open question about transcript retention in §12, not to a read that does not ex
   dormant owner is still revived, and peer fan-out still reaches the second agent so §3.4's
   mutual visibility holds.
 - `packages/web` — the row renders both controls, a platform that omits `sessionModes`
-  renders only the trigger, a direct conversation renders no session-mode control, and the
-  `PATCH` carries the chosen mode.
+  renders only the trigger, a direct conversation renders no session-mode control unless its
+  platform declares `dmSessionModes`, and the `PATCH` carries the chosen mode.
 
 ## 12. Open questions
 

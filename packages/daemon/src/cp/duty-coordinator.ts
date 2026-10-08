@@ -97,6 +97,7 @@ export interface DutyConvergeHost {
   syncOrchestrationDeadlines(): Promise<void>
   catchUpMissedSchedules(agentIds: string[]): Promise<void>
   drainSessionPurges(): Promise<void>
+  drainCronReports(): Promise<void>
   replayGainedSessionMetadata(agentIds: readonly string[]): Promise<void>
   /** Inbox rows a newly-gained duty owes, replayed once convergence is idle. */
   pendingInboxReplayAgents(): Set<string>
@@ -360,7 +361,11 @@ export class DutyCoordinator {
     // After the arm, so a catch-up runs against the schedules this member now actually holds.
     await this.host.catchUpMissedSchedules(result.agentsGained)
     // The purge-receipt drain is holder-scoped, so a receipt a prior holder left is owed by this member now.
-    if (result.agentsGained.length) void this.host.drainSessionPurges()
+    if (result.agentsGained.length) {
+      void this.host.drainSessionPurges()
+      // Cron outcomes a prior holder left unacknowledged are this member's to send too.
+      void this.host.drainCronReports()
+    }
     // Same for the session-metadata outbox: a snapshot the previous holder parked is this member's to emit.
     await this.host.replayGainedSessionMetadata(result.agentsGained)
   }

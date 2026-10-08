@@ -16,7 +16,7 @@ import {
   type ResolvedRoutedChannel
 } from '../decisions/bundle.js'
 import type { ActivationRule } from '@agentconnect.md/activation-policy'
-import type { ChannelSessionMode, RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
+import type { ChannelSessionMode, PlaceTrustLevel, RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
 
 export type RoutingMatch = BindMatch
 
@@ -70,6 +70,11 @@ export function integrationRouting(int: Integration): {
  *  before the setting existed and what an older CP's spec still means. */
 export function conversationSessionMode(int: Integration, channel: string): ChannelSessionMode {
   return integrationCore(int).sessionModes.find((entry) => entry.channel === channel)?.mode ?? 'createNew'
+}
+
+/** A place's trust level (assistant-mode.md §5.3): external when the platform detected it, otherwise internal. */
+export function conversationTrustLevel(int: Integration, channel: string): PlaceTrustLevel {
+  return integrationCore(int).externalChannels.includes(channel) ? 'external' : 'internal'
 }
 
 /**

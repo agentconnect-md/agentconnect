@@ -40,7 +40,11 @@ const CoreConfigShape = {
   PORT: z.coerce.number().int().default(8080),
   HOST: z.string().default('0.0.0.0'),
   DATABASE_URL: z.string().url(), // Postgres (Prisma)
+  // pg pool behind Prisma; pg's own default of 10 held daemon handshakes to ~75/s against a database on another host.
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).default(20),
   WS_PATH: z.string().default('/daemon/ws'),
+  // Daemon auth/register steps run at once; a further auth gets a retryable RATE_LIMITED. Unset: three quarters of DATABASE_POOL_MAX.
+  DAEMON_HANDSHAKE_CONCURRENCY: z.coerce.number().int().min(1).optional(),
   HEARTBEAT_SEC: z.coerce.number().int().default(15), // → AuthOk.heartbeatSec (protocol §2.2)
   MISSED_BEATS: z.coerce.number().int().default(3), // freeze after 3×heartbeat
   REASSIGN_GRACE_SEC: z.coerce.number().int().default(60),
@@ -53,6 +57,10 @@ const CoreConfigShape = {
   // sweeps every CRON_RUN_REAP_INTERVAL_SEC.
   CRON_RUN_TTL_SEC: z.coerce.number().int().default(1800),
   CRON_RUN_REAP_INTERVAL_SEC: z.coerce.number().int().default(300),
+  // Repository-grant re-attestation, where the per-user GitHub gate is configured: sweep cadence, per-grant recheck age, grants per sweep.
+  REPO_GRANT_REATTEST_INTERVAL_SEC: z.coerce.number().int().min(60).default(600),
+  REPO_GRANT_REATTEST_AFTER_SEC: z.coerce.number().int().min(3600).default(86_400),
+  REPO_GRANT_REATTEST_BATCH: z.coerce.number().int().min(1).max(500).default(25),
   // ── Session-access cache policy (session-access-cold-visit.md §2.3) ──
   // Any cached access decision older than this must be re-verified (seconds).
   // Per-user checks (workspace membership, repo permission) block until
@@ -173,7 +181,7 @@ const CoreConfigShape = {
   // ignores both keys.
   PRESET_AGENT_POOL_RUNTIME: z.string().default('dsh-acp'),
   // Model pinned on that placement; empty ⇒ leave it to the runtime's own default.
-  PRESET_AGENT_POOL_MODEL: z.string().default('deepseek-v4-flash'),
+  PRESET_AGENT_POOL_MODEL: z.string().default('deepseek-official::deepseek-flash'),
   // (SLACK_PLATFORM_* and FEISHU/LARK_PLATFORM_* moved into the provider env
   // shapes spread above.)
   // The MCP endpoint's dedicated public origin (agent-assistant.md §6.1), e.g.
@@ -375,6 +383,7 @@ const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher).super
 const BootstrapConfigSchema = z
   .object({
     DATABASE_URL: CoreConfigShape.DATABASE_URL,
+    DATABASE_POOL_MAX: CoreConfigShape.DATABASE_POOL_MAX,
     SECRET_CIPHER: CoreConfigShape.SECRET_CIPHER,
     VAULT_ADDR: CoreConfigShape.VAULT_ADDR,
     VAULT_TRANSIT_KEY: CoreConfigShape.VAULT_TRANSIT_KEY,

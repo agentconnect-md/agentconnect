@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { httpIntegrationToSpec, integrationToSpec } from './placement.js'
+import { httpIntegrationToSpec, integrationToSpec, isGatedAgent, type SpecOwner } from './placement.js'
 import { agentRecordToSpec } from './agentSpecAssembler.js'
 import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -69,17 +69,21 @@ const bot = (over: Partial<BotRecord> = {}): BotRecord =>
     ...over
   }) as BotRecord
 
+/** The owning agents the projection reads: restricted, and Everyone in assistant mode. */
+const RESTRICTED: SpecOwner = { visibility: 'restricted' }
+const ASSISTANT: SpecOwner = { visibility: 'org', assistantMode: { enabled: true } }
+
 /** `integrationToSpec` with the registry + the matching bot row pre-bound, so the
  *  cases below keep reading as the trigger→bindRules fold they are testing. */
 const specOf = async (
   i: IntegrationRecord,
   secret: Parameters<typeof integrationToSpec>[3],
   channels: IntegrationChannelRecord[] = [],
-  gated = false
+  owner?: SpecOwner
 ) => {
   // Every platform exercised here always has a deliverable payload; `null` is the
   // withheld-integration answer, pinned in its own suite below.
-  const spec = await integrationToSpec(PLATFORMS, i, bot({ platform: i.platform }), secret, channels, gated)
+  const spec = await integrationToSpec(PLATFORMS, i, bot({ platform: i.platform }), secret, channels, owner)
   if (!spec) throw new Error('expected a deliverable spec')
   return spec
 }
@@ -133,7 +137,7 @@ describe('integrationToSpec sessionModes', () => {
   // in every mode, so withholding it would silently downgrade a restricted agent to
   // createNew while the console shows append.
   it('ships for a gated agent, whose bindRules carry no unscoped defaults', async () => {
-    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention', 'channel', 'append')], true)
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention', 'channel', 'append')], RESTRICTED)
     expect(spec.core.gated).toBe(true)
     expect(spec.core.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
   })
@@ -146,6 +150,126 @@ describe('integrationToSpec sessionModes', () => {
     ])
     expect(spec?.core.bindRules).toEqual([])
     expect(spec?.core.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
+  })
+})
+
+// assistant-mode.md §5.1, §5.2: assistant mode gates the agent and gives each place one session, at projection only.
+describe('assistant-mode places', () => {
+  const decided = (channelId: string, sessionMode: 'createNew' | 'append' = 'createNew'): IntegrationChannelRecord => ({
+    ...channel(channelId, 'mention', 'channel', sessionMode),
+    trigger: 'decision',
+    decisionBinding: {
+      type: 'gate',
+      decisionId: '99999999-9999-4999-8999-999999999999',
+      when: { type: 'boolean', values: [true] }
+    }
+  })
+  const rows = () => [
+    channel('C1', 'mention'),
+    channel('C2', 'off'),
+    channel('C3', 'any', 'channel', 'append'),
+    channel('D1', 'any', 'im'),
+    channel('G1', 'mention', 'mpim'),
+    decided('C4'),
+    decided('C5', 'append')
+  ]
+  const OFF: SpecOwner = { visibility: 'org', assistantMode: { enabled: false } }
+
+  it('gates an Everyone agent in assistant mode exactly like a restricted one', async () => {
+    expect(isGatedAgent({ visibility: 'org' })).toBe(false)
+    expect(isGatedAgent(OFF)).toBe(false)
+    expect(isGatedAgent(ASSISTANT)).toBe(true)
+    expect(isGatedAgent(RESTRICTED)).toBe(true)
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention'), channel('C2', 'off')], ASSISTANT)
+    expect(spec.core.gated).toBe(true)
+    expect(spec.core.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
+    expect(spec.core.mutedChannels).toEqual([])
+  })
+
+  it('keys rooms and Slack DMs on one session, leaving group DMs and Decision rows on their own mode', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, rows(), ASSISTANT)
+    expect(spec.core.sessionModes).toEqual([
+      { channel: 'C1', mode: 'append' },
+      { channel: 'C2', mode: 'append' },
+      { channel: 'C3', mode: 'append' },
+      { channel: 'D1', mode: 'append' },
+      { channel: 'C5', mode: 'append' }
+    ])
+  })
+
+  it("restores every row's own mode once assistant mode is off", async () => {
+    for (const owner of [undefined, OFF, RESTRICTED]) {
+      const spec = await specOf(INTEGRATION, SECRET, rows(), owner)
+      expect(spec.core.sessionModes).toEqual([
+        { channel: 'C3', mode: 'append' },
+        { channel: 'C5', mode: 'append' }
+      ])
+    }
+  })
+
+  it('forces the same on a relay-managed member spec', async () => {
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      rows(),
+      ASSISTANT
+    )
+    expect(spec?.core.gated).toBe(true)
+    expect(spec?.core.sessionModes.map((m) => m.channel)).toEqual(['C1', 'C2', 'C3', 'D1', 'C5'])
+  })
+
+  it('leaves a DM that is one continuous session already on its platform keying', async () => {
+    const spec = await specOf(
+      { ...INTEGRATION, platform: 'telegram' },
+      { botToken: '1:a', appToken: null, signingSecret: null },
+      [channel('-100', 'mention'), channel('42', 'any', 'im')],
+      ASSISTANT
+    )
+    expect(spec.core.sessionModes).toEqual([{ channel: '-100', mode: 'append' }])
+  })
+
+  it('skips a platform whose rows never append', async () => {
+    const linear = buildCpPlatformRegistry([
+      {
+        platformId: 'linear',
+        installRoutes: () => [],
+        credentialBodySchema: z.object({}),
+        validateConfig: () => Promise.resolve({ ok: true as const, identity: {} }),
+        buildNewBotInstall: () => ({ secrets: { botToken: '', appToken: null, signingSecret: null } }),
+        secretShape: { slots: {}, httpAssignRequires: [] },
+        projectIntegrationConfig: () => Promise.resolve({})
+      }
+    ])
+    const spec = await httpIntegrationToSpec(
+      linear,
+      { ...INTEGRATION, platform: 'linear' },
+      bot({ platform: 'linear', transport: 'http' }),
+      SECRET,
+      [channel('team_eng', 'mention')],
+      ASSISTANT
+    )
+    expect(spec?.core.gated).toBe(true)
+    expect(spec?.core.sessionModes).toEqual([])
+  })
+})
+
+// assistant-mode.md §5.3: the detected external conversations; the daemon reads every other enabled one as internal.
+describe('integrationToSpec externalChannels', () => {
+  const shared = (channelId: string): IntegrationChannelRecord => ({
+    ...channel(channelId, 'mention'),
+    externalReason: 'externallyShared'
+  })
+
+  it('lists only the conversations the platform detected as external', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [shared('C1'), channel('C2', 'mention'), shared('C3')])
+    expect(spec.core.externalChannels).toEqual(['C1', 'C3'])
+  })
+
+  it('ships for a relay-managed bot too', async () => {
+    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, [shared('C1')])
+    expect(spec?.core.externalChannels).toEqual(['C1'])
   })
 })
 
@@ -207,7 +331,7 @@ describe('integrationToSpec conversation gating (§14)', () => {
       INTEGRATION,
       SECRET,
       [channel('C1', 'mention'), channel('C2', 'any'), channel('C3', 'off'), channel('D1', 'any', 'im')],
-      true
+      RESTRICTED
     )
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
     expect(spec.core.gated).toBe(true)
@@ -219,7 +343,7 @@ describe('integrationToSpec conversation gating (§14)', () => {
   })
 
   it('gated with no enabled conversations ships an EMPTY rule set (fail-closed)', async () => {
-    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'off', 'im')], true)
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'off', 'im')], RESTRICTED)
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
     expect(spec.core.bindRules).toEqual([])
     expect(spec.core.gated).toBe(true)
@@ -258,7 +382,7 @@ describe('integrationToSpec mutedChannels', () => {
   // A gated integration says Off by having no rule for the conversation; stating it
   // twice would let the two representations drift apart.
   it('stays empty for a gated integration, whose Off is the missing rule', async () => {
-    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), channel('C2', 'mention')], true)
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), channel('C2', 'mention')], RESTRICTED)
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
     expect(spec.core?.mutedChannels).toEqual([])
     expect(spec.core?.bindRules).toEqual([{ channel: 'C2', match: { kind: 'mention' } }])
@@ -340,7 +464,7 @@ describe('By decision projection (decisions.md §7.1)', () => {
   })
 
   it('never turns a gated By decision conversation into a mention rule', async () => {
-    const spec = await specOf(INTEGRATION, SECRET, rows(), true)
+    const spec = await specOf(INTEGRATION, SECRET, rows(), RESTRICTED)
     expect(spec.core.bindRules).toEqual([
       { channel: 'C1', match: { kind: 'decision' } },
       { channel: 'C3', match: { kind: 'auto' } }
@@ -362,7 +486,14 @@ describe('By decision projection (decisions.md §7.1)', () => {
       ['C1', true],
       ['C2', false]
     ])
-    const gated = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows(), true)
+    const gated = await httpIntegrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      rows(),
+      RESTRICTED
+    )
     expect(gated?.core.bindRules).toContainEqual({ channel: 'C1', match: { kind: 'decision' } })
     expect(gated?.core.decisions.definitions).toEqual([definition])
   })
@@ -394,7 +525,14 @@ describe('shared-bot router projection on member specs (decisions.md §7.1)', ()
   })
 
   it('gives a gated member a decision rule for an enabled routed channel only', async () => {
-    const gated = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows(), true)
+    const gated = await httpIntegrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      rows(),
+      RESTRICTED
+    )
     expect(gated?.core.bindRules).toEqual([{ channel: 'R1', match: { kind: 'decision' } }])
   })
 })
@@ -408,22 +546,22 @@ describe('integrationToSpec platform fences (§9)', () => {
     ])
     // A SERVED id (slack) whose provider is simply not composed — the case that
     // reaches the provider fence rather than `toDbPlatform`'s served-set check.
-    await expect(integrationToSpec(withoutSlack, INTEGRATION, bot(), SECRET, [], false)).rejects.toThrow(
+    await expect(integrationToSpec(withoutSlack, INTEGRATION, bot(), SECRET, [])).rejects.toThrow(
       /no control-plane platform provider registered for slack/
     )
   })
 
   it('refuses an id outside the served set at the provider fence', async () => {
-    await expect(
-      integrationToSpec(PLATFORMS, foreign, bot({ platform: 'mastodon' }), SECRET, [], false)
-    ).rejects.toThrow(/no control-plane platform provider registered for mastodon/)
+    await expect(integrationToSpec(PLATFORMS, foreign, bot({ platform: 'mastodon' }), SECRET, [])).rejects.toThrow(
+      /no control-plane platform provider registered for mastodon/
+    )
   })
 
   it('refuses a session-identity id, which has no persisted integration at all', async () => {
     const webchat = { ...INTEGRATION, platform: 'webchat' }
-    await expect(
-      integrationToSpec(PLATFORMS, webchat, bot({ platform: 'webchat' }), SECRET, [], false)
-    ).rejects.toThrow(/no control-plane platform provider registered for webchat/)
+    await expect(integrationToSpec(PLATFORMS, webchat, bot({ platform: 'webchat' }), SECRET, [])).rejects.toThrow(
+      /no control-plane platform provider registered for webchat/
+    )
   })
 })
 
@@ -453,11 +591,11 @@ describe('a provider with no deliverable payload withholds the integration', () 
   ])
 
   it('answers null from the direct (socket) assembler', async () => {
-    expect(await integrationToSpec(withheld, INTEGRATION, bot(), SECRET, [], false)).toBeNull()
+    expect(await integrationToSpec(withheld, INTEGRATION, bot(), SECRET, [])).toBeNull()
   })
 
   it('answers null from the shared (http) assembler', async () => {
-    expect(await httpIntegrationToSpec(withheld, INTEGRATION, bot({ transport: 'http' }), SECRET, [], false)).toBeNull()
+    expect(await httpIntegrationToSpec(withheld, INTEGRATION, bot({ transport: 'http' }), SECRET, [])).toBeNull()
   })
 
   it('still emits a spec when the provider returns a payload, including a falsy one', async () => {
@@ -474,7 +612,7 @@ describe('a provider with no deliverable payload withholds the integration', () 
         projectIntegrationConfig: () => Promise.resolve({})
       }
     ])
-    expect(await integrationToSpec(empty, INTEGRATION, bot(), SECRET, [], false)).toMatchObject({
+    expect(await integrationToSpec(empty, INTEGRATION, bot(), SECRET, [])).toMatchObject({
       integrationId: INTEGRATION.id,
       config: {}
     })

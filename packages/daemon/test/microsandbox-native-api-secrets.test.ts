@@ -96,7 +96,9 @@ describe.skipIf(process.platform !== 'linux')('microsandbox native file API cred
         primaryApiKey: secret.placeholder,
         additionalModelOptionsCache: host.additionalModelOptionsCache
       })
-      expect(launch.toolSandbox!.protectedCredentialRoots).toContain(join(launch.runtimeHome!, '.claude'))
+      // The projected config (its placeholder, MCP state) is denied; the rest of `.claude` is read-only.
+      expect(launch.toolSandbox!.protectedCredentialRoots).toContain(path)
+      expect(launch.toolSandbox!.readOnlyStateRoots).toEqual([join(launch.runtimeHome!, '.claude')])
       projected.projects = { workspace: { approved: true } }
       write(path, projected)
       write(source, { ...host, primaryApiKey: 'fixture-rotated-key' })
@@ -153,7 +155,11 @@ describe.skipIf(process.platform !== 'linux')('microsandbox native file API cred
       tokens: null
     })
     expect(readFileSync(join(launch.runtimeHome!, '.codex', 'config.toml'), 'utf8')).not.toContain(key)
-    expect(launch.toolSandbox!.protectedCredentialRoots).toContain(join(launch.runtimeHome!, '.codex'))
+    // The placeholder auth file and the seeded config are denied; the rest of `.codex` is read-only.
+    expect(launch.toolSandbox!.protectedCredentialRoots).toEqual(
+      expect.arrayContaining([path, join(launch.runtimeHome!, '.codex', 'config.toml')])
+    )
+    expect(launch.toolSandbox!.readOnlyStateRoots).toEqual([join(launch.runtimeHome!, '.codex')])
     write(auth, { auth_mode: 'apikey', OPENAI_API_KEY: 'fixture-rotated-key' })
     expect(prepareMicrosandboxLaunch(opts).microsandbox.secrets![0]!.readValue()).toBe('fixture-rotated-key')
     expect(JSON.parse(readFileSync(path, 'utf8')).OPENAI_API_KEY).toBe(secret.placeholder)

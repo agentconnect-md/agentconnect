@@ -68,6 +68,12 @@ describe('agentSpecDigest', () => {
     expect(agentSpecDigest(selected)).not.toBe(agentSpecDigest(spec({})))
   })
 
+  it('digests a cleared assistant mode as the absent field, and a policy as content', () => {
+    expect(agentSpecDigest(spec({ assistantMode: null }))).toBe(agentSpecDigest(spec({})))
+    const enabled = spec({ assistantMode: { enabled: true, responsibleUserId: 'usr_1' } })
+    expect(agentSpecDigest(enabled)).not.toBe(agentSpecDigest(spec({})))
+  })
+
   it('is insensitive to key order but sensitive to values', () => {
     const a = agentSpecDigest(spec({ env: { A: '1', B: '2' } }))
     const b = agentSpecDigest(spec({ env: { B: '2', A: '1' } }))

@@ -12,8 +12,13 @@
  * nothing but node builtins, so the path grammars live in the `gitcred/repo-path.ts` leaf and each
  * entry points at its own.
  */
-import { CODE_HOST_PROVIDERS, isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol'
-import { IMPLICIT_CREDENTIAL_PROVIDER, type ManagedCredentialHost } from '../gitcred/managed-hosts.js'
+import { CODE_HOST_PROVIDERS, gitRepoLabel, isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol'
+import {
+  IMPLICIT_CREDENTIAL_PROVIDER,
+  parseManagedBaseUrl,
+  stripHostPathPrefix,
+  type ManagedCredentialHost
+} from '../gitcred/managed-hosts.js'
 import type { CredentialRepoPathParser } from '../gitcred/repo-path.js'
 import type { ManagedCredentialScope } from '../workspace/git-injection.js'
 import { githubCredentials } from '../github/credentials.js'
@@ -29,6 +34,17 @@ export interface CodeHostSpecHosts {
   gitlabHost?: string
   /** The Gitea instance this spec's Gitea consumers address; absent ⇒ gitea.com (gitea-integration.md §11). */
   giteaHost?: string
+}
+
+/** The host-carrying fields of an agent's replicated spec, with absent hosts omitted rather than set undefined. */
+export function specHostsOf(agent: {
+  gitlabHost?: string | undefined
+  giteaHost?: string | undefined
+}): CodeHostSpecHosts {
+  return {
+    ...(agent.gitlabHost !== undefined ? { gitlabHost: agent.gitlabHost } : {}),
+    ...(agent.giteaHost !== undefined ? { giteaHost: agent.giteaHost } : {})
+  }
 }
 
 /** The numeric workspace identity a replicated spec may carry, one field per host whose grants are numerically qualified (§17.1). */
@@ -125,4 +141,15 @@ const LIVE_CREDENTIAL_PURPOSES: ReadonlySet<string> = new Set(
 /** True when a refusal of this purpose must not outlive the call that discovered it. */
 export function isLiveCredentialPurpose(purpose: string | undefined): boolean {
   return purpose !== undefined && LIVE_CREDENTIAL_PURPOSES.has(purpose)
+}
+
+/** A workspace repository's path from its host's instance root, under that host's grammar; undefined when it is not one. */
+export function workspaceRepositoryPath(
+  module: Pick<CodeHostCredentialModule, 'managedHost' | 'credentialRepoPath'>,
+  spec: CodeHostSpecHosts,
+  gitRepo: string
+): string | undefined {
+  const instance = parseManagedBaseUrl(module.managedHost(spec).baseUrl)
+  const stripped = instance ? stripHostPathPrefix(gitRepoLabel(gitRepo), instance.pathPrefix) : undefined
+  return stripped !== undefined ? module.credentialRepoPath(stripped) : undefined
 }

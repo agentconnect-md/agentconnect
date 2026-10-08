@@ -1,4 +1,5 @@
 // Human authorization after authentication and organization selection; see docs/designs/authorization-policy.md.
+import { isAppendCoordinate } from '@agentconnect.md/protocol'
 import type { SessionExternalAccessSnapshot, SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
 
 export type { Shareable, ViewCtx } from '../persistence/ports.js'
@@ -26,6 +27,9 @@ export interface SessionViewable {
   externalScopeId?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   classifiedPolicyRev?: bigint | null
+  /** The session's thread coordinate; null when it has none. Omitted means unread, which
+   *  `session.visibility.change` treats as an `append` coordinate (fail closed). */
+  thread?: string | null
 }
 
 export type AuthorizationRequest =
@@ -120,8 +124,16 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // `session.view`). A row with no recorded owner is re-classifiable by no
     // one. Deliberately NOT the role-based edit guard: the grant follows
     // OWNERSHIP, so a viewer-role member keeps control of their own DM.
+    // An `append` session is the whole conversation's long-lived session: its
+    // recorded owner is only the first poster, so its audience is no one's to
+    // change (channel-session-mode.md §9). An unread coordinate counts as one.
     case AuthorizationAction.SessionChangeVisibility:
-      return !request.resource.externalProvider && identityOwnsSession(request.resource, request.identitySet)
+      return (
+        !request.resource.externalProvider &&
+        request.resource.thread !== undefined &&
+        !isAppendCoordinate(request.resource.thread) &&
+        identityOwnsSession(request.resource, request.identitySet)
+      )
     // Continuation is an organization WRITE riding on view (webchat-cross-
     // integration-continuation.md §5.1): viewing a transcript is not authority
     // to make the bot speak in an external system, so the viewer role is

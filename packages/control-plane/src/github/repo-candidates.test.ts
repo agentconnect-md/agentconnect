@@ -54,7 +54,7 @@ function grant(
   }
 }
 
-function row(repoId: bigint): AgentRepoAuthorizationRecord {
+function row(repoId: bigint, stale: AgentRepoAuthorizationRecord['stale'] = null): AgentRepoAuthorizationRecord {
   return {
     id: `row-${repoId}`,
     agentId: AGENT.id,
@@ -64,7 +64,9 @@ function row(repoId: bigint): AgentRepoAuthorizationRecord {
     access: 'read',
     materialize: 'always',
     createdAt: new Date(0),
-    createdBy: null
+    createdBy: null,
+    attestedByUserId: null,
+    stale
   }
 }
 
@@ -160,6 +162,17 @@ describe('repository selector candidates (multi-repository-workspaces.md, The se
     const reply = await svc.forAgent({ ...AGENT, workspace, workspaceRepoId: 4n })
     // A gitlab row numbers a different repository, so the GitHub repository with that id stays a candidate.
     expect(reply.candidates.map((candidate) => candidate.repoId)).toEqual(['1', '3'])
+  })
+
+  it('offers a repository whose own row is stale through the grant, since the row no longer speaks for it', async () => {
+    const { svc } = service({
+      grants: [grant(1n)],
+      installations: [installation(1n)],
+      rosters: new Map([[1n, [repo(1), repo(2)]]]),
+      rows: [row(1n), row(2n, { since: new Date(0), reason: 'access_lost' })]
+    })
+    const reply = await svc.forAgent(AGENT)
+    expect(reply.candidates.map((candidate) => candidate.repoId)).toEqual(['2'])
   })
 
   it('skips a grant whose installation is suspended, revoked, or not this organization’s', async () => {

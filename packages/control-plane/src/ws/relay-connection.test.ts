@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
+  RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   buildRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
@@ -23,7 +24,7 @@ import { RelayRegistry } from './relay-registry.js'
 import type { Transport } from './transport.js'
 import { RelayAuthService } from '../registry/relayAuthService.js'
 import { ApiKeyCodec } from '../registry/apiKey.js'
-import type { ApiKeyRepo, RelayRepo, RelayRecord } from '../persistence/ports.js'
+import type { ApiKeyRepo, RelayRepo, RelayRecord, Shareable } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
 import type { WebchatTokenClaims } from '../registry/webchatToken.js'
 import { createWebchatTokenVerifier, type WebchatVerificationDeps } from '../registry/webchatVerification.js'
@@ -203,6 +204,8 @@ async function toReady(transport: FakeServerTransport, features: string[] = []):
   await Promise.resolve()
 }
 
+type VerifierAgent = NonNullable<Awaited<ReturnType<WebchatVerificationDeps['agents']['getUnscoped']>>>
+
 function buildWebchatVerifier(
   over: {
     tokenClaims?: WebchatTokenClaims | null
@@ -212,8 +215,8 @@ function buildWebchatVerifier(
     /** Roster returned by the conversations repo (default: empty — the
      *  pre-participant single-agent shape). */
     participants?: Awaited<ReturnType<WebchatVerificationDeps['conversations']['participants']>>
-    /** Per-agent lookups for roster MEMBERS (the primary keeps the defaults). */
-    agentById?: Record<string, Awaited<ReturnType<WebchatVerificationDeps['agents']['getUnscoped']>>>
+    /** Per-agent lookups (default: the primary on WEBCHAT_DAEMON_ID); visibility defaults to org-wide. */
+    agentById?: Record<string, (Omit<VerifierAgent, keyof Shareable> & Partial<Shareable>) | null>
     /** Per-daemon connection state for member placements. */
     daemonById?: Record<string, { state: string; features?: string[] }>
     establish?: WebchatVerificationDeps['remoteMcp']['establish']
@@ -241,14 +244,19 @@ function buildWebchatVerifier(
         }
       : over.tokenClaims
   )
-  const getAgent = vi.fn(async (id: string) => {
-    if (over.agentById && id in over.agentById) return over.agentById[id] ?? null
+  const getAgent = vi.fn(async (id: string): Promise<VerifierAgent | null> => {
+    if (over.agentById && id in over.agentById) {
+      const agent = over.agentById[id]
+      return agent ? { visibility: 'org', sharedWith: [], ...agent } : null
+    }
     return {
       id,
       orgId: 'org-1',
       placementKind: 'daemon' as const,
       setId: null,
-      daemonId: over.daemonId === undefined ? WEBCHAT_DAEMON_ID : over.daemonId
+      daemonId: over.daemonId === undefined ? WEBCHAT_DAEMON_ID : over.daemonId,
+      visibility: 'org',
+      sharedWith: []
     }
   })
   const getDaemon = vi.fn((id: string) => {
@@ -293,7 +301,10 @@ function buildWebchatVerifier(
       },
       apiEntries: { listForAgent: async () => [] },
       sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
-      memberSets: { sharedStoreMemberIdsOf: async (setId) => over.sharedStoreMembersBySet?.[setId] ?? [] },
+      memberSets: {
+        sharedStoreMemberIdsOf: async ({ contentSetId }) =>
+          (contentSetId && over.sharedStoreMembersBySet?.[contentSetId]) || []
+      },
       orgs: { roleOf: async () => (over.role === undefined ? 'collaborator' : over.role) },
       placement: over.placement ?? PLACEMENT_ONLY,
       remoteMcp: { establish }
@@ -411,7 +422,8 @@ describe('RelayConnection FSM', () => {
         CODEHOST_FEEDBACK_FEATURE,
         PULL_REQUEST_FEEDBACK_FEATURE,
         BOT_CREDENTIAL_CHECK_FEATURE,
-        BOT_TENANT_FEATURE
+        BOT_TENANT_FEATURE,
+        RELAY_PROJECTION_SNAPSHOT_V1_FEATURE
       ]
     })
     expect(conn.state).toBe('READY')
@@ -1044,6 +1056,7 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
           platform: 'webchat',
           daemonId: RECORDER,
           contentSetId: null,
+          contentStoreId: null,
           visibility: 'org',
           ownerIdentity: null,
           contentPurgedAt: null
@@ -1149,6 +1162,42 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
   })
 })
 
+describe('webchat verification re-reads the minter’s access on every dial', () => {
+  const MEMBER_AGENT_ID = '77777777-7777-4777-8777-777777777777'
+  const agent = (id: string, sharedWith?: string[]) => ({
+    id,
+    orgId: 'org-1',
+    placementKind: 'daemon' as const,
+    setId: null,
+    daemonId: WEBCHAT_DAEMON_ID,
+    ...(sharedWith ? { visibility: 'restricted' as const, sharedWith } : {})
+  })
+
+  it('refuses a token whose minter has since left the organization', async () => {
+    const h = buildWebchatVerifier({ role: null })
+    await expect(h.verifier('t')).resolves.toEqual({ ok: false, reason: 'access revoked' })
+    expect(h.establish).not.toHaveBeenCalled()
+  })
+
+  it('refuses once the agent is restricted away from the minter, and admits them while still selected', async () => {
+    const hidden = buildWebchatVerifier({ agentById: { [WEBCHAT_AGENT_ID]: agent(WEBCHAT_AGENT_ID, ['user-2']) } })
+    await expect(hidden.verifier('t')).resolves.toEqual({ ok: false, reason: 'access revoked' })
+    const selected = buildWebchatVerifier({ agentById: { [WEBCHAT_AGENT_ID]: agent(WEBCHAT_AGENT_ID, ['user-1']) } })
+    await expect(selected.verifier('t')).resolves.toMatchObject({ ok: true })
+  })
+
+  it('refuses the whole conversation when one member is hidden from the minter', async () => {
+    const h = buildWebchatVerifier({
+      participants: [
+        { agentId: AgentId(WEBCHAT_AGENT_ID), role: 'primary' as const },
+        { agentId: AgentId(MEMBER_AGENT_ID), role: 'member' as const }
+      ],
+      agentById: { [MEMBER_AGENT_ID]: agent(MEMBER_AGENT_ID, ['user-2']) }
+    })
+    await expect(h.verifier('t')).resolves.toEqual({ ok: false, reason: 'access revoked' })
+  })
+})
+
 describe('webchat verification — session-targeted continuation (webchat-cross-integration-continuation.md §6.2)', () => {
   const TARGET_SESSION_ID = 'acp-session-target-1'
   const CONTINUATION_FEATURES = [WEBCHAT_REMOTE_MCP_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE]
@@ -1159,6 +1208,7 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
       platform: string | null
       daemonId: string | null
       contentSetId: string | null
+      contentStoreId: string | null
       visibility: string
       ownerIdentity: string | null
       contentPurgedAt: Date | null
@@ -1169,6 +1219,7 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     platform: 'slack',
     daemonId: WEBCHAT_DAEMON_ID,
     contentSetId: null,
+    contentStoreId: null,
     visibility: 'org',
     ownerIdentity: null,
     contentPurgedAt: null,
@@ -1274,19 +1325,22 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
       })
     })
 
-    it('leaves out a peer that drifted, moved conversation, lost its owner, or went offline', async () => {
+    it('leaves out a peer that drifted, moved conversation, lost its owner, went offline, or was hidden from the caller', async () => {
+      const HIDDEN_PEER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
       const h = hookTarget(
         [
           { sessionId: 'purged-session' },
           { sessionId: 'other-pr-session' },
           { sessionId: 'private-session', privateOwnerIdentity: 'github:1' },
-          { sessionId: 'offline-session' }
+          { sessionId: 'offline-session' },
+          { sessionId: 'hidden-session' }
         ],
         {
           'purged-session': peer(PEER, { contentPurgedAt: new Date() }),
           'other-pr-session': peer(PEER, { thread: '1553' }),
           'private-session': peer(PEER, { visibility: 'private', ownerIdentity: 'github:2' }),
-          'offline-session': peer(OFFLINE_PEER)
+          'offline-session': peer(OFFLINE_PEER),
+          'hidden-session': peer(HIDDEN_PEER)
         },
         {
           agentById: {
@@ -1296,6 +1350,15 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
               placementKind: 'daemon',
               setId: null,
               daemonId: OFFLINE_DAEMON
+            },
+            [HIDDEN_PEER]: {
+              id: AgentId(HIDDEN_PEER),
+              orgId: 'org-1',
+              placementKind: 'daemon',
+              setId: null,
+              daemonId: WEBCHAT_DAEMON_ID,
+              visibility: 'restricted',
+              sharedWith: ['user-2']
             }
           },
           daemonById: { [OFFLINE_DAEMON]: { state: 'OFFLINE', features: HOOK_FEATURES } }

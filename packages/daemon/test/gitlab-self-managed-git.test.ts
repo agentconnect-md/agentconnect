@@ -252,7 +252,7 @@ describe.skipIf(tls === undefined)('a prefixed, non-default-port instance, end t
     const env = { ...workspaceGitEnvBase(cloneUrl), ...cloneGitEnv(AGENT, cloneUrl, scope()), ...SOURCE_CONDITION_ENV }
     // No `process.env` spread: `workspaceGitEnvBase` already IS the sanitized process env, and a
     // raw spread reintroduces exactly the host-shell names simple-git refuses (a login-shell EDITOR).
-    await gitFor(root).env(env).clone(cloneUrl, checkout, ['--branch', 'main', '--single-branch'])
+    await gitFor(root, undefined, env).clone(cloneUrl, checkout, ['--branch', 'main', '--single-branch'])
     expect(readFileSync(join(checkout, 'README.md'), 'utf8')).toBe('seeded\n')
 
     writeFileSync(join(checkout, 'agent.txt'), 'written by the agent\n')

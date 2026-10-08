@@ -59,7 +59,7 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
-  WORKSPACE_RAW_READ_FEATURE,
+  WORKSPACE_FILE_DOWNLOAD_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -71,7 +71,8 @@ import {
   TaskErrorReason,
   gitRepoLabel,
   isCodeHostHookKind,
-  HOST_STRATEGY
+  HOST_STRATEGY,
+  type AssistantModePolicy
 } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
@@ -91,7 +92,7 @@ import {
   type DerivedWorkspace
 } from './workspace-credential.js'
 import type { DaemonView } from '../../ports.js'
-import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
+import { AgentId, DaemonId, IntegrationId, OrgId, SessionId } from '../../domain/ids.js'
 import { advertises } from '../../domain/daemon-features.js'
 import {
   UNPLACED,
@@ -137,11 +138,19 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { repositorySelectorRefusal } from '../../agents/repository-selector.js'
+import {
+  ASSISTANT_MODE_NOT_ADMITTED,
+  AssistantModeAdmissionRefused,
+  assistantModeAdmissionOf,
+  assistantModeEditNeedsAdmission,
+  assistantModeRefusalMessage
+} from '../../agents/assistant-mode.js'
 import { readySetMembers, usesDecisionMaterialize } from '../repository-selection.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
 import { AgentWakeCoordinator, agentWakeRequest } from '../../orchestrator/agentWake.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
+import { isAssistantModeAgent } from '../../orchestrator/placement.js'
 import { reconcileAgentLinkedDms } from '../../orchestrator/linkedDmReconcile.js'
 import { ProtocolError } from '../../domain/errors.js'
 import {
@@ -166,6 +175,7 @@ import {
   AgentPermissionDecisionBody,
   AgentCreatedDto,
   AgentListDto,
+  AssistantModeAdmissionDto,
   ErrorDto,
   IdParam,
   WorkspaceFilesQueryDto,
@@ -174,6 +184,8 @@ import {
   WorkspaceFilesDto,
   WorkspaceFileQueryDto,
   WorkspaceFileDto,
+  WorkspaceDownloadQueryDto,
+  WorkspaceDownloadBody,
   PutWorkspaceFileQueryDto,
   PutWorkspaceFileBody,
   WorkspaceFileWriteDto,
@@ -253,6 +265,15 @@ import {
   type DreamFilesDtoT,
   type DreamFileDtoT
 } from '../dto/index.js'
+import {
+  assembleWorkspaceFile,
+  attachmentDisposition,
+  downloadContentType,
+  DOWNLOAD_SLICE_BYTES,
+  sessionFileDownloadable,
+  sha256Matches,
+  WorkspaceDownloadRefusal
+} from '../workspace-download.js'
 import { provisionDaemonConnect } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
 import { buildAgentMoves } from '../agent-moves.js'
@@ -408,6 +429,7 @@ function toDto(
     repositorySelector: a.repositorySelector ?? null,
     managedSkills: a.managedSkills,
     memory: a.memory,
+    assistantMode: a.assistantMode ?? null,
     status: a.status,
     placementKind: a.placementKind,
     daemonId: a.daemonId,
@@ -555,7 +577,7 @@ export function toWorkspaceFileDto(rep: WorkspaceReadContent): WorkspaceFileDtoT
     type: rep.type ?? null,
     size: rep.size ?? null,
     mtime: rep.mtime ?? null,
-    encoding: rep.encoding ?? null,
+    encoding: rep.encoding ?? null, // 'base64' only when the read asked for raw bytes
     content: rep.content ?? null,
     offset: rep.offset ?? null,
     nextOffset: rep.nextOffset ?? null,
@@ -837,6 +859,8 @@ export function workspaceFailure(
         return { status: 404, error: 'Not Found', message: 'workspace not found', code }
       }
       if (code === SANDBOX_REMOVED_CODE) return { status: 404, error: 'Not Found', message: err.message, code }
+      // Version skew in the sandbox, like a daemon missing a feature: nothing about the request was wrong.
+      if (code === 'WORKSPACE_SANDBOX_OUTDATED') return { status: 409, error: 'Conflict', message: err.message, code }
       // Ahead of the 400: the daemon reports it as a refused request (it carries a reason), but
       // nothing about the request was wrong, and a 400 tells a console to stop retrying.
       if (code === SANDBOX_UNAVAILABLE) {
@@ -1730,6 +1754,27 @@ export function agentRoutes(deps: HttpDeps) {
       return null
     }
 
+    // Where an enabled assistant mode sends what it cannot deliver: an organization member, or a conversation of this agent's own integration.
+    const assistantModeTargetError = async (
+      agent: AgentRecord,
+      policy: AssistantModePolicy
+    ): Promise<string | null> => {
+      if (
+        policy.responsibleUserId !== undefined &&
+        !(await deps.repos.org.roleOf(agent.orgId, policy.responsibleUserId))
+      ) {
+        return 'the responsible user is not a member of this organization'
+      }
+      const fallback = policy.fallbackConversation
+      if (fallback) {
+        const integration = await deps.repos.integration.get(agent.orgId, IntegrationId(fallback.integrationId))
+        if (!integration || integration.agentId !== agent.id) {
+          return 'the fallback conversation must belong to one of this agent’s integrations'
+        }
+      }
+      return null
+    }
+
     const validateManagedSkills = async (
       ids: readonly string[] | null | undefined,
       orgId: OrgId
@@ -2303,6 +2348,26 @@ export function agentRoutes(deps: HttpDeps) {
     )
 
     r.get(
+      '/agents/:id/assistant-mode/admission',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Check assistant mode admission',
+          description:
+            'Reports whether the agent may switch assistant mode on as it stands, and every reason it may not: no runtime yet, a runtime outside the admission list, memory other than managed or off, or a daemon group whose members do not share one store. Switching it off is never refused.',
+          operationId: 'getAgentAssistantModeAdmission',
+          params: IdParam,
+          response: { 200: AssistantModeAdmissionDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        return assistantModeAdmissionOf(deps.repos.memberSet, agent)
+      }
+    )
+
+    r.get(
       '/agents/:id/decisions',
       {
         schema: {
@@ -2660,6 +2725,33 @@ export function agentRoutes(deps: HttpDeps) {
           if (memoryError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: memoryError })
           }
+          // Only an enabled policy needs a live target; switching off must work after the saved target is gone.
+          if (req.body.assistantMode?.enabled) {
+            const targetError = await assistantModeTargetError(existing, req.body.assistantMode)
+            if (targetError) return badRequest(reply, targetError)
+          }
+          // The friendly admission refusal, with the placement's store check; the row-locked write re-checks the definition.
+          const targetRuntime = req.body.runtime ?? existing.runtime
+          const changesDefinition =
+            targetRuntime !== existing.runtime ||
+            (targetMemory?.provider ?? 'managed') !== (existing.memory?.provider ?? 'managed')
+          const targetAssistantMode =
+            req.body.assistantMode !== undefined ? req.body.assistantMode : existing.assistantMode
+          if (assistantModeEditNeedsAdmission(existing.assistantMode, targetAssistantMode, changesDefinition)) {
+            const admission = await assistantModeAdmissionOf(deps.repos.memberSet, {
+              ...existing,
+              runtime: targetRuntime,
+              memory: targetMemory
+            })
+            if (!admission.admitted) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: assistantModeRefusalMessage(admission.refusals),
+                code: ASSISTANT_MODE_NOT_ADMITTED
+              })
+            }
+          }
           // The row patch and the secret merge commit as ONE transaction (sealing
           // outside it), so the replicateUpsert below can only ever ship a
           // definition that fully applied — never a half-updated one. Chained per
@@ -2714,10 +2806,19 @@ export function agentRoutes(deps: HttpDeps) {
             if (e instanceof MemoryHomeRefusedError) {
               return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
             }
+            if (e instanceof AssistantModeAdmissionRefused) {
+              return reply
+                .code(409)
+                .send({ error: 'Conflict', statusCode: 409, message: e.message, code: ASSISTANT_MODE_NOT_ADMITTED })
+            }
             throw e
           }
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent)
+          // Assistant mode gates conversations and fixes session modes, both projected into every integration's spec.
+          if (isAssistantModeAgent(existing) !== isAssistantModeAgent(agent)) {
+            await convergeIntegrationGating(deps, agent, req.log)
+          }
           // Pause decides whether this agent's hooks belong in the relay pool at all, so a toggle
           // needs the rule convergence a placement change gets — nothing else recomputes it.
           if ((existing.pause === true) !== (agent.pause === true)) {
@@ -3756,7 +3857,7 @@ export function agentRoutes(deps: HttpDeps) {
             reply,
             agent.orgId,
             agent.daemonId,
-            WORKSPACE_RAW_READ_FEATURE,
+            WORKSPACE_FILE_DOWNLOAD_FEATURE,
             'this agent version cannot read raw file bytes; upgrade its daemon'
           ))
         ) {
@@ -3775,6 +3876,92 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toWorkspaceFileDto(rep)
         } catch (err) {
+          if (sendWorkspaceFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Session file download: an upload or a shared file's bytes, assembled from daemon byte slices and never stored.
+    r.get(
+      '/agents/:id/workspace/file/download',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Download a session file',
+          description:
+            'Return the original bytes of one file from a session’s working root — its isolated worktree, or the agent’s checkout when the session shares it — as an attachment. The file must sit under uploads/ (where inbound attachments land), or be named together with sha256, the digest prefix a shared file’s transcript marker records; the bytes must still match that digest (409 WORKSPACE_FILE_CHANGED otherwise). The agent and the session must both be visible to the caller (404 otherwise). The control plane assembles the file from bounded byte slices it proxies live from the owning daemon and stores none of it; a file over the download ceiling is refused with 413 WORKSPACE_FILE_TOO_LARGE. 409 when the daemon or the agent’s sandbox is too old to serve bytes, 503 when the agent is unplaced or its daemon is offline.',
+          operationId: 'downloadAgentSessionFile',
+          params: IdParam,
+          querystring: WorkspaceDownloadQueryDto,
+          response: {
+            200: WorkspaceDownloadBody,
+            400: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            413: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getServingAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const session = await visibleAgentSession(req, agent.id, req.query.sessionId)
+        if (!session) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        if (!sessionFileDownloadable(req.query.path, req.query.sha256)) {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'only a file under uploads/, or a shared file named by its sha256, can be downloaded',
+            code: 'WORKSPACE_NOT_A_SESSION_FILE'
+          })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        const daemonId = agent.daemonId
+        const downloads = await requireDaemonFeature(
+          reply,
+          agent.orgId,
+          daemonId,
+          WORKSPACE_FILE_DOWNLOAD_FEATURE,
+          'this agent version does not support file downloads; upgrade its daemon'
+        )
+        if (!downloads) return reply
+        // The daemon lands and shares a session's files in its worktree when isolated, else in the checkout.
+        const sessionId = session.workspaceIsolation === 'session' ? req.query.sessionId : undefined
+        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, daemonId, sessionId))) return
+
+        try {
+          const bytes = await assembleWorkspaceFile((offset) =>
+            deps.control.workspaceRead(daemonId, {
+              agentId: agent.id,
+              ...(sessionId ? { sessionId } : {}),
+              path: req.query.path,
+              offset,
+              limit: DOWNLOAD_SLICE_BYTES,
+              encoding: 'base64'
+            })
+          )
+          if (req.query.sha256 && !sha256Matches(bytes, req.query.sha256)) {
+            throw new WorkspaceDownloadRefusal(409, 'WORKSPACE_FILE_CHANGED', 'the file changed since it was shared')
+          }
+          // The typed reply knows only the documented string body; Fastify sends a Buffer raw, past the serializer.
+          return (reply as FastifyReply)
+            .header('content-type', downloadContentType(req.query.path))
+            .header('content-disposition', attachmentDisposition(req.query.path))
+            .header('x-content-type-options', 'nosniff')
+            .header('content-security-policy', "default-src 'none'; sandbox")
+            .header('cache-control', 'private, no-store')
+            .send(bytes)
+        } catch (err) {
+          if (err instanceof WorkspaceDownloadRefusal) {
+            const error = err.status === 404 ? 'Not Found' : err.status === 409 ? 'Conflict' : 'Payload Too Large'
+            return reply.code(err.status).send({ error, statusCode: err.status, message: err.message, code: err.code })
+          }
           if (sendWorkspaceFailure(reply, err)) return
           throw err
         }
@@ -5311,10 +5498,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Workspace sync: pin the configured branch to its remote and check it out on the owning daemon. A
-    // refused sync (offline remote, a local commit the remote lacks, an edit it would rewrite) is data
-    // (`ok:false` + `detail`); the daemon's "agent is working here" refusal is a 409 like every other
-    // console git write, and only an offline daemon → 503.
+    // Workspace sync: a git write (editors only); a refused sync is data, a busy checkout 409, an offline daemon 503.
     r.post(
       '/agents/:id/workspace/gitpull',
       {
@@ -5322,18 +5506,20 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Sync the workspace',
           description:
-            'Sync the checkout to its configured remote branch on the owning daemon: fetch, point the local branch at the remote tip and check it out, carrying uncommitted edits and never merging. A refused sync (a local commit the remote lacks, an edit it would rewrite) is data (ok:false + detail); 409 when the agent is working in the checkout, 503 only when the daemon is offline. Pass repo to sync one of the agent’s authorized additional repositories instead of its primary workspace.',
+            'Sync the checkout to its configured remote branch on the owning daemon: fetch, point the local branch at the remote tip and check it out, carrying uncommitted edits and never merging. Requires edit access to the agent. A refused sync (a local commit the remote lacks, an edit it would rewrite) is data (ok:false + detail); 409 when the agent is working in the checkout, 503 only when the daemon is offline. Pass repo to sync one of the agent’s authorized additional repositories instead of its primary workspace.',
           operationId: 'pullAgentWorkspace',
           params: IdParam,
           querystring: WorkspaceRepoScopeQueryDto,
-          response: { 200: WorkspaceGitPullDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: WorkspaceGitPullDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        // Route through getOrgAgent (org boundary + canView) — a bare repo.get here
-        // would let a non-viewer trigger a pull on a restricted / cross-org agent.
+        if (denyViewerWrite(req, reply)) return
         const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!canEdit(agent, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
         if (!(await canReadWorkspaceRepoScope(agent, req.query.repo))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
         }
@@ -5357,10 +5543,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    /** The chain every console git write shares: the READ chain plus the generic write gates,
-     *  because no git- or workspace-scoped action exists — "may mutate this agent's workspace" is
-     *  spelled `denyViewerWrite` + `canEdit`, as for the file editor. Deliberately NOT `gitpull`'s
-     *  shape, which gates a mutation on `canView` alone. null ⇒ replied; nothing reached the daemon. */
+    /** The READ chain plus the `denyViewerWrite` + `canEdit` gates every console git write shares; null ⇒ replied, nothing reached the daemon. */
     const gitWriteTarget = async (
       req: FastifyRequest,
       reply: FastifyReply,

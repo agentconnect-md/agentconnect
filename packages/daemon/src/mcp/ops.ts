@@ -26,7 +26,7 @@ import {
 } from '../memory/entries/tools.js'
 import { z, type ZodType } from 'zod'
 import type { AskDeps } from './ask.js'
-import { MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../memory/tools.js'
+import { MEMORY_WRITE_CLOSED, MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../memory/tools.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
@@ -149,6 +149,9 @@ import {
   type PlatformReadDeps
 } from './ops/platform-reads.js'
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
+import { assertAssistantPlaceAccess, type PlaceAccessDeps } from './ops/place-gate.js'
+import { recall, RECALL_ARGS } from './ops/recall.js'
+import { ASSISTANT_ITEM_ARG_SCHEMAS, ASSISTANT_ITEM_HANDLERS, type AssistantItemDeps } from './ops/assistant-items.js'
 
 export type { McpContentResult, MessageGateway, SendIdentity, SessionContext } from './ops/context.js'
 export type { ChannelAgentsRequest } from './ops/directory.js'
@@ -192,7 +195,9 @@ export interface OpsDeps
     MemoryOpsDeps,
     ShareFileDeps,
     PlatformReadDeps,
-    PlatformActionDeps {
+    PlatformActionDeps,
+    PlaceAccessDeps,
+    AssistantItemDeps {
   /** Rejected tool arguments are logged here at debug, key names only — the sole trace of them (#1921). */
   log?: Pick<Logger, 'debug'>
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
@@ -293,7 +298,9 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['searchPublicMessages', searchPublicMessages],
   ['createCanvas', createCanvas],
   ['readCanvas', readCanvas],
-  ['updateCanvas', updateCanvas]
+  ['updateCanvas', updateCanvas],
+  ['recall', recall],
+  ...ASSISTANT_ITEM_HANDLERS
 ])
 
 /**
@@ -361,6 +368,8 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['createCanvas', CREATE_CANVAS_ARGS],
   ['readCanvas', READ_CANVAS_ARGS],
   ['updateCanvas', UPDATE_CANVAS_ARGS],
+  ['recall', RECALL_ARGS],
+  ...ASSISTANT_ITEM_ARG_SCHEMAS,
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.
@@ -428,12 +437,12 @@ async function executeRegisteredTool(
   args: Record<string, unknown>,
   deps: OpsDeps
 ): Promise<unknown> {
-  // Session-isolation gate for the memory tools (#653), checked at CALL time so a
-  // mid-session policy change takes effect immediately.
+  // The memory tools' session-isolation gate (#653), checked at CALL time so a policy change applies at once.
   const memoryMode = MEMORY_TOOL_ACCESS_MODES[name]
   if (memoryMode !== undefined) {
     const decision = (await deps.memoryAccessDecision?.(ctx, memoryMode)) ?? 'allow'
     if (decision === 'deny') throw new Error(MEMORY_WRITE_NO_APPROVER)
+    if (decision === 'closed') throw new Error(MEMORY_WRITE_CLOSED)
     if (decision === 'ask') {
       // The approval covers THIS call's payload and nothing else: it is awaited inline, never cached.
       const verdict =
@@ -452,6 +461,8 @@ async function executeRegisteredTool(
       }
     }
   }
+  // Assistant mode (assistant-mode.md §5.5): platform writes stay in the current place, other reads pass the place rule.
+  await assertAssistantPlaceAccess(ctx, name, args, deps)
   const handler = HANDLERS.get(name)
   if (handler) return await handler(ctx, args, deps)
 

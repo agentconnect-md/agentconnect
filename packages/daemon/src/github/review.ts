@@ -1,11 +1,4 @@
-/**
- * Structured GitHub pull-request review client (R1).
- *
- * The target is daemon-trusted metadata plus a one-action purpose token minted
- * by the control plane. The model supplies only the semantic review payload;
- * it can never choose the repository, pull number, or commit. A hidden marker
- * makes an ambiguous POST recoverable without blindly submitting twice.
- */
+// Trusted targets and correlation markers fence model-authored reviews and recover ambiguous writes.
 
 import { appendGithubMarkdownChrome, githubAttributionFooter, type GithubCommentAttribution } from './poster.js'
 
@@ -37,8 +30,7 @@ export interface GithubReviewTarget {
   hookId: string
   deliveryKey: string
   attemptId: string
-  /** This attempt id came from durable inbox state after a daemon restart; a
-   * failed marker read is therefore ambiguous, not proof of no effect. */
+  // A replayed attempt needs marker reconciliation before its write can be retried.
   recovering?: boolean
 }
 
@@ -91,9 +83,16 @@ interface GithubReviewResponse {
   commit_id?: string
 }
 
+interface GithubPullFile {
+  filename: string
+  patch?: string
+}
+
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_REVIEW_PAGES = 10
 const REVIEWS_PER_PAGE = 100
+const FILES_PER_PAGE = 100
+const MAX_FILE_PAGES = 30
 
 class GithubHttpError extends Error {
   constructor(
@@ -124,8 +123,7 @@ function validateInput(input: SubmitGithubReviewInput): string | undefined {
   if (input.event === 'REQUEST_CHANGES' && input.verdict !== 'fail') {
     return 'REQUEST_CHANGES requires verdict=fail'
   }
-  // Validate the model-authored body before daemon attribution is appended. An
-  // APPROVE is the sole public response too, so its summary cannot be empty.
+  // Validate the model-authored summary before daemon attribution is appended.
   if (!input.body.trim()) {
     return `${input.event} requires a non-empty body`
   }
@@ -138,6 +136,44 @@ function validateInput(input: SubmitGithubReviewInput): string | undefined {
         return `comments[${index}].startLine must be positive and no greater than line`
       }
       if (!comment.startSide) return `comments[${index}].startSide is required with startLine`
+    }
+  }
+  return undefined
+}
+
+function diffPosition(patch: string, line: number, side: 'LEFT' | 'RIGHT') {
+  let left = 0
+  let right = 0
+  let hunk = 0
+  for (const [position, row] of patch.split('\n').entries()) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row)
+    if (header) {
+      left = Number(header[1])
+      right = Number(header[2])
+      hunk++
+    } else if (hunk && [' ', '-', '+'].includes(row[0] ?? '')) {
+      if (side === 'LEFT' ? row[0] !== '+' && left === line : row[0] !== '-' && right === line) {
+        return { hunk, position }
+      }
+      if (row[0] !== '+') left++
+      if (row[0] !== '-') right++
+    }
+  }
+  return undefined
+}
+
+function validateInlineComments(comments: GithubInlineReviewComment[], files: Map<string, string | undefined>) {
+  for (const [index, comment] of comments.entries()) {
+    const patch = files.get(comment.path)
+    const end = patch && diffPosition(patch, comment.line, comment.side)
+    const start =
+      comment.startLine === undefined ? end : patch && diffPosition(patch, comment.startLine, comment.startSide!)
+    if (!end || !start || start.hunk !== end.hunk || start.position > end.position) {
+      return (
+        `comments[${index}] (${comment.path}:${comment.line} ${comment.side}): ` +
+        (patch ? 'the line or range is outside a single diff hunk.' : 'no text diff is available for this path.') +
+        ' Use a line in the diff, or move this finding into the review body, then retry.'
+      )
     }
   }
   return undefined
@@ -201,6 +237,8 @@ export class GithubReviewClient {
       }
       if (existing) return this.submitted(existing, target, input)
 
+      const files = input.comments?.length ? await this.readCommentFiles(target, input.comments) : undefined
+      // Recheck the revision after paginated file reads and before accepting any positions.
       const pull = await this.getPull(target.token, target.repoFullName, target.pullNumber)
       if (pull.state !== 'open' || pull.merged) {
         return {
@@ -217,8 +255,12 @@ export class GithubReviewClient {
         }
       }
 
-      // Keep the visible review self-contained. Attribution is shared with the
-      // ordinary poster, while the correlation marker remains the final chrome.
+      if (files) {
+        const invalidComments = validateInlineComments(input.comments!, files)
+        if (invalidComments) return { state: 'not_submitted', code: 'invalid_input', message: invalidComments }
+      }
+
+      // Share ordinary-comment attribution, with the correlation marker last.
       const body = appendGithubMarkdownChrome(input.body, `${githubAttributionFooter(attribution)}\n\n${marker}`)
       try {
         const created = await this.request<GithubReviewResponse>(
@@ -245,19 +287,17 @@ export class GithubReviewClient {
         )
         return this.submitted(created, target, input)
       } catch (err) {
-        // A received 4xx is a definite rejection: GitHub did not create the
-        // review, so the CP may release this attempt reservation.
+        // A received 4xx proves no review was created, so the attempt reservation can be released.
         if (err instanceof GithubHttpError && err.status >= 400 && err.status < 500) {
           return { state: 'not_submitted', code: 'github_rejected', message: err.message }
         }
-        // Timeout/disconnect/5xx is ambiguous. Reconcile by the hidden marker;
-        // never blindly retry the POST.
+        // Reconcile an ambiguous timeout/disconnect/5xx by marker without blindly repeating the POST.
         const recovered = await this.findByMarker(target, marker).catch(() => undefined)
         if (recovered) return this.submitted(recovered, target, input)
         return {
           state: 'ambiguous',
           code: 'ambiguous_write',
-          message: 'GitHub review outcome is unknown; automatic retry is blocked'
+          message: `GitHub review outcome is unknown (${err instanceof Error ? err.message : String(err)}); automatic retry is blocked`
         }
       }
     } catch (err) {
@@ -270,9 +310,7 @@ export class GithubReviewClient {
     }
   }
 
-  /** Read-only recovery for an attempt whose POST outcome was ambiguous. This
-   * is safe to run automatically before a replayed model turn: it can converge
-   * a now-visible marker, but never issues a second review mutation. */
+  // Recover a replayed attempt by reading its marker without issuing another mutation.
   async reconcile(
     target: GithubReviewTarget,
     event: GithubReviewEvent,
@@ -348,6 +386,23 @@ export class GithubReviewClient {
     throw new Error('review marker reconciliation exceeded pagination bound')
   }
 
+  private async readCommentFiles(target: GithubReviewTarget, comments: GithubInlineReviewComment[]) {
+    const wanted = new Set(comments.map(({ path }) => path))
+    const files = new Map<string, string | undefined>()
+    for (let page = 1; page <= MAX_FILE_PAGES; page++) {
+      const rows = await this.request<GithubPullFile[]>(
+        `/repos/${target.repoFullName}/pulls/${target.pullNumber}/files?per_page=${FILES_PER_PAGE}&page=${page}`,
+        target.token,
+        'GET'
+      )
+      for (const row of rows) {
+        if (wanted.has(row.filename)) files.set(row.filename, row.patch)
+      }
+      if (files.size === wanted.size || rows.length < FILES_PER_PAGE) break
+    }
+    return files
+  }
+
   private async request<T>(path: string, token: string, method: 'GET' | 'POST', body?: unknown): Promise<T> {
     let response: Response
     try {
@@ -363,14 +418,30 @@ export class GithubReviewClient {
         signal: AbortSignal.timeout(this.timeoutMs)
       })
     } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`)
+      // fetch reports only "fetch failed"; the cause code (ECONNRESET, ENOTFOUND, …) names the network failure.
+      const code = (err as { cause?: { code?: unknown } } | undefined)?.cause?.code
+      const detail = typeof code === 'string' ? ` (${code})` : ''
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}${detail}`)
     }
     const text = await response.text()
     if (!response.ok) {
       let detail = ''
       try {
-        const parsed = safeJson(text) as { message?: string } | undefined
-        detail = parsed?.message ? `: ${parsed.message}` : ''
+        const parsed = safeJson(text) as { message?: unknown; errors?: unknown } | undefined
+        const parts = typeof parsed?.message === 'string' ? [parsed.message] : []
+        for (const error of Array.isArray(parsed?.errors) ? parsed.errors.slice(0, 5) : []) {
+          if (typeof error === 'string') parts.push(error)
+          else if (error && typeof error === 'object') {
+            parts.push(
+              ['resource', 'field', 'code', 'message']
+                .map((field) => (error as Record<string, unknown>)[field])
+                .filter((value): value is string => typeof value === 'string')
+                .join(': ')
+            )
+          }
+        }
+        const message = parts.filter(Boolean).join('; ').slice(0, 2000)
+        if (message) detail = `: ${message}`
       } catch {
         // Status alone is enough for a non-JSON body.
       }

@@ -87,7 +87,7 @@ describe('applyOpenCodeReadOnlyMode', () => {
   })
 })
 
-describe('dream host launch (daemon)', () => {
+describe('OpenCode host launch (daemon)', () => {
   function scaffold(runtime: string): string {
     const root = mkdtempSync(join(tmpdir(), 'ac-opencode-dream-'))
     writeFileSync(
@@ -113,18 +113,38 @@ describe('dream host launch (daemon)', () => {
     return root
   }
 
-  async function launchEnv(runtime: string, excludeAgentToolCredentials: boolean): Promise<Record<string, string>> {
+  async function launchEnv(
+    runtime: string,
+    excludeAgentToolCredentials: boolean,
+    cloud = false
+  ): Promise<Record<string, string>> {
     const root = scaffold(runtime)
     const daemon = new Daemon({ root, probeRuntimes: async () => [] })
     try {
       await daemon.start()
       const inner = daemon as any
       const agent = inner.agents.get('bot-a')
+      if (cloud) {
+        inner.k8s = true
+        inner.modelSessions.staticModelCredentials = {
+          claude: { key: 'static-claude', baseUrl: 'https://gw.example/anthropic' },
+          codex: { key: 'static-openai', baseUrl: 'https://gw.example/openai/v1' },
+          deepseek: { key: 'static-deepseek', baseUrl: 'https://gw.example/deepseek/v1' }
+        }
+      }
       return inner.buildAcpHost(agent, inner.cfg, {
         hostKey: agentHostKey(agent.id),
         strategy: 'host',
         cwd: join(root, 'in'),
-        excludeAgentToolCredentials
+        excludeAgentToolCredentials,
+        ...(cloud
+          ? {
+              modelCredential: {
+                target: { runtime: 'opencode', provider: 'deepseek', opencodeProvider: 'deepseek' },
+                credential: { key: 'issued-deepseek', baseUrl: 'https://gw.example/deepseek/v1' }
+              }
+            }
+          : {})
       }).host.opts.env
     } finally {
       await daemon.stop()
@@ -140,6 +160,20 @@ describe('dream host launch (daemon)', () => {
     // The warm host is untouched: its mode list stays the runtime's own, and the console never sees the agent.
     expect((await launchEnv('opencode', false)).OPENCODE_CONFIG_CONTENT).toBeUndefined()
     expect((await launchEnv('claude', true)).OPENCODE_CONFIG_CONTENT).toBeUndefined()
+  })
+
+  it('exposes all Cloud provider endpoints but only the selected session’s issued key', async () => {
+    const env = await launchEnv('opencode', true, true)
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!)
+    expect(config.enabled_providers).toEqual(['anthropic', 'openai', 'deepseek'])
+    expect(config.provider.anthropic.options.baseURL).toBe('https://gw.example/anthropic/v1')
+    expect(config.provider.openai.options.baseURL).toBe('https://gw.example/openai/v1')
+    expect(config.provider.deepseek.options.apiKey).toBe('{env:DEEPSEEK_API_KEY}')
+    expect(env.DEEPSEEK_API_KEY).toBe('issued-deepseek')
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(JSON.stringify(env)).not.toContain('static-')
+    expect(config.agent[OPENCODE_READ_ONLY_MODE].permission).toEqual(OPENCODE_READ_ONLY_PERMISSION)
   })
 
   it('keeps the providers a self-hosted daemon supplies through its own OPENCODE_CONFIG_CONTENT', async () => {

@@ -157,6 +157,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
   // §14: agents whose AgentRepo.get returns visibility 'restricted' (⇒ gated).
   let gatedAgents: Set<string>
+  // Agents switched into assistant mode, which gates them without restricting them.
+  let assistantAgents: Set<string>
   // Agents reported with no daemonId — not placed, so they compile no routes.
   let unplacedAgents: Set<string>
   // Drives ThreadAffinityStore.get (null = affinity miss → SessionMeta fallback).
@@ -281,6 +283,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
           row.name = candidate.name ?? null
           row.isPrivate = candidate.isPrivate ?? false
         }
+        return { externalChanged: false }
       },
       setAgent: async (integrationId, channelId, agentId) => {
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
@@ -340,7 +343,11 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       getUnscoped: async (id) => {
         const a = agents[id]
         if (!a) return null
-        return { ...a, visibility: gatedAgents.has(id) ? 'restricted' : 'org' } as AgentRecord
+        return {
+          ...a,
+          visibility: gatedAgents.has(id) ? 'restricted' : 'org',
+          ...(assistantAgents.has(id) ? { assistantMode: { enabled: true } } : {})
+        } as AgentRecord
       }
     }
     const control = {
@@ -422,7 +429,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
           getUnscoped: async (id) =>
             daemonCreatedAt[id] === undefined ? null : ({ createdAt: new Date(daemonCreatedAt[id]!) } as never)
         }
-      }
+      },
+      { slugById: async (orgId) => (orgId === ORG ? 'example-org' : null) }
     )
   }
 
@@ -439,6 +447,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     threadOwner = null
     threadOwnerLookup = null
     gatedAgents = new Set()
+    assistantAgents = new Set()
     unplacedAgents = new Set()
     threadBinding = null
     threadParticipants = []
@@ -731,6 +740,45 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     })
   })
 
+  it('keeps an unbound installation available for Home, replays it, and restores routing on reconnect', async () => {
+    const orch = makeOrch()
+    integrations = []
+    channels = []
+    botRow = bot({ agentIds: [] })
+    await orch.syncBot(BOT)
+    const disconnected = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
+    expect(disconnected).toMatchObject({ installedAgentIds: [], members: [], agents: [], routes: [] })
+    expect(disconnected.defaultAgentId).toBeUndefined()
+    expect(upserts).toEqual([])
+    const fresh = new FakeChannel(RELAY)
+    await orch.replayTo(fresh)
+    expect(fresh.sends.find((s) => s.type === 'rc/bot-assign')?.payload).toEqual(disconnected)
+    integrations = [integration(INT_A, ALICE)]
+    botRow = bot({ agentIds: [ALICE] })
+    ch.sends = []
+    await orch.syncBot(BOT)
+    expect(ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload).toMatchObject({
+      installedAgentIds: [ALICE],
+      defaultAgentId: ALICE
+    })
+    expect(upserts).toHaveLength(1)
+    botRow = bot({ agentIds: [], revokedAt: new Date() })
+    ch.sends = []
+    await orch.syncBot(BOT)
+    expect(ch.sends.map((s) => s.type)).toEqual(['rc/bot-unassign'])
+  })
+
+  it('keeps bound but unplaced agents distinct from a disconnected installation', async () => {
+    unplacedAgents = new Set([ALICE, BOB])
+    await makeOrch().syncBot(BOT)
+    expect(ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload).toMatchObject({
+      installedAgentIds: [ALICE, BOB],
+      members: [],
+      routes: []
+    })
+    expect(upserts).toEqual([])
+  })
+
   it('assigns the bot to a relay and compiles channel-owner + keyword routes + default', async () => {
     await makeOrch().syncBot(BOT)
 
@@ -739,6 +787,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     // §6.1: a bot assignment is always a chat platform; the kind teaches an older relay
     // to classify an id a newer CP introduces.
     expect(assign.originKind).toBe('chat')
+    expect(assign.orgSlug).toBe('example-org')
+    expect(assign.installedAgentIds).toEqual([ALICE, BOB])
     // §6.7: a manual-paste bot has no demux identity, so the opaque ingress bag ships empty
     // (keys omitted, never null) and the relay verify-scans instead.
     expect(assign.ingress).toEqual({})
@@ -932,6 +982,31 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       // ALICE's install is the earliest, but a gated agent must not catch bare @bot/DMs.
       expect(assign.defaultAgentId).toBe(BOB)
       expect(assign.gatedAgentIds).toEqual([ALICE])
+    })
+
+    it('gates an assistant-mode member like a restricted one, and keys its places on one session', async () => {
+      assistantAgents = new Set([ALICE])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'mention' }),
+        channel({ integrationId: INT_A, channelId: 'D9', kind: 'im', trigger: 'any' }),
+        channel({ integrationId: INT_B, channelId: 'C1', agentId: BOB, trigger: 'mention' })
+      ]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.defaultAgentId).toBe(BOB)
+      expect(assign.gatedAgentIds).toEqual([ALICE])
+      const alice = upserts.find((u) => u.daemonId === D1)!.spec as never as {
+        core: { gated: boolean; sessionModes: unknown[] }
+      }
+      expect(alice.core.gated).toBe(true)
+      // Every room of the bot is replicated onto her install, so each keys one session for her alone.
+      expect(alice.core.sessionModes).toEqual([
+        { channel: 'C9', mode: 'append' },
+        { channel: 'D9', mode: 'append' },
+        { channel: 'C1', mode: 'append' }
+      ])
+      const bob = upserts.find((u) => u.daemonId === D2)!.spec as never as { core: { sessionModes: unknown[] } }
+      expect(bob.core.sessionModes).toEqual([])
     })
 
     it('a group of only gated agents has NO default agent', async () => {
@@ -2048,7 +2123,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       dutyHolders = { [BOB]: [D3] }
       await makeOrch().syncBot(BOT)
       const assign = lastOf(modern, 'rc/bot-assign')!
-      expect(assign.routedConversations).toEqual([{ channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1 }])
+      expect(assign.routedConversations).toEqual([
+        { channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1, targetAgentIds: [ALICE, BOB] }
+      ])
       expect(assign.routes.filter((r) => r.scope?.channel === 'C1')).toEqual([
         {
           agentId: BOB,
@@ -2094,7 +2171,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       await orch.daemonReady(D1)
       const routes = lastOf(modern, 'rc/routes')!
       expect(routes.mutedChannels).not.toContain('C1')
-      expect(routes.routedConversations).toEqual([{ channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1 }])
+      expect(routes.routedConversations).toEqual([
+        { channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1, targetAgentIds: [ALICE, BOB] }
+      ])
     })
 
     it('moves the host to the earliest-created live candidate when it goes offline, and back', async () => {
@@ -2104,7 +2183,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       upserts = []
       await orch.daemonOffline(D1)
       expect(lastOf(modern, 'rc/routes')!.routedConversations).toEqual([
-        { channel: 'C1', decisionId: DECISION, evaluationDaemonId: D2 }
+        { channel: 'C1', decisionId: DECISION, evaluationDaemonId: D2, targetAgentIds: [ALICE, BOB] }
       ])
       expect(pushedTo(D2)?.core.decisions.sharedBotRouting?.channels).toEqual([{ channel: 'C1', defaultAgentId: BOB }])
       expect(pushedTo(D1)?.core.decisions.sharedBotRouting).toBeUndefined()

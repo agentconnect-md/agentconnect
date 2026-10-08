@@ -244,6 +244,7 @@ export function orgScopedRoutes(deps: HttpDeps) {
         // Without this an agent placed on a pool keeps its sandbox claim — and the pod and workspace
         // volume the claim owns — with no row left anywhere to reap it from.
         const announceRemovals = await deps.agentDelivery.planRemoval(await deps.repos.agent.list(orgId), orgId)
+        const bots = await deps.repos.bot.listForOrg(orgId)
         const deleted = await deps.repos.org.delete(req.orgCtx!.orgId)
         for (const hookId of deleted.removedHookIds) deps.hooks.remove(hookId)
         if (deleted.status === 'daemons_present') {
@@ -261,6 +262,7 @@ export function orgScopedRoutes(deps: HttpDeps) {
             message: 'GitHub Check cleanup is pending — retry organization deletion after cleanup converges'
           })
         }
+        for (const bot of bots) if (bot.transport === 'http') await deps.httpBot.unassign(bot)
         // Best-effort, like the agent delete's own removal push: the rows are gone either way, and a
         // member that missed this drops the agents on its next register roster.
         await announceRemovals((err, daemonId) => {

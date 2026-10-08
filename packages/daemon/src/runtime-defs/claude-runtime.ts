@@ -158,9 +158,12 @@ export interface ClaudeInnerSandboxSettings {
 export function claudeInnerSandboxSettings(
   protectedCredentialRoots: readonly string[],
   allowAllUnixSockets = false,
-  sharedWriteRoots: readonly string[] = []
+  sharedWriteRoots: readonly string[] = [],
+  readOnlyStateRoots: readonly string[] = []
 ): ClaudeInnerSandboxSettings {
   const roots = [...new Set(protectedCredentialRoots)]
+  // The runtime's private state is readable to sandboxed commands (a saved tool result is read with jq) and never writable.
+  const unwritable = [...new Set([...roots, ...readOnlyStateRoots])]
   const allowWrite = [...new Set(sharedWriteRoots)]
   return {
     enabled: true,
@@ -176,7 +179,7 @@ export function claudeInnerSandboxSettings(
     filesystem: {
       ...(allowWrite.length > 0 ? { allowWrite } : {}),
       denyRead: roots,
-      denyWrite: roots
+      denyWrite: unwritable
     },
     credentials: {
       files: roots.map((path) => ({ path, mode: 'deny' as const })),

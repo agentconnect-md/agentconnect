@@ -1,11 +1,22 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError, createExecHandler } from '../src/shim/exec-handler.js'
+import { prepareBundleStaging } from '../src/shim/bundle-staging.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
+import { shimPaths, type ShimPaths } from '../src/shim/sandbox-paths.js'
 import type { GitExecResult } from '../src/shim/git-exec.js'
 import { workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
 
@@ -44,8 +55,31 @@ function repository(): string {
   return root
 }
 
-function handler(root: string) {
-  return createExecHandler({ workspaceRoot: root, log: { info: () => {}, warn: () => {} } })
+function handler(root: string, paths?: ShimPaths) {
+  return createExecHandler({
+    workspaceRoot: root,
+    ...(paths ? { paths } : {}),
+    log: { info: () => {}, warn: () => {} }
+  })
+}
+
+// A shim runtime root of its own, with its bundle staging prepared as the entrypoint does.
+function runtimePaths(): ShimPaths {
+  const runtimeRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ac-execguard-rt-')))
+  roots.push(runtimeRoot)
+  const paths = shimPaths(runtimeRoot)
+  prepareBundleStaging(paths.bundleStagingDir)
+  return paths
+}
+
+// A bare origin that serves filters, and a blobless --no-checkout clone of it inside the workspace root.
+function bloblessClone(root: string): { origin: string; clone: string } {
+  const origin = join(root, 'origin.git')
+  execFileSync('git', ['clone', '--bare', '-q', root, origin])
+  execFileSync('git', ['config', 'uploadpack.allowFilter', 'true'], { cwd: origin })
+  const clone = join(root, 'blobless')
+  execFileSync('git', ['clone', '-q', '--filter=blob:none', '--no-checkout', `file://${origin}`, clone])
+  return { origin, clone }
 }
 
 describe('sandbox exec handler', () => {
@@ -388,6 +422,98 @@ describe('sandbox exec handler', () => {
     const count = (await handler(root)('exec', { tool: 'git', args: ['rev-list', '--count', 'HEAD'] })) as GitExecResult
     expect(count.code).toBe(0)
     expect(count.stdout.trim()).toBe('1')
+  })
+
+  it('refuses abbreviated, aliased and grouped spellings before anything runs', async () => {
+    // Each of these ran the helper on main: Git expands a unique prefix, `--exec` aliases the pack programs, and clone groups shorts.
+    const root = repository()
+    const marker = join(root, 'EVIL-RAN')
+    const evil = join(root, 'evil.sh')
+    writeFileSync(evil, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o755 })
+    const origin = `file://${root}`
+    const spellings = [
+      ['clone', `--upl=${evil}`, origin, join(root, 'a1')],
+      ['clone', '--upl', evil, origin, join(root, 'a2')],
+      ['clone', `-qu${evil}`, origin, join(root, 'a3')],
+      ['clone', '-qcprotocol.ext.allow=always', `ext::${evil}`, join(root, 'a4')],
+      ['clone', '--conf=protocol.ext.allow=always', `ext::${evil}`, join(root, 'a5')],
+      ['ls-remote', `--exec=${evil}`, origin],
+      ['ls-remote', `--upload=${evil}`, origin],
+      ['push', `--exec=${evil}`, origin, 'HEAD:refs/heads/x'],
+      ['push', `--receive=${evil}`, origin, 'HEAD:refs/heads/x'],
+      ['pull', `--upload=${evil}`, origin],
+      ['fetch', `--upload=${evil}`, origin]
+    ]
+    for (const args of spellings) {
+      await expect(handler(root)('exec', { tool: 'git', args, cwd: root })).rejects.toBeInstanceOf(ExecRefusedError)
+    }
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('refuses every exec `bundle` form: write-back bundles are cut by the shim-owned `bundle` operation', async () => {
+    const root = repository()
+    const paths = runtimePaths()
+    const file = join(paths.bundleStagingDir, 'a.bundle')
+    for (const args of [
+      ['bundle', 'create', file, 'refs/heads/main'],
+      ['bundle', 'create', '-q', file, '--filter=blob:none', 'refs/heads/main'],
+      ['bundle', 'list-heads', file]
+    ]) {
+      await expect(handler(root, paths)('exec', { tool: 'git', args, cwd: root })).rejects.toBeInstanceOf(
+        ExecRefusedError
+      )
+    }
+    expect(existsSync(file)).toBe(false)
+  })
+
+  it('runs clone --bundle-uri in its joined https form and refuses the separated one', async () => {
+    const root = repository()
+    const { origin } = bloblessClone(root)
+    const result = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['clone', '--bundle-uri=https://127.0.0.1:1/x.bundle', `file://${origin}`, 'bundled'],
+      cwd: root
+    })) as GitExecResult
+    // An unreachable bundle is only a warning: the clone falls through to the origin.
+    expect(result.code, result.stderr).toBe(0)
+    expect(result.stderr).toMatch(/bundle/i)
+    await expect(
+      handler(root)('exec', {
+        tool: 'git',
+        args: ['clone', '--bundle-uri', 'https://127.0.0.1:1/x.bundle', `file://${origin}`, 'separated'],
+        cwd: root
+      })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+  })
+
+  it.each([[['fsck', '--connectivity-only']], [['fsck', '--connectivity-only', '--no-dangling']]])(
+    'runs %j',
+    async (args) => {
+      const root = repository()
+      const result = (await handler(root)('exec', { tool: 'git', args })) as GitExecResult
+      expect(result.code, result.stderr).toBe(0)
+    }
+  )
+
+  it('enumerates and deletes refs/bundles with rev-parse --glob and update-ref -d', async () => {
+    // Both the pre-2.50 and the 2.50+ imported-ref layouts are cleaned by listing, never by a fixed name.
+    const root = repository()
+    execFileSync('git', ['update-ref', 'refs/bundles/main', 'HEAD'], { cwd: root })
+    execFileSync('git', ['update-ref', 'refs/bundles/heads/main', 'HEAD'], { cwd: root })
+    const execute = handler(root)
+    const listBundleRefs = async (): Promise<string[]> => {
+      const args = ['rev-parse', '--symbolic-full-name', '--glob=refs/bundles/*']
+      const listed = (await execute('exec', { tool: 'git', args })) as GitExecResult
+      expect(listed.code, listed.stderr).toBe(0)
+      return listed.stdout.split('\n').filter(Boolean)
+    }
+    const found = await listBundleRefs()
+    expect(found.sort()).toEqual(['refs/bundles/heads/main', 'refs/bundles/main'])
+    for (const ref of found) {
+      const deleted = (await execute('exec', { tool: 'git', args: ['update-ref', '-d', ref] })) as GitExecResult
+      expect(deleted.code, deleted.stderr).toBe(0)
+    }
+    expect(await listBundleRefs()).toEqual([])
   })
 
   it('refuses a cwd that escapes through a SYMLINK beneath the root', async () => {

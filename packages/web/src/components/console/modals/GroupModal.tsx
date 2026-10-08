@@ -1,7 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useRef, useState } from 'react'
-import type { MemberSetRow } from '@/lib/data'
+import { presentedDaemonStatus, type MemberSetRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { useTranslations } from 'next-intl'
@@ -132,7 +132,11 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
                         {daemon.name}
                       </span>
                       <span className="block truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                        {daemon.status === 'online' ? t('onlineStatus') : t('offlineStatus')}
+                        {daemon.status === 'online'
+                          ? t('onlineStatus')
+                          : presentedDaemonStatus(daemon) === 'reconnecting'
+                            ? t('reconnectingStatus')
+                            : t('offlineStatus')}
                       </span>
                     </span>
                   </button>

@@ -65,6 +65,7 @@ import {
   PublicGitlabProjectOption,
   RepositoryAccessField,
   RepositoryAccessToggle,
+  RepositoryGrantSuspendedBadge,
   RepositoryMaterializeSelect,
   WorktreeField,
   WorkingSubdirectoryField,
@@ -1231,6 +1232,7 @@ export default function EditWorkspaceModal({
                     >
                       {authorization.repoFullName}
                     </span>
+                    {authorization.stale && <RepositoryGrantSuspendedBadge reason={authorization.stale.reason} />}
                     <RepositoryAccessToggle
                       value={authorization.access}
                       name={authorization.repoFullName}

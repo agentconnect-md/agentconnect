@@ -36,6 +36,7 @@ export default defineConfig([
   { ...shared, entry: { index: 'src/shim/index.ts' } },
   { ...shared, entry: { 'git-credential': 'src/shim/git-credential.ts' } },
   { ...shared, entry: { 'gh-token': 'src/shim/gh-token.ts' } },
+  { ...shared, entry: { 'glab-token': 'src/shim/glab-token.ts' } },
   { ...shared, entry: { 'mcp-bridge': 'src/shim/mcp-bridge.ts' } },
   { ...shared, entry: { 'auto-merge': 'src/shim/auto-merge.ts' } },
   { ...shared, entry: { 'skills/workspace-mutation': 'src/skills/skill-workspace-mutation-cli.ts' } },

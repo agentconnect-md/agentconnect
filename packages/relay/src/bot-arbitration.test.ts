@@ -345,9 +345,11 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     // and the assignment handler forwards the full wire frame when S3 lands.
     const a = toBotAssignment({
       ...base,
+      orgSlug: 'example-org',
       secrets: { botToken: 'xoxb-x', signingSecret: 'sig' }
     } as never)
     expect(a?.secrets).toEqual({ botToken: 'xoxb-x', signingSecret: 'sig' })
+    expect(a?.orgSlug).toBe('example-org')
     const f = toBotAssignment({
       ...base,
       platform: 'feishu',
@@ -1041,6 +1043,40 @@ describe('By decision candidate routes (decisions.md §7.1)', () => {
       expect(r.hostCarrier('bot-1', 'C9', 'd3')).toBeUndefined()
       r.upsert({ ...routedBot(), mutedChannels: ['C9'] })
       expect(r.routedCandidates('bot-1', 'C9')).toEqual([])
+    })
+  })
+
+  describe('a gated agent its routing can select (§14)', () => {
+    const gatedTarget = (): BotAssignment => ({
+      ...decisionAssignment(),
+      agents: [
+        { agentId: ALICE, name: 'Alice', daemonId: D1, integrationId: 'iA' },
+        { agentId: BOB, name: 'Bob', daemonId: D2, integrationId: 'iB' }
+      ],
+      gatedAgentIds: [BOB],
+      routedConversations: [{ channel: 'C9', decisionId: 'dec-1', evaluationDaemonId: D2, targetAgentIds: [BOB] }]
+    })
+
+    it('is a candidate in that routed conversation, and stays reachable there once it joins', () => {
+      const r = new BotArbitrationRouter()
+      r.upsert(gatedTarget())
+      expect(r.routedCandidates('bot-1', 'C9').map((t) => t.agentId)).toEqual([ALICE, BOB])
+      // A participant is re-resolved through the same gate on every follow-up.
+      r.setAffinity('bot-1', 'C9/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' })
+      expect(r.conversationParticipants('bot-1', 'C9/ts1', 'C9').map((t) => t.agentId)).toEqual([BOB])
+    })
+
+    it('stays gated in every other conversation, in a muted one, and where the routing does not name it', () => {
+      const r = new BotArbitrationRouter()
+      r.upsert(gatedTarget())
+      expect(r.agentTarget('bot-1', BOB, 'C1')).toBeNull()
+      r.upsert({ ...gatedTarget(), mutedChannels: ['C9'] })
+      expect(r.routedCandidates('bot-1', 'C9')).toEqual([])
+      r.upsert({
+        ...gatedTarget(),
+        routedConversations: [{ channel: 'C9', decisionId: 'dec-1', evaluationDaemonId: D2, targetAgentIds: [ALICE] }]
+      })
+      expect(r.routedCandidates('bot-1', 'C9').map((t) => t.agentId)).toEqual([ALICE])
     })
   })
 

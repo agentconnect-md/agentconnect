@@ -149,4 +149,33 @@ describe('ws gateway — real socket handshake over agentconnect.v1', () => {
     })
     expect([4400, 1006]).toContain(closeCode)
   })
+
+  it('holds no handshake slot for a socket that has not sent auth', async () => {
+    const app = buildDaemonApp(prisma, { wsConfig: { DAEMON_HANDSHAKE_CONCURRENCY: 1 } })
+    running = app
+    const address = await app.listen()
+    const token = await app.mintToken(DAEMON)
+    const url = `${address.replace(/^http/, 'ws')}/daemon/ws`
+    const opened: WebSocket[] = []
+    try {
+      // Idle sockets past the limit are neither refused nor able to keep a daemon from its handshake.
+      for (let i = 0; i < 3; i++) opened.push(await dial(url, SUBPROTOCOL))
+      const ws = await dial(url, SUBPROTOCOL)
+      opened.push(ws)
+      sendFrame(ws, 'auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' })
+      await nextFrame(ws, 'auth/ok')
+      sendFrame(ws, 'register', {
+        host: 'host-1',
+        capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true },
+        maxAgents: 4,
+        localState: { assignments: [], crons: [], leases: [] }
+      })
+      await nextFrame(ws, 'register/ok')
+    } finally {
+      for (const ws of opened) {
+        ws.on('error', () => {})
+        ws.terminate()
+      }
+    }
+  })
 })

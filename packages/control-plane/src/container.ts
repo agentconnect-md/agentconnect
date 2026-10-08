@@ -80,6 +80,7 @@ import { HookRedeliveryReconciler } from './orchestrator/hookRedeliveryReconcile
 import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-identity.js'
 import { GithubRepoIdentityService } from './github/repo-identity.js'
 import { GithubUserAuthzService } from './github/user-authz.js'
+import { RepositoryGrantReattestor, strictRepoAccessLookups } from './github/repository-grant-reattestor.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { ClusterDaemonIdentityService, ClusterWorkloadIdentityService, loadClusterAccess } from './cluster/index.js'
@@ -127,10 +128,12 @@ import {
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
   PgAgentMemoryFileRepo,
+  PgAgentMemoryStoreOperationRepo,
   PgAgentMemoryHistoryRepo,
   PgThreadAffinityStore,
   PgSlackInstallStore,
   PgSlackPlatformInstallStore,
+  PgSlackWorkspaceInstallStore,
   PgFeishuAppRegistrationStore,
   PgSlackUserConfigStore,
   PgLinearTokenStore,
@@ -189,6 +192,7 @@ import {
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
+import { OAuthReaper, OAUTH_REAP_GRACE_MS, OAUTH_REAP_INTERVAL_MS } from './orchestrator/oauthReaper.js'
 import { AgentMemoryStagingSweeper } from './orchestrator/agentMemoryStagingSweeper.js'
 import { AgentMemoryStoreService } from './agent-memory/store.service.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
@@ -234,6 +238,7 @@ import { ConnectionRegistry } from './ws/registry.js'
 import { RelayRegistry } from './ws/relay-registry.js'
 import { RelayControlSender } from './orchestrator/relayControl.js'
 import { replayMcpTo } from './orchestrator/mcpReplay.js'
+import { replaySnapshot } from './orchestrator/relaySnapshot.js'
 import { makeMcpPush } from './http/mcp-push.js'
 import { makeOauthRebind } from './http/provider-chain.js'
 import { McpProviderOauthService } from './mcp-oauth/service.js'
@@ -302,6 +307,8 @@ import { googleChatAppRoutes, googleChatKeyRoutes } from './platforms/googlechat
 import { googleChatClaimRoutes } from './platforms/googlechat/claim.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
+import { slackWorkspaceIngress } from './platforms/slack/workspace-install.js'
+import { slackWorkspacePublicRoutes, slackWorkspaceClaimRoutes } from './http/routes/slack-workspace-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from './http/routes/slack-bot-refresh.js'
 import { slackBotTokenRoutes } from './http/routes/slack-bot-token.js'
@@ -497,6 +504,7 @@ export function buildContainer(
     externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, secretCipher),
     // The `control-plane` memory home (memory-evolution.md §3.2.1): both own their transactions.
     agentMemoryFile: new PgAgentMemoryFileRepo(prisma),
+    agentMemoryStoreOperation: new PgAgentMemoryStoreOperationRepo(prisma),
     agentMemoryHistory: new PgAgentMemoryHistoryRepo(prisma),
     // Owns its transactions: every external-memory check-then-write pair runs
     // under the advisory mutation scopes, so it stays serialized across CP
@@ -505,6 +513,7 @@ export function buildContainer(
     threadAffinity: new PgThreadAffinityStore(prisma),
     slackInstall: new PgSlackInstallStore(prisma, secretCipher),
     slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
+    slackWorkspaceInstall: new PgSlackWorkspaceInstallStore(prisma, secretCipher),
     feishuAppRegistration: new PgFeishuAppRegistrationStore(prisma, secretCipher),
     slackUserConfig: new PgSlackUserConfigStore(prisma, secretCipher),
     linearToken: new PgLinearTokenStore(prisma, secretCipher),
@@ -1020,7 +1029,8 @@ export function buildContainer(
     agentDelivery,
     placementResolver,
     gatedDmSeedResolver,
-    { routings: repos.botDecisionRouting, daemons: repos.daemon }
+    { routings: repos.botDecisionRouting, daemons: repos.daemon },
+    repos.org
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
@@ -1881,6 +1891,7 @@ export function buildContainer(
       agentMemoryHistory: repos.agentMemoryHistory,
       slackInstall: repos.slackInstall,
       slackPlatformInstall: repos.slackPlatformInstall,
+      slackWorkspaceInstall: repos.slackWorkspaceInstall,
       feishuAppRegistration: repos.feishuAppRegistration,
       slackUserConfig: repos.slackUserConfig,
       linearToken: repos.linearToken,
@@ -2028,6 +2039,15 @@ export function buildContainer(
     http.log
   )
 
+  // Deletes consumed or expired OAuth codes, dead OAuth access tokens and expired DCR clients (agent-assistant.md §7.4).
+  const oauthReaper = new OAuthReaper(
+    repos.oauth,
+    repos.apiKey,
+    clock,
+    { intervalMs: OAUTH_REAP_INTERVAL_MS, graceMs: OAUTH_REAP_GRACE_MS },
+    http.log
+  )
+
   // Same reconciler, hook runs: closes `running` hook_run rows whose completion
   // report was lost (daemon offline at turn end / relay report dropped). The
   // two-report lifecycle matches crons exactly, so the class is reused verbatim.
@@ -2045,8 +2065,14 @@ export function buildContainer(
   // The `control-plane` memory home's op set, and the sweep behind the staged rows an abandoned append
   // sequence leaves (memory-evolution.md §3.2.1); the sweep is armed only by `startBackground()`.
   const agentMemoryTransaction = new AgentMemoryTransactionService(new PgAgentMemoryTransactionRepo(prisma), clock)
-  const agentMemoryStore = new AgentMemoryStoreService(repos.agentMemoryFile, clock)
-  const agentMemoryStagingSweeper = new AgentMemoryStagingSweeper(repos.agentMemoryFile, clock, http.log)
+  const agentMemoryStore = new AgentMemoryStoreService(repos.agentMemoryFile, clock, repos.agentMemoryStoreOperation)
+  const agentMemoryStagingSweeper = new AgentMemoryStagingSweeper(
+    repos.agentMemoryFile,
+    clock,
+    http.log,
+    undefined,
+    repos.agentMemoryStoreOperation
+  )
 
   // Durable one-time assertion recovery. Invocation rows are reaped before
   // expired delegations so a parent is never removed while cached/recoverable
@@ -2094,6 +2120,42 @@ export function buildContainer(
         http.log
       )
     : undefined
+
+  // Re-attests repository grants wherever creation attests them (the per-user GitHub gate); armed only by startBackground().
+  const repositoryGrantReattestor =
+    github && githubUserAuthz && logtoIdentity
+      ? new RepositoryGrantReattestor(
+          {
+            grants: repos.agentRepoAuth,
+            installations: repos.githubInstallation,
+            github,
+            // The creation gate's check, over lookups that keep a credential failure an error rather than "no access".
+            authz: new GithubUserAuthzService({
+              identity: logtoIdentity,
+              github: strictRepoAccessLookups(github),
+              users: repos.user,
+              clock
+            }),
+            audit: repos.audit,
+            reproject: async (orgId, agentId) => {
+              const agent = await repos.agent.get(orgId, agentId)
+              if (!agent) return
+              await agentDelivery.upsert(agent, (err, daemonId) => {
+                if (err instanceof NoConnection)
+                  http.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+                else http.log.warn({ err, agentId, daemonId }, 'grant re-attestation: spec reconcile failed')
+              })
+            },
+            clock,
+            log: http.log
+          },
+          {
+            intervalMs: config.REPO_GRANT_REATTEST_INTERVAL_SEC * 1000,
+            reattestAfterMs: config.REPO_GRANT_REATTEST_AFTER_SEC * 1000,
+            batch: config.REPO_GRANT_REATTEST_BATCH
+          }
+        )
+      : undefined
 
   // One-time preset backfill (preset-agents.md §3.2): existing orgs receive the
   // `agentconnect` general preset; the preset_agent row is the per-org marker, so
@@ -2301,19 +2363,22 @@ export function buildContainer(
       syncBotProfile: syncDiscordBotProfile
     }),
     createSlackCpProvider({
+      unclaimedIngress: slackWorkspaceIngress(repos.slackWorkspaceInstall, slackPlatformApp, webAppUrl),
       verifyBot: verifySlackBot,
       verifyAppToken: verifySlackAppToken,
       funnelRoutes: {
         org: [
           slackInstallRoutes(httpDeps, slackSeams),
           slackPlatformInstallRoutes(httpDeps, slackSeams),
+          slackWorkspaceClaimRoutes(httpDeps, slackSeams),
           slackConfigRoutes(httpDeps, slackSeams),
           slackBotRefreshRoutes(httpDeps, slackSeams),
           slackBotTokenRoutes(httpDeps, slackSeams)
         ],
         publicCallback: [
           slackOauthCallbackRoutes(httpDeps, slackSeams),
-          slackPlatformCallbackRoutes(httpDeps, slackSeams)
+          slackPlatformCallbackRoutes(httpDeps, slackSeams),
+          slackWorkspacePublicRoutes(httpDeps, slackSeams)
         ]
       },
       ...(slackSeams.toolingCredentials ? { toolingCredentials: slackSeams.toolingCredentials } : {}),
@@ -2508,7 +2573,11 @@ export function buildContainer(
     config: {
       HEARTBEAT_SEC: config.HEARTBEAT_SEC,
       ACK_TIMEOUT_MS: config.ACK_TIMEOUT_MS,
-      WS_PATH: config.WS_PATH
+      WS_PATH: config.WS_PATH,
+      DATABASE_POOL_MAX: config.DATABASE_POOL_MAX,
+      ...(config.DAEMON_HANDSHAKE_CONCURRENCY
+        ? { DAEMON_HANDSHAKE_CONCURRENCY: config.DAEMON_HANDSHAKE_CONCURRENCY }
+        : {})
     }
   }
 
@@ -2527,7 +2596,12 @@ export function buildContainer(
     )
   }
 
-  const relayDeploymentConfig = relayDeploymentSnapshot(opts.deploymentConfig, googleChatAnchor, relayPublicBase)
+  const relayDeploymentConfig = relayDeploymentSnapshot(
+    opts.deploymentConfig,
+    googleChatAnchor,
+    relayPublicBase,
+    webAppUrl
+  )
   const relayWsDeps: RelayWsServerDeps = {
     auth: relayAuth,
     relays: repos.relay,
@@ -2618,18 +2692,26 @@ export function buildContainer(
         httpBot.reconcileAll().catch((err) => http.log.error({ err }, 'relay: HTTP-bot reconcile on register failed'))
       )
       trackRelayRegistrationTask(
-        hookService.replayTo(ch).catch((err) => http.log.error({ err }, 'relay: hook-rule replay on register failed'))
+        replaySnapshot(ch, 'hook', relayControl, (withhold) => hookService.replayTo(ch, withhold)).catch((err) =>
+          http.log.error({ err }, 'relay: hook-rule replay on register failed')
+        )
       )
       // Seed the fresh relay with every MCP provider binding (its table starts empty;
       // bindings are pool-wide, so a later-joining relay must be replayed or requests 401).
       trackRelayRegistrationTask(
-        replayMcpTo(ch, {
-          providers: repos.mcpProvider,
-          secrets: repos.mcpProviderSecret,
-          grants: repos.mcpGrant,
-          tokens: mcpTokenService,
-          log: http.log
-        }).catch((err) => http.log.error({ err }, 'relay: mcp binding replay on register failed'))
+        replaySnapshot(ch, 'mcp', relayControl, (withhold) =>
+          replayMcpTo(
+            ch,
+            {
+              providers: repos.mcpProvider,
+              secrets: repos.mcpProviderSecret,
+              grants: repos.mcpGrant,
+              tokens: mcpTokenService,
+              log: http.log
+            },
+            withhold
+          )
+        ).catch((err) => http.log.error({ err }, 'relay: mcp binding replay on register failed'))
       )
       trackRelayRegistrationTask(
         (async () => {
@@ -2641,7 +2723,9 @@ export function buildContainer(
             log: http.log
           }
           // The relay binding must exist before a daemon is pointed at it.
-          await replayMemoryConnectionsTo(ch, memoryDeps)
+          await replaySnapshot(ch, 'memory', relayControl, (withhold) =>
+            replayMemoryConnectionsTo(ch, memoryDeps, withhold)
+          )
           const selected = (await relayRoster.entries())[0]
           if (!selected) return
           await syncMemoryConnectionsToDaemons(relayHttpOrigin(selected.url), {
@@ -2792,9 +2876,10 @@ export function buildContainer(
         http.log.error({ err, botId: m.botId }, 'relay: bot-channels snapshot failed')
       }
     },
-    // A closed relay socket shrinks the connected roster — re-stamp §14.3 notice
-    // authorities on the survivors (fire-and-forget; errors logged).
+    // A closed relay shrinks the roster — re-stamp §14.3 notice authorities on the survivors (fire-and-forget).
     onRelayGone: () => {
+      // A retiring CP's own drain closes every relay; the replacement re-places bots when each re-registers.
+      if (readiness.isShuttingDown()) return
       void httpBot
         .reconcileAll()
         .catch((err) => http.log.error({ err }, 'relay: HTTP-bot reconcile on disconnect failed'))
@@ -2879,12 +2964,14 @@ export function buildContainer(
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()
+      oauthReaper.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       agentMemoryStagingSweeper.start()
       githubRunReporter?.start()
       giteaStatusReporter.start()
       hookRedeliveryReconciler?.start()
+      repositoryGrantReattestor?.start()
       mcpOauthRefresher.start()
       gitlabRotator?.start()
       gitlabRetirementSweeper?.start()
@@ -2904,12 +2991,14 @@ export function buildContainer(
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
+      oauthReaper.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       agentMemoryStagingSweeper.stop()
       githubRunReporter?.stop()
       giteaStatusReporter.stop()
       hookRedeliveryReconciler?.stop()
+      repositoryGrantReattestor?.stop()
       mcpOauthRefresher.stop()
       gitlabRotator?.stop()
       gitlabRetirementSweeper?.stop()
@@ -2972,6 +3061,7 @@ export function httpServerConfigFrom(
     WAITLIST_MODE: config.WAITLIST_MODE,
     ...(config.CORS_ORIGIN !== undefined ? { CORS_ORIGIN: config.CORS_ORIGIN } : {}),
     ...(config.PUBLIC_WEB_URL ? { PUBLIC_WEB_URL: config.PUBLIC_WEB_URL } : {}),
+    SLACK_INSTALL_TTL_SEC: config.SLACK_INSTALL_TTL_SEC,
     ...(config.PUBLIC_RELAY_URL ? { PUBLIC_RELAY_URL: config.PUBLIC_RELAY_URL } : {}),
     ...(config.USAGE_INGEST_TOKEN ? { USAGE_INGEST_TOKEN: config.USAGE_INGEST_TOKEN } : {}),
     USAGE_COLLECTOR_SERVICE_ACCOUNT: config.USAGE_COLLECTOR_SERVICE_ACCOUNT,

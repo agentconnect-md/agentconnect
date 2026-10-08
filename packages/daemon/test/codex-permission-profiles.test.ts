@@ -144,7 +144,7 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
   })
 
   // §11: the per-session HOME is a SIBLING of the cwd, so `:workspace` never reaches it and pnpm/corepack cannot write their caches.
-  it('opens a confined session HOME for writes and denies its .codex whole', () => {
+  it('opens a confined session HOME for writes and keeps its .codex read-only', () => {
     const home = '/agent/sessions/session-1/home'
     const config = codexPermissionProfileConfig({
       protectedRoots: [],
@@ -156,9 +156,11 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
       value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
     )!
     expect(agent).toContain(`"${home}" = "write"`)
-    // `auth.json` under it LINKS to the shared host credential, and the rest is the ACP parent's own state.
-    expect(agent).toContain(`"${home}/.codex" = "deny"`)
-    expect(agent).not.toContain(`"${home}/.codex" = "read"`)
+    // The ACP parent's state: never writable to the model's tools, but readable, since Codex execs its
+    // linux-sandbox helper from `.codex/tmp/arg0` through its own bwrap, which masks a denied directory.
+    expect(agent).toContain(`"${home}/.codex" = "read"`)
+    expect(agent).not.toContain(`"${home}/.codex" = "deny"`)
+    expect(agent).not.toContain('tmp/arg0')
     // The read-only profile grants nothing, and the write never leaks into it.
     expect(
       config.configOverrides.find((value) =>
@@ -186,8 +188,9 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     expect(agent).not.toContain('= "write" }')
   })
 
-  // The caller's own `.codex` deny and this one name the same path: one entry, still `deny`.
-  it('keeps the session .codex denied once when the caller already protects it', () => {
+  // A caller that cannot list the session `.codex` (an executor's HOME) denies it outright, which wins over the
+  // read-only default; Codex's helper below it is then reachable only through a writable carve-out.
+  it('keeps the session .codex denied once when the caller protects it outright, and reopens its helper', () => {
     const home = '/agent/sessions/session-1/home'
     const config = codexPermissionProfileConfig({
       protectedRoots: [`${home}/.codex`],
@@ -198,8 +201,40 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
       value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
     )!
     expect(agent).toBe(
-      `permissions.agentconnect-protected-workspace.filesystem={ "${home}" = "write", "${home}/.codex" = "deny" }`
+      `permissions.agentconnect-protected-workspace.filesystem={ "${home}" = "write", "${home}/.codex" = "deny", "${home}/.codex/tmp/arg0" = "write" }`
     )
+    // The read-only profile grants no write, so the carve-out never reaches it.
+    expect(
+      config.configOverrides.find((value) =>
+        value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
+      )
+    ).toBe(`permissions.agentconnect-protected-read-only.filesystem={ "${home}/.codex" = "deny" }`)
+  })
+
+  // Automatic approval review runs under a read-only derivative of the profile, which keeps no write: only a
+  // directory that is not denied leaves Codex its helper there, so the credentials are what is denied.
+  it('denies the credentials in a read-only session .codex in every profile, the read-only one included', () => {
+    const home = '/agent/sessions/session-1/home'
+    const config = codexPermissionProfileConfig({
+      protectedRoots: [`${home}/.codex/auth.json`, `${home}/.codex/config.toml`],
+      readOnlyRoots: [`${home}/.codex`],
+      sessionHomeRoot: home
+    })!
+    const table = (profile: string) =>
+      config.configOverrides.find((value) => value.startsWith(`permissions.${profile}.filesystem=`))!
+    expect(table('agentconnect-protected-workspace')).toBe(
+      `permissions.agentconnect-protected-workspace.filesystem={ "${home}" = "write", "${home}/.codex" = "read", "${home}/.codex/auth.json" = "deny", "${home}/.codex/config.toml" = "deny" }`
+    )
+    expect(table('agentconnect-protected-read-only')).toBe(
+      `permissions.agentconnect-protected-read-only.filesystem={ "${home}/.codex/auth.json" = "deny", "${home}/.codex/config.toml" = "deny" }`
+    )
+    expect(table('agentconnect-protected-full-access')).toContain(`"${home}/.codex" = "read"`)
+  })
+
+  // Only the session's own Codex home earns the helper carve-out; another protected `.codex` stays denied whole.
+  it('reopens no helper subtree under a protected .codex that is not the session HOME', () => {
+    const config = codexPermissionProfileConfig({ protectedRoots: ['/host/.codex'] })!
+    expect(config.configOverrides.join('\n')).not.toContain('tmp/arg0')
   })
 
   // A HOME alone is a policy: it must not be silently dropped by the "nothing to say" early return.

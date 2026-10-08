@@ -130,6 +130,25 @@ describe('R1/R2a GitHub review settings', () => {
     ).toBe('write')
   })
 
+  it('a suspended row authorizes nothing, while an installation grant on its owner still does', () => {
+    const suspended = {
+      repoId: '11',
+      repoFullName: 'acme/docs',
+      access: 'write' as const,
+      stale: { since: '2026-09-01T00:00:00.000Z', reason: 'access_lost' as const }
+    }
+    const input = { repoId: '11', repoFullName: 'acme/docs', workspace: { mode: 'scratch' as const } }
+    expect(effectiveRepoAccess({ ...input, authorizations: [suspended] })).toBe('none')
+    expect(
+      effectiveRepoAccess({
+        ...input,
+        authorizations: [suspended],
+        installationGrants: [{ accountLogin: 'acme', access: 'read' }]
+      })
+    ).toBe('read')
+    expect(effectiveRepoAccess({ ...input, authorizations: [{ ...suspended, stale: null }] })).toBe('write')
+  })
+
   it("never hands a renamed repository's row to a new repository that reuses its name", () => {
     const stale = { id: 'old', repoId: '11', repoFullName: 'acme/docs', access: 'write' as const }
     const legacy = { id: 'legacy', repoFullName: 'acme/legacy', access: 'read' as const }

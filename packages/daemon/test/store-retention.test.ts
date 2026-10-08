@@ -113,6 +113,10 @@ async function seedEveryTable(s: LocalStore, agentId: string, tag: string, at: n
   await s.ensureOutwardSessionId(`internal:memory:${tag}`, agentId, at)
   // Written after the delete: `deleteSession` drops the session's own outbox snapshot with it.
   await s.saveSessionMetadataSnapshot(agentId, `acp-${tag}`, '{"phase":"end"}', true, at, owner)
+  await s.queueCronReport(
+    { cronId: `cron-${tag}`, agentId, firedAt: new Date(at).toISOString(), status: 'success' },
+    at
+  )
   await s.recordWebchatMcpGrant({
     conversationId: `conv-${tag}`,
     agentId,
@@ -268,6 +272,7 @@ describe('store retention rule table', () => {
       'hook-report': 1,
       'delivery-receipt': 1,
       'session-metadata': 1,
+      'cron-report': 1,
       'outward-id': 1,
       'webchat-grant': 1,
       'memory-capture': 1,
@@ -276,8 +281,8 @@ describe('store retention rule table', () => {
       'catalog-meta': 0,
       'catalog-models': 0
     })
-    expect(summary).toMatchObject({ horizon: 7, agentGone: 0, deleted: 7, failed: 0 })
-    expect(logs.at(-1)).toContain('collected=7 deleted=7')
+    expect(summary).toMatchObject({ horizon: 8, agentGone: 0, deleted: 8, failed: 0 })
+    expect(logs.at(-1)).toContain('collected=8 deleted=8')
     expect(await remaining(s, 'hook-report')).toBe(0)
     expect(await remaining(s, 'session-purge')).toBe(1)
 
@@ -398,11 +403,12 @@ describe('store retention rule table', () => {
     const summary = await instance.sweep()
 
     expect(cp.asked).toEqual([[LIVE, GONE]])
-    expect(summary).toMatchObject({ agentGone: 7, horizon: 0, deleted: 7, failed: 0 })
+    expect(summary).toMatchObject({ agentGone: 8, horizon: 0, deleted: 8, failed: 0 })
     // Only the rules that name an agent; the agent-free ones are untouched by this proof.
     expect(summary!.byRule).toMatchObject({
       'hook-report': 1,
       'session-metadata': 1,
+      'cron-report': 1,
       'session-purge': 1,
       'webchat-grant': 1,
       'memory-capture': 1,
@@ -428,8 +434,8 @@ describe('store retention rule table', () => {
     })
     const summary = await instance.sweep()
 
-    expect(summary).toMatchObject({ agentMoved: 7, agentGone: 0, horizon: 0, deleted: 7, failed: 0 })
-    expect(logs.at(-1)).toContain('agent-moved=7')
+    expect(summary).toMatchObject({ agentMoved: 8, agentGone: 0, horizon: 0, deleted: 8, failed: 0 })
+    expect(logs.at(-1)).toContain('agent-moved=8')
     expect(await remaining(b, 'hook-report')).toBe(1) // the agent still placed here
     await a.close()
   })
@@ -442,7 +448,7 @@ describe('store retention rule table', () => {
       liveAgents: async (ids) => new Set(ids),
       movedAgents: async (ids) => new Set(ids)
     })
-    expect(await instance.sweep()).toMatchObject({ agentMoved: 7, collected: 7, deleted: 0 })
+    expect(await instance.sweep()).toMatchObject({ agentMoved: 8, collected: 8, deleted: 0 })
     expect(logs.some((line) => line.includes('agent left this pool'))).toBe(true)
     expect(await remaining(b, 'hook-report')).toBe(1)
     await a.close()
@@ -455,7 +461,7 @@ describe('store retention rule table', () => {
     const { instance, logs } = sweeper(b, AT + 1_000, { liveAgents: fakeCp().liveAgents })
     const summary = await instance.sweep()
 
-    expect(summary).toMatchObject({ agentGone: 7, collected: 7, deleted: 0 })
+    expect(summary).toMatchObject({ agentGone: 8, collected: 8, deleted: 0 })
     expect(logs.at(-1)).toContain('(orphan dry run)')
     expect(await remaining(b, 'hook-report')).toBe(1)
     await a.close()
@@ -470,7 +476,7 @@ describe('store retention rule table', () => {
     expect(fresh).toMatchObject({ agentGone: 0, collected: 0 })
 
     const aged = await sweeper(s, AT + DEFAULT_STORE_HORIZON_MS).instance.sweep()
-    expect(aged).toMatchObject({ agentGone: 0, horizon: 7, deleted: 7 })
+    expect(aged).toMatchObject({ agentGone: 0, horizon: 8, deleted: 8 })
     await s.close()
   })
 
@@ -572,7 +578,7 @@ describe('store retention rule table', () => {
     const { instance } = sweeper(s, AT + 30 * DAY)
     const summary = await instance.sweepAgeOnly()
 
-    expect(summary).toMatchObject({ agentGone: 0, horizon: 10, deleted: 10, failed: 0 })
+    expect(summary).toMatchObject({ agentGone: 0, horizon: 11, deleted: 11, failed: 0 })
     expect(await remaining(s, 'catalog-meta')).toBe(0)
     await s.close()
   })

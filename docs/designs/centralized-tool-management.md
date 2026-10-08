@@ -217,7 +217,10 @@ bindings copy that pool-wide distribution pattern:
 - `rc/mcp-unassign` (C→R) broadcasts `{ providerId }` to invalidate the full
   provider or `{ providerId, grantKeyHash }` to invalidate one grant.
 - When a relay registers or reconnects, the CP replays the full persisted
-  binding set to that relay.
+  binding set to that relay. When both sides advertise
+  `relay-projection-snapshot-v1`, the replay is framed by `rc/snapshot-begin`
+  and `rc/snapshot-end`, and the relay then drops bindings the replay no longer
+  names, so a grant revoked while the relay was disconnected stops resolving.
 - Upstream headers therefore exist **only in the CP database and relay memory**,
   at the same trust level as Slack signing secrets held by every relay.
 

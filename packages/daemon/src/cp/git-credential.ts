@@ -102,6 +102,8 @@ interface Entry {
   access: GitCredGrant['access']
   /** The purge fence the CP minted this grant under; absent when the CP echoed none. */
   credentialEpoch?: string
+  /** The numeric repository identity the CP echoed, verified against the ask whenever it named one; GitHub's only source of it. */
+  externalRepoId?: string
   /** Monotonic deadline (ms on the injected monotonic clock). */
   expiresAtMono: number
 }
@@ -521,6 +523,7 @@ export class GitCredentialCache {
       repoFullName: grant.repoFullName,
       access: grant.access,
       ...(grant.credentialEpoch !== undefined ? { credentialEpoch: grant.credentialEpoch } : {}),
+      ...(grant.externalRepoId !== undefined ? { externalRepoId: grant.externalRepoId } : {}),
       expiresAtMono: this.monoNow() + grant.ttlSec * 1000
     }
     this.entries.set(key, entry)

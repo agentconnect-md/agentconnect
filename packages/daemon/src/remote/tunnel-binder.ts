@@ -58,6 +58,11 @@ export class TunnelBinder {
     }
   }
 
+  /** Whether the subject's bound pod serves `tunnel`: a pod bound by an older daemon may lack `gitcred` (source-cache.md §8). */
+  serves(subject: string, tunnel: TunnelName): boolean {
+    return this.proxies.get(subject)?.proxy.serves(tunnel) === true
+  }
+
   /** Drop the subject's proxy: this member no longer serves the launch its streams belong to. */
   release(subject: string, reason: string): void {
     this.proxies.get(subject)?.proxy.stop(reason)

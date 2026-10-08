@@ -1138,7 +1138,7 @@ describe('Daemon in-conversation commands', () => {
       ...selectHost(),
       permissionModeOptions: vi.fn(() => ({
         current: 'agent',
-        modes: ['read-only', 'agent', 'agent-full-access']
+        modes: ['read-only', 'workspace-write', 'agent', 'agent-full-access']
       })),
       setSessionPermissionMode: vi.fn(async () => true)
     }
@@ -1170,8 +1170,9 @@ describe('Daemon in-conversation commands', () => {
     // bare /permission lists Codex's own mode names, not the raw wire ids.
     await (daemon as any).onInboundOutcome(dm('200', '/permission'))
     const listed = conn.postMessage.mock.calls.at(-1)![1] as string
-    expect(listed).toContain('Ask for approval')
-    expect(listed).toContain('Approve for me')
+    expect(listed).toContain('Read-only')
+    expect(listed).toContain('Workspace access')
+    expect(listed).toContain('Auto review')
     expect(listed).toContain('Full access')
     expect(listed).not.toContain('agent-full-access')
 
@@ -1188,8 +1189,8 @@ describe('Daemon in-conversation commands', () => {
       CHROME_REPLY
     )
 
-    // the default mode resolves from its Codex label too ("approve for me" → agent)
-    await (daemon as any).onInboundOutcome(dm('220', '/permission approve for me'))
+    // The default mode resolves from its Codex label too.
+    await (daemon as any).onInboundOutcome(dm('220', '/permission auto review'))
     expect(await store.getPermissionModeOverride(key)).toBe('agent')
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
@@ -2066,14 +2067,13 @@ describe('Slack interactive status bar', () => {
       status: 'pending',
       resolvedAt: null
     })
-    ;(daemon as any).permissions.pendingChatPermissions.set(permissionRequestId, {
+    ;(daemon as any).permissions.pendingApprovals.set(permissionRequestId, {
+      kind: 'permission',
       agentId: 'bot-a',
       sessionId: 'acp-1',
       params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
       evaluationParams: {},
-      conn: { updateBlocks, workspaceId: () => 'T1' },
-      channel: 'C1',
-      ts: 'card-1',
+      chat: { conn: { updateBlocks, workspaceId: () => 'T1' }, channel: 'C1', ts: 'card-1' },
       resolve: permissionResolved
     })
     expect(
@@ -2180,7 +2180,7 @@ describe('Slack interactive status bar', () => {
     // With no CP verify available in this harness it fails closed: admitted, not decided.
     const dmResolved = vi.fn()
     const dmRequestId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
-    ;(daemon as any).permissions.pendingEditorPermissions.set(dmRequestId, {
+    ;(daemon as any).permissions.pendingApprovals.set(dmRequestId, {
       kind: 'permission',
       agentId: 'bot-a',
       sessionId: 'acp-2',

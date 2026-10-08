@@ -333,7 +333,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         trigger: 'mention',
         decisionBinding: null,
         decision: null,
-        agentId: null
+        agentId: null,
+        externalReason: null
       },
       {
         channelId: 'C2',
@@ -350,7 +351,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         trigger: 'mention',
         decisionBinding: null,
         decision: null,
-        agentId: null
+        agentId: null,
+        externalReason: null
       }
     ])
   })
@@ -692,6 +694,44 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     // person) and a DM from someone outside the audience.
     expect(triggers.get('C1')).toBe('off')
     expect(triggers.get('D_DAVE')).toBe('off')
+  })
+
+  it('starts an assistant-mode agent Off everywhere and opens no DM for a share set it kept', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await install(running)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    // Everyone visibility, with a share set left from an earlier Selected audience.
+    await prisma.agent.update({
+      where: { id: integration.agentId },
+      data: {
+        visibility: 'org',
+        sharedWith: [DEFAULT_OWNER_ID],
+        assistantMode: { enabled: true, responsibleUserId: DEFAULT_OWNER_ID }
+      }
+    })
+    await prisma.bot.update({ where: { id: integration.botId }, data: { teamId: 'T_ACME' } })
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: ALICE_SUB } })
+
+    await report(
+      DAEMON,
+      id,
+      [
+        { id: 'C1', name: 'deploys' },
+        { id: 'G1', name: '@@alice, bob', kind: 'mpim' },
+        { id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' }
+      ],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { [ALICE_SUB]: { teamId: 'T_ACME', userId: 'U_ALICE' } }
+    )
+
+    const triggers = await triggersOf(id)
+    expect(triggers.get('C1')).toBe('off')
+    expect(triggers.get('G1')).toBe('off')
+    expect(triggers.get('D_ALICE')).toBe('off')
   })
 
   // The other regression the review caught. On a direct/socket integration this handler
@@ -1765,7 +1805,8 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       trigger: 'any',
       decisionBinding: null,
       decision: null,
-      agentId: null
+      agentId: null,
+      externalReason: null
     })
 
     // The daemon got the recomputed rule set: defaults + ONE auto rule for C2.
@@ -2242,5 +2283,79 @@ describe('conversation paths for a POOL agent', () => {
     expect(spy.leaves).toEqual([
       { daemonId: MEMBER, l: { integrationId: id, target: { kind: 'conversation', channel: 'C1' } } }
     ])
+  })
+})
+
+// assistant-mode.md §5.3: an enabled place is internal unless the platform detects it as external.
+describe('detected external places', () => {
+  const externalOf = async (id: string): Promise<Map<string, string | null>> => {
+    const res = await running!.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const integration = (
+      res.json() as Array<{ id: string; channels: Array<{ channelId: string; externalReason: string | null }> }>
+    ).find((i) => i.id === id)
+    return new Map(integration!.channels.map((c) => [c.channelId, c.externalReason]))
+  }
+
+  it('records a Slack Connect channel, lifts it when the share is gone, and pushes only on a change', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const converged: unknown[] = []
+    const converge = async (agent: unknown) => void converged.push(agent)
+    const reportExternal = (channels: IntegrationChannel[]) =>
+      report(DAEMON, id, channels, undefined, undefined, undefined, undefined, undefined, converge)
+
+    await reportExternal([
+      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C2', name: 'deploys', externalReason: null }
+    ])
+    expect(await externalOf(id)).toEqual(
+      new Map([
+        ['C1', 'externallyShared'],
+        ['C2', null]
+      ])
+    )
+    expect(converged).toHaveLength(1)
+
+    // The same listing again changes nothing; a report that checked nothing keeps the detection.
+    await reportExternal([
+      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C2', name: 'deploys', externalReason: null }
+    ])
+    await reportExternal([
+      { id: 'C1', name: 'partners' },
+      { id: 'C2', name: 'deploys' }
+    ])
+    expect((await externalOf(id)).get('C1')).toBe('externallyShared')
+    expect(converged).toHaveLength(1)
+
+    // A listing that no longer reports the share lifts it.
+    await reportExternal([
+      { id: 'C1', name: 'partners', externalReason: null },
+      { id: 'C2', name: 'deploys', externalReason: null }
+    ])
+    expect((await externalOf(id)).get('C1')).toBeNull()
+    expect(converged).toHaveLength(2)
+  })
+
+  it('carries the detected set to the daemon with the spec', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [
+      { id: 'C1', externalReason: 'externallyShared' },
+      { id: 'C2', externalReason: null }
+    ])
+    spy.upserts.length = 0
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C2`,
+      payload: { trigger: 'any' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(spy.upserts.at(-1)!.u.core.externalChannels).toEqual(['C1'])
   })
 })

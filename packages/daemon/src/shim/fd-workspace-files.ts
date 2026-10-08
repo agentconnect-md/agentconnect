@@ -33,10 +33,10 @@ import type {
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, relative, sep } from 'node:path'
 import {
+  byteSliceWorkspaceRead,
   pageWorkspaceEntries,
-  sliceWorkspaceRead,
-  rawWorkspaceRead,
   readWorkspaceSlice,
+  sliceWorkspaceRead,
   workspaceEditBytes,
   workspaceEntryOf,
   WorkspaceConflictError,
@@ -213,10 +213,10 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
             size,
             mtime
           }
-
           if (req.encoding === 'base64') {
-            return { ...head, ...rawWorkspaceRead(await readWorkspaceSlice(file, req, size), req, size) }
+            return { ...head, ...byteSliceWorkspaceRead(await readWorkspaceSlice(file, req, size), req, size) }
           }
+
           const sniffLen = Math.min(SNIFF_BYTES, size)
           if (sniffLen > 0) {
             const sniff = Buffer.alloc(sniffLen)

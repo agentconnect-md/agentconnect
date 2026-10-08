@@ -252,6 +252,35 @@ describe('a chat with no card of its own takes the Agent-editor queue', () => {
     await expect(outcome).resolves.toBe('allow_once')
   })
 
+  it('offers the console all three answers, so an editor can allow the session (#2592)', async () => {
+    const w = world({ platform: 'discord', webchat: false, conn: true })
+    const outcome = w.coordinator.askMemoryWriteApproval(OWNER, ACP_SESSION, ASK)
+    await vi.waitFor(() => expect(w.store.createPermissionRequest).toHaveBeenCalledTimes(1))
+    const id = (w.store.createPermissionRequest.mock.calls[0] as any[])[0].id as string
+    expect(w.coordinator.pendingPermissionOptions(AGENT, id)).toEqual([
+      { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'allow_session', name: 'Allow for this session', kind: 'allow_always' },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+    ])
+    const ack = await w.coordinator.decideEditorPermission({
+      requestId: id,
+      agentId: AGENT,
+      decision: 'allow',
+      optionId: 'allow_session'
+    })
+    expect(ack).toEqual({ ok: true })
+    await expect(outcome).resolves.toBe('allow_session')
+  })
+
+  it('the Deny choice declines', async () => {
+    const w = world({ platform: 'discord', webchat: false, conn: true })
+    const outcome = w.coordinator.askMemoryWriteApproval(OWNER, ACP_SESSION, ASK)
+    await vi.waitFor(() => expect(w.store.createPermissionRequest).toHaveBeenCalledTimes(1))
+    const id = (w.store.createPermissionRequest.mock.calls[0] as any[])[0].id as string
+    await w.coordinator.decideEditorPermission({ requestId: id, agentId: AGENT, decision: 'deny', optionId: 'deny' })
+    await expect(outcome).resolves.toBe('denied')
+  })
+
   it('an editor Deny, or the turn ending, is a decline', async () => {
     const denied = world({ platform: 'discord', webchat: false, conn: true })
     const first = denied.coordinator.askMemoryWriteApproval(OWNER, ACP_SESSION, ASK)
@@ -263,7 +292,7 @@ describe('a chat with no card of its own takes the Agent-editor queue', () => {
     const ended = world({ platform: 'discord', webchat: false, conn: true })
     const second = ended.coordinator.askMemoryWriteApproval(OWNER, ACP_SESSION, ASK)
     await vi.waitFor(() => expect(ended.store.createPermissionRequest).toHaveBeenCalledTimes(1))
-    await ended.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
+    await ended.coordinator.releaseApprovals(OWNER, ACP_SESSION)
     await expect(second).resolves.toBe('denied')
   })
 })

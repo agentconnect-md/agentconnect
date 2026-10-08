@@ -55,7 +55,8 @@ describe('daemon Decision evaluator', () => {
           id: 'typesafe',
           cloudAvailable: true,
           models: [{ id: 'jev-1.13.0' }, { id: 'jev-latest' }, { id: 'jev-preview' }]
-        }
+        },
+        { id: 'openai', cloudAvailable: false, models: [{ id: 'gpt-6-luna' }] }
       ]
     })
     expect(credentials).not.toHaveBeenCalled()

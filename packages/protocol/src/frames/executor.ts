@@ -141,6 +141,15 @@ export const ExecutorPrepareResult = z.discriminatedUnion('status', [
     helperRoot: z.string().min(1).max(4096).optional(), // a `host` executor's own bundle; absent ⇒ the image's default
     missingHelpers: z.array(z.string().min(1).max(64)).optional(), // `shimPaths` keys the executor has nothing at
     runtimeLaunch: ExecutorRuntimeLaunch.optional(), // how this machine starts the runtime `prepare` named; absent ⇒ not asked, or it has none
+    // The session HOME's `.codex` as the executor classified it, in its coordinates: read-only, and what is denied in it; absent ⇒ an older executor or no `.codex`, denied whole
+    codexState: z
+      .object({
+        home: z.string().min(1).max(4096),
+        readOnly: z.array(z.string().min(1).max(4096)).max(8),
+        secret: z.array(z.string().min(1).max(4096)).max(64)
+      })
+      .optional(),
+    workspaceIncarnation: z.string().min(1).max(256).optional(), // the session directory's identity on the executor, the same across its launches: the key its skill ledger is kept under; absent ⇒ an older executor, keyed on the launch
     liveCount: z.number().int().min(0) // environments live on the executor now, this one included
   }),
   z.object({ status: z.literal('full'), liveCount: z.number().int().min(0).optional() }),

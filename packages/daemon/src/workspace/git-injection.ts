@@ -80,22 +80,21 @@ const UNSAFE_OPTS = {
     allowUnsafeConfigPaths: true, // the daemon-selected empty global/system config view
     allowUnsafeFsMonitor: true, // the daemon-built false override for checkout fsmonitor commands
     allowUnsafeHooksPath: true, // the daemon-built /dev/null hooks path for host-side Git
-    allowUnsafeSshCommand: true // the daemon-built ssh command that ignores user routing config
+    allowUnsafeSshCommand: true, // the daemon-built ssh command that ignores user routing config
+    allowUnsafeUrlRewrite: true // the daemon-built self-rewrite that pins the target URL against broader insteadOf rules
   }
 } as const
 
-/**
- * simple-git bound to a cwd with the credential-helper opt-in. An `abort`
- * signal KILLS the spawned git child (abort-plugin) — pair budget timeouts
- * with it, or the abandoned child keeps running and holds .git locks
- * (index.lock) into the next session's pull.
- */
-export function gitFor(cwd?: string, abort?: AbortSignal): SimpleGit {
-  return simpleGit({
+/** simple-git at `cwd` with `env` as the whole child env; `abort` KILLS the child, so pair timeouts with it or it holds index.lock. */
+export function gitFor(cwd?: string, abort?: AbortSignal, env?: Record<string, string>): SimpleGit {
+  const git = simpleGit({
     ...(cwd ? { baseDir: cwd } : {}),
     ...(abort ? { abort } : {}),
+    // simple-git 4 rejects any GIT_* name it is not told about; the caller built `env`, and the unsafe checks still run on it.
+    ...(env ? { allowEnvironment: Object.keys(env).filter((key) => /^git_/i.test(key)) } : {}),
     ...UNSAFE_OPTS
   })
+  return env ? git.env(env) : git
 }
 
 // Every env var simple-git's checker refuses by NAME (it matches
@@ -163,6 +162,8 @@ export function gitEnvBase(): Record<string, string> {
 
 const WORKSPACE_GIT_PROXY_ENV = /^(?:all|ftp|http|https|no)_proxy$/i
 const EMPTY_GIT_CONFIG = process.platform === 'win32' ? 'NUL' : '/dev/null'
+/** The partial-clone filter of a session clone (§11): whole history, file contents on demand. */
+export const SESSION_CLONE_FILTER = 'blob:none'
 const WORKSPACE_SSH_COMMAND =
   'ssh -F none -o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ClearAllForwardings=yes'
 const WORKSPACE_GIT_CONTROLLED_ENV = new Set([
@@ -264,11 +265,17 @@ export function workspaceGitEnvBase(repository?: string): Record<string, string>
  * One function for both directions so the two cannot drift apart again. `credentialAgentId` is
  * omitted for a workspace with no github-app credential, which then reaches the remote on whatever
  * ambient (ssh) auth the host provides.
+ *
+ * `blobless` marks the remote a promisor with the session clone's own filter, at command scope. A
+ * filtered fetch from a remote Git does not already know as a promisor writes that mark into the
+ * checkout's config, and the URL is never written, so every review would leave one more URL-less
+ * remote behind; declared up front, nothing is persisted.
  */
 export function workspaceGitRemoteTarget(
   repository: string,
   credentialAgentId?: string,
-  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE,
+  { blobless = false }: { blobless?: boolean } = {}
 ): { remote: string; env: Record<string, string> } {
   const normalized = normalizeGitCloneUrl(repository)
   const remote = `agentconnect-${randomUUID()}`
@@ -277,7 +284,13 @@ export function workspaceGitRemoteTarget(
     ...(credentialAgentId ? credentialConfigPairs(credentialAgentId, scope) : []),
     // Never an empty value first: Git reads it as the first fetch URL and fails before the authorized target.
     [`remote.${remote}.url`, normalized] as const,
-    [`remote.${remote}.proxy`, ''] as const
+    [`remote.${remote}.proxy`, ''] as const,
+    ...(blobless
+      ? [
+          [`remote.${remote}.promisor`, 'true'] as const,
+          [`remote.${remote}.partialclonefilter`, SESSION_CLONE_FILTER] as const
+        ]
+      : [])
   ]
   const env = workspaceGitProcessEnv()
   env.GIT_ALLOW_PROTOCOL = 'https:ssh'
@@ -526,6 +539,13 @@ let targetFor: ((agentId: string, cwd?: string) => GitCredentialTarget) | undefi
 let daemonTarget: GitCredentialTarget | undefined
 let preWarm: ((agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>) | undefined
 let capabilityFor: ((agentId: string) => string) | undefined
+let openSkillWindow: ((agentId: string, repo: string) => SkillCredentialWindowHandle | undefined) | undefined
+
+/** A daemon-opened skill credential window: its capability replaces the agent's for one acquisition. */
+export interface SkillCredentialWindowHandle {
+  capability: string
+  close(): void
+}
 
 export function initGitInjection(opts: {
   /** Resolves the filesystem an agent's git runs in, on the SAME predicate the execution plane's `gitRunnerFor` answers with — a remote runner running with daemon-local pointers is exactly the bug this seam exists to remove. The path narrows it where one agent's sessions run in different filesystems (session-executors.md §5). */
@@ -540,11 +560,22 @@ export function initGitInjection(opts: {
   preWarm: (agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>
   /** Runtime-only local socket capability. Never written to a config file. */
   capabilityFor: (agentId: string) => string
+  /** Opens a daemon-subject skill credential window (source-cache.md §8); absent or undefined ⇒ the agent capability is presented. */
+  openSkillCredentialWindow?: (agentId: string, repo: string) => SkillCredentialWindowHandle | undefined
 }): void {
   targetFor = opts.targetFor
   daemonTarget = opts.daemonTarget
   preWarm = opts.preWarm
   capabilityFor = opts.capabilityFor
+  openSkillWindow = opts.openSkillCredentialWindow
+}
+
+/** Open a window for Git the daemon runs itself on one skill repository; the caller closes it in `finally`. */
+export function openDaemonSkillCredentialWindow(
+  agentId: string,
+  repo: string
+): SkillCredentialWindowHandle | undefined {
+  return openSkillWindow?.(agentId, repo)
 }
 
 /** This daemon's own filesystem: the helper shim and run dir it (re)writes on every boot. */
@@ -596,7 +627,10 @@ export function gitCredentialEnv(
 
 function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
   const { helper } = target
-  return `!'${helper.replaceAll("'", "'\\''")}' ${agentId}`
+  const quoted = `'${helper.replaceAll("'", "'\\''")}'`
+  // A sandbox helper is read by `sh` rather than executed, so its mode does not matter: npm packs every non-`bin`
+  // file as 0644, and the installed CLI that would restore the bit is not upgraded along with the daemon.
+  return target.kind === 'sandbox' ? `!sh ${quoted} ${agentId}` : `!${quoted} ${agentId}`
 }
 
 /** The three host-scoped config pairs both channels share. The host defaults to

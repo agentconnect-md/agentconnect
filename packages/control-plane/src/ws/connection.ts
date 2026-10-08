@@ -14,6 +14,7 @@
  */
 import {
   AnyFrame,
+  CloseCode,
   type ControlExt,
   type ErrorCode,
   checkInboundFrameOrg,
@@ -28,12 +29,25 @@ import type { Transport } from './transport.js'
 import { ConnectionClosed, type ConnChannel, type LifecycleState } from './registry.js'
 import type { DaemonWsDeps } from './deps.js'
 import type { FrameRouter } from './handlers/index.js'
+import type { HandshakeGate, ReleaseSlot } from './handshake-gate.js'
 import { clearAwaitingApprovals } from './approval-waits.js'
 import { FencingState, checkFencing } from '../orchestrator/fencing.js'
 import { ProtocolError } from '../domain/errors.js'
 
 export class DaemonConnection implements ConnChannel {
-  state: LifecycleState = 'CONNECTING'
+  private lifecycle: LifecycleState = 'CONNECTING'
+  /** The gateway slot of the handshake step now running; freed early once the connection is READY or closed. */
+  private handshakeSlot: ReleaseSlot | undefined
+
+  get state(): LifecycleState {
+    return this.lifecycle
+  }
+
+  set state(next: LifecycleState) {
+    this.lifecycle = next
+    if (next === 'READY' || next === 'CLOSED') this.handshakeSlot?.()
+  }
+
   daemonId = '' // set on auth/ok; "" until then (ConnChannel requires a string)
   /** Auth-scoped org; null for an install-wide pool member. */
   orgId: string | null = null
@@ -50,7 +64,9 @@ export class DaemonConnection implements ConnChannel {
   constructor(
     readonly transport: Transport,
     private readonly deps: DaemonWsDeps,
-    private readonly router: FrameRouter
+    private readonly router: FrameRouter,
+    /** The gateway's cap on handshake work running at once; the in-memory protocol tests run without one. */
+    private readonly handshakes?: HandshakeGate
   ) {
     this.correlator = new ReqRep(deps.clock, deps.config.ACK_TIMEOUT_MS)
   }
@@ -125,6 +141,22 @@ export class DaemonConnection implements ConnChannel {
       if (!this.gateFencing(frame, decoded.ext)) return
     }
 
+    // auth and register hold a gateway slot only while the CP works on them, so an idle or upgrading daemon holds none.
+    let release: ReleaseSlot | undefined
+    if (this.handshakes && (frame.type === 'auth' || frame.type === 'register')) {
+      release = frame.type === 'register' ? await this.handshakes.acquire() : this.handshakes.tryAcquire()
+      if (!release) {
+        this.sendError(frame.id, 'RATE_LIMITED', 'daemon handshake limit reached; retry shortly', true)
+        this.close(CloseCode.RATE_LIMITED, 'handshake limit reached')
+        return
+      }
+      if (this.lifecycle === 'CLOSED') {
+        release()
+        return
+      }
+      this.handshakeSlot = release
+    }
+
     // Defense in depth: a handler that rejects (e.g. an unexpected persistence
     // error) must close the socket cleanly, never bubble to an unhandled
     // rejection that takes down the CP process.
@@ -132,6 +164,8 @@ export class DaemonConnection implements ConnChannel {
       await this.router.dispatch(frame, this, this.deps)
     } catch {
       if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
+    } finally {
+      release?.()
     }
   }
 

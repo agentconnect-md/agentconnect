@@ -253,6 +253,16 @@ describe('Daemon rd/msg hook fires', () => {
       model: 'default'
     })
 
+    // Runtime evidence survives host eviction and takes precedence over agent configuration and decision intent.
+    await (daemon as any).store.setObservedTurn(key, 'claude', 'claude-opus-4-6')
+    expect(
+      await (daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-selected', 'github')
+    ).toMatchObject({ runtime: 'Claude Code', model: 'claude-opus-4-6' })
+    await (daemon as any).store.setObservedTurn(key, 'claude', null)
+    expect(
+      await (daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-selected', 'github')
+    ).toMatchObject({ runtime: 'Claude Code', model: 'default' })
+
     await daemon.stop()
   })
 
@@ -1653,6 +1663,10 @@ describe('Daemon rd/msg hook fires', () => {
     )
     expect(entry.msg.text).toContain('Trusted review workspace')
     expect(entry.msg.text).not.toContain('No trusted local pull-request checkout is available')
+    const startHook = vi.fn(async (_payload: HookStart, _orgId?: string) => ({ accepted: true }))
+    ;(daemon as never as { cpClient: unknown }).cpClient = { ...fakeCpClient(), startHook }
+    await (daemon as any).githubReviews.prepareGithubTurn(entry, 'acp-grant-review')
+    expect(startHook.mock.calls[0]![0].reviewCheckout).toEqual({ outcome: 'exact' })
     await daemon.stop()
   })
 
@@ -1740,7 +1754,9 @@ describe('Daemon rd/msg hook fires', () => {
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
     const prepare = vi
       .spyOn(daemon as any, 'prepareAgentWorkspace')
-      .mockRejectedValueOnce(new Error('exact checkout preparation failed'))
+      .mockRejectedValueOnce(
+        new Error('session clone failed', { cause: new Error('environment env-1 configuration changed while active') })
+      )
       .mockResolvedValueOnce('/agent/worktrees/revision-only')
     const headSha = 'a'.repeat(40)
     const baseSha = 'b'.repeat(40)
@@ -1793,6 +1809,11 @@ describe('Daemon rd/msg hook fires', () => {
     expect(entry.msg.text).toContain('Trusted review revision')
     expect(entry.msg.text).toContain('Do not trust local files')
     expect(entry.msg.text).toContain('Local execution may be skipped')
+    // The start barrier reports the degradation by reason, which is what the review checkout metric counts.
+    const startHook = vi.fn(async (_payload: HookStart, _orgId?: string) => ({ accepted: true }))
+    ;(daemon as never as { cpClient: unknown }).cpClient = { ...fakeCpClient(), startHook }
+    await (daemon as any).githubReviews.prepareGithubTurn(entry, 'acp-review-fallback')
+    expect(startHook.mock.calls[0]![0].reviewCheckout).toEqual({ outcome: 'degraded', reason: 'sandbox_conflict' })
     await daemon.stop()
   })
 

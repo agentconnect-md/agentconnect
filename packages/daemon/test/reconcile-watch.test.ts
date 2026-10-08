@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
 import { DiscordConnection } from '../src/discord/connection.js'
@@ -1120,6 +1121,29 @@ describe('Daemon.leaveConversation', () => {
     await (daemon as any).replayChannelSnapshots()
 
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'tg-int', removed: ['-100123'] }))
+  })
+
+  it('replays the other integrations when one cannot be scoped, and the reconnect replay goes on after it', async () => {
+    const root = root1()
+    const { daemon } = makeStubDaemon(root)
+    await daemon.start()
+    ;(daemon as any).channelSnapshots.set('gone-int', { channels: [{ id: 'C-gone' }], authoritative: true })
+    ;(daemon as any).channelSnapshots.set('tg-int', { channels: [{ id: '-100123' }], authoritative: false })
+    const emit = vi.fn((snapshot: { integrationId: string }) => {
+      if (snapshot.integrationId === 'gone-int') throw new Error('cannot resolve organization for integration/channels')
+    })
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    await (daemon as any).replayChannelSnapshots()
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'tg-int' }))
+
+    // A replay step that still throws no longer abandons the drains queued behind it.
+    ;(daemon as any).cpClient = undefined
+    vi.spyOn(daemon as any, 'replayChannelSnapshots').mockRejectedValue(new Error('store unavailable'))
+    const purges = vi.spyOn(daemon as any, 'drainSessionPurges').mockResolvedValue(undefined)
+    const deps = buildCpClientDeps((daemon as any).cpClientDepsHost(root, 'wss://cp.example.test', () => {}))
+    await deps.onReady!()
+    expect(purges).toHaveBeenCalled()
+    await daemon.stop()
   })
 
   // The snapshots are in memory, the tombstones on disk. A restart before the first

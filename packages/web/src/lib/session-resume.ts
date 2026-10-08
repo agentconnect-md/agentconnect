@@ -4,7 +4,7 @@ export interface SessionResumeMember {
   agentId: string
   /** Daemon that recorded this session's content. */
   daemonId: string | null | undefined
-  /** The shared-store pool set the content went to; null/absent ⇒ the recorder's private store. */
+  /** The set whose shared store the content went to (the pool, or a group on one `postgres` store); null/absent ⇒ the recorder's private store. */
   contentSetId?: string | null
 }
 
@@ -33,7 +33,7 @@ export function sessionResumeMembers(
   return currentSession ? [currentSession] : null
 }
 
-/** Resumable only while every participant's CURRENT placement still reaches its content: a `daemon` placement or a group's holder must be the recorder (moves copy nothing), a pool placement needs the content in the pool's shared store (`contentSetId`) — no member id survives a rollout. `null` members = still loading; anything missing fails closed. */
+/** Resumable only while every participant's CURRENT placement still reaches its content: a `daemon` placement or a group's holder must be the recorder (moves copy nothing), a set placement needs the content in that set's shared store (`contentSetId`) — no member id survives a rollout; the server still checks the member it reaches holds that store. `null` members = still loading; anything missing fails closed. */
 export function sessionResumeState(
   members: readonly SessionResumeMember[] | null,
   placementByAgent: ReadonlyMap<string, SessionResumePlacement | undefined>

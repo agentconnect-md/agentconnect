@@ -2,9 +2,11 @@ import { fork, spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { detectSandbox } from '../src/acp/sandbox.js'
+import { withSkillWorkspaceLock } from '../src/skills/skill-install-ledger.js'
 
 const workerFile = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/skill-workspace-lock-worker.ts')
 
@@ -115,6 +117,32 @@ describe.skipIf(!hasBwrap)('cross-process skill workspace lock', () => {
   }, 120_000)
 })
 
+describe('skill workspace lock database', () => {
+  let root: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-skill-lock-db-'))
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it('waits for a peer whose write outlasts the busy timeout instead of failing to open', async () => {
+    const cwd = join(root, 'workspace')
+    const stateDir = join(root, 'state')
+    await mkdir(cwd)
+    await withSkillWorkspaceLock(cwd, async () => undefined, stateDir)
+
+    // Hold the database exclusively past the 1s busy timeout, as a slow-disk commit would.
+    const peer = new DatabaseSync(join(stateDir, 'workspace-skill-locks', 'leases.sqlite3'))
+    peer.exec('BEGIN EXCLUSIVE')
+    setTimeout(() => peer.close(), 1_500)
+
+    await expect(withSkillWorkspaceLock(cwd, async () => 'locked', stateDir)).resolves.toBe('locked')
+  })
+})
+
 function workerStderr(child: ChildProcess): string {
   const captured = (child as unknown as { capturedStderr?: string[] }).capturedStderr ?? []
   const text = captured.join('').trim()
@@ -139,6 +167,11 @@ function waitForMessage(child: ChildProcess, type: string, timeoutMs = 60_000): 
       child.off('exit', onExit)
       if (error) reject(error)
       else resolve(message!)
+    }
+    // A worker that died before this wait began has no exit event left to report it.
+    if (child.exitCode !== null || child.signalCode !== null) {
+      onExit(child.exitCode, child.signalCode)
+      return
     }
     child.on('message', onMessage)
     child.on('exit', onExit)

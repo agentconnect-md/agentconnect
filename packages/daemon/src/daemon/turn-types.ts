@@ -587,9 +587,10 @@ export interface TurnSignals {
   applyChain: Promise<void>
   /** True once the normal turn-end usage/report has been emitted. */
   usageReportSent: boolean
-  /** Whether this turn received an ACP-native cost. When true, it wins and the
-   *  public-pricing fallback must not add another amount for the same turn. */
+  /** Native cost suppresses the public-pricing fallback for this turn. */
   runtimeCostReported: boolean
+  /** Concrete model reported during this turn, distinct from its initial selector snapshot. */
+  runtimeReportedModel?: string
 }
 
 /** Per-in-flight-turn rendering state, keyed by ACP sessionId in `this.pending`.

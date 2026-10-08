@@ -22,10 +22,12 @@ import {
   AGENT_EXISTS_FEATURE,
   AGENT_PLACEMENT_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
+  AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
+  CRON_REPORT_ACK_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
@@ -138,6 +140,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       SESSION_METADATA_ACK_FEATURE,
       SESSION_PURGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
+      // high-availability.md: this CP ACKs a terminal cron outcome, so the daemon keeps it until then.
+      CRON_REPORT_ACK_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
       AGENT_EXISTS_FEATURE,
       // k8s-daemon-pool.md §4: …and says WHERE a surviving agent is placed, so the pool's
@@ -148,6 +152,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       // memory-evolution.md §3.2.1: this CP serves the whole `memory/store` family, the migration completion included.
       AGENT_MEMORY_STORE_V1_FEATURE,
       AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
+      // high-availability.md: a `memory/store` write re-sent under its operation id is answered, not applied twice.
+      ...(deps.agentMemoryStore?.deduplicatesOperations() ? [AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE] : []),
       MEMORY_TRANSACTION_V1_FEATURE,
       MEMORY_CAPTURE_FENCE_V1_FEATURE,
       // session-executors.md §6: this CP serves `executor/candidates` and relays `executor/prepare`; a holder must not send either before seeing this.

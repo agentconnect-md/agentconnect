@@ -153,8 +153,9 @@
       "add": "添加"
     },
     "permissionModes": {
-      "askForApproval": "请求审批",
-      "approveForMe": "由我自动审批",
+      "readOnly": "只读",
+      "workspaceAccess": "工作区访问",
+      "autoReview": "自动审核",
       "fullAccess": "完全访问",
       "manual": "手动",
       "acceptEdits": "接受编辑",
@@ -591,6 +592,12 @@
       "content": "内容",
       "locations": "位置",
       "viewFull": "查看完整内容",
+      "downloadFile": "下载 {name}",
+      "fileTooLarge": "文件过大，无法在此下载",
+      "fileChanged": "该文件在分享后已被修改",
+      "fileGone": "该文件已不在工作区中",
+      "downloadUnsupported": "该 Agent 更新后才能提供下载",
+      "downloadFailed": "无法下载该文件",
       "noToolBody": "此工具调用没有捕获到内容。",
       "parentConversation": "父级对话",
       "parentConversations": "父级对话（{count}）",
@@ -887,7 +894,9 @@
       "back": "返回",
       "copyLink": "复制链接",
       "linkCopied": "链接已复制",
-      "cancel": "取消"
+      "cancel": "取消",
+      "openMenu": "打开菜单",
+      "closeMenu": "关闭菜单"
     },
     "connectAi": {
       "title": "连接你的 AI",
@@ -949,7 +958,8 @@
       "activate": "激活账户 · AgentConnect",
       "join": "加入组织 · AgentConnect",
       "welcome": "开始使用 · AgentConnect",
-      "googleChatClaim": "连接 Google Chat · AgentConnect"
+      "googleChatClaim": "连接 Google Chat · AgentConnect",
+      "slackConnect": "连接 Slack · AgentConnect"
     },
     "login": {
       "brandLead": "在团队已在使用的工具中运行你的 Agent。",
@@ -978,6 +988,30 @@
       "goToAgentConnect": "前往 AgentConnect",
       "joining": "正在加入组织…",
       "role": "你将以协作者身份加入。"
+    },
+    "slackConnect": {
+      "title": "连接 Slack 工作区",
+      "description": "为此工作区选择组织和 agent。Slack 已完成授权，无需再次安装应用。",
+      "workspace": "工作区：{name}",
+      "organization": "组织",
+      "agent": "Agent",
+      "noOrganizations": "请先创建组织，然后回到此页面刷新，完成 Slack 连接。",
+      "createOrganization": "创建组织",
+      "noAgents": "此组织中没有你可以连接的 agent。请创建一个，或向组织所有者申请权限，然后刷新。",
+      "manageAgents": "管理 agents",
+      "connect": "连接工作区",
+      "connecting": "正在连接…",
+      "refresh": "刷新",
+      "doneTitle": "Slack 已连接",
+      "doneBody": "回到 Slack 即可向 agent 发消息。在频道中使用时，请先邀请应用加入，再 @提及它。Agent 现有的访问权限和触发设置仍然适用。",
+      "backToSlack": "返回 Slack",
+      "configureAgent": "配置 agent",
+      "identityRequired": "请使用安装此应用的 Slack 账号。在 AgentConnect 个人资料中关联该 Slack 账号，然后回到此页面刷新。",
+      "openProfile": "打开个人资料",
+      "invalidLink": "此连接链接无效。请打开 Slack 中应用的 Home 标签页，继续设置。",
+      "storageBlocked": "请允许此网站存储浏览器数据，然后刷新以继续登录。",
+      "loadError": "无法加载连接选项，请刷新重试。",
+      "connectError": "无法连接此工作区，请重试。"
     },
     "googleChatClaim": {
       "preparing": "正在准备…",
@@ -1426,8 +1460,8 @@
         "addTitle": "用决策为每条消息选择Agent",
         "stop": "此频道停止使用按决策"
       },
-      "gatedNote": "私有Agent仅会在下方启用的对话中响应。",
-      "linearGatedNote": "私有Agent仅会在其作为默认Agent的团队中响应。",
+      "gatedNote": "{reason, select, assistant {助理模式下，Agent} other {私有Agent}}仅会在下方启用的对话中响应。",
+      "linearGatedNote": "{reason, select, assistant {助理模式下，Agent} other {私有Agent}}仅会在其作为默认Agent的团队中响应。",
       "discordCannotLeaveRowHint": "Discord Bot属于服务器，而不是单个频道——请使用上方服务器标题中的“离开”操作将其移出。如果它仍在服务器中，该行会重新出现。",
       "googlechatMentionHint": "被@提及时回复。Google Chat 只投递提及了该应用的空间消息，话题里的回复也一样。",
       "space": {
@@ -1440,9 +1474,15 @@
       "openIn": "在 {platform} 中打开 {name}",
       "ownerChange": {
         "title": "要更改此团队的默认Agent吗？",
-        "body": "{owner}是私有Agent，只有成为{room}的默认Agent才能在那里工作。该团队中的实时会话仍可停止，但它不会再次响应这些会话。新的提及或委派会使用新的默认Agent开启会话。",
+        "body": "{owner}{reason, select, assistant {处于助理模式} other {是私有Agent}}，只有成为{room}的默认Agent才能在那里工作。该团队中的实时会话仍可停止，但它不会再次响应这些会话。新的提及或委派会使用新的默认Agent开启会话。",
         "confirmLabel": "更改",
         "busy": "更改中…"
+      },
+      "assistantPlace": {
+        "title": "要启用{name}吗？",
+        "warning": "这里的所有人都能通过它获取此 Agent 在其他地方的内容。只有在这里的所有人都完全可信时才启用。",
+        "confirm": "启用",
+        "busy": "启用中…"
       },
       "sessionMode": {
         "createNew": "按话题",
@@ -1634,6 +1674,12 @@
         "readWrite": "读写",
         "accessFor": "{name} 的访问权限",
         "lowerAccessRevoke": "要降低权限，请撤销后重新授权",
+        "grantSuspended": "已暂停",
+        "grantSuspendedReason": {
+          "access_lost": "授权它的成员在 GitHub 上已没有这个权限",
+          "identity_unlinked": "授权它的成员已不再关联 GitHub 账号",
+          "attester_removed": "授权它的成员账号已不存在"
+        },
         "githubWriteAccess": "推送、创建 PR 并运行 GitHub Actions",
         "repositoryAccess": "仓库访问权限",
         "selectRepositoryFirst": "请先选择仓库",
@@ -1719,6 +1765,13 @@
       "addIntegration": "添加集成",
       "connectDescription": "将聊天平台、Webhook 或仓库连接到你的 Agent",
       "agent": "Agent",
+      "reconnectIntegration": "重新连接集成",
+      "reconnect": "重新连接",
+      "reconnecting": "正在重新连接…",
+      "organization": "组织",
+      "chooseAgent": "选择 Agent",
+      "noReconnectAgents": "没有可供你配置并连接此应用的 Agent。",
+      "reconnectUnavailable": "此应用当前无法重新连接，请到集成页面查看其状态。",
       "agentHandles": "{agent} 处理来自此集成的消息。",
       "platform": "平台",
       "chat": "聊天",
@@ -2945,6 +2998,45 @@
         "loading": "加载中…",
         "loadMore": "加载更多"
       },
+      "assistantMode": {
+        "title": "助理模式",
+        "on": "开启",
+        "off": "关闭",
+        "locked": "不可用",
+        "responsibleNamed": "负责人：{name}",
+        "fallbackNamed": "备用会话：{name}",
+        "edit": "编辑",
+        "close": "关闭",
+        "cancel": "取消",
+        "details": "详情",
+        "saving": "保存中…",
+        "save": "保存助理模式",
+        "enable": "开启助理模式",
+        "turnOnTitle": "要开启助理模式吗？",
+        "turnOn": "开启",
+        "responsibleUser": "负责人",
+        "fallbackConversation": "备用会话",
+        "none": "无",
+        "limits": "限制",
+        "limit": {
+          "maxConcurrentSubsessions": "并发子会话数",
+          "dailyPatrolBudget": "每日巡查次数",
+          "dailySubsessionsPerItem": "每项每日子会话数",
+          "permissionWaitHours": "等待审批的小时数"
+        },
+        "defaultLimit": "默认",
+        "askWarning": "此 Agent 每次操作前都会请求批准，后台工作会经常等待审批。建议自动批准只在工作区内进行的操作。",
+        "refusals": {
+          "runtime-unset": "请先选择 Runtime。",
+          "runtime-not-admitted": "暂不支持此 Runtime：它需要能关闭自身记忆，并能在重启后恢复会话。",
+          "memory-provider": "记忆必须为托管或关闭。",
+          "store-not-shared": "此 Agent 所在组的所有 Daemon 必须共用同一存储。"
+        },
+        "blockers": {
+          "needsTarget": "请选择负责人或备用会话。",
+          "invalidLimit": "每项限制必须是其范围内的整数。"
+        }
+      },
       "dreamSchedule": {
         "runOnSchedule": "按计划运行（否则只有在你触发时才运行梦境）",
         "frequency": "计划频率",
@@ -3545,7 +3637,8 @@
       "paused": "已暂停",
       "offline": "离线",
       "upgrading": "升级中",
-      "restarting": "重启中"
+      "restarting": "重启中",
+      "reconnecting": "重连中"
     },
     "metrics": {
       "agents": "Agent",
@@ -3599,6 +3692,7 @@
       "off": "关闭",
       "onlineStatus": "在线",
       "offlineStatus": "离线",
+      "reconnectingStatus": "重连中",
       "save": "保存",
       "createGroup": "创建组",
       "expireSessions": "过期会话",

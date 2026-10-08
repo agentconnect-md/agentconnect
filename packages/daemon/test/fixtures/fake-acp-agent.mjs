@@ -188,6 +188,14 @@ rl.on('line', async (line) => {
     sessionPermissionModes.set(sessionId, permissionModeList[0])
     send({ jsonrpc: '2.0', id, result: { sessionId, configOptions: configOptions(sessionId) } })
   } else if (method === 'session/set_config_option') {
+    if (params.configId === 'model' && process.env.AC_MODEL_ERROR) {
+      send({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32603, message: 'Internal error', data: { message: process.env.AC_MODEL_ERROR } }
+      })
+      return
+    }
     if (params.configId === 'model' && modelList.includes(params.value))
       sessionModels.set(params.sessionId, params.value)
     if (params.configId === 'mode' && permissionModeList.includes(params.value))

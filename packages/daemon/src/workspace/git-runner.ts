@@ -29,7 +29,8 @@ export interface GitRunner {
   withEnv(env: Record<string, string>): GitRunner
   /** Run a git subcommand with argv, never a composed shell string. */
   raw(args: string[]): Promise<string>
-  clone(repo: string, target: string, options?: string[]): Promise<void>
+  /** Stderr when the runner sees Git's output (an exit-0 clone's bundle warnings); undefined when it cannot. */
+  clone(repo: string, target: string, options?: string[]): Promise<GitCloneOutput | undefined>
   /** Pull, returning what the console reports: which files moved and by how much. */
   pull(remote: string, branch: string, options?: string[]): Promise<GitPullSummary>
   status(): Promise<GitStatusSummary>
@@ -51,6 +52,11 @@ export interface GitRunner {
    * slice, which is the answer this seam wants: the caller reports it as truncated.
    */
   readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }>
+}
+
+/** What a clone reports when its runner can see Git's output. */
+export interface GitCloneOutput {
+  stderr: string
 }
 
 /** A runner whose backing runner is opened on first use — for a pod judged reachable then rather than at resolution. */
@@ -193,8 +199,9 @@ export class LocalGitRunner implements GitRunner {
     })
   }
 
-  async clone(repo: string, target: string, options: string[] = []): Promise<void> {
+  async clone(repo: string, target: string, options: string[] = []): Promise<undefined> {
     await this.git.clone(repo, target, options)
+    return undefined
   }
 
   async pull(remote: string, branch: string, options: string[] = []): Promise<GitPullSummary> {

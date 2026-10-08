@@ -28,7 +28,7 @@
 import { randomUUID } from 'node:crypto'
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { DaemonId } from '../../domain/ids.js'
-import type { MemberSetRecord, MemberSetRepo } from '../ports.js'
+import type { MemberSetRecord, MemberSetRepo, SessionContentStore } from '../ports.js'
 import {
   AgentSetPlacementDenied,
   DaemonPlacementInSet,
@@ -137,15 +137,34 @@ export class PgMemberSetRepo implements MemberSetRepo {
     return rows.map((r) => r.daemonId).sort()
   }
 
-  async sharedStoreMemberIdsOf(setId: string): Promise<string[]> {
-    // `set: { orgId: null }` IS the shared-store predicate — the install-wide pool is the one set
-    // whose members are cluster daemons on the single data-plane store. An operator-built org set
-    // may be self-hosted machines with private stores, so none of its members answers for another.
+  async sharedStoreMemberIdsOf(session: SessionContentStore): Promise<string[]> {
+    const { contentSetId: setId, contentStoreId: storeId } = session
+    if (!setId) return []
+    // The install-wide pool is the one set whose members are all cluster daemons on the single
+    // data-plane store. An operator-built org set may mix private and shared stores, so there only
+    // a member that still reports the store the session was written to answers for it.
     const rows = await this.prisma.memberSetMember.findMany({
-      where: { setId, set: { orgId: null } },
+      where: {
+        setId,
+        OR: [
+          { set: { orgId: null } },
+          ...(storeId ? [{ daemon: { capabilities: { path: ['contentStore'], equals: storeId } } }] : [])
+        ]
+      },
       select: { daemonId: true }
     })
     return rows.map((r) => r.daemonId).sort()
+  }
+
+  async memberContentStoresOf(setId: string): Promise<Array<string | null>> {
+    const rows = await this.prisma.memberSetMember.findMany({
+      where: { setId },
+      select: { daemon: { select: { capabilities: true } } }
+    })
+    return rows.map((r) => {
+      const store = (r.daemon.capabilities as { contentStore?: unknown } | null)?.contentStore
+      return typeof store === 'string' ? store : null
+    })
   }
 
   async enroll(setId: string, daemonId: DaemonId): Promise<void> {

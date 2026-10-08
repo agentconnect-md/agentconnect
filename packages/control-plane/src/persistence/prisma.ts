@@ -26,9 +26,12 @@ let singleton: PrismaClient | undefined
  * `datasources` override). `DATABASE_URL` falls back to the env when no explicit
  * URL is passed (the adapter reads `process.env.DATABASE_URL`).
  */
-export function createPrisma(databaseUrl?: string): PrismaClient {
+export function createPrisma(databaseUrl?: string, opts?: { poolMax?: number }): PrismaClient {
   if (singleton) return singleton
-  const adapter = new PrismaPg({ connectionString: databaseUrl ?? process.env.DATABASE_URL })
+  const adapter = new PrismaPg({
+    connectionString: databaseUrl ?? process.env.DATABASE_URL,
+    ...(opts?.poolMax ? { max: opts.poolMax } : {})
+  })
   singleton = new PrismaClient({ adapter })
   return singleton
 }

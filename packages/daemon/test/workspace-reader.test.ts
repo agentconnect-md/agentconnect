@@ -242,18 +242,6 @@ describe('workspace read', () => {
     expect(r.mtime).toMatch(/^\d{4}-\d{2}-\d{2}T/)
   })
 
-  it('serves raw bytes as base64 slices when asked, binary or not', async () => {
-    const bytes = Buffer.from([0x47, 0x49, 0x46, 0x00, 0xff, 0x01, 0x02])
-    writeFileSync(join(ws, 'anim.gif'), bytes)
-
-    const head = await reader.read(readReq('anim.gif', { encoding: 'base64', limit: 4 }))
-    expect(head).toMatchObject({ exists: true, type: 'file', size: 7, encoding: 'base64', offset: 0, nextOffset: 4 })
-    expect(head.truncated).toBe(true)
-    const tail = await reader.read(readReq('anim.gif', { encoding: 'base64', offset: 4 }))
-    expect(tail).toMatchObject({ encoding: 'base64', offset: 4, nextOffset: 7, truncated: false })
-    expect(Buffer.concat([Buffer.from(head.content!, 'base64'), Buffer.from(tail.content!, 'base64')])).toEqual(bytes)
-  })
-
   it('reads a text slice with offset/limit and sets truncated', async () => {
     writeFileSync(join(ws, 'notes.txt'), 'hello world!')
 

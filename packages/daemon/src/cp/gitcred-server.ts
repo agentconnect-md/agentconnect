@@ -37,12 +37,19 @@ import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import type { QualifiedCodeHostProvider } from '../codehost/credentials.js'
 import { IMPLICIT_CREDENTIAL_PROVIDER } from '../gitcred/managed-hosts.js'
 import { isWindowsNamedPipe, localIpcPath } from '../paths.js'
+import {
+  DAEMON_SKILL_WINDOW_SUBJECT,
+  SkillCredentialWindows,
+  type AdmittedSkillWindow,
+  type SkillCredentialWindow
+} from './skill-credential-window.js'
 
 // Declared in `gitcred/env.ts` and re-exported here, where every daemon-side caller already looks
 // for them: the helper that also runs inside a sandbox cannot import this module (it would pull the
 // credential cache into an image whose bundle may import only node builtins).
 export { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { shQuote } from './gh-shim.js'
 
 /** The socket a helper should dial: an explicit override, else this daemon's own. */
 export function gitcredSocketFrom(env: NodeJS.ProcessEnv, root: string): string {
@@ -94,12 +101,10 @@ export interface GitCredServerDeps {
   ) => { provider: QualifiedCodeHostProvider; externalId: string } | undefined
   /** A NAMED repository the replicated spec lists as a GitHub additional authorization (§8.3) — `qualifiedRepoOf`'s implicit-host twin. */
   githubAdditionalRepoOf?: (agentId: string, repoFullName: string) => boolean
-  /** A NAMED repository the replicated spec lists as a PRIVATE GitHub skill source
-   *  (shared-skills.md §3) — the third spec-derived authority. Acquisition is daemon-owned and
-   *  always GitHub, so such a request routes to GitHub whatever the WORKSPACE provider is; without
-   *  this, a gitlab/gitea workspace would send it to its own broker and the source could never
-   *  install. Like `qualifiedRepoOf`, it never introduces a repository the spec lacks. */
+  /** A PRIVATE GitHub skill source the replicated spec enables (shared-skills.md §3): GitHub on any workspace, issued only inside a skill credential window. */
   privateGithubSkillRepoOf?: (agentId: string, repoFullName: string) => boolean
+  /** The open skill credential windows (source-cache.md §8); absent ⇒ a private registry of this server's own. */
+  skillWindows?: SkillCredentialWindows
 }
 
 export class GitCredServer {
@@ -112,6 +117,7 @@ export class GitCredServer {
   private readonly qualifiedRepoOf?: GitCredServerDeps['qualifiedRepoOf']
   private readonly githubAdditionalRepoOf?: GitCredServerDeps['githubAdditionalRepoOf']
   private readonly privateGithubSkillRepoOf?: GitCredServerDeps['privateGithubSkillRepoOf']
+  readonly skillWindows: SkillCredentialWindows
 
   constructor(
     private readonly cache: GitCredentialCache,
@@ -125,6 +131,7 @@ export class GitCredServer {
     if (deps.qualifiedRepoOf) this.qualifiedRepoOf = deps.qualifiedRepoOf
     if (deps.githubAdditionalRepoOf) this.githubAdditionalRepoOf = deps.githubAdditionalRepoOf
     if (deps.privateGithubSkillRepoOf) this.privateGithubSkillRepoOf = deps.privateGithubSkillRepoOf
+    this.skillWindows = deps.skillWindows ?? new SkillCredentialWindows()
   }
 
   async start(): Promise<void> {
@@ -164,6 +171,7 @@ export class GitCredServer {
   stop(): void {
     this.server?.close()
     this.capabilities.clear()
+    this.skillWindows.closeAll()
     if (!isWindowsNamedPipe(this.path)) rmSync(this.path, { force: true })
   }
 
@@ -179,6 +187,20 @@ export class GitCredServer {
 
   revoke(agentId: string): void {
     this.capabilities.delete(agentId)
+    this.skillWindows.closeAgent(agentId)
+  }
+
+  /** A daemon-subject window for one private skill repository; undefined otherwise, so the agent capability keeps its workspace and additional-repository grants. */
+  openDaemonSkillWindow(agentId: string, repo: string): SkillCredentialWindow | undefined {
+    if (this.privateGithubSkillRepoOf?.(agentId, repo) !== true || this.isGithubWorkspaceRepo(agentId, repo))
+      return undefined
+    return this.skillWindows.open({ agentId, subject: DAEMON_SKILL_WINDOW_SUBJECT, repos: [repo] })
+  }
+
+  /** The same predicate the workspace fold applies to an implicit-host ask. */
+  private isGithubWorkspaceRepo(agentId: string, repo: string): boolean {
+    if ((this.providerOf?.(agentId) ?? IMPLICIT_CREDENTIAL_PROVIDER) !== IMPLICIT_CREDENTIAL_PROVIDER) return false
+    return this.workspaceRepoOf?.(agentId)?.toLowerCase() === repo.toLowerCase()
   }
 
   private serve(sock: Socket): void {
@@ -205,12 +227,26 @@ export class GitCredServer {
     } catch {
       return reply({ ok: false, error: 'malformed request' })
     }
-    if (!req || typeof req.agentId !== 'string' || !this.authorized(req.agentId, req.capability)) {
+    const principal = req && typeof req.agentId === 'string' ? this.principalOf(req.agentId, req.capability) : undefined
+    if (!principal) {
       this.audit('rejected', req?.agentId, req?.plane === 'gh' ? 'gh' : 'git', req?.repoFullName, true)
       return reply({ ok: false, error: 'local credential capability required' })
     }
     const plane: CredPlane = req.plane === 'gh' ? 'gh' : req.plane === 'glab' ? 'glab' : 'git'
     let repo = typeof req.repoFullName === 'string' && req.repoFullName.includes('/') ? req.repoFullName : undefined
+    // An omitted provider and an explicit `github` are the same GitHub ask; both meet the private-skill gate.
+    const githubAsk = req.provider === undefined || req.provider === IMPLICIT_CREDENTIAL_PROVIDER
+    const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
+    // A window capability opens exactly its own private skill repositories on the git plane, nothing else.
+    const window = principal === 'agent' ? undefined : principal
+    if (window && (plane !== 'git' || repo === undefined || !privateSkill || !window.covers(repo))) {
+      this.audit('denied', req.agentId, plane, repo, true, 'outside skill credential window')
+      return reply({
+        ok: false,
+        error: 'a skill credential window covers only its own private skill repositories',
+        denied: 'repository'
+      })
+    }
     // The SPEC decides the provider; a helper whose host hint disagrees is
     // asking for another host's credential and gets a clean denial (§13.2).
     // A named repository the spec lists as an additional authorization on another host (§8.3) is the
@@ -228,14 +264,14 @@ export class GitCredServer {
     const githubNamed =
       repo !== undefined &&
       requestProvider === IMPLICIT_CREDENTIAL_PROVIDER &&
-      (this.privateGithubSkillRepoOf?.(req.agentId, repo) === true ||
-        this.githubAdditionalRepoOf?.(req.agentId, repo) === true)
+      (privateSkill || this.githubAdditionalRepoOf?.(req.agentId, repo) === true)
     // Workspace normalization: a request naming the workspace repo folds onto
     // the repo-less key (one cache entry with pre-warm/spawn; and old CPs that
     // strip the wire field keep serving the workspace unchanged) — only when the
     // ask is for the workspace's own host. The same path on another host is
     // another repository, never the workspace.
-    if (repo !== undefined && requestProvider === workspaceProvider) {
+    // A window ask stays named, so a window never reaches the workspace key.
+    if (repo !== undefined && requestProvider === workspaceProvider && !window) {
       const workspace = this.workspaceRepoOf?.(req.agentId)
       if (workspace && workspace.toLowerCase() === repo.toLowerCase()) repo = undefined
     }
@@ -260,6 +296,15 @@ export class GitCredServer {
     }
     if (req.op !== 'get') {
       return reply({ ok: false, error: 'unsupported op' })
+    }
+    // §8 credential window: the agent capability, which the pod runtime also holds, never mints a private skill token.
+    if (!window && privateSkill && repo !== undefined && this.githubAdditionalRepoOf?.(req.agentId, repo) !== true) {
+      this.audit('denied', req.agentId, plane, repo, true, 'private skill outside a skill credential window')
+      return reply({
+        ok: false,
+        error: `${repo} is a private skill source; its token is issued only inside the daemon's skill reconcile`,
+        denied: 'repository'
+      })
     }
     if (req.provider !== undefined && req.provider !== provider) {
       this.audit('denied', req.agentId, plane, repo)
@@ -301,12 +346,16 @@ export class GitCredServer {
     }
   }
 
-  private authorized(agentId: string, presented?: string): boolean {
+  /** Who presented the request: the agent capability, a live skill window for this agent, or nobody. */
+  private principalOf(agentId: string, presented?: string): 'agent' | AdmittedSkillWindow | undefined {
+    if (!presented) return undefined
     const expected = this.capabilities.get(agentId)
-    if (!expected || !presented) return false
-    const a = Buffer.from(expected)
-    const b = Buffer.from(presented)
-    return a.length === b.length && timingSafeEqual(a, b)
+    if (expected) {
+      const a = Buffer.from(expected)
+      const b = Buffer.from(presented)
+      if (a.length === b.length && timingSafeEqual(a, b)) return 'agent'
+    }
+    return this.skillWindows.admit(agentId, presented)
   }
 
   private audit(
@@ -314,11 +363,13 @@ export class GitCredServer {
     agentId: unknown,
     plane: CredPlane,
     repo?: unknown,
-    warn = false
+    warn = false,
+    reason?: string
   ): void {
     const message =
       `gitcred: local credential outcome=${outcome} agent=${JSON.stringify(agentId)} ` +
-      `repo=${JSON.stringify(typeof repo === 'string' ? repo : 'workspace')} plane=${plane}`
+      `repo=${JSON.stringify(typeof repo === 'string' ? repo : 'workspace')} plane=${plane}` +
+      (reason ? ` reason=${JSON.stringify(reason)}` : '')
     if (warn) this.log.warn(message)
     else this.log.info(message)
   }
@@ -333,21 +384,20 @@ export class GitCredServer {
 export function writeGitcredShim(root: string, cliEntry: string): string {
   const shim = gitcredShimPath(root)
   mkdirSync(dirname(shim), { recursive: true, mode: 0o700 })
-  const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
   const executableEntry = existsSync(cliEntry) ? realpathSync(cliEntry) : cliEntry
   // Production runs the built dist (a .js entry node executes directly). A dev
   // daemon runs under tsx with a .ts argv[1] — route the shim through the tsx
   // CLI then, or plain `node entry.ts` would die resolving .js-suffixed imports.
-  const argv = [q(realpathSync(process.execPath))]
+  const argv = [shQuote(realpathSync(process.execPath))]
   if (executableEntry.endsWith('.ts')) {
     const req = createRequire(import.meta.url)
-    argv.push(q(req.resolve('tsx/cli')))
+    argv.push(shQuote(req.resolve('tsx/cli')))
   }
-  argv.push(q(executableEntry))
+  argv.push(shQuote(executableEntry))
   const body = [
     '#!/bin/sh',
     '# agentconnect git credential helper shim — regenerated on daemon start; NO secrets.',
-    `AGENTCONNECT_ROOT=${q(root)} \\`,
+    `AGENTCONNECT_ROOT=${shQuote(root)} \\`,
     `  exec ${argv.join(' ')} git-credential "$@"`,
     ''
   ].join('\n')

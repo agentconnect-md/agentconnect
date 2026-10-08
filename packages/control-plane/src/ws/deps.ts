@@ -78,6 +78,10 @@ export interface WsConfig {
   ACK_TIMEOUT_MS: number
   /** The path the daemon socket is mounted at (default `/daemon/ws`). */
   WS_PATH?: string
+  /** The database pool the handshake limit is sized against (pg's default of 10 when absent). */
+  DATABASE_POOL_MAX?: number
+  /** Daemon auth/register steps run at once; defaults to three quarters of the pool. */
+  DAEMON_HANDSHAKE_CONCURRENCY?: number
 }
 
 export interface DaemonWsDeps {
@@ -179,7 +183,7 @@ export interface DaemonWsDeps {
   externalMemoryConnection?: ExternalMemoryConnectionRepo
   /** The `control-plane` memory home's op set (memory-evolution.md §3.2.1); absent ⇒ `memory/store` answers INTERNAL. */
   agentMemoryTransaction?: Pick<AgentMemoryTransactionService, 'apply'>
-  agentMemoryStore?: Pick<AgentMemoryStoreService, 'apply'>
+  agentMemoryStore?: Pick<AgentMemoryStoreService, 'apply' | 'applyOnce' | 'deduplicatesOperations'>
   /** The change-log table behind `memory/history/append` and `memory/history/read`; absent ⇒ INTERNAL. */
   agentMemoryHistory?: Pick<AgentMemoryHistoryRepo, 'append' | 'page'>
   /** github-app workspaces façade; absent ⇒ gitcred/request answers SCOPE_DENIED. */

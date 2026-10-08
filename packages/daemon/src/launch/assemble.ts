@@ -5,6 +5,7 @@ import type { SandboxMechanism } from '../acp/sandbox.js'
 import type { HostKey } from '../acp/host-key.js'
 import type { MemoryProviderKind } from '../memory/provider.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
+import type { PrivateRuntimeState } from '../runtimes/private-runtime-state.js'
 
 /** The config-file plan plus the pre-strip env it came from, which the idle sweep re-materializes this disk's files from. */
 export interface AssembledConfigFiles extends MaterializeResult {
@@ -64,7 +65,7 @@ export interface AssembleRuntimeLaunchOptions {
     trustedMounts?: SandboxMount[]
   }
   /** A session placed on another machine: its HOME in that machine's coordinates. */
-  executor?: { home: string }
+  executor?: { home: string; codexState?: PrivateRuntimeState }
   /** A session whose clones are off this disk: their `.git` where they are (see prepareRuntimeLaunch). */
   sessionGitDirs?: string[]
   /** A confined session launched through the SRT-wrapped shim rooted here (see prepareRuntimeLaunch). */

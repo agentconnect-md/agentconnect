@@ -6,4 +6,6 @@ attached to {{ .Values.route.gateway.namespace }}/{{ .Values.route.gateway.name 
 
 Check rollout:
   kubectl -n {{ .Release.Namespace }} get pods,httproute
-  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "agentconnect.fullname" . }}-control-plane -c migrate
+{{- if .Values.migrate.enabled }}
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "agentconnect.fullname" . }}-control-plane-migrate -c migrate
+{{- end }}

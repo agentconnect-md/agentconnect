@@ -8,7 +8,7 @@
 //
 // This check turns that silent degradation into a hard build failure. It runs
 // after tsdown in the daemon's `build` script; it ships nowhere (files: ["dist"]).
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { builtinModules } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -51,7 +51,7 @@ if (leaked.length > 0) {
     '✗ daemon bundle is not self-contained — these required imports were left external:\n' +
       unique.map((s) => `    ${s}`).join('\n') +
       '\n  tsdown must inline them. Ensure workspace deps are built before tsdown runs\n' +
-      "  (the build's `pnpm --filter '{.}^...' build` step needs `dependencies` intact).\n"
+      '  (the build dependency selector needs `dependencies` intact).\n'
   )
   process.exit(1)
 }
@@ -94,7 +94,7 @@ for (const arch of ['x64', 'arm64']) {
 // Every entry the image ships, checked identically: the credential helper and the gh token fetch are separate
 // bundles precisely so their graphs stay disjoint from the channel's, and a shared module would show up here
 // as a relative chunk import — a file the image never copies.
-for (const entry of ['index.js', 'git-credential.js', 'gh-token.js', 'skills/workspace-mutation.js']) {
+for (const entry of ['index.js', 'git-credential.js', 'gh-token.js', 'glab-token.js', 'skills/workspace-mutation.js']) {
   const shimPath = new URL(`../dist/shim/${entry}`, import.meta.url)
   if (!existsSync(shimPath)) {
     console.error(`✗ shim bundle ${entry} is missing — \`tsdown --config tsdown.shim.config.ts\` did not run`)
@@ -153,6 +153,16 @@ if (!existsSync(ghWrapper)) {
 }
 if (!readFileSync(ghWrapper, 'utf8').includes('/opt/agentconnect/shim/gh-token.js')) {
   console.error('✗ the sandbox gh wrapper does not call the in-image token entry')
+  process.exit(1)
+}
+
+// The host and srt strategies hand git `<helperRoot>/bin/git-credential` with this `dist` as the helper root, so a
+// build that skipped the emit step would fail every credentialed clone of a session placed on this installation.
+const gitCredentialWrapper = new URL('../dist/bin/git-credential', import.meta.url)
+if (!existsSync(gitCredentialWrapper) || (statSync(gitCredentialWrapper).mode & 0o111) === 0) {
+  console.error(
+    '✗ the installation git credential helper is missing — `node scripts/emit-shim-git-credential-wrapper.mjs` did not run'
+  )
   process.exit(1)
 }
 

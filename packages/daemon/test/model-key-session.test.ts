@@ -52,6 +52,26 @@ describe('daemon model-key session lifecycle', () => {
     )
     await h.daemon.modelSessions.release('session-a')
   })
+
+  it('issues for the probed OpenCode default and uses that provider’s configured endpoint', async () => {
+    const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
+    const configured = { id: 'agent-a', runtime: 'opencode' }
+    h.daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
+    h.daemon.modelSessions.staticModelCredentials = {
+      claude: { key: '', baseUrl: 'https://gw.example/anthropic' },
+      codex: { key: '', baseUrl: 'https://gw.example/openai/v1' },
+      deepseek: { key: '', baseUrl: 'https://gw.example/deepseek/v1' }
+    }
+    await expect(h.daemon.modelSessions.ensure(configured, 'session-a')).rejects.toThrow(/model list is not ready/)
+    expect(h.issue).not.toHaveBeenCalled()
+    vi.spyOn(h.daemon.runtimeFacts, 'modelCatalog').mockReturnValue({ defaultModel: 'deepseek/deepseek-chat' })
+    await h.daemon.modelSessions.ensure(configured, 'session-a')
+    expect(h.issue).toHaveBeenCalledWith(expect.objectContaining({ provider: 'deepseek' }))
+    const [startedAgent, entry] = h.starts.mock.calls[0]!
+    expect(startedAgent.runtimeOverrides.model).toBe('deepseek/deepseek-chat')
+    expect(h.daemon.modelSessions.staticBaseUrl(entry.target)).toEqual({ baseUrl: 'https://gw.example/deepseek/v1' })
+    await h.daemon.modelSessions.release('session-a')
+  })
   it('refuses a key server outside cloud mode, and never demands a token path', () => {
     // A minted key is only usable with the `*_MODEL_BASE_URL` pair that aims it at this install's
     // gateway, and that pair is cloud-mode configuration — so a non-cloud key server is refused.
@@ -214,9 +234,12 @@ describe('daemon model-key session lifecycle', () => {
     expect(h.issue).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'openai' }))
   })
 
-  it('refuses a cross-provider switch on the shared static-credential host', async () => {
+  it('allows static OpenCode switches only to a provider configured on the host', async () => {
     const daemon = new Daemon({ k8s: true, clock: new FakeClock(1_000) }) as any
-    daemon.modelSessions.staticModelCredentials = { opencode: { key: 'static-token' } }
+    daemon.modelSessions.staticModelCredentials = {
+      codex: { key: 'openai-token' },
+      deepseek: { key: 'deepseek-token' }
+    }
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
@@ -230,13 +253,15 @@ describe('daemon model-key session lifecycle', () => {
 
     expect(await daemon.commands.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(false)
     expect(setModelOverride).not.toHaveBeenCalled()
+    expect(await daemon.commands.setModelByKey('session-a', 'deepseek/deepseek-chat')).toBe(true)
+    expect(setModelOverride).toHaveBeenCalledWith('session-a', 'deepseek/deepseek-chat')
     expect(await daemon.commands.setModelByKey('session-a', 'openai/gpt-5-codex')).toBe(true)
     expect(setModelOverride).toHaveBeenCalledWith('session-a', 'openai/gpt-5-codex')
   })
 
   it('leaves a runtime the static map never configured switchable', async () => {
     const daemon = new Daemon({ k8s: true, clock: new FakeClock(1_000) }) as any
-    daemon.modelSessions.staticModelCredentials = { claude: { key: 'static-token' } }
+    daemon.modelSessions.staticModelCredentials = {}
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
@@ -248,7 +273,7 @@ describe('daemon model-key session lifecycle', () => {
     const setModelOverride = vi.fn()
     daemon.store = { getSession: () => ({ agentId: 'agent-a', acpSessionId: null }), setModelOverride }
 
-    // The map configures no opencode pair, so this host runs on runtime-owned auth and stays switchable.
+    // Without injected provider credentials, the runtime owns authentication and switching.
     expect(await daemon.commands.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(true)
     expect(setModelOverride).toHaveBeenCalledWith('session-a', 'anthropic/claude-opus-4')
   })

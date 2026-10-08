@@ -28,6 +28,7 @@ function toRecord(o: DaemonLifecycleOp): DaemonLifecycleOpRecord {
     status: o.status as DaemonLifecycleOpStatus,
     phase: o.phase as DaemonLifecyclePhase | null,
     commandEpoch: o.commandEpoch,
+    commandBootId: o.commandBootId,
     acceptedAt: o.acceptedAt,
     startedAt: o.startedAt,
     deadline: o.deadline,
@@ -72,6 +73,7 @@ export class PgDaemonLifecycleOpRepo implements DaemonLifecycleOpRepo {
         targetVersion: input.targetVersion ?? null,
         initiator: input.initiator ?? null,
         commandEpoch: input.commandEpoch,
+        commandBootId: input.commandBootId ?? null,
         deadline: input.deadline,
         status: 'pending'
       }

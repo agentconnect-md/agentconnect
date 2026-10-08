@@ -150,3 +150,29 @@ describe('HookTable', () => {
     })
   })
 })
+
+describe('HookTable — reconnect snapshot', () => {
+  const SNAP = '33333333-3333-4333-8333-333333333333'
+  const HOOK_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+
+  it('removes a hook deleted while the link was down, token index included', () => {
+    const t = new HookTable()
+    t.upsert(rule())
+    t.upsert(rule({ hookId: HOOK_B, webhook: { urlToken: 'wh_gone' } }))
+    t.beginSnapshot(SNAP)
+    expect(t.getByToken('wh_gone')?.hookId).toBe(HOOK_B)
+    t.upsert(rule())
+    t.endSnapshot(SNAP, [])
+    expect(t.getByToken('wh_tok1')?.hookId).toBe(HOOK_A)
+    expect(t.getByToken('wh_gone')).toBeUndefined()
+    expect(t.getByHookId(HOOK_B)).toBeUndefined()
+  })
+
+  it('keeps a hook the CP withheld because it failed to compile it', () => {
+    const t = new HookTable()
+    t.upsert(rule())
+    t.beginSnapshot(SNAP)
+    t.endSnapshot(SNAP, [HOOK_A])
+    expect(t.getByToken('wh_tok1')?.hookId).toBe(HOOK_A)
+  })
+})

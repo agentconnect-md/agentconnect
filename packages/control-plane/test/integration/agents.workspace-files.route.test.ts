@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { WORKSPACE_RAW_READ_FEATURE, WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
+import { WORKSPACE_FILE_DOWNLOAD_FEATURE, WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
 import type {
   WorkspaceDeleteOk,
   WorkspaceDeleteReq,
@@ -171,7 +171,7 @@ describe('GET /agents/:id/workspace/file', () => {
 
     await prisma.daemon.update({
       where: { id: DAEMON },
-      data: { capabilities: { ...CAPABILITIES, features: [...CAPABILITIES.features, WORKSPACE_RAW_READ_FEATURE] } }
+      data: { capabilities: { ...CAPABILITIES, features: [...CAPABILITIES.features, WORKSPACE_FILE_DOWNLOAD_FEATURE] } }
     })
     const raw = await running.app.inject({
       method: 'GET',

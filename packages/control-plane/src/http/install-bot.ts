@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto'
 import type { HttpDeps } from './deps.js'
 import type { AgentRecord, BotRecord, IntegrationRecord, SlackTransport } from '../persistence/ports.js'
 import { BotId, IntegrationId, type OrgId } from '../domain/ids.js'
-import { integrationToSpec, isGatedAgent } from '../orchestrator/placement.js'
+import { integrationToSpec } from '../orchestrator/placement.js'
 import { NoConnection } from '../orchestrator/outbound.js'
 import type { CpNewBotInstall } from '../platforms/provider.js'
 import { BotWorkspaceClaimed } from '../persistence/errors.js'
@@ -136,9 +136,7 @@ export async function installNewBot(
     deps.repos.botSecret.get(orgId, botId),
     deps.repos.integrationChannel.listForIntegration(id)
   ])
-  const spec = secret
-    ? await integrationToSpec(deps.platforms, integration, bot, secret, channels, isGatedAgent(agent))
-    : null
+  const spec = secret ? await integrationToSpec(deps.platforms, integration, bot, secret, channels, agent) : null
   // No secret, or a provider with no deliverable payload: withhold the push and let the reconcile
   // roster carry (or prune) the row.
   if (spec) {

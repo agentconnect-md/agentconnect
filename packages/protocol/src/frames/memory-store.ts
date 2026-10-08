@@ -93,9 +93,19 @@ export const MemoryFsReplySchema = z.discriminatedUnion('ok', [
 ])
 export type MemoryFsReply = z.infer<typeof MemoryFsReplySchema>
 
+/** CP applies a `memory/store` carrying `operationId` at most once, answering a re-send with the stored reply. */
+export const AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE = 'agent-memory-store-operation-id-v1'
+
 // D→C REQ `memory/store`: one op against the named agent's `control-plane` home; the REP is `MemoryFsReplySchema`.
 // Error REPs: `SCOPE_DENIED` (agent not served here, or its home is not the CP), `BAD_PAYLOAD`, `INTERNAL`.
-export const MemoryStoreReq = z.object({ agentId: z.string().uuid(), op: MemoryFsPayloadSchema }).strict()
+export const MemoryStoreReq = z
+  .object({
+    agentId: z.string().uuid(),
+    op: MemoryFsPayloadSchema,
+    // One write's identity across a re-send; only a CP advertising the feature above accepts it.
+    operationId: z.string().uuid().optional()
+  })
+  .strict()
 export type MemoryStoreReq = z.infer<typeof MemoryStoreReq>
 
 /** Records per change-log batch; the byte refinement on the request is the bound that keeps it in one frame. */

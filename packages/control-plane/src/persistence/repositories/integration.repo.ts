@@ -14,6 +14,7 @@ import {
   decisionChainIds,
   DecisionBundleDefinition,
   gateUsageRules,
+  PlaceExternalReason,
   type Platform,
   type FeishuRegion
 } from '@agentconnect.md/protocol'
@@ -358,10 +359,13 @@ export class PgBotRepo implements BotRepo {
     })
   }
 
-  async listHttpActive(): Promise<BotRecord[]> {
-    // http-transport bots with ≥1 ACTIVE install — the orchestrator's convergence set.
+  async listHttpActive(retainUnboundPlatforms: readonly string[] = []): Promise<BotRecord[]> {
     const rows = await this.db.bot.findMany({
-      where: { transport: 'http', integrations: { some: { status: 'active' } } },
+      where: {
+        transport: 'http',
+        revokedAt: null,
+        OR: [{ integrations: { some: { status: 'active' } } }, { platform: { in: [...retainUnboundPlatforms] } }]
+      },
       include: botInclude,
       orderBy: { createdAt: 'asc' }
     })
@@ -895,7 +899,8 @@ function toChannelRecord(
     decisionRouting: routingOf(c),
     dmUserId: c.dmUserId,
     triggerChosen: c.triggerChosen,
-    agentId: c.agentId ? AgentId(c.agentId) : null
+    agentId: c.agentId ? AgentId(c.agentId) : null,
+    externalReason: PlaceExternalReason.safeParse(c.externalReason).data ?? null
   }
 }
 
@@ -955,7 +960,19 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       authoritative?: boolean
       removed?: string[]
     }
-  ): Promise<void> {
+  ): Promise<{ externalChanged: boolean }> {
+    // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
+    const before = new Map(
+      (
+        await this.db.integrationChannel.findMany({
+          where: { integrationId, channelId: { in: channels.map((c) => c.id) } },
+          select: { channelId: true, externalReason: true }
+        })
+      ).map((row) => [row.channelId, row.externalReason])
+    )
+    const externalChanged = channels.some(
+      (c) => c.externalReason !== undefined && (c.externalReason ?? null) !== (before.get(c.id) ?? null)
+    )
     if (opts?.authoritative !== false) {
       await this.db.integrationChannel.deleteMany({
         where: { integrationId, kind: 'channel', channelId: { notIn: channels.map((c) => c.id) } }
@@ -984,14 +1001,17 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "key", "url",
-           "isPrivate", "kind", "trigger", "dmUserId", "firstSeenAt", "updatedAt")
+           "isPrivate", "kind", "trigger", "dmUserId", "externalReason", "firstSeenAt", "updatedAt")
         VALUES (
           ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
           ${c.icon ?? null}, ${c.color ?? null}, ${c.key ?? null}, ${c.url ?? null},
           ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
-          ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, NOW(), NOW()
+          ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, ${c.externalReason ?? null}, NOW(), NOW()
         )
         ON CONFLICT ("integrationId", "channelId") DO UPDATE SET
+          -- Tri-state like the glyph: an omitting reporter keeps the detection, an enumerating null lifts it.
+          "externalReason" = CASE WHEN ${c.externalReason !== undefined}::boolean THEN EXCLUDED."externalReason"
+                                  ELSE "integration_channel"."externalReason" END,
           "name" = CASE WHEN ${setName}::boolean THEN EXCLUDED."name" ELSE "integration_channel"."name" END,
           "spaceId" = CASE WHEN ${c.spaceId !== undefined}::boolean THEN EXCLUDED."spaceId"
                            ELSE "integration_channel"."spaceId" END,
@@ -1060,6 +1080,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, channelId: { in: [...removed] } }
       })
     }
+    return { externalChanged }
   }
 
   async deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean> {

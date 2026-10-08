@@ -14,12 +14,14 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   startSlackPlatformInstall: vi.fn(),
   getSlackPlatformInstall: vi.fn(),
-  refreshSlackBot: vi.fn()
+  refreshSlackBot: vi.fn(),
+  params: '',
+  openModal: vi.fn()
 }))
 
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }))
+vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams(mocks.params) }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
-vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
+vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: mocks.openModal }) }))
 vi.mock('@/lib/org-context', () => {
   // One stable object: the view's effects key on these identities.
   const orgs = {
@@ -133,6 +135,8 @@ beforeEach(() => {
   mocks.integrations = [install('agent-a', true)]
   mocks.agents = [pilot]
   mocks.role = 'owner'
+  mocks.params = ''
+  mocks.openModal.mockReset()
   mocks.refresh.mockReset()
   mocks.startSlackPlatformInstall.mockReset()
   mocks.getSlackPlatformInstall.mockReset()
@@ -151,6 +155,27 @@ afterEach(async () => {
 })
 
 describe('a revoked built-in Slack app’s row', () => {
+  it('opens the reconnect link once with the exact installation preselected', async () => {
+    mocks.params = 'reconnect=bot-1'
+    mocks.bots = [bot({ revokedAt: null })]
+    await botRow()
+    await botRow()
+    expect(mocks.openModal).toHaveBeenCalledExactlyOnceWith('integration', undefined, {
+      platform: 'slack',
+      botId: 'bot-1'
+    })
+  })
+
+  it('does not offer reconnect for a revoked app or to a viewer', async () => {
+    mocks.params = 'reconnect=bot-1'
+    await botRow()
+    expect(mocks.openModal).not.toHaveBeenCalled()
+    mocks.bots = [bot({ revokedAt: null })]
+    mocks.role = 'viewer'
+    await botRow()
+    expect(mocks.openModal).not.toHaveBeenCalled()
+  })
+
   it('reinstalls straight from the row, haloed, with the refresh beside it held for the same round trip', async () => {
     mocks.getSlackPlatformInstall.mockImplementation(async (id: string) => ({
       id,

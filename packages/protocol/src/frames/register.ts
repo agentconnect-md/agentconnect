@@ -24,6 +24,8 @@ export const RegisterReq = z.object({
   // Only the newest live generation of a member set may claim vacated duty groups; absent for
   // local daemons and older pods, which the rule never excludes.
   generation: z.string().min(1).max(128).optional(),
+  // Fresh on every daemon process start: a restart completes only when a different boot registers (high-availability.md).
+  bootId: z.string().uuid().optional(),
   // An OBSERVER connection: the `reconcile --once` CronJob, which authenticates with the same
   // projected pool identity but serves nothing. The CP admits the identity and answers reads, but
   // enrolls it in no member set, so the duty ledger can never grant it anything (k8s-daemon-pool.md §4).
@@ -40,7 +42,9 @@ export const RegisterReq = z.object({
     // The machine's own effective strategy table (§5), in the executor report's shape: what its own sessions can run in, and what an agent's `execution` is checked against.
     strategies: ExecutorStrategyTable.optional(),
     // The retiring `sandbox.backend`, reported while the daemon still reads one so the CP can migrate `runInSandbox` once (§5).
-    sandboxBackend: ExecutorStrategyName.optional()
+    sandboxBackend: ExecutorStrategyName.optional(),
+    // The shared PostgreSQL store's id (one per database); absent on a private local store. Members of a group that report the same id read each other's sessions.
+    contentStore: z.string().uuid().optional()
   }),
   maxAgents: z.number().int(), // concurrency ceiling for placement (C3)
   localState: z.object({

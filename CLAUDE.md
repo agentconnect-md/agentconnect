@@ -132,7 +132,7 @@ values only.
 
 The console has a **≤768px mobile responsive layer** — the `max-width: 768px`
 media block in `globals.css` plus `lib/use-is-mobile.ts` (`useIsMobile()`,
-SSR-safe). Mobile chrome (app bar, bottom-tab nav, bottom-sheet modals) is
+SSR-safe). Mobile chrome (app bar, hamburger drawer, bottom-sheet modals) is
 route+CSS-driven in `components/console/Shell.tsx`. Most views render **one
 responsive tree** (base = mobile classes + `desktop:` variants; genuinely
 divergent fragments dual-render behind `hidden desktop:*` / `desktop:hidden`).
@@ -176,7 +176,7 @@ Requires **Node >= 24.12.0** (`.nvmrc` = 24.12.0) and **pnpm 11**.
 ```bash
 pnpm install
 pnpm dev       # run all packages in parallel (-r --parallel dev)
-pnpm build     # pnpm -r build
+pnpm build     # pnpm -r build:package
 pnpm typecheck # type-check all packages
 pnpm lint      # eslint .   (lint:fix to autofix)
 pnpm format    # prettier --write .   (format:check to verify)

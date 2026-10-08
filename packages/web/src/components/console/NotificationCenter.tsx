@@ -70,9 +70,10 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
   const items = filter === 'unread' ? notifications.filter((n) => !n.read) : notifications
 
   const rail = variant === 'rail'
+  // `mobile` sits in the drawer footer, so its panel opens upward, edge to edge.
   const dropdownPositionCls = rail
-    ? 'absolute bottom-[calc(100%_+_8px)] left-0 z-50'
-    : 'absolute right-0 top-[calc(100%_+_8px)] z-50'
+    ? 'absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[360px] max-w-[calc(100vw-32px)]'
+    : 'fixed inset-x-4 bottom-[calc(80px+env(safe-area-inset-bottom,0px))] z-50'
   const formatRelativeTime = (isoString: string) => {
     const sec = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000)
     if (sec < 60) return t('justNow')
@@ -87,7 +88,7 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
     <div ref={menuRef} className="relative inline-flex flex-none">
       <button
         type="button"
-        className={`${rail ? 'railiconbtn' : 'mappbtn'} relative`}
+        className={`${rail ? 'railiconbtn' : 'mappbtn text-(--text-inverse)'} relative`}
         aria-label={unreadCount > 0 ? `${t('title')} (${t('unread', { count: unreadCount })})` : t('title')}
         title={t('title')}
         onClick={() => setOpen((prev) => !prev)}
@@ -102,7 +103,7 @@ export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
 
       {open && (
         <div
-          className={`${dropdownPositionCls} w-[360px] max-w-[calc(100vw-32px)] rounded-lg border border-(--border-default) bg-(--surface-card) p-0 shadow-(--shadow-md)`}
+          className={`${dropdownPositionCls} rounded-lg border border-(--border-default) bg-(--surface-card) p-0 shadow-(--shadow-md)`}
         >
           {/* Header */}
           <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3">

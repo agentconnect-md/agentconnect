@@ -202,43 +202,52 @@ normal choice for a loopback or in-pod gateway.
 The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with a
 per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
 for Claude, `OPENAI_MODEL_*` for Codex, `DEEPSEEK_MODEL_*` for the DeepSeek Harness.
-OpenCode has no pair of its own — it picks a provider per model and takes the shared one.
+OpenCode reuses these provider pairs: `anthropic` uses `ANTHROPIC_MODEL_*`, `openai`
+uses `OPENAI_MODEL_*`, and `deepseek` uses `DEEPSEEK_MODEL_*`, with the same shared fallback.
 `*_MODEL_TOKEN` names an opaque deployment credential, not a header choice: despite the
 word "token" it is unrelated to `ANTHROPIC_AUTH_TOKEN`, and Claude's injection slot is
 `ANTHROPIC_API_KEY` (see the table below).
 
-One deployment gateway is still one address; the runtimes just do not agree on where their
-base ends. Claude Code appends `/v1/messages` to its base, while Codex appends `/responses`
-and OpenCode's providers append `/messages`, so the same gateway is `https://gw` for one and
-`https://gw/v1` for the others. The daemon injects each base verbatim and never derives a
-path: the gateway's own layout is the deployment's to know, so composing these variables from
-one address belongs where that layout is configured, not in a runtime guess. Every base URL
-must be an HTTP(S) URL. Each pair is translated at runtime launch:
+The deployment supplies each provider's gateway base as an HTTP(S) URL. Claude Code
+appends `/v1/messages`, while OpenCode's Anthropic SDK appends `/messages`; reusing the
+Claude pair therefore adds `/v1` to OpenCode's base, without duplicating an existing
+`/v1` suffix. OpenAI and DeepSeek bases pass through unchanged. Each pair is translated
+at runtime launch:
 
-| Runtime  | Token                                                                                    | Base URL                                                                                                                             |
-| -------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Claude   | `ANTHROPIC_API_KEY` (`ANTHROPIC_AUTH_TOKEN` is cleared — one credential per launch)      | `ANTHROPIC_BASE_URL`                                                                                                                 |
-| Codex    | `OPENAI_API_KEY`                                                                         | `CODEX_CONFIG` → `model_provider = "openai"` and `model_providers.openai.base_url`; `OPENAI_BASE_URL` is also set for older adapters |
-| OpenCode | `OPENCODE_CONFIG_CONTENT` → selected provider `options.apiKey` using `{env:MODEL_TOKEN}` | selected provider `options.baseURL`                                                                                                  |
-| DeepSeek | `DEEPSEEK_API_KEY`                                                                       | `DEEPSEEK_BASE_URL`                                                                                                                  |
+| Runtime  | Token                                                                                                                              | Base URL                                                                                                                             |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude   | `ANTHROPIC_API_KEY` (`ANTHROPIC_AUTH_TOKEN` is cleared — one credential per launch)                                                | `ANTHROPIC_BASE_URL`                                                                                                                 |
+| Codex    | `OPENAI_API_KEY`                                                                                                                   | `CODEX_CONFIG` → `model_provider = "openai"` and `model_providers.openai.base_url`; `OPENAI_BASE_URL` is also set for older adapters |
+| OpenCode | `OPENCODE_CONFIG_CONTENT` → provider `options.apiKey` referencing its `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY` | provider `options.baseURL`                                                                                                           |
+| DeepSeek | `DEEPSEEK_API_KEY`                                                                                                                 | `DEEPSEEK_BASE_URL`                                                                                                                  |
 
 Dynamic grants use the same translation for their key, and take their base URL from
 these same variables — a key server changes where the token comes from, never where the
-runtime points. With neither a key server nor a static token, the runtime's existing
+runtime points. With neither a key server nor a deployment pair, the runtime's existing
 provider configuration is left unchanged.
+
+OpenCode's Cloud probe loads every configured provider, so its ACP model selector
+includes the same providers as real sessions. Endpoint-only pairs use the probe's
+stand-in key; enumeration never prompts or issues a session credential. Configured
+providers become the default `enabled_providers`, excluding unrelated free defaults.
+Explicit OpenCode provider restrictions and custom model declarations are preserved.
+Static launches carry each provider's separate key. Key-server launches configure all
+provider endpoints but inject only the selected provider's issued key.
 
 One logical AgentConnect session owns one ACP host when key-server mode is active.
 Provider credentials are process-level settings, so sharing a runtime would let
 concurrent sessions use whichever key was written last. Internal model jobs use their
 own opaque session identities and revoke their grants when their one-off host stops.
-OpenCode derives the credential provider from the effective session model. A started
-host is authoritative for its whole working life: while its session still has live SDK
+OpenCode derives the credential provider from the effective session model, falling back
+to the probed runtime default when no model is selected. It requires a model selection
+or catalog result before issuing a key. A started host is authoritative for its whole
+working life: while its session still has live SDK
 work, a model switch to another provider is recorded as the sticky session override but
-never pushed to the running process, whose options only ever received the key and base
-URL of the provider it was started for. The next start after the work settles reads that
-override, issues for the new provider, and rebinds. Without a key server the shared
-static-credential host has no per-session start to rebind at, so it refuses a
-cross-provider selection outright instead of storing one that could never be honoured.
+never pushed to the running process, which only received a key for its starting provider.
+The next start after the work settles reads that override, issues for the new provider,
+and rebinds. Without a key server the shared
+static-credential host permits switching between providers whose keys it already carries
+and refuses a selection requiring an unavailable credential.
 
 ## 5. Caching, rotation, and revocation
 

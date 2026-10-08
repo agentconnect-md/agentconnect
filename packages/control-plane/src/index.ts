@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   const bootstrapConfig = loadBootstrapConfig()
 
   // 2. The single Prisma touch in the process; the only seam the bootstrap owns.
-  const prisma = createPrisma(bootstrapConfig.DATABASE_URL)
+  const prisma = createPrisma(bootstrapConfig.DATABASE_URL, { poolMax: bootstrapConfig.DATABASE_POOL_MAX })
   const secretCipher = makeSecretCipher(bootstrapConfig)
   const deploymentConfig = await new PgDeploymentConfigStore(prisma, secretCipher).getRuntime()
 

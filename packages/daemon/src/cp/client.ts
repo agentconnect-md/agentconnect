@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { DecisionControlDeps } from './control/decision.js'
 import {
   MEMORY_TRANSACTION_V1_FEATURE,
@@ -117,11 +118,13 @@ import {
   MAX_FRAME_BYTES,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
+  CRON_REPORT_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
+  AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
   checkInboundFrameOrg,
   checkReplyFrameOrg,
@@ -151,8 +154,12 @@ import type { Logger } from '../log.js'
 export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
 
 const ACK_TIMEOUT_MS = 5000
-/** One deadline for a `memory/store` op, the shim carrier's per-op timeout; there is never a second send. */
+/** The correlator's default five-try budget: what a wrapped turn-path request had in total before it waited out a handoff. */
+const TURN_PATH_BUDGET_MS = 5 * ACK_TIMEOUT_MS
+/** One deadline for a `memory/store` op, the shim carrier's per-op timeout; a safe re-send fits inside it. */
 const MEMORY_STORE_TIMEOUT_MS = 30_000
+/** The `memory/store` ops that change nothing, so a re-send needs no operation id. */
+const MEMORY_FS_READS: ReadonlySet<string> = new Set(['memory-read', 'memory-stat', 'memory-readdir'])
 /** How long a turn-path request waits for a reconnecting control link; a planned CP handoff takes seconds. */
 export const CP_HANDOFF_WAIT_MS = 10_000
 /** Requests wait only this long after a READY link dropped: a handoff, never a startup without a CP or a long outage. */
@@ -224,6 +231,8 @@ export interface CpClientDeps
   host: string
   /** Rollout generation (pod-template hash) — a pool member's; absent for a local daemon. */
   generation?: string
+  /** This process's boot identity, the same on every reconnect of one process. */
+  bootId?: string
   heartbeatDefaultMs: number
   maxAgents: number
   capabilities: () => RegisterReq['capabilities']
@@ -619,6 +628,7 @@ export class CpClient {
     const register = buildEnvelope('register', {
       host: this.deps.host,
       ...(this.deps.generation ? { generation: this.deps.generation } : {}),
+      ...(this.deps.bootId ? { bootId: this.deps.bootId } : {}),
       capabilities: registerCapabilities,
       maxAgents: this.deps.maxAgents,
       localState: this.deps.localState()
@@ -920,6 +930,17 @@ export class CpClient {
     this.transport?.send(encode(this.scopedFrame('cron/report', report)))
   }
 
+  /** Persist one terminal CP-cron outcome (D→C `cron/report-sync` REQ → `ack`); the outbox row is released only after it resolves. */
+  async syncCronReport(report: CronReport): Promise<'acknowledged' | 'unsupported'> {
+    this.requireReady('cron/report-sync')
+    if (!this.supportsServerFeature(CRON_REPORT_ACK_FEATURE)) return 'unsupported'
+    const rep = await this.request('cron/report-sync', report)
+    if (rep.type !== 'ack' || rep.payload.ok !== true) {
+      throw new WireError('INTERNAL', `expected cron/report-sync ack, got ${rep.type}`, false)
+    }
+    return 'acknowledged'
+  }
+
   /**
    * Durably converge a hook turn outcome (D→C `hook/report` REQ). The daemon
    * retains its metadata-only outbox row until the CP replies after persistence
@@ -945,8 +966,8 @@ export class CpClient {
 
   /** Durable start barrier for an accepted hook turn; the gitlab arm is organization-scoped (§17.2). */
   async startHook(payload: HookStart, orgId?: string): Promise<HookStartOk> {
-    const rep = await this.turnPathRequest('hook/start', CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS, false, () =>
-      this.request('hook/start', payload, orgId)
+    const rep = await this.turnPathRequest('hook/start', TURN_PATH_BUDGET_MS, false, (budgetMs) =>
+      this.budgetedRequest('hook/start', payload, budgetMs, orgId)
     )
     if (rep.type !== 'hook/start/ok') {
       throw new WireError('INTERNAL', `expected hook/start/ok, got ${rep.type}`, false)
@@ -1024,11 +1045,8 @@ export class CpClient {
     payload: CodeHostReviewLeaseRenew,
     orgId?: string
   ): Promise<CodeHostReviewLeaseRenewed> {
-    const rep = await this.turnPathRequest(
-      'codehost/review-lease-renew',
-      CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS,
-      true,
-      () => this.request('codehost/review-lease-renew', payload, orgId)
+    const rep = await this.turnPathRequest('codehost/review-lease-renew', TURN_PATH_BUDGET_MS, true, (budgetMs) =>
+      this.budgetedRequest('codehost/review-lease-renew', payload, budgetMs, orgId)
     )
     if (rep.type !== 'codehost/review-lease-renew/ok') {
       throw new WireError('INTERNAL', `expected codehost/review-lease-renew/ok, got ${rep.type}`, false)
@@ -1118,7 +1136,7 @@ export class CpClient {
   private async turnPathRequest<T>(
     op: string,
     budgetMs: number,
-    idempotent: boolean,
+    idempotent: boolean | (() => boolean),
     send: (ackTimeoutMs: number) => Promise<T>
   ): Promise<T> {
     const deadline = this.deps.clock.now() + budgetMs
@@ -1130,7 +1148,8 @@ export class CpClient {
       try {
         return await send(remaining())
       } catch (err) {
-        if (!idempotent || attempt > 0 || !(err instanceof WireError) || !err.retryable) throw err
+        const resendable = typeof idempotent === 'function' ? idempotent() : idempotent
+        if (!resendable || attempt > 0 || !(err instanceof WireError) || !err.retryable) throw err
         const replaced = await this.waitConnected(Math.min(CP_HANDOFF_WAIT_MS, remaining() - MIN_TURN_SEND_MS))
         if (!replaced || this.linkGeneration === generation) throw err
         this.deps.log.warn(`cp: ${op} lost its link (${err.message}) — retrying once across the reconnect`)
@@ -1141,6 +1160,16 @@ export class CpClient {
   private request(type: string, payload: unknown, explicitOrgId?: string): Promise<AnyFrame> {
     const frame = this.scopedFrame(type, payload, explicitOrgId)
     return this.correlator.request(frame, (e) => this.transport!.send(e))
+  }
+
+  /** A request whose retransmits fit in `budgetMs`, so time spent waiting out a handoff comes out of the caller's deadline. */
+  private budgetedRequest(type: string, payload: unknown, budgetMs: number, explicitOrgId?: string): Promise<AnyFrame> {
+    const ackTimeoutMs = Math.min(ACK_TIMEOUT_MS, budgetMs)
+    const frame = this.scopedFrame(type, payload, explicitOrgId)
+    return this.correlator.request(frame, (e) => this.transport!.send(e), {
+      ackTimeoutMs,
+      maxTries: Math.max(1, Math.floor(budgetMs / ackTimeoutMs))
+    })
   }
 
   /** Request a short-lived git credential: waits out a CP handoff, one send per link, inside the helper's IPC timeout. */
@@ -1236,10 +1265,10 @@ export class CpClient {
     this.forgetLeaseDeadlines(groupIds)
   }
 
-  /** `duty/claim`: the activation rendezvous for a trigger that landed here, never re-sent because a repeat reads as held. */
+  /** `duty/claim`: the activation rendezvous for a trigger that landed here; the CP refreshes a repeat by the holder, so it is re-sent once over a replaced link. */
   async claimDuty(agentId: string): Promise<DutyClaimOk> {
-    const rep = await this.turnPathRequest('duty/claim', CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS, false, () =>
-      this.request('duty/claim', { agentId })
+    const rep = await this.turnPathRequest('duty/claim', TURN_PATH_BUDGET_MS, true, (budgetMs) =>
+      this.budgetedRequest('duty/claim', { agentId }, budgetMs)
     )
     if (rep.type !== 'duty/claim/ok') {
       throw new WireError('INTERNAL', `expected duty/claim/ok, got ${rep.type}`, false)
@@ -1385,8 +1414,8 @@ export class CpClient {
 
   /** `channel/agents`: this agent's callable peers, waiting out a CP handoff; the caller negotiates the org-wide form. */
   async channelAgents(payload: ChannelAgentsReq): Promise<ChannelAgentsOk> {
-    const rep = await this.turnPathRequest('channel/agents', CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS, true, () =>
-      this.correlator.request(this.scopedFrame('channel/agents', payload), (e) => this.transport!.send(e))
+    const rep = await this.turnPathRequest('channel/agents', TURN_PATH_BUDGET_MS, true, (budgetMs) =>
+      this.budgetedRequest('channel/agents', payload, budgetMs)
     )
     if (rep.type !== 'channel/agents/ok') {
       throw new WireError('INTERNAL', `expected channel/agents/ok, got ${rep.type}`, false)
@@ -1418,8 +1447,8 @@ export class CpClient {
     if (!this.supportsServerFeature(ORGANIZATION_KNOWLEDGE_FEATURE)) {
       throw new WireError('INTERNAL', 'control plane does not support organization knowledge', false)
     }
-    const rep = await this.turnPathRequest('knowledge/search', CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS, true, () =>
-      this.request('knowledge/search', payload)
+    const rep = await this.turnPathRequest('knowledge/search', TURN_PATH_BUDGET_MS, true, (budgetMs) =>
+      this.budgetedRequest('knowledge/search', payload, budgetMs)
     )
     if (rep.type !== 'knowledge/search/ok') {
       throw new WireError('INTERNAL', `expected knowledge/search/ok, got ${rep.type}`, false)
@@ -1433,7 +1462,8 @@ export class CpClient {
       throw new WireError('INTERNAL', 'control plane does not support memory transactions', false)
     if (payload.operation === 'capture-status' && !this.supportsServerFeature(MEMORY_CAPTURE_FENCE_V1_FEATURE))
       throw new WireError('INTERNAL', 'control plane does not support capture fences', false)
-    const rep = await this.turnPathRequest('memory/transaction/v1', MEMORY_STORE_TIMEOUT_MS, false, (ackTimeoutMs) =>
+    // Reads, and a commit the CP deduplicates by its operation id, so one re-send over a replaced link is safe.
+    const rep = await this.turnPathRequest('memory/transaction/v1', MEMORY_STORE_TIMEOUT_MS, true, (ackTimeoutMs) =>
       this.correlator.request(this.scopedFrame('memory/transaction/v1', payload), (e) => this.transport!.send(e), {
         maxTries: 1,
         ackTimeoutMs
@@ -1448,12 +1478,28 @@ export class CpClient {
     if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
       throw new WireError('INTERNAL', 'control plane does not serve the memory store', false)
     }
-    // One send, never re-sent: `memory-append` is not idempotent and the CP does not deduplicate request ids.
-    const rep = await this.turnPathRequest('memory/store', MEMORY_STORE_TIMEOUT_MS, false, (ackTimeoutMs) =>
-      this.correlator.request(this.scopedFrame('memory/store', payload), (e) => this.transport!.send(e), {
-        maxTries: 1,
-        ackTimeoutMs
-      })
+    // A read may be re-sent over a replaced link; a write only under an operation id the CP deduplicates.
+    const operationId = MEMORY_FS_READS.has(payload.op.op) ? undefined : randomUUID()
+    let sends = 0
+    let sentWithId = false
+    const rep = await this.turnPathRequest(
+      'memory/store',
+      MEMORY_STORE_TIMEOUT_MS,
+      () => operationId === undefined || sentWithId,
+      (ackTimeoutMs) => {
+        const withId =
+          operationId !== undefined && this.supportsServerFeature(AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE)
+        // The re-send is safe only under the id the first send carried; a CP that stopped deduplicating gets none.
+        if (sends++ > 0 && operationId !== undefined && !withId) {
+          throw new WireError('INTERNAL', 'control plane no longer deduplicates memory writes', true)
+        }
+        sentWithId = withId
+        const request = withId ? { ...payload, operationId } : payload
+        return this.correlator.request(this.scopedFrame('memory/store', request), (e) => this.transport!.send(e), {
+          maxTries: 1,
+          ackTimeoutMs
+        })
+      }
     )
     if (rep.type !== 'memory/store/ok') {
       throw new WireError('INTERNAL', `expected memory/store/ok, got ${rep.type}`, false)

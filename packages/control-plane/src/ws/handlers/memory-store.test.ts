@@ -47,7 +47,11 @@ function deps(overrides: Partial<Record<keyof DaemonWsDeps, unknown>> = {}): Dae
       get: async () => ({ id: AGENT, orgId: ORG, placementKind: 'daemon', daemonId: DAEMON, memory: cpHome }),
       settleMemoryHomeMigration: vi.fn(async () => 'cleared')
     },
-    agentMemoryStore: { apply: vi.fn(async () => ({ ok: true, value: { exists: false } })) },
+    agentMemoryStore: {
+      apply: vi.fn(async () => ({ ok: true, value: { exists: false } })),
+      applyOnce: vi.fn(async () => ({ ok: true, value: { size: 1 } })),
+      deduplicatesOperations: () => true
+    },
     agentMemoryHistory: { append: vi.fn(async () => undefined), page: vi.fn(async () => ({ records: [] })) },
     ...overrides
   } as unknown as DaemonWsDeps
@@ -59,10 +63,25 @@ describe('handleMemoryStore', () => {
     const c = conn()
     await handleMemoryStore(frame('memory/store', { agentId: AGENT, op: readOp }), c, d)
     expect(c.replyTo).toHaveBeenCalledWith(expect.anything(), 'memory/store/ok', { ok: true, value: { exists: false } })
-    expect((d.agentMemoryStore as { apply: ReturnType<typeof vi.fn> }).apply).toHaveBeenCalledWith(
+    expect((d.agentMemoryStore as unknown as { apply: ReturnType<typeof vi.fn> }).apply).toHaveBeenCalledWith(
       expect.objectContaining({ id: AGENT, orgId: ORG }),
       readOp
     )
+  })
+
+  it('applies a write sent with an operation id at most once, through the operation record', async () => {
+    const d = deps()
+    const c = conn()
+    const operationId = '44444444-4444-4444-8444-444444444444'
+    const append = { op: 'memory-append' as const, root: '.', rel: 'notes.md.tmp', content: 'x', create: true }
+    await handleMemoryStore(frame('memory/store', { agentId: AGENT, op: append, operationId }), c, d)
+    expect(c.replyTo).toHaveBeenCalledWith(expect.anything(), 'memory/store/ok', { ok: true, value: { size: 1 } })
+    const store = d.agentMemoryStore as unknown as {
+      apply: ReturnType<typeof vi.fn>
+      applyOnce: ReturnType<typeof vi.fn>
+    }
+    expect(store.applyOnce).toHaveBeenCalledWith(expect.objectContaining({ id: AGENT }), append, operationId)
+    expect(store.apply).not.toHaveBeenCalled()
   })
 
   it('refuses an agent this daemon does not serve — the fence that stops a member racing its successor', async () => {

@@ -58,6 +58,8 @@ export interface ResolvedChannelScope {
   /** The conversation is a 1:1 DM. Session history can't tell a DM from a group, so
    *  without this observed discovery offers a DM as a configurable channel row. */
   isIm?: boolean
+  /** The platform reports the conversation private; absent when it cannot tell. */
+  isPrivate?: boolean
 }
 
 export interface ChannelNameResolverOpts {
@@ -148,15 +150,14 @@ export class ChannelNameResolver {
     if (!this.claim(channel)) return
     try {
       const info = await src.getChannelInfo(channel)
-      // Where the conversation sits: a thread folds onto its enclosing channel in
-      // channel discovery. Saved before the name so a nameless lookup still contributes
-      // the scope.
-      if (info.parentId || info.spaceId || info.isIm !== undefined)
+      // Where the conversation sits and whether it is private, saved before the name so a nameless lookup still contributes them.
+      if (info.parentId || info.spaceId || info.isIm !== undefined || info.isPrivate !== undefined)
         this.persist(
           this.saveScope?.(channel, {
             ...(info.parentId ? { parentId: info.parentId } : {}),
             ...(info.spaceId ? { spaceId: info.spaceId } : {}),
-            ...(info.isIm === undefined ? {} : { isIm: info.isIm })
+            ...(info.isIm === undefined ? {} : { isIm: info.isIm }),
+            ...(info.isPrivate === undefined ? {} : { isPrivate: info.isPrivate })
           })
         )
       // The enclosing channel is a reportable conversation of its own (channel discovery

@@ -528,6 +528,9 @@ export type RdMsgIm = z.infer<typeof RdMsgIm>
 // It remains typed inside rd/msg so status controls and message-card choices reuse the
 // existing receipt, dedup, and relay→daemon delivery path.
 export const RdSlackAction = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('app-home-opened'), channelId: z.string().min(1) }),
+  // Slack's Assistant "new chat" in a DM: the daemon starts a fresh session where that DM appends.
+  z.object({ kind: z.literal('assistant-thread-started'), channelId: z.string().min(1), threadTs: z.string().min(1) }),
   z.object({ kind: z.literal('open-config'), triggerId: z.string().min(1) }),
   z.object({
     kind: z.literal('open-config-for-thread'),

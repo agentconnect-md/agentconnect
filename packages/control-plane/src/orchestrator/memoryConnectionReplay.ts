@@ -30,7 +30,8 @@ export interface MemoryConnectionDaemonSyncDeps extends MemoryConnectionReplayDe
 
 export async function replayMemoryConnectionsTo(
   channel: RelayChannel,
-  deps: MemoryConnectionReplayDeps
+  deps: MemoryConnectionReplayDeps,
+  withhold: (connectionId: string) => void = () => {}
 ): Promise<void> {
   for (const connection of await deps.connections.listAll()) {
     try {
@@ -51,6 +52,7 @@ export async function replayMemoryConnectionsTo(
     } catch {
       // Error text can contain a secret-store/provider detail. Log only the opaque id.
       deps.log?.warn({ connectionId: connection.id }, 'memory connection replay failed — skipped')
+      withhold(connection.id)
     }
   }
 }

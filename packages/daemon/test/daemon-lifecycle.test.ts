@@ -11,7 +11,9 @@ import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
 import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
+import { ClusterSkillCoordinator } from '../src/skills/cluster-skill-coordinator.js'
 import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
+import { cwdWorkspaceIncarnation } from '../src/skills/workspace-incarnation.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { NO_RESPONSE_SENTINEL } from '../src/session/no-response.js'
 import { localWorkspaceFiles } from '../src/workspace/workspace-files.js'
@@ -622,6 +624,84 @@ describe('Daemon session lifecycle (#118)', () => {
       expect(fence).toHaveBeenCalledTimes(2)
       expect(prepare).toHaveBeenCalledOnce()
     } finally {
+      await daemon.stop()
+    }
+  })
+
+  it("installs a placed session's skills into its checkout and retires those at its session directory", async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      const agent = d.agents.get('bot-a')
+      d.runtimeCatalog.entries.claude = { ...d.runtimeCatalog.entries.claude, skillsAgentId: 'claude' }
+      const cwd = '/srv/executor/sessions/leaf/workspace'
+      const reported = 'workspace:reported'
+      const atCwd = cwdWorkspaceIncarnation(reported, cwd)
+      const root = (path: string) => ({
+        path,
+        sourceId: 'managed:a',
+        sourceKind: 'managed' as const,
+        digest: 'a'.repeat(64),
+        files: []
+      })
+      const clients = new Map<string | undefined, unknown>([
+        [undefined, { manifestLimits: { maxFiles: 1, maxTotalBytes: 1 } }],
+        [cwd, { manifestLimits: { maxFiles: 1, maxTotalBytes: 1 } }]
+      ])
+      d.executorPlane = {
+        placementOf: (key: string) =>
+          key === KEY ? { agentId: 'bot-a', sessionKey: KEY, subject: 'bot-a/leaf' } : undefined,
+        withEnvironment: (_subject: string, work: () => Promise<unknown>) => work(),
+        mountFor: () => '/srv/executor',
+        skillClientFor: (_subject: string, at?: string) => clients.get(at),
+        workspaceIncarnationFor: () => reported,
+        shimGenerationFor: () => 1,
+        planeFor: () => undefined,
+        launched: () => [],
+        releaseAgent: () => {},
+        stop: async () => {}
+      }
+      vi.spyOn(d.workspaces, 'prepareExecutorWorkspace').mockResolvedValue(cwd)
+      const exclude = vi.spyOn(d.workspaces, 'excludePlacedSessionSkills').mockResolvedValue(undefined)
+      vi.spyOn(d.duties, 'dutyForAgent').mockReturnValue({ groupId: 'group-a', term: '1' })
+      // An older daemon installed at the shim's root, the session directory; the checkout holds nothing yet.
+      const ledgers = new Map([[reported, { revision: 1, ledger: { roots: [root('.claude/skills/a')] } }]])
+      vi.spyOn(d.store, 'clusterSkillLedger').mockImplementation((async (_id: string, key: string) =>
+        ledgers.get(key)) as never)
+      let retirementFails = true
+      const reconcile = vi.spyOn(ClusterSkillCoordinator.prototype, 'reconcile').mockImplementation(async (input) => {
+        const at = input.authority.workspaceIncarnation
+        if (at === reported && retirementFails) {
+          retirementFails = false
+          throw new Error('shim busy')
+        }
+        const roots = at === atCwd ? [root('.claude/skills/a')] : []
+        ledgers.set(at, { revision: 2, ledger: { roots } })
+        return { roots }
+      })
+      const request = { sessionKey: KEY, isolation: 'session' }
+
+      // A failed retirement leaves the launch alone; the next preparation retries it.
+      expect(await d.runAgentWorkspacePreparation(agent, request)).toBe(cwd)
+      expect(reconcile.mock.calls.map(([input]) => [input.authority.workspaceIncarnation, input.client])).toEqual([
+        [atCwd, clients.get(cwd)],
+        [reported, clients.get(undefined)]
+      ])
+      expect(reconcile.mock.calls[1]![0].sources).toEqual([])
+      expect(exclude).toHaveBeenCalledWith(agent, cwd, ['.claude/skills/a', '.agentconnect/cluster-skill-state'])
+
+      reconcile.mockClear()
+      await d.runAgentWorkspacePreparation(agent, request)
+      expect(reconcile.mock.calls.map(([input]) => input.authority.workspaceIncarnation)).toEqual([atCwd, reported])
+      expect(ledgers.get(reported)?.ledger.roots).toEqual([])
+
+      // Nothing is left there, so later preparations ask nothing of the session directory.
+      reconcile.mockClear()
+      await d.runAgentWorkspacePreparation(agent, request)
+      expect(reconcile.mock.calls.map(([input]) => input.authority.workspaceIncarnation)).toEqual([atCwd])
+    } finally {
+      vi.restoreAllMocks()
       await daemon.stop()
     }
   })
@@ -1631,8 +1711,11 @@ describe('Daemon session lifecycle (#118)', () => {
       updateBlocks: vi.fn(async () => {})
     })
     const emitCronReport = vi.fn()
+    const syncCronReport = vi.fn(async () => 'acknowledged' as const)
     ;(daemon as any).cpClient = {
+      state: 'READY',
       emitCronReport,
+      syncCronReport,
       emitEventSession: vi.fn(),
       emitUsageReport: vi.fn(),
       stop: vi.fn(async () => {})
@@ -1669,7 +1752,13 @@ describe('Daemon session lifecycle (#118)', () => {
 
     blocked.release()
     await run
-    expect(emitCronReport.mock.calls[2]![0]).toMatchObject({ status: 'success', sessionId: outward })
+    // The close is the one report held until the CP acknowledges it.
+    await vi.waitFor(
+      () =>
+        expect(syncCronReport).toHaveBeenCalledWith(expect.objectContaining({ status: 'success', sessionId: outward })),
+      WAIT
+    )
+    expect(emitCronReport).toHaveBeenCalledTimes(2)
     await daemon.stop()
   })
 
@@ -3231,6 +3320,41 @@ describe('Daemon session retention GC (#485)', () => {
     expect(await (daemon as any).store.getSession('fresh-closed')).toBeDefined()
     expect(await (daemon as any).store.getSession('expired-prompting')).toBeDefined()
     expect(await (daemon as any).store.getSession('expired-gated')).toBeDefined()
+
+    await daemon.stop()
+  })
+
+  it('purges an expired Dream row without judging a directory, since its runner never prepares one', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
+    await daemon.start()
+    await sweepRetention(daemon)
+    // An agent that may own worktrees, so only the Dream rule keeps the row out of the directory judgement.
+    vi.spyOn((daemon as any).workspaces, 'mayOwnSessionWorktrees').mockReturnValue(true)
+    const judge = vi.spyOn(daemon as any, 'judgeSessionDirectories')
+    await (daemon as any).store.upsertSession({
+      key: 'dream:memory:drm-1:bot-a',
+      agentId: 'bot-a',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'drm-1',
+      acpSessionId: 'acp-dream',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 0
+    })
+
+    clock.advance(8 * 24 * 3_600_000)
+    await vi.waitFor(
+      async () => expect(await (daemon as any).store.getSession('dream:memory:drm-1:bot-a')).toBeUndefined(),
+      WAIT
+    )
+    expect(judge).not.toHaveBeenCalled()
 
     await daemon.stop()
   })

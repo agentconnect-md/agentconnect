@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFile } from 'node:child_process'
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createServer, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { INSTALLATION_GIT_CREDENTIAL_WRAPPER } from '../src/shim/git-credential-wrapper.js'
 
 /**
  * REAL git, asking the in-sandbox helper for a credential, over a real socket.
@@ -234,5 +235,28 @@ describe('the credential helper the runtime image ships', () => {
     expect(result.stdout).not.toContain('ghs_leak')
     // Nothing was asked of the daemon at all: a github.com token must not be fetched for another host.
     expect(server.seen).toEqual([])
+  }, 60_000)
+})
+
+describe('the credential helper a daemon installation ships', () => {
+  // The host and srt strategies hand git `<helperRoot>/bin/git-credential` with an installation's `dist` as the root.
+  it('runs the helper bundle beside it with the arguments git passes', async () => {
+    const installation = scratchDir()
+    mkdirSync(join(installation, 'bin'))
+    mkdirSync(join(installation, 'shim'))
+    writeFileSync(join(installation, 'bin', 'git-credential'), INSTALLATION_GIT_CREDENTIAL_WRAPPER, { mode: 0o755 })
+    // A stand-in for the built helper bundle that echoes its argv back as the password.
+    writeFileSync(
+      join(installation, 'shim', 'git-credential.js'),
+      "process.stdout.write(`username=x-access-token\\npassword=${process.argv.slice(2).join('+')}\\n`)\n"
+    )
+    const result = await gitCredentialFill({
+      helper: join(installation, 'bin', 'git-credential'),
+      socketPath: join(installation, 'unused.sock'),
+      agentId: 'agent-a',
+      request: 'protocol=https\nhost=github.com\npath=acme/private.git\n\n'
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('password=agent-a+get')
   }, 60_000)
 })

@@ -7,6 +7,7 @@ import type { MemoryProvider } from '../memory/provider.js'
 // The `CpClientDeps` literal the daemon hands `CpClient`, hoisted out of `Daemon.startCpClient`.
 // Construction order is load-bearing (the workspace resolvers feed the file, git and skills seams),
 // so `buildCpClientDeps` is the single wiring site and keeps it verbatim.
+import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -52,6 +53,7 @@ import type { LoadedAgent } from '../agents/load-agents.js'
 import type { LocalStore, SessionRecord } from '../store/local-store.js'
 import type { ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 import type { SessionMetadataOutbox } from '../store/session-metadata-outbox.js'
+import type { CronReportOutbox } from '../store/cron-report-outbox.js'
 import type { WebchatMcpRevocations } from '../webchat/mcp-revocations.js'
 import type { WorkspaceManager } from '../workspace/workspace-manager.js'
 import type { K8sRuntimePlane } from '../k8s/runtime-plane.js'
@@ -65,6 +67,9 @@ import type { MemoryHomePorts } from '../memory/home.js'
 import type { DreamRunner } from '../dream/runner.js'
 import type { ExecutorFacet } from '../execution/executor-facet.js'
 import type { CodeHostNoteProjector } from '../gitlab/note-projection.js'
+
+/** One per daemon process, so the CP can tell a restarted daemon from the same process reconnecting. */
+const PROCESS_BOOT_ID = randomUUID()
 
 /** The credentials, identity and logging this connection is built from, plus its single-point writes. */
 export interface CpClientConnectionHost {
@@ -105,6 +110,8 @@ export interface CpClientRegistrationHost {
   /** The machine's effective strategy table, and the retiring `sandbox.backend` the CP migrates `runInSandbox` from (session-executors.md §5). */
   ownStrategies(): ExecutorStrategyTable
   sandboxBackend(): string
+  /** The id of the shared PostgreSQL store this daemon writes to; unset on a private local store. */
+  contentStore(): string | undefined
   /** The executor facet (session-executors.md §6); while it is dark it reports nothing, and then nothing new is sent. */
   executorFacet(): ExecutorFacet | undefined
   admittedRuntimeIds(): string[]
@@ -134,6 +141,7 @@ export interface CpClientReadyHost {
   /** Re-assert every live approval wait: the CP cleared them when this daemon dropped (slack-approval-dm.md §7). */
   replayApprovalActivity(): void
   sessionMetadataOutbox(): SessionMetadataOutbox
+  cronReportOutbox(): CronReportOutbox
   webchatMcpRevocations(): WebchatMcpRevocations
   drainSessionPurges(): Promise<void>
   effectiveAgents(): LoadedAgent[]
@@ -267,11 +275,13 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // The deployment side sets this from the pod-template-hash label; the ledger's rollout barrier
     // lets only the newest live generation of the set claim vacated groups. Unset locally.
     generation: process.env[POD_TEMPLATE_HASH_ENV]?.trim() || undefined,
+    bootId: PROCESS_BOOT_ID,
     heartbeatDefaultMs: host.heartbeatDefaultMs(),
     maxAgents: host.maxAgents(),
     capabilities: () => {
       const sandboxUnavailable = host.sandboxUnavailable()
       const executor = host.executorFacet()?.facts()
+      const contentStore = host.contentStore()
       return {
         platforms: host.registrationPlatforms(),
         // Report the human-facing tool name (e.g. "Claude Agent"), not the
@@ -283,7 +293,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         ...(sandboxUnavailable ? { sandboxUnavailable } : {}),
         ...(executor ? { executor } : {}),
         strategies: host.ownStrategies(),
-        sandboxBackend: host.sandboxBackend()
+        sandboxBackend: host.sandboxBackend(),
+        ...(contentStore ? { contentStore } : {})
       }
     },
     // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on
@@ -312,8 +323,13 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // A READY connection is a reachable `control-plane` memory home: distill the turns that waited for it.
       host.wakeMemoryOutbox()
       host.wakeMemoryHomeMigrations()
-      await host.replayHookTerminalReports()
-      await host.replayChannelSnapshots()
+      // Each replay fails on its own: one that throws must not skip the drains after it.
+      await host
+        .replayHookTerminalReports()
+        .catch((err) => host.log().warn(`cp: hook report replay failed (${(err as Error).message})`))
+      await host
+        .replayChannelSnapshots()
+        .catch((err) => host.log().warn(`cp: channel snapshot replay failed (${(err as Error).message})`))
       // ...and every explicit credential revocation still unacknowledged: the platform never redelivers one.
       void host.replayCredentialRevocations()
       // Only snapshots written to the durable outbox by this build are
@@ -335,6 +351,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // was unreachable (or before it advertised the feature) left the deleted
       // sessions' metadata rows unmarked; this is the only side that still knows.
       void host.drainSessionPurges()
+      // ...and every terminal cron outcome the CP has not ACKed, such as a completion that raced the drop.
+      void host.cronReportOutbox().drainReports()
       // ...and each CP cron's stored last-run stamp — fires while the CP was
       // unreachable would otherwise never land (latest-wins upsert, so
       // re-asserting an already-known stamp is a no-op).

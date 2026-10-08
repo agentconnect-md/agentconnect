@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { Socket } from 'node:net'
 import { ClientTransport, systemClock, type Clock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect.md/protocol'
+import type { PrivateRuntimeState } from '../runtimes/private-runtime-state.js'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { clusterMetrics } from '../metrics/cluster-metrics.js'
@@ -16,7 +17,7 @@ import { ShimFileSink } from '../shim/channels.js'
 import type { ShimTransport } from '../shim/client.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
-import { ClusterSkillClient } from '../shim/skill-client.js'
+import { ClusterSkillClient, cwdSkillRequester } from '../shim/skill-client.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import { shimPaths } from '../shim/sandbox-paths.js'
 import type { ShimSession } from '../shim/session.js'
@@ -289,21 +290,31 @@ export class ExecutorPlane implements ExecutionPlane {
     return leaf === undefined || mount === undefined ? undefined : sessionHomeIn(sessionDirIn(mount, leaf))
   }
 
-  /** The skills seam over one session's shim, as the pool's is over a pod's; undefined until its channel is bound. */
-  skillClientFor(subject: string): ClusterSkillClient | undefined {
+  /** The skills seam over one session's shim, installing into the runtime's cwd (its checkout) when one is named; undefined until its channel is bound. */
+  skillClientFor(subject: string, cwd?: string): ClusterSkillClient | undefined {
     const session = this.boundSession(subject)
     if (!session?.hasCapability('skills')) return undefined
     return new ClusterSkillClient(
-      session,
+      // The shim's own root is the session directory, above the checkout the runtime scans for project skills.
+      cwd === undefined ? session : cwdSkillRequester(session, cwd),
       session.hasCapability('skills-wide'),
       false,
-      session.hasCapability('skills-receipts')
+      session.hasCapability('skills-receipts'),
+      // Executors keep daemon acquisition in P2 (source-cache.md §13), whatever their shim advertises.
+      false
     )
   }
 
-  /** The environment incarnation a skill receipt is fenced on: the launch, which is one environment life. */
+  /** The incarnation a skill receipt is fenced on: the session directory the executor reported, which outlives a launch (an idle close, a restart), else the launch for an executor that reports none. */
   workspaceIncarnationFor(subject: string): string | undefined {
-    return this.registry.currentLaunch(subject)?.sandboxUid
+    const launch = this.registry.currentLaunch(subject)
+    return launch?.ready?.workspaceIncarnation ?? launch?.sandboxUid
+  }
+
+  /** The session `.codex` split its executor reported (prepareExecutorLaunch), for the HOME the holder launches in; undefined for an executor that reports none, or classified another HOME. */
+  codexStateFor(subject: SandboxSubject, home: string): PrivateRuntimeState | undefined {
+    const reported = this.registry.currentLaunch(subject)?.ready?.codexState
+    return reported?.home === home ? { readOnly: reported.readOnly, secret: reported.secret } : undefined
   }
 
   shimGenerationFor(subject: string): number | undefined {

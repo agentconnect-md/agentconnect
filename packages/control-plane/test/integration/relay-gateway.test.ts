@@ -874,7 +874,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     daemonWs.close()
   })
 
-  it('keeps ordinary webchat but omits remote MCP when the token owner loses current membership', async () => {
+  it('refuses the token, and so grants no remote MCP, once its owner loses current membership', async () => {
     const { app, base } = await start({
       PUBLIC_RELAY_URL: RELAY_URL
     })
@@ -887,9 +887,29 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
 
     const verified = await verifyWebchat(base, token.token, 'pod-membership-revoked')
 
-    expect(verified.result).toMatchObject({ ok: true, agentId: AGENT, daemonId: DAEMON })
-    expect(verified.result.remoteMcp).toBeUndefined()
+    expect(verified.result).toEqual({ ok: false, reason: 'access revoked' })
     expect(await prisma.webchatMcpDelegation.count()).toBe(0)
+    verified.ws.close()
+    daemonWs.close()
+  })
+
+  it('refuses the token once its agent is restricted to other members', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
+    const other = randomUUID()
+    await prisma.user.create({ data: { id: other, email: `${other}@example.test` } })
+    await prisma.membership.create({ data: { orgId: DEFAULT_ORG_ID, userId: other, role: 'collaborator' } })
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
+      data: { role: 'collaborator' }
+    })
+    await prisma.agent.update({ where: { id: AGENT }, data: { visibility: 'restricted', sharedWith: [other] } })
+
+    const verified = await verifyWebchat(base, token.token, 'pod-agent-restricted')
+
+    expect(verified.result).toEqual({ ok: false, reason: 'access revoked' })
     verified.ws.close()
     daemonWs.close()
   })

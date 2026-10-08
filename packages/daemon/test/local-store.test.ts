@@ -826,6 +826,87 @@ describe('LocalStore', () => {
     await s.close()
   })
 
+  it('skips, on request, exactly the dream sources the capture gate excludes, before the limit', async () => {
+    const s = await store()
+    const key = (thread: string) => sessionKey('slack', 'C1', thread, 'bot-a')
+    // Newest first: the excluded sessions are the newest, so a filter after the limit would return nothing.
+    const threads = ['cp-org', 'open', 'local-private', 'cp-private', 'no-gate', 'other-agent-gate']
+    for (const [i, thread] of threads.entries()) {
+      await s.upsertSession({
+        key: key(thread),
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        acpSessionId: `acp-${thread}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: i + 1
+      })
+    }
+    await s.setLocalCaptureGate('bot-a', key('open'), false)
+    await s.setLocalCaptureGate('bot-a', key('local-private'), true)
+    await s.setLocalCaptureGate('bot-a', key('cp-private'), false)
+    expect(await s.applyCpCaptureGate('bot-a', key('cp-private'), true, 1)).toBe('applied')
+    await s.setLocalCaptureGate('bot-a', key('cp-org'), true)
+    expect(await s.applyCpCaptureGate('bot-a', key('cp-org'), false, 1)).toBe('applied')
+    // A gate row keyed to another agent never opens this agent's session.
+    await s.setLocalCaptureGate('bot-b', key('other-agent-gate'), false)
+
+    expect((await s.dreamSessionSources('bot-a', 20)).map((r) => r.thread)).toEqual([...threads].reverse())
+    const open: string[] = []
+    for (const thread of [...threads].reverse())
+      if (!(await s.isCaptureExcluded('bot-a', key(thread)))) open.push(thread)
+    expect(open).toEqual(['open', 'cp-org'])
+    expect((await s.dreamSessionSources('bot-a', 20, { skipPrivate: true })).map((r) => r.thread)).toEqual(open)
+    expect((await s.dreamSessionSources('bot-a', 1, { skipPrivate: true })).map((r) => r.thread)).toEqual(['open'])
+    await s.close()
+  })
+
+  it('skips, on request, dream sources in a DM, a group DM, or a place not known to be open', async () => {
+    const s = await store()
+    const sessions = [
+      { platform: 'slack', channel: 'C-public', thread: 'shared' },
+      { platform: 'slack', channel: 'G-group', thread: 'group-dm' },
+      { platform: 'slack', channel: 'C-private', thread: 'private-channel' },
+      // Nothing known yet, as right after a restart.
+      { platform: 'slack', channel: 'C-unknown', thread: 'undetermined' },
+      // Not a place at all.
+      { platform: 'github', channel: 'example-org/example-repo', thread: 'review' },
+      // A webchat conversation its owner made org-visible.
+      { platform: 'webchat', channel: 'conv-1', thread: 'webchat' }
+    ]
+    for (const [i, { platform, channel, thread }] of sessions.entries()) {
+      const key = sessionKey(platform, channel, thread, 'bot-a')
+      await s.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform,
+        channel,
+        thread,
+        acpSessionId: `acp-${thread}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: i + 1
+      })
+      await s.setLocalCaptureGate('bot-a', key, false)
+    }
+    await s.setSessionClassification(sessionKey('slack', 'G-group', 'group-dm', 'bot-a'), {
+      conversationKind: 'group_dm'
+    })
+    const threads = async (opts?: Parameters<LocalStore['dreamSessionSources']>[2]) =>
+      (await s.dreamSessionSources('bot-a', 20, opts)).map((r) => r.thread)
+    const everything = ['webchat', 'review', 'undetermined', 'private-channel', 'group-dm', 'shared']
+    expect(await threads()).toEqual(everything)
+    expect(await threads({ skipPrivate: true })).toEqual(everything.filter((t) => t !== 'group-dm'))
+    const places = { platforms: ['slack', 'webchat'], open: ['C-public', 'C-public'] }
+    expect(await threads({ skipPrivate: true, places })).toEqual(['review', 'shared'])
+    expect(await threads({ skipPrivate: true, places: { ...places, open: [] } })).toEqual(['review'])
+    // Places ride only with skipPrivate.
+    expect(await threads({ places })).toEqual(everything)
+    await s.close()
+  })
+
   it('returns transcript entries strictly after a marker, ordered by ts', async () => {
     const s = await store()
     await s.appendTranscript({ channel: 'C1', thread: '100.1', ts: '100.2', sender: 'U1', kind: 'text', text: 'first' })
@@ -3820,7 +3901,7 @@ describe.skipIf(pg)('decision table migrations', () => {
   }
 
   it('creates the decision tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(34)
+    expect(SCHEMA_VERSION).toBe(36)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual([
@@ -3847,6 +3928,24 @@ describe.skipIf(pg)('decision table migrations', () => {
       'decision_release',
       'decision_verdict'
     ])
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+
+  it('adds the Source Cache tables to a v34 store', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v34-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP TABLE source_cache_object; DROP TABLE source_cache_usage; PRAGMA user_version = 34')
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    expect(await upgraded.sourceCacheUsage('org-a', 1)).toEqual({ committedBytes: 0, pendingBytes: 0 })
+    await upgraded.close()
+    const check = new DatabaseSync(path)
+    const names = check
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'source_cache_%' ORDER BY name")
+      .all() as { name: string }[]
+    check.close()
+    expect(names.map((row) => row.name)).toEqual(['source_cache_object', 'source_cache_usage'])
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
@@ -4156,5 +4255,40 @@ describe.skipIf(pg)('the v23 → v24 channel-record migration', () => {
     const check = new DatabaseSync(path)
     expect((check.prepare('SELECT MAX(seq) AS m FROM transcript').get() as { m: number }).m).toBeGreaterThan(maxSeq)
     check.close()
+  })
+})
+
+describe('the cron report outbox', () => {
+  const outcome = (agentId: string, firedAt: string) => ({
+    cronId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    agentId,
+    firedAt,
+    status: 'success' as const
+  })
+
+  it('holds one row per run, oldest first, until the run is acknowledged', async () => {
+    const s = await store()
+    const first = outcome('agent-a', '2026-09-30T09:00:00.000Z')
+    const second = outcome('agent-a', '2026-09-30T10:00:00.000Z')
+    await s.queueCronReport(first, 1_000)
+    await s.queueCronReport(second, 2_000)
+    await s.queueCronReport({ ...first, durationMs: 5 }, 3_000)
+    const rows = await s.pendingCronReports(10, [])
+    expect(rows.map((row) => row.firedAt)).toEqual([first.firedAt, second.firedAt])
+    expect(rows[0]).toMatchObject({ agentId: 'agent-a', cronId: first.cronId })
+    expect(JSON.parse(rows[0]!.report)).toEqual({ ...first, durationMs: 5 })
+
+    await s.acknowledgeCronReport('agent-a', first.cronId, first.firedAt)
+    expect((await s.pendingCronReports(10, [])).map((row) => row.firedAt)).toEqual([second.firedAt])
+    await s.close()
+  })
+
+  it('answers a pool member only for the agents it serves', async () => {
+    const [a, b] = await sharedMembers('member-a', 'member-b')
+    await a.queueCronReport(outcome('agent-a', '2026-09-30T09:00:00.000Z'), 1_000)
+    await a.queueCronReport(outcome('agent-b', '2026-09-30T09:00:00.000Z'), 1_000)
+    expect((await b.pendingCronReports(10, ['agent-b'])).map((row) => row.agentId)).toEqual(['agent-b'])
+    expect(await b.pendingCronReports(10, [])).toEqual([])
+    await a.close()
   })
 })

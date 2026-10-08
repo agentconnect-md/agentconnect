@@ -114,3 +114,50 @@ describe('MemoryConnectionBindingTable — purpose-separated per-connection gran
     expect(table.size()).toBe(0)
   })
 })
+
+describe('MemoryConnectionBindingTable — reconnect snapshot', () => {
+  const SNAP = '33333333-3333-4333-8333-333333333333'
+  const DELETED = '22222222-2222-4222-8222-222222222222'
+  const bind = (table: MemoryConnectionBindingTable, connectionId: string, revision = 1) =>
+    table.assign({
+      connectionId,
+      revision,
+      upstreamUrl: 'https://plugin.example/mcp',
+      headers: [],
+      grantKeyHashes: [hash('memory-grant')]
+    })
+
+  it('keeps every binding serving until the replay ends, then drops the ones it no longer names', () => {
+    const table = new MemoryConnectionBindingTable()
+    bind(table, CONNECTION_ID, 3)
+    bind(table, DELETED)
+    table.beginSnapshot(SNAP)
+    expect(table.resolve(DELETED, 'memory-grant')).not.toBeNull()
+    // The replay re-sends the unchanged revision: ignored as an update, still counted as current.
+    bind(table, CONNECTION_ID, 3)
+    table.endSnapshot(SNAP, [])
+    expect(table.resolve(CONNECTION_ID, 'memory-grant')).not.toBeNull()
+    expect(table.resolve(DELETED, 'memory-grant')).toBeNull()
+  })
+
+  it('keeps a deletion that landed during the replay, so a delayed older assign cannot restore it', async () => {
+    const table = new MemoryConnectionBindingTable()
+    bind(table, DELETED, 2)
+    table.beginSnapshot(SNAP)
+    table.unassign(DELETED, 3)
+    table.endSnapshot(SNAP, [])
+    bind(table, DELETED, 2)
+    expect(table.resolve(DELETED, 'memory-grant')).toBeNull()
+  })
+
+  it('keeps the revision of a binding it prunes, so only a newer assign re-enables it', async () => {
+    const table = new MemoryConnectionBindingTable()
+    bind(table, DELETED, 2)
+    table.beginSnapshot(SNAP)
+    table.endSnapshot(SNAP, [])
+    bind(table, DELETED, 2)
+    expect(table.resolve(DELETED, 'memory-grant')).toBeNull()
+    bind(table, DELETED, 3)
+    expect(table.resolve(DELETED, 'memory-grant')).not.toBeNull()
+  })
+})

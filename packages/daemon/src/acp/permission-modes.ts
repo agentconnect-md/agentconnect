@@ -1,10 +1,8 @@
-// Labels for the runtime-owned ACP `mode` values shown in session-control surfaces
-// (Slack status modal, Telegram/Discord select cards, `/permission` text lists).
-// Copied verbatim from codex-acp's own AgentMode names so these surfaces read the same
-// as the console, which renders the names the runtime reports in its catalog.
+// Codex ACP mode names shown in platform controls when the runtime reports only IDs.
 const CODEX_MODE_LABELS: Record<string, string> = {
-  'read-only': 'Ask for approval', // always asks before editing external files or using the network
-  agent: 'Approve for me', // only asks for actions the runtime's own reviewer flags as unsafe
+  'read-only': 'Read-only',
+  'workspace-write': 'Workspace access',
+  agent: 'Auto review',
   'agent-full-access': 'Full access'
 }
 

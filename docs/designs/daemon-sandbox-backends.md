@@ -661,6 +661,23 @@ workspace configuration. SRT keeps native authentication. Amp ACP 0.9.0 and the
 native CLI were checked with synthetic credentials; an authenticated model/tool
 turn remains a release acceptance task.
 
+Kimi Code projects nonempty literal `api_key` values from the active
+`.kimi-code/config.toml`, honoring `KIMI_CODE_HOME`. Only supported model
+providers with explicit HTTPS `base_url` values authorize injection; unknown
+protocols, OAuth/registry-backed providers, unresolved routes and service-only
+keys retain placeholders without injection. Repeated values share a binding;
+matching copies in seeded files are replaced before guest access. Environment-only
+credentials, `api_key_env`, provider `env` bags and arbitrary header credentials
+are outside this path. This is static API-key protection, not OAuth shielding.
+The native OAuth credentials directory remains shared and writable for refresh.
+
+Retained plaintext API configuration or changed credential identities requires a
+new session; existing data is not migrated or deleted. Guest settings survive
+resume, but cannot authorize new destinations. Native Kimi Code 2.1.1 accepted
+file keys and placeholders through ACP and sent them as Bearer headers to a
+synthetic local endpoint. Real provider TLS/model/tool turns inside a VM remain
+unverified.
+
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
 existing private logins are preserved. Without a DeepSeek key, normal seeding is
@@ -877,8 +894,8 @@ The image workflow creates this alias even when it reuses an older component
 image. The pool continues to use the separate `runtime-sandbox` image. Both targets
 share the same helper payload over their respective application layers. Additional
 self-hosted runtimes belong in the full application stage. The pool provides Claude Code,
-Codex, and DeepSeek Harness. The full image additionally installs Antigravity,
-Cline, Devin, GitHub Copilot, Grok Build, Oh My Pi, OpenCode, pi, Qwen Code,
+Codex, DeepSeek Harness, and OpenCode. The full image additionally installs Antigravity,
+Cline, Devin, GitHub Copilot, Grok Build, Oh My Pi, pi, Qwen Code,
 Qoder CLI, and Qoder CN CLI. The `qoder` compatibility ID resolves to `qoder-cli`
 before host discovery and image projection. Both IDs share one native launch
 definition and one probe state; reported `aliasOf` metadata lets the Console show
@@ -1144,10 +1161,16 @@ network listener.
   second shim over a session directory an earlier life's shim still runs in.
 - **Helpers from the daemon's installation.** `AC_SHIM_HELPER_ROOT` is the
   directory that holds `shim/index.js`, which resolves the MCP bridge, the
-  merge-when-ready watcher and the `gh` token entry from the daemon's own bundle.
-  The git-credential wrapper, the `gh` wrapper directory and the DeepSeek preset
-  have no counterpart in an installation; the launcher reports them in
-  `missingHelpers` rather than naming a path that is not there.
+  merge-when-ready watcher, the `gh` token entry and the git-credential wrapper
+  (`bin/git-credential`, emitted by the build beside `shim/`) from the daemon's own
+  bundle. Git runs a sandbox helper through `sh`, because npm ships that wrapper
+  without its executable bit. The `gh` and `glab` wrappers cannot ship that way, since
+  a runtime finds them by PATH lookup: the launcher writes them per launch into
+  `<runtimeRoot>/pathbin` (`runtimeWrapperDir`), each only when its token entry exists, fetching tokens through the helper
+  root's `shim/gh-token.js` and `shim/glab-token.js` over the gitcred tunnel, and the
+  ACP runner puts that directory first on PATH when the image's `pathbin` is absent.
+  The image's `pathbin` and the DeepSeek preset have no counterpart in an installation;
+  the launcher reports them in `missingHelpers` rather than naming a path that is not there.
 
 The launcher returns the socket path, the runtime root, the helper root, the
 workspace root, the identity token, the missing helpers, an exit promise and

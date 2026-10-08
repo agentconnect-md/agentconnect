@@ -70,6 +70,11 @@ export const RcDeploymentConfig = z.object({
   revision: z.number().int().nonnegative(),
   githubWebhookSecret: z.string().min(1).optional(),
   googleChatAnchor: RcGoogleChatAnchor.optional(),
+  // Console links in provider-owned onboarding use the configured origin, without an organization path.
+  webAppUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional(),
   // The relay pool's public origin (the CP's PUBLIC_RELAY_URL): a provider that signs for its callback URL is checked against it.
   publicRelayUrl: z
     .string()
@@ -923,7 +928,10 @@ export type RcConversationDefault = z.infer<typeof RcConversationDefault>
 export const RcRoutedConversation = z.object({
   channel: z.string().min(1),
   decisionId: z.string().min(1).max(128),
-  evaluationDaemonId: z.string().uuid()
+  evaluationDaemonId: z.string().uuid(),
+  // The agents its routing can select. Saving the routing needs edit rights on each, so it enables a gated (§14)
+  // one in this conversation as a channel-scoped route does; absent ⇒ an older CP, only routes enable one
+  targetAgentIds: z.array(z.string().uuid()).max(64).optional()
 })
 export type RcRoutedConversation = z.infer<typeof RcRoutedConversation>
 
@@ -936,6 +944,10 @@ export type RcRoutedConversation = z.infer<typeof RcRoutedConversation>
 // relay expects). NEVER log.
 export const RcBotAssign = z.object({
   botId: z.string().uuid(),
+  // Console organization path for provider-owned management links; absent from older CPs.
+  orgSlug: z.string().min(1).optional(),
+  // Bindings outlive daemon availability; an empty array means the installation is disconnected.
+  installedAgentIds: z.array(z.string().uuid()).optional(),
   // S1a open reader (route.ts Platform policy). The CP only emits ids the
   // relay build supports; the relay's assign handler already refuses an
   // unsupported platform gracefully ("not yet supported"), never the socket.
@@ -1311,6 +1323,28 @@ export const RcMemoryConnectionUnassign = z.object({
 })
 export type RcMemoryConnectionUnassign = z.infer<typeof RcMemoryConnectionUnassign>
 
+/** Both ends frame a full reconnect replay as one snapshot, so the relay prunes what the replay no longer names. */
+export const RELAY_PROJECTION_SNAPSHOT_V1_FEATURE = 'relay-projection-snapshot-v1'
+
+/** At most this many ids ride one `rc/snapshot-end`; a CP that failed on more sends no end, and the relay keeps its copy. */
+export const RC_SNAPSHOT_MAX_WITHHELD = 1_000
+
+/** The relay projections a CP replays in full after the relay (re)registers. */
+export const RcSnapshotKind = z.enum(['mcp', 'hook', 'memory'])
+export type RcSnapshotKind = z.infer<typeof RcSnapshotKind>
+
+/** C→R EVT: a full replay of one projection starts; the relay keeps serving its current copy meanwhile. */
+export const RcSnapshotBegin = z.object({ kind: RcSnapshotKind, snapshotId: z.string().uuid() })
+export type RcSnapshotBegin = z.infer<typeof RcSnapshotBegin>
+
+/** C→R EVT: the replay is complete; the relay drops each entry it neither received nor finds `withheld` (items the CP failed to produce). */
+export const RcSnapshotEnd = z.object({
+  kind: RcSnapshotKind,
+  snapshotId: z.string().uuid(),
+  withheld: z.array(z.string().uuid()).max(RC_SNAPSHOT_MAX_WITHHELD)
+})
+export type RcSnapshotEnd = z.infer<typeof RcSnapshotEnd>
+
 // ── the wire union ───────────────────────────────────────────────────────────
 
 /** `type` string → payload schema for the relay↔CP wire. */
@@ -1363,6 +1397,8 @@ export const RELAY_CP_SCHEMAS = {
   'rc/mcp-unassign': RcMcpUnassign,
   'rc/memoryconnection-assign': RcMemoryConnectionAssign,
   'rc/memoryconnection-unassign': RcMemoryConnectionUnassign,
+  'rc/snapshot-begin': RcSnapshotBegin,
+  'rc/snapshot-end': RcSnapshotEnd,
   error: ErrorFrame
 } as const
 
@@ -1422,6 +1458,8 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/mcp-unassign', RELAY_CP_SCHEMAS['rc/mcp-unassign']),
   frameSchema('rc/memoryconnection-assign', RELAY_CP_SCHEMAS['rc/memoryconnection-assign']),
   frameSchema('rc/memoryconnection-unassign', RELAY_CP_SCHEMAS['rc/memoryconnection-unassign']),
+  frameSchema('rc/snapshot-begin', RELAY_CP_SCHEMAS['rc/snapshot-begin']),
+  frameSchema('rc/snapshot-end', RELAY_CP_SCHEMAS['rc/snapshot-end']),
   frameSchema('error', RELAY_CP_SCHEMAS['error'])
 ])
 export type RelayCpFrame = z.infer<typeof RelayCpFrame>

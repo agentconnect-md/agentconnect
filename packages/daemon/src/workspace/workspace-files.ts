@@ -30,6 +30,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
+import type { FileHandle } from 'node:fs/promises'
 import * as path from 'node:path'
 import type {
   WorkspaceListReq,
@@ -397,8 +398,8 @@ export const localWorkspaceFiles: WorkspaceFiles = {
     const mtime = opened.mtime.toISOString()
     try {
       if (req.encoding === 'base64') {
-        const head = { agentId: req.agentId, path: req.path, exists: true, type: 'file' as const, size, mtime }
-        return { ...head, ...rawWorkspaceRead(await readWorkspaceSlice(fh, req, size), req, size) }
+        const bytes = byteSliceWorkspaceRead(await readWorkspaceSlice(fh, req, size), req, size)
+        return { agentId: req.agentId, path: req.path, exists: true, type: 'file' as const, size, mtime, ...bytes }
       }
       // Binary detection: NUL byte anywhere in the first 8 KiB ⇒ no content.
       const sniffLen = Math.min(SNIFF_BYTES, size)
@@ -418,10 +419,7 @@ export const localWorkspaceFiles: WorkspaceFiles = {
         }
       }
 
-      // Read up to the requested byte count, then shrink so the JSON-escaped
-      // reply fits the frame budget and ends on a UTF-8 boundary. `limit` is a
-      // ceiling; the slice may be shorter. `nextOffset` (not a client-side
-      // recount of `content`) is the authoritative next offset.
+      // Read up to `limit`, then shrink to the frame budget and a UTF-8 boundary; `nextOffset` is authoritative.
       const slice = await readWorkspaceSlice(fh, req, size)
 
       return {
@@ -636,26 +634,26 @@ export function sliceWorkspaceRead(
   return { content: fitted.content, offset: req.offset, nextOffset, truncated: nextOffset < size }
 }
 
-/** Up to `req.limit` bytes from `req.offset`; shared by the text and raw reads so both page the same way. */
+/** Up to `limit` bytes from `offset`, fewer at end of file; both read implementations slice through here. */
 export async function readWorkspaceSlice(
-  fh: { read(buf: Buffer, off: number, len: number, pos: number): Promise<{ bytesRead: number }> },
+  file: Pick<FileHandle, 'read'>,
   req: { offset: number; limit: number },
   size: number
 ): Promise<Buffer> {
   const want = Math.min(req.limit, Math.max(0, size - req.offset))
   if (want === 0) return Buffer.alloc(0)
   const buf = Buffer.alloc(want)
-  const { bytesRead } = await fh.read(buf, 0, want, req.offset)
+  const { bytesRead } = await file.read(buf, 0, want, req.offset)
   return buf.subarray(0, bytesRead)
 }
 
-/** A raw slice as base64: 64 KiB encodes to ~85 KiB, well inside the frame budget, so no shrinking is needed. */
-export function rawWorkspaceRead(
+/** A download's slice: raw bytes as base64, which needs no UTF-8 cut and fits the frame at the 64 KiB limit. */
+export function byteSliceWorkspaceRead(
   slice: Buffer,
   req: { offset: number },
   size: number
 ): { encoding: 'base64'; content: string; offset: number; nextOffset: number; truncated: boolean } {
-  const nextOffset = req.offset + slice.length
+  const nextOffset = req.offset + slice.byteLength
   return {
     encoding: 'base64',
     content: slice.toString('base64'),

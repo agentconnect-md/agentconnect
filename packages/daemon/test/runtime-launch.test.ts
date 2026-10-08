@@ -217,13 +217,9 @@ describe('prepareRuntimeLaunch', () => {
       ])
     )
     expect(launch.toolSandbox?.protectedCredentialRoots).toEqual(
-      expect.arrayContaining([
-        canonicalIdentityToken,
-        canonicalAwsWebIdentityToken,
-        privateClaudeConfig,
-        privateClaudeGlobal
-      ])
+      expect.arrayContaining([canonicalIdentityToken, canonicalAwsWebIdentityToken, privateClaudeGlobal])
     )
+    expect(launch.toolSandbox?.readOnlyStateRoots).toEqual([privateClaudeConfig])
   })
 
   it('drops host Anthropic profile auth instead of deriving outer exceptions from its JSON', () => {
@@ -689,13 +685,17 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.sandbox!.writable).toContain(home)
     expect(policy.filesystem.allowWrite).toContain(home)
     expect(policy.filesystem.allowWrite).toContain(realpathSync(join(hostCodex, 'auth.json')))
-    // Runtime-native protected roots follow: the session .codex is what the inner tool sandbox is denied.
-    expect(launch.toolSandbox!.protectedCredentialRoots).toContain(join(home, '.codex'))
+    // Runtime-native roots follow: the session .codex is read-only to the inner tool sandbox, its credential denied.
+    expect(launch.toolSandbox!.readOnlyStateRoots).toContain(join(home, '.codex'))
+    expect(launch.toolSandbox!.protectedCredentialRoots).toContain(realpathSync(join(hostCodex, 'auth.json')))
+    expect(launch.toolSandbox!.protectedCredentialRoots).not.toContain(join(home, '.codex', 'auth.json'))
     const profile = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
     const tables = profile.configOverrides.filter((value) => value.includes('.filesystem='))
     expect(tables).toHaveLength(3)
     for (const table of tables) {
-      expect(table).toContain(`"${join(home, '.codex')}" = "deny"`)
+      expect(table).toContain(`"${realpathSync(join(hostCodex, 'auth.json'))}" = "deny"`)
+      expect(table).not.toContain(`"${join(home, '.codex', 'auth.json')}"`)
+      expect(table).not.toContain(`"${join(home, '.codex')}" = "deny"`)
       expect(table).not.toContain(agentHome)
     }
     // The inner sandbox pins writes to the cwd, and HOME is its SIBLING: without this the package caches §11 puts here are unwritable.
@@ -729,7 +729,7 @@ describe('prepareRuntimeLaunch', () => {
     const home = join(realpathSync(sessionDir), 'home')
     const table = agentFilesystem(launch.env)
     expect(table).toContain(`"${home}" = "write"`)
-    expect(table).toContain(`"${join(home, '.codex')}" = "deny"`)
+    expect(table).toContain(`"${join(home, '.codex')}" = "read"`)
     // The link target is the ACP parent's own write capability; the model's tools are denied it directly too.
     expect(table).toContain(`"${realpathSync(join(hostCodex, 'auth.json'))}" = "deny"`)
     expect(launch.toolSandbox!.protectedCredentialRoots).toContain(realpathSync(join(hostCodex, 'auth.json')))
@@ -763,7 +763,7 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.env.HOME).toBe(join(scopeDir, 'home'))
     const agentHome = realpathSync(join(scopeDir, 'home'))
     const table = agentFilesystem(launch.env)
-    expect(table).toContain(`"${join(agentHome, '.codex')}" = "deny"`)
+    expect(table).toContain(`"${join(agentHome, '.codex')}" = "read"`)
     expect(table).not.toContain(`"${agentHome}" = "write"`)
   })
 
@@ -798,9 +798,8 @@ describe('prepareRuntimeLaunch', () => {
     expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))).toEqual({
       additionalModelOptionsCache: [{ value: 'root-fable', label: 'Root Fable', description: 'test' }]
     })
-    expect(launch.toolSandbox!.protectedCredentialRoots).toEqual(
-      expect.arrayContaining([join(home, '.claude'), join(home, '.claude.json')])
-    )
+    expect(launch.toolSandbox!.protectedCredentialRoots).toEqual(expect.arrayContaining([join(home, '.claude.json')]))
+    expect(launch.toolSandbox!.readOnlyStateRoots).toEqual([join(home, '.claude')])
     expect(launch.toolSandbox!.protectedCredentialRoots.some((root) => root.startsWith(join(scopeDir, 'home')))).toBe(
       false
     )
@@ -1301,9 +1300,46 @@ describe('prepareRuntimeLaunch', () => {
 
     expect(launch.env.CODEX_HOME).toBe(`${PLACED_HOME}/.codex`)
     expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}" = "write"`)
+    // The executor's HOME cannot be listed from here, nor the file its `auth.json` links to: `.codex` is denied whole,
+    // and Codex's helper below it reopened for write.
     expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex" = "deny"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex/tmp/arg0" = "write"`)
     expect(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]).not.toContain(realpathSync(cwd))
     expect(launch.gitMetadataWriteRoots).toEqual([])
+  })
+
+  it("applies the .codex split a placed Codex session's executor reported, in every profile", () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const codex = `${PLACED_HOME}/.codex`
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: PLACED,
+      runInSandbox: false,
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+      executor: {
+        home: PLACED_HOME,
+        codexState: { readOnly: [codex], secret: ['/home/op/.codex/auth.json', `${codex}/config.toml`] }
+      }
+    })
+
+    const profiles = (JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] })
+      .configOverrides
+    const readOnly = profiles.find((value) =>
+      value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
+    )!
+    // `.codex` is readable to the tools, and only the credentials in it are denied. Approval review runs under the
+    // read-only profile, which reopens nothing below a deny, so it finds Codex's helper only because nothing denies it.
+    expect(agentFilesystem(launch.env)).toContain(`"${codex}" = "read"`)
+    for (const table of [agentFilesystem(launch.env), readOnly]) {
+      expect(table).toContain(`"/home/op/.codex/auth.json" = "deny"`)
+      expect(table).toContain(`"${codex}/config.toml" = "deny"`)
+      expect(table).not.toContain(`"${codex}" = "deny"`)
+      expect(table).not.toContain('tmp/arg0')
+    }
   })
 
   // What Codex's `:workspace` pins read-only, and so what a commit there needs back.

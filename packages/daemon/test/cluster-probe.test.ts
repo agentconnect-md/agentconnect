@@ -20,13 +20,40 @@ describe('cluster runtime probe', () => {
   it('launches with the deployment’s provider pair and the identity that routes it into the pod', () => {
     const { env } = clusterProbeEnv('claude-acp', claude, {
       agentId: 'ac-runtime-probe-abc',
-      staticCredential: (kind) => (kind === 'claude' ? { key: 'token', baseUrl: 'https://gw.example' } : undefined)
+      staticCredential: (target) =>
+        target.runtime === 'claude' ? { key: 'token', baseUrl: 'https://gw.example' } : undefined
     })
     expect(env).toEqual({
       AC_AGENT_ID: 'ac-runtime-probe-abc',
       ANTHROPIC_API_KEY: 'token',
       ANTHROPIC_BASE_URL: 'https://gw.example'
     })
+  })
+
+  it('enumerates all configured OpenCode providers without issuing session keys', () => {
+    const pairs = {
+      anthropic: { key: '', baseUrl: 'https://gw.example/anthropic' },
+      openai: { key: 'catalog-token', baseUrl: 'https://gw.example/openai/v1' },
+      deepseek: { key: '', baseUrl: 'https://gw.example/deepseek/v1' }
+    }
+    const { env, redactValues, uncredentialed } = clusterProbeEnv(
+      'opencode',
+      { command: 'opencode', args: ['acp'], env: [] },
+      {
+        agentId: 'probe',
+        staticCredential: (target) => pairs[target.opencodeProvider as keyof typeof pairs]
+      }
+    )
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!)
+    expect(config.enabled_providers).toEqual(['anthropic', 'openai', 'deepseek'])
+    expect(config.provider.anthropic.options.baseURL).toBe('https://gw.example/anthropic/v1')
+    expect(config.provider.deepseek.options.baseURL).toBe('https://gw.example/deepseek/v1')
+    expect(env.ANTHROPIC_API_KEY).toBe(PROBE_PLACEHOLDER_KEY)
+    expect(env.DEEPSEEK_API_KEY).toBe(PROBE_PLACEHOLDER_KEY)
+    expect(env.OPENAI_API_KEY).toBe('catalog-token')
+    expect(redactValues).toContain('catalog-token')
+    expect(redactValues).not.toContain(PROBE_PLACEHOLDER_KEY)
+    expect(uncredentialed).toBe(false)
   })
 
   it('carries nothing but the routing id for a runtime with no configured provider surface', () => {

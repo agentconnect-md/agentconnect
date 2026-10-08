@@ -5,9 +5,18 @@
  * that happened — these tests pin the stitching and the deliberately absent catalog.
  */
 import { describe, expect, it } from 'vitest'
-import { daemonFromDto, withDaemonCapability, type DaemonCapabilityDto, type DaemonFleetDto } from '@/lib/api'
+import {
+  agentFromDto,
+  daemonFromDto,
+  sessionFromDto,
+  withDaemonCapability,
+  type AgentDto,
+  type DaemonCapabilityDto,
+  type DaemonFleetDto,
+  type SessionDto
+} from '@/lib/api'
 import { mergeDaemonCatalogs } from '@/lib/use-daemon-detail'
-import type { DaemonRow } from '@/lib/data'
+import { effectiveAgentStatus, presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
 
 const fleetRow: DaemonFleetDto = {
   daemonId: 'd-1',
@@ -93,6 +102,8 @@ describe('daemon read split', () => {
     const reconnecting = daemonFromDto({ ...fleetRow, status: 'connecting', lifecycleOp: op })
     expect(reconnecting.lifecycleStatus).toBe('restarting')
     expect(reconnecting.lifecycleOp).toEqual(op)
+    // The planned relaunch names itself; Reconnecting is only for a link recovering on its own.
+    expect(presentedDaemonStatus(reconnecting)).toBe('restarting')
 
     const gone = daemonFromDto({ ...fleetRow, status: 'offline', lifecycleOp: op })
     expect(gone.status).toBe('offline')
@@ -105,6 +116,46 @@ describe('daemon read split', () => {
     // A bootstrap upgrade waits for the next connection by design, so an offline daemon keeps showing it.
     const queued = daemonFromDto({ ...fleetRow, status: 'offline', lifecycleOp: { ...op, phase: null } })
     expect(queued.lifecycleStatus).toBe('upgrading')
+  })
+
+  it('presents a control link recovering within the grace as reconnecting, never as a serving daemon', () => {
+    const recovering = daemonFromDto({ ...fleetRow, status: 'connecting' })
+    expect(presentedDaemonStatus(recovering)).toBe('reconnecting')
+    expect(status(presentedDaemonStatus(recovering))).toMatchObject({
+      label: 'reconnecting',
+      dot: 'var(--status-paused)',
+      bg: 'var(--status-paused-soft)',
+      // The same readable amber as the paused, upgrading and restarting labels.
+      text: status('restarting').text
+    })
+    // Readiness stays not-serving, so placement, reconnect and delete decisions are unchanged.
+    expect(recovering.status).toBe('offline')
+    expect(effectiveAgentStatus({ status: 'online', daemon: 'd-1' }, recovering)).toBe('offline')
+
+    const gone = daemonFromDto({ ...fleetRow, status: 'offline' })
+    expect(gone.reconnecting).toBe(false)
+    expect(presentedDaemonStatus(gone)).toBe('offline')
+    expect(status(presentedDaemonStatus(gone)).dot).toBe('var(--status-error)')
+  })
+
+  it('keeps connecting offline for every entity that is not a daemon', () => {
+    const agent = agentFromDto({
+      id: 'a-1',
+      name: 'a-1',
+      status: 'connecting',
+      daemonId: 'd-1',
+      workspace: { mode: 'scratch' }
+    } as unknown as AgentDto)
+    expect(agent.status).toBe('offline')
+    expect(agent).not.toHaveProperty('reconnecting')
+
+    const session = sessionFromDto({
+      sessionId: 's-1',
+      sessionKey: { platform: 'slack', channel: 'C1' },
+      status: 'connecting'
+    } as unknown as SessionDto)
+    expect(session.status).toBe('offline')
+    expect(session).not.toHaveProperty('reconnecting')
   })
 
   it('stitches capability onto the liveness row without disturbing liveness', () => {

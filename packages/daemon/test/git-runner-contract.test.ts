@@ -90,7 +90,7 @@ function runners(root: string): {
 } {
   const requester = sandboxRequester(root)
   return {
-    local: new LocalGitRunner(gitFor(root), root, (env) => gitFor(root).env(env)),
+    local: new LocalGitRunner(gitFor(root), root, (env) => gitFor(root, undefined, env)),
     remote: new ShimGitRunner(requester, root),
     requester
   }
@@ -415,10 +415,9 @@ describe('git runner contract, local and shim-backed', () => {
     git(seed, ['commit', '-m', 'upstream change'])
     git(seed, ['push', 'origin', 'main'])
 
-    const fromLocal = await new LocalGitRunner(gitFor(forLocal), forLocal, (env) => gitFor(forLocal).env(env)).pull(
-      'origin',
-      'main'
-    )
+    const fromLocal = await new LocalGitRunner(gitFor(forLocal), forLocal, (env) =>
+      gitFor(forLocal, undefined, env)
+    ).pull('origin', 'main')
     const fromRemote = await new ShimGitRunner(sandboxRequester(forRemote), forRemote).pull('origin', 'main')
 
     expect([...fromRemote.files].sort()).toEqual([...fromLocal.files].sort())
@@ -443,7 +442,7 @@ describe('git runner contract, local and shim-backed', () => {
     roots.push(clone)
     git(clone, ['clone', upstream, '.'])
 
-    const fromLocal = await new LocalGitRunner(gitFor(clone), clone, (env) => gitFor(clone).env(env)).pull(
+    const fromLocal = await new LocalGitRunner(gitFor(clone), clone, (env) => gitFor(clone, undefined, env)).pull(
       'origin',
       'main'
     )
@@ -452,6 +451,35 @@ describe('git runner contract, local and shim-backed', () => {
     expect(fromLocal.files).toEqual([])
     expect(fromLocal.insertions).toBe(0)
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'returns a clone’s stderr on exit 0, so a failed bundle download reaches the cache fallback',
+    async () => {
+      const upstream = mkdtempSync(join(tmpdir(), 'ac-gitbundleuri-'))
+      roots.push(upstream)
+      git(upstream, ['init', '--bare', '--initial-branch=main'])
+      const seed = mkdtempSync(join(tmpdir(), 'ac-gitbundleseed-'))
+      roots.push(seed)
+      git(seed, ['clone', upstream, '.'])
+      writeFileSync(join(seed, 'only.txt'), 'x\n')
+      git(seed, ['add', 'only.txt'])
+      git(seed, ['commit', '-m', 'seed'])
+      git(seed, ['push', 'origin', 'main'])
+      const root = mkdtempSync(join(tmpdir(), 'ac-gitbundleclone-'))
+      roots.push(root)
+
+      // The real exec policy admits only an https bundle URI; nothing listens on port 1, so the download fails.
+      const out = await new ShimGitRunner(sandboxRequester(root), root).clone(`file://${upstream}`, 'checkout', [
+        '--bundle-uri=https://127.0.0.1:1/x.bundle',
+        '--branch',
+        'main',
+        '--single-branch'
+      ])
+
+      expect(out?.stderr).toMatch(/failed to (download bundle|fetch objects from bundle) from URI/)
+      expect(git(join(root, 'checkout'), ['rev-parse', 'HEAD']).trim()).toBe(git(seed, ['rev-parse', 'HEAD']).trim())
+    }
+  )
 
   it('parses a detached HEAD and upstream tracking the way git reports them', () => {
     // Unit-level, because a detached checkout is awkward to stage and the format is the part

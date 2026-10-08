@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { RcMcpAssign } from '@agentconnect.md/protocol'
+import { ProjectionSnapshot } from '../projection-snapshot.js'
 
 /** The upstream a resolved grant maps to. `headers` carry the UPSTREAM credential — NEVER log. */
 export interface McpUpstream {
@@ -21,9 +22,11 @@ function sha256(s: string): string {
  */
 export class McpBindingTable {
   private byProvider = new Map<string, { upstreamUrl: string; headers: McpUpstream['headers']; hashes: Set<string> }>()
+  private readonly snapshot = new ProjectionSnapshot()
 
   /** Load/replace one provider's binding (`rc/mcp-assign`). */
   assign(a: RcMcpAssign): void {
+    this.snapshot.see(a.providerId)
     this.byProvider.set(a.providerId, {
       upstreamUrl: a.upstreamUrl,
       headers: a.headers,
@@ -50,6 +53,22 @@ export class McpBindingTable {
     const b = this.byProvider.get(providerId)
     if (!b || !b.hashes.has(sha256(grantKey))) return null
     return { upstreamUrl: b.upstreamUrl, headers: b.headers }
+  }
+
+  /** `rc/snapshot-begin`: the current bindings keep serving while the replay lands. */
+  beginSnapshot(snapshotId: string): void {
+    this.snapshot.begin(snapshotId)
+  }
+
+  /** `rc/snapshot-end`: drop each provider the replay neither sent nor withheld, such as one revoked while the link was down. */
+  endSnapshot(snapshotId: string, withheld: readonly string[]): void {
+    for (const providerId of this.snapshot.end(snapshotId, this.byProvider.keys(), withheld)) {
+      this.byProvider.delete(providerId)
+    }
+  }
+
+  abandonSnapshot(): void {
+    this.snapshot.abandon()
   }
 
   /** Test/introspection: number of bound providers. */

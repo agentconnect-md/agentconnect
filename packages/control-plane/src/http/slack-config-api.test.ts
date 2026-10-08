@@ -127,6 +127,7 @@ describe('slackConfigApi.exchangeOAuth (oauth.v2.access)', () => {
             token_type: 'bot',
             app_id: 'A123456789',
             bot_user_id: 'U123456789',
+            authed_user: { id: 'UINSTALLER' },
             team: { id: 'T1', name: 'Acme' }
           }),
           { status: 200 }
@@ -140,7 +141,14 @@ describe('slackConfigApi.exchangeOAuth (oauth.v2.access)', () => {
     })
     expect(res).toEqual({
       ok: true,
-      result: { botToken: 'xoxb-123', appId: 'A123456789', teamId: 'T1', teamName: 'Acme', botUserId: 'U123456789' }
+      result: {
+        botToken: 'xoxb-123',
+        appId: 'A123456789',
+        teamId: 'T1',
+        teamName: 'Acme',
+        botUserId: 'U123456789',
+        installerUserId: 'UINSTALLER'
+      }
     })
   })
 

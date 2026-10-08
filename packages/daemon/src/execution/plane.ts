@@ -2,6 +2,7 @@ import type { HostKey } from '../acp/host-key.js'
 import type { SpawnDriver } from '../acp/spawn-driver.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { PreparedRuntimeLaunch } from '../launch/prepare.js'
+import type { SourceCacheBundleStager } from '../source-cache/write-back.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 import type { WorkspacePlacement } from '../workspace/workspace-fs.js'
 import type { WorkspaceManager } from '../workspace/workspace-manager.js'
@@ -33,6 +34,8 @@ export interface ExecutionPlane {
   workspaceFsFor: (agentId: string, scope?: Omit<PlaneScope, 'agentId'>) => WorkspacePlacement | undefined
   /** Empty a directory no `rmSync` here can reach, answering why not instead of throwing; absent where the files are on this daemon's disk. */
   clearPath?: (agentId: string, root: string) => Promise<string | undefined>
+  /** The shim `bundle` operations for the pod holding `path`, or undefined when it cannot write back (source-cache.md §9). */
+  bundleStagerFor?: (agentId: string, path: string) => Promise<SourceCacheBundleStager | undefined>
   /** Retire every session sandbox of the agent but the leaf named: a replaced workspace leaves them holding the old repository (§11). */
   discardSessions: (agentId: string, exceptLeaf?: string) => Promise<void>
 }

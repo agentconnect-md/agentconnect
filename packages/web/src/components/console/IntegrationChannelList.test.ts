@@ -290,8 +290,8 @@ describe('roomGlyph', () => {
 
 // channel-session-mode.md §8: the session mode shares the trigger's button, offered only where the choice means something.
 describe('IntegrationChannelList session mode', () => {
-  const render = (channels: IntegrationChannelRow[], platform = 'slack') =>
-    renderToStaticMarkup(createElement(IntegrationChannelList, { platform, gated: false, channels }))
+  const render = (channels: IntegrationChannelRow[], platform = 'slack', extra: { assistantMode?: boolean } = {}) =>
+    renderToStaticMarkup(createElement(IntegrationChannelList, { platform, channels, ...extra }))
 
   it('reads both choices on a channel row, defaulting to a session per thread', () => {
     const html = render([{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }])
@@ -312,13 +312,23 @@ describe('IntegrationChannelList session mode', () => {
     expect(html).not.toContain('Per thread')
   })
 
-  // A DM is one continuous exchange already, and a group DM is not a place this is configured either.
-  it('offers it on no direct conversation', () => {
-    for (const kind of ['im', 'mpim'] as const) {
-      const html = render([{ channelId: 'D1', name: '@alice', kind, trigger: 'any' }])
-      expect(html, kind).not.toContain('Session mode')
-      expect(html, kind).not.toContain('Per thread')
-    }
+  // Most platforms' DMs are one continuous exchange already, and a group DM is not a place this is configured either.
+  it('offers it on no direct conversation where the platform keeps DMs continuous', () => {
+    for (const platform of ['telegram', 'discord', 'feishu'])
+      for (const kind of ['im', 'mpim'] as const) {
+        const html = render([{ channelId: 'D1', name: '@alice', kind, trigger: 'any' }], platform)
+        expect(html, `${platform} ${kind}`).not.toContain('Session mode')
+        expect(html, `${platform} ${kind}`).not.toContain('Per thread')
+      }
+  })
+
+  // A Slack DM opens a session per top-level message, so its row may pick one session instead.
+  it('offers it on a Slack DM, but not on a Slack group DM', () => {
+    const dm = render([{ channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any', sessionMode: 'append' }])
+    expect(dm).toContain('title="Respond to · Session mode"')
+    expect(dm).toContain('<span>Single session</span>')
+    const group = render([{ channelId: 'G1', name: '@alice, bob', kind: 'mpim', trigger: 'any' }])
+    expect(group).not.toContain('Session mode')
   })
 
   it('offers it nowhere the platform allows only one mode', () => {
@@ -329,6 +339,45 @@ describe('IntegrationChannelList session mode', () => {
     expect(html).toContain('aria-label="Settings for Acme / Engineering: @-mentions"')
     expect(html).not.toContain('Session mode')
   })
+
+  // assistant-mode.md §5.2: every place that can hold one session does, whatever its row stores, while the mode is on.
+  it('fixes a room and a Slack DM on one session in assistant mode', () => {
+    const html = render(
+      [
+        { channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention', sessionMode: 'createNew' },
+        { channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any' }
+      ],
+      'slack',
+      { assistantMode: true }
+    )
+    expect(html).toContain('aria-label="Settings for deploys: @-mentions, Single session"')
+    expect(html).toContain('aria-label="Settings for alice: On, Single session"')
+    expect(html).not.toContain('Per thread')
+  })
+
+  it('leaves a group DM, a continuous DM, and a team without the choice in assistant mode', () => {
+    const group = render([{ channelId: 'G1', name: '@alice, bob', kind: 'mpim', trigger: 'mention' }], 'slack', {
+      assistantMode: true
+    })
+    expect(group).not.toContain('Session mode')
+    const dm = render([{ channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any' }], 'telegram', {
+      assistantMode: true
+    })
+    expect(dm).not.toContain('Session mode')
+    const team = render(
+      [{ channelId: 'T1', name: 'Acme / Engineering', kind: 'channel', trigger: 'mention' }],
+      'linear',
+      { assistantMode: true }
+    )
+    expect(team).not.toContain('Session mode')
+  })
+
+  it("returns a row's own mode when assistant mode is off", () => {
+    const html = render([{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }], 'slack', {
+      assistantMode: false
+    })
+    expect(html).toContain('aria-label="Settings for deploys: @-mentions, Per thread"')
+  })
 })
 
 describe('IntegrationChannelList footer', () => {
@@ -338,7 +387,6 @@ describe('IntegrationChannelList footer', () => {
       const html = renderToStaticMarkup(
         createElement(IntegrationChannelList, {
           platform,
-          gated: false,
           channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
         })
       )
@@ -349,12 +397,12 @@ describe('IntegrationChannelList footer', () => {
   })
 })
 
-describe('IntegrationChannelList private-agent banner', () => {
-  const banner = (platform?: string) =>
+describe('IntegrationChannelList gated-agent banner', () => {
+  const banner = (platform?: string, gate: 'private' | 'assistant' | null = 'private') =>
     renderToStaticMarkup(
       createElement(IntegrationChannelList, {
         platform,
-        gated: true,
+        gate,
         channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
       })
     )
@@ -371,6 +419,12 @@ describe('IntegrationChannelList private-agent banner', () => {
     expect(html).toContain('Private agent — answers only in teams where it is the default.')
     expect(html).not.toContain('enabled below')
   })
+
+  it('names assistant mode when that is the gate, and shows nothing without one', () => {
+    expect(banner('slack', 'assistant')).toContain('Assistant mode — answers only where enabled below.')
+    expect(banner('linear', 'assistant')).toContain('Assistant mode — answers only in teams where it is the default.')
+    expect(banner('slack', null)).not.toContain('role="note"')
+  })
 })
 
 describe('IntegrationChannelList trigger control', () => {
@@ -378,7 +432,6 @@ describe('IntegrationChannelList trigger control', () => {
     const html = renderToStaticMarkup(
       createElement(IntegrationChannelList, {
         platform: 'slack',
-        gated: false,
         channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
       })
     )
@@ -567,7 +620,6 @@ describe('IntegrationChannelList direct rows', () => {
     const html = renderToStaticMarkup(
       createElement(IntegrationChannelList, {
         platform: 'discord',
-        gated: false,
         channels: [{ channelId: 'D1', name: '@Alice', kind: 'im', trigger: 'any' }]
       })
     )
@@ -599,7 +651,6 @@ describe('IntegrationChannelList row name, where the platform gives one', () => 
     renderToStaticMarkup(
       createElement(IntegrationChannelList, {
         platform: 'linear',
-        gated: false,
         channels: [
           {
             channelId: 'team-eng',
@@ -627,7 +678,6 @@ describe('IntegrationChannelList row name, where the platform gives one', () => 
     const slack = renderToStaticMarkup(
       createElement(IntegrationChannelList, {
         platform: 'slack',
-        gated: false,
         channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
       })
     )

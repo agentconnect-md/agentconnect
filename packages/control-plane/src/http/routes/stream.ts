@@ -49,6 +49,11 @@ function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
 export function streamRoutes(deps: HttpDeps) {
   return async function streamRoutesPlugin(app: FastifyInstance): Promise<void> {
     const sessionAccess = makeSessionAccessResolver(deps)
+    // An open stream never ends on its own; end every one before close waits on its connection, and the browser redials.
+    const open = new Set<FastifyReply>()
+    app.addHook('preClose', async () => {
+      for (const reply of open) reply.raw.end()
+    })
     app.get(
       '/stream',
       {
@@ -128,7 +133,9 @@ export function streamRoutes(deps: HttpDeps) {
         const cleanup = (): void => {
           clearInterval(keepalive)
           unsubscribe()
+          open.delete(reply)
         }
+        open.add(reply)
         req.raw.on('close', cleanup)
         reply.raw.on('close', cleanup)
 

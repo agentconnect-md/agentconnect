@@ -3,6 +3,7 @@ import type { Agent } from '../src/agents/agent-schema.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 import {
   applyCodexSessionFloor,
+  applyConfiguredModelProviders,
   applyModelCredential,
   applyStaticModelConfig,
   applyClaudeModelAliases,
@@ -34,7 +35,7 @@ describe('modelProviderTarget', () => {
       opencodeProvider: 'anthropic'
     })
     expect(modelProviderTarget(agent('opencode', 'deepseek/deepseek-v4'), runtime('opencode', ['acp']))).toEqual({
-      provider: 'openai',
+      provider: 'deepseek',
       runtime: 'opencode',
       opencodeProvider: 'deepseek'
     })
@@ -94,22 +95,62 @@ describe('applyModelCredential', () => {
     const env: Record<string, string> = {
       OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { deepseek: { options: { timeout: 30_000 } } } })
     }
-    applyModelCredential({ provider: 'openai', runtime: 'opencode', opencodeProvider: 'deepseek' }, env, {
+    applyModelCredential({ provider: 'deepseek', runtime: 'opencode', opencodeProvider: 'deepseek' }, env, {
       key: 'issued',
       baseUrl: 'https://gateway.example/openai/v1'
     })
-    expect(env.MODEL_TOKEN).toBe('issued')
+    expect(env.DEEPSEEK_API_KEY).toBe('issued')
     expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual({
       provider: {
         deepseek: {
           options: {
             timeout: 30_000,
-            apiKey: '{env:MODEL_TOKEN}',
+            apiKey: '{env:DEEPSEEK_API_KEY}',
             baseURL: 'https://gateway.example/openai/v1'
           }
         }
       }
     })
+  })
+
+  it('keeps OpenCode provider keys separate and preserves explicit model restrictions', () => {
+    const env: Record<string, string> = {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        enabled_providers: ['anthropic', 'openai'],
+        provider: { anthropic: { whitelist: ['claude-sonnet-4'], options: { timeout: 30_000 } } }
+      })
+    }
+    const credentials = {
+      anthropic: { key: 'claude-key', baseUrl: 'https://gw.example/anthropic/' },
+      openai: { key: 'openai-key', baseUrl: 'https://gw.example/openai/v1' },
+      deepseek: { key: 'deepseek-key', baseUrl: 'https://gw.example/deepseek/v1' }
+    }
+    applyConfiguredModelProviders(
+      { runtime: 'opencode', provider: 'openai' },
+      env,
+      (target) => credentials[target.opencodeProvider as keyof typeof credentials]
+    )
+    expect(env).toMatchObject({
+      ANTHROPIC_API_KEY: 'claude-key',
+      OPENAI_API_KEY: 'openai-key',
+      DEEPSEEK_API_KEY: 'deepseek-key'
+    })
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!)
+    expect(config.enabled_providers).toEqual(['anthropic', 'openai'])
+    expect(config.provider.anthropic).toEqual({
+      whitelist: ['claude-sonnet-4'],
+      options: { timeout: 30_000, apiKey: '{env:ANTHROPIC_API_KEY}', baseURL: 'https://gw.example/anthropic/v1' }
+    })
+    expect(config.provider.openai.options.apiKey).toBe('{env:OPENAI_API_KEY}')
+    expect(config.provider.deepseek.options.apiKey).toBe('{env:DEEPSEEK_API_KEY}')
+    applyStaticModelConfig({ runtime: 'opencode', provider: 'anthropic', opencodeProvider: 'anthropic' }, env, {
+      key: '',
+      baseUrl: 'https://gw.example/anthropic/v1/'
+    })
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!).provider.anthropic.options.baseURL).toBe(
+      'https://gw.example/anthropic/v1'
+    )
+    expect(env.ANTHROPIC_API_KEY).toBe('claude-key')
   })
 
   it('supports a static URL without replacing the runtime key', () => {

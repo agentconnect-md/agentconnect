@@ -77,13 +77,14 @@ export {
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
+  WORKSPACE_FILE_DOWNLOAD_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE,
-  WORKSPACE_SESSION_READ_FEATURE,
-  WORKSPACE_RAW_READ_FEATURE
+  WORKSPACE_SESSION_READ_FEATURE
 } from './consts.js'
 
 // ── normalized platform-message wire contract ──
 export * from './normalized-message.js'
+export * from './slack-app-home.js'
 
 // Code-host provider identity (gitlab-com-integration.md §8.1)
 export * from './code-host.js'
@@ -111,6 +112,8 @@ export * from './frames/approval-route.js'
 export * from './frames/integration.js'
 export * from './frames/mcpserver.js'
 export * from './frames/memory-connection.js'
+export * from './frames/assistant-mode.js'
+export * from './assistant-mode-admission.js'
 export * from './frames/skill.js'
 export * from './frames/runtime-command.js'
 export * from './frames/gitcred.js'
@@ -192,6 +195,7 @@ export type { DecodeResultOf } from './wire.js'
 export {
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
   WORKSPACE_GIT_ANY_ORIGIN,
+  DOT_PATH_SEGMENT_RE,
   MAX_GIT_REPO_LENGTH,
   GitCloneUrlError,
   normalizeAllowedWorkspaceGitUrl,
@@ -207,10 +211,11 @@ export {
 
 // ── repository-relative agent working-directory helpers ──
 export { MAX_REPO_SUBDIR_LENGTH, RepoSubdirError, normalizeRepoSubdir } from './repo-subdir.js'
+export { APPEND_COORDINATE_PREFIX, isAppendCoordinate } from './append-coordinate.js'
 
 // ── §5 platform manifest — pre-dispatch capability table, read by every host ──
 export { DEFAULT_MANIFEST, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'
-export type { MembershipEnumeration, PlatformManifest } from './platform-manifest.js'
+export type { AppendConversationKind, MembershipEnumeration, PlatformManifest } from './platform-manifest.js'
 
 // ── exact money — the decimal amount every reported/stored/served cost uses ──
 export {

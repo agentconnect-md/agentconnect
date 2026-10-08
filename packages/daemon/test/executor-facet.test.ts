@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { connect as netConnect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -20,6 +20,7 @@ import {
 import { PIPE_TLS } from '../src/execution/executor-pipe.js'
 import type { EnvironmentDescriptor, StrategyLauncher } from '../src/execution/strategies.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT } from '../src/shim/sandbox-paths.js'
+import { workspaceIncarnationOf } from '../src/skills/workspace-incarnation.js'
 import { WAIT } from './wait-support.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
@@ -296,6 +297,8 @@ describe('executor facet', () => {
         runtimeRoot: join(root!, 'hs', '1'),
         helperRoot: '/opt/example/dist',
         missingHelpers: ['gitCredentialHelper'],
+        // The session directory's own identity, which its skill ledger is kept under across launches.
+        workspaceIncarnation: await workspaceIncarnationOf(join(root!, 'sessions', LEAF)),
         liveCount: 1
       })
       expect(Buffer.from(reply.psk, 'base64url')).toHaveLength(32)
@@ -308,6 +311,31 @@ describe('executor facet', () => {
       const socket = await dial(reply)
       socket.write('hello shim')
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('hello shim'), WAIT)
+    })
+
+    // The holder can list neither this HOME nor the shared file its credential link points at, so this machine
+    // classifies the session's `.codex` (private-runtime-state.ts) and the holder's Codex profile applies the split.
+    it("reports the seeded HOME's .codex split: read-only, with its credentials denied at the link's target", async () => {
+      let shared = ''
+      const { facet } = await start({
+        seedHome: (home) => {
+          shared = join(root!, 'operator-codex')
+          mkdirSync(shared, { recursive: true })
+          writeFileSync(join(shared, 'auth.json'), '{}\n')
+          mkdirSync(join(home, '.codex', 'tmp', 'arg0'), { recursive: true })
+          writeFileSync(join(home, '.codex', 'config.toml'), 'model = "x"\n')
+          symlinkSync(join(shared, 'auth.json'), join(home, '.codex', 'auth.json'))
+          return undefined
+        }
+      })
+      const reply = ready(await facet.prepare(req(3)))
+      const home = join(root!, 'sessions', LEAF, 'home')
+      const codex = realpathSync(join(home, '.codex'))
+      expect(reply.codexState).toEqual({
+        home,
+        readOnly: [codex],
+        secret: expect.arrayContaining([realpathSync(join(shared, 'auth.json')), join(codex, 'config.toml')])
+      })
     })
 
     // §8, §11 step 3: the facet builds the environment from the leaf alone, whichever strategy starts it, and only this machine can say where its seed points.
@@ -456,7 +484,8 @@ describe('executor facet', () => {
 
     it('remembers the generation and the launch across a restart, and gives the interrupted launch no second key', async () => {
       const first = await start()
-      expect(ready(await first.facet.prepare(req(5))).generation).toBe(1)
+      const before = ready(await first.facet.prepare(req(5)))
+      expect(before.generation).toBe(1)
       await first.facet.stop()
       facets = []
       const { facet } = await start()
@@ -464,7 +493,10 @@ describe('executor facet', () => {
       expect(await facet.prepare(req(5))).toEqual({ status: 'refused', reason: 'launch_retired' })
       expect(starts).toHaveLength(1)
       // The holder answers a retired launch with a new one, which starts the environment again past the generation on disk.
-      expect(ready(await facet.prepare(req(6))).generation).toBe(2)
+      const after = ready(await facet.prepare(req(6)))
+      expect(after.generation).toBe(2)
+      // The same directory under the new launch: the skills the first one installed stay its own.
+      expect(after.workspaceIncarnation).toBe(before.workspaceIncarnation)
       expect(starts).toHaveLength(2)
       expect(record()).toMatchObject({ generation: 2, launchId: LAUNCH(6) })
     })

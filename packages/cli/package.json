@@ -24,7 +24,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "pnpm --filter '{.}^...' build && tsdown && node scripts/assert-self-contained.mjs",
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "build:package": "tsdown && node scripts/assert-self-contained.mjs",
     "clean": "rm -rf dist",
     "prepack": "pnpm run build",
     "test": "vitest run",
@@ -36,16 +37,16 @@
     "@agentconnect.md/connection": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
     "commander": "^15.0.0",
-    "ws": "^8.21.1"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/node": "^24.13.6",
-    "@types/ws": "^8.18.1",
+    "@types/node": "^24.19.0",
+    "@types/ws": "^8.18.2",
     "json": "^11.0.0",
     "tsdown": "^0.23.0",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.2"
   },
   "keywords": [
     "agentconnect",

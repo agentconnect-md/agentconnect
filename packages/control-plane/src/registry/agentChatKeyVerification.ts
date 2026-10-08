@@ -121,7 +121,7 @@ export function createAgentChatKeyVerifier(
         orgId: key.orgId,
         conversationId
       },
-      { remoteMcp: false }
+      { remoteMcp: false, viewer: ctx }
     )
     if (!verdict.ok && (verdict.reason === 'agent unplaced' || verdict.reason === 'daemon offline')) {
       return refuse(AGENT_CHAT_KEY_REFUSAL.agentUnavailable)

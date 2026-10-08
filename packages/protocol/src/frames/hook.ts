@@ -481,6 +481,25 @@ export type HookPreparing = z.infer<typeof HookPreparing>
 export const HookPreparingOk = z.object({ accepted: z.literal(true) })
 export type HookPreparingOk = z.infer<typeof HookPreparingOk>
 
+/** Why a formal review lost its exact checkout; a fixed enum so it can label a metric. */
+export const ReviewCheckoutDegradedReason = z.enum([
+  'no_review_root',
+  'fetch_timeout',
+  'sandbox_conflict',
+  'authority_draining',
+  'credential_unavailable',
+  'revision_mismatch',
+  'other'
+])
+export type ReviewCheckoutDegradedReason = z.infer<typeof ReviewCheckoutDegradedReason>
+
+/** How a formal review's workspace was prepared: the exact verified checkout, or revision-only for a reason. */
+export const ReviewCheckout = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('exact') }),
+  z.object({ outcome: z.literal('degraded'), reason: ReviewCheckoutDegradedReason })
+])
+export type ReviewCheckout = z.infer<typeof ReviewCheckout>
+
 /**
  * `hook/start` (D→C REQ) — metadata barrier immediately before an accepted
  * GitHub hook enters the model prompt. A successful reply means the CP durably
@@ -499,6 +518,7 @@ export const HookStart = z
     github: GithubHookMetadata.optional(),
     gitlab: GitlabHookMetadata.optional(),
     gitea: GiteaHookMetadata.optional(),
+    reviewCheckout: ReviewCheckout.optional(), // only on a turn that prepared a formal review's workspace
     ...HookConfigSnapshot.shape
   })
   .superRefine((start, ctx) => {

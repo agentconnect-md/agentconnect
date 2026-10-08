@@ -25,7 +25,11 @@ export interface McpReplayDeps {
 }
 
 /** Full replay of every provider's binding to ONE relay that just (re)registered. */
-export async function replayMcpTo(ch: RelayChannel, deps: McpReplayDeps): Promise<void> {
+export async function replayMcpTo(
+  ch: RelayChannel,
+  deps: McpReplayDeps,
+  withhold: (providerId: string) => void = () => {}
+): Promise<void> {
   for (const p of await deps.providers.listAll()) {
     try {
       const keys = (await deps.grants.activeForProvider(p.orgId, p.id)).map((g) => g.key)
@@ -37,6 +41,7 @@ export async function replayMcpTo(ch: RelayChannel, deps: McpReplayDeps): Promis
       ch.send('rc/mcp-assign', mcpRcAssign(p, headers, keys))
     } catch (err) {
       deps.log?.warn({ providerId: p.id, err }, 'mcp replay: send failed — skipped')
+      withhold(p.id)
     }
   }
 }

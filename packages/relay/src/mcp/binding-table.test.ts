@@ -40,3 +40,40 @@ describe('McpBindingTable — grant → upstream resolution', () => {
     expect(t.size()).toBe(0)
   })
 })
+
+describe('McpBindingTable — reconnect snapshot', () => {
+  const SNAP = '33333333-3333-4333-8333-333333333333'
+  const REVOKED = '22222222-2222-4222-8222-222222222222'
+  const bind = (t: McpBindingTable, providerId: string) =>
+    t.assign({ providerId, upstreamUrl: 'https://a', headers, grantKeyHashes: [hash('k1')] })
+
+  it('keeps serving during the replay and drops a provider revoked while the link was down', () => {
+    const t = new McpBindingTable()
+    bind(t, PID)
+    bind(t, REVOKED)
+    t.beginSnapshot(SNAP)
+    // Nothing is dropped before the replay completes: every binding still resolves.
+    expect(t.resolve(REVOKED, 'k1')).not.toBeNull()
+    bind(t, PID)
+    t.endSnapshot(SNAP, [])
+    expect(t.resolve(PID, 'k1')).not.toBeNull()
+    expect(t.resolve(REVOKED, 'k1')).toBeNull()
+  })
+
+  it('keeps a provider the CP withheld because it failed to replay it', () => {
+    const t = new McpBindingTable()
+    bind(t, PID)
+    t.beginSnapshot(SNAP)
+    t.endSnapshot(SNAP, [PID])
+    expect(t.resolve(PID, 'k1')).not.toBeNull()
+  })
+
+  it('prunes nothing when the snapshot never ends', () => {
+    const t = new McpBindingTable()
+    bind(t, PID)
+    t.beginSnapshot(SNAP)
+    t.abandonSnapshot()
+    t.endSnapshot(SNAP, [])
+    expect(t.resolve(PID, 'k1')).not.toBeNull()
+  })
+})

@@ -31,6 +31,7 @@ import EditWorkspaceModal from '@/components/console/modals/EditWorkspaceModal'
 import {
   INSTALLATION_MATERIALIZE_OPTIONS,
   RepositoryAccessToggle,
+  RepositoryGrantSuspendedBadge,
   RepositoryMaterializeSelect,
   type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
@@ -270,7 +271,7 @@ export function WorkspaceCard({
             {header.status.label}
           </span>
         )}
-        {isGit && header?.onPull && (
+        {isGit && canEdit && header?.onPull && (
           <button
             type="button"
             className={`iconbtn h-6 w-6 flex-none ${header.pulling ? 'pointer-events-none opacity-50' : ''}`}
@@ -433,6 +434,7 @@ function RepositoryAccessMenu({
                     {row.repoFullName}
                   </span>
                 )}
+                {row.stale && <RepositoryGrantSuspendedBadge reason={row.stale.reason} compact />}
                 <RepositoryAccessToggle
                   value={row.access}
                   name={row.repoFullName}

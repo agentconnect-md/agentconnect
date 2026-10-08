@@ -72,7 +72,10 @@ terminal outcomes.
 The CP compiles each enabled, placed hook into an `rc/hook-assign` rule and
 broadcasts it to every connected relay. Hook disablement, deletion, or an
 unplaced agent produces `rc/hook-remove`. A relay starts with an empty in-memory
-table and receives a full replay after registration.
+table and receives a full replay after registration. When both sides advertise
+`relay-projection-snapshot-v1`, that replay is framed by `rc/snapshot-begin` and
+`rc/snapshot-end`, and the relay removes rules the replay no longer names, so a
+hook deleted while the relay was disconnected does not survive the reconnect.
 
 The authoritative implementation surfaces are:
 
@@ -724,6 +727,7 @@ Informational Check projection and formal review details are defined in
 
 - `rc/hook-assign`: upsert one compiled hook rule.
 - `rc/hook-remove`: remove one rule.
+- `rc/snapshot-begin` / `rc/snapshot-end`: frame the full replay after registration.
 
 A compiled rule includes:
 

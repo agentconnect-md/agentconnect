@@ -43,7 +43,7 @@ describe('NotificationBell', () => {
     expect(html).not.toContain('border-(--border-subtle)')
   })
 
-  it('uses mobile app-bar chrome', () => {
+  it('uses mobile drawer chrome', () => {
     const html = renderToStaticMarkup(
       <NotificationProvider>
         <NotificationBell variant="mobile" />

@@ -8,9 +8,7 @@
 import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-
-/** Single-quote a value for sh, escaping any quote it carries. */
-const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
+import { shQuote } from './gh-shim.js'
 
 export interface GlabWrapperSpec {
   /** The wrapper's own directory, skipped while it locates the real glab. */
@@ -25,7 +23,7 @@ export function renderGlabWrapper({ selfDir, tokenCommand }: GlabWrapperSpec): s
 # agentconnect glab wrapper — generated, never edited; NO secrets.
 # Per-invocation read-only GITLAB_TOKEN over the daemon's credential channel (gitlab-com-integration.md §13.3).
 
-SELF_DIR=${q(selfDir)}
+SELF_DIR=${shQuote(selfDir)}
 
 # The real glab: first one on PATH outside our own bin dir.
 REAL_GLAB=""
@@ -91,15 +89,15 @@ export function writeGlabShim(root: string, cliEntry: string): string {
   const executableEntry = existsSync(cliEntry) ? realpathSync(cliEntry) : cliEntry
   // Dev daemons run under tsx with a .ts argv[1] — route through the tsx CLI
   // (the git-credential shim precedent).
-  const argv = [q(realpathSync(process.execPath))]
+  const argv = [shQuote(realpathSync(process.execPath))]
   if (executableEntry.endsWith('.ts')) {
     const req = createRequire(import.meta.url)
-    argv.push(q(req.resolve('tsx/cli')))
+    argv.push(shQuote(req.resolve('tsx/cli')))
   }
-  argv.push(q(executableEntry))
+  argv.push(shQuote(executableEntry))
   const body = renderGlabWrapper({
     selfDir: dir,
-    tokenCommand: `AGENTCONNECT_ROOT=${q(root)} ${argv.join(' ')} glab-token "$AC_AGENT_ID" -- "$@"`
+    tokenCommand: `AGENTCONNECT_ROOT=${shQuote(root)} ${argv.join(' ')} glab-token "$AC_AGENT_ID" -- "$@"`
   })
   writeFileSync(join(dir, 'glab'), body, { mode: 0o755 })
   return dir

@@ -108,7 +108,12 @@ export interface PlatformManifest {
   readonly ownerAsDefault: boolean
   /** Whether every inbound event marks the bot as mentioned, so a mention is no fresh address: the decision gate admits one in a thread the agent participates in. */
   readonly addressedByConstruction: boolean
+  /** Conversation kinds whose rows can key one long (`append`) session; the spec projection reads it to give an assistant-mode agent one session per place (assistant-mode.md §5.2). */
+  readonly appendKinds: readonly AppendConversationKind[]
 }
+
+/** A conversation row's kind, as far as session modes go: a room, a 1:1 DM, or a group DM. */
+export type AppendConversationKind = 'channel' | 'im' | 'mpim'
 
 // Google Chat's platform id, registered in `KNOWN_PLATFORMS` with its Control Plane provider (google-chat-integration.md §7).
 export const GOOGLE_CHAT_PLATFORM = 'googlechat'
@@ -129,7 +134,9 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   // The arm every shipped platform takes: an owner is an ownership route, not a default.
   ownerAsDefault: false,
   // A mention is an explicit address, judged even inside a thread the agent is in.
-  addressedByConstruction: false
+  addressedByConstruction: false,
+  // No row of an unknown platform is ever forced onto one long session.
+  appendKinds: []
 }
 
 /**
@@ -139,7 +146,7 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
  * axes — a fail-OPEN hole in the exact guarantee this module sells.
  */
 const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
-  ['qq', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/ }],
+  ['qq', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/, appendKinds: ['channel'] }],
   // Slack is the only platform with an authoritative membership snapshot — which
   // is why the branches this replaces read "Slack does X, everyone else does Y".
   // It is also the only platform whose normalizer attributes bot authorship AND
@@ -155,7 +162,9 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       multiAgentShareable: true,
       publicChannelJoin: true,
       ownerAsDefault: false,
-      addressedByConstruction: false
+      addressedByConstruction: false,
+      // A Slack DM opens a session per top-level message unless it appends (channel-session-mode.md §8).
+      appendKinds: ['channel', 'im']
     }
   ],
   [
@@ -168,7 +177,9 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       multiAgentShareable: false,
       publicChannelJoin: false,
       ownerAsDefault: false,
-      addressedByConstruction: false
+      addressedByConstruction: false,
+      // A DM here is one continuous session already (thread-keys.ts), so only rooms take `append`.
+      appendKinds: ['channel']
     }
   ],
   // A Discord bot is added to a GUILD, not to a channel — there is no
@@ -183,7 +194,9 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       multiAgentShareable: false,
       publicChannelJoin: false,
       ownerAsDefault: false,
-      addressedByConstruction: false
+      addressedByConstruction: false,
+      // A DM here is one continuous session already (thread-keys.ts), so only rooms take `append`.
+      appendKinds: ['channel']
     }
   ],
   [
@@ -196,7 +209,9 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       multiAgentShareable: false,
       publicChannelJoin: false,
       ownerAsDefault: false,
-      addressedByConstruction: false
+      addressedByConstruction: false,
+      // A DM here is one continuous session already (thread-keys.ts), so only rooms take `append`.
+      appendKinds: ['channel']
     }
   ],
   // A connected Linear workspace IS a shared bot: the deployment's one OAuth app
@@ -213,7 +228,9 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       // Every Linear event addresses the app, so a team row's owner is its dispatch default (§6.2).
       ownerAsDefault: true,
       // A follow-up prompt in a session the agent already holds continues it rather than addressing anew.
-      addressedByConstruction: true
+      addressedByConstruction: true,
+      // A team row holds every issue of the team, each its own thread; appending would pool them all.
+      appendKinds: []
     }
   ],
   // Conservative on every axis; no `dmChannelPattern` because a DM Space name looks like any other `spaces/…` name.
@@ -228,7 +245,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       publicChannelJoin: false,
       ownerAsDefault: false,
       // Google delivers only mentions and adds in a Space, so a mention in a thread the agent holds continues it (google-chat-integration.md §4).
-      addressedByConstruction: true
+      addressedByConstruction: true,
+      appendKinds: ['channel']
     }
   ]
 ])

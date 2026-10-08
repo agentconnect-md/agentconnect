@@ -2,9 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareReq, ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect.md/protocol'
 import { sessionKeyDirName } from '../src/acp/host-key.js'
-import { executorMount, ExecutorPlane } from '../src/execution/executor-plane.js'
+import { EXECUTOR_GRANTS, executorMount, ExecutorPlane } from '../src/execution/executor-plane.js'
 import type { PlacementChoice } from '../src/execution/executor-placement.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
+import { cwdWorkspaceIncarnation } from '../src/skills/workspace-incarnation.js'
 
 // What the holder does with a launch (session-executors.md §6, §7): one uuid per launch, the
 // executor's generation, a retired launch given up rather than replayed, and the loss rule.
@@ -194,6 +195,92 @@ describe('the session life', () => {
     await executor.discardSessions(AGENT, sessionKeyDirName(otherKey))
     expect(released.map((entry) => entry.sessionKey)).toEqual([KEY])
     expect(executor.placementOf(otherKey)).toBeDefined()
+  })
+})
+
+describe("the .codex split a placed session's executor reported", () => {
+  const HOME = '/srv/agentconnect/sessions/s/home'
+  const codexState = { home: HOME, readOnly: [`${HOME}/.codex`], secret: [`${HOME}/.codex/config.toml`] }
+
+  it('is handed over for the HOME the launch runs in', async () => {
+    const { executor } = plane([ready(2, { codexState })])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.codexStateFor(SUBJECT, HOME)).toEqual({ readOnly: codexState.readOnly, secret: codexState.secret })
+  })
+
+  it('is none for another HOME, or from an executor that reports none: the launch denies `.codex` whole', async () => {
+    const { executor } = plane([ready(2, { codexState })])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.codexStateFor(SUBJECT, '/elsewhere/home')).toBeUndefined()
+    const older = plane([ready(2)])
+    await older.executor.prepareAt(AGENT, KEY, [HOST])
+    expect(older.executor.codexStateFor(SUBJECT, HOME)).toBeUndefined()
+  })
+})
+
+describe('the key a placed session keeps its skill ledger under', () => {
+  const WORKSPACE = 'workspace:5e7b6f7c0d0a4c1f9a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f'
+
+  it('is the session directory the executor reported, the same after an idle close relaunches it', async () => {
+    const { executor, sent } = plane([
+      ready(2, { workspaceIncarnation: WORKSPACE }),
+      ready(3, { workspaceIncarnation: WORKSPACE })
+    ])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.workspaceIncarnationFor(SUBJECT)).toBe(WORKSPACE)
+    await executor.suspendIdle(SUBJECT)
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    // A new launch over the same directory: its skills are the ones the ledger already records, not foreign ones.
+    expect(sent[0]!.launchId).not.toBe(sent[1]!.launchId)
+    expect(executor.workspaceIncarnationFor(SUBJECT)).toBe(WORKSPACE)
+  })
+
+  it('is the launch for an executor that reports no directory', async () => {
+    const { executor, sent } = plane([ready(2)])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.workspaceIncarnationFor(SUBJECT)).toBe(sent[0]!.launchId)
+  })
+})
+
+describe('the skills a placed session installs', () => {
+  const CWD = `/var/lib/agentconnect/sessions/${LEAF}/workspace`
+
+  /** A bound shim session that records what the skills seam asks of it. */
+  function bound() {
+    const { executor } = plane([])
+    const request = vi.fn(async () => ({ intact: [] }))
+    const session = { isAttached: () => true, hasCapability: () => true, request }
+    ;(executor as unknown as { binder: { sessionFor: () => unknown } }).binder.sessionFor = () => session
+    return { executor, request }
+  }
+
+  // The shim is rooted at the session directory, above the checkout where runtimes scan for project skills.
+  it('aims every request at the cwd it is given', async () => {
+    const { executor, request } = bound()
+    await executor.skillClientFor(SUBJECT, CWD)!.verify([])
+    expect(request).toHaveBeenCalledWith('skills', { cwd: CWD, request: { op: 'verify', roots: [] } }, undefined)
+  })
+
+  // P2 keeps executors on daemon acquisition even if a shim advertised skill-git-in-pod-v1 and the grant leaked.
+  it('never takes Git plans, whatever the bound shim holds', () => {
+    const { executor } = bound()
+    expect(EXECUTOR_GRANTS).not.toContain('skills-git')
+    expect(executor.skillClientFor(SUBJECT, CWD)!.gitInPod).toBe(false)
+    expect(executor.skillClientFor(SUBJECT)!.gitInPod).toBe(false)
+  })
+
+  it('sends the bare request without one, which the shim installs at its own root', async () => {
+    const { executor, request } = bound()
+    await executor.skillClientFor(SUBJECT)!.verify([])
+    expect(request).toHaveBeenCalledWith('skills', { op: 'verify', roots: [] })
+  })
+
+  it('keeps the receipts of installs into a cwd apart from those at the session directory', () => {
+    const reported = 'workspace:5e7b6f7c0d0a4c1f9a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f'
+    // Receipt paths are relative to the directory installed into: one at the session root must never vouch for the checkout.
+    expect(cwdWorkspaceIncarnation(reported, CWD)).not.toBe(reported)
+    expect(cwdWorkspaceIncarnation(reported, CWD)).toBe(cwdWorkspaceIncarnation(reported, CWD))
+    expect(cwdWorkspaceIncarnation(reported, CWD)).not.toBe(cwdWorkspaceIncarnation(reported, `${CWD}/sub`))
   })
 })
 

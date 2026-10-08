@@ -27,7 +27,6 @@
  */
 import type { SlackIdentity } from '../github/logto-identity.js'
 import type { AgentRecord, BotRecord, SeedTrigger, ReportedChannel } from '../persistence/ports.js'
-import { isGatedAgent } from './placement.js'
 
 /** Concurrent identity reads per resolve — the audience is small and every lookup is
  *  cached per subject, so this only bounds a cold burst. Shared with approvalRoute.ts. */
@@ -103,14 +102,13 @@ export async function linkedMemberIds(
   return new Set(identities.filter((id): id is string => id !== null))
 }
 
-/** {@link linkedMemberIds} over a gated agent's whole audience — the seed path, where
- *  every row under consideration is new and there is no operator choice to preserve. */
+/** {@link linkedMemberIds} over a restricted agent's share set, the seed path; assistant mode alone opens no DM (assistant-mode.md §1.8). */
 export async function linkedAudienceMemberIds(
   agent: Pick<AgentRecord, 'visibility' | 'sharedWith'>,
   bot: Pick<BotRecord, 'platform' | 'teamId'>,
   deps: LinkedDmDeps
 ): Promise<ReadonlySet<string>> {
-  return isGatedAgent(agent) ? linkedMemberIds(agent.sharedWith, bot, deps) : new Set()
+  return agent.visibility === 'restricted' ? linkedMemberIds(agent.sharedWith, bot, deps) : new Set()
 }
 
 /**

@@ -14,10 +14,12 @@ import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
   RELAY_CP_SUBPROTOCOL,
+  RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   type RcCodeHostFeedback,
   type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
-  type RcRunReport
+  type RcRunReport,
+  type RcSnapshotKind
 } from '@agentconnect.md/protocol'
 import { ClientTransport, systemClock } from '@agentconnect.md/connection'
 import { loadConfig, resolveAuth, toWsOrigin } from './config.js'
@@ -26,7 +28,7 @@ import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { WebchatRouter, bindWebchatPostAuthor } from './webchat-router.js'
-import { WebchatVerdictCache } from './webchat-verdict-cache.js'
+import { VERDICT_TTL_MS, WebchatVerdictCache } from './webchat-verdict-cache.js'
 import { registerAgentChatRoutes } from './agent-chat-route.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
 import { relayIngressPlugins } from './platforms/registry.js'
@@ -50,8 +52,6 @@ import { startRelayOpenTelemetry } from './observability.js'
 const telemetry = startRelayOpenTelemetry()
 
 const RELAY_WS_PATH = '/api/v1/relays/ws'
-// How long a verified agent chat key keeps chatting without the CP (shared-bot-relay.md §10.4).
-const AGENT_CHAT_VERDICT_TTL_MS = 60_000
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -120,6 +120,8 @@ async function main(): Promise<void> {
   // Upstream headers are the upstream credential — never logged.
   const mcpBindings = new McpBindingTable()
   const memoryBindings = new MemoryConnectionBindingTable()
+  const projectionTable = (kind: RcSnapshotKind) =>
+    kind === 'mcp' ? mcpBindings : kind === 'hook' ? hookTable : memoryBindings
 
   const wsOrigin = toWsOrigin(config.CP_URL)
   const client = new RelayCpClient({
@@ -143,11 +145,10 @@ async function main(): Promise<void> {
     // Link (re)became READY — re-emit thread-assign reports and channel snapshots
     // dropped while it was down.
     onReady: () => {
-      // The CP now replays the complete active memory-binding set for this
-      // registration. Clear only here (not while disconnected), so deleted or
-      // revoked grants cannot survive a reconnect while a CP outage still leaves
-      // the last verified bindings available.
-      memoryBindings.clear()
+      // A snapshot left open by the dropped link never ends; the new CP's replay starts its own.
+      for (const table of [mcpBindings, hookTable, memoryBindings]) table.abandonSnapshot()
+      // A CP without snapshots replays the full memory-binding set, so only its clear drops revoked grants.
+      if (!client.advertisedFeature(RELAY_PROJECTION_SNAPSHOT_V1_FEATURE)) memoryBindings.clear()
       held.relayIngress?.flushPendingReports()
     },
     // CP revoked a daemon's credential/membership — drop its rd/* connection now (§9).
@@ -197,7 +198,9 @@ async function main(): Promise<void> {
     onMcpAssign: (a) => mcpBindings.assign(a),
     onMcpUnassign: (a) => mcpBindings.unassign(a.providerId, a.grantKeyHash),
     onMemoryConnectionAssign: (a) => memoryBindings.assign(a),
-    onMemoryConnectionUnassign: (a) => memoryBindings.unassign(a.connectionId, a.revision, a.grantKeyHash)
+    onMemoryConnectionUnassign: (a) => memoryBindings.unassign(a.connectionId, a.revision, a.grantKeyHash),
+    onSnapshotBegin: (s) => projectionTable(s.kind).beginSnapshot(s.snapshotId),
+    onSnapshotEnd: (s) => projectionTable(s.kind).endSnapshot(s.snapshotId, s.withheld)
   })
   held.client = client
 
@@ -334,13 +337,13 @@ async function main(): Promise<void> {
 
   // The webchat router (chatId → browser or AI SDK chat turn) — a daemon's rd/chat is delivered here.
   const router = new WebchatRouter()
-  // One verdict per browser token until its `exp` (§10.4).
+  // One verdict per browser token for a minute at most, never past its `exp` (§10.4).
   const webchatVerdicts = new WebchatVerdictCache((token) => client.verify('webchat-token', token))
   // One verdict per (API key, agent, chat id) for a minute, the bound on how long a revoked key keeps chatting (§10.4).
   const agentChatVerdicts = new WebchatVerdictCache<[apiKey: string, agentId: string, chatId: string]>(
     (apiKey, agentId, chatId) => client.verifyAgentChatKey(apiKey, agentId, chatId),
     Date.now,
-    (_args, verifiedAtMs) => verifiedAtMs + AGENT_CHAT_VERDICT_TTL_MS
+    (_args, verifiedAtMs) => verifiedAtMs + VERDICT_TTL_MS
   )
 
   // Agent chat API (POST /ai-sdk/… and /ag-ui/agents/:agentId/chat, §10.4); registered before listen, the rd/* server is late-bound.

@@ -65,6 +65,22 @@ describe('memoryProviderFor (spawn-time provider + env)', () => {
     expect(() => memoryProviderFor(agent('none'), other).runtimeEnv()).toThrow(MemoryProviderUnavailableError)
   })
 
+  it.each([
+    ['opencode', 'custom-wrapper', ['serve-acp']],
+    ['my-opencode', './opencode', ['acp']],
+    ['my-opencode', 'C:\\Tools\\opencode.exe', ['acp']],
+    ['my-opencode', 'npx', ['-y', 'opencode-ai@1.18.32', 'acp']]
+  ])('allows none memory for %s via %s without replacing provider config', (runtimeId, command, args) => {
+    const runtime = { command, args, env: [] } as unknown as RuntimeDef
+    const env = {
+      OPENCODE_CONFIG_CONTENT: '{"enabled_providers":["deepseek"],"model":"deepseek/deepseek-chat"}',
+      DEEPSEEK_API_KEY: 'test-provider-key'
+    }
+    const before = { ...env }
+    expect(memoryProviderFor(agent('none', runtimeId), runtime, env).runtimeEnv()).toEqual({})
+    expect(env).toEqual(before)
+  })
+
   it('keeps invalid runtime config on the provider-unavailable error surface', () => {
     expect(() => memoryProviderFor(agent('none'), codex, { CODEX_CONFIG: 'not-json' }).runtimeEnv()).toThrow(
       MemoryProviderUnavailableError
@@ -73,6 +89,28 @@ describe('memoryProviderFor (spawn-time provider + env)', () => {
 
   it('native on an unregistered runtime throws (env unverified)', () => {
     expect(() => memoryProviderFor(agent('native'), other).runtimeEnv()).toThrow(MemoryProviderUnavailableError)
+  })
+
+  // assistant-mode.md §4.1, §5.5: an assistant-mode session launches with the runtime's own memory off, or not at all.
+  it('assistant mode requires the verified off-switch, whatever the provider', () => {
+    const on = (provider: MemoryProviderKind | undefined, runtime = 'claude-acp') => ({
+      ...agent(provider, runtime),
+      assistantMode: { enabled: true }
+    })
+    const off = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' }
+    expect(memoryProviderFor(on('managed'), claude).runtimeEnv()).toEqual(off)
+    expect(memoryProviderFor(on(undefined), claude).runtimeEnv()).toEqual(off)
+    expect(memoryProviderFor(on('none'), claude).runtimeEnv()).toEqual(off)
+    expect(() => memoryProviderFor(on('managed', 'gemini'), other).runtimeEnv()).toThrow(
+      "assistant mode needs the runtime's own memory turned off"
+    )
+    expect(() => memoryProviderFor(on('native'), claude)).toThrow(MemoryProviderUnavailableError)
+    // Outside assistant mode, managed still tolerates a runtime whose off-switch is unverified.
+    const plain = { ...agent('managed', 'gemini'), assistantMode: { enabled: false } }
+    expect(memoryProviderFor(plain, other).runtimeEnv()).toEqual({})
+    expect(memoryProviderFor({ ...agent('native'), assistantMode: { enabled: false } }, claude).runtimeEnv()).toEqual(
+      {}
+    )
   })
 
   it('external fails closed without a connection id/verified registry admission', () => {

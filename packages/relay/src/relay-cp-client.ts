@@ -73,6 +73,9 @@ import {
   type RcMcpUnassign,
   type RcMemoryConnectionAssign,
   type RcMemoryConnectionUnassign,
+  RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+  type RcSnapshotBegin,
+  type RcSnapshotEnd,
   type ErrorCode
 } from '@agentconnect.md/protocol'
 import {
@@ -161,6 +164,9 @@ export interface RelayCpClientDeps {
   /** Purpose-separated daemon-private memory plugin proxy bindings. */
   onMemoryConnectionAssign?: (a: RcMemoryConnectionAssign) => void
   onMemoryConnectionUnassign?: (a: RcMemoryConnectionUnassign) => void
+  /** A full reconnect replay of one projection starts, then ends naming what failed to replay. */
+  onSnapshotBegin?: (s: RcSnapshotBegin) => void
+  onSnapshotEnd?: (s: RcSnapshotEnd) => void
   /** Called once the relay reaches READY on each (re)connect. */
   onReady?: () => void
   /** First authenticated snapshot of a stored deployment document in this process; later reconnects never hot-reload it. */
@@ -698,7 +704,9 @@ export class RelayCpClient {
           // Seats an ownerAsDefault decision route as the channel default, one writer per session.
           OWNER_DEFAULT_DECISION_V1_FEATURE,
           // Fills an installation-wide GitHub rule in with each event's repository, so the CP may send it one.
-          HOOK_GITHUB_INSTALLATION_V1_FEATURE
+          HOOK_GITHUB_INSTALLATION_V1_FEATURE,
+          // Prunes its MCP, hook and memory tables at the end of a replay snapshot instead of keeping stale entries.
+          RELAY_PROJECTION_SNAPSHOT_V1_FEATURE
         ]
       })
     )
@@ -819,6 +827,14 @@ export class RelayCpClient {
       }
       case 'rc/memoryconnection-unassign': {
         this.deps.onMemoryConnectionUnassign?.(frame.payload as RcMemoryConnectionUnassign)
+        return
+      }
+      case 'rc/snapshot-begin': {
+        this.deps.onSnapshotBegin?.(frame.payload as RcSnapshotBegin)
+        return
+      }
+      case 'rc/snapshot-end': {
+        this.deps.onSnapshotEnd?.(frame.payload as RcSnapshotEnd)
         return
       }
       default:

@@ -77,6 +77,9 @@ export const CronReport = z.object({
 })
 export type CronReport = z.infer<typeof CronReport>
 
+/** CP accepts `cron/report-sync`, the acknowledged form of a terminal `cron/report`; without it a daemon sends the EVT. */
+export const CRON_REPORT_ACK_FEATURE = 'cron-report-ack-v1'
+
 /**
  * `cron/run` (C→D REQ → ack) — fire one CP-owned cron NOW (console "Run now").
  * The daemon accepts (`ok:true`) and runs the fire asynchronously — outcome

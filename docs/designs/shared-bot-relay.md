@@ -510,7 +510,12 @@ stands on (an org-visible session is continuable by the organization; a
 private one stays its owner's, and a conversation with no turn yet has no
 session to judge, so it is the owner's alone); unknown and foreign ids fail
 closed. The token carries the authorized conversation id, and the relay uses
-that token-bound value rather than trusting the browser query. It then resolves
+that token-bound value rather than trusting the browser query. Every
+verification re-reads the token owner's organization membership and requires
+them to still see every agent in the conversation; the relay reuses a
+successful verdict for at most a minute and never past the token's expiry, so a
+removed member or a revoked share stops dialing within a minute. A socket that
+is already open is not closed by either check. The relay then resolves
 the agent's current daemon placement and bridges browser turns and daemon
 output without routing arbitration. Webchat verification carries a
 `conversationBinding: 'v1'` fence and uses a v2 token-signing domain so mixed
@@ -925,8 +930,9 @@ The table describes degradation paths within the current control-loss limits.
 Relay readiness follows the CP link; with the chart's probes, roughly 20–30
 seconds without READY removes the relay from Service endpoints. CP roster
 expiry is currently 45 seconds, after which daemons can lose that relay route.
-Reconnect also clears memory bindings before asynchronous replay, while MCP
-and hook replay is additive. Existing connections alone do not establish
+Reconnect replays MCP bindings, hook rules and memory bindings as snapshots:
+the relay keeps serving its tables during the replay and prunes what the
+replay no longer names at its end. Existing connections alone do not establish
 uninterrupted service through those transitions.
 
 The proposed [CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget)

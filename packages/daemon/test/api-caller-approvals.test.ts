@@ -170,7 +170,7 @@ describe("an API turn's runtime approval", () => {
     const w = world()
     const outcome = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)
     await handedOut(w)
-    await w.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
+    await w.coordinator.releaseApprovals(OWNER, ACP_SESSION)
     await expect(outcome).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     expect(w.coordinator.awaitingHuman(OWNER, ACP_SESSION)).toBe(false)
   })

@@ -43,13 +43,20 @@ export const WorkspaceErrorReason = z.enum([
   'not-utf8', // the supplied content is not valid UTF-8
   'stale', // optimistic-concurrency failure (CONFLICT)
   'sandbox-unavailable', // no bound channel reaches the pod right now; the one TRANSIENT reason, so the CP answers 503 with a code
-  'sandbox-removed' // a session's own sandbox claim and volume are gone, so no wake brings them back; its next message creates new ones
+  'sandbox-removed', // a session's own sandbox claim and volume are gone, so no wake brings them back; its next message creates new ones
+  'sandbox-outdated' // the agent's sandbox predates the requested operation; a restarted sandbox serves it
 ])
 export type WorkspaceErrorReason = z.infer<typeof WorkspaceErrorReason>
 
 /** Raw UTF-8 ceiling for one console workspace-file edit. Base64 expansion still
  * leaves enough envelope headroom under the shared 256 KiB frame cap. */
 export const MAX_WORKSPACE_EDIT_BYTES = 180_000
+
+/** Ceiling on one console file download (assembled from byte slices by the CP): the default attachment cap. */
+export const MAX_WORKSPACE_DOWNLOAD_BYTES = 8 * 1024 * 1024
+
+/** Where inbound attachments land under a session's working root (inbound-file-attachments.md §2.1). */
+export const WORKSPACE_UPLOADS_DIR = 'uploads'
 
 /** One directory entry in a workspace listing (name-only; not a full path). */
 export const WorkspaceEntry = z.object({
@@ -94,12 +101,11 @@ export const WorkspaceReadReq = z.object({
   path: z.string().min(1), // workspace-relative POSIX path to a file
   offset: z.number().int().nonnegative().default(0), // byte offset
   limit: z.number().int().positive().max(65536).default(65536), // byte count per slice (64 KiB, see docblock)
-  encoding: z.literal('base64').optional() // ask for raw bytes as base64 (any file, no binary sniff); needs `workspace-raw-read-v1`
+  encoding: z.enum(['base64']).optional() // 'base64' ⇒ a raw byte slice with no binary sniff (file download)
 })
 export type WorkspaceReadReq = z.infer<typeof WorkspaceReadReq>
 
-/** D→C REP (corr = the req id): the file slice (or `exists:false` / binary-detected
- *  / `type:'dir'`). */
+/** D→C REP (corr = the req id): the file slice (or `exists:false` / binary-detected / `type:'dir'`). */
 export const WorkspaceReadContent = z.object({
   agentId: z.string(),
   path: z.string(),
@@ -107,8 +113,8 @@ export const WorkspaceReadContent = z.object({
   type: z.enum(['file', 'dir']).optional(), // what the path IS; 'dir' ⇒ no content (absent from an older daemon)
   size: z.number().int().nonnegative().optional(),
   mtime: z.string().optional(), // RFC3339
-  encoding: z.enum(['utf8', 'none', 'base64']).optional(), // 'none' ⇒ binary detected, content omitted; 'base64' ⇒ raw bytes, as asked
-  content: z.string().optional(), // utf8 text slice, or base64 bytes when `encoding:'base64'`
+  encoding: z.enum(['utf8', 'none', 'base64']).optional(), // 'none' ⇒ binary detected, content omitted; 'base64' answers a byte read
+  content: z.string().optional(), // utf8 text slice, or the base64 bytes of a byte read
   offset: z.number().int().nonnegative().optional(), // byte offset this slice starts at
   nextOffset: z.number().int().nonnegative().optional(), // byte offset to request next (offset + bytes in this slice)
   truncated: z.boolean().optional() // true ⇒ nextOffset < size (more bytes remain)

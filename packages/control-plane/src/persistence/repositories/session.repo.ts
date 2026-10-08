@@ -88,6 +88,7 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     outputMode: s.outputMode,
     daemonId: s.daemonId ? DaemonId(s.daemonId) : null,
     contentSetId: s.contentSetId,
+    contentStoreId: s.contentStoreId,
     workspaceIsolation: s.workspaceIsolation as 'shared' | 'session' | null,
     executorDaemonId: s.executorDaemonId ? DaemonId(s.executorDaemonId) : null,
     stayedHomeReason: (s.stayedHomeReason as SessionStayedHomeReason | null) ?? null,
@@ -942,7 +943,7 @@ export class PgSessionRepo implements SessionRepo {
         "thread", "tenantScope", "phase", "link", "summary", "title", "status",
         "lastActivityAt", "triggeredBy", "channelName", "triggeredByName", "hookKind",
         "threadUrl", "runtime", "model", "effort", "fastMode",
-        "permissionMode", "outputMode", "daemonId", "contentSetId", "workspaceIsolation",
+        "permissionMode", "outputMode", "daemonId", "contentSetId", "contentStoreId", "workspaceIsolation",
         "executorDaemonId", "stayedHomeReason", "orgId", "visibility",
         "ownerIdentity", "visibilitySource", "externalProvider",
         "externalScopeId", "externalResolution", "legacyUnresolved",
@@ -962,12 +963,19 @@ export class PgSessionRepo implements SessionRepo {
         ${ev.fastMode ?? null}, ${ev.permissionMode ?? null},
         ${ev.outputMode ?? null}, ${ev.daemonId ?? null},
         -- Read from the reporting daemon's membership in this same statement, so the store the
-        -- bodies are going to can never drift from the daemon it describes. Restricted to the
-        -- org-less pool: that is the set whose members provably share one data-plane store.
+        -- bodies are going to can never drift from the daemon it describes. The org-less pool's
+        -- members provably share one data-plane store; an org set's member counts only when it
+        -- reports a shared store, whose id is stamped beside it.
         (
           SELECT msm."setId" FROM "member_set_member" msm
           JOIN "member_set" ms ON ms."id" = msm."setId"
-          WHERE msm."daemonId" = ${ev.daemonId ?? null}::uuid AND ms."orgId" IS NULL
+          JOIN "daemon" d ON d."id" = msm."daemonId"
+          WHERE msm."daemonId" = ${ev.daemonId ?? null}::uuid
+            AND (ms."orgId" IS NULL OR d."capabilities"->>'contentStore' IS NOT NULL)
+        ),
+        (
+          SELECT (d."capabilities"->>'contentStore')::uuid FROM "daemon" d
+          WHERE d."id" = ${ev.daemonId ?? null}::uuid
         ),
         ${ev.workspaceIsolation ?? null}::"WorkspaceIsolation",
         ${ev.executorDaemonId ?? null}::uuid, ${ev.stayedHomeReason ?? null},
@@ -1035,6 +1043,11 @@ export class PgSessionRepo implements SessionRepo {
           WHEN "session_meta"."daemonId" IS DISTINCT FROM EXCLUDED."daemonId"
             THEN "session_meta"."contentSetId"
           ELSE COALESCE("session_meta"."contentSetId", EXCLUDED."contentSetId")
+        END,
+        "contentStoreId" = CASE
+          WHEN "session_meta"."daemonId" IS DISTINCT FROM EXCLUDED."daemonId"
+            THEN "session_meta"."contentStoreId"
+          ELSE COALESCE("session_meta"."contentStoreId", EXCLUDED."contentStoreId")
         END,
         "workspaceIsolation" = COALESCE(
           EXCLUDED."workspaceIsolation",
@@ -1778,6 +1791,7 @@ export class PgSessionRepo implements SessionRepo {
       visibility: SessionVisibility
       ownerIdentity: string | null
       externalProvider: string | null
+      thread: string | null
     }) => boolean
   ): Promise<SessionVisibilityChange> {
     return withAmbientTx(this.db, async (tx) => {
@@ -1785,9 +1799,14 @@ export class PgSessionRepo implements SessionRepo {
       // for children, and a child whose row is still uncommitted is invisible to that scan.
       await lockSessionLineage(tx, [sessionId])
       const locked = await tx.$queryRaw<
-        Array<{ visibility: string; ownerIdentity: string | null; externalProvider: string | null }>
+        Array<{
+          visibility: string
+          ownerIdentity: string | null
+          externalProvider: string | null
+          thread: string | null
+        }>
       >(Prisma.sql`
-        SELECT "visibility", "ownerIdentity", "externalProvider"
+        SELECT "visibility", "ownerIdentity", "externalProvider", "thread"
         FROM "session_meta" WHERE "id" = ${sessionId} AND "orgId" = ${orgId} FOR UPDATE
       `)
       // The org fence rides the row-lock read, so a cross-org id takes the same
@@ -1798,7 +1817,8 @@ export class PgSessionRepo implements SessionRepo {
       const current = {
         visibility: locked[0]!.visibility as SessionVisibility,
         ownerIdentity: locked[0]!.ownerIdentity,
-        externalProvider: locked[0]!.externalProvider
+        externalProvider: locked[0]!.externalProvider,
+        thread: locked[0]!.thread
       }
       // Re-authorize against the LOCKED row, not the one the route read. An
       // ancestor cascade committing in between can re-own this session, and the

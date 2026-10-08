@@ -16,7 +16,7 @@
 import { useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
-import { groupFleetStatus, isSetPlacementKind, status, type DaemonRow } from '@/lib/data'
+import { groupFleetStatus, isSetPlacementKind, presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { NotFound } from '@/components/console/NotFound'
@@ -292,7 +292,7 @@ export default function GroupDetailView() {
 
 /** One member of the group. Clickable, because the machine's own page is where its detail lives. */
 function MemberRow({ m, pinned, onOpen }: { m: DaemonRow; pinned: number; onOpen: () => void }) {
-  const ms = status(m.status)
+  const ms = status(presentedDaemonStatus(m))
   return (
     // Mobile drops the two load bars rather than squeezing six tracks into 375px: which member
     // is serving is the routing fact, and its utilization is on the machine's own page anyway.

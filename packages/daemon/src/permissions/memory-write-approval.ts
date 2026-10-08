@@ -3,6 +3,7 @@
 // It rides the elicitation machinery as one synthetic form so every surface renders it unchanged.
 import type { CreateElicitationRequest, CreateElicitationResponse } from '@agentclientprotocol/sdk'
 import type { MemoryWriteAsk } from '../mcp/ops/memory.js'
+import { elicitationDenyChoice, type ApprovalChoice } from './approval-choices.js'
 
 /** The one field the card asks. */
 export const MEMORY_WRITE_APPROVAL_PROP = 'decision'
@@ -47,7 +48,23 @@ export function memoryWriteApprovalElicitation(sessionId: string, ask: MemoryWri
   } as CreateElicitationRequest
 }
 
-/** Read the answer back: only an explicit grant allows; a bare `accept` (the editor queue's Allow)
+/** The three answers as the console offers them (slack-approval-dm.md §11.2): two grants, then Deny. */
+export function memoryWriteApprovalChoices(): ApprovalChoice<CreateElicitationResponse>[] {
+  return MEMORY_WRITE_APPROVAL_OPTIONS.map((o) =>
+    o.value === 'deny'
+      ? elicitationDenyChoice(o.label)
+      : {
+          option: {
+            optionId: o.value,
+            name: o.label,
+            kind: o.value === 'allow_session' ? 'allow_always' : 'allow_once'
+          },
+          response: { action: 'accept', content: { [MEMORY_WRITE_APPROVAL_PROP]: o.value } }
+        }
+  )
+}
+
+/** Read the answer back: only an explicit grant allows; a bare `accept` (an older console's Allow)
  *  is one write; decline, cancel and an unshown card (`undefined`) never are. */
 export function memoryWriteApprovalFrom(res: CreateElicitationResponse | undefined): MemoryWriteApprovalOutcome {
   if (res === undefined) return 'no_approver'

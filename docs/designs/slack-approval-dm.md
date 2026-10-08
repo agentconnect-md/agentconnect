@@ -441,3 +441,99 @@ Console notifications (§7) followed as their own change (#1704).
   chosen human is away, the console queue is the backstop, as today.
 - **Approval timeouts and reminders.** Orthogonal; nothing here precludes
   them.
+
+## 11. One pending approval, one settle path (#2592)
+
+The chat path (§1), the editor path, and the DM (§5) each grew their own pending
+record and their own resolve entry point. So the same request could be answered
+differently depending on where it was answered: the console could not grant
+`allow_always` (#1969), and it answered a managed-memory write with a bare
+`accept`, which always meant "Allow once". This section records the model that
+replaces them. It is delivered in steps; §11.4 says what each step covers.
+
+### 11.1 What differs per surface, and what does not
+
+Three things genuinely differ per surface, and each stays with its surface:
+
+- **Transport.** The daemon posts and rewrites chat and DM cards itself. The
+  console reaches a request only through the CP proxy (§6.2), because the CP is
+  never on the hot path.
+- **Who may answer.** For an in-conversation card, anyone who can see it, and
+  only behind `allowRuntimeChangesInChat` (§2). For a DM card, the addressed
+  target, re-verified at click time (§6.3). For the console, an Agent editor,
+  which the CP decision route enforces before the frame reaches the daemon.
+- **Rendering limits.** Option caps, surfaces with no buttons that take a
+  correlated text reply, and surfaces that cannot edit a posted message.
+
+Everything else is shared:
+
+- **The pending record.** One entry per request: its kind, its bounded,
+  secret-masked choices, the original params, the resolver, and the surfaces it
+  was offered on (an in-conversation card, a DM card, and always the console).
+- **Answer validation.** The returned choice must be one this request offered,
+  re-derived against the request's own params (#1815). An unoffered choice, or
+  one whose kind contradicts the binary `decision`, is refused, and the request
+  stays pending.
+- **Settlement.** Exactly once across concurrent surfaces, fenced by the store's
+  compare-and-swap on `status = 'pending'`. It records the decider, closes the
+  wait (§7), and rewrites every other surface's card to its settled state with
+  the same label: the chosen option's name, followed by the decider's name when
+  one is known.
+
+```
+pending: { id, kind, choices, params, resolve, surfaces }
+settle(id, choice, actor, surface)
+  → surface.authorize(actor)     // the only per-surface step
+  → validate choice against choices
+  → settle once + audit + rewrite every surface's card
+surfaces: render choices; turn a click or reply into a choice
+```
+
+### 11.2 Choices
+
+A choice is the console's `AgentPermissionOption` (`optionId`, `name`, `kind`),
+paired with the ACP answer it resolves with.
+
+- **Permission request:** one choice per ACP option, with its own id and kind.
+  A list longer than the shared cap is declined before any surface sees it.
+- **MCP tool approval elicitation** (Codex, `_meta.codex_approval_kind`): when
+  the ask reduces to one single-select field that the DM card can offer
+  (§5.2), each option is an allow choice that accepts with that value, plus one
+  `Deny` choice that declines. Choice ids are positions (`option:<n>`), so a
+  value is never echoed back to the daemon. An ask with any other shape offers
+  no choices and keeps the binary Allow/Deny.
+- **Managed-memory write approval** (session-visibility.md §5.1): the daemon's
+  own three answers. `Allow once` and `Allow for this session` are allow
+  choices, and `Deny` declines.
+
+A request with no choices keeps the stated binary fallback of §6.2. For an
+elicitation, Allow is a bare `accept` and Deny a `cancel`. With a choice, a
+reject declines instead, because an explicit refusal is what MCP's `decline`
+means, and it is what the chat card's Dismiss and an API caller's refusal
+already send.
+
+The console needs no change beyond §6.2: it already renders one control per
+option in `options`, and pending elicitation rows now carry them too.
+
+### 11.3 Actor format
+
+`resolvedBy` stays surface-scoped: `user:<consoleUserId>` from the console (CP
+stamped), and `<platform>:<scope>:<userId>` from a chat surface. Here `scope`
+is the namespace the surface's user ids live in (the Slack workspace), and it
+is omitted where the ids are already global (`<platform>:<userId>`). The
+Slack encoding (§6.1) is unchanged, and the prefix now comes from the surface
+rather than from core.
+
+### 11.4 Delivery
+
+1. **One record for permission requests and editor-queue elicitations**, and
+   one settle path for the console, the Slack in-conversation permission card,
+   and the DM permission card. Console choices for approval elicitations, both
+   the editor-queue ones and the in-chat approval cards, so an editor can pick
+   `Allow for this session`. This unblocks #2331 and per-call re-approval on
+   every platform without an in-chat approval card.
+2. **Migrate the remaining entry points** (the DM elicitation card, elicitation
+   choice, form, typed reply and URL consent) onto `settle`, collapse the
+   elicitation map into the same record, and replace the
+   `instanceof SlackConnection` gates on chat approval with a surface
+   capability.

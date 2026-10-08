@@ -101,36 +101,23 @@ function safeEventTimeUs(value: number): number {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
-/**
- * The provenance-explicit duplicate identity of a row, or null when the row
- * must never dedupe across sources (§6 step 2). Two rules are CORE — they
- * belong to no platform — and the third is the platform module's:
- *
- * - only `kind === 'text'` rows dedupe — a coincidental `ts` collision with a
- *   work-lane row is inert by construction;
- * - webchat: the canonical `postId` — minted once at origin, identical on
- *   every copy regardless of a collision-bumped `ts`. Rows without one
- *   (daemon-local a2a report-backs, pre-upgrade rows) never dedupe: failing
- *   toward a visible duplicate, never toward data loss. Webchat has no bot
- *   identity to install and therefore no platform module, so this arm is the
- *   host's for good;
- * - everything else: the owning module's `messageIdentity` (§10) — the
- *   provider-native id shape, chosen so a daemon-local 13-digit
- *   `monotonicTs()` millisecond stamp can never match it.
- *
- * AN UNREGISTERED PLATFORM ID NOW DEDUPES NOTHING. It used to take Slack's
- * decimal-`ts` rule, purely because Slack sat in the fall-through arm of an
- * if-chain; the published contract says the opposite (absent ⇒ never dedupe),
- * and the contract is right. Deduping is the only step here that can DELETE a
- * row from the transcript, so guessing that an unknown provider numbers its
- * messages the way Slack does is a guess in the one direction §6 forbids —
- * "toward a visible duplicate, never toward data loss".
- */
+/** A hook fire row's `ts`: the relay's `firedAt` millis, then the per-hook msgId `<hookId>:<deliveryKey>`, `:route` on a Decision host copy. */
+const HOOK_FIRE_TS = /^(\d+)\|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:(.+?)(?::route)?$/i
+
+/** One provider delivery fanned to several agents' hooks shares its `firedAt` and delivery key, so those survive while the hook id is dropped; sender and text keep an unlike row visible. */
+function hookFireIdentity(row: SessionMessageDto): string | null {
+  const fire = HOOK_FIRE_TS.exec(row.ts)
+  return fire ? `hook:${fire[1]}|${fire[2]}|${row.sender}|${row.text}` : null
+}
+
+/** A text row's cross-source duplicate identity, or null to keep every copy (§6 step 2): a canonical `postId`, a hook fire's delivery, else the platform module's `messageIdentity`; an unclaimed platform dedupes nothing, failing toward a visible duplicate. */
 export function duplicateIdentity(platform: string, row: SessionMessageDto): string | null {
   if (row.kind !== 'text') return null
   // A canonical post id is minted once per line, so it identifies every copy on any platform, including a console line sent into several hook members (#2500).
   if (row.postId) return `post:${row.postId}`
   if (platform === 'webchat') return null
+  // Hook is core-owned like webchat: it has no platform module to claim its rows.
+  if (platform === 'hook') return hookFireIdentity(row)
   return platformMessageIdentity(platform, row)
 }
 

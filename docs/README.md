@@ -44,6 +44,7 @@ the picture it draws.
 - [feishu-integration.md](designs/feishu-integration.md) — The Lark / Feishu integration, international and CN variants.
 - [qq-integration.md](designs/qq-integration.md) — Official QQ bot integration, attachment support, and shared group-context and approval dependencies.
 - **(draft)** [google-chat-integration.md](designs/google-chat-integration.md) — Proposed native Google Chat integration with HTTPS relay ingress, threaded replies, durable admission, and a Pub/Sub alternative.
+- **(draft)** [voice-meeting-participation.md](designs/voice-meeting-participation.md) — Agents in voice calls: joining and transcribing Google Meet through a meeting runner first, then speaking, Discord voice channels, the console microphone, and Zoom, Teams, and huddles on the same runner seam.
 
 ### Webchat and console
 
@@ -111,6 +112,7 @@ the picture it draws.
 - [agent-reachability-graph.md](designs/agent-reachability-graph.md) — Which agents can reach which: the reachability graph.
 - [preset-agents.md](designs/preset-agents.md) — Preset agents and guided onboarding.
 - [agent-assistant.md](designs/agent-assistant.md) — The AgentConnect MCP: system operations for AI tools.
+- [assistant-mode.md](designs/assistant-mode.md) — Assistant mode: one long conversation per place, one shared mind, trust declared per place, background sub-sessions and read-only patrols.
 - [agent-capability-benchmark-harness.md](designs/agent-capability-benchmark-harness.md) — Add-on evaluation and harness neutrality.
 
 ### Memory, knowledge, and tools
@@ -131,6 +133,7 @@ the picture it draws.
 - [k8s-daemon-pool.md](designs/k8s-daemon-pool.md) — Multi-org cloud daemons and the duty ledger.
 - [cluster-spawn-and-shim.md](designs/cluster-spawn-and-shim.md) — Running ACP runtimes in sandbox pods, and the in-sandbox shim.
 - [cloud-data-plane-postgres.md](designs/cloud-data-plane-postgres.md) — PostgreSQL as the cloud daemon's durable store.
+- [source-cache.md](designs/source-cache.md) — S3-backed Source Cache for in-pod workspace and skill Git materialization, including non-GitHub sources.
 - [daemon-groups.md](designs/daemon-groups.md) — Daemon groups and agent placement.
 - [session-executors.md](designs/session-executors.md) — Spreading one agent's sessions across a daemon group: the executor facet, the shim contract, execution strategies.
 - [background-task-aware-reclaim.md](designs/background-task-aware-reclaim.md) — ACP host reclamation that respects background jobs.
@@ -138,6 +141,6 @@ the picture it draws.
 
 ## Working papers
 
-[`superpowers/`](superpowers/) holds point-in-time implementation plans and
-specs produced during development. They record how a change was executed, are
-not kept current, and never override the designs above.
+[`superpowers/`](superpowers/) holds point-in-time design specs produced during
+development. They record how a change was shaped, are not kept current, and
+never override the designs above.

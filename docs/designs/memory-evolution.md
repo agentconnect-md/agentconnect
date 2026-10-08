@@ -315,7 +315,11 @@ conditional write unified-memory-interface.md §5 later builds on this transacti
 previous + 1 ms)` inside the same transaction, so two commits within one millisecond
 never hand out the same token — and a staged row an abandoned append sequence left
 behind (the daemon died between its appends and its `commit` or `rm`, which clear their
-own) is removed by a bounded periodic sweep once it is an hour old. Directories are
+own) is removed by a bounded periodic sweep once it is an hour old. A write that may be
+re-sent across a Control Plane handoff carries an `operationId` when the CP advertises
+`agent-memory-store-operation-id-v1`: the CP looks it up, runs the op and records its
+reply in one transaction, answers a re-send with that reply, refuses the id reused for a
+different op as a `conflict`, and sweeps the records on the same hourly schedule. Directories are
 implicit — a prefix with rows:
 `mkdir` succeeds, `rmdir` answers whether nothing was left, and an empty directory does
 not exist. That is the only observable difference from the two disk ports, and no
@@ -965,6 +969,15 @@ off switch: selecting a third party as the only store must not let an unknown
 runtime secretly retain another persistent copy. See the complete product
 invariant in
 [`product-conventions.md`](../product-conventions.md#runtime-memory-provider-compatibility).
+
+OpenCode v1.18.32 supports `managed`, `none`, and admitted `external` memory without an
+environment override; `native` remains unavailable. Its [ACP session creation](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/acp/service.ts)
+and [instruction loading](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/session/instruction.ts)
+have no automatic cross-session memory store. Session history and compaction stay
+session-scoped. Project rules, explicitly requested workspace files, and installed
+plugins remain runtime configuration: the older-model [memory-file prompt](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/session/prompt/beast.txt)
+is a workspace-file convention, not an automatically loaded native store. `none`
+does not block ordinary file tools or remove user-installed memory plugins.
 
 ## 7. Explicit Non-Goals
 

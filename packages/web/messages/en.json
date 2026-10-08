@@ -153,8 +153,9 @@
       "add": "Add"
     },
     "permissionModes": {
-      "askForApproval": "Ask for approval",
-      "approveForMe": "Approve for me",
+      "readOnly": "Read-only",
+      "workspaceAccess": "Workspace access",
+      "autoReview": "Auto review",
       "fullAccess": "Full access",
       "manual": "Manual",
       "acceptEdits": "Accept edits",
@@ -591,6 +592,12 @@
       "content": "CONTENT",
       "locations": "LOCATIONS",
       "viewFull": "View full",
+      "downloadFile": "Download {name}",
+      "fileTooLarge": "Too large to download here",
+      "fileChanged": "This file has changed since it was shared",
+      "fileGone": "This file is no longer in the workspace",
+      "downloadUnsupported": "This agent needs an update before it can serve downloads",
+      "downloadFailed": "Couldn’t download this file",
       "noToolBody": "No body captured for this tool call.",
       "parentConversation": "Parent conversation",
       "parentConversations": "Parent conversations ({count})",
@@ -887,7 +894,9 @@
       "back": "Back",
       "copyLink": "Copy link",
       "linkCopied": "Link copied",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "openMenu": "Open menu",
+      "closeMenu": "Close menu"
     },
     "connectAi": {
       "title": "Connect your AI",
@@ -949,7 +958,8 @@
       "activate": "Activate account · AgentConnect",
       "join": "Join organization · AgentConnect",
       "welcome": "Get started · AgentConnect",
-      "googleChatClaim": "Connect Google Chat · AgentConnect"
+      "googleChatClaim": "Connect Google Chat · AgentConnect",
+      "slackConnect": "Connect Slack · AgentConnect"
     },
     "login": {
       "brandLead": "Run your agents from the tools your team already lives in.",
@@ -978,6 +988,30 @@
       "goToAgentConnect": "Go to AgentConnect",
       "joining": "Joining organization…",
       "role": "You’ll join as a Collaborator."
+    },
+    "slackConnect": {
+      "title": "Connect your Slack workspace",
+      "description": "Choose the organization and agent for this workspace. Slack is already authorized; you do not need to install the app again.",
+      "workspace": "Workspace: {name}",
+      "organization": "Organization",
+      "agent": "Agent",
+      "noOrganizations": "Create an organization, then return here and refresh to finish connecting Slack.",
+      "createOrganization": "Create an organization",
+      "noAgents": "You have no agent you can connect in this organization. Create one or ask an organization owner for access, then refresh.",
+      "manageAgents": "Manage agents",
+      "connect": "Connect workspace",
+      "connecting": "Connecting…",
+      "refresh": "Refresh",
+      "doneTitle": "Slack is connected",
+      "doneBody": "Return to Slack to message your agent. To use it in a channel, invite the app and @mention it. Your agent’s existing access and trigger settings still apply.",
+      "backToSlack": "Back to Slack",
+      "configureAgent": "Configure agent",
+      "identityRequired": "Use the Slack account that installed this app. Link that Slack account from your AgentConnect profile, then return here and refresh.",
+      "openProfile": "Open profile",
+      "invalidLink": "This connection link is invalid. Open the app’s Home tab in Slack to continue setup.",
+      "storageBlocked": "Allow this site to store browser data before signing in, then refresh to continue.",
+      "loadError": "Could not load your connection options. Refresh to try again.",
+      "connectError": "Could not connect this workspace. Please try again."
     },
     "googleChatClaim": {
       "preparing": "Preparing…",
@@ -1426,8 +1460,8 @@
         "addTitle": "Pick the agent per message with a decision",
         "stop": "Stop using By decision in this channel"
       },
-      "gatedNote": "Private agent — answers only where enabled below.",
-      "linearGatedNote": "Private agent — answers only in teams where it is the default.",
+      "gatedNote": "{reason, select, assistant {Assistant mode} other {Private agent}} — answers only where enabled below.",
+      "linearGatedNote": "{reason, select, assistant {Assistant mode} other {Private agent}} — answers only in teams where it is the default.",
       "discordCannotLeaveRowHint": "A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.",
       "googlechatMentionHint": "Replies when mentioned. Google Chat delivers a message in a space, thread replies included, only when it mentions the app.",
       "space": {
@@ -1440,9 +1474,15 @@
       "openIn": "Open {name} in {platform}",
       "ownerChange": {
         "title": "Move this team’s default?",
-        "body": "{owner} is a private agent, and being {room}’s default is what lets it act there. Its live sessions in this team can still be stopped, but it will not answer in them again. A new mention or delegation opens a session with the new default.",
+        "body": "{owner} {reason, select, assistant {is in assistant mode} other {is a private agent}}, and being {room}’s default is what lets it act there. Its live sessions in this team can still be stopped, but it will not answer in them again. A new mention or delegation opens a session with the new default.",
         "confirmLabel": "Move",
         "busy": "Moving…"
+      },
+      "assistantPlace": {
+        "title": "Enable {name}?",
+        "warning": "Everyone here will be able to get the content of this agent’s other places out of it. Enable only if everyone here is fully trusted.",
+        "confirm": "Enable",
+        "busy": "Enabling…"
       },
       "sessionMode": {
         "createNew": "Per thread",
@@ -1634,6 +1674,12 @@
         "readWrite": "Read & write",
         "accessFor": "Access for {name}",
         "lowerAccessRevoke": "Revoke and authorize again to lower access",
+        "grantSuspended": "Suspended",
+        "grantSuspendedReason": {
+          "access_lost": "The member who authorized it no longer has this access on GitHub",
+          "identity_unlinked": "The member who authorized it no longer has a linked GitHub account",
+          "attester_removed": "The member who authorized it no longer has an account"
+        },
         "githubWriteAccess": "Push, open PRs & run GitHub Actions",
         "repositoryAccess": "Repository access",
         "selectRepositoryFirst": "Select repository first",
@@ -1718,6 +1764,13 @@
       "configuration": "Integration configuration",
       "addIntegration": "Add integration",
       "connectDescription": "Connect a chat platform, webhook or repository to one of your agents",
+      "reconnectIntegration": "Reconnect integration",
+      "reconnect": "Reconnect",
+      "reconnecting": "Reconnecting…",
+      "organization": "Organization",
+      "chooseAgent": "Choose an agent",
+      "noReconnectAgents": "No agent you can configure is available for this app.",
+      "reconnectUnavailable": "This app is no longer available to reconnect. Check its current status in Integrations.",
       "agent": "Agent",
       "agentHandles": "{agent} handles messages from this integration.",
       "platform": "Platform",
@@ -2945,6 +2998,45 @@
         "loading": "Loading…",
         "loadMore": "Load more"
       },
+      "assistantMode": {
+        "title": "Assistant mode",
+        "on": "On",
+        "off": "Off",
+        "locked": "Unavailable",
+        "responsibleNamed": "Responsible: {name}",
+        "fallbackNamed": "Fallback: {name}",
+        "edit": "Edit",
+        "close": "Close",
+        "cancel": "Cancel",
+        "details": "Details",
+        "saving": "Saving…",
+        "save": "Save assistant mode",
+        "enable": "Turn on assistant mode",
+        "turnOnTitle": "Turn on assistant mode?",
+        "turnOn": "Turn on",
+        "responsibleUser": "Responsible user",
+        "fallbackConversation": "Fallback conversation",
+        "none": "None",
+        "limits": "Limits",
+        "limit": {
+          "maxConcurrentSubsessions": "Concurrent sub-sessions",
+          "dailyPatrolBudget": "Patrols per day",
+          "dailySubsessionsPerItem": "Sub-sessions per item per day",
+          "permissionWaitHours": "Hours to wait for approval"
+        },
+        "defaultLimit": "Default",
+        "askWarning": "This agent asks before every action, so background work will often wait for approval. Consider auto-approving operations that stay inside the workspace.",
+        "refusals": {
+          "runtime-unset": "Choose a runtime first.",
+          "runtime-not-admitted": "This runtime is not supported yet: it must be able to turn off its own memory and resume a session after a restart.",
+          "memory-provider": "Memory must be managed or off.",
+          "store-not-shared": "Every daemon in this agent’s group must share one store."
+        },
+        "blockers": {
+          "needsTarget": "Choose a responsible user or a fallback conversation.",
+          "invalidLimit": "Each limit must be a whole number within its range."
+        }
+      },
       "dreamSchedule": {
         "runOnSchedule": "Run on a schedule (otherwise dreams only run when you trigger them)",
         "frequency": "Schedule frequency",
@@ -3545,7 +3637,8 @@
       "paused": "paused",
       "offline": "offline",
       "upgrading": "upgrading",
-      "restarting": "restarting"
+      "restarting": "restarting",
+      "reconnecting": "reconnecting"
     },
     "metrics": {
       "agents": "agents",
@@ -3599,6 +3692,7 @@
       "off": "Off",
       "onlineStatus": "Online",
       "offlineStatus": "Offline",
+      "reconnectingStatus": "Reconnecting",
       "save": "Save",
       "createGroup": "Create group",
       "expireSessions": "Expire sessions",

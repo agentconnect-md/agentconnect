@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { forwardSessionShortcut, forwardSessionStop, slackIngressPlugin } from './ingress-plugin.js'
 import type { RelayIngressHost } from '../contract.js'
 import type { BotAssignment, RouteTarget } from '../../bot-arbitration.js'
+import type { SlackHttpIngestDeps } from './http-ingest.js'
 
 const ROUTE: RouteTarget = {
   agentId: '44444444-4444-4444-8444-444444444444',
@@ -38,6 +39,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   selectThreadAgent: () => {},
   reportBotUserId: () => {},
   publicRelayUrl: () => undefined,
+  webAppUrl: () => undefined,
   clock: { now: () => 1_720_000_000_000 },
   log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
   ...over
@@ -67,6 +69,89 @@ const SHORTCUT = {
 }
 
 describe('slack ingress plugin — review-pinned regressions', () => {
+  it('resolves Home links from the current DM route and only falls back to a sole agent', () => {
+    const h = host({ webAppUrl: () => 'https://console.example.test' })
+    const resolve = vi.spyOn(h.directory, 'resolveTarget')
+    const sole = vi.spyOn(h.directory, 'soleTarget')
+    const ingest = slackIngressPlugin.buildIngest({ ...slackAssignment(), orgSlug: 'example-org' }, h)!
+    const context = (ingest as unknown as { deps: SlackHttpIngestDeps }).deps.appHomeContext!
+    expect(context('D1')).toEqual({
+      webAppUrl: 'https://console.example.test',
+      orgSlug: 'example-org',
+      agentId: ROUTE.agentId
+    })
+    expect(resolve).toHaveBeenCalledWith('bot-1', { channelId: 'D1' })
+    resolve.mockReturnValue({ ...ROUTE, agentId: 'other-agent' })
+    expect(context('D1').agentId).toBe('other-agent')
+    resolve.mockReturnValue(undefined)
+    expect(context('D1').agentId).toBe(ROUTE.agentId)
+    sole.mockReturnValue(undefined)
+    expect(context('D1').agentId).toBeUndefined()
+    expect(h.forwardAction).not.toHaveBeenCalled()
+  })
+  it('uses binding state rather than daemon availability to decide whether Home needs reconnect', () => {
+    const h = host({ webAppUrl: () => 'https://console.example.test' })
+    vi.spyOn(h.directory, 'resolveTarget').mockReturnValue(undefined)
+    vi.spyOn(h.directory, 'soleTarget').mockReturnValue(undefined)
+    const assignment = { ...slackAssignment(), orgSlug: 'example-org', installedAgentIds: [ROUTE.agentId] }
+    const bound = slackIngressPlugin.buildIngest(assignment, h)!
+    expect((bound as unknown as { deps: SlackHttpIngestDeps }).deps.appHomeContext?.('D1')).toMatchObject({
+      connected: true,
+      agentId: ROUTE.agentId
+    })
+    const unbound = slackIngressPlugin.buildIngest({ ...assignment, installedAgentIds: [] }, h)!
+    expect((unbound as unknown as { deps: SlackHttpIngestDeps }).deps.appHomeContext?.('D1')).toMatchObject({
+      connected: false,
+      botId: assignment.botId,
+      agentId: undefined
+    })
+    vi.spyOn(h.directory, 'soleTarget').mockReturnValue(ROUTE)
+    const shared = slackIngressPlugin.buildIngest({ ...assignment, installedAgentIds: [ROUTE.agentId, 'other'] }, h)!
+    expect((shared as unknown as { deps: SlackHttpIngestDeps }).deps.appHomeContext?.('D1').agentId).toBeUndefined()
+    expect(h.forwardAction).not.toHaveBeenCalled()
+  })
+
+  it('forwards only Messages opens as owner-addressed UI events, never as chat', async () => {
+    const h = host({ forward: vi.fn() })
+    const resolve = vi.spyOn(h.directory, 'resolveTarget')
+    const ingest = slackIngressPlugin.buildIngest(slackAssignment(), h)!
+    await ingest.handleEvent({ type: 'app_home_opened', channel: 'D1', user: 'U1', tab: 'home' }, 0, 'Ev1')
+    expect(h.forwardAction).not.toHaveBeenCalled()
+    await ingest.handleEvent({ type: 'app_home_opened', channel: 'D1', user: 'U1', tab: 'messages' }, 0, 'Ev2')
+    expect(resolve).toHaveBeenCalledWith('bot-1', { channelId: 'D1' })
+    expect(h.forwardAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: ROUTE.agentId,
+        userId: 'U1',
+        payload: { kind: 'app-home-opened', channelId: 'D1' }
+      }),
+      ROUTE
+    )
+    expect(h.forward).not.toHaveBeenCalled()
+    vi.mocked(h.forwardAction).mockClear()
+    resolve.mockReturnValue(undefined)
+    await ingest.handleEvent({ type: 'app_home_opened', channel: 'D1', user: 'U1', tab: 'messages' }, 0, 'Ev3')
+    expect(h.forwardAction).not.toHaveBeenCalled()
+  })
+  it("forwards an Assistant 'new chat' to the DM's owner, never as chat", async () => {
+    const h = host({ forward: vi.fn() })
+    const resolve = vi.spyOn(h.directory, 'resolveTarget')
+    const ingest = slackIngressPlugin.buildIngest(slackAssignment(), h)!
+    const started = (thread: Record<string, string>) => ({ type: 'assistant_thread_started', assistant_thread: thread })
+    await ingest.handleEvent(started({ user_id: 'U1', channel_id: 'D1' }), 0, 'Ev1')
+    expect(h.forwardAction).not.toHaveBeenCalled()
+    await ingest.handleEvent(started({ user_id: 'U1', channel_id: 'D1', thread_ts: '1720000000.000500' }), 0, 'Ev2')
+    expect(resolve).toHaveBeenCalledWith('bot-1', { channelId: 'D1' })
+    expect(h.forwardAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: ROUTE.agentId,
+        userId: 'U1',
+        payload: { kind: 'assistant-thread-started', channelId: 'D1', threadTs: '1720000000.000500' }
+      }),
+      ROUTE
+    )
+    expect(h.forward).not.toHaveBeenCalled()
+  })
   it('a shortcut whose daemon is OFFLINE returns false (local unavailable modal, trigger not eaten)', () => {
     // The trigger id is one-shot: returning true consumes it. An offline daemon
     // must fall back to the local unavailable path exactly like an unroutable

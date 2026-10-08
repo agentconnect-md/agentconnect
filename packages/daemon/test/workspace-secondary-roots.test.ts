@@ -21,7 +21,13 @@ import {
   initGitInjection,
   workspaceGitLocalEnv
 } from '../src/workspace/git-injection.js'
-import { LocalGitRunner, type GitRunner, type GitLogEntry, type GitPullSummary } from '../src/workspace/git-runner.js'
+import {
+  LocalGitRunner,
+  type GitCloneOutput,
+  type GitRunner,
+  type GitLogEntry,
+  type GitPullSummary
+} from '../src/workspace/git-runner.js'
 import { WorkspaceManager, parseSymrefDefaultBranch } from '../src/workspace/workspace-manager.js'
 import { buildWorkspaceRootsAppend } from '../src/session/turn/standing-context.js'
 import { wireTestPlane } from './workspace-plane-support.js'
@@ -241,7 +247,7 @@ class SeamRunner implements GitRunner {
         env[`GIT_CONFIG_VALUE_${index}`] = substitute(env[`GIT_CONFIG_VALUE_${index}`] ?? '')
       }
     }
-    const make = (value: Record<string, string>) => gitFor(this.cwd, this.abort).env(value)
+    const make = (value: Record<string, string>) => gitFor(this.cwd, this.abort, value)
     return new LocalGitRunner(gitFor(this.cwd, this.abort), this.cwd, make).withEnv(env)
   }
 
@@ -251,8 +257,8 @@ class SeamRunner implements GitRunner {
     return this.delegate().raw(args[0] === 'ls-remote' ? args.map(substitute) : args)
   }
 
-  clone(repo: string, target: string, options?: string[]): Promise<void> {
-    return this.delegate().clone(substitute(repo), target, options)
+  async clone(repo: string, target: string, options?: string[]): Promise<GitCloneOutput | undefined> {
+    return await this.delegate().clone(substitute(repo), target, options)
   }
 
   pull(remote: string, branch: string, options?: string[]): Promise<GitPullSummary> {
@@ -1737,6 +1743,14 @@ describe('removeSessionWorktree across every root (decision 4)', () => {
     mkdirSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'shared-library'), { recursive: true })
 
     expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+  })
+
+  it('ignores a primary checkout this volume never received instead of failing the whole cleanup', async () => {
+    // A pool agent pod whose sessions all ran in pods of their own never clones the primary.
+    const agent = agentFixture([])
+
+    expect(await workspaces.hasSessionWorktreeRoots(agent)).toBe(false)
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a', 'worktrees')).toEqual({ outcome: 'absent' })
   })
 
   it('removes a scratch agent’s secondary worktrees, which have no primary beside them', async () => {

@@ -12,7 +12,10 @@ import {
   ClusterSkillPriorReplySchema,
   ClusterSkillReceiptPageSchema,
   ClusterSkillVerifySchema,
+  budgetSkillPlanUrls,
+  isGitPlanReconcile,
   skillControlPages,
+  skillReplyExtras,
   ClusterSkillUploadReplySchema,
   ClusterSkillVerifyReplySchema,
   LEGACY_MAX_CLUSTER_SKILL_FILES,
@@ -21,6 +24,7 @@ import {
   MAX_CLUSTER_SKILL_CONTROL_BYTES,
   MAX_CLUSTER_SKILL_FILES,
   MAX_CLUSTER_SKILL_TOTAL_BYTES,
+  SKILLS_RECONCILE_TIMEOUT_MS,
   type ClusterSkillBegin,
   type ClusterSkillBeginReply,
   type ClusterSkillFile,
@@ -30,6 +34,11 @@ import {
   type ClusterSkillVerifyReply
 } from './skill-protocol.js'
 
+/** A shim's skills seam aimed at `cwd`, not its own root: runtimes scan for project skills only from cwd up to the repository root. */
+export function cwdSkillRequester(session: ShimRequester, cwd: string): ShimRequester {
+  return { request: (capability, request, options) => session.request(capability, { cwd, request }, options) }
+}
+
 export class ClusterSkillClient {
   /** `wide` mirrors the peer's `cluster-skills-v2` grant. */
   constructor(
@@ -37,7 +46,9 @@ export class ClusterSkillClient {
     private readonly wide = false,
     // Enabled when the caller supplies a matching shim bundle; retained images may predate this field.
     readonly fileModes = false,
-    private readonly receiptPaging = false
+    private readonly receiptPaging = false,
+    // Mirrors the `skills-git` grant: the bound shim takes Git plan Sources and clones them itself.
+    readonly gitInPod = false
   ) {}
 
   /** What the BOUND image admits, so a caller can drop one oversized source instead of failing a launch. */
@@ -92,10 +103,14 @@ export class ClusterSkillClient {
   }
 
   async reconcile(input: Omit<ClusterSkillReconcile, 'op' | 'priorRootCount'>): Promise<ClusterSkillReconcileReply> {
+    if (isGitPlanReconcile(input)) {
+      if (!this.gitInPod || !this.receiptPaging) throw new Error('this sandbox image does not take Git skill plans')
+      input = budgetSkillPlanUrls(input)
+    }
     if (!this.receiptPaging) {
       const request = ClusterSkillReconcileSchema.parse({ op: 'reconcile', ...input })
       return ClusterSkillReconcileReplySchema.parse(
-        await this.requester.request('skills', request, { timeoutMs: 15 * 60_000 })
+        await this.requester.request('skills', request, { timeoutMs: SKILLS_RECONCILE_TIMEOUT_MS })
       )
     }
     const priorRoots = ClusterSkillLedgerSchema.parse({ roots: input.priorRoots }).roots
@@ -118,13 +133,12 @@ export class ClusterSkillClient {
       }
     }
     let page = ClusterSkillReceiptPageSchema.parse(
-      await this.requester.request('skills', ClusterSkillReconcileSchema.parse(request), { timeoutMs: 15 * 60_000 })
+      await this.requester.request('skills', ClusterSkillReconcileSchema.parse(request), {
+        timeoutMs: SKILLS_RECONCILE_TIMEOUT_MS
+      })
     )
-    const result = {
-      roots: [...page.roots],
-      conflicts: page.conflicts,
-      ...(page.skipped && page.skipped.length > 0 ? { skipped: page.skipped } : {})
-    }
+    const extras = skillReplyExtras(page)
+    const result = { roots: [...page.roots], conflicts: page.conflicts, ...extras }
     while (page.nextOffset !== undefined) {
       if (page.nextOffset !== result.roots.length) throw new Error('inconsistent skill receipt offset')
       page = ClusterSkillReceiptPageSchema.parse(
@@ -138,7 +152,7 @@ export class ClusterSkillClient {
       if (
         page.roots.length === 0 ||
         JSON.stringify(page.conflicts) !== JSON.stringify(result.conflicts) ||
-        JSON.stringify(page.skipped ?? []) !== JSON.stringify(result.skipped ?? [])
+        JSON.stringify(skillReplyExtras(page)) !== JSON.stringify(extras)
       )
         throw new Error('inconsistent skill receipt page')
       result.roots.push(...page.roots)

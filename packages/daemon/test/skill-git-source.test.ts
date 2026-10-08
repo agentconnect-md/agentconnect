@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
@@ -13,8 +13,12 @@ import {
   parseGitSkillSource,
   resolveAuthorizedGitSkillCloneUrl,
   resolveBoundedGitSkillSource,
+  loadScopedGitSkillCredential,
   type GitSkillCredentialRequest
 } from '../src/skills/skill-git-source.js'
+import { GitCredServer, gitcredSocketPath } from '../src/cp/gitcred-server.js'
+import type { GitCredentialCache } from '../src/cp/git-credential.js'
+import { DAEMON_SKILL_WINDOW_SUBJECT } from '../src/cp/skill-credential-window.js'
 import {
   daemonGitCredentialTarget,
   initGitInjection,
@@ -932,4 +936,150 @@ describe('Git skill source policy boundary', () => {
     expect(config.get('credential.https://github.com.helper')).toBe("!'/daemon/git-credential-helper' agent-1")
     expect(config.get('credential.https://github.com.useHttpPath')).toBe('true')
   })
+
+  it('presents a skill window capability in place of the agent capability on GitHub HTTPS only', () => {
+    initGitInjection({
+      targetFor: () => daemonGitCredentialTarget({ shimPath: '/daemon/git-credential-helper', runDir: '/private/run' }),
+      preWarm: async () => {},
+      capabilityFor: (agentId) => `cap-${agentId}`
+    })
+    const https = buildSkillGitAcquisitionEnv({
+      agentId: 'agent-1',
+      cloneUrl: 'https://github.com/acme/skills.git',
+      privateHome: '/private/home',
+      useGitCredential: true,
+      windowCapability: 'window-cap'
+    })
+    expect(https.AC_GITCRED_CAPABILITY).toBe('window-cap')
+    expect(https.AC_GITCRED_AGENT).toBe('agent-1')
+
+    configureWorkspaceGitOrigins(['ssh://github.com'])
+    const ssh = buildSkillGitAcquisitionEnv({
+      agentId: 'agent-1',
+      cloneUrl: resolveAuthorizedGitSkillCloneUrl('git@github.com:acme/skills.git'),
+      privateHome: '/private/home',
+      useGitCredential: true,
+      windowCapability: 'window-cap'
+    })
+    expect(ssh.AC_GITCRED_CAPABILITY).toBeUndefined()
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'acquires a private skill credential through a window the daemon opens around the fill',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'skill-window-'))
+      const socket = gitcredSocketPath(root)
+      const helperScript = join(root, 'helper.mjs')
+      const helper = join(root, 'helper.sh')
+      // A stand-in for the daemon helper: forwards the env bearer and the parsed path to the socket.
+      await writeFile(
+        helperScript,
+        [
+          "import { createConnection } from 'node:net'",
+          "let input = ''",
+          "process.stdin.on('data', (c) => (input += c))",
+          "process.stdin.on('end', () => {",
+          "  const path = (input.match(/^path=(.*)$/m)?.[1] ?? '').replace(/\\.git$/, '')",
+          `  const sock = createConnection(${JSON.stringify(socket)})`,
+          "  let buf = ''",
+          "  sock.on('connect', () => sock.write(JSON.stringify({ op: 'get', agentId: process.env.AC_GITCRED_AGENT, capability: process.env.AC_GITCRED_CAPABILITY, repoFullName: path }) + '\\n'))",
+          "  sock.on('data', (c) => {",
+          '    buf += c',
+          "    if (!buf.includes('\\n')) return",
+          '    sock.destroy()',
+          '    const res = JSON.parse(buf)',
+          '    if (!res.ok) { process.exitCode = 1; return }',
+          '    process.stdout.write(`username=${res.username}\\npassword=${res.password}\\n`)',
+          '  })',
+          '})'
+        ].join('\n')
+      )
+      await writeFile(helper, `#!/bin/sh\nexec '${process.execPath}' '${helperScript}' "$@"\n`)
+      await chmod(helper, 0o755)
+      const asked: string[] = []
+      const cache = {
+        get: async (_agentId: string, _reason: string, opts?: { repo?: string }) => {
+          asked.push(opts?.repo ?? 'workspace')
+          return { username: 'x-access-token', token: 'ghs_window', repoFullName: opts?.repo, access: 'read' }
+        },
+        invalidate: () => {}
+      }
+      const server = new GitCredServer(cache as unknown as GitCredentialCache, socket, {
+        log: { info: () => {}, warn: () => {} },
+        privateGithubSkillRepoOf: (_agentId, repo) => repo.toLowerCase() === 'acme/skills',
+        workspaceRepoOf: () => 'acme/infra'
+      })
+      await server.start()
+      const target = daemonGitCredentialTarget({ shimPath: helper, runDir: join(root, 'run') })
+      const request = {
+        agentId: 'agent-1',
+        cloneUrl: 'https://github.com/acme/skills.git',
+        privateHome: join(root, 'home'),
+        repositoryPath: 'acme/skills',
+        signal: new AbortController().signal
+      }
+      try {
+        await mkdir(join(root, 'home', 'tmp'), { recursive: true })
+        // An older wiring without windows presents the agent capability, which gitcred refuses.
+        initGitInjection({
+          targetFor: () => target,
+          daemonTarget: target,
+          preWarm: async () => {},
+          capabilityFor: (agentId) => server.capabilityFor(agentId)
+        })
+        await expect(loadScopedGitSkillCredential(request)).rejects.toThrow('unavailable')
+        expect(asked).toEqual([])
+
+        initGitInjection({
+          targetFor: () => target,
+          daemonTarget: target,
+          preWarm: async () => {},
+          capabilityFor: (agentId) => server.capabilityFor(agentId),
+          openSkillCredentialWindow: (agentId, repo) => server.openDaemonSkillWindow(agentId, repo)
+        })
+        await expect(loadScopedGitSkillCredential(request)).resolves.toEqual({
+          username: 'x-access-token',
+          password: 'ghs_window'
+        })
+        expect(asked).toEqual(['acme/skills'])
+        // Closed in `finally`: nothing stays open after the fill.
+        expect(server.skillWindows.size()).toBe(0)
+
+        // A skill from the agent's own workspace repo without `private: true` fills through the workspace fold.
+        const workspaceSkill = {
+          ...request,
+          cloneUrl: 'https://github.com/acme/infra.git',
+          repositoryPath: 'acme/infra'
+        }
+        await expect(loadScopedGitSkillCredential(workspaceSkill)).resolves.toEqual({
+          username: 'x-access-token',
+          password: 'ghs_window'
+        })
+        expect(asked).toEqual(['acme/skills', 'workspace'])
+        expect(server.skillWindows.size()).toBe(0)
+        // A window, even one naming the workspace repo, never yields the workspace token.
+        const window = server.skillWindows.open({
+          agentId: 'agent-1',
+          subject: DAEMON_SKILL_WINDOW_SUBJECT,
+          repos: ['acme/infra']
+        })
+        try {
+          initGitInjection({
+            targetFor: () => target,
+            daemonTarget: target,
+            preWarm: async () => {},
+            capabilityFor: (agentId) => server.capabilityFor(agentId),
+            openSkillCredentialWindow: () => window
+          })
+          await expect(loadScopedGitSkillCredential(workspaceSkill)).rejects.toThrow('unavailable')
+          expect(asked).toEqual(['acme/skills', 'workspace'])
+        } finally {
+          window.close()
+        }
+      } finally {
+        server.stop()
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  )
 })

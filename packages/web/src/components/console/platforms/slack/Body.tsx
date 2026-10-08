@@ -131,7 +131,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
   // workspace is already taken by the preset, and the callback answers `agent_taken`.
   const builtinAppOffered = platformAvailable && agent.builtin === true
   const checking = funnel === null
-  const builtin = funnel !== null && builtinAppOffered && slackIdentity === 'builtin'
+  const builtin = funnel !== null && builtinAppOffered && slackIdentity === 'builtin' && host.mode === 'create'
   // The built-in pane and the funnel probe's spinner each REPLACE the host's whole
   // identity chassis; the host renders neither the header/mode-cards/free-bot-list
   // nor the share toggle while this is true.

@@ -162,6 +162,25 @@ describe('DaemonsView pool', () => {
     expect(html).toContain('not serving')
   })
 
+  it('reads reconnecting while no member serves and one is recovering its control link', () => {
+    mocks.daemons = [member('p1', { status: 'offline', reconnecting: true }), member('p2', { status: 'offline' })]
+
+    const html = render()
+
+    expect(html).toContain('>reconnecting<')
+    expect(html).not.toContain('>offline<')
+  })
+
+  it('shows an owned daemon recovering its control link as reconnecting on both layouts', () => {
+    mocks.daemons = [daemon({ status: 'offline', reconnecting: true })]
+
+    const html = render()
+
+    // The desktop status word and the mobile badge.
+    expect(html.match(/>reconnecting</g)).toHaveLength(2)
+    expect(html).not.toContain('>offline<')
+  })
+
   it('keeps the org’s own machines as their own cards under a labelled section', () => {
     mocks.daemons = [member('p1'), daemon({ daemonId: 'own', name: 'pc.dev' })]
 
@@ -302,6 +321,15 @@ describe('DaemonsView pool — self-hosted', () => {
 
     expect(html).toContain('no nodes serving')
     expect(html).not.toContain('Sandbox capacity in use')
+  })
+
+  it('reads reconnecting while its members recover their control links', () => {
+    mocks.daemons = [member('p1', { status: 'offline', reconnecting: true })]
+
+    const html = render()
+
+    expect(html).toContain('>reconnecting<')
+    expect(html).not.toContain('>offline<')
   })
 
   it('offers no Manage button — the card already opens what it would open', () => {

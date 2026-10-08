@@ -85,9 +85,9 @@ import {
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
+  WORKSPACE_FILE_DOWNLOAD_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
-  WORKSPACE_RAW_READ_FEATURE,
   effectiveManagedMemoryScope,
   RdSlackAction,
   WireFeishuCardActionEvent,
@@ -127,14 +127,20 @@ import {
 import { ShimWorkspaceFs } from './shim/workspace-fs-channel.js'
 import { ShimWorkspaceFiles } from './shim/workspace-files-channel.js'
 import { ClusterSkillClient } from './shim/skill-client.js'
+import type { TunnelName } from './shim/tunnel.js'
 import { ShimChannelLostError, type ShimRequester } from './shim/channels.js'
 import type { ClusterSkillLedger } from './store/cluster-skill-ledger.js'
 import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
 import { microsandboxSkillTarget } from './microsandbox/shim.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
-import { IMPLICIT_CREDENTIAL_PROVIDER, parseManagedBaseUrl, stripHostPathPrefix } from './gitcred/managed-hosts.js'
-import { codeHostCredentials, credentialProviderOf, type ManagedWorkspaceRepo } from './codehost/credentials.js'
+import { IMPLICIT_CREDENTIAL_PROVIDER } from './gitcred/managed-hosts.js'
+import {
+  codeHostCredentials,
+  credentialProviderOf,
+  workspaceRepositoryPath,
+  type ManagedWorkspaceRepo
+} from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { setTimeout as sleepFor } from 'node:timers/promises'
@@ -287,6 +293,7 @@ import {
   type LiveApp
 } from './mcp/apps/cards.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
+import { askerIdentity, assistantItemToolsFor, assistantModeOn } from './mcp/ops/assistant-items.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
@@ -297,8 +304,10 @@ import {
   DreamRunner,
   DreamStateError,
   type DreamLifecycleEvent,
-  type DreamOperationPolicy
+  type DreamOperationPolicy,
+  type DreamPlaces
 } from './dream/runner.js'
+import { describePlace, kindFromRows, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
   conversationAdmitsAgent,
@@ -319,7 +328,7 @@ import {
   type RoutingRule
 } from './router/routing-rule.js'
 import { CpRoutingLayer } from './router/cp-routing-layer.js'
-import { SlackConnection, type SlackAppFactory, type SlackStatusOptions } from './slack/connection.js'
+import { SlackConnection, slackTsToMs, type SlackAppFactory, type SlackStatusOptions } from './slack/connection.js'
 import { QQConnection } from './platforms/qq/connection.js'
 import { createQQTurnOutput } from './platforms/qq/surface.js'
 import { QQCommandChrome } from './platforms/qq/command-chrome.js'
@@ -407,6 +416,8 @@ import {
   retainedAfterTracking
 } from './skills/install-skills.js'
 import { GitSkillRefTracker } from './skills/git-skill-ref-tracker.js'
+import { createSkillRefResolution } from './skills/skill-ref-resolution.js'
+import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
 import {
   ClusterSkillCoordinator,
   clusterSkillSupportRequired,
@@ -549,7 +560,7 @@ import {
   applyCodexSessionFloor,
   applyClaudeModelAliases,
   applyModelCredential,
-  applyStaticModelConfig,
+  applyConfiguredModelProviders,
   configuredClaudeModelAliases,
   configuredCodexSessionFloor,
   configuredModelCredentials,
@@ -633,6 +644,20 @@ import {
 } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
+import {
+  createCredentialedCacheReadAuthorizer,
+  createSourceCache,
+  createSourceCacheReadPlanner,
+  createSourceCacheSweeper,
+  createSourceCacheWriter,
+  sourceCacheMetrics as defaultSourceCacheMetrics,
+  type SourceCache,
+  type SourceCacheMetrics,
+  type SourceCachePresigner,
+  type SourceCacheSweeper
+} from './source-cache/index.js'
+import { CodeHostRefResolver } from './codehost/ref-resolver.js'
+import { gitCredReadTokens } from './codehost/repository.js'
 import { CpClient } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
@@ -701,6 +726,7 @@ import { DATA_PLANE_CONFIG_PATH } from './store/postgres-config.js'
 import type { EvaluationCapabilityProfile } from './evaluation/events.js'
 import { DaemonEvaluationHooks, type DaemonEvaluationHost } from './evaluation/daemon-hooks.js'
 import { SessionMetadataOutbox, type SessionMetadataHost } from './store/session-metadata-outbox.js'
+import { CronReportOutbox } from './store/cron-report-outbox.js'
 import type {
   DeliveryHandle,
   DeliveryRejectionReason,
@@ -711,7 +737,7 @@ import { type ConfigApply } from './cp/config-apply.js'
 import { buildConfigApply, type ConfigApplyHost } from './cp/config-apply-handlers.js'
 import { SystemMetrics } from './metrics/system-metrics.js'
 import { estimateOpenAiTurnCost } from './usage/openai-public-pricing.js'
-import type { McpServer } from '@agentclientprotocol/sdk'
+import type { McpServer, SessionUpdate } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
 import {
   appendTurnPrompt,
@@ -904,6 +930,8 @@ import {
   FEISHU_STREAM_FLUSH_MS,
   SLACK_STREAM_FLUSH_MS,
   IDLE_FLUSH_MS,
+  LONG_IDLE_SKIP_AFTER_TTLS,
+  LONG_IDLE_SKIP_REPORT_INTERVAL_MS,
   MAX_BG_TASK_WAKE_REARMS,
   MAX_BG_TASK_WAKES_PER_SESSION,
   MAX_DRAIN_TEXT_CHARS,
@@ -913,7 +941,8 @@ import {
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
-  SESSION_RETENTION_SWEEP_INTERVAL_MS
+  SESSION_RETENTION_SWEEP_INTERVAL_MS,
+  UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS
 } from './daemon/constants.js'
 import {
   observeStartup,
@@ -1577,6 +1606,12 @@ export class Daemon {
   private readonly codexSessionFloor?: string
   private readonly claudeModelAliases?: Record<string, string>
   private readonly runtimeEnvironment: RuntimeEnvironment
+  /** The pool member's Source Cache signer; undefined outside --k8s or when no bucket is configured. */
+  private readonly sourceCache?: SourceCache
+  /** The per-agent `resolveRef` cache behind credentialed cache reads and credentialed skill refs; bucket or not. */
+  private readonly codeHostRefs: CodeHostRefResolver
+  /** The member's share of the Source Cache sweep and lifecycle check; only with a Source Cache. */
+  private readonly sourceCacheSweeper?: SourceCacheSweeper
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -1664,12 +1699,14 @@ export class Daemon {
   private managedSkillCache?: ManagedSkillCache
   /** Extracted Git skill sources per (agent, repository, commit), so a new session reuses what an earlier one fetched. */
   private gitSkillSources?: GitSkillSourceCache
-  private gitSkillRefs?: GitSkillRefTracker
+  private gitSkillRefs?: (entry: AgentSkillEntrySchema, agentId: string) => Promise<string | null>
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
   // Latest channel report per integrationId plus whether it came from a complete
   // membership listing. Replayed with the same authority on each CP (re)connect.
   private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
+  // A conversation's privacy as its platform reported it on a channel lookup (`PlatformChannelInfo.isPrivate`), by id.
+  private readonly conversationPrivacy = new Map<string, boolean>()
   private cpAgents?: CpAgentRegistry
   private cpIntegrations?: CpIntegrationRegistry
   private botUserIds: Record<string, string> = {}
@@ -1772,6 +1809,11 @@ export class Daemon {
   private lastProbeRootSweepAt = 0
   // Last session-retention GC pass (#485); rides the idle sweep at its own cadence.
   private lastSessionRetentionSweepAt = 0
+  // Last look for Running pods no launch here tracks, and the one still in flight, off the sweep's critical path.
+  private lastUntrackedSandboxAdoptionAt = 0
+  private untrackedSandboxAdoption?: Promise<void>
+  // When each long-quiet pod's skip reason was last logged at info, per subject.
+  private readonly longIdleSkipReportedAt = new Map<string, number>()
   // Single-flight for the retention pass — a slow git cleanup must not overlap
   // the next sweep's pass (the sweep itself is synchronous, the GC is not).
   private sessionRetentionSweepInFlight = false
@@ -1782,6 +1824,7 @@ export class Daemon {
   // The durable session-metadata outbox (store/session-metadata-outbox.ts); owns its
   // own drain promise and retry timer behind the delegates below.
   private readonly sessionMetadataOutbox: SessionMetadataOutbox
+  private readonly cronReportOutbox: CronReportOutbox
   // Observed-channel discovery/retraction (platforms/observed-channels-sync.ts).
   private readonly observedChannelsSync: ObservedChannelsSync
   private readonly webchatTransport: WebchatTransport
@@ -1879,6 +1922,10 @@ export class Daemon {
       keyServerClient?: KeyServerClient
       /** Test seam for the daemon-private memory-plugin transport. */
       memoryPluginConnect?: MemoryPluginConnector
+      /** Test seam for the Source Cache's STS calls. */
+      sourceCacheFetch?: typeof fetch
+      /** Test seam for the Source Cache metrics recorder. */
+      sourceCacheMetrics?: SourceCacheMetrics
       /** Optional, observer-only evaluation surface and add-on treatment. */
       evaluation?: DaemonEvaluationOptions
     } = {}
@@ -1910,6 +1957,58 @@ export class Daemon {
     // supplies the key alone.
     this.modelSessions.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
     this.runtimeEnvironment = this.k8s ? configuredRuntimeEnvironment(process.env) : {}
+    this.sourceCache = createSourceCache({
+      env: process.env,
+      k8s: this.k8s,
+      ...(opts.sourceCacheFetch ? { fetch: opts.sourceCacheFetch } : {}),
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
+    })
+    // Lazy closures: the credential cache and the store are built in later boot phases.
+    const tokens = gitCredReadTokens({
+      get: (...args) => this.gitCreds.get(...args),
+      invalidate: (...args) => this.gitCreds.invalidate(...args)
+    })
+    this.codeHostRefs = new CodeHostRefResolver({ tokens, log: { warn: (m) => this.log.warn(m) } })
+    if (this.sourceCache) {
+      const cacheMetrics = opts.sourceCacheMetrics ?? defaultSourceCacheMetrics
+      this.workspaces.setSourceCacheReader(
+        createSourceCacheReadPlanner({
+          store: () => this.store as LocalStore | undefined,
+          presigner: this.sourceCache.presigner,
+          authorize: createCredentialedCacheReadAuthorizer({ resolver: this.codeHostRefs, tokens }),
+          orgForAgent: (agentId) => this.orgForAgent(agentId),
+          log: { debug: (m) => this.log.debug(m), warn: (m) => this.log.warn(m) },
+          onOutcome: (outcome) => cacheMetrics.read(outcome)
+        })
+      )
+      const sourceCacheLog = {
+        debug: (m: string) => this.log.debug(m),
+        info: (m: string) => this.log.info(m),
+        warn: (m: string) => this.log.warn(m)
+      }
+      const sweeper = createSourceCacheSweeper({
+        store: () => this.store as LocalStore | undefined,
+        objects: this.sourceCache.objects,
+        config: this.sourceCache.config,
+        clock: this.clock,
+        paused: () => this.draining || this.shutdownDraining,
+        log: sourceCacheLog,
+        onPass: (pass) => cacheMetrics.sweepPass(pass),
+        onLifecycle: (status) => cacheMetrics.lifecycle(status)
+      })
+      this.sourceCacheSweeper = sweeper
+      this.workspaces.setSourceCacheWriter(
+        createSourceCacheWriter({
+          store: () => this.store as LocalStore | undefined,
+          presigner: this.sourceCache.presigner,
+          objects: this.sourceCache.objects,
+          limits: this.sourceCache.config.limits,
+          allowWrites: () => sweeper.lifecycle() !== 'missing',
+          log: sourceCacheLog,
+          onOutcome: (outcome, scope) => cacheMetrics.writeBack(outcome, scope)
+        })
+      )
+    }
     this.decisionEvaluator = new DecisionEvaluator({
       orgForAgent: (agentId) => this.orgForAgent(agentId),
       credentials: (request, signal) => {
@@ -1974,6 +2073,15 @@ export class Daemon {
     this.k8sProbeOnDemand = this.k8s && configuredRuntimeProbeOnDemand(process.env)
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
+    this.cronReportOutbox = new CronReportOutbox({
+      store: () => this.store,
+      cpClient: () => this.cpClient,
+      clock: () => this.clock,
+      servedAgentIds: () => this.sessionMetadataOutbox.servedAgentIds(),
+      draining: () => this.draining,
+      warn: (message) => this.log.warn(message),
+      debug: (message) => this.log.debug(message)
+    })
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
     this.connections = new ConnectionReconciler(this.connectionReconcilerHost())
     this.webchatTransport = new WebchatTransport(this.webchatHost())
@@ -2153,6 +2261,8 @@ export class Daemon {
       draining: () => this.draining,
       boltDebug: () => this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace',
       slackAppFactory: () => this.opts.slackAppFactory,
+      webAppUrl: () => this.cfg.webAppUrl ?? this.cpWebAppUrl,
+      orgSlug: () => this.cpOrgSlug,
       googleChatWriteBudgets: () =>
         (this.googleChatBudgets ??= new GoogleChatWriteBudgets(googleChatWriteBudgetSettings(this.cfg.googleChat))),
       agents: () => this.agents,
@@ -2224,6 +2334,8 @@ export class Daemon {
         this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
       slackThreadSessions: (shortcut, srcIntegrationIds) =>
         this.commands.slackThreadSessions(shortcut, srcIntegrationIds),
+      startNewAppendSessions: (platform, channel, srcIntegrationIds, actor, notBefore) =>
+        this.commands.startNewAppendSessions(platform, channel, srcIntegrationIds, actor, notBefore),
       settleSlackSlot: (conn, a) => this.settleSlackSlot(conn as SlackConnection, a.channel, a.thread, a.exclude)
     }
   }
@@ -2735,17 +2847,8 @@ export class Daemon {
           generations: this.dataPlane!.store,
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
           servesAgent: (agentId) => this.servesAgent(agentId),
-          // Which sockets this agent's pod needs, and where this daemon serves them — both are on
-          // the daemon's own filesystem, so without a tunnel they exist nowhere the pod can reach.
-          // `mcp` for every pod agent: any session may carry tools and the listener lives as long as the pod.
-          // `gitcred` follows the credential marker, the predicate the pod gitconfig and the local carve use,
-          // so a scratch agent gets it; tunnels open once per pod, so the repo list would strand a late grant.
-          // An unknown id gets neither: the member's own runtime probe is granted `probe` alone.
-          tunnelsFor: (agentId) => {
-            const agent = this.agents.get(agentId)
-            if (!agent) return []
-            return this.workspaces.helperBackedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
-          },
+          // Which daemon sockets this agent's pod needs (see tunnelsForAgent); an unknown id, the member's own probe, gets none.
+          tunnelsFor: (agentId) => this.tunnelsForAgent(agentId),
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
           onSandboxBound: () => this.memoryOutbox?.wake(),
@@ -2888,8 +2991,7 @@ export class Daemon {
           (row) => row.provider === IMPLICIT_CREDENTIAL_PROVIDER && row.repoFullName.toLowerCase() === wanted
         )
       },
-      // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): the daemon's own
-      // acquisition asks for exactly that owner/repo, and it is GitHub whatever the workspace is.
+      // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): issued only inside a skill credential window.
       privateGithubSkillRepoOf: (agentId: string, repoFullName: string) => {
         const wanted = repoFullName.toLowerCase()
         return (this.agents.get(agentId)?.skills ?? []).some(
@@ -2915,6 +3017,8 @@ export class Daemon {
       // `targetFor` says about the agent's workspace git.
       daemonTarget: daemonCredentialTarget,
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
+      // Daemon-run skill acquisition opens its own window per credential fill, except on the workspace repo (source-cache.md §8).
+      openSkillCredentialWindow: (agentId, repo) => this.gitCredServer!.openDaemonSkillWindow(agentId, repo),
       preWarm: async (agentId, reason, repository) => {
         // An additional repository warms the key its own helper ask lands on, never the workspace's — a scratch agent has none.
         if (repository !== undefined) {
@@ -2970,6 +3074,11 @@ export class Daemon {
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
     })
     probeGitVersion((m) => this.log.warn(m))
+  }
+
+  /** The Source Cache presigner later clone and write-back paths consume; undefined when not configured. */
+  sourceCacheSigner(): SourceCachePresigner | undefined {
+    return this.sourceCache?.presigner
   }
 
   /** Phase 6 — settle this daemon id (minted locally only when the CP will not assign one) and rebuild the logger at the configured level. */
@@ -3087,11 +3196,13 @@ export class Daemon {
     this.gitSkillSources = new GitSkillSourceCache(join(root, 'git-skill-sources'), {
       warn: (message) => this.log.warn(message)
     })
-    // A tracking Git skill ref is re-read per new session's preparation, so the
-    // tracker's TTL + conditional reads are what keep that affordable.
-    this.gitSkillRefs = new GitSkillRefTracker({
-      stateRoot: join(root, 'skill-installs'),
-      warn: (message) => this.log.warn(message)
+    // Re-read per new session's preparation: a public ref through the shared anonymous check, a private one per agent.
+    this.gitSkillRefs = createSkillRefResolution({
+      anonymous: new GitSkillRefTracker({
+        stateRoot: join(root, 'skill-installs'),
+        warn: (message) => this.log.warn(message)
+      }),
+      credentialed: this.codeHostRefs
     })
   }
 
@@ -3533,9 +3644,9 @@ export class Daemon {
         await this.observedChannelsSync.refreshObservedChannels()
       },
       {
-        // A newly-learnt scope changes which rows the observed set collapses onto (a
-        // Discord thread folds into its channel), so re-emit the snapshot with it.
-        saveScope: async (id, scope) => {
+        // A newly-learnt scope changes which rows the observed set collapses onto, so re-emit the snapshot with it.
+        saveScope: async (id, { isPrivate, ...scope }) => {
+          if (isPrivate !== undefined) this.conversationPrivacy.set(id, isPrivate)
           await this.store.setChannelScope(id, scope, Date.now())
           await this.observedChannelsSync.refreshObservedChannels()
         },
@@ -3625,6 +3736,14 @@ export class Daemon {
       now: () => Date.now(),
       canRun: (ctx) => this.toolTurnRunnable(ctx),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      // Assistant mode's place rules (assistant-mode.md §5.5), read live so a switch applies to open sessions.
+      assistantModeFor: (agentId) => this.agents.get(agentId)?.assistantMode?.enabled === true,
+      placeIntegrationFor: (agentId, platform, transportScope) =>
+        this.integrationIdForTransportScope(agentId, platform, transportScope),
+      // The membership listing and observed chats already carry each conversation's `isPrivate`.
+      placeSnapshot: (integrationId, channel) =>
+        this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel),
+      placeStore: this.store,
       attachmentReaderFor: (integrationId) =>
         this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
@@ -3816,6 +3935,10 @@ export class Daemon {
       // coords at call time so a policy change takes effect for an already-running ACP session.
       memoryAccessDecision: (ctx, mode) => this.memoryAccessDecisionFor(ctx, mode),
       requestMemoryWriteApproval: (ctx, ask) => this.requestMemoryWriteApprovalFor(ctx, ask),
+      assistantItems: {
+        ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantItems : undefined),
+        askerFor: (ctx) => this.assistantAskerFor(ctx)
+      },
       memoryScope: (ctx) => ({
         ...this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
         sourceTurnId: this.activeMemorySourceTurns.get(
@@ -4152,12 +4275,15 @@ export class Daemon {
           organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true,
           decisions:
             !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
-          currentPlatform: platform
+          currentPlatform: platform,
+          assistantMode: agent.assistantMode?.enabled === true
         })
         // Static descriptor, dynamic authority: a per-thread ACP session can
         // outlive many hook deliveries. The call resolves the CURRENT daemon-
         // private turn and fails closed everywhere else.
         tools = [...tools, ...GITHUB_REVIEW_TOOLS]
+        // Assistant mode's item ledger (assistant-mode.md §5.4); each call re-checks the mode, since this list is fixed per session.
+        tools = [...tools, ...assistantItemToolsFor(agent)]
         // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
         const managedRepo = this.managedWorkspaceRepo(agent.id)
         if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
@@ -4350,11 +4476,7 @@ export class Daemon {
         ),
       replace: (placed) => this.replaceLostExecutor(placed),
       // The same policy the pool's plane is given: only the daemon knows which of its own sockets this agent needs.
-      tunnelsFor: (agentId) => {
-        const agent = this.agents.get(agentId)
-        if (!agent) return []
-        return this.workspaces.helperBackedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
-      },
+      tunnelsFor: (agentId) => this.tunnelsForAgent(agentId),
       tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
       log: {
         info: (m) => this.log.info(m),
@@ -4753,6 +4875,8 @@ export class Daemon {
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
     this.armStoreRetentionSweep()
+    if (this.sourceCacheSweeper && this.k8sPlane)
+      this.sourceCacheSweeper.start(`${this.k8sPlane.memberId}/${randomUUID().slice(0, 8)}`)
     this.startupComplete = true
     this.readiness?.refresh()
     this.log.info('daemon ready')
@@ -4982,6 +5106,7 @@ export class Daemon {
       this.scheduler.unregister(id)
       this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
+      this.codeHostRefs.forgetAgent(id)
       this.gitCredServer?.revoke(id)
       this.runtimeCommands.forget(id)
       void this.store.deleteRuntimeCommands(id).catch(() => undefined)
@@ -5062,6 +5187,7 @@ export class Daemon {
         void this.store.deleteRuntimeCommands(a.id).catch(() => undefined)
         if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
+          this.codeHostRefs.forgetAgent(a.id)
           this.gitCredServer?.revoke(a.id)
         }
         try {
@@ -5090,6 +5216,7 @@ export class Daemon {
       // Additional repositories and grants reach sessions started from now (decision 19): running turns keep their roots, and the next credential request mints at the new authorization.
       if (change.additionalRepos && !workspaceNeedsColdRecovery) {
         this.gitCreds.remove(a.id)
+        this.codeHostRefs.forgetAgent(a.id)
         // Codex's `:workspace` profile reopens only the `.git` that existed at launch, so its shared process is reclaimed once idle.
         const shared =
           change.alwaysRootAdded && this.isCodexRuntime(a.id) ? this.hosts.get(agentHostKey(a.id)) : undefined
@@ -5282,8 +5409,16 @@ export class Daemon {
     })
   }
 
+  /** The agent a session's own VM runs, as {@link sessionAgent} hands it to that session's host launch. */
+  private microsandboxSessionAgent(agent: LoadedAgent, sessionDir: string, key?: HostKey): LoadedAgent {
+    const leaf = basename(sessionDir)
+    const sessionKey =
+      (key && hostKeySessionKey(key)) ?? [...this.sessionRuntimes.keys()].find((k) => sessionKeyDirName(k) === leaf)
+    return this.sessionAgent(agent.id, sessionKey) ?? agent
+  }
+
   private microsandboxContext(
-    agent: LoadedAgent,
+    configured: LoadedAgent,
     cwd: string,
     key?: HostKey,
     excludeAgentToolCredentials = false
@@ -5297,10 +5432,14 @@ export class Daemon {
       void this.microsandboxReady().catch(() => {})
       throw new Error('the microsandbox image is not prepared yet; its first session prepares it')
     }
+    const placement = this.microsandboxPlacement(configured, cwd, key)
+    // A session's VM takes the session's selected runtime, as its host launch does, or preparation would name another VM.
+    const agent = placement.trustedSessionDir
+      ? this.microsandboxSessionAgent(configured, placement.trustedSessionDir, key)
+      : configured
     const runtimeEntry = this.microsandboxCatalog.entries[agent.runtime]
     const runtime = runtimeEntry?.runtime
     if (!runtime) throw new Error(`runtime "${agent.runtime}" is not provided by the microsandbox image`)
-    const placement = this.microsandboxPlacement(agent, cwd, key)
     // The provider whose managed credential this spec names; a dream host gets none at all.
     const credentialProvider = excludeAgentToolCredentials
       ? undefined
@@ -6025,7 +6164,12 @@ export class Daemon {
           ...request!,
           confined: true
         })
-        await this.reconcileClusterSkills(agent, placed.subject, plane)
+        // Into the checkout, where the runtime scans for project skills, and kept out of its `git status` like a local install.
+        const ledger = await this.reconcileClusterSkills(agent, placed.subject, plane, cwd)
+        await this.workspaces.excludePlacedSessionSkills(agent, cwd, [
+          ...(ledger?.roots.map((root) => root.path) ?? []),
+          '.agentconnect/cluster-skill-state'
+        ])
         return cwd
       })
     }
@@ -6080,15 +6224,16 @@ export class Daemon {
       : this.workspaces.prepareWorkspace(agent, opts)
   }
 
-  /** The commit a tracking Git skill ref points at now, or null when unknown —
-   *  unknown keeps whatever commit the workspace already installed. */
+  /** `mcp` for every pod agent; `gitcred` for any agent with a managed credential or a private skill source, the latter window-gated (source-cache.md §8). */
+  private tunnelsForAgent(agentId: string): TunnelName[] {
+    const agent = this.agents.get(agentId)
+    if (!agent) return []
+    return this.workspaces.needsGitcredTunnel(agent) ? ['mcp', 'gitcred'] : ['mcp']
+  }
+
+  /** The commit a tracking Git skill ref points at now, or null when unknown (the installed commit then stands). */
   private trackedGitSkillCommit(entry: AgentSkillEntrySchema, agent: Agent): Promise<string | null> {
-    return (
-      this.gitSkillRefs?.resolve(entry, {
-        agentId: agent.id,
-        useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
-      }) ?? Promise.resolve(null)
-    )
+    return this.gitSkillRefs?.(entry, agent.id) ?? Promise.resolve(null)
   }
 
   /** Skills through a shim, whichever plane holds the environment: a pod of the pool, or a session's on an executor. */
@@ -6096,18 +6241,60 @@ export class Daemon {
     agent: Agent,
     pod: SandboxSubject,
     plane: Pick<K8sRuntimePlane, 'skillClientFor' | 'workspaceIncarnationFor' | 'shimGenerationFor'> | undefined = this
-      .k8sPlane
-  ): Promise<void> {
-    const workspaceIncarnation = plane?.workspaceIncarnationFor?.(pod)
+      .k8sPlane,
+    cwd?: string
+  ): Promise<ClusterSkillLedger | undefined> {
+    const reported = plane?.workspaceIncarnationFor?.(pod)
     const shimGeneration = plane?.shimGenerationFor?.(pod)
-    await this.reconcileSandboxSkills(agent, {
-      client: plane?.skillClientFor?.(pod),
-      workspaceIncarnation,
+    const isLaunchCurrent = () =>
+      plane?.workspaceIncarnationFor?.(pod) === reported && plane?.shimGenerationFor?.(pod) === shimGeneration
+    const ledger = await this.reconcileSandboxSkills(agent, {
+      client: plane?.skillClientFor?.(pod, cwd),
+      // Receipts are relative to the directory installed into, so installs into a cwd keep a ledger of their own.
+      workspaceIncarnation: reported && cwd ? cwdWorkspaceIncarnation(reported, cwd) : reported,
       shimGeneration,
-      isLaunchCurrent: () =>
-        plane?.workspaceIncarnationFor?.(pod) === workspaceIncarnation &&
-        plane?.shimGenerationFor?.(pod) === shimGeneration
+      isLaunchCurrent
     })
+    if (cwd !== undefined && reported && shimGeneration !== undefined) {
+      await this.retireShimRootSkills(agent, plane?.skillClientFor?.(pod), reported, shimGeneration, isLaunchCurrent)
+    }
+    return ledger
+  }
+
+  /** Remove the bundles an older daemon installed at a placed session's directory, above its checkout: no runtime scans there, and no other ledger owns them. */
+  private async retireShimRootSkills(
+    agent: Agent,
+    client: ClusterSkillClient | undefined,
+    workspaceIncarnation: string,
+    shimGeneration: number,
+    isLaunchCurrent: () => boolean
+  ): Promise<void> {
+    const prior = await this.store.clusterSkillLedger(agent.id, workspaceIncarnation)
+    if (!prior?.ledger.roots.length) return
+    const duty = this.duties.dutyForAgent(agent.id)
+    const skillsAgentId = this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId
+    if (!client || !duty || !skillsAgentId || !this.cfg.daemonId) return
+    try {
+      await new ClusterSkillCoordinator(this.store).reconcile({
+        authority: {
+          groupId: duty.groupId,
+          term: duty.term,
+          daemonId: this.cfg.daemonId,
+          agentId: agent.id,
+          workspaceIncarnation
+        },
+        skillsAgentId,
+        shimGeneration,
+        sources: [],
+        client,
+        isLaunchCurrent
+      })
+    } catch (error) {
+      // Retried at the next preparation: the ledger still holds them.
+      this.log.warn(
+        `skills: could not remove ${agent.id}'s bundles at its session directory (${(error as Error).message})`
+      )
+    }
   }
 
   private async reconcileMicrosandboxSkills(agent: Agent, cwd: string): Promise<string[]> {
@@ -6680,6 +6867,9 @@ export class Daemon {
     const remoteHome = remoteSession && this.executorPlane?.homeFor(remoteSession.subject)
     // The roots its `prepare` named, where the session gitconfig and config files land in that machine's environment (§5).
     const remoteRoots = remoteSession && this.executorPlane?.rootsFor(remoteSession.sessionKey)
+    // Its `.codex` as that machine classified it, which this one cannot list (prepareExecutorLaunch).
+    const remoteCodexState =
+      remoteSession && remoteHome ? this.executorPlane?.codexStateFor(remoteSession.subject, remoteHome) : undefined
     if (remoteSession && (!remoteHome || !remoteRoots)) {
       throw new Error(
         `session ${remoteSession.leaf} has no environment on daemon ${remoteSession.executorDaemonId} to launch in — its next turn prepares one`
@@ -6807,6 +6997,8 @@ export class Daemon {
       Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
       shimDirs.add(this.glabBinDir)
     }
+    // A placed session's glab wrapper is its executor's (written beside its shim); the instance it talks to still comes from here.
+    if (gitlabCredentials && remoteSession) Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
     }
@@ -6833,7 +7025,9 @@ export class Daemon {
               }
             }
           : {}),
-        ...(remoteHome ? { executor: { home: remoteHome } } : {}),
+        ...(remoteHome
+          ? { executor: { home: remoteHome, ...(remoteCodexState ? { codexState: remoteCodexState } : {}) } }
+          : {}),
         ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
         ...(srtShim ? { srtShim: { runtimeRoot: srtShim.runtimeRoot } } : {}),
         runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
@@ -6864,11 +7058,11 @@ export class Daemon {
           }
           if (!this.k8s) return
           if (target) {
+            applyConfiguredModelProviders(target, launchEnv, (providerTarget) => {
+              const configured = this.modelSessions.staticCredential(providerTarget)
+              return configured && opts.modelCredential ? { ...configured, key: '' } : configured
+            })
             if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
-            else {
-              const configured = this.modelSessions.staticCredential(target.runtime)
-              if (configured) applyStaticModelConfig(target, launchEnv, configured)
-            }
             if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
             if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
           }
@@ -7117,8 +7311,8 @@ export class Daemon {
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
       WORKSPACE_SESSION_READ_FEATURE,
-      WORKSPACE_RAW_READ_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
+      WORKSPACE_FILE_DOWNLOAD_FEATURE,
       TASK_LIST_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
@@ -7217,6 +7411,7 @@ export class Daemon {
       log: () => this.log,
       agent: (agentId, key) => this.sessionAgent(agentId, key),
       runtime: (kind) => this.runtimes[kind],
+      defaultModel: (runtime) => this.runtimeFacts.modelCatalog(runtime)?.defaultModel,
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       modelOverride: async (sessionKey) => {
         const session = await this.store.getSession(sessionKey)
@@ -7346,16 +7541,85 @@ export class Daemon {
     await Promise.all([...selected].map((lifecycle) => lifecycle.stop(0)))
   }
 
-  /** The memory-tool gate (#653): reads always pass; a private session's write asks unless it holds a session grant. */
+  /** The memory-tool gate (#653): reads always pass; a private session's write asks unless it holds a session grant, or is closed in assistant mode. */
   private async memoryAccessDecisionFor(ctx: SessionContext, mode: 'read' | 'write'): Promise<MemoryAccessDecision> {
     if (mode === 'read') return 'allow'
-    // A daemon-minted binding (distillation) carries its own authorization: it has no persisted
-    // row, so the capture gate would fail closed on it, and queueMemoryPostTurn already refused
-    // to distill a capture-excluded turn. Never model-supplied, so it cannot be forged.
+    // A daemon-minted binding (distillation) is never model-supplied and has no row for the gate to read.
     if (ctx.memoryBinding) return 'allow'
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-    if (!(await this.store.isCaptureExcluded(ctx.agentId, key))) return 'allow'
+    const excluded = await this.store.isCaptureExcluded(ctx.agentId, key)
+    // Assistant mode keeps private sessions and places out of shared memory: nobody is asked, no earlier grant applies (assistant-mode.md §5.5).
+    if (
+      assistantModeOn(this.agents.get(ctx.agentId)) &&
+      (excluded || (await this.sessionInPrivatePlace(ctx.agentId, key)))
+    )
+      return 'closed'
+    if (!excluded) return 'allow'
     return this.memoryWriteGrants.has(key) ? 'allow' : 'ask'
+  }
+
+  /** Whether a session sits in a place an assistant-mode agent must keep out of shared memory (assistant-mode.md §5.5); fails closed. */
+  private async sessionInPrivatePlace(agentId: string, key: string | undefined): Promise<boolean> {
+    const rec = key ? await this.store.getSession(key) : undefined
+    if (!rec) return true
+    return (
+      this.placePlatforms().includes(rec.platform) &&
+      !(await this.placeOpenForMemory(agentId, rec, [rec.conversationKind]))
+    )
+  }
+
+  /** Whether a place may feed shared memory: only a channel its platform explicitly reported not private; a DM, group DM, webchat or undetermined place may not. */
+  private async placeOpenForMemory(
+    agentId: string,
+    place: { platform: string; channel: string; transportScope?: string | null },
+    kinds: Iterable<string | null | undefined>
+  ): Promise<boolean> {
+    const rowKind = kindFromRows(place.platform, kinds)
+    if (rowKind !== undefined && rowKind !== 'channel') return false
+    // The recall rule's resolver: the snapshot row first, then the platform's own lookup.
+    const described = await describePlace(
+      { platform: place.platform, channel: place.channel },
+      rowKind,
+      this.integrationIdForTransportScope(agentId, place.platform, place.transportScope),
+      this.memoryPlaceDeps()
+    )
+    return described.kind === 'channel' && described.private === false
+  }
+
+  /** describePlace's inputs for memory: the snapshot row, plus the privacy a channel lookup cached; `isPrivate: true` from either wins. */
+  private memoryPlaceDeps(): Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'> {
+    return {
+      gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      placeSnapshot: (integrationId, channel) => {
+        const row = this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel)
+        const looked = this.conversationPrivacy.get(channel)
+        const isPrivate = row?.isPrivate === true || looked === true ? true : (row?.isPrivate ?? looked)
+        return { ...(row?.kind ? { kind: row.kind } : {}), ...(isPrivate !== undefined ? { isPrivate } : {}) }
+      }
+    }
+  }
+
+  /** An assistant-mode agent's places for a dream's source query: the conversations of its sessions known open. */
+  private async dreamPlaces(agentId: string): Promise<DreamPlaces | undefined> {
+    if (!assistantModeOn(this.agents.get(agentId))) return undefined
+    const platforms = this.placePlatforms()
+    const byPlace = new Map<string, { place: SessionRecord; kinds: (string | null | undefined)[] }>()
+    for (const session of await this.store.listSessions(agentId)) {
+      if (!platforms.includes(session.platform)) continue
+      const id = `${session.platform}\u001f${session.channel}`
+      const entry = byPlace.get(id) ?? { place: session, kinds: [] }
+      entry.kinds.push(session.conversationKind)
+      byPlace.set(id, entry)
+    }
+    const open: string[] = []
+    for (const { place, kinds } of byPlace.values())
+      if (await this.placeOpenForMemory(agentId, place, kinds)) open.push(place.channel)
+    return { platforms, open }
+  }
+
+  /** The platforms whose sessions are places (assistant-mode.md §5.2): every chat platform's and webchat's; a code host's or a cron's is none. */
+  private placePlatforms(): string[] {
+    return [...platformIds(), 'webchat']
   }
 
   /** Ask the human behind the session's live turn about ONE write; "for this session" is remembered here. */
@@ -7366,6 +7630,15 @@ export class Daemon {
     const outcome = await this.permissions.askMemoryWriteApproval(p.hostKey, p.acpSessionId, ask)
     if (outcome === 'allow_session') this.memoryWriteGrants.add(key)
     return outcome === 'allow_once' || outcome === 'allow_session' ? 'allowed' : outcome
+  }
+
+  /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */
+  private async assistantAskerFor(ctx: SessionContext): Promise<string | undefined> {
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const msg = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)?.entry.msg
+    if (!msg) return undefined
+    const integration = ctx.integrationId ? this.integrationConfigById(ctx.integrationId) : undefined
+    return askerIdentity(msg, integration ? await this.tenantScopeForIntegration(integration) : undefined)
   }
 
   /** Build the memory scope for an agent + conversation. For a `channel`-scoped
@@ -7405,12 +7678,10 @@ export class Daemon {
   ): Promise<void> {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
-    // Agent memory is agent-scoped and shared across users, so a memory-excluded
-    // session's turn (a `private` session, or a DM / webchat / A2A-child /
-    // launch-correlated one) must never be distilled into it. The gate is checked
-    // HERE — before both the managed distillation and the external capture outbox
-    // — and fails closed on unknown state.
+    // Shared memory never takes a capture-excluded turn, checked before distillation and the external outbox alike; fails closed.
     if (await this.store.isCaptureExcluded(agentId, session?.key)) return
+    // Nor, in assistant mode, a turn in a place not known to be open (assistant-mode.md §5.5).
+    if (assistantModeOn(this.agents.get(agentId)) && (await this.sessionInPrivatePlace(agentId, session?.key))) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -7827,8 +8098,12 @@ export class Daemon {
     let issued: { target: ModelProviderTarget; grant: KeyGrant } | undefined
     if (this.modelSessions.enabled) {
       const runtime = this.runtimes[agent.runtime]
-      const target = runtime ? modelProviderTarget(agent, runtime) : undefined
+      const model = agent.runtimeOverrides?.model ?? this.runtimeFacts.modelCatalog(agent.runtime)?.defaultModel
+      const target = runtime ? modelProviderTarget(agent, runtime, model) : undefined
       if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
+      if (target.runtime === 'opencode' && !model) {
+        throw new Error('OpenCode model list is not ready; select a model or retry after it loads')
+      }
       issued = {
         target,
         grant: await this.modelSessions.issueKey(agent, target, internalSessionKey.dream(context.dreamId))
@@ -8399,6 +8674,7 @@ export class Daemon {
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       memoryHomePortsFor: (id) => this.memoryHomePortsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
+      placesFor: (id) => this.dreamPlaces(id),
       operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>
@@ -10166,6 +10442,22 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
     }
     const payload = msg.payload
+    if (payload.kind === 'app-home-opened') {
+      await conn.welcomeBuiltin(payload.channelId, agent, integration)
+      return { msgId: msg.msgId, accepted: true }
+    }
+    // The HTTP arm of Slack's "new chat": the Socket Mode arm reaches the same rotation from the connection.
+    if (payload.kind === 'assistant-thread-started') {
+      const actor = msg.userId ? { userId: msg.userId } : undefined
+      await this.commands.startNewAppendSessions(
+        'slack',
+        payload.channelId,
+        [integration.id],
+        actor,
+        slackTsToMs(payload.threadTs)
+      )
+      return { msgId: msg.msgId, accepted: true }
+    }
     if (payload.kind === 'open-config-for-thread') {
       const routing = integrationRouting(integration)
       const unauthorized = !conversationAdmitted(routing, payload.channelId)
@@ -10698,10 +10990,8 @@ export class Daemon {
     if (!agent || provider === undefined || !host || agent.workspace.mode !== 'git-repo') return undefined
     const repoId = host.workspaceRepoId(agent.workspace)
     if (repoId === undefined) return undefined
-    const instance = parseManagedBaseUrl(host.managedHost(this.workspaces.specHostsOf(agent)).baseUrl)
-    const label = agent.workspace.gitRepo ? gitRepoLabel(agent.workspace.gitRepo) : undefined
-    const stripped = instance && label !== undefined ? stripHostPathPrefix(label, instance.pathPrefix) : undefined
-    const repoPath = stripped !== undefined ? host.credentialRepoPath(stripped) : undefined
+    const gitRepo = agent.workspace.gitRepo
+    const repoPath = gitRepo ? workspaceRepositoryPath(host, this.workspaces.specHostsOf(agent), gitRepo) : undefined
     return { provider, repoId, ...(repoPath !== undefined ? { repoPath } : {}) }
   }
 
@@ -10830,9 +11120,17 @@ export class Daemon {
       // A hook's stored selection names the runtime even after its host stops.
       storedSessionExecution: async (agentId, acpSessionId) => {
         const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+        const pending = rec
+          ? this.pending.get(pendingTurnKey(this.sessionOwnerKey(agentId, rec.key), acpSessionId))
+          : undefined
         return {
           host: rec ? this.hostForOwner(this.sessionOwnerKey(agentId, rec.key)) : this.hosts.get(agentHostKey(agentId)),
-          target: pinnedDecisionTarget(rec?.decisionModel)
+          target: pinnedDecisionTarget(rec?.decisionModel),
+          // During a turn, its initial selector snapshot must not override newer live model information.
+          observed:
+            rec && (!pending || pending.signals.runtimeReportedModel)
+              ? await this.store.getObservedTurn(rec.key)
+              : undefined
         }
       }
     }
@@ -12047,6 +12345,7 @@ export class Daemon {
       syncOrchestrationDeadlines: () => this.collab.syncOrchestrationDeadlines(),
       catchUpMissedSchedules: (agentIds) => this.catchUpMissedSchedules(agentIds),
       drainSessionPurges: () => this.drainSessionPurges(),
+      drainCronReports: () => this.cronReportOutbox.drainReports(),
       replayGainedSessionMetadata: (agentIds) => this.sessionMetadataOutbox.replayGainedSessionMetadata(agentIds),
       pendingInboxReplayAgents: () => this.pendingInboxReplayAgents,
       // After the registry write, not at the grant: admission is asynchronous and a grant is not held until it settles.
@@ -13881,6 +14180,16 @@ export class Daemon {
       this.log.debug(`dispatch: skipped already-delivered Slack event ${msg.msgId}`)
       return null
     }
+    if (created) {
+      // Classify for session visibility BEFORE the first milestone: the CP's
+      // ingest is first-wins, and the daemon's own capture gate must be closed
+      // from turn one for anything that could be private (session-visibility.md
+      // §4.1/§5.1). Persisted on the session row so later re-emits — including
+      // after a restart, when `msg` is long gone — still carry the same facts.
+      // Also BEFORE the cold fence below: a cancel there keeps the new row, and a row
+      // without its source binding rejects every later turn as a source mismatch.
+      await this.classifyNewSession(agentId, key, sessionId, msg, callMeta, hookContext, webchat?.evaluation === true)
+    }
     // A cold session can spend time booting/materializing inside sessions.handle(). If
     // pause landed in that window, no Pending existed for the transition hook to cancel.
     // Re-check before publishing metadata or prompting, restore the new row to idle, and
@@ -13961,6 +14270,7 @@ export class Daemon {
       this.emitTurnStarted(run, host, sessionId, created, prompt.finalCaptureInput, turnModel)
       const outcome = await this.runPromptLoop(p, run, { ...prompt, host, sessionId, turnModel, settlement })
       if (outcome.kind === 'cancelled') return null
+      if (!p.signals.runtimeReportedModel) turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
       await this.settleUsage(p, run, sessionId)
       await this.commitWebchatReply(p, run, outcome)
       await this.flushPlatformFinals(p, run, sessionId, currentAttributionInfo)
@@ -14503,8 +14813,16 @@ export class Daemon {
       const built = buildCodeHostDecisionState({ ...context, agent: decisionAgentContext(agent) }, decision)
       return built.unsupported ? undefined : built.state
     }
-    if (msg.source !== 'user') return undefined
     const context = decisionAgentContext(agent)
+    if (msg.source === 'cron') return modelSelectionState('cron', msg.text, context)
+    if (msg.source === 'agent') {
+      const caller = this.agents.get(msg.sender.id)
+      return modelSelectionState('agent', msg.text, context, {
+        id: msg.sender.id,
+        ...(caller ? { name: decisionAgentContext(caller).name } : {})
+      })
+    }
+    if (msg.source !== 'user') return undefined
     const record = await this.store.channelRecordRef(channel, transcriptCoords(msg).ts, agent.id)
     if (!record) return modelSelectionState('chat', msg.text, context)
     const window = await this.store.decisionWindow(
@@ -14692,7 +15010,7 @@ export class Daemon {
    *  metadata snapshot, observed-channel discovery, and the caller's session-ready callback. */
   private async announceTurnStart(run: TurnRun, sessionId: string, created: boolean): Promise<void> {
     const { entry, key, plan, replyConn } = run
-    const { agentId, msg, callMeta, hookContext, webchat, onSessionReady } = entry
+    const { agentId, msg, onSessionReady } = entry
     // sessions.handle() booted the host — surface any spawn-time config warnings
     // (config-file secret conflicts / write failures) into this session.
     await this.flushSpawnNotices(agentId, {
@@ -14703,14 +15021,6 @@ export class Daemon {
       statusThread: plan.statusThread,
       sessionKey: plan.sessionKey
     })
-    if (created) {
-      // Classify for session visibility BEFORE the first milestone: the CP's
-      // ingest is first-wins, and the daemon's own capture gate must be closed
-      // from turn one for anything that could be private (session-visibility.md
-      // §4.1/§5.1). Persisted on the session row so later re-emits — including
-      // after a restart, when `msg` is long gone — still carry the same facts.
-      await this.classifyNewSession(agentId, key, sessionId, msg, callMeta, hookContext, webchat?.evaluation === true)
-    }
     // The row exists now, so the birth verdict this turn reached lands before the milestone that reports it (§7).
     await this.flushSessionExecutorVerdict(key)
     // Turn-start metadata snapshot — EVERY turn, not only `created`. The row is
@@ -15120,18 +15430,8 @@ export class Daemon {
     if (selectedModel && this.modelSessions.crossesHostProvider(key, agentId, selectedModel)) {
       // A live host can only use the provider credentials it started with.
       this.log.debug('model selection deferred — host is bound to its start-time provider')
-    } else if (selectedModel) {
-      const applied =
-        host.modelOptions?.(sessionId)?.current === selectedModel ||
-        (await host.setSessionModel(sessionId, selectedModel).catch(() => false))
-      if (
-        !applied &&
-        !override &&
-        runtimeAgent?.runtimeOverrides?.model &&
-        !this.modelSessions.crossesHostProvider(key, agentId, runtimeAgent.runtimeOverrides.model)
-      ) {
-        await host.setSessionModel(sessionId, runtimeAgent.runtimeOverrides.model).catch(() => false)
-      }
+    } else if (selectedModel && host.modelOptions?.(sessionId)?.current !== selectedModel) {
+      await host.setSessionModel(sessionId, selectedModel)
     }
     // Apply effort after the model, which determines the offered levels.
     const effortOverride =
@@ -16074,8 +16374,7 @@ export class Daemon {
     this.clearSlackStream(p)
     // Backstop: settle any permission / elicitation card still awaiting a tap.
     await this.permissions.releaseElicits(p.hostKey, sessionId)
-    await this.permissions.releaseChatPermissions(p.hostKey, sessionId)
-    await this.permissions.releaseEditorPermissions(p.hostKey, sessionId)
+    await this.permissions.releaseApprovals(p.hostKey, sessionId)
     // §6.7: this turn's active call context ends with the turn (a nested messageAgent can
     // only inherit while the turn is in flight). Only clear if THIS turn owns the entry —
     // the map is keyed by sessionKey and the gate guarantees one active turn per key.
@@ -16233,8 +16532,7 @@ export class Daemon {
     )
   }
 
-  /** This turn's live attribution facts. Re-read per call: a runtime may only publish its final
-   *  session-scoped model during the prompt. */
+  /** Prefer execution evidence, then the live selector, which can change during the prompt. */
   private async turnAttributionInfo(
     p: Pending,
     run: TurnRun,
@@ -16246,7 +16544,7 @@ export class Daemon {
       botName: agent.name,
       botUrl: this.agentLink(entry.agentId),
       runtime: this.runtimeFacts.runtimeNames()[agent.runtime] ?? agent.runtime,
-      model: (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
+      model: p.signals.runtimeReportedModel ?? (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
       sessionUrl: this.sessionLink(p.outwardSessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
       ...(plan.hopLimitNotice ? { notice: plan.hopLimitNotice } : {})
     }
@@ -16396,9 +16694,7 @@ export class Daemon {
     if (!exact()) return
     await this.permissions.releaseElicits(live.hostKey, liveSessionId)
     if (!exact()) return
-    await this.permissions.releaseChatPermissions(live.hostKey, liveSessionId)
-    if (!exact()) return
-    await this.permissions.releaseEditorPermissions(live.hostKey, liveSessionId)
+    await this.permissions.releaseApprovals(live.hostKey, liveSessionId)
     if (!exact()) return
     // §7.3 idle→cancelling: send session/cancel, then arm a force backstop. The turn's
     // dispatch finally clears the timer + writes the terminal idle state when the agent
@@ -18104,6 +18400,31 @@ export class Daemon {
     return maskSecretsDeep(payload, maskableSecrets(this.agents.get(agentId)))
   }
 
+  /** Keep native usage and the runtime's concrete model together, including notifications after turn completion. */
+  private async recordRuntimeUsageSnapshot(
+    key: string,
+    update: Extract<SessionUpdate, { sessionUpdate: 'usage_update' }>
+  ): Promise<string | undefined> {
+    await this.store.setUsageSnapshot(key, {
+      contextUsed: update.used,
+      contextSize: update.size,
+      costAmount: update.cost?.amount ?? undefined,
+      costCurrency: update.cost?.currency ?? undefined
+    })
+    // Claude ACP reports the top-level assistant model here even while its selector stays on "default".
+    const reported = update._meta?.['_claude/model']
+    const model = typeof reported === 'string' ? reported.trim() : ''
+    if (!model || model === 'default' || model === '<synthetic>') return
+    const observed = await this.store.getObservedTurn(key)
+    if (!observed?.runtime) return
+    if (observed.model !== model) {
+      await this.store.setObservedTurn(key, observed.runtime, model)
+      const rec = await this.store.getSession(key)
+      if (rec) await this.reportSessionStatus(rec)
+    }
+    return model
+  }
+
   /** Emit the daemon's latest merged usage snapshot. Used both at normal turn end
    *  and when a late ACP usage_update corrects an already-reported fallback. */
   private async emitStoredUsageReport(
@@ -18330,12 +18651,7 @@ export class Daemon {
       // platform delivery and evaluation telemetry.
       if (update?.sessionUpdate === 'usage_update' && extraction.sessionKey) {
         if (update.cost?.amount !== undefined) extraction.runtimeCostReported = true
-        await this.store.setUsageSnapshot(extraction.sessionKey, {
-          contextUsed: update.used,
-          contextSize: update.size,
-          costAmount: update.cost?.amount ?? undefined,
-          costCurrency: update.cost?.currency ?? undefined
-        })
+        await this.recordRuntimeUsageSnapshot(extraction.sessionKey, update)
       }
       return
     }
@@ -18348,12 +18664,7 @@ export class Daemon {
       if (extractionQuarantineOwner === agentId && update?.sessionUpdate === 'usage_update') {
         const rec = await this.sessionForAcp(owner, sessionId)
         if (rec?.platform === 'dream') {
-          await this.store.setUsageSnapshot(rec.key, {
-            contextUsed: update.used,
-            contextSize: update.size,
-            costAmount: update.cost?.amount ?? undefined,
-            costCurrency: update.cost?.currency ?? undefined
-          })
+          await this.recordRuntimeUsageSnapshot(rec.key, update)
           await this.emitStoredUsageReport(sessionId, agentId, rec.platform, rec.channel, rec.key, true)
         }
       }
@@ -18442,12 +18753,8 @@ export class Daemon {
       const key = p?.plan.sessionKey ?? rec?.key
       if (key) {
         if (p && update.cost?.amount !== undefined) p.signals.runtimeCostReported = true
-        await this.store.setUsageSnapshot(key, {
-          contextUsed: update.used,
-          contextSize: update.size,
-          costAmount: update.cost?.amount ?? undefined,
-          costCurrency: update.cost?.currency ?? undefined
-        })
+        const reportedModel = await this.recordRuntimeUsageSnapshot(key, update)
+        if (p && reportedModel) p.signals.runtimeReportedModel = reportedModel
         if (p) {
           // Live context/cost changed — refresh the status bar (deduped if nothing observable
           // moved). Token totals aren't in this stream; they fold in at turn end.
@@ -19993,26 +20300,24 @@ export class Daemon {
   /** Re-assert cached reports after a CP reconnect without upgrading a partial
    *  observation (including Slack direct-conversation discovery) to a full snapshot. */
   private async replayChannelSnapshots(): Promise<void> {
-    // Keyed by BOTH sources. The snapshots are in memory and the tombstones are on
-    // disk, so a restart before the first reconnect leaves an integration with a
-    // durable retraction and no cached snapshot — and keying on the map alone would
-    // replay nothing for it, stranding the CP row exactly when the original
-    // fire-and-forget retraction was the one thing that got lost.
+    // Keyed by both sources: a restart keeps the on-disk tombstones but not the in-memory snapshots.
     const integrationIds = new Set([...this.channelSnapshots.keys(), ...(await this.store.retractedIntegrations())])
     for (const integrationId of integrationIds) {
       const snapshot = this.channelSnapshots.get(integrationId)
-      // Replay the tombstones too: a retraction emitted while the CP was unreachable
-      // is simply lost, so without carrying it here the reconnect would re-assert what
-      // remains and leave the departed conversation listed forever — the exact failure
-      // this whole mechanism exists to end.
+      // Tombstones replay too: a retraction sent while the CP was unreachable is lost, so the reconnect carries it.
       const removed = [...(await this.store.retractedConversations(integrationId))]
       if (!snapshot && removed.length === 0) continue
-      this.cpClient?.emitIntegrationChannels({
-        integrationId,
-        channels: snapshot?.channels ?? [],
-        ...(snapshot?.authoritative ? {} : { authoritative: false }),
-        ...(removed.length > 0 ? { removed } : {})
-      })
+      try {
+        this.cpClient?.emitIntegrationChannels({
+          integrationId,
+          channels: snapshot?.channels ?? [],
+          ...(snapshot?.authoritative ? {} : { authoritative: false }),
+          ...(removed.length > 0 ? { removed } : {})
+        })
+      } catch (err) {
+        // A pool store's tombstone can name an integration this member cannot scope; skip it, not the rest.
+        this.log.debug(`channels: replay skipped for integration ${integrationId}: ${formatErr(err)}`)
+      }
     }
   }
 
@@ -21010,6 +21315,8 @@ export class Daemon {
 
   /** Whether retention has a directory of this session's to judge: its on-demand clones beside the agent's roots (decision 20) — recorded on its row once handed, so later rows cannot hide them — shared or not, else an isolated one's worktrees or clones. */
   private sessionMayOwnDirectories(agent: Agent, rec: SessionRecord): boolean {
+    // A Dream works in its runner's staging and never prepares a session workspace, so no pod is woken to judge one.
+    if (rec.platform === 'dream') return false
     if (rec.onDemandClones === 1 || this.workspaces.mayOwnOnDemandClones(agent, rec.key)) return true
     return rec.workspaceIsolation !== 'shared' && this.workspaces.mayOwnSessionWorktrees(agent)
   }
@@ -21087,14 +21394,24 @@ export class Daemon {
     }
   }
 
+  /** A conversation's current append session skips idle retention (channel-session-mode.md §6.3); removing the agent or integration, leaving `append`, or `!new` ends it. */
+  private async keepsAppendSession(rec: SessionRecord): Promise<boolean> {
+    if (!isAppendCoordinate(rec.thread)) return false
+    const integrationId = this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope)
+    const int = this.agents.get(rec.agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
+    if (!int || conversationSessionMode(int, rec.channel) !== 'append') return false
+    return (await this.store.currentAppendCoordinate(rec.agentId, rec.channel, rec.transportScope)) === rec.thread
+  }
+
   /** Returns how many session VMs a completed pass discarded. */
   private async sweepExpiredSessions(): Promise<number> {
     const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
     if (windowMs === null) return 0
     // Holder-only on a shared store: the active-turn exclusions are member-local, so only the holder can judge a row.
-    const expired = (await this.store.listExpiredSessions(this.clock.now() - windowMs)).filter((rec) =>
-      this.judgesStoredSessions(rec.agentId)
-    )
+    const expired: SessionRecord[] = []
+    for (const rec of await this.store.listExpiredSessions(this.clock.now() - windowMs)) {
+      if (this.judgesStoredSessions(rec.agentId) && !(await this.keepsAppendSession(rec))) expired.push(rec)
+    }
     if (!expired.length) return 0
     // ONE stamp for the whole pass, not one per session: it is the sweep that
     // deleted them, and a shared value lets the drain report a pass as a single
@@ -21744,11 +22061,15 @@ export class Daemon {
     for (const [agentId, running] of this.k8sAdoptions) {
       if (!running) this.adoptClusterSandbox(agentId)
     }
+    this.adoptUntrackedSandboxes(plane, now)
     const launched = plane.launched()
     this.log.debug(`idle: examining ${launched.length} held sandbox launch(es)`)
+    const held = new Set(launched.map(({ subject }) => subject))
+    for (const subject of this.longIdleSkipReportedAt.keys()) {
+      if (!held.has(subject)) this.longIdleSkipReportedAt.delete(subject)
+    }
     const sessionActivity = new Map<string, Map<string, number>>()
     for (const { subject, agentId, since } of launched) {
-      const skip = (reason: string): void => this.log.debug(`idle: skipping sandbox "${subject}" — ${reason}`)
       const leaf = sandboxSubjectSessionLeaf(subject)
       let activity: number | null
       if (leaf === undefined) {
@@ -21767,6 +22088,10 @@ export class Daemon {
         }
         activity = sessions.get(leaf) ?? null
       }
+      // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
+      const last = Math.max(activity ?? 0, since)
+      const quiet = now - last > ttl
+      const skip = (reason: string): void => this.reportIdleSkip(subject, reason, now - last, ttl, now)
       // Recheck duty and admission after reading the store, before asking the pod to suspend.
       if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) {
         skip('duty held elsewhere')
@@ -21777,9 +22102,6 @@ export class Daemon {
         skip(inUse)
         continue
       }
-      // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
-      const last = Math.max(activity ?? 0, since)
-      const quiet = now - last > ttl
       // A lease on THIS pod defers the suspend: an open page's dirty volume or armed watcher, or this daemon's own on a watcher it saw armed; each lapses within one TTL (§11).
       if (this.sandboxHolds.holds(subject)) {
         skip(`held by ${this.sandboxHolds.reasons(subject).join(', ')}`)
@@ -21799,6 +22121,43 @@ export class Daemon {
         })
         .catch((err) => this.log.warn(`idle: suspending the sandbox "${subject}" failed: ${formatErr(err)}`))
     }
+  }
+
+  /** One sweep skip, at debug unless the pod has stayed quiet several timeouts, when it is logged at info once an hour so a pod that never suspends names what holds it. */
+  private reportIdleSkip(subject: string, reason: string, quietMs: number, ttl: number, now: number): void {
+    const reportedAt = this.longIdleSkipReportedAt.get(subject)
+    if (
+      quietMs <= LONG_IDLE_SKIP_AFTER_TTLS * ttl ||
+      (reportedAt !== undefined && now - reportedAt < LONG_IDLE_SKIP_REPORT_INTERVAL_MS)
+    ) {
+      this.log.debug(`idle: skipping sandbox "${subject}" — ${reason}`)
+      return
+    }
+    this.longIdleSkipReportedAt.set(subject, now)
+    this.log.info(
+      `idle: the sandbox "${subject}" is still up after ${Math.round(quietMs / 60_000)} min without recorded activity — ${reason}`
+    )
+  }
+
+  /** Take over Running pods no launch here tracks, at most once per interval and never awaited, since otherwise only a duty change would. */
+  private adoptUntrackedSandboxes(plane: K8sRuntimePlane, now: number): void {
+    // Duty alone decides, as at a duty gain: before its first auth a member cannot tell its agents from a peer's.
+    if (!this.dutyCoordinator.dutyEnforced() || this.duties.agents().size === 0) return
+    if (this.untrackedSandboxAdoption) return
+    if (now - this.lastUntrackedSandboxAdoptionAt < UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS) return
+    this.lastUntrackedSandboxAdoptionAt = now
+    this.untrackedSandboxAdoption = plane
+      // An agent whose duty-gain takeover is still running or retrying is left to it.
+      .adoptUntracked((agentId) => this.duties.holdsAgent(agentId) && !this.k8sAdoptions.has(agentId))
+      .then((subjects) => {
+        for (const subject of subjects) {
+          this.log.info(`idle: took over the running sandbox "${subject}", which no launch here tracked`)
+        }
+      })
+      .catch((err) => this.log.warn(`idle: looking for running sandboxes no launch tracks failed: ${formatErr(err)}`))
+      .finally(() => {
+        this.untrackedSandboxAdoption = undefined
+      })
   }
 
   /** Where an arm's watcher lives (k8s-daemon-pool §4): an isolated session's own pod when it has one, else the agent's — off the session's directory and its claim, never off what is attached. */
@@ -22489,8 +22848,7 @@ export class Daemon {
         this.clearIdle(p)
         this.turnSurfaces.exact(p.plan.platform)?.onSuppress?.(p)
         await this.permissions.releaseElicits(p.hostKey, p.acpSessionId)
-        await this.permissions.releaseChatPermissions(p.hostKey, p.acpSessionId)
-        await this.permissions.releaseEditorPermissions(p.hostKey, p.acpSessionId)
+        await this.permissions.releaseApprovals(p.hostKey, p.acpSessionId)
         void (p.selectedHost?.host ?? this.hostForOwner(p.hostKey))?.cancel(p.acpSessionId).catch(() => {})
         // Its durable row survives the drain, so the next holder replays the message.
         if (cutHere) await this.postTurnCutNotice(p, SHUTDOWN_NOTICE, true)
@@ -22943,6 +23301,7 @@ export class Daemon {
       ownStrategies: () => this.strategyTable(),
       // Only for the Control Plane's one-time `runInSandbox` migration: the retiring key, or its old default.
       sandboxBackend: () => this.cfg.sandbox.backend ?? 'srt',
+      contentStore: () => this.dataPlane?.storeId,
       executorFacet: () => this.executorFacet,
       admittedRuntimeIds: () => this.admittedRuntimeIds(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),
@@ -22966,6 +23325,7 @@ export class Daemon {
       replayCredentialRevocations: () => this.connections.replayCredentialRevocations(),
       replayApprovalActivity: () => this.permissions.replayApprovalActivity(),
       sessionMetadataOutbox: () => this.sessionMetadataOutbox,
+      cronReportOutbox: () => this.cronReportOutbox,
       webchatMcpRevocations: () => this.webchatMcpRevocations,
       drainSessionPurges: () => this.drainSessionPurges(),
       effectiveAgents: () => this.effectiveAgents(),
@@ -23302,7 +23662,10 @@ export class Daemon {
     update: Omit<CronReport, 'cronId' | 'agentId' | 'firedAt'> = {}
   ): void {
     if (msg.source !== 'cron' || !msg.cronRun) return
-    this.cpClient?.emitCronReport({ ...msg.cronRun, agentId, ...update })
+    const report = { ...msg.cronRun, agentId, ...update }
+    // A terminal outcome is held until the CP ACKs it; fire and session progress stay best-effort.
+    if (update.status) void this.cronReportOutbox.record(report)
+    else this.cpClient?.emitCronReport(report)
   }
 
   /** Console "Run now" (`cron/run` REQ): fire one CP cron immediately. The fire
@@ -23797,7 +24160,7 @@ export class Daemon {
           log: this.log,
           isolateAccountApps: this.cfg.security.isolateAccountApps
         }),
-      staticCredential: (kind) => this.modelSessions.staticCredential(kind),
+      staticCredential: (target) => this.modelSessions.staticCredential(target),
       runtimeEnvironment: this.runtimeEnvironment,
       ...(this.codexSessionFloor ? { codexSessionFloor: this.codexSessionFloor } : {}),
       ...(this.claudeModelAliases ? { claudeModelAliases: this.claudeModelAliases } : {}),
@@ -23991,6 +24354,8 @@ export class Daemon {
     }
     this.runtimeFacts.dispose()
     this.k8sProbeSchedule?.stop()
+    // Bounded: the pass stops between rows, so at most one row's HEAD and DELETE (30 s each) plus one store call.
+    await this.sourceCacheSweeper?.stop()
     // Not awaited: an image pull in flight must not hold the drain; the manager refuses the VM once it closes.
     this.vmModelProbe?.abort()
     this.dutyCoordinator.dispose()
@@ -24008,6 +24373,7 @@ export class Daemon {
       this.hookReportRetryTimer = undefined
     }
     this.sessionMetadataOutbox.dispose()
+    this.cronReportOutbox.dispose()
     // Clear any live orchestration deadline timers so they don't hold the process open
     // (the durable `orchestration.deadline` epoch re-arms them on the next startup).
     for (const t of this.collab.orchestrationDeadlines.values()) this.clock.clearTimeout(t)
@@ -24062,6 +24428,7 @@ export class Daemon {
     this.shutdownDutyDrain = undefined
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.sessionMetadataOutbox.inFlightDrain()).catch((e) => errors.push(e))
+    await Promise.resolve(this.cronReportOutbox.inFlightDrain()).catch((e) => errors.push(e))
     // Nothing here can emit after this point; hand any claim this member still holds back.
     await this.sessionMetadataOutbox.releaseOwnedSessionMetadata()
     // The closed CP transport cannot admit another lifecycle frame. Drain every

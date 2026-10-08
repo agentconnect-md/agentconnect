@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { CodeHostRefResolver } from '../src/codehost/ref-resolver.js'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +10,11 @@ import {
   RUNTIME_PROBE_FEATURE
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import {
+  LONG_IDLE_SKIP_AFTER_TTLS,
+  LONG_IDLE_SKIP_REPORT_INTERVAL_MS,
+  UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS
+} from '../src/daemon/constants.js'
 import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { wireWorkspacePlane } from '../src/execution/plane.js'
 import { SANDBOX_HOLD_TTL_MS, SandboxHolds } from '../src/k8s/sandbox-hold.js'
@@ -18,6 +24,7 @@ import { agentSandboxSubject, sandboxSubjectFor, sandboxSubjectForPath } from '.
 import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../src/shim/protocol.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
+import type { SourceCacheMetrics, SourceCacheSweeper, SourceCacheWorkspaceReader } from '../src/source-cache/index.js'
 import { DATA_PLANE_CONFIG_PATH } from '../src/store/postgres-config.js'
 import { mcpSocketPath, statePath } from '../src/paths.js'
 import { SANDBOX_TUNNEL_PATHS } from '../src/shim/sandbox-paths.js'
@@ -103,6 +110,10 @@ function daemon(opts: {
   startControlPlane?: ReturnType<typeof vi.fn>
   /** Receives the options the mode hands the plane — the rows about what it asks the pod to serve. */
   onPlaneStart?: (options: any) => void
+  /** The Source Cache's STS seam, so a row can prove no network call was made. */
+  sourceCacheFetch?: ReturnType<typeof vi.fn>
+  /** A recording Source Cache metrics recorder, for the wiring row. */
+  sourceCacheMetrics?: SourceCacheMetrics
 }): Daemon {
   return new Daemon({
     root: opts.root,
@@ -122,6 +133,7 @@ function daemon(opts: {
               workspacesOffDisk: true,
               gitRunnerFor: () => undefined,
               launched: () => [],
+              adoptUntracked: async () => [],
               armedIn: async () => false,
               suspendIdle: async () => 'absent',
               suspendStalled: async () => 'absent',
@@ -133,11 +145,13 @@ function daemon(opts: {
         }
       : {}),
     ...(opts.openDataPlane ? { openDataPlane: opts.openDataPlane as never } : {}),
+    ...(opts.sourceCacheMetrics ? { sourceCacheMetrics: opts.sourceCacheMetrics } : {}),
     startControlPlane: (opts.startControlPlane ?? vi.fn(() => Promise.resolve())) as never,
     ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     resolveCatalog: async () => catalog(),
     ...(opts.probe ? { probeRuntimes: opts.probe as never } : {}),
     ...(opts.probeHostFactory ? { probeHostFactory: opts.probeHostFactory as never } : {}),
+    ...(opts.sourceCacheFetch ? { sourceCacheFetch: opts.sourceCacheFetch as never } : {}),
     hostFactory: () => ({}) as never
   })
 }
@@ -1013,6 +1027,98 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  it('takes over a running pod no launch here tracks, only for agents whose duty it holds and once per interval', async () => {
+    const adoptUntracked = vi.fn(async (_serves: (agentId: string) => boolean) => ['held:session-x'])
+    const k8sDaemon = daemon({ root: root(), k8s: true, plane: { adoptUntracked } })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      const info = vi.spyOn(inner.log, 'info')
+      const ttl = inner.cfg.limits.agentIdleTimeoutMs
+      const now = Date.now()
+      // Outside a member set nothing tells this member's agents from a peer's.
+      await inner.sweepIdleSandboxes(now, ttl)
+      expect(adoptUntracked).not.toHaveBeenCalled()
+      inner.cpClient = {
+        organizationScope: () => 'frame',
+        memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
+        stop: async () => {}
+      }
+      inner.duties.applyGrant([
+        {
+          groupId: '11111111-1111-4111-8111-111111111111',
+          orgId: 'org-1',
+          term: '1',
+          members: [{ kind: 'agent', refId: 'held' }]
+        }
+      ])
+      await inner.sweepIdleSandboxes(now, ttl)
+      await vi.waitFor(() =>
+        expect(info).toHaveBeenCalledWith(
+          'idle: took over the running sandbox "held:session-x", which no launch here tracked'
+        )
+      )
+      await vi.waitFor(() => expect(inner.untrackedSandboxAdoption).toBeUndefined())
+      const serves = adoptUntracked.mock.calls[0]![0]
+      expect([serves('held'), serves('moved')]).toEqual([true, false])
+      // A duty-gain takeover still running or retrying keeps its agent.
+      inner.k8sAdoptions.set('held', undefined)
+      expect(serves('held')).toBe(false)
+      inner.k8sAdoptions.delete('held')
+      await inner.sweepIdleSandboxes(now + UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS - 1, ttl)
+      expect(adoptUntracked).toHaveBeenCalledOnce()
+      await inner.sweepIdleSandboxes(now + UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS, ttl)
+      expect(adoptUntracked).toHaveBeenCalledTimes(2)
+    } finally {
+      ;(k8sDaemon as any).cpClient = undefined
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('names what keeps a long-quiet pod up at info once an hour, and at debug before and in between', async () => {
+    let launched = [{ subject: 'bot-a', agentId: 'bot-a', since: 0 }]
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      plane: { launched: () => launched, suspendIdle: async () => 'busy' }
+    })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      const info = vi.spyOn(inner.log, 'info')
+      const debug = vi.spyOn(inner.log, 'debug')
+      const ttl = inner.cfg.limits.agentIdleTimeoutMs
+      const stillUp = (): number =>
+        info.mock.calls.filter(([line]) => String(line).startsWith('idle: the sandbox "bot-a" is still up after'))
+          .length
+      const skipped = (): number =>
+        debug.mock.calls.filter(([line]) => String(line).startsWith('idle: skipping sandbox "bot-a" — busy')).length
+      const longQuiet = (LONG_IDLE_SKIP_AFTER_TTLS + 1) * ttl
+      await inner.sweepIdleSandboxes(LONG_IDLE_SKIP_AFTER_TTLS * ttl, ttl)
+      await vi.waitFor(() => expect(skipped()).toBe(1))
+      expect(stillUp()).toBe(0)
+      await inner.sweepIdleSandboxes(longQuiet, ttl)
+      await vi.waitFor(() => expect(stillUp()).toBe(1))
+      expect(info).toHaveBeenCalledWith(
+        `idle: the sandbox "bot-a" is still up after ${Math.round(longQuiet / 60_000)} min without recorded activity — ` +
+          `busy; idle ${Math.round(longQuiet / 1000)}s, timeout ${Math.round(ttl / 1000)}s`
+      )
+      await inner.sweepIdleSandboxes(longQuiet + LONG_IDLE_SKIP_REPORT_INTERVAL_MS - 1, ttl)
+      await vi.waitFor(() => expect(skipped()).toBe(2))
+      expect(stillUp()).toBe(1)
+      await inner.sweepIdleSandboxes(longQuiet + LONG_IDLE_SKIP_REPORT_INTERVAL_MS, ttl)
+      await vi.waitFor(() => expect(stillUp()).toBe(2))
+      // A pod this member stopped holding starts over: the next time it is held and skipped, it is named at once.
+      launched = []
+      await inner.sweepIdleSandboxes(longQuiet + LONG_IDLE_SKIP_REPORT_INTERVAL_MS + 1, ttl)
+      launched = [{ subject: 'bot-a', agentId: 'bot-a', since: 0 }]
+      await inner.sweepIdleSandboxes(longQuiet + LONG_IDLE_SKIP_REPORT_INTERVAL_MS + 2, ttl)
+      await vi.waitFor(() => expect(stillUp()).toBe(3))
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
   it('takes over the sandbox when a duty arrives and releases it — after the host stop — when the duty leaves', async () => {
     const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
     const GROUP = '11111111-1111-4111-8111-111111111111'
@@ -1646,6 +1752,20 @@ describe('daemon --k8s mode', () => {
         workspace: { mode: 'git-repo', additionalRepos: [{ repoFullName: 'acme/own', repoId: '2' }] }
       })
       expect(planeOptions.tunnelsFor('anon')).toEqual(['mcp'])
+      // A skill-only agent (scratch, no marker) with a private skill source gets the socket, window-gated (source-cache.md §8).
+      const privateSkill = { name: 'tools', source: 'acme/skills', githubRepoId: '9', private: true, skills: [] }
+      ;(k8sDaemon as any).agents.set('skill-only', {
+        id: 'skill-only',
+        workspace: { mode: 'from-scratch' },
+        skills: [privateSkill]
+      })
+      expect(planeOptions.tunnelsFor('skill-only')).toEqual(['mcp', 'gitcred'])
+      ;(k8sDaemon as any).agents.set('public-skill', {
+        id: 'public-skill',
+        workspace: { mode: 'from-scratch' },
+        skills: [{ ...privateSkill, private: undefined }]
+      })
+      expect(planeOptions.tunnelsFor('public-skill')).toEqual(['mcp'])
       // And nothing for the member's own runtime probe, whose channel is granted `probe` alone —
       // asking it to serve a socket would be refused, and the refusal logged, on every boot.
       expect(planeOptions.tunnelsFor('ac-runtime-probe-0f0f0f0f')).toEqual([])
@@ -2483,3 +2603,101 @@ async function openSessionClaim(
   await inner.openSession(run, () => {})
   return claimed
 }
+
+describe('daemon --k8s mode: Source Cache signer (source-cache.md §12)', () => {
+  function sourceCacheEnv(dir: string): string {
+    return JSON.stringify({
+      version: 1,
+      region: 'us-east-1',
+      bucket: 'ac-cache',
+      credentials: { source: 'static', dir, accessKeyIdKey: 'id', secretAccessKeyKey: 'secret' }
+    })
+  }
+
+  const cacheReaderOf = (instance: { workspaces: unknown }): unknown =>
+    (instance.workspaces as { sourceCacheReader?: unknown }).sourceCacheReader
+  const sweeperOf = (instance: object): unknown => (instance as { sourceCacheSweeper?: unknown }).sourceCacheSweeper
+
+  function keyDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-source-cache-keys-'))
+    writeFileSync(join(dir, 'id'), 'AKIDEXAMPLE\n')
+    writeFileSync(join(dir, 'secret'), 'secret\n')
+    return dir
+  }
+
+  it('builds no signer and touches no network when the bucket is not configured', () => {
+    const fetch = vi.fn()
+    vi.stubEnv('AC_SOURCE_CACHE', '')
+    try {
+      const instance = daemon({ root: root(), k8s: true, sourceCacheFetch: fetch })
+      expect(instance.sourceCacheSigner()).toBeUndefined()
+      // No reader either, so every workspace clone keeps today's argv and reads no store.
+      expect(cacheReaderOf(instance)).toBeUndefined()
+      expect(sweeperOf(instance)).toBeUndefined()
+      // Credentialed skill refs still resolve per agent, bucket or not.
+      expect((instance as unknown as { codeHostRefs: unknown }).codeHostRefs).toBeInstanceOf(CodeHostRefResolver)
+      expect(fetch).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('refuses to construct with an invalid configuration, naming the variable', () => {
+    vi.stubEnv('AC_SOURCE_CACHE', JSON.stringify({ version: 1, region: 'us-east-1', bucket: 'ac-cache' }))
+    try {
+      expect(() => daemon({ root: root(), k8s: true })).toThrow('AC_SOURCE_CACHE is invalid')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  // The document requires an absolute POSIX key directory, which a Windows temp dir is not.
+  it.skipIf(process.platform === 'win32')(
+    'builds a signer from a valid configuration without any network call',
+    async () => {
+      const fetch = vi.fn()
+      vi.stubEnv('AC_SOURCE_CACHE', sourceCacheEnv(keyDir()))
+      try {
+        const instance = daemon({ root: root(), k8s: true, sourceCacheFetch: fetch })
+        expect(instance.sourceCacheSigner()).toBeDefined()
+        expect(cacheReaderOf(instance)).toBeDefined()
+        // The sweeper is built but idle: its lifecycle check and first pass start with the timers, not here.
+        expect(sweeperOf(instance)).toBeDefined()
+        expect(fetch).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'wires the read planner and the sweeper into the injected metrics recorder',
+    async () => {
+      const fetch = vi.fn(() => Promise.reject(new Error('offline')))
+      const recorder = { read: vi.fn(), writeBack: vi.fn(), sweepPass: vi.fn(), lifecycle: vi.fn() }
+      vi.stubEnv('AC_SOURCE_CACHE', sourceCacheEnv(keyDir()))
+      try {
+        const instance = daemon({ root: root(), k8s: true, sourceCacheFetch: fetch, sourceCacheMetrics: recorder })
+        const hit = { kind: 'hit', bundleKey: 'k', shape: 'full', repoClass: 'anon', bytes: 10 } as const
+        ;(cacheReaderOf(instance) as SourceCacheWorkspaceReader).record(hit)
+        expect(recorder.read).toHaveBeenCalledWith(hit)
+        await (sweeperOf(instance) as SourceCacheSweeper).checkLifecycle()
+        expect(recorder.lifecycle).toHaveBeenCalledWith('unknown')
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    }
+  )
+
+  it('ignores the configuration outside --k8s', () => {
+    vi.stubEnv('AC_SOURCE_CACHE', sourceCacheEnv(keyDir()))
+    try {
+      const instance = daemon({ root: root(), k8s: false })
+      expect(instance.sourceCacheSigner()).toBeUndefined()
+      expect(sweeperOf(instance)).toBeUndefined()
+      expect((instance as unknown as { codeHostRefs: unknown }).codeHostRefs).toBeInstanceOf(CodeHostRefResolver)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})

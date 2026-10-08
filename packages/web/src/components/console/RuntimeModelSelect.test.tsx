@@ -279,7 +279,7 @@ it('edits run settings in the open picker and adapts them when choosing another 
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Codex · other"]')!.click())
   expect(selected).toEqual({ runtime: 'codex', model: 'other', effort: '', permissionMode: 'agent', fastMode: false })
   expect(document.querySelector('select[aria-label="Effort"]')).toBeNull()
-  expect(document.querySelector('select[aria-label="Approval"]')?.textContent).toBe('Approve for me')
+  expect(document.querySelector('select[aria-label="Approval"]')?.textContent).toBe('Auto review')
 })
 
 it('shows a truncated form trigger in full on hover, with its run settings', async () => {

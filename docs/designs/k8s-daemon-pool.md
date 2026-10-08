@@ -262,6 +262,16 @@ not yet recorded locally. Takeover deduplication is scoped to the current owners
 fence: regaining an agent starts a new attempt without reusing the departed ownership's
 promise.
 
+A duty gain is not the only takeover. Every ten minutes the idle sweep also lists
+the namespace's Sandboxes and takes over each Running pod of an agent this member
+holds that no launch records — one that came up after the takeover read its claim,
+such as a fenced acquisition's pod, or one a release left without a duty change to
+follow. An agent whose duty-gain takeover is still running or retrying is left to
+it, and a member outside a member set never does this, since before its first
+authentication it cannot tell its agents from a peer's. A pod the sweep still skips
+after four idle timeouts has the reason logged at info once an hour, so a pod that
+never suspends names what holds it.
+
 Before publishing a launch, the member stamps its durable binding generation onto
 the Sandbox's `agentconnect.md/launch-generation` annotation. A resourceVersion CAS
 prevents an older allocation from overwriting a successor. Every suspend or resume

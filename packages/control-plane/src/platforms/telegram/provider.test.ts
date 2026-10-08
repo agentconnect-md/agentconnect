@@ -10,13 +10,16 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { createTelegramCpProvider, telegramIntegrationConfig, TelegramCreateCredentials } from './provider.js'
-import { integrationToSpec } from '../../orchestrator/placement.js'
+import { integrationToSpec, type SpecOwner } from '../../orchestrator/placement.js'
 import { buildCpPlatformRegistry } from '../registry.js'
 import type { TelegramBotVerification } from '../../http/telegram-identity.js'
 import type { BotProfileIconAgent } from '../../http/bot-profile-icon.js'
 import type { BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { IntegrationTelegramConfig } from '@agentconnect.md/protocol'
+
+/** A restricted owner: the projection's gated arm. */
+const RESTRICTED: SpecOwner = { visibility: 'restricted' }
 
 const verifierOk = (over: Partial<Extract<TelegramBotVerification, { status: 'ok' }>> = {}) =>
   vi.fn(
@@ -227,14 +230,11 @@ describe('telegram projection equivalence with the live integrationToSpec path',
   // GOLDEN: the literal payload the PRE-ADOPTION `integrationToSpec` telegram arm
   // emitted — one BotFather token, no appToken, no shareable/appId members.
   it('emits the byte-identical payload the pre-adoption telegram arm produced', async () => {
-    const spec = await integrationToSpec(
-      PLATFORMS,
-      INTEGRATION,
-      BOT,
-      SECRET,
-      [channel('-100', 'any'), channel('-200', 'mention'), channel('-300', 'off')],
-      false
-    )
+    const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, [
+      channel('-100', 'any'),
+      channel('-200', 'mention'),
+      channel('-300', 'off')
+    ])
     const bindRules = [
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
@@ -251,6 +251,7 @@ describe('telegram projection equivalence with the live integrationToSpec path',
         mutedChannels: ['-300'],
         gated: false,
         sessionModes: [],
+        externalChannels: [],
         decisions: { bindings: [], definitions: [] }
       },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
@@ -263,7 +264,14 @@ describe('telegram projection equivalence with the live integrationToSpec path',
   // the pre-adoption arm called.
   for (const { label, channels, gated } of cases) {
     it(`routes the live path through the telegram projector unchanged — ${label}`, async () => {
-      const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, channels, gated)
+      const spec = await integrationToSpec(
+        PLATFORMS,
+        INTEGRATION,
+        BOT,
+        SECRET,
+        channels,
+        gated ? RESTRICTED : undefined
+      )
       if (!spec) throw new Error('expected a deliverable spec')
       expect(spec.core.mode).toBe('direct')
       expect(spec.config).toEqual(telegramIntegrationConfig(SECRET))

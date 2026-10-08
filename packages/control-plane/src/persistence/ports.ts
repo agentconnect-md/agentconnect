@@ -32,6 +32,7 @@ import type {
   BindRule,
   AgentIcon,
   AgentMemoryBinding,
+  AssistantModePolicy,
   AgentModelSelection,
   AgentRepositorySelector,
   DecimalAmount,
@@ -49,6 +50,7 @@ import type {
   PullRequestFeedbackSignal,
   SessionStayedHomeReason,
   BotRevocationEvidence,
+  PlaceExternalReason,
   RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import type {
@@ -198,6 +200,8 @@ export interface RegisterReqInput {
   maxAgents: RegisterReq['maxAgents']
   /** Rollout generation (pod-template hash); absent ⇒ stored null. */
   generation?: RegisterReq['generation']
+  /** The registering process's boot identity; absent ⇒ stored null. */
+  bootId?: RegisterReq['bootId']
 }
 
 export interface DaemonRecord {
@@ -214,6 +218,8 @@ export interface DaemonRecord {
   maxAgents: number
   sessionEpoch: bigint
   routingEpoch: bigint
+  /** The boot identity of the process that last registered; null for an older daemon. */
+  bootId?: string | null
   status: DaemonStatus
   health: HealthState
   /** Last reported `Heartbeat.load` {cpu,mem,agents}; null before the first beat. */
@@ -363,6 +369,8 @@ export interface OpenLifecycleOpInput {
   /** The daemon `sessionEpoch` at command-send time. The op settles only on a READY at a
    *  STRICTLY GREATER epoch (a re-auth after drain+relaunch), never a same-epoch reconnect. */
   commandEpoch: bigint
+  /** The daemon boot a restart is sent to; the op then settles only once a different boot registers. */
+  commandBootId?: string
   /** When a still-`pending` op is considered failed (drain + relaunch budget). */
   deadline: Date
 }
@@ -376,6 +384,7 @@ export interface DaemonLifecycleOpRecord {
   status: DaemonLifecycleOpStatus
   phase: DaemonLifecyclePhase | null
   commandEpoch: bigint
+  commandBootId?: string | null
   /** Set once the daemon ACKs `accepted:true` — the op is "armed". A READY before this
    *  must not settle it (the command hadn't been accepted/executed yet). */
   acceptedAt: Date | null
@@ -513,6 +522,8 @@ export interface ApiKeyRepo {
   /** Revoke every live oauth access token minted under a grant — the "disconnect"
    *  cascade so a Profile revoke kills outstanding tokens now, not in ≤1h. Returns count. */
   revokeByOAuthGrant(grantId: string, reason: string, at: Date): Promise<number>
+  /** Delete oauth access tokens that expired or were revoked before `before`, keeping any a webchat conversation still names. Returns count. */
+  reapOAuthAccessTokens(before: Date): Promise<number>
   /** All keys (including revoked) for a daemon — the console key list, and the
    *  ownership proof the revoke route binds a raw key id against. Org-fenced
    *  (§3): a daemon outside `orgId` yields no keys at all, so that proof cannot
@@ -623,6 +634,8 @@ export interface OAuthRepo {
   listGrantsForUser(userId: string): Promise<OAuthGrantRecord[]>
   /** Revoke a grant (idempotent) — returns the row, or null if it isn't the user's / doesn't exist. */
   revokeGrant(id: string, at: Date): Promise<OAuthGrantRecord | null>
+  /** Delete codes consumed or expired, and clients expired, before `before`; grants are never touched. */
+  reapExpired(before: Date): Promise<{ codes: number; clients: number }>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -799,6 +812,7 @@ export interface UpdateAgentInput {
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
   managedSkills?: string[] | null // accepted managed_skill ids; replaced wholesale when provided; null clears
   memory?: AgentMemoryBinding | null // memory backend
+  assistantMode?: AssistantModePolicy | null // replaced wholesale; null clears
   // Workspace repository identity is not a generic PATCH field. The dedicated
   // cold editor drains the daemon and reconciles its local materialization;
   // gitAccess above remains the contextual integration-upgrade shortcut.
@@ -846,6 +860,7 @@ export interface AgentRecord {
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
+  assistantMode?: AssistantModePolicy // assistant-mode.md §5.1; absent ⇒ never configured, off
   status: 'active' | 'inactive' | 'paused'
   /** What placement NAMES (domain/placement.ts): `daemon` resolves through `daemonId`, `set`
    *  resolves through `setId`. Never branch on it directly. */
@@ -1311,6 +1326,8 @@ export interface SessionMetaRecord {
   /** The member set whose shared store holds this session's content; null ⇒ the recorder kept a
    *  private one. Session-bound provenance that outlives `daemonId` (domain/session-content.ts). */
   contentSetId: string | null
+  /** The recorder's shared store id, stamped beside `contentSetId`; null ⇒ none reported. */
+  contentStoreId: string | null
   workspaceIsolation: 'shared' | 'session' | null
   /** Birth verdict (session-executors.md §7): the group member executing this session, or the reason
    *  it stayed with its holder. At most one is ever set; both null on a session born before the feature. */
@@ -1597,6 +1614,7 @@ export interface SessionRepo {
       visibility: SessionVisibility
       ownerIdentity: string | null
       externalProvider: string | null
+      thread: string | null
     }) => boolean
   ): Promise<SessionVisibilityChange>
   /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
@@ -3477,10 +3495,8 @@ export interface BotRepo {
    *  Org-fenced: the lock read is filtered, so a cross-org id throws the same
    *  missing-row error ({@link BotMissing}) as an absent one. */
   update(orgId: OrgId, id: BotId, patch: BotUpdate): Promise<void>
-  /** Every http-transport bot with ≥1 active integration, across all orgs — the
-   *  shared-bot orchestrator's convergence worklist (relay register / failover).
-   *  System-tier: fleet-wide by design. */
-  listHttpActive(): Promise<BotRecord[]>
+  // Fleet-wide HTTP worklist, including unbound installations for providers that retain ingress.
+  listHttpActive(retainUnboundPlatforms?: readonly string[]): Promise<BotRecord[]>
   /**
    * Every bot of ONE platform, across all orgs — a provider's own convergence
    * worklist (§9 `backgroundLoops`; today the Linear deployment-credential
@@ -4431,6 +4447,9 @@ export type RepoAccess = 'read' | 'comment' | 'write'
 /** The wire spelling; the Prisma enum maps `on_demand` to this value. */
 export type RepoMaterialization = 'always' | 'decision' | 'on-demand'
 
+/** Why re-attestation stopped honoring a grant (agent-multi-repo-authorization.md, Re-attestation). */
+export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed'
+
 export interface AgentRepoAuthorizationRecord {
   id: string
   agentId: AgentId
@@ -4441,6 +4460,19 @@ export interface AgentRepoAuthorizationRecord {
   materialize: RepoMaterialization // how a session stands in the repository (multi-repository-workspaces.md decision 13)
   createdAt: Date
   createdBy: AgentCreator | null // audit: who authorized (identity-assertion subject)
+  attestedByUserId: string | null // who vouched for the current tier; re-attestation re-checks this member
+  stale: { since: Date; reason: RepoGrantStaleReason } | null // set while the attester fails the check
+}
+
+/** A stale grant carries no authority: every mint, spec projection and gate reads it as absent. */
+export function isHonoredRepoGrant(row: Pick<AgentRepoAuthorizationRecord, 'stale'>): boolean {
+  return !row.stale
+}
+
+/** The attester and tier one re-attestation checked; its verdict applies only while both still hold. */
+export interface RepoGrantAttestationSubject {
+  attestedByUserId: string | null
+  access: RepoAccess
 }
 
 export interface AgentRepoAuthorizationRepo {
@@ -4455,15 +4487,35 @@ export interface AgentRepoAuthorizationRepo {
     repoFullName: string
     access: RepoAccess
     materialize?: RepoMaterialization // absent ⇒ always
-    createdByUserId?: string
+    createdByUserId?: string // also the first attester
+    attestedAt?: Date // when the creator's access was checked; absent ⇒ never checked
   }): Promise<AgentRepoAuthorizationRecord>
   get(id: string): Promise<AgentRepoAuthorizationRecord | null>
-  /** The agent's grants — the console card AND the mint-gate read (viewer-free). */
+  /** The agent's grants, stale ones included — the console card AND the mint-gate read (viewer-free). */
   listForAgent(agentId: AgentId): Promise<AgentRepoAuthorizationRecord[]>
   /** Every grant in the organization over one numeric repository — who still consumes a binding (gitea-integration.md §6). */
   listForRepository(orgId: OrgId, provider: CodeHostProvider, repoId: bigint): Promise<AgentRepoAuthorizationRecord[]>
   /** Raise a grant's capability tier after the caller's GitHub access is re-checked; a tier at or above `access` is left as is. */
   updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null>
+  /** Raise a grant under an attestation: the caller becomes the attester, and `restored` says this write honored a stale grant again. */
+  raiseAttested(
+    id: string,
+    access: RepoAccess,
+    attestation: { userId: string; at: Date }
+  ): Promise<{ row: AgentRepoAuthorizationRecord; restored: boolean } | null>
+  /** Take the grant whose last re-attestation is oldest and before `checkedBefore`, stamping it checked at `now`. */
+  claimDueForReattestation(
+    provider: CodeHostProvider,
+    checkedBefore: Date,
+    now: Date
+  ): Promise<(AgentRepoAuthorizationRecord & { orgId: OrgId }) | null>
+  /** Record a verdict (null = held) for `subject`; true when the grant's honored state flipped and the spec was advanced. */
+  recordAttestation(
+    id: string,
+    subject: RepoGrantAttestationSubject,
+    verdict: RepoGrantStaleReason | null,
+    at: Date
+  ): Promise<boolean>
   /** Change how sessions stand in the repository; projected, so it advances the agent's config revision. */
   updateMaterialize(id: string, materialize: RepoMaterialization): Promise<AgentRepoAuthorizationRecord | null>
   /** Best-effort display refresh when the mint gate detects a rename (repoId match
@@ -4718,9 +4770,8 @@ export type SlackPlatformInstallStatus = 'pending' | 'completed' | 'failed'
 
 export interface SlackPlatformInstallRecord {
   id: string // == OAuth state (random uuid)
-  orgId: OrgId
-  /** Generic-install bind target. Null for bot-bound Settings reauthorization,
-   *  which preserves the bot's current (possibly empty) membership set. */
+  orgId: OrgId | null
+  // Null for public installs before binding and for reauthorization that preserves existing memberships.
   agentId: AgentId | null
   /** Terminal state of the OAuth round trip — the console's completion signal. */
   status: SlackPlatformInstallStatus
@@ -4740,7 +4791,7 @@ export interface SlackPlatformInstallRecord {
 export interface SlackPlatformInstallStore {
   create(input: {
     id: string
-    orgId: OrgId
+    orgId?: OrgId
     agentId?: AgentId
     /** Bind OAuth to an existing platform Bot/workspace without changing membership. */
     botId?: BotId
@@ -4766,6 +4817,36 @@ export interface SlackPlatformInstallStore {
   /** TTL sweep: delete rows created before `staleBefore` (settled or not — a
    *  settled row has already been observed, or the tab is long gone). */
   reapExpired(staleBefore: Date): Promise<number>
+}
+
+export interface SlackWorkspaceInstallRecord {
+  id: string
+  appId: string
+  teamId: string
+  teamName: string | null
+  botUserId: string
+  installerUserId: string
+  botToken: string
+  grantedScopes: string[]
+  credentialRevision: number
+  installedAt: Date
+}
+
+export interface SlackWorkspaceInstallStore {
+  put(
+    input: Omit<SlackWorkspaceInstallRecord, 'id' | 'credentialRevision' | 'installedAt'>
+  ): Promise<SlackWorkspaceInstallRecord>
+  get(id: string): Promise<SlackWorkspaceInstallRecord | null>
+  list(): Promise<SlackWorkspaceInstallRecord[]>
+  claim(input: {
+    id: string
+    revision: number
+    orgId: OrgId
+    agentId: AgentId
+    userId: string
+    signingSecret: string
+  }): Promise<BotId | null>
+  revoke(id: string, fence: { revision?: number; eventAtMs?: number }): Promise<boolean>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -5378,6 +5459,8 @@ export interface IntegrationChannelRecord {
   triggerChosen: boolean
   /** Per-conversation owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null
+  /** Why the platform detected this place as external (assistant-mode.md §5.3); null is internal. Optional for older fixtures. */
+  externalReason?: PlaceExternalReason | null
 }
 
 /** Daemon-reported conversation (no trigger — that is operator-owned CP state). */
@@ -5402,6 +5485,8 @@ export interface ReportedChannel {
   kind?: ConversationKind
   /** The 1:1 DM counterpart's platform member id — reported for `kind:'im'` only. */
   dmUserId?: string
+  /** Detected external: absent leaves the stored value, null is an enumerating "not external". */
+  externalReason?: PlaceExternalReason | null
 }
 
 /**
@@ -5443,7 +5528,7 @@ export interface IntegrationChannelRepo {
       authoritative?: boolean
       removed?: string[]
     }
-  ): Promise<void>
+  ): Promise<{ externalChanged: boolean }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */
@@ -6878,6 +6963,21 @@ export interface AgentMemoryFileRepo {
   deleteTree(agentId: AgentId): Promise<void>
 }
 
+// The `agent_memory_store_operation` table: a `memory/store` write keyed by its operation id, applied at most once.
+export interface AgentMemoryStoreOperationRepo {
+  /** Answer a recorded operation from its stored reply; otherwise run it and record the reply in the same transaction. */
+  once<T>(
+    agentId: AgentId,
+    orgId: OrgId,
+    operationId: string,
+    requestHash: string,
+    now: Date,
+    run: (files: AgentMemoryFileRepo) => Promise<T>
+  ): Promise<{ reply: T } | { reusedFor: 'another-request' }>
+  /** Delete up to `limit` operation records older than `before`; a re-send never outlives them. */
+  sweep(before: Date, limit: number): Promise<number>
+}
+
 /** One change-log record as stored: the wire event plus the store `root` it belongs to. */
 export interface AgentMemoryHistoryInput {
   id: string
@@ -7382,6 +7482,12 @@ export interface OrgInviteLinkRepo {
 // MemberSetRepo — the sets a duty may be claimed within (daemon-groups.md §2)
 // ───────────────────────────────────────────────────────────────────────────
 
+/** Where a session's rows were written: its content set, and the store id its recorder reported. */
+export interface SessionContentStore {
+  contentSetId: string | null
+  contentStoreId: string | null
+}
+
 /** A member set. `orgId` null means CROSS-ORG (the install-wide pool), never "unassigned". */
 export interface MemberSetRecord {
   id: string
@@ -7401,10 +7507,13 @@ export interface MemberSetRepo {
   setOf(daemonId: DaemonId): Promise<MemberSetRecord | null>
   /** The set's members, sorted. The read path for "who could serve a `set`-placed agent". */
   memberIdsOf(setId: string): Promise<string[]>
-  /** The set's members, sorted, but ONLY for a set whose members share one content store — the
-   *  org-less install-wide pool. An org set answers `[]`: its machines may keep private stores, so
-   *  none of them can stand in for another's transcripts (domain/session-content.ts). */
-  sharedStoreMemberIdsOf(setId: string): Promise<string[]>
+  /** The members of a session's content set that hold the store it was written to, sorted: every
+   *  member of the org-less install-wide pool, and in an org set only those reporting the session's
+   *  `contentStoreId` — its machines may keep private stores, which none of them can read for
+   *  another (domain/session-content.ts). `[]` for a session with no content set. */
+  sharedStoreMemberIdsOf(session: SessionContentStore): Promise<string[]>
+  /** Each member's reported shared store id, null for a member on a private store; [] for a set with no members. */
+  memberContentStoresOf(setId: string): Promise<Array<string | null>>
   /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch.
    *  The automatic path (a pool Pod on auth) — no operator precondition. */
   enroll(setId: string, daemonId: DaemonId): Promise<void>

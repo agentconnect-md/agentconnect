@@ -217,7 +217,9 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
         ? t('status.paused')
         : s.label === 'offline'
           ? t('status.offline')
-          : s.label
+          : s.label === 'reconnecting'
+            ? t('status.reconnecting')
+            : s.label
 
   return (
     // Opens the group's page, not the editor: what runs on it is the common read. Edit stays in the menu.
@@ -312,9 +314,11 @@ function StatusWord({ s }: { s: StatusInfo }) {
             ? t('status.upgrading')
             : s.label === 'restarting'
               ? t('status.restarting')
-              : s.label
+              : s.label === 'reconnecting'
+                ? t('status.reconnecting')
+                : s.label
   return (
-    <span className="hidden w-[76px] flex-none items-center gap-[7px] desktop:flex">
+    <span className="hidden w-24 flex-none items-center gap-[7px] desktop:flex">
       <span className="dot" style={{ background: s.dot }} />
       <span className="truncate font-sans text-[12.5px] font-medium leading-normal" style={{ color: s.text }}>
         {label}
@@ -345,7 +349,13 @@ function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: numb
   // Node count and version stay internal — the cloud pool doesn't expose its topology.
   const meta = online ? t('pool.managed') : t('pool.notServing')
   const statusLabel =
-    s.label === 'online' ? t('status.online') : s.label === 'paused' ? t('status.paused') : t('status.offline')
+    s.label === 'online'
+      ? t('status.online')
+      : s.label === 'paused'
+        ? t('status.paused')
+        : s.label === 'reconnecting'
+          ? t('status.reconnecting')
+          : t('status.offline')
   // Opens CLOUD's own page, never a member's: no member id survives a rollout, so landing on
   // one machine would name the pool after a Pod that is already gone. That page is where the
   // runtimes, models and connections Cloud offers are read.
@@ -422,7 +432,13 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
     ? t('cluster.nodesVersion', { count: serving.length, version: serving[0]!.version })
     : t('cluster.noNodes')
   const statusLabel =
-    s.label === 'online' ? t('status.online') : s.label === 'paused' ? t('status.paused') : t('status.offline')
+    s.label === 'online'
+      ? t('status.online')
+      : s.label === 'paused'
+        ? t('status.paused')
+        : s.label === 'reconnecting'
+          ? t('status.reconnecting')
+          : t('status.offline')
   // Capacity is the sum of what the serving members will run, matched against what they ARE
   // running — the same pair the CP's placement check uses. A member reporting `maxAgents <= 0`
   // is UNBOUNDED, not a ceiling of zero: a cluster holding one has no finite budget, so the
@@ -546,7 +562,9 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
             ? t('status.upgrading')
             : s.label === 'restarting'
               ? t('status.restarting')
-              : s.label
+              : s.label === 'reconnecting'
+                ? t('status.reconnecting')
+                : s.label
 
   const beginEdit = () => {
     setDraft(m.name)

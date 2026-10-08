@@ -26,16 +26,16 @@ function daemonWithLog(): { daemon: Daemon; lines: string[] } {
 function seedPending(daemon: Daemon, allowRuntimeChangesInChat: boolean): void {
   const inner = daemon as never as {
     agents: Map<string, unknown>
-    permissions: { pendingChatPermissions: Map<string, unknown> }
+    permissions: { pendingApprovals: Map<string, unknown> }
   }
   inner.agents.set(AGENT, { id: AGENT, allowRuntimeChangesInChat })
-  inner.permissions.pendingChatPermissions.set(REQUEST, {
+  inner.permissions.pendingApprovals.set(REQUEST, {
+    kind: 'permission',
     agentId: AGENT,
     sessionId: 'acp-1',
     params: { options: [{ optionId: 'allow_once', kind: 'allow_once', name: 'Allow' }] },
     evaluationParams: {},
-    conn: {},
-    channel: 'C1',
+    chat: { conn: {}, channel: 'C1' },
     resolve: () => {}
   })
 }
@@ -61,8 +61,7 @@ describe('chat-side session action audit', () => {
     expect(audit[0]).not.toContain('permission:allowed')
     // …and the request is genuinely still pending, so nothing was decided.
     expect(
-      (daemon as never as { permissions: { pendingChatPermissions: Map<string, unknown> } }).permissions
-        .pendingChatPermissions.size
+      (daemon as never as { permissions: { pendingApprovals: Map<string, unknown> } }).permissions.pendingApprovals.size
     ).toBe(1)
   })
 

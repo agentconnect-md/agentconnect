@@ -26,6 +26,10 @@ pnpm --filter @agentconnect.md/control-plane dev
 pnpm --filter @agentconnect.md/web dev
 ```
 
+`pnpm build` builds every package once in dependency order. A package's `build`
+command includes its workspace dependencies; `build:package` only compiles that
+package and is used when the caller already selects the complete dependency closure.
+
 For a complete local Control Plane and PostgreSQL development setup, follow the
 [Control Plane quickstart](packages/control-plane/README.md#local-dev-quickstart).
 

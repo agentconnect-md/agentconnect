@@ -364,6 +364,18 @@ describe('code-host M0 shapes (gitlab-com-integration.md §17.2)', () => {
     expect(HookStart.safeParse({ ...base, github, gitlab }).success).toBe(false)
   })
 
+  it('carries a review checkout outcome whose degraded arm names a closed reason', () => {
+    const base = { hookId: HOOK_ID, agentId: AGENT_ID, deliveryKey: 'delivery-1', github, ...snapshot }
+    expect(HookStart.safeParse({ ...base, reviewCheckout: { outcome: 'exact' } }).success).toBe(true)
+    expect(
+      HookStart.safeParse({ ...base, reviewCheckout: { outcome: 'degraded', reason: 'sandbox_conflict' } }).success
+    ).toBe(true)
+    expect(HookStart.safeParse({ ...base, reviewCheckout: { outcome: 'degraded' } }).success).toBe(false)
+    expect(HookStart.safeParse({ ...base, reviewCheckout: { outcome: 'degraded', reason: 'why not' } }).success).toBe(
+      false
+    )
+  })
+
   it('round-trips a gitlab hook/start and its correlated barrier reply', () => {
     const start = buildEnvelope('hook/start', {
       hookId: HOOK_ID,

@@ -16,6 +16,7 @@ import { startHostShim } from '../src/execution/host-shim.js'
 import { effectiveStrategies, hostLauncher, machineStrategies } from '../src/execution/strategies.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { ShimDialer } from '../src/shim/dialer.js'
+import { shimPaths } from '../src/shim/sandbox-paths.js'
 import { ShimSession } from '../src/shim/session.js'
 import { WAIT } from './wait-support.js'
 
@@ -278,7 +279,9 @@ describe('executor facet, end to end', () => {
       expect(seen.CLAUDE_CONFIG_DIR).toBe(join(root, 'sessions', LEAF, 'home', '.claude'))
       // Where this machine keeps the sign-in that HOME points at: a path only it can name, filled in by its shim.
       expect(seen.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(signIn)
+      // The machine's own PATH, untouched: the source entry's helper root has no built token entries, so its launcher wrote no wrappers.
       expect(seen.PATH).toBe(process.env.PATH)
+      expect(existsSync(shimPaths(reply.runtimeRoot).runtimeWrapperDir)).toBe(false)
       expect(seen.HOLDER_ONLY).toBeUndefined()
       expect(Object.values(seen).filter((value) => value?.startsWith(holderDir))).toEqual([])
 

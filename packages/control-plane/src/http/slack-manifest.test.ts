@@ -24,11 +24,12 @@ describe('buildInstallManifest', () => {
 
   it('enables Socket Mode and carries the daemon scopes + events', () => {
     const m = buildInstallManifest('acme-bot', REDIRECT) as {
-      features: { shortcuts: { callback_id: string; type: string }[] }
+      features: { app_home: { home_tab_enabled: boolean }; shortcuts: { callback_id: string; type: string }[] }
       oauth_config: { scopes: { bot: string[] } }
       settings: { socket_mode_enabled: boolean; event_subscriptions: { bot_events: string[] } }
     }
     expect(m.settings.socket_mode_enabled).toBe(true)
+    expect(m.features.app_home.home_tab_enabled).toBe(true)
     expect(m.oauth_config.scopes.bot).toEqual([...SLACK_BOT_SCOPES])
     expect(m.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
     expect(m.features.shortcuts).toEqual([
@@ -98,9 +99,7 @@ describe('buildInstallManifest', () => {
     expect(manifest.features.agent_view.agent_description).toBe(PLATFORM_APP_DESCRIPTION)
   })
 
-  // Drift guard: these scopes/events MUST stay in lock-step with the manual manifest
-  // (packages/web/src/lib/slack-manifest.ts) and what the daemon's Slack adapter uses.
-  // A change here is deliberate — update the pins AND the other two places.
+  // Pin the scopes exposed by the CP installer as well as the manual installer.
   it('pins the exact bot scopes (drift guard)', () => {
     expect([...SLACK_BOT_SCOPES]).toEqual([
       'files:read',
@@ -132,11 +131,7 @@ describe('buildInstallManifest', () => {
       'lists:read',
       'lists:write',
       'channels:join',
-      'team:read',
-      'users:read.email',
-      'search:read.public',
-      'search:read.files',
-      'search:read.users'
+      'search:read.public'
     ])
   })
 
@@ -145,6 +140,7 @@ describe('buildInstallManifest', () => {
       'agent_session_stopped',
       'agent_session_title_changed',
       'app_mention',
+      'app_home_opened',
       'app_uninstalled',
       'assistant_thread_started',
       'assistant_thread_context_changed',
@@ -170,7 +166,9 @@ describe('checkSlackBotScopes', () => {
   })
 
   it('ignores extra scopes the workspace happens to have granted', () => {
-    expect(checkSlackBotScopes([...SLACK_BOT_SCOPES, 'bookmarks:read'])).toEqual({ status: 'complete' })
+    expect(checkSlackBotScopes([...SLACK_BOT_SCOPES, 'team:read', 'users:read.email'])).toEqual({
+      status: 'complete'
+    })
   })
 
   it('names exactly the required scopes a short grant is missing', () => {
@@ -199,7 +197,7 @@ describe('mergeManagedSlackManifest', () => {
       display_information: { name: 'Custom app', description: 'Keep this description' },
       features: {
         bot_user: { display_name: 'Custom bot', always_online: false },
-        app_home: { home_tab_enabled: true },
+        app_home: { home_tab_enabled: false },
         agent_view: { agent_description: 'Keep this agent description' },
         slash_commands: [{ command: '/custom', description: 'Keep me' }],
         shortcuts: [

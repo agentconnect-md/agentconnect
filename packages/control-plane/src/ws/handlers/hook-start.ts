@@ -3,6 +3,7 @@ import { codeHostHookMetadataOf, isFrame } from '@agentconnect.md/protocol'
 import { DaemonId, HookId } from '../../domain/ids.js'
 import { CodeHostReviewBrokerError } from '../../codehost/review-lease.service.js'
 import { GithubReviewBrokerError } from '../../github/review-broker.service.js'
+import { countReviewCheckout } from '../../observability/review-checkout.js'
 import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
@@ -66,6 +67,8 @@ export const handleHookStart: Handler = async (frame, conn, deps) => {
       accepted: true,
       ...(started?.amendment ? { amendment: started.amendment } : {})
     })
+    // Counted once the barrier is acknowledged, so a refused start is not a reviewed checkout.
+    if (frame.payload.reviewCheckout) countReviewCheckout(frame.payload.reviewCheckout, conn.orgId ? 'org' : 'install')
   } catch (error) {
     if (error instanceof GithubReviewBrokerError) {
       conn.sendError(frame.id, error.code, error.message, error.retryable)
