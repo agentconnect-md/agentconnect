@@ -775,10 +775,28 @@ over `source_cache_usage`, and quota pressure surfaces as
 
 ## 13. Shim protocol
 
-- **Capability:** `skill-git-in-pod-v1`, advertised by the shim.
-- **Reconcile plan:** a Git Source entry (URL, ref, planned commit, subdirectory,
-  selections, optional GET URL) beside the existing uploaded sources; the reply
-  keeps its receipts and `skipped` list and gains write-back candidates.
+- **Capability:** `skill-git-in-pod-v1`, advertised by the shim. The daemon
+  grants `skills-git` only to a shim advertising it beside receipt paging
+  (`cluster-skills-v3`), and in P2 only to Kubernetes runtime pods: executor
+  sessions and local VMs keep daemon acquisition whatever their shim advertises.
+- **Reconcile plan:** a Git Source entry (`sourceKind: 'git'`: https URL, the
+  resolved full ref — `refs/heads/<b>` or `refs/tags/<t>`, absent only for a
+  pinned SHA — the 40-hex planned commit, subdirectory, selections,
+  `keepInstalled` for an installed Source whose resolution failed, and an
+  optional GET URL under the exec `--bundle-uri` rule) beside the existing
+  uploaded sources. The daemon drops GET URLs, last Source first, until the
+  reconcile frame fits the 220 KiB skill control cap; those Sources clone
+  without a bundle. The reply keeps its receipts and `skipped` list, whose
+  entries gain an optional section 11 `code` beside the free-text reason, and
+  gains per-Source `gitSources` (resolved commit, skill leaves) and
+  `writeBackCandidates`. Every new field is optional, and a shim sends them only
+  in the reply to a Git plan, so a daemon predating the capability, whose reply
+  schema is strict, never receives one. The schema admits any https URL, so the
+  plan builder runs the daemon's Git origin policy before a URL reaches the pod
+  and bounds URL and selection totals so a plan without GET URLs always fits.
+  Because a daemon advertises the feature before it sends Git plans, a shim
+  granted `skills-git` keeps the uploaded-source path for any reconcile that
+  carries no Git entry.
 - **Workspace clone:** the existing clone instruction accepts an optional bundle
   URL, passed as `--bundle-uri`. It needs the new `https://`-only rule for that
   flag in the exec inventory, so it ships with shims that carry the rule; any
