@@ -30,7 +30,7 @@ describe('organization provider keys', () => {
     deps.repos.providerKey = store
     expect(
       (await app.inject({ method: 'GET', url: BASE })).json().map((row: { provider: string }) => row.provider)
-    ).toEqual(['typesafe', 'openrouter', 'cloudflare'])
+    ).toEqual(['typesafe', 'openrouter', 'cloudflare', 'openai'])
     expect(
       (await app.inject({ method: 'PUT', url: `${BASE}/openrouter`, payload: { headers: { 'X-Title': 'Example' } } }))
         .statusCode
@@ -39,6 +39,16 @@ describe('organization provider keys', () => {
       (await app.inject({ method: 'PUT', url: `${BASE}/openrouter`, payload: { apiKey: 'example-router-key' } }))
         .statusCode
     ).toBe(200)
+    const openai = await app.inject({ method: 'PUT', url: `${BASE}/openai`, payload: { apiKey: 'example-openai-key' } })
+    expect(openai.statusCode).toBe(200)
+    expect(openai.json()).toMatchObject({
+      provider: 'openai',
+      configured: true,
+      defaultEndpoint: 'https://api.openai.com/v1'
+    })
+    expect(openai.body).not.toContain('example-openai-key')
+    expect(await store.get(OrgId(DEFAULT_ORG_ID), 'openai')).toMatchObject({ apiKey: 'example-openai-key' })
+    cipher.open.mockClear()
     const url = `${BASE}/cloudflare`
     expect((await app.inject({ method: 'PUT', url, payload: { apiKey: 'example-gateway-key' } })).statusCode).toBe(400)
     const endpoint = 'https://gateway.example.test/v1'

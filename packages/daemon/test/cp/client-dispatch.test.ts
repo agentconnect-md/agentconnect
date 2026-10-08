@@ -243,7 +243,12 @@ describe('CpClient dispatch', () => {
       expect(t.lastSent()).toMatchObject({
         type: 'decision/catalog/result',
         orgId: 'example-org',
-        payload: { providers: [{ id: 'typesafe', cloudAvailable: false }] }
+        payload: {
+          providers: [
+            { id: 'typesafe', cloudAvailable: false },
+            { id: 'openai', cloudAvailable: false, models: [{ id: 'gpt-6-luna' }] }
+          ]
+        }
       })
     } finally {
       await client.stop()

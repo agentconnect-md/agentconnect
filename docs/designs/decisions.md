@@ -2,7 +2,7 @@
 
 > Status: Implemented — Decision persistence, Console CRUD, daemon provider readiness, standalone live previews, Provider keys, the Jev evaluator, and live message admission and routing. Cloud evaluation on AC credits (C1, §10.4) remains.
 > Storage, ordering, and the evaluation-host rule are superseded by [message-intake.md](message-intake.md); the sections it replaces say so inline.
-> Scope: reusable typed judgments, initially using TypeSafe Jev.
+> Scope: reusable typed judgments using TypeSafe Jev and OpenAI Decisions.
 > Delivery: Stage 1 adds the Decision resource and fixed-target activation; Stage 2 adds shared-bot routing.
 > Primary implementation areas: protocol, control-plane, daemon, relay, and web.
 
@@ -448,13 +448,13 @@ admission replay reuse a settled decision rather than creating another turn.
 ### Provider keys and credential resolution
 
 Users configure organization-wide credentials under **Infra → Provider keys**.
-The shared configuration catalog includes **TypeSafe (Jev)**, **OpenRouter**, and
-**Cloudflare AI Gateway**, with one default connection per provider per organization.
-The Console lists only TypeSafe (Jev) until something consumes the other two; the
-API still accepts them. This infrastructure resource can serve consumers beyond
+The shared configuration catalog includes **TypeSafe (Jev)**, **OpenAI**, **OpenRouter**,
+and **Cloudflare AI Gateway**, with one default connection per provider per organization.
+The Console offers TypeSafe (Jev) and OpenAI; OpenRouter and Cloudflare have no
+consumer yet, but the API still accepts them. This infrastructure resource can serve consumers beyond
 Decisions. Owners can edit or remove connections; members can read non-secret
 metadata. Credentials are not per Decision or per daemon. A Decision keeps its
-logical `providerId` (initially `typesafe`) and selected `model`; BYOK and AC credits
+logical `providerId` (`typesafe` or `openai`) and selected `model`; BYOK and AC credits
 are resolved credential sources, not separate choices in the Decision editor.
 
 **Implemented configuration surface:**
@@ -888,6 +888,42 @@ loss of conversation access, and removal withdraw the relevant observation
 destination. Relay forwarding is bounded by the existing ingress/backpressure
 rules; dropped/offline intervals mark the context partial rather than claiming
 complete history. Evaluation remains entirely on the destination daemon.
+
+### OpenAI Decisions adapter and image support
+
+The `openai` provider offers `gpt-6-luna` for Boolean, Choice, and Score questions.
+Configure its organization key in **Infra → Provider keys**, then select OpenAI
+when creating a Decision. Its endpoint defaults to `https://api.openai.com/v1`;
+a custom endpoint is an API base, to which the adapter appends `/decisions`.
+OpenAI currently requires BYOK. It never uses the TypeSafe Cloud gateway or its grants.
+
+The daemon sends the frozen state as JSON text in `input` and one named question
+in the `questions` array. Boolean becomes `predicate`, with both true/false criteria
+included in its instructions. Choice criteria become value/description pairs;
+Score criteria become ordered levels with stable numeric-string labels. Answers
+are normalized into the same host contract as Jev, including the complete
+probability distribution, actual model, and token usage. A refusal produces
+`unavailable: provider`; malformed answers produce `invalid_response`.
+Request budgets reserve the largest question envelope and state encoding across
+providers, including JSON-string escaping, so mixed-provider chains share a safe
+frozen state. The existing 32 KiB request limit still applies.
+
+The upstream API supports visual judgments, not generated-image output. Images
+are `input_image` parts beside `input_text` in a `role: user` message; `image_url`
+must be `data:image/<format>;base64,<bytes>`. HTTP(S) URLs and file IDs are not
+accepted. The endpoint allows at most 128 image parts and exposes `detail` values
+`low`, `high`, `auto`, and `original` (default `auto`). See the
+[OpenAI guide](https://developers.openai.com/api/docs/guides/decisions) and
+[API contract](https://developers.openai.com/api/reference/resources/decisions/methods/create).
+
+AgentConnect's Decision consumers currently supply text and quoted context only.
+The new adapter does not download attachments or send image parts; an attachment's
+caption or filename does not mean the model inspected its pixels. End-to-end
+visual Decisions require a separate daemon-side attachment-resolution path, image
+byte/count budgets independent of text budgets, and evaluation-record handling
+that does not embed base64 images into raw JSON previews. Those bytes must remain
+on the daemon/relay data plane. Live ingress and standalone previews would both
+need to supply the same explicit image evidence contract.
 
 ### 7.3 Jev request and normalized result
 

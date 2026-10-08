@@ -1,4 +1,9 @@
-import { decisionAgentContext, type DecisionEvaluationAgent, type DecisionQuestion } from '@agentconnect.md/protocol'
+import {
+  DECISION_PROVIDER_PROFILES,
+  decisionAgentContext,
+  type DecisionEvaluationAgent,
+  type DecisionQuestion
+} from '@agentconnect.md/protocol'
 import { transcriptQuoted, type ChannelTextRow } from '../store/local-store.js'
 import { DECISION_REQUEST_MAX_BYTES, decisionRequestBody } from './evaluator.js'
 
@@ -74,7 +79,7 @@ export function decisionEntryOf(row: ChannelTextRow, truncate: boolean): Decisio
 
 /** Whether a state's whole request fits the byte cap and the estimated token budget (decisions.md §8.2). */
 export function fitsDecisionBudget(state: Record<string, unknown>, question: DecisionQuestion, model: string): boolean {
-  const bytes = Buffer.byteLength(decisionRequestBody({ decision: { model, question }, state }), 'utf8')
+  const bytes = decisionBudgetBytes({ model, question }, state)
   return bytes <= DECISION_REQUEST_MAX_BYTES && Math.ceil(bytes / BYTES_PER_TOKEN) <= DECISION_TOKEN_BUDGET
 }
 
@@ -82,9 +87,22 @@ export type DecisionStateBudget = { question: DecisionQuestion; model: string }
 
 type DecisionStateTrim = readonly [reason: string, trim: () => boolean]
 
-// State bytes are identical across requests, so the largest envelope budgets every step or chunk.
+// Reserve the largest provider encoding so one frozen state fits mixed-provider chains, including JSON escaping.
+function decisionBudgetBytes(decision: DecisionStateBudget, state: Record<string, unknown>): number {
+  const sizes = DECISION_PROVIDER_PROFILES.map(({ id }) => {
+    const envelope = Buffer.byteLength(
+      decisionRequestBody({ decision: { ...decision, providerId: id }, state: {} }),
+      'utf8'
+    )
+    const full = Buffer.byteLength(decisionRequestBody({ decision: { ...decision, providerId: id }, state }), 'utf8')
+    return { envelope, content: full - envelope }
+  })
+  return Math.max(...sizes.map(({ envelope }) => envelope)) + Math.max(...sizes.map(({ content }) => content))
+}
+
+// The largest question envelope reserves enough space for every step or chunk.
 export function largestDecisionRequest<T extends DecisionStateBudget>(decisions: readonly [T, ...T[]]): T {
-  const size = (decision: T) => Buffer.byteLength(decisionRequestBody({ decision, state: {} }), 'utf8')
+  const size = (decision: T) => decisionBudgetBytes(decision, {})
   return decisions.reduce((largest, decision) => (size(decision) > size(largest) ? decision : largest))
 }
 
