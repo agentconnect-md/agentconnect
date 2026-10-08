@@ -46,11 +46,11 @@ function useModelEvaluations(
   agentId: string,
   orgId: string | undefined,
   live: boolean,
-  { decisionId, initialSeq }: { decisionId?: string; initialSeq?: number } = {}
+  { decisionId, sessionId, initialSeq }: { decisionId?: string; sessionId?: string; initialSeq?: number } = {}
 ) {
-  const filter = decisionId ? { decisionId } : {}
+  const filter = { ...(decisionId ? { decisionId } : {}), ...(sessionId ? { sessionId } : {}) }
   const { data, error, isLoading, mutate } = useSWR(
-    live ? ['agent-model-evaluations', orgId, agentId, decisionId] : null,
+    live ? ['agent-model-evaluations', orgId, agentId, decisionId, sessionId] : null,
     () => fetchAgentModelEvaluations(agentId, { limit: PAGE, ...filter }, orgId)
   )
   const page = live ? data : { items: [], nextCursor: null }
@@ -275,18 +275,20 @@ function ModelEvaluationsBody({ state, padX }: { state: ModelEvaluations; padX: 
 export function ModelSelectionEvaluationsDrawer({
   target,
   decisionId,
+  sessionId,
   initialSeq,
   onClose
 }: {
   target: ModelEvaluationsTarget
   /** Only selections rooted at this Decision, as the Decision page lists them. */
   decisionId?: string
+  sessionId?: string
   initialSeq?: number
   onClose: () => void
 }) {
   const t = useTranslations('Agents.dialog.modelSelection.evaluations')
   const { activeOrg } = useOrgs()
-  const state = useModelEvaluations(target.agentId, activeOrg?.id, target.live, { decisionId, initialSeq })
+  const state = useModelEvaluations(target.agentId, activeOrg?.id, target.live, { decisionId, sessionId, initialSeq })
   return (
     <EvaluationsDrawer
       title={t('title')}

@@ -8,6 +8,7 @@ import {
   DECISION_EVALUATION_STEPS_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_EVALUATION_FILTER_V1_FEATURE,
+  DECISION_MODEL_SESSION_FILTER_V1_FEATURE,
   DECISION_MODEL_EVALUATIONS_V1_FEATURE,
   DecisionModelEvaluationsReply,
   DecisionModelEvaluationReply,
@@ -963,7 +964,8 @@ export class ControlSender {
     if (
       c.state !== 'READY' ||
       !c.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE) ||
-      (req.decisionId && !c.capabilities.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE))
+      (req.decisionId && !c.capabilities.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE)) ||
+      (req.sessionId && !c.capabilities.features.includes(DECISION_MODEL_SESSION_FILTER_V1_FEATURE))
     )
       throw new NoConnection(daemonId)
     return DecisionModelEvaluationsReply.parse(

@@ -4523,13 +4523,14 @@ export function fetchCodeHostRoutingEvaluation(
 
 export function fetchAgentModelEvaluations(
   agentId: string,
-  page: { cursor?: number; limit?: number; decisionId?: string } = {},
+  page: { cursor?: number; limit?: number; decisionId?: string; sessionId?: string } = {},
   orgId?: string
 ): Promise<DecisionModelEvaluationRecordPage> {
   const query = new URLSearchParams()
   if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
   if (page.limit !== undefined) query.set('limit', String(page.limit))
   if (page.decisionId) query.set('decisionId', page.decisionId)
+  if (page.sessionId) query.set('sessionId', page.sessionId)
   const suffix = query.toString()
   return apiGet(
     `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/model-evaluations${suffix ? `?${suffix}` : ''}`

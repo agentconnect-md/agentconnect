@@ -6530,15 +6530,18 @@ export class LocalStore {
     agentId: string,
     before: number | undefined,
     limit: number,
-    decisionId?: string
+    decisionId?: string,
+    sessionId?: string
   ): Promise<DecisionModelEvaluationRow[]> {
     const params: unknown[] = [this.orgForRead(agentId, orgId), agentId, before ?? Number.MAX_SAFE_INTEGER]
     const decisionFilter = decisionId ? ' AND decisionId = ?' : ''
     if (decisionId) params.push(decisionId)
+    const sessionFilter = sessionId ? ' AND sessionId = ?' : ''
+    if (sessionId) params.push(sessionId)
     return (await this.db
       .prepare(
         `SELECT seq, summaryJson, detailJson, bodiesStrippedAt
-      FROM decision_model_evaluation WHERE orgId = ? AND agentId = ? AND seq < ?${decisionFilter}
+      FROM decision_model_evaluation WHERE orgId = ? AND agentId = ? AND seq < ?${decisionFilter}${sessionFilter}
       ORDER BY seq DESC LIMIT ?`
       )
       .all(...params, limit)) as DecisionModelEvaluationRow[]

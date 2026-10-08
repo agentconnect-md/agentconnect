@@ -151,6 +151,13 @@ describe('model selection evaluation history', () => {
     await save(OTHER, 100)
     for (let i = 1; i <= 21; i++) await save(AGENT, i)
     await save(AGENT, 21)
+    const oldestSession = await reader.list('', { agentId: AGENT, sessionId: sessionId(1), limit: 1 })
+    expect(oldestSession.items.map((row) => row.sessionId)).toEqual([sessionId(1)])
+    expect(oldestSession.nextCursor).toBeNull()
+    expect((await reader.list('', { agentId: AGENT, sessionId: sessionId(100), limit: 1 })).items).toEqual([])
+    expect(
+      (await reader.list('', { agentId: AGENT, sessionId: sessionId(1), decisionId: OTHER, limit: 1 })).items
+    ).toEqual([])
     const first = await reader.list('', { agentId: AGENT, limit: 20 })
     expect(first.items).toHaveLength(20)
     expect(first.nextCursor).not.toBeNull()
