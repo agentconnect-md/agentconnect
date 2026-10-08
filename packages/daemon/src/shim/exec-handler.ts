@@ -13,6 +13,7 @@ import type { ShimCapability } from './protocol.js'
 import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
 import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
 import { srtGitEnv } from './srt-route.js'
+import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 
 export { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError } from '../workspace/git-command-policy.js'
 import { ExecRefusedError, validateGitArgs } from '../workspace/git-command-policy.js'
@@ -117,10 +118,17 @@ export function createExecHandler(
   context?: ClusterSkillRequestContext
 ) => Promise<unknown> {
   const paths = deps.paths ?? DEFAULT_SHIM_PATHS
+  // How a Git plan Source reaches gitcred: this layout's helper and tunnel, as the other in-pod credential users find it.
+  const git = {
+    credentialHelper: paths.gitCredentialHelper,
+    credentialSocket: process.env[GITCRED_SOCKET_ENV]?.trim() || paths.tunnels.gitcred,
+    ...(deps.log ? { log: deps.log } : {})
+  }
   const skillHandler = new ClusterSkillHandler({
     stagingRoot: paths.skillStagingDir,
     workspaceRoot: deps.workspaceRoot,
-    stateRoot: join(deps.workspaceRoot, '.agentconnect', 'cluster-skill-state')
+    stateRoot: join(deps.workspaceRoot, '.agentconnect', 'cluster-skill-state'),
+    git
   })
   const workspaceSkills = new Map<string, ClusterSkillHandler>()
   return async (capability, payload, abort, context) => {
@@ -144,7 +152,8 @@ export function createExecHandler(
         handler = new ClusterSkillHandler({
           stagingRoot: join(paths.skillStagingDir, createHash('sha256').update(cwd).digest('hex')),
           workspaceRoot: cwd,
-          stateRoot: join(cwd, '.agentconnect', 'cluster-skill-state')
+          stateRoot: join(cwd, '.agentconnect', 'cluster-skill-state'),
+          git
         })
         workspaceSkills.set(cwd, handler)
       }

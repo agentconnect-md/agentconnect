@@ -317,6 +317,24 @@ describe('Git skill plan wire (skill-git-in-pod-v1)', () => {
     ).toBe(false)
   })
 
+  it('carries a credential window capability only on a Git plan reconcile', () => {
+    const credentialWindow = { capability: 'A'.repeat(43) }
+    expect(ClusterSkillReconcileSchema.safeParse({ ...reconcile, credentialWindow }).success).toBe(true)
+    const uploaded = { sourceId: 'managed:one', sourceKind: 'managed', selections: ['one'] }
+    expect(ClusterSkillReconcileSchema.safeParse({ ...reconcile, sources: [uploaded], credentialWindow }).success).toBe(
+      false
+    )
+    for (const capability of ['short', 'has space in it, padded out', `${'a'.repeat(43)}\n`]) {
+      expect(ClusterSkillReconcileSchema.safeParse({ ...reconcile, credentialWindow: { capability } }).success).toBe(
+        false
+      )
+    }
+    expect(
+      ClusterSkillReconcileSchema.safeParse({ ...reconcile, credentialWindow: { ...credentialWindow, extra: 1 } })
+        .success
+    ).toBe(false)
+  })
+
   it('takes the new reply fields as optional, and an old-shape reply still parses', () => {
     expect(ClusterSkillReconcileReplySchema.parse(gitReply)).toEqual(gitReply)
     expect(ClusterSkillReconcileReplySchema.parse({ roots: [], conflicts: [] })).toEqual({ roots: [], conflicts: [] })
