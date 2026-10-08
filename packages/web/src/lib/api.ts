@@ -2765,7 +2765,7 @@ export interface WorkspaceFileDto {
   type: 'file' | 'dir' | null // what the path IS; 'dir' ⇒ no content to show (null from an older daemon)
   size: number | null
   mtime: string | null
-  encoding: 'utf8' | 'none' | 'base64' | null // 'base64' only when asked for raw bytes
+  encoding: 'utf8' | 'none' | null
   content: string | null
   offset: number | null
   nextOffset: number | null // byte offset to request next; do NOT recompute from content
@@ -2850,14 +2850,13 @@ export async function fetchAgentRuntimeCommands(agentId: string): Promise<Runtim
 // 503 when the daemon is offline / the agent is unplaced.
 export async function fetchWorkspaceFile(
   agentId: string,
-  opts: { path: string; offset?: number; limit?: number; sessionId?: string; repo?: string; encoding?: 'base64' }
+  opts: { path: string; offset?: number; limit?: number; sessionId?: string; repo?: string }
 ): Promise<WorkspaceFileDto> {
   const q = new URLSearchParams({ path: opts.path })
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
   if (opts.repo) q.set('repo', opts.repo)
   if (opts.offset) q.set('offset', String(opts.offset))
   if (opts.limit) q.set('limit', String(opts.limit))
-  if (opts.encoding) q.set('encoding', opts.encoding)
   return apiGet<WorkspaceFileDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`)
 }
 
@@ -2900,64 +2899,6 @@ export async function fetchWorkspaceFileFull(
     offset = slice.nextOffset
   }
   throw new Error('The workspace file is too large to load safely.')
-}
-
-/** Largest workspace file the console pulls whole, for a preview or a download. */
-export const MAX_WORKSPACE_RAW_BYTES = 50 * 1024 * 1024
-const RAW_SLICE_BYTES = 65_536
-const RAW_READ_CONCURRENCY = 4
-
-/** Thrown when the agent's sandbox predates raw reads: the daemon forwarded `encoding` but the bytes came back as text or withheld. */
-export class WorkspaceRawReadUnsupportedError extends Error {
-  constructor() {
-    super('This agent runs a version that cannot read raw file bytes. Update the agent to preview or download it.')
-    this.name = 'WorkspaceRawReadUnsupportedError'
-  }
-}
-
-function base64Bytes(content: string): Uint8Array<ArrayBuffer> {
-  const binary = atob(content)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-  return bytes
-}
-
-/** Read one workspace file's raw bytes whole, as base64 slices fetched a few at a time; every slice must describe the first one's mtime. */
-export async function fetchWorkspaceFileBlob(
-  agentId: string,
-  opts: { path: string; sessionId?: string; repo?: string; type?: string; maxBytes?: number }
-): Promise<Blob> {
-  const base = {
-    path: opts.path,
-    encoding: 'base64' as const,
-    limit: RAW_SLICE_BYTES,
-    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
-    ...(opts.repo ? { repo: opts.repo } : {})
-  }
-  const first = await fetchWorkspaceFile(agentId, base)
-  if (!first.exists || first.type === 'dir') throw new Error('This checkout has no file at that path.')
-  if (first.encoding !== 'base64') throw new WorkspaceRawReadUnsupportedError()
-  const size = first.size ?? 0
-  if (size > (opts.maxBytes ?? MAX_WORKSPACE_RAW_BYTES)) throw new Error('This file is too large to load here.')
-  const parts: Uint8Array<ArrayBuffer>[] = [base64Bytes(first.content ?? '')]
-  const offsets: number[] = []
-  for (let at = first.nextOffset ?? size; at < size; at += RAW_SLICE_BYTES) offsets.push(at)
-  let next = 0
-  const worker = async () => {
-    while (next < offsets.length) {
-      const index = next++
-      const slice = await fetchWorkspaceFile(agentId, { ...base, offset: offsets[index] })
-      if (slice.encoding !== 'base64' || slice.mtime !== first.mtime || slice.offset !== offsets[index]) {
-        throw new Error('The file changed while it was loading. Try again.')
-      }
-      parts[index + 1] = base64Bytes(slice.content ?? '')
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(RAW_READ_CONCURRENCY, offsets.length) }, worker))
-  if (parts.reduce((total, part) => total + part.length, 0) !== size) {
-    throw new Error('The file changed while it was loading. Try again.')
-  }
-  return new Blob(parts, opts.type ? { type: opts.type } : {})
 }
 
 export function writeWorkspaceFile(

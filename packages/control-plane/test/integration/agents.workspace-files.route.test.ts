@@ -4,14 +4,12 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { WORKSPACE_FILE_DOWNLOAD_FEATURE, WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
+import { WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
 import type {
   WorkspaceDeleteOk,
   WorkspaceDeleteReq,
   WorkspaceListPage,
   WorkspaceListReq,
-  WorkspaceReadContent,
-  WorkspaceReadReq,
   WorkspaceWriteOk,
   WorkspaceWriteReq
 } from '@agentconnect.md/protocol'
@@ -47,20 +45,6 @@ class WorkspaceWriteSpy {
   listCalls: Array<{ daemonId: string; req: WorkspaceListReq }> = []
   calls: Array<{ daemonId: string; req: WorkspaceWriteReq }> = []
   deleteCalls: Array<{ daemonId: string; req: WorkspaceDeleteReq }> = []
-  readCalls: Array<{ daemonId: string; req: WorkspaceReadReq }> = []
-
-  async workspaceRead(daemonId: string, req: WorkspaceReadReq): Promise<WorkspaceReadContent> {
-    this.readCalls.push({ daemonId, req })
-    return {
-      agentId: req.agentId,
-      path: req.path,
-      exists: true,
-      type: 'file',
-      size: 3,
-      encoding: 'base64',
-      content: 'R0lG'
-    }
-  }
 
   async workspaceList(daemonId: string, req: WorkspaceListReq): Promise<WorkspaceListPage> {
     this.listCalls.push({ daemonId, req })
@@ -152,34 +136,6 @@ describe('GET /agents/:id/workspace/files', () => {
     const res = await app(control).app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/workspace/files` })
     expect(res.statusCode).toBe(503)
     expect(res.json()).toMatchObject({ code: 'WORKSPACE_SANDBOX_UNAVAILABLE' })
-  })
-})
-
-describe('GET /agents/:id/workspace/file', () => {
-  it('forwards a raw-bytes read only to a daemon that serves one', async () => {
-    await seedScratch()
-    const control = new WorkspaceWriteSpy()
-    const running = app(control)
-
-    const old = await running.app.inject({
-      method: 'GET',
-      url: `${ORG}/agents/${AGENT}/workspace/file?path=anim.gif&encoding=base64`
-    })
-    expect(old.statusCode).toBe(409)
-    expect(old.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
-    expect(control.readCalls).toHaveLength(0)
-
-    await prisma.daemon.update({
-      where: { id: DAEMON },
-      data: { capabilities: { ...CAPABILITIES, features: [...CAPABILITIES.features, WORKSPACE_FILE_DOWNLOAD_FEATURE] } }
-    })
-    const raw = await running.app.inject({
-      method: 'GET',
-      url: `${ORG}/agents/${AGENT}/workspace/file?path=anim.gif&encoding=base64`
-    })
-    expect(raw.statusCode).toBe(200)
-    expect(raw.json()).toMatchObject({ encoding: 'base64', content: 'R0lG' })
-    expect(control.readCalls[0]?.req).toMatchObject({ path: 'anim.gif', encoding: 'base64' })
   })
 })
 

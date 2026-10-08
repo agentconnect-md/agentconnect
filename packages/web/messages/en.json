@@ -466,8 +466,7 @@
       "code": "Code",
       "download": "Download",
       "downloadTitle": "Download this file",
-      "imageTooLarge": "Image too large to preview ({size}) — download it instead.",
-      "rawReadUnsupported": "This agent runs a daemon version that cannot read raw file bytes. Update the agent to preview or download it."
+      "imageTooLarge": "Image too large to preview or download here ({size})."
     },
     "list": {
       "allAgents": "All agents",

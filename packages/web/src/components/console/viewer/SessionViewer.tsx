@@ -16,16 +16,16 @@ import { gitWriteRequestFailureText } from '@/components/console/dock/git-write'
 import { escapeHtml, highlight, languageLabel, linkifyHtml, loadHljs, splitHtmlLines } from '@/lib/highlight'
 import {
   ApiError,
+  downloadSessionFile,
   fetchWorkspaceFile,
-  fetchWorkspaceFileBlob,
   fetchWorkspaceGitDiff,
-  WorkspaceRawReadUnsupportedError,
   stageWorkspacePaths,
   unstageWorkspacePaths,
   type WorkspaceDiffScope,
   type WorkspaceFileDto,
   type WorkspaceGitDiffDto
 } from '@/lib/api'
+import { MAX_WORKSPACE_DOWNLOAD_BYTES, saveBlob, type SessionFileDownload } from '@/lib/shared-file'
 
 // react-markdown is heavy and only needed for a Markdown preview, so it stays out of the main console bundle.
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), { ssr: false })
@@ -120,7 +120,6 @@ const IMAGE_TYPES: Record<string, string> = {
   bmp: 'image/bmp',
   ico: 'image/x-icon'
 }
-const MAX_IMAGE_PREVIEW_BYTES = 20 * 1024 * 1024
 
 /** The MIME type a previewable image path names, or null. */
 export function imageTypeOf(name: string): string | null {
@@ -153,6 +152,7 @@ export function SessionViewer({
   onModeChange,
   onIndexChanged,
   onOpenPath,
+  download,
   onClose
 }: {
   agentId: string
@@ -172,9 +172,12 @@ export function SessionViewer({
   onIndexChanged?: () => void
   /** A relative link in a Markdown preview was followed. Omitted ⇒ such links are drawn unavailable. */
   onOpenPath?: (path: string) => void
+  /** How the download route names this file — an upload, or a share by its digest. Omitted ⇒ no Download and no image preview. */
+  download?: SessionFileDownload
   onClose: () => void
 }) {
   const t = useTranslations('Sessions.viewer')
+  const td = useTranslations('Sessions.detail')
   const [read, setRead] = useState<Read>(PENDING)
   // Re-reads the same path from byte 0, for a file that changed while it was being read.
   const [reloadTick, setReloadTick] = useState(0)
@@ -315,36 +318,38 @@ export function SessionViewer({
   const imageType = imageTypeOf(name)
   const isImage = mode === 'file' && file?.exists === true && file.type === 'file' && imageType !== null
   const isText = file?.exists === true && file.encoding === 'utf8' && imageType === null
-  const rawFailureText = (e: unknown) =>
-    e instanceof WorkspaceRawReadUnsupportedError || codeOf(e) === 'DAEMON_FEATURE_MISSING'
-      ? t('rawReadUnsupported')
-      : e instanceof ApiError
-        ? readNoticeText(statusOf(e), codeOf(e), Boolean(sessionId))
-        : msg(e)
+  // The download route's refusals, worded as the shared-file chip words them.
+  const downloadFailureText = (e: unknown) => {
+    const code = codeOf(e)
+    if (code === 'WORKSPACE_FILE_TOO_LARGE') return td('fileTooLarge')
+    if (code === 'WORKSPACE_FILE_CHANGED') return td('fileChanged')
+    if (code === 'WORKSPACE_FILE_NOT_FOUND') return td('fileGone')
+    if (code === 'DAEMON_FEATURE_MISSING' || code === 'WORKSPACE_SANDBOX_OUTDATED') return td('downloadUnsupported')
+    return e instanceof ApiError ? readNoticeText(statusOf(e), code, Boolean(sessionId)) : td('downloadFailed')
+  }
 
   // An image's bytes are read raw once the text read has said what the path is; the key fences an answer to the revision it was asked for.
-  const imageKey = isImage ? [agentId, sessionId ?? '', repo ?? '', path, file?.mtime ?? ''].join('\n') : null
-  const previewable = isImage && (file?.size ?? 0) <= MAX_IMAGE_PREVIEW_BYTES
+  const imageKey =
+    isImage && download
+      ? [agentId, download.sessionId, download.sha256 ?? '', path, file?.mtime ?? ''].join('\n')
+      : null
+  const previewable = imageKey !== null && (file?.size ?? 0) <= MAX_WORKSPACE_DOWNLOAD_BYTES
   const [image, setImage] = useState<ImageRead | null>(null)
   useEffect(() => {
-    if (!imageKey || !previewable) return
+    if (!imageKey || !previewable || !download) return
     let active = true
     let url: string | null = null
     setImage({ key: imageKey, blob: null, url: null, err: null })
-    fetchWorkspaceFileBlob(agentId, {
-      path,
-      ...(sessionId ? { sessionId } : {}),
-      ...(repo ? { repo } : {}),
-      ...(imageType ? { type: imageType } : {}),
-      maxBytes: MAX_IMAGE_PREVIEW_BYTES
-    }).then(
-      (blob) => {
+    downloadSessionFile(agentId, { ...download, path }).then(
+      (bytes) => {
         if (!active) return
+        // Retyped from the extension: the route answers octet-stream for formats it does not name, which an <img> may refuse.
+        const blob = imageType ? new Blob([bytes], { type: imageType }) : bytes
         url = URL.createObjectURL(blob)
         setImage({ key: imageKey, blob, url, err: null })
       },
       (e) => {
-        if (active) setImage({ key: imageKey, blob: null, url: null, err: rawFailureText(e) })
+        if (active) setImage({ key: imageKey, blob: null, url: null, err: downloadFailureText(e) })
       }
     )
     return () => {
@@ -357,31 +362,20 @@ export function SessionViewer({
   // Download pulls the raw bytes on demand; a loaded preview's blob is reused instead of read twice.
   const [downloading, setDownloading] = useState(false)
   const [downloadErr, setDownloadErr] = useState<string | null>(null)
-  const canDownload = !(file && (!file.exists || file.type === 'dir'))
-  const download = async () => {
-    if (downloading) return
-    setDownloading(true)
+  const canDownload = download !== undefined && !(file && (!file.exists || file.type === 'dir'))
+  const saveFile = async () => {
+    if (downloading || !download) return
     setDownloadErr(null)
+    // The route refuses past its ceiling anyway; saying so here spares pulling every slice first.
+    if ((file?.size ?? 0) > MAX_WORKSPACE_DOWNLOAD_BYTES) {
+      setDownloadErr(td('fileTooLarge'))
+      return
+    }
+    setDownloading(true)
     try {
-      const blob =
-        currentImage?.blob ??
-        (await fetchWorkspaceFileBlob(agentId, {
-          path,
-          ...(sessionId ? { sessionId } : {}),
-          ...(repo ? { repo } : {}),
-          ...(imageType ? { type: imageType } : {})
-        }))
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = name
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      // Revoked after the click has handed the URL to the download manager.
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      saveBlob(currentImage?.blob ?? (await downloadSessionFile(agentId, { ...download, path })), name)
     } catch (e) {
-      setDownloadErr(rawFailureText(e))
+      setDownloadErr(downloadFailureText(e))
     } finally {
       setDownloading(false)
     }
@@ -570,6 +564,15 @@ export function SessionViewer({
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
           <Icon name="folder-open" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
           <span>{t('folderPath')}</span>
+        </div>
+      )
+    }
+    // An image the download route cannot name is withheld like any binary, whatever the text read made of its bytes.
+    if (isImage && !download) {
+      return (
+        <div className="flex items-center gap-2 p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          <Icon name="file-question-mark" size={15} />
+          {t('binaryFile', { size: formatFileSize(file?.size ?? null) })}
         </div>
       )
     }
@@ -762,7 +765,7 @@ export function SessionViewer({
             disabled={downloading}
             title={t('downloadTitle')}
             aria-label={t('downloadTitle')}
-            onClick={() => void download()}
+            onClick={() => void saveFile()}
           >
             {downloading ? <Spinner size={12} /> : <Icon name="download" size={13} />}
             <span className="max-desktop:hidden">{t('download')}</span>

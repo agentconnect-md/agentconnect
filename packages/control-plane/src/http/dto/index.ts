@@ -3547,8 +3547,7 @@ export const WorkspaceFilesDto = z.object({
 export const WorkspaceFileQueryDto = WorkspaceScopeQueryDto.extend({
   path: z.string().min(1), // workspace-relative POSIX path to a file
   offset: z.coerce.number().int().nonnegative().optional(), // byte offset
-  limit: z.coerce.number().int().positive().max(65536).optional(), // byte count per slice
-  encoding: z.literal('base64').optional() // raw bytes as base64, for image previews and downloads
+  limit: z.coerce.number().int().positive().max(65536).optional() // byte count per slice
 })
 
 export const WorkspaceFileDto = z.object({
@@ -3557,8 +3556,8 @@ export const WorkspaceFileDto = z.object({
   type: z.enum(['file', 'dir']).nullable(), // what the path IS; 'dir' ⇒ no content (null from an older daemon)
   size: z.number().nullable(),
   mtime: z.string().nullable(), // RFC3339
-  encoding: z.enum(['utf8', 'none', 'base64']).nullable(), // 'none' ⇒ binary detected, content omitted; 'base64' ⇒ raw bytes, as asked
-  content: z.string().nullable(), // utf8 text slice, or base64 bytes
+  encoding: z.enum(['utf8', 'none']).nullable(), // 'none' ⇒ binary detected, content omitted
+  content: z.string().nullable(), // utf8 text slice
   offset: z.number().nullable(), // byte offset this slice starts at
   nextOffset: z.number().nullable(), // byte offset to request next; clients must NOT recompute from content
   truncated: z.boolean().nullable() // true ⇒ nextOffset < size (more bytes remain)

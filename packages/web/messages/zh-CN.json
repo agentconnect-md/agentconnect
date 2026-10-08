@@ -466,8 +466,7 @@
       "code": "代码",
       "download": "下载",
       "downloadTitle": "下载此文件",
-      "imageTooLarge": "图片过大，无法预览（{size}），请下载后查看。",
-      "rawReadUnsupported": "该 agent 的 daemon 版本无法读取文件原始内容。请升级 agent 后再预览或下载。"
+      "imageTooLarge": "图片过大（{size}），无法在此预览或下载。"
     },
     "list": {
       "allAgents": "所有 Agent",

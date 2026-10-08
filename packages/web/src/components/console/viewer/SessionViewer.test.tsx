@@ -36,8 +36,8 @@ const wire = vi.hoisted(() => ({
   stageCalls: [] as Array<{ kind: 'stage' | 'unstage'; paths: string[]; sessionId?: string }>,
   stageFailure: null as null | { status: number; code?: string },
   /** Raw-bytes reads behind previews and downloads, and what they answer. */
-  blobCalls: [] as Array<{ path: string; type?: string; maxBytes?: number }>,
-  blobFailure: null as null | 'unsupported'
+  blobCalls: [] as Array<{ sessionId: string; path: string; sha256?: string }>,
+  blobFailure: null as null | string
 }))
 
 vi.mock('@/lib/api', () => {
@@ -50,17 +50,13 @@ vi.mock('@/lib/api', () => {
       super(message)
     }
   }
-  class WorkspaceRawReadUnsupportedError extends Error {}
   return {
     ApiError,
-    WorkspaceRawReadUnsupportedError,
-    fetchWorkspaceFileBlob: vi.fn(
-      async (_agentId: string, opts: { path: string; type?: string; maxBytes?: number }) => {
-        wire.blobCalls.push(opts)
-        if (wire.blobFailure) throw new WorkspaceRawReadUnsupportedError('old')
-        return new Blob([new Uint8Array([0x47, 0x49, 0x46])], opts.type ? { type: opts.type } : {})
-      }
-    ),
+    downloadSessionFile: vi.fn(async (_agentId: string, opts: { sessionId: string; path: string; sha256?: string }) => {
+      wire.blobCalls.push(opts)
+      if (wire.blobFailure) throw new ApiError(409, 'nope', wire.blobFailure)
+      return new Blob([new Uint8Array([0x47, 0x49, 0x46])], { type: 'application/octet-stream' })
+    }),
     fetchWorkspaceGitDiff: vi.fn(
       async (_agentId: string, opts: { path: string; scope?: string; sessionId?: string }) => {
         wire.diffCalls.push(opts)
@@ -344,6 +340,7 @@ describe('SessionViewer body', () => {
 })
 
 describe('SessionViewer images and downloads', () => {
+  const SHARED = { sessionId: 'session-1', sha256: '0123456789abcdef' }
   beforeEach(() => {
     let next = 0
     vi.stubGlobal(
@@ -352,58 +349,64 @@ describe('SessionViewer images and downloads', () => {
     )
   })
 
-  it.each(['anim.gif', 'shot.webp', 'logo.png'])(
-    'draws %s from its raw bytes instead of withholding it',
-    async (name) => {
-      wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
-      await render({ path: `assets/${name}` })
-      await settle()
-      const img = container?.querySelector<HTMLImageElement>('[data-viewer-image] img')
-      expect(img?.getAttribute('src')).toMatch(/^blob:test\//)
-      expect(img?.getAttribute('alt')).toBe(name)
-      expect(wire.blobCalls).toEqual([
-        expect.objectContaining({ path: `assets/${name}`, type: expect.stringMatching(/^image\//) })
-      ])
-      expect(text()).not.toContain('Binary file')
-    }
-  )
-
-  it('withholds an image too large to preview and still offers its download', async () => {
-    wire.slices[0] = { encoding: 'none', content: null, size: 30 * 1024 * 1024 }
-    await render({ path: 'big.gif' })
+  it.each(['anim.gif', 'shot.webp', 'logo.png'])('draws a shared %s through the download route', async (name) => {
+    wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
+    await render({ path: `assets/${name}`, download: SHARED })
     await settle()
-    expect(text()).toContain('Image too large to preview (30.0 MB)')
-    expect(wire.blobCalls).toHaveLength(0)
-    expect(container?.querySelector('[data-viewer-download]')).not.toBeNull()
+    const img = container?.querySelector<HTMLImageElement>('[data-viewer-image] img')
+    expect(img?.getAttribute('src')).toMatch(/^blob:test\//)
+    expect(img?.getAttribute('alt')).toBe(name)
+    expect(wire.blobCalls).toEqual([{ ...SHARED, path: `assets/${name}` }])
+    expect(text()).not.toContain('Binary file')
   })
 
-  it('says an agent too old for raw reads needs updating, rather than that it is offline', async () => {
+  it('neither previews nor offers a file the download route cannot name', async () => {
     wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
-    wire.blobFailure = 'unsupported'
-    await render({ path: 'anim.gif' })
+    await render({ path: 'assets/anim.gif' })
     await settle()
-    expect(text()).toContain('cannot read raw file bytes')
+    expect(text()).toContain('Binary file — not displayed (2.0 KB)')
+    expect(container?.querySelector('[data-viewer-image]')).toBeNull()
+    expect(container?.querySelector('[data-viewer-download]')).toBeNull()
+    expect(wire.blobCalls).toHaveLength(0)
+  })
+
+  it('withholds an image past the download ceiling without reading it', async () => {
+    wire.slices[0] = { encoding: 'none', content: null, size: 9 * 1024 * 1024 }
+    await render({ path: 'big.gif', download: SHARED })
+    await settle()
+    expect(text()).toContain('Image too large to preview or download here (9.0 MB)')
+    await click('[data-viewer-download]')
+    expect(text()).toContain('Too large to download here')
+    expect(wire.blobCalls).toHaveLength(0)
+  })
+
+  it('words a refused download as the shared-file chip does', async () => {
+    wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
+    wire.blobFailure = 'WORKSPACE_FILE_CHANGED'
+    await render({ path: 'anim.gif', download: SHARED })
+    await settle()
+    expect(text()).toContain('This file has changed since it was shared')
     expect(text()).not.toContain('may be offline')
   })
 
-  it('downloads the file under its own name', async () => {
+  it('downloads an upload under its own name', async () => {
     wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
     const clicks: Array<{ href: string; download: string }> = []
     const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
       clicks.push({ href: this.href, download: this.download })
     })
-    await render({ path: 'dist/app.bin' })
+    await render({ path: 'uploads/report.pdf', download: { sessionId: 'session-1' } })
     await click('[data-viewer-download]')
     await settle()
-    expect(wire.blobCalls).toEqual([expect.objectContaining({ path: 'dist/app.bin' })])
-    expect(clicks).toEqual([{ href: expect.stringMatching(/^blob:test\//), download: 'app.bin' }])
+    expect(wire.blobCalls).toEqual([{ sessionId: 'session-1', path: 'uploads/report.pdf' }])
+    expect(clicks).toEqual([{ href: expect.stringMatching(/^blob:test\//), download: 'report.pdf' }])
     spy.mockRestore()
   })
 
   it('reuses a previewed image for its download instead of reading it twice', async () => {
     wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
     const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-    await render({ path: 'anim.gif' })
+    await render({ path: 'anim.gif', download: SHARED })
     await settle()
     await click('[data-viewer-download]')
     await settle()
@@ -414,7 +417,7 @@ describe('SessionViewer images and downloads', () => {
 
   it('offers no download for a path that is not a file', async () => {
     wire.slices[0] = { exists: false, content: null, size: null }
-    await render({ path: 'gone.png' })
+    await render({ path: 'uploads/gone.png', download: { sessionId: 'session-1' } })
     expect(container?.querySelector('[data-viewer-download]')).toBeNull()
   })
 })

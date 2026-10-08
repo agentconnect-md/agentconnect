@@ -40,9 +40,7 @@ import {
   uploadOrgIcon,
   usageWindow,
   fetchUsage,
-  fetchWorkspaceFileBlob,
   fetchWorkspaceGitDiff,
-  WorkspaceRawReadUnsupportedError,
   stageWorkspacePaths,
   unstageWorkspacePaths
 } from './api'
@@ -71,74 +69,6 @@ describe('workspace viewer repository scope', () => {
       expect(query.get('sessionId')).toBe('session-1')
       expect(query.get('repo')).toBe('acme/secondary')
     }
-  })
-})
-
-describe('fetchWorkspaceFileBlob', () => {
-  afterEach(() => {
-    setApiOrgId(null)
-    vi.unstubAllGlobals()
-  })
-
-  const SLICE = 65_536
-  // A daemon answering base64 slices of `bytes`; `mtimeAt` lets a case change the revision mid-read.
-  const daemon = (bytes: Uint8Array, mtimeAt: (offset: number) => string = () => 'm1', encoding = 'base64') =>
-    vi.fn<typeof fetch>(async (input) => {
-      const q = new URL(String(input), 'http://cp.example.test').searchParams
-      const offset = Number(q.get('offset') ?? 0)
-      const end = Math.min(bytes.length, offset + Number(q.get('limit')))
-      const body = {
-        path: q.get('path'),
-        exists: true,
-        type: 'file',
-        size: bytes.length,
-        mtime: mtimeAt(offset),
-        encoding,
-        content: encoding === 'base64' ? Buffer.from(bytes.subarray(offset, end)).toString('base64') : null,
-        offset,
-        nextOffset: end,
-        truncated: end < bytes.length
-      }
-      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
-    })
-
-  it('assembles every slice in order, typed as asked', async () => {
-    const bytes = Uint8Array.from({ length: SLICE * 3 + 10 }, (_, i) => i % 251)
-    const fetcher = daemon(bytes)
-    vi.stubGlobal('fetch', fetcher)
-    setApiOrgId('org-1')
-    const blob = await fetchWorkspaceFileBlob('agent-1', { path: 'a.gif', sessionId: 's1', type: 'image/gif' })
-    expect(blob.type).toBe('image/gif')
-    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(bytes)
-    expect(fetcher).toHaveBeenCalledTimes(4)
-    expect(String(fetcher.mock.calls[0]?.[0])).toContain('encoding=base64')
-    expect(String(fetcher.mock.calls[0]?.[0])).toContain('sessionId=s1')
-  })
-
-  it('refuses to splice two revisions of one file', async () => {
-    const bytes = new Uint8Array(SLICE + 1)
-    vi.stubGlobal(
-      'fetch',
-      daemon(bytes, (offset) => (offset === 0 ? 'm1' : 'm2'))
-    )
-    setApiOrgId('org-1')
-    await expect(fetchWorkspaceFileBlob('agent-1', { path: 'a.bin' })).rejects.toThrow('changed while it was loading')
-  })
-
-  it('names a sandbox that answered without raw bytes as too old', async () => {
-    vi.stubGlobal('fetch', daemon(new Uint8Array(4), undefined, 'none'))
-    setApiOrgId('org-1')
-    await expect(fetchWorkspaceFileBlob('agent-1', { path: 'a.bin' })).rejects.toBeInstanceOf(
-      WorkspaceRawReadUnsupportedError
-    )
-  })
-
-  it('stops before reading a file over the cap', async () => {
-    const fetcher = daemon(new Uint8Array(SLICE * 2))
-    vi.stubGlobal('fetch', fetcher)
-    setApiOrgId('org-1')
-    await expect(fetchWorkspaceFileBlob('agent-1', { path: 'a.bin', maxBytes: SLICE })).rejects.toThrow('too large')
-    expect(fetcher).toHaveBeenCalledTimes(1)
   })
 })
 
