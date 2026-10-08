@@ -658,8 +658,8 @@ throws before its ledger commits (an unparseable or refused reply, lost
 authority, a frame error) is re-run on the daemon path for that preparation;
 the fallback journals under the failed run's desired hash, so the store resumes
 that operation and the shim replays whatever it had already published instead
-of reporting it as foreign. In-pod write-back candidates reach a no-op consumer
-until write-back lands (S6).
+of reporting it as foreign. Write-back candidates are handled as section 9
+describes under **Skill write-back (S6)**.
 
 **Skill reads (S5b, `createSkillReadPlanner`).** With a bucket configured,
 a plan entry gets a GET URL from a pointer keyed like a workspace's
@@ -671,7 +671,9 @@ reads a `cred` entry. A pinned SHA reads no pointer; a no-ref Source keys on
 the default branch `resolveRef` named. The anonymous check reports no ref
 name, so an anonymous Source whose entry does not spell a full ref takes no
 GET URL in P2. Only its misses reach the `reads` metric: the pod does not
-report a bundled clone's outcome in P2.
+report a bundled clone's outcome in P2. The same lookup yields the Source's
+write target (`SkillCachePlan.target`: that pointer key and the target row it
+read), so a skill write-back lands exactly where that Source reads.
 
 ## 9. Write-back
 
@@ -713,6 +715,65 @@ finishes, and a failure is a log line and a metric.
    out like any replaced bundle, since any valid bundle of the ref is an
    acceptable pointer target. A failed retag skips the pointer, so a pointer
    never names a `pending`-tagged object.
+
+**Skill write-back (S6).** A Git plan clone is bundled by the shim itself,
+because its staging clone is removed when the reconcile ends; the daemon then
+drives steps 2 to 5 unchanged by the shim-minted handle.
+
+- The daemon asks only a shim granted `skills-git-writeback` (section 13),
+  only with a bucket configured, and only for a Source with a write target
+  whose ref is a branch: a plan entry then carries `writeBack` (the bundle cap,
+  and `stale` when its GET URL names a bundle older than the 7-day write-back
+  age). A pinned SHA, a tag, a `keepInstalled` entry, and an anonymous Source
+  whose entry spells no full ref (no ref name in P2, section 8) never carry it.
+  `createSkillCachePlanner` (`source-cache/skill-write-back.ts`) builds it from
+  the skill read planner's lookup.
+- The class is the one the daemon instructed, never one the pod names: the
+  target is `cred` only for a private entry whose `resolveRef` succeeded for
+  this agent (the read path's own authorization) and that the daemon routed
+  in-pod through the pod-subject window; it is `anon` (the canonical URL's
+  hash) otherwise, so an anonymous declaration of a private URL never writes
+  `cred`. The writer still refuses a target whose class differs from whether
+  the planned clone carried the credential.
+- The shim offers a candidate for a cloned Source that installed this run (not
+  skipped, not dropped by the budget, at the planned commit) when the clone
+  missed (no GET URL), fell back for a bad-bundle reason (`clone-failed`,
+  `no-bundle-refs`, `inspect-failed`, `connectivity`, `cleanup-failed`; a
+  `download-warning` or `stderr-unavailable` fallback does not), or hit a
+  bundle the daemon marked `stale`. The clone's `refs/heads/<branch>` must
+  name the planned commit exactly as the origin's branch did when the clone
+  fetched it (a non-default branch's local ref is created at that commit);
+  a branch that moved after resolution offers nothing. The shim then stages
+  the bundle through the `bundle` handler's own create primitive
+  (`shim/skill-git-writeback.ts`, `stage` on `shim/bundle-handler.ts`): the
+  same 0700 staging and handle registry, lifetime and start-up emptying as a
+  workspace bundle, the same `GIT_NO_LAZY_FETCH=1`-last environment with no
+  system or global config, shape `blobless` only, the daemon's size cap, and
+  the same list-heads check, each Git output bounded at 64 KiB. A bundling
+  failure is logged and offers no candidate; the install never depends on it.
+  Bundling must not cost the install its reconcile timeout or the workspace
+  its write-back:
+  - each bundle gets at most 2 minutes, and one reconcile spends at most 4
+    minutes bundling, so a Source past that budget offers no candidate;
+  - a skill-staged handle lives 30 minutes, not 2 hours;
+  - skill staging leaves one registry slot free, so a workspace `create` is
+    never refused `busy` for a skill's leftovers.
+- The reply's candidate carries the source id, branch, commit, handle, size,
+  SHA-256 and trigger (`miss`, `fallback`, `stale`). The coordinator hands on
+  only candidates whose plan asked, at the planned branch and commit, for a
+  Source neither skipped nor reported at another commit, and only after the
+  ledger commits; it discards every other offered handle, and all of them
+  when the reconcile throws (so a fallback to the daemon path leaves none).
+  The skill client also discards the handles named by a reply it refuses to
+  parse. A private Source that gets no window has `writeBack` stripped from
+  its plan, so its pod never bundles it.
+- The writer's `considerStaged` skips measuring and `create`, then runs the
+  workspace path's reserve, sign, upload, `HEAD`, commit, retag and pointer
+  compare-and-set, sharing its one-write-per-pointer and two-per-member
+  limits, and discards the handle on every path, including a missing
+  lifecycle rule, a refused reservation or a lost race. The writes run one
+  at a time per reconcile, fire-and-forget after its ledger committed; they
+  never touch the ledger, the installed bundles or the session.
 
 **Abandoned uploads.** An upload the store accepted but no reply confirmed —
 the pod died, the channel dropped, the member restarted — keeps its `pending`
@@ -921,17 +982,17 @@ Session startup never depends on the object store.
 OpenTelemetry meter `@agentconnect.md/daemon-source-cache`, which the daemon's
 existing SDK exports. Every name is prefixed `agentconnect.source_cache.`.
 
-| Instrument             | Kind / unit          | Labels                                | Recorded                                                                                                                                      |
-| ---------------------- | -------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reads`                | counter `{read}`     | `outcome`, `reason`, `shape`, `class` | Every clone's cache outcome: `hit` (reason `none`), `miss` and `fallback` with their reason                                                   |
-| `read_bytes`           | counter `By`         | `shape`, `class`                      | On a hit, the bundle row's size; a fallback's partial download is not knowable and not counted                                                |
-| `write_backs`          | counter `{write}`    | `outcome`, `reason`, `shape`, `class` | `written` (reason = trigger), `skipped` (closed skip reason), `failed` (reason = stage), `lost_race`                                          |
-| `write_bytes`          | counter `By`         | `trigger`, `shape`, `class`           | The staged and verified size of each written bundle                                                                                           |
-| `sweep.passes`         | counter `{pass}`     | none                                  | Each completed sweep pass                                                                                                                     |
-| `sweep.rows`           | counter `{row}`      | `step`, `result`                      | Non-zero per-step row results (`claimed`, `deleted`, `object_deleted`, `already_gone`, `retagged`, `failed`, `lost`, `changed`, `referenced`) |
-| `sweep.released_bytes` | counter `By`         | `step`                                | Bytes a pass released from org usage                                                                                                          |
-| `lifecycle.checks`     | counter `{check}`    | `status`                              | Each lifecycle check's result                                                                                                                 |
-| `lifecycle.status`     | observable gauge `1` | `status`                              | A state set (1 for the current status, 0 for the others); nothing before the first check                                                      |
+| Instrument             | Kind / unit          | Labels                                         | Recorded                                                                                                                                      |
+| ---------------------- | -------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reads`                | counter `{read}`     | `outcome`, `reason`, `shape`, `class`          | Every clone's cache outcome: `hit` (reason `none`), `miss` and `fallback` with their reason                                                   |
+| `read_bytes`           | counter `By`         | `shape`, `class`                               | On a hit, the bundle row's size; a fallback's partial download is not knowable and not counted                                                |
+| `write_backs`          | counter `{write}`    | `outcome`, `reason`, `shape`, `class`, `scope` | `written` (reason = trigger), `skipped` (closed skip reason), `failed` (reason = stage), `lost_race`; `scope` is `workspace` or `skill`       |
+| `write_bytes`          | counter `By`         | `trigger`, `shape`, `class`, `scope`           | The staged and verified size of each written bundle                                                                                           |
+| `sweep.passes`         | counter `{pass}`     | none                                           | Each completed sweep pass                                                                                                                     |
+| `sweep.rows`           | counter `{row}`      | `step`, `result`                               | Non-zero per-step row results (`claimed`, `deleted`, `object_deleted`, `already_gone`, `retagged`, `failed`, `lost`, `changed`, `referenced`) |
+| `sweep.released_bytes` | counter `By`         | `step`                                         | Bytes a pass released from org usage                                                                                                          |
+| `lifecycle.checks`     | counter `{check}`    | `status`                                       | Each lifecycle check's result                                                                                                                 |
+| `lifecycle.status`     | observable gauge `1` | `status`                                       | A state set (1 for the current status, 0 for the others); nothing before the first check                                                      |
 
 Labels are closed daemon-authored values; anything outside a label's allowlist
 is recorded as `other`, and a miss before the access class resolved has
@@ -973,6 +1034,22 @@ over `source_cache_usage`, and quota pressure surfaces as
   Because a daemon advertises the feature before it sends Git plans, a shim
   granted `skills-git` keeps the uploaded-source path for any reconcile that
   carries no Git entry.
+- **Capability:** `skill-git-writeback-v1`, advertised by a shim that also
+  advertises `skill-git-in-pod-v1` and serves `source-cache-bundle-v1` over a
+  usable bundle staging directory. The daemon grants `skills-git-writeback`
+  only beside `skills-git` and `bundle`, and only a client holding that grant
+  sends a Git plan entry's optional `writeBack` (`maxBytes`, optional
+  `stale: true`; the schema refuses it on a pinned SHA, a tag or a
+  `keepInstalled` entry, and the daemon drops it with the GET URL when the
+  frame is over budget). The shim emits `writeBackCandidates` only for an
+  entry that asked, each with `sourceId`, `branch`, `commit`, `handle`,
+  `bytes`, `sha256` and `trigger`, which the daemon uploads and discards over
+  `bundle` by handle (section 9). Images from v2.4.0-rc.10 advertise
+  `skill-git-in-pod-v1` with a strict plan schema and never emit candidates,
+  and S5b daemons have a strict reply schema: a shim advertises only the
+  features the daemon's hello lists in `supportedFeatures`, so an older daemon
+  never sees this one, and an older image never gets the grant, so either
+  pairing keeps S5b's shapes.
 - **Workspace clone:** the existing clone instruction accepts an optional bundle
   URL, passed as `--bundle-uri`. It needs the new `https://`-only rule for that
   flag in the exec inventory, so it ships with shims that carry the rule; any
@@ -1008,7 +1085,8 @@ Each phase ships and rolls back alone.
   end-to-end cluster verification of CP1.8 is still open.
 - **P2 — skills in the pod.** `resolveRef` for skill Sources, in-pod anonymous
   resolution, the credential window,
-  `skill-git-in-pod-v1` and the in-pod Git skill install, skill write-back.
+  `skill-git-in-pod-v1` and the in-pod Git skill install, skill write-back
+  (`skill-git-writeback-v1`, S6).
   Images without the capability keep the daemon-acquisition path, including its
   daemon-local cache (#2697), which is removed once those images age out.
   - **Retirement record (S5b).** The first runtime image that advertises

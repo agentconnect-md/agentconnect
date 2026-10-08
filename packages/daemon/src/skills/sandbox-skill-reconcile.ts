@@ -10,6 +10,8 @@ import {
   type GitSkillPlan,
   type SkillWriteBackCandidate
 } from '../shim/skill-protocol.js'
+import { MAX_BUNDLE_BYTES } from '../shim/bundle-protocol.js'
+import type { SkillSourceCachePlan, SkillWriteBackIntent } from '../source-cache/skill-write-back.js'
 import { MAX_SKILL_BUNDLES } from './skill-limits.js'
 import type { ClusterSkillLedger, ClusterSkillReconcileAuthority } from '../store/cluster-skill-ledger.js'
 import {
@@ -52,8 +54,12 @@ export interface InPodSkillDeps {
   openWindow(repos: string[]): { capability: string; close(): void } | undefined
   /** Whether `openWindow` would admit this private repository; one it would not takes the daemon path. */
   windowAdmits(repo: string): boolean
-  /** A presigned GET of the Source's own access class, when a Source Cache bucket is configured. */
-  getUrl?(entry: AgentSkillEntry, resolution: SkillRefPlan): Promise<string | undefined>
+  /** With a bucket: a presigned GET of the Source's own access class, and a write-back intent when `writeBack` allows one. */
+  cachePlan?(
+    entry: AgentSkillEntry,
+    resolution: SkillRefPlan,
+    options: { writeBack: boolean }
+  ): Promise<SkillSourceCachePlan>
   /** A Source only the daemon path can fill, e.g. a public entry naming a repository the agent capability grants. */
   daemonOnly?(entry: AgentSkillEntry): boolean
 }
@@ -70,8 +76,6 @@ export interface SandboxSkillReconcileDeps {
     destination: string
   ): Promise<{ sourceDir: string; resolvedCommit: string }>
   inPod?: InPodSkillDeps
-  /** Write-back is S6's: in-pod candidates arrive here and are otherwise unused. */
-  onWriteBackCandidates?(candidates: SkillWriteBackCandidate[]): void
 }
 
 export interface SandboxSkillReconcileInput {
@@ -93,6 +97,7 @@ interface ConfiguredGitSource {
 
 /** The reconcile frame's room for everything but Git plan entries, so plans without GET URLs always fit (§13). */
 const PLAN_FRAME_RESERVE_BYTES = 16 * 1024
+const WIDEST_WRITE_BACK = { maxBytes: MAX_BUNDLE_BYTES, stale: true as const }
 
 const gitSourceId = (index: number, digest: string, commit: string): string => `agent:${index}:${digest}:${commit}`
 
@@ -131,6 +136,10 @@ interface PodPlan {
   /** Sources that neither route can install this run, named for the log. */
   unresolved: ConfiguredGitSource[]
   privateRepos: string[]
+  /** The daemon's write-back intent per plan source id; a candidate for any other Source is discarded. */
+  writeBacks: Map<string, SkillWriteBackIntent>
+  /** Plan source ids the pod-subject window credentials. */
+  privateSourceIds: string[]
 }
 
 async function reconcileOnce(
@@ -265,12 +274,20 @@ async function reconcileOnce(
       [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
     )
     window = pod && pod.privateRepos.length > 0 ? inPod!.openWindow(pod.privateRepos) : undefined
+    const writeBacks = pod?.writeBacks
+    // A private Source cloned without a window carried no credential, so it never writes back as `cred`.
+    const unwritten = new Set(window ? [] : (pod?.privateSourceIds ?? []))
+    for (const sourceId of unwritten) writeBacks?.delete(sourceId)
+    const stager = client.writeBack
     const reconciled = await new ClusterSkillCoordinator(deps.store).reconcile({
       ...input.target,
-      sources,
+      // Nor does the pod bundle it for nothing.
+      sources: unwritten.size === 0 ? sources : sources.map((source) => withoutWriteBack(source, unwritten)),
       gitResolutions,
       ...(window ? { credentialWindow: { capability: window.capability } } : {}),
-      ...(deps.onWriteBackCandidates ? { onWriteBackCandidates: deps.onWriteBackCandidates } : {}),
+      ...(writeBacks && writeBacks.size > 0 && stager
+        ? { onWriteBackCandidates: (candidates) => void writeBackInOrder(candidates, writeBacks, stager, deps.log) }
+        : {}),
       ...(onJournaled ? { onJournaled } : {}),
       ...(journalAs ? { journalAs } : {})
     })
@@ -280,6 +297,30 @@ async function reconcileOnce(
     // The window never outlives its reconcile, whatever the outcome.
     window?.close()
     await rm(scratch, { recursive: true, force: true })
+  }
+}
+
+function withoutWriteBack<T extends { sourceId: string; writeBack?: unknown }>(source: T, ids: Set<string>): T {
+  if (!('writeBack' in source) || !ids.has(source.sourceId)) return source
+  const { writeBack: _dropped, ...rest } = source
+  return rest as T
+}
+
+// Fire-and-forget after the ledger committed, one at a time so a reconcile never crowds the writer; every handle is spent.
+async function writeBackInOrder(
+  candidates: SkillWriteBackCandidate[],
+  intents: Map<string, SkillWriteBackIntent>,
+  stager: NonNullable<ClusterSkillClient['writeBack']>,
+  log: SandboxSkillReconcileDeps['log']
+): Promise<void> {
+  for (const candidate of candidates) {
+    const intent = intents.get(candidate.sourceId)
+    try {
+      if (intent) await intent.write(candidate, stager)
+      else await stager.discard(candidate.handle)
+    } catch (error) {
+      log.warn(`skills: write-back of ${candidate.sourceId} did not run (${(error as Error).message})`)
+    }
   }
 }
 
@@ -326,6 +367,8 @@ async function planInPod(
   const priorIds = new Set((input.priorLedger ?? input.target.initialLedger)?.roots.map((root) => root.sourceId) ?? [])
   const drafts: Array<{ source: ConfiguredGitSource; plan: GitSkillPlan; resolution: SkillRefPlan }> = []
   const unresolved: ConfiguredGitSource[] = []
+  // Only a pod granted `skills-git-writeback`, with a bucket to write to, is asked to bundle anything.
+  const writeBackPossible = input.target.client.writeBack !== undefined && inPod.cachePlan !== undefined
   for (const [position, source] of routed.entries()) {
     const { index, entry } = source
     const resolution = resolutions[position]!
@@ -346,6 +389,9 @@ async function planInPod(
     // The daemon's origin policy runs here, before any URL reaches the pod.
     const parsed = resolveBoundedGitSkillSource(entry)
     const ref = resolution.ok && !resolution.pinned ? resolution.ref : undefined
+    // The widest write-back request is measured with the plan; the real one, or none, replaces it below.
+    const writeBack =
+      writeBackPossible && !keepInstalled && ref?.startsWith('refs/heads/') ? WIDEST_WRITE_BACK : undefined
     const candidate = GitSkillPlanSchema.safeParse({
       sourceId: gitSourceId(index, digest, commit),
       sourceKind: 'git',
@@ -354,7 +400,8 @@ async function planInPod(
       plannedCommit: commit,
       ...(parsed.subDir ? { subDir: parsed.subDir } : {}),
       selections: [...entry.skills],
-      ...(keepInstalled ? { keepInstalled: true } : {})
+      ...(keepInstalled ? { keepInstalled: true } : {}),
+      ...(writeBack ? { writeBack } : {})
     })
     if (!candidate.success) {
       deps.log.warn(`skills: Git source ${entry.name} cannot be planned for the sandbox; the daemon acquires it`)
@@ -392,20 +439,36 @@ async function planInPod(
   const plans = new Map<number, GitSkillPlan>()
   const commits = new Map<string, string>()
   const privateRepos = new Set<string>()
+  const writeBacks = new Map<string, SkillWriteBackIntent>()
   await Promise.all(
     fitted.map(async ({ source, plan, resolution }) => {
-      const getUrl = plan.keepInstalled
+      const { writeBack: _widest, ...planned } = plan
+      const cache = plan.keepInstalled
         ? undefined
-        : await inPod.getUrl?.(source.entry, resolution).catch(() => undefined)
-      plans.set(source.index, getUrl ? { ...plan, getUrl } : plan)
+        : await inPod
+            .cachePlan?.(source.entry, resolution, { writeBack: plan.writeBack !== undefined })
+            .catch(() => undefined)
+      const intent = plan.writeBack ? cache?.writeBack : undefined
+      if (intent) writeBacks.set(plan.sourceId, intent)
+      plans.set(source.index, {
+        ...planned,
+        ...(cache?.getUrl ? { getUrl: cache.getUrl } : {}),
+        ...(intent
+          ? { writeBack: { maxBytes: intent.maxBytes, ...(intent.stale ? { stale: true as const } : {}) } }
+          : {})
+      })
     })
   )
+  const privateSourceIds: string[] = []
   for (const { source, plan } of fitted) {
     commits.set(gitResolutionDigest(source.entry), plan.plannedCommit)
     const repo = gitSkillRepositoryPath(source.entry)
-    if (source.entry.private === true && !plan.keepInstalled && repo) privateRepos.add(repo.toLowerCase())
+    if (source.entry.private === true && !plan.keepInstalled && repo) {
+      privateRepos.add(repo.toLowerCase())
+      privateSourceIds.push(plan.sourceId)
+    }
   }
-  return { plans, commits, unresolved, privateRepos: [...privateRepos] }
+  return { plans, commits, unresolved, privateRepos: [...privateRepos], writeBacks, privateSourceIds }
 }
 
 function planBytes(plan: GitSkillPlan): number {

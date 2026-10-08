@@ -14,7 +14,7 @@ import { sweepMarkedUntilClear } from './marked-sweep.js'
 import { resolveCommandInPath } from './path-resolve.js'
 import { ShimServer } from './server.js'
 import { probeSkillGitInPod } from './skill-git-feature.js'
-import { SKILL_GIT_IN_POD_FEATURE } from './skill-protocol.js'
+import { SKILL_GIT_IN_POD_FEATURE, SKILL_GIT_WRITEBACK_FEATURE } from './skill-protocol.js'
 import { TunnelHost } from './tunnel-host.js'
 
 if (process.argv[2] === '__sandbox-runtime' || process.argv[2] === '__sandbox-runtime-offline') {
@@ -82,8 +82,10 @@ async function main(): Promise<number> {
   const skillGit = await probeSkillGitInPod({ stagingDir: paths.skillStagingDir })
   if (!skillGit.ok)
     log.warn(`in-pod Git skill install unavailable (${skillGit.reason}); the daemon acquires Git skills`)
-  const exec = createExecHandler({ workspaceRoot, paths, log })
   const bundles = createBundleHandler({ workspaceRoot, stagingDir: paths.bundleStagingDir, log })
+  // Skill write-back stages into the bundle registry, so it needs both the bundle staging and the in-pod Git path.
+  const skillWriteBack = bundleStaging && skillGit.ok
+  const exec = createExecHandler({ workspaceRoot, paths, log, ...(skillWriteBack ? { skillWriteBack: bundles } : {}) })
   // Watchers own long-lived processes and stay outside the git-only exec inventory.
   const automerge = createAutoMergeHandler({ paths, log })
   const server = new ShimServer({ log })
@@ -122,7 +124,8 @@ async function main(): Promise<number> {
       'cluster-skills-v2',
       'cluster-skills-v3',
       ...(bundleStaging ? [SOURCE_CACHE_BUNDLE_FEATURE] : []),
-      ...(skillGit.ok ? [SKILL_GIT_IN_POD_FEATURE] : [])
+      ...(skillGit.ok ? [SKILL_GIT_IN_POD_FEATURE] : []),
+      ...(skillWriteBack ? [SKILL_GIT_WRITEBACK_FEATURE] : [])
     ],
     log
   })

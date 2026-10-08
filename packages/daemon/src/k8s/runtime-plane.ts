@@ -543,7 +543,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         session.hasCapability('skills-wide'),
         false,
         session.hasCapability('skills-receipts'),
-        session.hasCapability('skills-git')
+        session.hasCapability('skills-git'),
+        session.hasCapability('skills-git-writeback') && session.hasCapability('bundle')
+          ? new ShimBundleClient(session)
+          : undefined
       )
     },
     workspaceIncarnationFor: (subject) => driver.currentLaunch(subject)?.claimUid,

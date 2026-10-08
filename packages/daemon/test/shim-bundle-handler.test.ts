@@ -15,7 +15,12 @@ import { createServer, type IncomingHttpHeaders } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createBundleHandler, type BundleHandlerDeps, type GitInvocation } from '../src/shim/bundle-handler.js'
+import {
+  createBundleHandler,
+  SKILL_STAGED_HANDLE_TTL_MS,
+  type BundleHandlerDeps,
+  type GitInvocation
+} from '../src/shim/bundle-handler.js'
 import { prepareBundleStaging } from '../src/shim/bundle-staging.js'
 
 // The shim's own `bundle` operations against real Git (source-cache.md §6.1, §9): the handle and file are the shim's, never the caller's.
@@ -363,6 +368,22 @@ describe('shim bundle operations', () => {
     await handler(create(f, f.full))
     await expect(handler(create(f, f.full))).rejects.toThrow(/busy/)
     expect(readdirSync(f.staging)).toHaveLength(1)
+  })
+
+  it('keeps one slot for the workspace from skill staging, and expires a skill-staged handle sooner', async () => {
+    const f = fixture()
+    let now = 1_000
+    const handler = handlerFor(f, { maxHandles: 2, now: () => now })
+    const stage = { repo: f.full, ref: 'refs/heads/main', commit: f.commit, shape: 'full' as const, maxBytes: 1 << 20 }
+    const skill = await handler.stage(stage)
+    await expect(handler.stage(stage)).rejects.toThrow(/busy/)
+    const workspace = (await handler(create(f, f.full))) as { handle: string }
+    now += SKILL_STAGED_HANDLE_TTL_MS + 1
+    expect(await handler({ op: 'discard', handle: '00000000-0000-4000-8000-000000000000' })).toEqual({
+      discarded: false
+    })
+    expect(existsSync(join(f.staging, `${skill.handle}.bundle`))).toBe(false)
+    expect(existsSync(join(f.staging, `${workspace.handle}.bundle`))).toBe(true)
   })
 
   it('refuses to stage into a directory that is no longer private', async () => {

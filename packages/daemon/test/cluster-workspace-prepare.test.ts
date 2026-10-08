@@ -2160,7 +2160,9 @@ describe('workspace clones read the Source Cache (source-cache.md §7)', () => {
   }
 
   // A writer that records each request and settles only when told to, so a test can prove nothing waited on it.
-  function writer(behavior: 'hang' | 'reject' = 'hang'): SourceCacheWriter & { requests: SourceCacheWriteRequest[] } {
+  function writer(
+    behavior: 'hang' | 'reject' = 'hang'
+  ): Pick<SourceCacheWriter, 'consider'> & { requests: SourceCacheWriteRequest[] } {
     const requests: SourceCacheWriteRequest[] = []
     return {
       requests,

@@ -268,9 +268,21 @@ export interface SkillBundleRequest {
   resolution: SkillRefPlan
 }
 
+/** A skill Source's cache plan: the GET URL to seed from, and where a write-back of its clone may land. */
+export interface SkillCachePlan {
+  /** A presigned GET; never logged. */
+  getUrl?: string
+  /** Set once the Source's class, repository and ref resolved, whether or not a bundle exists. */
+  target?: SourceCacheWriteTarget
+  /** The planned bundle row's write time, for the write-back age trigger. */
+  bundleCreatedAt?: number
+}
+
 export interface SourceCacheSkillReader {
   /** A presigned GET of the Source's own access class for `--bundle-uri`, or undefined; never throws, never logged. */
   getUrl(request: SkillBundleRequest): Promise<string | undefined>
+  /** The GET URL and the write target together; never throws. */
+  plan(request: SkillBundleRequest): Promise<SkillCachePlan>
 }
 
 /** The skill read planner (source-cache.md §4, §5, §8): a Source reads only its own class, and `cred` only on its agent's `resolveRef`. */
@@ -289,7 +301,10 @@ export function createSkillReadPlanner(
       // A metrics hook never fails a plan.
     }
   }
-  const resolve = async (request: SkillBundleRequest, found: { repoClass?: SourceCacheClass }): Promise<string> => {
+  const resolve = async (
+    request: SkillBundleRequest,
+    found: { repoClass?: SourceCacheClass; target?: SourceCacheWriteTarget }
+  ): Promise<WorkspaceBundlePlan> => {
     const { entry, resolution } = request
     if (!resolution.ok) return miss('unauthorized', 'resolution_failed')
     // A pinned SHA has no ref to follow, so it has no pointer.
@@ -311,21 +326,34 @@ export function createSkillReadPlanner(
     const repoClass = found.repoClass
     const latest = skillPointerKey({ org: orgId, class: repoClass, repo, ref: resolution.ref })
     const pointer = await store.getSourceCacheObject(orgId, latest)
-    const plan = await bundleBehind(deps, store, { orgId, repoClass, repo, latest, pointer, shape: 'blobless' }, now)
-    return plan.url
+    // The write target is the read's own key, so a write-back lands exactly where this Source reads (§9 step 2).
+    found.target = {
+      orgId,
+      repoClass,
+      repoId: repo,
+      ref: resolution.ref,
+      shape: 'blobless',
+      pointerKey: latest,
+      observedTargetKey: pointer?.targetKey ?? null
+    }
+    return await bundleBehind(deps, store, { orgId, repoClass, repo, latest, pointer, shape: 'blobless' }, now)
   }
-  return {
-    async getUrl(request) {
-      const found: { repoClass?: SourceCacheClass } = {}
-      try {
-        return await resolve(request, found)
-      } catch (err) {
-        const repoClass = found.repoClass ? { repoClass: found.repoClass } : {}
-        const reason = err instanceof Miss ? err.reason : 'error'
-        const detail = err instanceof Miss ? err.message : ((err as Error)?.message ?? String(err))
-        record({ kind: 'miss', reason, shape: 'blobless', ...repoClass, detail })
-        return undefined
+  const plan = async (request: SkillBundleRequest): Promise<SkillCachePlan> => {
+    const found: { repoClass?: SourceCacheClass; target?: SourceCacheWriteTarget } = {}
+    try {
+      const bundle = await resolve(request, found)
+      return {
+        getUrl: bundle.url,
+        bundleCreatedAt: bundle.bundleCreatedAt,
+        ...(found.target ? { target: found.target } : {})
       }
+    } catch (err) {
+      const repoClass = found.repoClass ? { repoClass: found.repoClass } : {}
+      const reason = err instanceof Miss ? err.reason : 'error'
+      const detail = err instanceof Miss ? err.message : ((err as Error)?.message ?? String(err))
+      record({ kind: 'miss', reason, shape: 'blobless', ...repoClass, detail })
+      return found.target ? { target: found.target } : {}
     }
   }
+  return { plan, getUrl: async (request) => (await plan(request)).getUrl }
 }

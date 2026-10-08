@@ -9,6 +9,7 @@ import { ExecRefusedError } from '../workspace/git-command-policy.js'
 import {
   BUNDLE_PENDING_TAGGING,
   BUNDLE_UPLOAD_HEADERS,
+  BundleCreateRequestSchema,
   BundleRequestSchema,
   type BundleCreateRequest,
   type BundleCreateResult,
@@ -25,6 +26,8 @@ export const DEFAULT_BUNDLE_CREATE_TIMEOUT_MS = 10 * 60_000
 export const DEFAULT_BUNDLE_UPLOAD_TIMEOUT_MS = 15 * 60_000
 const DEFAULT_MAX_HANDLES = 4
 const DEFAULT_HANDLE_TTL_MS = 2 * 60 * 60_000
+// A skill-staged handle is uploaded right after its reconcile, so a lost one frees its slot sooner.
+export const SKILL_STAGED_HANDLE_TTL_MS = 30 * 60_000
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60_000
 const MAX_GIT_OUTPUT_BYTES = 64 * 1024
 const MAX_ERROR_BODY_BYTES = 4096
@@ -62,14 +65,32 @@ export interface BundleHandlerDeps {
   log?: { warn: (m: string) => void }
 }
 
-/** The `bundle` capability's request handler; `stop()` ends its stale-handle sweep. */
-export type BundleHandler = ((payload: unknown, abort?: AbortSignal) => Promise<unknown>) & { stop(): void }
+/** A shim-internal repository to bundle into the handle registry; `repo` is a shim-owned path, never one the daemon sent. */
+export interface BundleStageInput {
+  repo: string
+  ref: string
+  commit: string
+  shape: BundleCreateRequest['shape']
+  maxBytes: number
+  timeoutMs?: number
+}
+
+/** Stage a shim-owned clone under a fresh handle the daemon later uploads or discards (source-cache.md §9). */
+export type BundleStage = (input: BundleStageInput, abort?: AbortSignal) => Promise<BundleCreateResult>
+
+/** The `bundle` capability's request handler; `stop()` ends its stale-handle sweep, `stage` bundles a shim-owned clone. */
+export type BundleHandler = ((payload: unknown, abort?: AbortSignal) => Promise<unknown>) & {
+  stop(): void
+  stage: BundleStage
+  discard(handle: string): BundleDiscardResult
+}
 
 interface StagedBundle {
   file: string
   bytes: number
   sha256: string
   createdAt: number
+  ttlMs: number
   busy: boolean
 }
 
@@ -157,17 +178,22 @@ export function createBundleHandler(deps: BundleHandlerDeps): BundleHandler {
   let creating = 0
 
   const purgeStale = (): void => {
-    const cutoff = now() - ttlMs
     for (const [handle, staged] of handles) {
-      if (staged.busy || staged.createdAt > cutoff) continue
+      if (staged.busy || staged.createdAt > now() - staged.ttlMs) continue
       handles.delete(handle)
       unlinkStaged(staged.file)
     }
   }
 
-  const create = async (request: BundleCreateRequest, abort?: AbortSignal): Promise<BundleCreateResult> => {
-    if (handles.size + creating >= maxHandles) throw new BundleRefusedError('busy', `${maxHandles} bundles are staged`)
-    const cwd = resolveCwd(deps.workspaceRoot, request.cwd)
+  // The one create primitive: the workspace `create` op and a shim-internal `stage` both land here.
+  const createAt = async (
+    cwd: string,
+    request: Omit<BundleStageInput, 'repo'>,
+    abort?: AbortSignal,
+    staged: { ttlMs: number; slots: number } = { ttlMs, slots: maxHandles }
+  ): Promise<BundleCreateResult> => {
+    if (handles.size + creating >= staged.slots)
+      throw new BundleRefusedError('busy', `${handles.size} bundles are staged`)
     assertBundleStagingPrivate(deps.stagingDir)
     const env = bundleGitEnv(deps.shimEnv ?? process.env)
     const timeoutMs = Math.min(request.timeoutMs ?? DEFAULT_BUNDLE_CREATE_TIMEOUT_MS, DEFAULT_BUNDLE_CREATE_TIMEOUT_MS)
@@ -196,7 +222,7 @@ export function createBundleHandler(deps: BundleHandlerDeps): BundleHandler {
       chmodSync(file, 0o600)
       const sha256 = await sha256Of(file)
       if (abort?.aborted) throw new BundleRefusedError('aborted', 'the request was cancelled')
-      handles.set(handle, { file, bytes, sha256, createdAt: now(), busy: false })
+      handles.set(handle, { file, bytes, sha256, createdAt: now(), ttlMs: staged.ttlMs, busy: false })
       return { handle, bytes, sha256 }
     } catch (err) {
       unlinkStaged(file)
@@ -204,6 +230,20 @@ export function createBundleHandler(deps: BundleHandlerDeps): BundleHandler {
     } finally {
       creating--
     }
+  }
+
+  const create = (request: BundleCreateRequest, abort?: AbortSignal): Promise<BundleCreateResult> =>
+    createAt(resolveCwd(deps.workspaceRoot, request.cwd), request, abort)
+
+  // The same request schema as `create`, so a shim-internal caller gets exactly the ref, commit and cap rules.
+  const stage: BundleStage = async ({ repo, ...input }, abort) => {
+    const parsed = BundleCreateRequestSchema.safeParse({ op: 'create', cwd: repo, ...input })
+    if (!parsed.success) throw new BundleRefusedError('invalid', parsed.error.issues[0]?.message ?? 'invalid stage')
+    // Skill staging leaves one slot free, so a workspace write-back is never refused for a skill's leftovers.
+    return await createAt(repo, parsed.data, abort, {
+      ttlMs: Math.min(ttlMs, SKILL_STAGED_HANDLE_TTL_MS),
+      slots: Math.max(1, maxHandles - 1)
+    })
   }
 
   const upload = async (request: BundleUploadRequest, abort?: AbortSignal): Promise<BundleUploadResult> => {
@@ -341,5 +381,5 @@ export function createBundleHandler(deps: BundleHandlerDeps): BundleHandler {
       throw err
     }
   }
-  return Object.assign(serve, { stop: () => clearInterval(timer) })
+  return Object.assign(serve, { stop: () => clearInterval(timer), stage, discard })
 }

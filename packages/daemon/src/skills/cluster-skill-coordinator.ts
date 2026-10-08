@@ -78,7 +78,7 @@ export class ClusterSkillCoordinator {
     isLaunchCurrent?: () => boolean
     /** The pod-subject window a Git plan's private Sources fill through; only its capability is sent. */
     credentialWindow?: SkillCredentialWindowGrant
-    /** Write-back is S6's: candidates arrive here and are otherwise unused. */
+    /** Told the usable write-back candidates once the ledger commits; every other offered handle is discarded here. */
     onWriteBackCandidates?: (candidates: SkillWriteBackCandidate[]) => void
     /** Told the journaled desired hash once the run is journaled, so a fallback can resume this operation. */
     onJournaled?: (desiredHash: string) => void
@@ -113,10 +113,10 @@ export class ClusterSkillCoordinator {
     const desiredHash = createHash('sha256')
       .update(
         JSON.stringify({
-          // A presigned GET changes every run but not what installs; a planned commit does, so it moves the hash.
+          // A presigned GET or a write-back request changes per run but not what installs; a planned commit does.
           sources: sources.map((source) => {
             if (isGitPlan(source)) {
-              const { getUrl: _getUrl, ...plan } = source
+              const { getUrl: _getUrl, writeBack: _writeBack, ...plan } = source
               return plan
             }
             const { sourceDir: _sourceDir, limits: _limits, ...rest } = source
@@ -167,6 +167,35 @@ export class ClusterSkillCoordinator {
         ...(input.credentialWindow && plans.size > 0 ? { credentialWindow: input.credentialWindow } : {})
       })
     )
+    // Every offered handle is either handed on after the commit or discarded, whatever happens below.
+    const offered = reply.writeBackCandidates ?? []
+    const discard = (candidates: SkillWriteBackCandidate[]): void => {
+      for (const { handle } of candidates) void input.client.writeBack?.discard(handle).catch(() => undefined)
+    }
+    let handedOn: SkillWriteBackCandidate[] = []
+    try {
+      const result = await this.settle(input, { reply, sources, plans, begun, authority })
+      handedOn = result.writeBack
+      return result.ledger
+    } finally {
+      discard(offered.filter((candidate) => !handedOn.includes(candidate)))
+    }
+  }
+
+  private async settle(
+    input: Parameters<ClusterSkillCoordinator['reconcile']>[0],
+    run: {
+      reply: ReturnType<typeof ClusterSkillReconcileResultSchema.parse>
+      sources: ClusterSkillReconcileSource[]
+      plans: Map<string, GitSkillPlan>
+      begun: { priorRevision: number; priorLedger: ClusterSkillLedger }
+      authority: ClusterSkillReconcileAuthority
+    }
+  ): Promise<{
+    ledger: ClusterSkillLedger & { skipped?: ClusterSkillSkippedSource[] }
+    writeBack: SkillWriteBackCandidate[]
+  }> {
+    const { reply, sources, plans, begun, authority } = run
     if (reply.conflicts.length > 0) throw new Error('cluster skill ownership conflict')
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
@@ -244,6 +273,19 @@ export class ClusterSkillCoordinator {
     if (reply.writeBackCandidates?.some((candidate) => !plans.has(candidate.sourceId))) {
       throw new Error('cluster skill shim offered write-back for an unexpected source')
     }
+    // Usable only for an installed Source whose plan asked, at exactly the planned branch and commit; the rest are discarded.
+    const offeredOnce = new Set<string>()
+    const usable = (reply.writeBackCandidates ?? []).filter((candidate) => {
+      const plan = plans.get(candidate.sourceId)!
+      if (offeredOnce.has(candidate.sourceId)) return false
+      offeredOnce.add(candidate.sourceId)
+      return (
+        plan.writeBack !== undefined &&
+        !skippedIds.has(candidate.sourceId) &&
+        candidate.branch === plan.ref &&
+        candidate.commit === plan.plannedCommit
+      )
+    })
     // A skipped Git source loses its resolution so it is retried; a budget drop was pruned and keeps it, so it is not re-acquired.
     const skippedGitPrefixes = skipped
       .filter((entry) => !isBudgetSkip(entry))
@@ -262,8 +304,14 @@ export class ClusterSkillCoordinator {
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
     }
-    if (reply.writeBackCandidates?.length) input.onWriteBackCandidates?.(reply.writeBackCandidates)
+    let writeBack = input.onWriteBackCandidates ? usable : []
+    try {
+      if (writeBack.length > 0) input.onWriteBackCandidates!(writeBack)
+    } catch {
+      // Write-back never fails a committed reconcile; its handles are discarded instead.
+      writeBack = []
+    }
     // `skipped` only when something was: the committed ledger and the returned value stay equal otherwise.
-    return skipped.length > 0 ? { ...ledger, skipped } : ledger
+    return { ledger: skipped.length > 0 ? { ...ledger, skipped } : ledger, writeBack }
   }
 }

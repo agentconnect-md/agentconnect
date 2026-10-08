@@ -1,4 +1,6 @@
+import { z } from 'zod'
 import type { ShimRequester } from './channels.js'
+import type { SourceCacheBundleStager } from '../source-cache/write-back.js'
 import { ClusterSkillLedgerSchema } from '../store/cluster-skill-ledger.js'
 import {
   ClusterSkillBeginReplySchema,
@@ -39,6 +41,20 @@ export function cwdSkillRequester(session: ShimRequester, cwd: string): ShimRequ
   return { request: (capability, request, options) => session.request(capability, { cwd, request }, options) }
 }
 
+/** The `bundle` operations a skill write-back drives by the handle the shim offered. */
+export type SkillWriteBackStager = Pick<SourceCacheBundleStager, 'upload' | 'discard'>
+
+function withoutWriteBack<T extends Pick<ClusterSkillReconcile, 'sources'>>(input: T): T {
+  return {
+    ...input,
+    sources: input.sources.map((source) => {
+      if (source.sourceKind !== 'git' || source.writeBack === undefined) return source
+      const { writeBack: _writeBack, ...rest } = source
+      return rest
+    })
+  }
+}
+
 export class ClusterSkillClient {
   /** `wide` mirrors the peer's `cluster-skills-v2` grant. */
   constructor(
@@ -48,7 +64,9 @@ export class ClusterSkillClient {
     readonly fileModes = false,
     private readonly receiptPaging = false,
     // Mirrors the `skills-git` grant: the bound shim takes Git plan Sources and clones them itself.
-    readonly gitInPod = false
+    readonly gitInPod = false,
+    // Present only with the `skills-git-writeback` grant: uploads and discards the handles a Git plan reply offers.
+    readonly writeBack?: SkillWriteBackStager
   ) {}
 
   /** What the BOUND image admits, so a caller can drop one oversized source instead of failing a launch. */
@@ -105,13 +123,14 @@ export class ClusterSkillClient {
   async reconcile(input: Omit<ClusterSkillReconcile, 'op' | 'priorRootCount'>): Promise<ClusterSkillReconcileReply> {
     if (isGitPlanReconcile(input)) {
       if (!this.gitInPod || !this.receiptPaging) throw new Error('this sandbox image does not take Git skill plans')
+      // A shim without `skill-git-writeback-v1` refuses the field, so it never leaves the daemon for one.
+      if (!this.writeBack) input = withoutWriteBack(input)
       input = budgetSkillPlanUrls(input)
     }
     if (!this.receiptPaging) {
       const request = ClusterSkillReconcileSchema.parse({ op: 'reconcile', ...input })
-      return ClusterSkillReconcileReplySchema.parse(
-        await this.requester.request('skills', request, { timeoutMs: SKILLS_RECONCILE_TIMEOUT_MS })
-      )
+      const raw = await this.requester.request('skills', request, { timeoutMs: SKILLS_RECONCILE_TIMEOUT_MS })
+      return this.spendingOnRefusal(raw, () => ClusterSkillReconcileReplySchema.parse(raw))
     }
     const priorRoots = ClusterSkillLedgerSchema.parse({ roots: input.priorRoots }).roots
     const request = { op: 'reconcile' as const, ...input, priorRoots, priorRootCount: priorRoots.length }
@@ -132,11 +151,32 @@ export class ClusterSkillClient {
         if (reply.received !== offset) throw new Error('inconsistent prior skill receipt offset')
       }
     }
-    let page = ClusterSkillReceiptPageSchema.parse(
-      await this.requester.request('skills', ClusterSkillReconcileSchema.parse(request), {
-        timeoutMs: SKILLS_RECONCILE_TIMEOUT_MS
-      })
-    )
+    const first = await this.requester.request('skills', ClusterSkillReconcileSchema.parse(request), {
+      timeoutMs: SKILLS_RECONCILE_TIMEOUT_MS
+    })
+    return await this.spendingOnRefusal(first, () => this.receiptPages(input, first))
+  }
+
+  // A reply the daemon refuses still names the handles its pod staged; spend them rather than let them hold slots.
+  private async spendingOnRefusal<T>(raw: unknown, read: () => T | Promise<T>): Promise<T> {
+    try {
+      return await read()
+    } catch (err) {
+      const offered = (raw as { writeBackCandidates?: unknown } | null)?.writeBackCandidates
+      for (const candidate of Array.isArray(offered) ? offered : []) {
+        const handle = (candidate as { handle?: unknown } | null)?.handle
+        if (typeof handle === 'string' && z.uuid().safeParse(handle).success)
+          void this.writeBack?.discard(handle).catch(() => undefined)
+      }
+      throw err
+    }
+  }
+
+  private async receiptPages(
+    input: Omit<ClusterSkillReconcile, 'op' | 'priorRootCount'>,
+    first: unknown
+  ): Promise<ClusterSkillReconcileReply> {
+    let page = ClusterSkillReceiptPageSchema.parse(first)
     const extras = skillReplyExtras(page)
     const result = { roots: [...page.roots], conflicts: page.conflicts, ...extras }
     while (page.nextOffset !== undefined) {

@@ -63,6 +63,7 @@ export {
   createSkillReadPlanner,
   createSourceCacheReadPlanner,
   type SkillBundleRequest,
+  type SkillCachePlan,
   type SourceCacheSkillReader,
   type SourceCacheMissReason,
   type SourceCacheReadOutcome,
@@ -78,9 +79,17 @@ export {
   type SourceCacheBundleStager,
   type SourceCacheWriteOutcome,
   type SourceCacheWriter,
+  type SourceCacheStagedWriteRequest,
   type SourceCacheWriteRequest,
+  type SourceCacheWriteScope,
   type SourceCacheWriteSkipReason
 } from './write-back.js'
+export {
+  createSkillCachePlanner,
+  type SkillCachePlannerDeps,
+  type SkillSourceCachePlan,
+  type SkillWriteBackIntent
+} from './skill-write-back.js'
 export { createSourceCacheMetrics, sourceCacheMetrics, type SourceCacheMetrics } from './metrics.js'
 export type { SourceCacheBucketLifecycle, SourceCacheObjectClient } from './object-client.js'
 export {

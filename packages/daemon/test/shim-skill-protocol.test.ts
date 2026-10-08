@@ -256,7 +256,15 @@ describe('Git skill plan wire (skill-git-in-pod-v1)', () => {
     skipped: [{ sourceId: 'agent:1', reason: 'ref moved', code: 'ref_moved' }],
     gitSources: [{ sourceId: plan.sourceId, resolvedCommit: commit, leaves: ['review'] }],
     writeBackCandidates: [
-      { sourceId: plan.sourceId, branch: 'refs/heads/main', commit, handle: '22222222-2222-4222-8222-222222222222' }
+      {
+        sourceId: plan.sourceId,
+        branch: 'refs/heads/main',
+        commit,
+        handle: '22222222-2222-4222-8222-222222222222',
+        bytes: 4096,
+        sha256: Buffer.alloc(32, 7).toString('base64'),
+        trigger: 'miss'
+      }
     ]
   }
   // The reply schema a daemon predating skill-git-in-pod-v1 parses with: strict, and without the new fields.

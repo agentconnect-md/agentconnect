@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { ClusterSkillOwnedRootSchema, ClusterSkillPathSchema } from '../store/cluster-skill-ledger.js'
 import { MAX_SKILL_BUNDLES } from '../skills/skill-limits.js'
 import { bundleUriProblem, isValidBranchRef, isValidFullRef } from '../workspace/git-command-policy.js'
+import { MAX_BUNDLE_BYTES } from './bundle-protocol.js'
 
 export const MAX_CLUSTER_SKILL_SOURCES = 64
 // A Git source is a whole collection repo; these mirror GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, and the
@@ -21,6 +22,8 @@ export const MAX_SKILL_GET_URL_LENGTH = 8192
 
 /** Advertised by a shim that clones Git skill Sources itself; the daemon's grant for it is `skills-git`. */
 export const SKILL_GIT_IN_POD_FEATURE = 'skill-git-in-pod-v1' as const
+/** Advertised by a shim that also bundles a Git plan clone for write-back; the daemon's grant for it is `skills-git-writeback`. */
+export const SKILL_GIT_WRITEBACK_FEATURE = 'skill-git-writeback-v1' as const
 
 /** What `cluster-skills-v1` admits — a daemon takes over a running pod, so it may be older than us.
  *  That image has no `manifest` op, so its whole file list must still fit one `begin` frame. */
@@ -119,6 +122,10 @@ export const ClusterSkillUploadSchema = z
 
 const SelectionsSchema = z.array(z.string().min(1).max(128)).max(MAX_CLUSTER_SKILL_SELECTIONS)
 const CommitSchema = z.string().regex(/^[a-f0-9]{40}$/, { message: 'must be a full lowercase SHA-1' })
+const BundleSha256Schema = z
+  .string()
+  .regex(/^[A-Za-z0-9+/]{43}=$/, { message: 'must be a base64 SHA-256' })
+  .refine((value) => Buffer.from(value, 'base64').length === 32, { message: 'must be a base64 SHA-256' })
 
 /** A source the daemon acquired and uploaded file by file. */
 export const ClusterSkillUploadedSourceSchema = z
@@ -178,10 +185,23 @@ export const GitSkillPlanSchema = z
         const problem = bundleUriProblem(value)
         if (problem) ctx.addIssue({ code: 'custom', message: `getUrl ${problem}` })
       })
+      .optional(),
+    // Only to a `skill-git-writeback-v1` shim: bundle this clone for write-back (§9) when its read calls for one.
+    writeBack: z
+      .object({
+        maxBytes: z.number().int().positive().max(MAX_BUNDLE_BYTES),
+        // The GET URL's bundle is older than the write-back age, so even a hit is a candidate.
+        stale: z.literal(true).optional()
+      })
+      .strict()
       .optional()
   })
   .strict()
   .refine((value) => !(value.keepInstalled && value.getUrl), 'a keepInstalled entry carries no getUrl')
+  .refine(
+    (value) => !value.writeBack || (!value.keepInstalled && value.ref !== undefined && isValidBranchRef(value.ref)),
+    'only a cloned branch Source may ask for write-back'
+  )
 
 export const ClusterSkillSourceSchema = z.union([ClusterSkillUploadedSourceSchema, GitSkillPlanSchema])
 
@@ -297,13 +317,18 @@ export const GitSkillSourceResultSchema = z
     leaves: z.array(z.string().min(1).max(128)).max(MAX_CLUSTER_SKILL_SELECTIONS)
   })
   .strict()
-/** A Git plan clone the shim kept for the daemon's asynchronous write-back (source-cache.md §9). */
+/** Why the shim bundled a clone: no GET URL, a bad-bundle fallback, or a hit on a bundle the daemon marked stale. */
+export const SkillWriteBackTriggerSchema = z.enum(['miss', 'fallback', 'stale'])
+/** A Git plan clone the shim bundled for the daemon's asynchronous write-back (source-cache.md §9), sent only when its plan asked. */
 export const SkillWriteBackCandidateSchema = z
   .object({
     sourceId: z.string().min(1).max(160),
     branch: z.string().refine(isValidBranchRef, 'must be a full refs/heads/* name'),
     commit: CommitSchema,
-    handle: z.uuid()
+    handle: z.uuid(),
+    bytes: z.number().int().positive().max(MAX_BUNDLE_BYTES),
+    sha256: BundleSha256Schema,
+    trigger: SkillWriteBackTriggerSchema
   })
   .strict()
 export const ClusterSkillReconcileResultSchema = z
@@ -426,8 +451,10 @@ export function budgetSkillPlanUrls<T extends Pick<ClusterSkillReconcile, 'sourc
   for (let index = sources.length - 1; index >= 0 && bytes > limit; index--) {
     const source = sources[index]!
     if (source.sourceKind !== 'git' || source.getUrl === undefined) continue
+    // Its pointer exists, so without the bundle it would only be rewritten: write-back goes with the URL.
     const withoutUrl = { ...source }
     delete withoutUrl.getUrl
+    delete withoutUrl.writeBack
     sources[index] = withoutUrl
     bytes -= Buffer.byteLength(JSON.stringify(source)) - Buffer.byteLength(JSON.stringify(withoutUrl))
   }
@@ -454,6 +481,7 @@ export type SkillCredentialWindowGrant = z.infer<typeof SkillCredentialWindowGra
 export type SkillSkipCode = z.infer<typeof SkillSkipCodeSchema>
 export type GitSkillSourceResult = z.infer<typeof GitSkillSourceResultSchema>
 export type SkillWriteBackCandidate = z.infer<typeof SkillWriteBackCandidateSchema>
+export type SkillWriteBackTrigger = z.infer<typeof SkillWriteBackTriggerSchema>
 export type ClusterSkillPrior = z.infer<typeof ClusterSkillPriorSchema>
 export type ClusterSkillPriorReply = z.infer<typeof ClusterSkillPriorReplySchema>
 export type ClusterSkillReceipt = z.infer<typeof ClusterSkillReceiptSchema>

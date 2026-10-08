@@ -6,6 +6,7 @@ import type { SkillSourceSnapshotLimits } from '../skills/skill-source-snapshot.
 import {
   SkillGitAbortedError,
   acquireSkillGitSource,
+  type SkillGitBundleOutcome,
   type SkillGitCredential,
   type SkillGitRunner
 } from './skill-git-acquire.js'
@@ -51,6 +52,10 @@ export type GitPlanOutcome =
       totalBytes: number
       cliSelections: string[]
       expectedLeaves: string[]
+      /** The clone's work tree and how it read the cache, kept until the reconcile ends for a write-back bundle. */
+      repo: string
+      bundle: SkillGitBundleOutcome
+      writeBackRef?: string
     }
   | { kind: 'keep'; plan: GitSkillPlan }
   | { kind: 'skipped'; plan: GitSkillPlan; code: SkillSkipCode; reason: string }
@@ -141,7 +146,10 @@ async function acquireOne(input: AcquireGitPlanInput, plan: GitSkillPlan, phase:
         fileCount: acquired.snapshot.fileCount,
         totalBytes: acquired.snapshot.totalBytes,
         cliSelections: selected.cliSelections,
-        expectedLeaves: selected.expectedLeaves
+        expectedLeaves: selected.expectedLeaves,
+        repo: acquired.repo,
+        bundle: acquired.bundle,
+        ...(acquired.writeBackRef ? { writeBackRef: acquired.writeBackRef } : {})
       }
     } catch (err) {
       deps.log?.warn(`skill git ${plan.sourceId}: selection failed: ${(err as Error).message}`)

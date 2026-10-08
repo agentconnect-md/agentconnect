@@ -5,8 +5,13 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { AgentSkillEntry } from '@agentconnect.md/protocol'
-import { describe, expect, it } from 'vitest'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { describe, expect, it, vi } from 'vitest'
 import type { ShimRequester } from '../src/shim/channels.js'
+import { ShimBundleClient } from '../src/shim/bundle-client.js'
+import { createBundleHandler } from '../src/shim/bundle-handler.js'
+import { prepareBundleStaging } from '../src/shim/bundle-staging.js'
 import { ClusterSkillClient } from '../src/shim/skill-client.js'
 import { runLocalSkillGit, type SkillGitRunner } from '../src/shim/skill-git-acquire.js'
 import { ClusterSkillHandler } from '../src/shim/skill-handler.js'
@@ -21,6 +26,8 @@ import {
 import type { SkillRefPlan } from '../src/skills/skill-ref-resolution.js'
 import { bundleKey, parseSourceCacheObjectKey, skillPointerKey, anonRepoId } from '../src/source-cache/keys.js'
 import { createSkillReadPlanner } from '../src/source-cache/read-plan.js'
+import { createSkillCachePlanner } from '../src/source-cache/skill-write-back.js'
+import { createSourceCacheWriter, type SourceCacheWriteOutcome } from '../src/source-cache/write-back.js'
 import type { ClusterSkillLedger } from '../src/store/cluster-skill-ledger.js'
 import { LocalStore, type SourceCacheObjectRow } from '../src/store/local-store.js'
 import { memoryStoreDatabase } from './store-support.js'
@@ -131,12 +138,24 @@ async function realStore(agentId = 'a') {
 }
 
 /** One sandbox: the real handler behind a requester that records every request, and its own store. */
-async function sandbox(w: World, name: string, limits = { maxFiles: 16_384, maxTotalBytes: 1024 ** 3 }, agentId = 'a') {
+async function sandbox(
+  w: World,
+  name: string,
+  limits = { maxFiles: 16_384, maxTotalBytes: 1024 ** 3 },
+  agentId = 'a',
+  options: { writeBack?: boolean } = {}
+) {
   const dir = join(w.root, 'sandboxes', name)
   const workspace = join(dir, 'workspace')
   const staging = join(dir, 'staging')
   await mkdir(workspace, { recursive: true })
   await mkdir(staging, { recursive: true, mode: 0o700 })
+  // A `skill-git-writeback-v1` shim: its bundle registry, staged into from the skill handler and driven over `bundle`.
+  const bundleStaging = join(dir, 'bundle-staging')
+  const bundles = options.writeBack
+    ? createBundleHandler({ workspaceRoot: workspace, stagingDir: bundleStaging, allowHttpUpload: true })
+    : undefined
+  if (bundles) prepareBundleStaging(bundleStaging)
   const handler = new ClusterSkillHandler({
     stagingRoot: staging,
     workspaceRoot: workspace,
@@ -148,7 +167,8 @@ async function sandbox(w: World, name: string, limits = { maxFiles: 16_384, maxT
       credentialHelper: '/nonexistent/gitcred-helper',
       credentialSocket: '/nonexistent/gitcred.sock'
     },
-    manifestLimits: limits
+    manifestLimits: limits,
+    ...(bundles ? { writeBack: { stage: bundles.stage, discard: (handle: string) => bundles.discard(handle) } } : {})
   })
   const requests: Array<Record<string, unknown>> = []
   let intercept: ((payload: Record<string, unknown>, reply: unknown) => unknown) | undefined
@@ -159,14 +179,19 @@ async function sandbox(w: World, name: string, limits = { maxFiles: 16_384, maxT
       return intercept ? intercept(payload as Record<string, unknown>, reply) : reply
     }
   }
+  const stager = bundles
+    ? new ShimBundleClient({ request: async (_capability, payload) => await bundles(payload) })
+    : undefined
   const client = (gitInPod: boolean): ClusterSkillClient => {
-    const c = new ClusterSkillClient(requester, true, true, true, gitInPod)
+    const c = new ClusterSkillClient(requester, true, true, true, gitInPod, gitInPod ? stager : undefined)
     Object.defineProperty(c, 'manifestLimits', { get: () => limits })
     return c
   }
   return {
     workspace,
     staging,
+    bundleStaging,
+    stop: () => bundles?.stop(),
     requests,
     client,
     intercept: (fn: typeof intercept) => (intercept = fn),
@@ -595,7 +620,7 @@ describe('sandbox skill reconcile: plan frame bound', () => {
           servesGitcred: true,
           windowAdmits: () => true,
           openWindow: () => undefined,
-          getUrl: async () => `https://cache.example/${'q'.repeat(2000)}`
+          cachePlan: async () => ({ getUrl: `https://cache.example/${'q'.repeat(2000)}` })
         }
       },
       {
@@ -699,7 +724,7 @@ describe('sandbox skill reconcile: cross-agent isolation', () => {
       // Agent A resolves the private Source with its own credential.
       const podA = await sandbox(w, 'a')
       await run(w, podA, 'pod', {
-        inPod: { getUrl: (entry, resolution) => reader.getUrl({ agentId: 'a', entry, resolution }) }
+        inPod: { cachePlan: async (entry, resolution) => reader.plan({ agentId: 'a', entry, resolution }) }
       })
       const planA = podA.gitPlans()[0]!.find((plan) => plan.sourceId.startsWith('agent:1:'))!
       expect(planA).toMatchObject({ plannedCommit: commitA, getUrl: expect.stringContaining(credBundle) })
@@ -723,7 +748,7 @@ describe('sandbox skill reconcile: cross-agent isolation', () => {
             servesGitcred: true,
             windowAdmits: () => true,
             openWindow: () => undefined,
-            getUrl: (entry, resolution) => reader.getUrl({ agentId: 'b', entry, resolution })
+            cachePlan: async (entry, resolution) => reader.plan({ agentId: 'b', entry, resolution })
           }
         },
         {
@@ -761,4 +786,151 @@ describe('sandbox skill reconcile: cross-agent isolation', () => {
       ).toContain('/anon/')
     })
   }, 120_000)
+})
+
+describe('sandbox skill reconcile: in-pod write-back (source-cache.md §9)', () => {
+  // A bucket behind fakes that accept a real upload: reserve, sign, PUT, HEAD, commit, retag and pointer, all recorded.
+  async function bucket() {
+    const uploads = new Map<string, Buffer>()
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = []
+      req.on('data', (chunk: Buffer) => chunks.push(chunk))
+      req.on('end', () => {
+        uploads.set(req.url!.slice(1), Buffer.concat(chunks))
+        res.writeHead(200).end()
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const calls: string[] = []
+    const outcomes: SourceCacheWriteOutcome[] = []
+    const store = {
+      async getSourceCacheObject() {
+        return undefined
+      },
+      async touchSourceCacheRead() {
+        return true
+      },
+      async reserveBundle(input: { key: string }) {
+        calls.push(`reserve ${input.key}`)
+        return { admitted: true as const, committedBytes: 0, pendingBytes: 0 }
+      },
+      async commitBundle(input: { key: string }) {
+        calls.push(`commit ${input.key}`)
+        return { committed: true as const, alreadyCommitted: false, bytes: 0 }
+      },
+      async setSourceCachePointer(input: { pointerKey: string; expectedTargetKey?: string | null }) {
+        calls.push(`pointer ${input.pointerKey} ${input.expectedTargetKey}`)
+        return { set: true as const, previousBundleKey: undefined }
+      }
+    }
+    const writer = createSourceCacheWriter({
+      store: () => store as never,
+      presigner: {
+        async presignPut(key, input) {
+          return {
+            method: 'PUT',
+            url: `${base}/${key}`,
+            headers: {
+              'content-length': String(input.contentLength),
+              'x-amz-checksum-sha256': input.checksumSha256,
+              'x-amz-tagging': 'ac-cache=pending'
+            },
+            expiresAt: 0
+          }
+        }
+      },
+      objects: {
+        async head(key) {
+          const body = uploads.get(key)
+          return body
+            ? {
+                exists: true,
+                contentLength: body.length,
+                checksumSha256: createHash('sha256').update(body).digest('base64')
+              }
+            : { exists: false }
+        },
+        async putTagging(key, tag) {
+          calls.push(`retag ${key} ${tag}`)
+        }
+      },
+      limits: { maxBundleBytes: 64 * 1024 * 1024, orgQuotaBytes: 1024 ** 3, pendingReservationSeconds: 3600 },
+      log: { debug: () => {}, info: () => {}, warn: () => {} },
+      onOutcome: (outcome) => outcomes.push(outcome)
+    })
+    const reads = createSkillReadPlanner({
+      store: () => store as never,
+      presigner: {
+        async presignGet(key) {
+          return { method: 'GET', url: `https://cache.example/${key}`, headers: {}, expiresAt: 0 }
+        }
+      },
+      orgForAgent: () => 'org-1',
+      log: { debug: () => {}, warn: () => {} }
+    })
+    const plan = createSkillCachePlanner({ reads, writer, maxBytes: 64 * 1024 * 1024 })
+    const cachePlan: InPodSkillDeps['cachePlan'] = (entry, resolution, options) =>
+      plan({ agentId: 'a', entry, resolution }, options)
+    const reserved = (): string[] =>
+      calls.filter((call) => call.startsWith('reserve ')).map((call) => call.split(' ')[1]!)
+    return { calls, outcomes, cachePlan, reserved, close: () => new Promise((resolve) => server.close(resolve)) }
+  }
+
+  it('writes each missed clone back in the class the daemon planned, after the ledger, without changing it', async () => {
+    await withWorld(async (w) => {
+      const plain = await sandbox(w, 'plain')
+      const pod = await sandbox(w, 'pod', undefined, 'a', { writeBack: true })
+      const b = await bucket()
+      try {
+        await run(w, plain, 'pod', { inPod: { cachePlan: b.cachePlan } })
+        await run(w, pod, 'pod', { inPod: { cachePlan: b.cachePlan } })
+
+        // The plan asked for exactly what the grant allows: write-back only on the granted pod.
+        expect(JSON.stringify(plain.gitPlans())).not.toContain('writeBack')
+        expect(pod.gitPlans()[0]!.map((source) => 'writeBack' in source)).toEqual([true, true])
+        await vi.waitFor(() => expect(b.outcomes).toHaveLength(2), { timeout: 30_000 })
+        expect(b.outcomes).toEqual([
+          expect.objectContaining({ kind: 'written', trigger: 'miss' }),
+          expect.objectContaining({ kind: 'written', trigger: 'miss' })
+        ])
+        expect(b.reserved().map((key) => parseSourceCacheObjectKey(key)?.repoClass)).toEqual(['anon', 'cred'])
+        expect(b.reserved()[1]).toContain('/cred/github:22/')
+        const anon = anonRepoId('https://github.com/acme/skills.git')
+        expect(b.calls.filter((call) => call.startsWith('pointer '))).toEqual([
+          `pointer ${skillPointerKey({ org: 'org-1', class: 'anon', repo: anon, ref: 'refs/heads/main' })} null`,
+          `pointer ${skillPointerKey({ org: 'org-1', class: 'cred', repo: 'github:22', ref: 'refs/heads/main' })} null`
+        ])
+        // Every handle is spent, and the ledger and installed bundles are what a pod without write-back has.
+        expect(await readdir(pod.bundleStaging)).toEqual([])
+        expect(await pod.store.ledger()).toEqual(await plain.store.ledger())
+        expect(await installed(pod.workspace)).toEqual(await installed(plain.workspace))
+      } finally {
+        pod.stop()
+        await b.close()
+      }
+    })
+  }, 180_000)
+
+  it('never writes a private Source back when no window credentialed its clone, nor asks its pod to bundle it', async () => {
+    await withWorld(async (w) => {
+      const pod = await sandbox(w, 'pod', undefined, 'a', { writeBack: true })
+      const b = await bucket()
+      try {
+        await run(w, pod, 'pod', { inPod: { cachePlan: b.cachePlan, openWindow: () => undefined } })
+        await vi.waitFor(async () => expect(await readdir(pod.bundleStaging)).toEqual([]), { timeout: 30_000 })
+        await vi.waitFor(() => expect(b.outcomes).toHaveLength(1), { timeout: 30_000 })
+        expect(b.reserved().map((key) => parseSourceCacheObjectKey(key)?.repoClass)).toEqual(['anon'])
+        const sent = pod.requests.find((request) => request.op === 'reconcile')!.sources as Array<{
+          sourceKind: string
+          writeBack?: unknown
+        }>
+        expect(sent.filter((source) => source.sourceKind === 'git')).toHaveLength(2)
+        expect(sent.filter((source) => source.writeBack)).toHaveLength(1)
+      } finally {
+        pod.stop()
+        await b.close()
+      }
+    })
+  }, 180_000)
 })

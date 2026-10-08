@@ -37,7 +37,8 @@ import {
   type ClusterSkillReceiptPage,
   type ClusterSkillSkippedSource,
   type GitSkillPlan,
-  type GitSkillSourceResult
+  type GitSkillSourceResult,
+  type SkillWriteBackCandidate
 } from './skill-protocol.js'
 import {
   acquireGitPlanSources,
@@ -45,6 +46,7 @@ import {
   type GitPlanOutcome,
   type SkillGitPlanDeps
 } from './skill-git-plan.js'
+import { stageSkillWriteBacks, type SkillWriteBackStaging } from './skill-git-writeback.js'
 import { DEFAULT_SHIM_PATHS } from './sandbox-paths.js'
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 
@@ -77,6 +79,8 @@ export interface ClusterSkillHandlerDeps {
   git?: Partial<SkillGitPlanDeps>
   /** The one manifest budget a Git plan reconcile charges; defaults to what a paging shim admits. */
   manifestLimits?: { maxFiles: number; maxTotalBytes: number }
+  /** The bundle handler's staging, present only when this shim advertises `skill-git-writeback-v1`. */
+  writeBack?: SkillWriteBackStaging
 }
 
 const sourceDirectory = (sourceId: string): string => createHash('sha256').update(sourceId).digest('hex')
@@ -338,6 +342,9 @@ export class ClusterSkillHandler {
     const gitSources: GitSkillSourceResult[] = []
     const gitStaging = (sourceId: string): string =>
       join(this.deps.stagingRoot, input.handle, sourceDirectory(sourceId))
+    // Handles staged for write-back; dropped again unless the reply that names them is built.
+    let writeBackCandidates: SkillWriteBackCandidate[] = []
+    let replied = false
     try {
       const replayingPublication = await hasSkillPublicationOperation(
         this.deps.workspaceRoot,
@@ -493,6 +500,19 @@ export class ClusterSkillHandler {
         publicationKey: input.replayKey,
         candidates
       })
+      // Bundled before the clones go, and only for a Source this run installed; a plan without `writeBack` stages nothing.
+      const notInstalled = new Set([...skipped, ...budgetDropped].map((entry) => entry.sourceId))
+      if (gitPlan && this.deps.writeBack) {
+        writeBackCandidates = await stageSkillWriteBacks({
+          outcomes: [...git.values()].filter(
+            (outcome): outcome is Extract<GitPlanOutcome, { kind: 'acquired' }> =>
+              outcome.kind === 'acquired' && !notInstalled.has(outcome.plan.sourceId)
+          ),
+          staging: this.deps.writeBack,
+          abort: mutationSignal,
+          ...(this.deps.git?.log ? { log: this.deps.git.log } : {})
+        })
+      }
       const reply = ClusterSkillReconcileResultSchema.parse(
         skillReplyFor(input, {
           roots: result.owned.map(ownedRoot),
@@ -500,19 +520,24 @@ export class ClusterSkillHandler {
           ...(skipped.length + budgetDropped.length > 0
             ? { skipped: inSourceOrder(input, [...skipped, ...budgetDropped]) }
             : {}),
-          ...(gitPlan ? { gitSources: inSourceOrder(input, gitSources) } : {})
+          ...(gitPlan ? { gitSources: inSourceOrder(input, gitSources) } : {}),
+          ...(writeBackCandidates.length > 0 ? { writeBackCandidates: inSourceOrder(input, writeBackCandidates) } : {})
         })
       )
       if (input.priorRootCount !== undefined) {
         operation.result = reply
+        replied = true
         return await this.receipt(
           { op: 'receipt', handle: input.handle, operationId: input.operationId, offset: 0 },
           context
         )
       }
       await this.discard(operation.handle)
-      return ClusterSkillReconcileReplySchema.parse(reply)
+      const sent = ClusterSkillReconcileReplySchema.parse(reply)
+      replied = true
+      return sent
     } finally {
+      if (!replied) for (const candidate of writeBackCandidates) this.deps.writeBack?.discard(candidate.handle)
       for (const cleanup of cleanups) cleanup()
       // A Git Source's clone never outlives its reconcile, whatever the outcome.
       await Promise.all(
@@ -678,11 +703,11 @@ const inSourceOrder = <T extends { sourceId: string }>(input: ClusterSkillReconc
   return [...rows].sort((a, b) => order.get(a.sourceId)! - order.get(b.sourceId)!)
 }
 
-// A presigned GET URL changes every run but not what installs, so it never moves the fingerprint.
+// A presigned GET URL or a write-back request changes per run but not what installs, so neither moves the fingerprint.
 const fingerprintSources = (sources: ClusterSkillReconcile['sources']): unknown[] =>
   sources.map((source) => {
-    if (source.sourceKind !== 'git' || source.getUrl === undefined) return source
-    const { getUrl: _getUrl, ...rest } = source
+    if (source.sourceKind !== 'git') return source
+    const { getUrl: _getUrl, writeBack: _writeBack, ...rest } = source
     return rest
   })
 

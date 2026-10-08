@@ -525,6 +525,7 @@ describe('cluster skill coordinator', () => {
     const resolution = { definitionDigest: DIGEST, resolvedCommit: COMMIT }
 
     function harness(reply: Record<string, unknown>) {
+      const discarded: string[] = []
       const hashes: string[] = []
       const commits: Array<{ ledger: unknown }> = []
       const requests: Array<Record<string, unknown>> = []
@@ -556,7 +557,13 @@ describe('cluster skill coordinator', () => {
         true,
         true,
         true,
-        true
+        true,
+        {
+          upload: async () => ({ bytes: 1, sha256: '' }),
+          discard: async (handle) => {
+            discarded.push(handle)
+          }
+        }
       )
       const reconcile = (extra: Record<string, unknown> = {}) =>
         new ClusterSkillCoordinator(store).reconcile({
@@ -568,7 +575,7 @@ describe('cluster skill coordinator', () => {
           client,
           ...extra
         })
-      return { hashes, commits, requests, reconcile }
+      return { hashes, commits, requests, reconcile, discarded }
     }
 
     it('sends the plan and window, uploads nothing, and maps the reply kind `agent` onto the plan', async () => {
@@ -640,23 +647,115 @@ describe('cluster skill coordinator', () => {
       await expect(foreign.reconcile()).rejects.toThrow(/unexpected Git source/)
     })
 
-    it('hands write-back candidates to their consumer and nothing else', async () => {
-      const candidate = {
+    describe('write-back candidates (source-cache.md §9)', () => {
+      const HANDLE = '0b5c3f8e-8d0a-4c4e-9a1e-0123456789ab'
+      const writeBackPlan = { ...plan, writeBack: { maxBytes: 1024 } }
+      const candidate = (extra: Record<string, unknown> = {}) => ({
         sourceId,
         branch: 'refs/heads/main',
         commit: COMMIT,
-        handle: '0b5c3f8e-8d0a-4c4e-9a1e-0123456789ab'
-      }
-      const h = harness({
+        handle: HANDLE,
+        bytes: 10,
+        sha256: Buffer.alloc(32, 1).toString('base64'),
+        trigger: 'miss',
+        ...extra
+      })
+      const installedReply = (candidates: unknown[], extra: Record<string, unknown> = {}) => ({
         roots: [receipt('.agents/skills/alpha')],
         conflicts: [],
         gitSources: [{ sourceId, resolvedCommit: COMMIT, leaves: ['alpha'] }],
-        writeBackCandidates: [candidate]
+        writeBackCandidates: candidates,
+        ...extra
       })
-      const seen: unknown[] = []
-      const ledger = await h.reconcile({ onWriteBackCandidates: (c: unknown[]) => seen.push(...c) })
-      expect(seen).toEqual([candidate])
-      expect(ledger).not.toHaveProperty('writeBackCandidates')
+
+      it('hands a usable candidate on only after the ledger commits, leaving the ledger as it was', async () => {
+        const h = harness(installedReply([candidate()]))
+        const seen: Array<{ candidate: unknown; committed: number }> = []
+        const ledger = await h.reconcile({
+          sources: [writeBackPlan],
+          onWriteBackCandidates: (c: unknown[]) =>
+            seen.push(...c.map((one) => ({ candidate: one, committed: h.commits.length })))
+        })
+        expect(seen).toEqual([{ candidate: candidate(), committed: 1 }])
+        expect(ledger).toEqual({ roots: [receipt('.agents/skills/alpha')], gitResolutions: [resolution] })
+        expect(h.discarded).toEqual([])
+      })
+
+      it.each([
+        ['its plan never asked', plan, candidate()],
+        ['it names another branch', writeBackPlan, candidate({ branch: 'refs/heads/other' })],
+        ['it names another commit', writeBackPlan, candidate({ commit: 'e'.repeat(40) })]
+      ])('discards a candidate when %s', async (_label, sent, offered) => {
+        const h = harness(installedReply([offered]))
+        const seen: unknown[] = []
+        await h.reconcile({ sources: [sent], onWriteBackCandidates: (c: unknown[]) => seen.push(...c) })
+        expect(seen).toEqual([])
+        expect(h.discarded).toEqual([HANDLE])
+      })
+
+      it('discards the candidate of a skipped Source and of one whose reported commit differs', async () => {
+        const skipped = harness(
+          installedReply([candidate()], {
+            roots: [],
+            gitSources: [],
+            skipped: [{ sourceId, reason: 'x', code: 'cli_failed' }]
+          })
+        )
+        const seen: unknown[] = []
+        await skipped.reconcile({ sources: [writeBackPlan], onWriteBackCandidates: (c: unknown[]) => seen.push(...c) })
+        const mismatched = harness(
+          installedReply([candidate()], {
+            gitSources: [{ sourceId, resolvedCommit: 'f'.repeat(40), leaves: ['alpha'] }]
+          })
+        )
+        await mismatched.reconcile({
+          sources: [writeBackPlan],
+          onWriteBackCandidates: (c: unknown[]) => seen.push(...c)
+        })
+        expect(seen).toEqual([])
+        expect([...skipped.discarded, ...mismatched.discarded]).toEqual([HANDLE, HANDLE])
+      })
+
+      it('discards every handle when the reconcile fails after the reply, so a fallback leaves none staged', async () => {
+        const conflicted = harness(installedReply([candidate()], { conflicts: ['.agents/skills/alpha'] }))
+        const seen: unknown[] = []
+        await expect(
+          conflicted.reconcile({ sources: [writeBackPlan], onWriteBackCandidates: (c: unknown[]) => seen.push(...c) })
+        ).rejects.toThrow(/conflict/)
+        const foreign = harness(installedReply([candidate({ sourceId: 'agent:9' })]))
+        await expect(foreign.reconcile({ sources: [writeBackPlan] })).rejects.toThrow(/unexpected source/)
+        expect(seen).toEqual([])
+        expect([...conflicted.discarded, ...foreign.discarded]).toEqual([HANDLE, HANDLE])
+      })
+
+      it('discards the handles a refused reply names, before the refusal propagates', async () => {
+        const refused = harness({ ...installedReply([candidate()]), roots: 'not a list' })
+        await expect(refused.reconcile({ sources: [writeBackPlan] })).rejects.toThrow()
+        expect(refused.discarded).toEqual([HANDLE])
+      })
+
+      it('discards without a consumer, and when the consumer throws the committed reconcile still stands', async () => {
+        const unconsumed = harness(installedReply([candidate()]))
+        await unconsumed.reconcile({ sources: [writeBackPlan] })
+        expect(unconsumed.discarded).toEqual([HANDLE])
+        const throwing = harness(installedReply([candidate()]))
+        const ledger = await throwing.reconcile({
+          sources: [writeBackPlan],
+          onWriteBackCandidates: () => {
+            throw new Error('consumer broke')
+          }
+        })
+        expect(ledger.roots).toHaveLength(1)
+        expect(throwing.discarded).toEqual([HANDLE])
+      })
+
+      it('never moves the desired hash with a write-back request', async () => {
+        const h = harness(installedReply([]))
+        await h.reconcile()
+        await h.reconcile({ sources: [writeBackPlan] })
+        await h.reconcile({ sources: [{ ...writeBackPlan, writeBack: { maxBytes: 1024, stale: true } }] })
+        expect(new Set(h.hashes).size).toBe(1)
+      })
     })
 
     it('journals a fallback under the failed run’s desired hash', async () => {
