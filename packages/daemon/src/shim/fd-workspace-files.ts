@@ -35,6 +35,8 @@ import { isAbsolute, relative, sep } from 'node:path'
 import {
   pageWorkspaceEntries,
   sliceWorkspaceRead,
+  rawWorkspaceRead,
+  readWorkspaceSlice,
   workspaceEditBytes,
   workspaceEntryOf,
   WorkspaceConflictError,
@@ -212,6 +214,9 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
             mtime
           }
 
+          if (req.encoding === 'base64') {
+            return { ...head, ...rawWorkspaceRead(await readWorkspaceSlice(file, req, size), req, size) }
+          }
           const sniffLen = Math.min(SNIFF_BYTES, size)
           if (sniffLen > 0) {
             const sniff = Buffer.alloc(sniffLen)
@@ -219,13 +224,7 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
             if (sniff.subarray(0, bytesRead).includes(0)) return { ...head, encoding: 'none' as const }
           }
 
-          const want = Math.min(req.limit, Math.max(0, size - req.offset))
-          let slice = Buffer.alloc(0)
-          if (want > 0) {
-            const buf = Buffer.alloc(want)
-            const { bytesRead } = await file.read(buf, 0, want, req.offset)
-            slice = buf.subarray(0, bytesRead)
-          }
+          const slice = await readWorkspaceSlice(file, req, size)
           return { ...head, encoding: 'utf8' as const, ...sliceWorkspaceRead(slice, req, size) }
         } finally {
           await file.close()

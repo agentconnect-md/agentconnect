@@ -93,7 +93,8 @@ export const WorkspaceReadReq = z.object({
   repo: z.string().min(1).optional(),
   path: z.string().min(1), // workspace-relative POSIX path to a file
   offset: z.number().int().nonnegative().default(0), // byte offset
-  limit: z.number().int().positive().max(65536).default(65536) // byte count per slice (64 KiB, see docblock)
+  limit: z.number().int().positive().max(65536).default(65536), // byte count per slice (64 KiB, see docblock)
+  encoding: z.literal('base64').optional() // ask for raw bytes as base64 (any file, no binary sniff); needs `workspace-raw-read-v1`
 })
 export type WorkspaceReadReq = z.infer<typeof WorkspaceReadReq>
 
@@ -106,8 +107,8 @@ export const WorkspaceReadContent = z.object({
   type: z.enum(['file', 'dir']).optional(), // what the path IS; 'dir' ⇒ no content (absent from an older daemon)
   size: z.number().int().nonnegative().optional(),
   mtime: z.string().optional(), // RFC3339
-  encoding: z.enum(['utf8', 'none']).optional(), // 'none' ⇒ binary detected, content omitted
-  content: z.string().optional(), // utf8 text slice
+  encoding: z.enum(['utf8', 'none', 'base64']).optional(), // 'none' ⇒ binary detected, content omitted; 'base64' ⇒ raw bytes, as asked
+  content: z.string().optional(), // utf8 text slice, or base64 bytes when `encoding:'base64'`
   offset: z.number().int().nonnegative().optional(), // byte offset this slice starts at
   nextOffset: z.number().int().nonnegative().optional(), // byte offset to request next (offset + bytes in this slice)
   truncated: z.boolean().optional() // true ⇒ nextOffset < size (more bytes remain)

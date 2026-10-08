@@ -17,7 +17,9 @@ import { escapeHtml, highlight, languageLabel, linkifyHtml, loadHljs, splitHtmlL
 import {
   ApiError,
   fetchWorkspaceFile,
+  fetchWorkspaceFileBlob,
   fetchWorkspaceGitDiff,
+  WorkspaceRawReadUnsupportedError,
   stageWorkspacePaths,
   unstageWorkspacePaths,
   type WorkspaceDiffScope,
@@ -104,6 +106,36 @@ function readNoticeText(status: number | null, code: string | null, scoped: bool
   }
   if (status === 400) return 'The daemon could not read that path.'
   return "Couldn't read the file — the owning daemon may be offline. Workspace files live only on that machine and are read live from it, so they are unavailable while it is disconnected."
+}
+
+// Raster formats a browser draws from a blob; SVG is text and keeps the code view.
+const IMAGE_TYPES: Record<string, string> = {
+  png: 'image/png',
+  apng: 'image/apng',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon'
+}
+const MAX_IMAGE_PREVIEW_BYTES = 20 * 1024 * 1024
+
+/** The MIME type a previewable image path names, or null. */
+export function imageTypeOf(name: string): string | null {
+  const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : ''
+  return IMAGE_TYPES[ext] ?? null
+}
+
+/** One raw-bytes read behind an image preview, keyed by the file revision it describes. */
+interface ImageRead {
+  key: string
+  blob: Blob | null
+  url: string | null
+  err: string | null
+  width?: number
+  height?: number
 }
 
 const PILL_BASE =
@@ -280,7 +312,80 @@ export function SessionViewer({
 
   const name = path.split('/').at(-1) ?? path
   const dir = path.slice(0, Math.max(0, path.length - name.length - 1))
-  const isText = file?.exists === true && file.encoding === 'utf8'
+  const imageType = imageTypeOf(name)
+  const isImage = mode === 'file' && file?.exists === true && file.type === 'file' && imageType !== null
+  const isText = file?.exists === true && file.encoding === 'utf8' && imageType === null
+  const rawFailureText = (e: unknown) =>
+    e instanceof WorkspaceRawReadUnsupportedError || codeOf(e) === 'DAEMON_FEATURE_MISSING'
+      ? t('rawReadUnsupported')
+      : e instanceof ApiError
+        ? readNoticeText(statusOf(e), codeOf(e), Boolean(sessionId))
+        : msg(e)
+
+  // An image's bytes are read raw once the text read has said what the path is; the key fences an answer to the revision it was asked for.
+  const imageKey = isImage ? [agentId, sessionId ?? '', repo ?? '', path, file?.mtime ?? ''].join('\n') : null
+  const previewable = isImage && (file?.size ?? 0) <= MAX_IMAGE_PREVIEW_BYTES
+  const [image, setImage] = useState<ImageRead | null>(null)
+  useEffect(() => {
+    if (!imageKey || !previewable) return
+    let active = true
+    let url: string | null = null
+    setImage({ key: imageKey, blob: null, url: null, err: null })
+    fetchWorkspaceFileBlob(agentId, {
+      path,
+      ...(sessionId ? { sessionId } : {}),
+      ...(repo ? { repo } : {}),
+      ...(imageType ? { type: imageType } : {}),
+      maxBytes: MAX_IMAGE_PREVIEW_BYTES
+    }).then(
+      (blob) => {
+        if (!active) return
+        url = URL.createObjectURL(blob)
+        setImage({ key: imageKey, blob, url, err: null })
+      },
+      (e) => {
+        if (active) setImage({ key: imageKey, blob: null, url: null, err: rawFailureText(e) })
+      }
+    )
+    return () => {
+      active = false
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [imageKey, previewable])
+  const currentImage = image && image.key === imageKey ? image : null
+
+  // Download pulls the raw bytes on demand; a loaded preview's blob is reused instead of read twice.
+  const [downloading, setDownloading] = useState(false)
+  const [downloadErr, setDownloadErr] = useState<string | null>(null)
+  const canDownload = !(file && (!file.exists || file.type === 'dir'))
+  const download = async () => {
+    if (downloading) return
+    setDownloading(true)
+    setDownloadErr(null)
+    try {
+      const blob =
+        currentImage?.blob ??
+        (await fetchWorkspaceFileBlob(agentId, {
+          path,
+          ...(sessionId ? { sessionId } : {}),
+          ...(repo ? { repo } : {}),
+          ...(imageType ? { type: imageType } : {})
+        }))
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = name
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      // Revoked after the click has handed the URL to the download manager.
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) {
+      setDownloadErr(rawFailureText(e))
+    } finally {
+      setDownloading(false)
+    }
+  }
   const isMd = MARKDOWN_FILE_RE.test(name)
   const [mdView, setMdView] = useState<'preview' | 'code'>('preview')
   const showMarkdown = isMd && isText && mdView === 'preview'
@@ -332,7 +437,16 @@ export function SessionViewer({
     ? [languageLabel(name), file?.truncated ? `first ${lineCount}` : lineCount, formatFileSize(file?.size ?? null)]
         .filter(Boolean)
         .join(' · ')
-    : ''
+    : isImage
+      ? [
+          currentImage?.width && currentImage.height ? `${currentImage.width} × ${currentImage.height}` : '',
+          formatFileSize(file?.size ?? null)
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : file?.exists && file.type === 'file'
+        ? formatFileSize(file.size)
+        : ''
   // In Diff mode the same slot carries what CHANGED, counted from the rows on screen rather than from the git-status row: that row counts both sides of the index against HEAD, while this pane shows one scope of one path, so its numbers would disagree with the diff under them.
   const diffMeta =
     parsed && (parsed.additions > 0 || parsed.deletions > 0) ? (
@@ -456,6 +570,45 @@ export function SessionViewer({
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
           <Icon name="folder-open" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
           <span>{t('folderPath')}</span>
+        </div>
+      )
+    }
+    if (isImage) {
+      if (!previewable) {
+        return (
+          <div className="flex items-center gap-2 p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            <Icon name="image" size={15} />
+            {t('imageTooLarge', { size: formatFileSize(file?.size ?? null) })}
+          </div>
+        )
+      }
+      if (currentImage?.err) {
+        return (
+          <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+            <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
+            <span>{currentImage.err}</span>
+          </div>
+        )
+      }
+      if (!currentImage?.url) {
+        return (
+          <div className="flex flex-1 items-center justify-center py-10">
+            <Spinner size={30} />
+          </div>
+        )
+      }
+      const loaded = currentImage
+      return (
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4" data-viewer-image="">
+          <img
+            src={loaded.url ?? undefined}
+            alt={name}
+            className="max-h-full max-w-full object-contain"
+            onLoad={(event) => {
+              const { naturalWidth: width, naturalHeight: height } = event.currentTarget
+              setImage((current) => (current && current.key === loaded.key ? { ...current, width, height } : current))
+            }}
+          />
         </div>
       )
     }
@@ -601,6 +754,20 @@ export function SessionViewer({
             <span className="max-desktop:hidden">{mode === 'staged' ? t('unstageFile') : t('stageFile')}</span>
           </button>
         ) : null}
+        {canDownload ? (
+          <button
+            type="button"
+            data-viewer-download=""
+            className="dsbtn dsbtn-secondary xs flex-none disabled:pointer-events-none disabled:opacity-50"
+            disabled={downloading}
+            title={t('downloadTitle')}
+            aria-label={t('downloadTitle')}
+            onClick={() => void download()}
+          >
+            {downloading ? <Spinner size={12} /> : <Icon name="download" size={13} />}
+            <span className="max-desktop:hidden">{t('download')}</span>
+          </button>
+        ) : null}
         {meta ? (
           <span className="mono flex-none text-[11px] font-normal text-(--text-tertiary) max-desktop:hidden">
             {meta}
@@ -634,6 +801,16 @@ export function SessionViewer({
         >
           <Icon name="triangle-alert" size={14} color="var(--red-600)" className="mt-[2px] flex-none" />
           <span>{moveErr}</span>
+        </div>
+      ) : null}
+
+      {downloadErr ? (
+        <div
+          data-viewer-download-error=""
+          className="flex flex-none items-start gap-[6px] border-t border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--red-600)"
+        >
+          <Icon name="triangle-alert" size={14} color="var(--red-600)" className="mt-[2px] flex-none" />
+          <span>{downloadErr}</span>
         </div>
       ) : null}
 

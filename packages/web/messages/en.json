@@ -462,7 +462,11 @@
       "diffTruncated": "This diff has more lines than the viewer draws — only its first part is shown.",
       "malformedDiff": "Part of this diff is shown raw — its hunks are not two-way (a merge conflict, usually). Counts cover only the readable parts.",
       "preview": "Preview",
-      "code": "Code"
+      "code": "Code",
+      "download": "Download",
+      "downloadTitle": "Download this file",
+      "imageTooLarge": "Image too large to preview ({size}) — download it instead.",
+      "rawReadUnsupported": "This agent runs a daemon version that cannot read raw file bytes. Update the agent to preview or download it."
     },
     "list": {
       "allAgents": "All agents",

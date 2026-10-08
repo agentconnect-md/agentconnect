@@ -46,7 +46,8 @@ const ReadReqSchema = z.object({
   path: z.string(),
   offset: z.number().int().nonnegative(),
   limit: z.number().int().positive().max(65_536),
-  sessionId: z.string().optional()
+  sessionId: z.string().optional(),
+  encoding: z.literal('base64').optional()
 })
 
 const WriteReqSchema = z.object({

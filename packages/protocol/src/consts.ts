@@ -74,6 +74,9 @@ export const WORKSPACE_SESSION_READ_FEATURE = 'workspace-session-read-v1'
  * and would answer for the PRIMARY workspace, which is the wrong repository's files. */
 export const WORKSPACE_REPO_SCOPE_FEATURE = 'workspace-repo-scope-v1'
 
+/** Daemon answers `workspace/read` with `encoding:'base64'` raw byte slices when asked, so the console can preview images and download any file; an older daemon strips the field and withholds binary bytes. */
+export const WORKSPACE_RAW_READ_FEATURE = 'workspace-raw-read-v1'
+
 /** Daemon serves the console's git review reads — `workspace/gitdiff`,
  * `workspace/gitlog`, and per-file `additions`/`deletions` on `workspace/gitstatus`.
  * The CP must check this before sending either new frame: an older daemon ignores

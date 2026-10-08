@@ -59,6 +59,7 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
+  WORKSPACE_RAW_READ_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -3717,7 +3718,7 @@ export function agentRoutes(deps: HttpDeps) {
 
     // Workspace file view: proxy one byte slice live from the owning daemon
     // (64 KiB default; the UI pages with `offset` while `truncated`). A missing
-    // file is data (`exists:false`); binary files come back `encoding:'none'`.
+    // file is data (`exists:false`); binary files come back `encoding:'none'` unless raw bytes are asked for.
     r.get(
       '/agents/:id/workspace/file',
       {
@@ -3725,7 +3726,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Read a workspace file',
           description:
-            'Proxy one byte slice of a file live from the owning daemon (64 KiB default; page with offset while truncated). Pass sessionId to read an authorized isolated session worktree. A missing file is data (exists:false); binary files come back encoding:none. Pass repo (owner/repo) to address one of the agent’s authorized additional repositories instead of its primary workspace; an unauthorized name reads 404, and a daemon too old to scope by repository yields 409.',
+            'Proxy one byte slice of a file live from the owning daemon (64 KiB default; page with offset while truncated). Pass sessionId to read an authorized isolated session worktree. A missing file is data (exists:false); binary files come back encoding:none. Pass encoding=base64 to read any file’s raw bytes as base64 slices (image previews and downloads); a daemon too old to serve them yields 409 DAEMON_FEATURE_MISSING. Pass repo (owner/repo) to address one of the agent’s authorized additional repositories instead of its primary workspace; an unauthorized name reads 404, and a daemon too old to scope by repository yields 409.',
           operationId: 'readAgentWorkspaceFile',
           params: IdParam,
           querystring: WorkspaceFileQueryDto,
@@ -3748,6 +3749,19 @@ export function agentRoutes(deps: HttpDeps) {
         }
         if (!(await requireSessionWorkspaceRead(reply, agent.orgId, agent.daemonId, req.query.sessionId))) return
         if (!(await requireRepoScope(reply, agent.orgId, agent.daemonId, req.query.repo))) return
+        // An older daemon strips `encoding` and would answer a binary file with no bytes, which reads as an empty download.
+        if (
+          req.query.encoding &&
+          !(await requireDaemonFeature(
+            reply,
+            agent.orgId,
+            agent.daemonId,
+            WORKSPACE_RAW_READ_FEATURE,
+            'this agent version cannot read raw file bytes; upgrade its daemon'
+          ))
+        ) {
+          return
+        }
 
         try {
           const rep = await deps.control.workspaceRead(agent.daemonId, {
@@ -3756,7 +3770,8 @@ export function agentRoutes(deps: HttpDeps) {
             ...(req.query.repo ? { repo: req.query.repo } : {}),
             path: req.query.path,
             offset: req.query.offset ?? 0,
-            limit: req.query.limit ?? 65536
+            limit: req.query.limit ?? 65536,
+            ...(req.query.encoding ? { encoding: req.query.encoding } : {})
           })
           return toWorkspaceFileDto(rep)
         } catch (err) {

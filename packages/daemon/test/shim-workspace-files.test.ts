@@ -69,6 +69,20 @@ describe('the shim read capability', () => {
     expect(content).toMatchObject({ exists: true, type: 'file', encoding: 'utf8', content: '# hello\nsecond line\n' })
   })
 
+  it('carries a raw-bytes read across the channel as base64', async () => {
+    const { mount, checkout } = volume()
+    const bytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x57, 0x45, 0x42, 0x50])
+    writeFileSync(join(checkout, 'shot.webp'), bytes)
+    const reply = await handlerFor(mount)('read', {
+      op: 'read',
+      root: checkout,
+      req: { agentId: AGENT, path: 'shot.webp', offset: 0, limit: 65_536, encoding: 'base64' }
+    })
+    const content = (WorkspaceFilesReplySchema.parse(reply) as { ok: true; value: WorkspaceReadContent }).value
+    expect(content).toMatchObject({ exists: true, encoding: 'base64', size: 9, truncated: false })
+    expect(Buffer.from(content.content!, 'base64')).toEqual(bytes)
+  })
+
   it('refuses a root outside the sandbox workspace, whatever the daemon asked for', async () => {
     const { mount } = volume()
     // The daemon's own root resolution is not a control on this side: this is the check that stops a

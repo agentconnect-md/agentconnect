@@ -396,6 +396,10 @@ export const localWorkspaceFiles: WorkspaceFiles = {
     const size = opened.size
     const mtime = opened.mtime.toISOString()
     try {
+      if (req.encoding === 'base64') {
+        const head = { agentId: req.agentId, path: req.path, exists: true, type: 'file' as const, size, mtime }
+        return { ...head, ...rawWorkspaceRead(await readWorkspaceSlice(fh, req, size), req, size) }
+      }
       // Binary detection: NUL byte anywhere in the first 8 KiB ⇒ no content.
       const sniffLen = Math.min(SNIFF_BYTES, size)
       if (sniffLen > 0) {
@@ -418,13 +422,7 @@ export const localWorkspaceFiles: WorkspaceFiles = {
       // reply fits the frame budget and ends on a UTF-8 boundary. `limit` is a
       // ceiling; the slice may be shorter. `nextOffset` (not a client-side
       // recount of `content`) is the authoritative next offset.
-      const want = Math.min(req.limit, Math.max(0, size - req.offset))
-      let slice = Buffer.alloc(0)
-      if (want > 0) {
-        const buf = Buffer.alloc(want)
-        const { bytesRead } = await fh.read(buf, 0, want, req.offset)
-        slice = buf.subarray(0, bytesRead)
-      }
+      const slice = await readWorkspaceSlice(fh, req, size)
 
       return {
         agentId: req.agentId,
@@ -636,6 +634,35 @@ export function sliceWorkspaceRead(
   const fitted = fitToBudget(slice, utf8Boundary(slice, slice.length))
   const nextOffset = req.offset + fitted.end
   return { content: fitted.content, offset: req.offset, nextOffset, truncated: nextOffset < size }
+}
+
+/** Up to `req.limit` bytes from `req.offset`; shared by the text and raw reads so both page the same way. */
+export async function readWorkspaceSlice(
+  fh: { read(buf: Buffer, off: number, len: number, pos: number): Promise<{ bytesRead: number }> },
+  req: { offset: number; limit: number },
+  size: number
+): Promise<Buffer> {
+  const want = Math.min(req.limit, Math.max(0, size - req.offset))
+  if (want === 0) return Buffer.alloc(0)
+  const buf = Buffer.alloc(want)
+  const { bytesRead } = await fh.read(buf, 0, want, req.offset)
+  return buf.subarray(0, bytesRead)
+}
+
+/** A raw slice as base64: 64 KiB encodes to ~85 KiB, well inside the frame budget, so no shrinking is needed. */
+export function rawWorkspaceRead(
+  slice: Buffer,
+  req: { offset: number },
+  size: number
+): { encoding: 'base64'; content: string; offset: number; nextOffset: number; truncated: boolean } {
+  const nextOffset = req.offset + slice.length
+  return {
+    encoding: 'base64',
+    content: slice.toString('base64'),
+    offset: req.offset,
+    nextOffset,
+    truncated: nextOffset < size
+  }
 }
 
 /** The entry a dirent becomes on the wire, without its size/mtime — the caller adds those, since only
