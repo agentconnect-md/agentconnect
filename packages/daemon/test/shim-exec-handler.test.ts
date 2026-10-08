@@ -495,18 +495,17 @@ describe('sandbox exec handler', () => {
     expect(result.code, result.stderr).toBe(0)
   })
 
-  it('enumerates and deletes refs/bundles with show-ref and update-ref -d', async () => {
+  it('enumerates and deletes refs/bundles with rev-parse --glob and update-ref -d', async () => {
     // Both the pre-2.50 and the 2.50+ imported-ref layouts are cleaned by listing, never by a fixed name.
     const root = repository()
     execFileSync('git', ['update-ref', 'refs/bundles/main', 'HEAD'], { cwd: root })
     execFileSync('git', ['update-ref', 'refs/bundles/heads/main', 'HEAD'], { cwd: root })
     const execute = handler(root)
     const listBundleRefs = async (): Promise<string[]> => {
-      const listed = (await execute('exec', { tool: 'git', args: ['show-ref'] })) as GitExecResult
-      return listed.stdout
-        .split('\n')
-        .map((line) => line.split(' ')[1] ?? '')
-        .filter((ref) => ref.startsWith('refs/bundles/'))
+      const args = ['rev-parse', '--symbolic-full-name', '--glob=refs/bundles/*']
+      const listed = (await execute('exec', { tool: 'git', args })) as GitExecResult
+      expect(listed.code, listed.stderr).toBe(0)
+      return listed.stdout.split('\n').filter(Boolean)
     }
     const found = await listBundleRefs()
     expect(found.sort()).toEqual(['refs/bundles/heads/main', 'refs/bundles/main'])
