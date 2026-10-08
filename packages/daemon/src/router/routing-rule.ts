@@ -16,7 +16,13 @@ import {
   type ResolvedRoutedChannel
 } from '../decisions/bundle.js'
 import type { ActivationRule } from '@agentconnect.md/activation-policy'
-import type { ChannelSessionMode, PlaceTrustLevel, RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
+import {
+  manifestFor,
+  type ChannelSessionMode,
+  type PlaceTrustLevel,
+  type RouteAssign,
+  type RouteUpdate
+} from '@agentconnect.md/protocol'
 
 export type RoutingMatch = BindMatch
 
@@ -34,9 +40,12 @@ export interface RoutingRule extends ActivationRule {
 /** The platform-independent routing bits of an Integration (§6.4 core envelope) plus the bot's own id. */
 export function integrationRouting(int: Integration): {
   staticBotUserId?: string
+  platform: string
   bindRules: BindRuleConfig[]
   mutedChannels: string[]
   gated: boolean
+  /** The bot's conversation defaults where a kind is Off — see {@link conversationAdmitted}. */
+  offByDefault?: { channel: boolean; dm: boolean }
   /** The enabled By decision gate for a channel with its resolved definition, or undefined. */
   decisionBindingFor(channel: string): ResolvedDecisionGate | undefined
   /** Whether the channel is By decision: a bundle binding (enabled or not) or a decision bind rule covering it. */
@@ -46,13 +55,15 @@ export function integrationRouting(int: Integration): {
   /** The bot router this daemon hosts for this integration, if any. */
   sharedBotRouting(): ResolvedDecisionBundle['sharedBotRouting']
 } {
-  const { bindRules, mutedChannels, gated, decisions } = integrationCore(int)
+  const { bindRules, mutedChannels, gated, offByDefault, decisions } = integrationCore(int)
   const bundle = resolveDecisionBundle(decisions)
   return {
     staticBotUserId: configuredBotSelfId(int),
+    platform: int.platform,
     bindRules,
     mutedChannels,
     gated,
+    ...(offByDefault ? { offByDefault } : {}),
     decisionBindingFor: (channel) => bundle.gates.get(channel),
     routingFor: (channel) => bundle.routed.get(channel),
     sharedBotRouting: () => bundle.sharedBotRouting,
@@ -78,24 +89,33 @@ export function conversationTrustLevel(int: Integration, channel: string): Place
 }
 
 /**
- * Is this conversation open to `int` at all? Two independent fences, both applying
+ * Is this conversation open to `int` at all? Three independent fences, all applying
  * to the channel coordinate (the enclosing configurable channel on every platform):
  *
  *  - Off — the operator muted this channel. Applies to every integration.
  *  - Gating (resource-visibility.md §14) — a restricted agent's integration admits
  *    ONLY conversations that carry a scoped rule, so an unknown one is refused too.
+ *  - The bot's conversation defaults (§14.2) — where the default for the conversation's
+ *    kind is Off, the same scoped-rule admission applies to that kind; a bare id is
+ *    classified by the platform's manifest and reads as a room without a DM signal.
  *
  * The routing ladder enforces both through the rule set itself; this is for the
  * paths that resolve a target OUTSIDE it (control commands, message shortcuts, the
  * relay's pre-addressed hand-off), which would otherwise reach a silenced channel.
  */
 export function conversationAdmitted(
-  routing: Pick<ReturnType<typeof integrationRouting>, 'bindRules' | 'mutedChannels' | 'gated'>,
+  routing: Pick<ReturnType<typeof integrationRouting>, 'bindRules' | 'mutedChannels' | 'gated'> &
+    Partial<Pick<ReturnType<typeof integrationRouting>, 'platform' | 'offByDefault'>>,
   channel: string
 ): boolean {
   const covers = (candidate: string | undefined): boolean => candidate === channel
   if (routing.mutedChannels.some((muted) => covers(muted))) return false
-  return !routing.gated || routing.bindRules.some((rule) => covers(rule.channel))
+  const scoped = (): boolean => routing.bindRules.some((rule) => covers(rule.channel))
+  if (routing.gated) return scoped()
+  const off = routing.offByDefault
+  if (!off) return true
+  const dm = manifestFor(routing.platform ?? '').dmChannelPattern?.test(channel) ?? false
+  return (dm ? off.dm : off.channel) ? scoped() : true
 }
 
 /** Stored CP-layer rule — integration resolved lazily at merge time. */

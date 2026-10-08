@@ -251,6 +251,11 @@ export const IntegrationCoreEnvelope = z.object({
   mutedChannels: z.array(z.string()).default([]),
   gated: z.boolean().default(false),
   sessionModes: z.array(IntegrationSessionMode).default([]),
+  // The bot's conversation defaults where a kind is Off (`BotConversationDefaults`): that kind's
+  // unscoped default rule is withheld and its enabled rows ride as scoped rules, so a conversation
+  // no row has reached yet matches nothing. Read by the daemon's out-of-ladder admission; a
+  // relay-managed spec carries none, the relay fences those. Absent ⇒ open, today's behaviour.
+  offByDefault: z.object({ channel: z.boolean(), dm: z.boolean() }).optional(),
   // Conversations the platform detected as external (assistant-mode.md §5.3); every other enabled one is internal.
   externalChannels: z.array(z.string()).optional(),
   // Emitted unconditionally and stripped by readers that predate it; an empty bundle clears every binding.

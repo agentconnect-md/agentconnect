@@ -436,6 +436,29 @@ describe('conversationAdmitted', () => {
     })
     expect(conversationAdmitted(r, 'C1')).toBe(false)
   })
+
+  // §14.2: the bot's conversation defaults fence by kind, classifying a bare id by the manifest.
+  it('admits a room only through a scoped rule when channels default to Off; DMs stay open', () => {
+    const r = routing({
+      platform: 'slack',
+      offByDefault: { channel: true, dm: false },
+      bindRules: [{ channel: 'C1', match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
+    })
+    expect(conversationAdmitted(r, 'C1')).toBe(true)
+    expect(conversationAdmitted(r, 'C2')).toBe(false)
+    expect(conversationAdmitted(r, 'D9')).toBe(true)
+  })
+
+  it('closes DMs when they default to Off, leaving rooms open', () => {
+    const r = routing({ platform: 'slack', offByDefault: { channel: false, dm: true }, bindRules: [] })
+    expect(conversationAdmitted(r, 'C2')).toBe(true)
+    expect(conversationAdmitted(r, 'D9')).toBe(false)
+  })
+
+  it('reads an id without a DM signal as a room', () => {
+    const r = routing({ platform: 'telegram', offByDefault: { channel: true, dm: false }, bindRules: [] })
+    expect(conversationAdmitted(r, '-100')).toBe(false)
+  })
 })
 
 // assistant-mode.md §5.3: enabling a place trusts it; only a platform-detected external is the exception.

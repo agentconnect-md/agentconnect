@@ -747,7 +747,10 @@ visibility.
   carries `offByDefault` by kind, and the relay resolves an unconfigured conversation
   to nothing ahead of the keyword and `defaultAgentId` rungs. Adding the bot to a
   channel, or the bot joining one by itself, therefore activates nothing until an
-  editor enables the row. Restricted installs keep this section's own seeding.
+  editor enables the row. A socket (daemon-routed) install gets the same fence through
+  its spec: the Off kind loses its unscoped default rule and ships its enabled rows as
+  scoped rules, the gated shape, and `core.offByDefault` closes the out-of-ladder paths
+  (`conversationAdmitted`). Restricted installs keep this section's own seeding.
 - **Restricted agents are gated: every conversation defaults to Off.** When
   the bot is invited to a channel, the channel appears on the integration card
   in a pending/Off state. An **editor must enable it in the Console**, choosing
