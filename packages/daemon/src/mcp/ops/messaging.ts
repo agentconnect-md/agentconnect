@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { MessageGateway, SendIdentity, SessionContext } from './context.js'
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
+import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
 import { optionalString, parseArgs, requiredString } from './args.js'
 import { assertChannelReachable } from './channel-reach.js'
 import {
@@ -388,9 +389,11 @@ export interface MessagingDeps extends GatewayDeps {
     ctx: SessionContext,
     name: string
   ) => Promise<{ bytes: Buffer; name: string; mimeType: string } | undefined>
+  /** Set per call when the post must go through approval (assistant-mode.md §5.5): drafts it, or lets a granted one through. */
+  interceptPost?: (post: InterceptedPost) => Promise<PostInterception>
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
-    ctx: SessionContext,
+    ctx: PostOrigin,
     channel: string,
     thread: string | undefined,
     text: string,
@@ -399,6 +402,92 @@ export interface MessagingDeps extends GatewayDeps {
   ) => Promise<void>
   /** Monotonic-ish clock for synthesizing a message id when the platform doesn't return one. */
   now: () => number
+}
+
+/** The posting session's coordinates: what an outbound record is admitted into, and the lineage a seeded session keeps. */
+export type PostOrigin = Pick<
+  SessionContext,
+  'agentId' | 'platform' | 'channel' | 'thread' | 'transportScope' | 'deliveryThread'
+>
+
+/** One confirmed post, as the bookkeeping after it needs it. */
+export interface ConfirmedPost {
+  platform: string
+  integrationId: string
+  channel: string
+  /** The existing thread an update joined; absent for a root post. */
+  updateThread?: string
+  body: string
+  /** The platform's own id for the post; absent when it returned none. */
+  providerPostId?: string
+  ts: string
+  directMessage: boolean
+  /** Seed the author's session in the post's thread (no model turn). */
+  seed: boolean
+}
+
+/**
+ * What every confirmed post gets, from sendMessage and from an approved assistant-mode draft alike: the platform's
+ * required root thread, the outbound record in the thread the post belongs to, and the author's seeded session.
+ */
+export async function settlePost(
+  origin: PostOrigin,
+  deps: Pick<MessagingDeps, 'recordOutbound' | 'spawnChannelRootSession'>,
+  gw: MessageGateway,
+  post: ConfirmedPost
+): Promise<{ postedThread?: string; seeded: boolean }> {
+  const { platform, channel, updateThread, providerPostId, body, ts } = post
+  // Only a root post is classified and materialized: an update already has its conversation.
+  const isDmTarget =
+    updateThread === undefined && threadKeyNeedsDmClassification(platform)
+      ? ((await gw.getChannelInfo(channel).catch(() => undefined))?.isIm ?? false)
+      : false
+  const mustMaterializeThread =
+    updateThread === undefined && !isDmTarget && rootPostNeedsThreadMaterialization(platform)
+  const materializedThread =
+    providerPostId !== undefined && mustMaterializeThread
+      ? await gw.createThread?.(channel, providerPostId, rootPostThreadName(body))
+      : undefined
+  const canonicalPostThread =
+    updateThread !== undefined
+      ? threadKeyForUpdate(platform, channel, updateThread)
+      : providerPostId === undefined
+        ? undefined
+        : threadKeyForPost(platform, channel, providerPostId, isDmTarget)
+  const postedThread =
+    updateThread !== undefined
+      ? canonicalPostThread
+      : providerPostId === undefined
+        ? undefined
+        : mustMaterializeThread
+          ? materializedThread
+          : canonicalPostThread
+  // Recorded in the thread the post belongs to, the same canonical key a reply to it resolves to.
+  await deps.recordOutbound(origin, channel, postedThread ?? canonicalPostThread, body, ts, post.integrationId)
+  if (providerPostId !== undefined && mustMaterializeThread && postedThread === undefined) {
+    throw new Error(
+      `sendMessage: posted root message ${ts}, but its required thread could not be created; no session was started`
+    )
+  }
+  // session-concept case 2a and §2.4: the author joins the post's thread with a session whose origin is the posting one.
+  if (!post.seed || postedThread === undefined || providerPostId === undefined || !deps.spawnChannelRootSession) {
+    return { ...(postedThread !== undefined ? { postedThread } : {}), seeded: false }
+  }
+  const seeded = await deps.spawnChannelRootSession({
+    agentId: origin.agentId,
+    platform,
+    integrationId: post.integrationId,
+    channel,
+    thread: postedThread,
+    postTs: ts,
+    isDm: isDmTarget || post.directMessage,
+    text: body,
+    originPlatform: origin.platform,
+    ...(origin.transportScope !== undefined ? { originTransportScope: origin.transportScope } : {}),
+    originChannel: origin.channel,
+    originThread: origin.thread
+  })
+  return { postedThread, seeded }
 }
 
 /** Resolve `user` to the app's own 1:1 conversation through the platform's Layer-1
@@ -692,6 +781,25 @@ export async function sendMessage(
           }
         : {})
     }
+    // Assistant mode: a post to another place is drafted for approval here, once its target is fully resolved.
+    if (deps.interceptPost) {
+      if (attachment) {
+        throw new Error(
+          'sendMessage: a post to another conversation needs approval, and a file cannot be sent for approval. ' +
+            'Nothing was sent; send the text alone.'
+        )
+      }
+      const intercepted = await deps.interceptPost({
+        platform: wantPlatform,
+        integrationId: targetId,
+        channel: postChannel,
+        ...(updateThread !== undefined ? { thread: updateThread } : {}),
+        text: body,
+        directMessage,
+        ...(directMessage ? { recipient: requestedChannel } : {})
+      })
+      if (intercepted.handled) return intercepted.result
+    }
     // A file share IS the message — the caption is `body`, not a second post. It anchors like
     // any other post where the platform answers with a message id; Slack's does not, and that
     // arm degrades on the path a gateway returning no id already takes. A failed share is
@@ -725,44 +833,19 @@ export async function sendMessage(
       providerPostId = await gw.postMessage(postChannel, body, updateThread, identity)
     }
     const ts = providerPostId ?? `local-${deps.now()}`
-    // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
-    // continuous conversation, and no id carries that — ask the platform, once, and only where
-    // the answer can change the key. A failed lookup falls back to the non-DM conversation
-    // rather than failing the send that already happened.
-    // An update already has its conversation, so none of the ROOT-post derivations apply: there
-    // is no DM classification to make and no thread to materialize — both exist to decide where
-    // a brand-new conversation begins.
-    const isDmTarget =
-      updateThread === undefined && threadKeyNeedsDmClassification(wantPlatform)
-        ? ((await gw.getChannelInfo(postChannel).catch(() => undefined))?.isIm ?? false)
-        : false
-    const mustMaterializeThread =
-      updateThread === undefined && !isDmTarget && rootPostNeedsThreadMaterialization(wantPlatform)
-    const materializedThread =
-      providerPostId !== undefined && mustMaterializeThread
-        ? await gw.createThread?.(postChannel, providerPostId, rootPostThreadName(body))
-        : undefined
-    // An update keys on the thread it joined, which exists whether or not the platform handed
-    // back an id for the post itself.
-    const canonicalPostThread =
-      updateThread !== undefined
-        ? threadKeyForUpdate(wantPlatform, postChannel, updateThread)
-        : providerPostId === undefined
-          ? undefined
-          : threadKeyForPost(wantPlatform, postChannel, providerPostId, isDmTarget)
-    postedThread =
-      updateThread !== undefined
-        ? canonicalPostThread
-        : providerPostId === undefined
-          ? undefined
-          : mustMaterializeThread
-            ? materializedThread
-            : canonicalPostThread
-    // Record the post in the thread it BELONGS to — the one it just created for a root post,
-    // not the caller's own thread (the daemon's fallback, which for a cross-channel post keys a
-    // row to coords that match no session at all). It is also what resolves a later reply to
-    // this post back onto this thread, so it must be the same canonical key the session uses.
-    await deps.recordOutbound(ctx, postChannel, postedThread ?? canonicalPostThread, body, ts, targetId)
+    const settled = await settlePost(ctx, deps, gw, {
+      platform: wantPlatform,
+      integrationId: targetId,
+      channel: postChannel,
+      ...(updateThread !== undefined ? { updateThread } : {}),
+      body,
+      ...(providerPostId !== undefined ? { providerPostId } : {}),
+      ts,
+      directMessage,
+      // A peer wake owns the thread it anchors to, so only a post without one seeds the author's session.
+      seed: toAgent === undefined
+    })
+    postedThread = settled.postedThread
     post = {
       platform: wantPlatform,
       integrationId: targetId,
@@ -770,60 +853,10 @@ export async function sendMessage(
       thread: updateThread ?? null,
       ts
     }
-    if (providerPostId !== undefined && mustMaterializeThread && postedThread === undefined) {
-      throw new Error(
-        `sendMessage: posted root message ${ts}, but its required thread could not be created; no session was started`
-      )
-    }
-    // session-concept case 2a: a root post with NO peer wake seeds a NEW session owned by
-    // this agent, keyed by the post's own thread, origin = the current session. When there
-    // IS a `toAgent`, the woken peer owns that thread instead (see (B)) — so skip the
-    // caller-owned spawn. Also skip when the platform returned no real ts (synthesized
-    // `local-*`), which leaves `postedThread` undefined and nothing to key a session on.
-    //
-    // §2.4 uses the SAME seam for an update, pointed at a thread that already existed. That is
-    // the whole of the anchoring rule: the author joins the thread and gains a session there
-    // whose origin is this posting session, so a human's reply lands on a session WITH lineage
-    // instead of the lineage-less one §8.6 refuses to synthesize. The seam is idempotent by
-    // session key, so an update into a thread this agent already has a session on records into
-    // it rather than opening a second — posting where you already are is not a new context.
-    if (
-      toAgent === undefined &&
-      postedThread !== undefined &&
-      providerPostId !== undefined &&
-      deps.spawnChannelRootSession
-    ) {
-      const seeded = await deps.spawnChannelRootSession({
-        agentId: ctx.agentId,
-        platform: wantPlatform,
-        ...(targetId ? { integrationId: targetId } : {}),
-        channel: postChannel,
-        thread: postedThread,
-        postTs: ts,
-        isDm: isDmTarget || directMessage,
-        text: body,
-        originPlatform: ctx.platform,
-        ...(ctx.transportScope !== undefined ? { originTransportScope: ctx.transportScope } : {}),
-        originChannel: ctx.channel,
-        originThread: ctx.thread
-      })
-      // A root post is a legitimate way to open a new topic, so this is never blocked — but
-      // when it FORKS a conversation the agent is ALREADY part of, the intent was almost
-      // certainly to answer, not to fork. Two cases, both observed on relay-the-answer-back
-      // agents: forking the conversation of the parent session that is waiting for the answer,
-      // and forking the current session's own, whose ordinary turn reply already goes there.
-      // Say which one happened and name the address that would have replied.
-      //
-      // Gated twice, because both claims can be false. `seeded` — the daemon declines outright
-      // at the hop limit, and nothing may then say a context opened. And `targetThread`, which
-      // the daemon compares against the conversation's own thread: in Telegram / Feishu /
-      // Discord DMs a "root" post maps back onto the continuous conversation, so it forks
-      // nothing and the message DID reach the reader — saying otherwise would talk an agent
-      // into sending twice. Discord guild posts have already materialized a native thread.
-      // An update forks nothing — it joined a conversation instead of starting one beside it —
-      // so the fork notices below never apply to it.
+    if (settled.seeded) {
+      // A root post that forked a conversation the agent is already in (parent or its own) names the address that would have answered.
       const relation =
-        seeded && postedThread !== undefined && updateThread === undefined
+        postedThread !== undefined && updateThread === undefined
           ? await deps.rootPostRelation?.({
               callerAgentId: ctx.agentId,
               platform: ctx.platform,

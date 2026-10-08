@@ -227,6 +227,7 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
                 cpAgents.remove(agentId)
                 await host.store().deleteMemoryHomeApplied(agentId)
                 await host.store().assistantItems.deleteForAgent(agentId)
+                await host.store().assistantDrafts.deleteForAgent(agentId)
                 await host.discardClusterSandbox(agentId)
                 host.moveStageMetadata().delete(agentId)
                 host.moveStagedAgents().delete(agentId)
@@ -437,6 +438,7 @@ export function applyAgentRemove(host: ConfigApplyHost, agentId: string): Promis
         cpAgents.remove(agentId)
         await host.store().deleteMemoryHomeApplied(agentId)
         await host.store().assistantItems.deleteForAgent(agentId)
+        await host.store().assistantDrafts.deleteForAgent(agentId)
       } catch (cleanupError) {
         if (removal.markerError) {
           throw new AggregateError(

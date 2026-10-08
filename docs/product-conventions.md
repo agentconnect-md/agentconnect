@@ -283,7 +283,9 @@ matters in workspaces where 👀 already carries a meaning between people. Only 
 the write is refused — the app lacks the scope, the API fails, the turn shows no
 indicator — does the reaction fall back in, so a Slack turn never shows neither.
 A typing hint is not an indicator in this sense: it acknowledges nothing, so
-Telegram and Discord react as before.
+Telegram and Discord react as before. An assistant-mode reply drafted in an external
+place shows no indicator at all, so there the reaction is the acknowledgement (see
+"Assistant-mode drafts").
 
 Google Chat has neither: an app can react only with user authentication, and it has
 no typing indicator. There the acknowledgement is one placeholder message in the
@@ -837,6 +839,51 @@ reports it; a guest or an outside member never is. When an enabled place turns e
 reply already in progress there is stopped before it can post; messages waiting behind it, and
 everything the agent knows, are kept. Enabling a 1:1 DM trusts the person in it, so a DM never
 turns external.
+
+## Assistant-mode drafts
+
+An agent in assistant mode posts directly only in the conversation it is answering. Two kinds
+of post wait for an internal member's approval instead:
+
+- **A reply in an external place.** In a conversation the platform reports as shared with
+  another organization (a Slack Connect channel), the reply is drafted, not posted. The
+  conversation sees no working indicator, no streaming and no tool progress: only a reaction
+  on the message that started the turn, where the platform has reactions, and never text.
+  Other platform writes there are refused; reads are unchanged.
+- **A post to another place.** `sendMessage` to another channel, a direct message, or a thread
+  elsewhere is drafted instead of sent, and only to a conversation where the agent is enabled;
+  any other target is refused. A target that is itself external needs no second approval. A
+  forwarded file cannot be drafted and is refused, and other writes aimed at another place stay
+  refused. The agent-to-agent forms and the parent-session reply are unchanged.
+
+The draft goes as a card to one internal member's direct message: the person who asked when
+they are an internal member (on Slack, a full member of the installing workspace, not a guest
+and not from the other organization), otherwise the agent's responsible user, otherwise its
+fallback conversation. A session with no conversation of its own (a hook or cron run) goes to
+the responsible user or the fallback conversation. The card leads with one sentence naming the
+actual destination (the conversation by name, the recipient of a direct message, and the
+platform when it is not the card's own) and saying it will post, identifies the conversation and
+any thread, shows the exact text, and offers Approve and Discard; a post to another place also
+offers "Always allow from here to there". Only the addressed member's click
+counts, re-verified like an approval DM's when the responsible user was chosen for it; anyone in
+the fallback conversation may decide.
+
+Approve posts the text unchanged, once, a reply in its original thread. The approved post is
+recorded and threaded like any message the agent sends, so a reply to it reaches the agent; no
+turn runs for it. Discard drops it. A
+draft expires after 24 hours and is never posted afterwards. A post whose outcome is uncertain
+(no message id came back, the connection failed mid-post, or a restart cut it short) says "not
+sure this went through" on the card and is never retried. "Always allow from here to there" lets
+later posts from the same conversation to the same target go out without a card; it never
+covers another source conversation or an external target, and every grant ends when assistant
+mode is switched off. A card shown before assistant mode was switched off or on grants nothing,
+even when clicked later. Whether a post needs approval follows from its target, never from the
+model's judgment.
+
+Runtime permission requests in an external place take the editor path: no card or notice
+appears in the conversation, and the approval DM goes to an agent editor. Draft cards are
+delivered on Slack; when no member or conversation can be reached the draft is kept until it
+expires, nothing is sent, and for a post it attempted the agent is told so.
 
 ## No-response control marker
 

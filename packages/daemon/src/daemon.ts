@@ -294,6 +294,15 @@ import {
 } from './mcp/apps/cards.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { askerIdentity, assistantItemToolsFor, assistantModeOn } from './mcp/ops/assistant-items.js'
+import { AssistantDrafts, type DraftAsker, type InterceptedPost, type PostInterception } from './assistant/drafts.js'
+import type {
+  AssistantDraft,
+  AssistantDraftDestination,
+  AssistantDraftSource,
+  AssistantDraftTarget
+} from './store/assistant-drafts.js'
+import { settlePost, type PostOrigin } from './mcp/ops/messaging.js'
+import { slackDraftCardPort } from './platforms/slack/draft-card.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
@@ -326,6 +335,7 @@ import {
   conversationSessionMode,
   integrationRouting,
   conversationAdmitted,
+  conversationTrustLevel,
   type RoutingRule
 } from './router/routing-rule.js'
 import { CpRoutingLayer } from './router/cp-routing-layer.js'
@@ -357,7 +367,7 @@ import { physicalThreadOf, registerThreadPromotion, threadPromotionFor } from '.
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { sessionLinkSourceFor } from './platforms/link-source.js'
 import { sessionThreadUrlFor } from './platforms/session-links.js'
-import { offersReadPort } from './platforms/read-ports.js'
+import { offersReadPort, platformLabel } from './platforms/read-ports.js'
 import { registerObservedChannels } from './platforms/observed-channels.js'
 import { ObservedChannelsSync, type ObservedChannelsSyncHost } from './platforms/observed-channels-sync.js'
 import { discordObservedChannels } from './platforms/discord/observed-channels.js'
@@ -2346,7 +2356,8 @@ export class Daemon {
         this.dispatch(agentId, msg, integrationId, undefined, callMeta),
       handleStatusAction: (a) => this.commands.handleStatusAction(a),
       statusInfoForKey: (key) => this.statusInfoForKey(key),
-      handlePermissionChoice: (a) => this.permissions.handlePermissionChoice(a),
+      handlePermissionChoice: (a) =>
+        void this.routePermissionChoice(a).catch((err) => this.log.warn(`permission choice failed: ${formatErr(err)}`)),
       handleElicitChoice: (a) => this.permissions.handleElicitChoice(a),
       handleElicitFormSubmit: (a) => void this.permissions.submitElicitForm(a),
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
@@ -3770,6 +3781,9 @@ export class Daemon {
       placeSnapshot: (integrationId, channel) =>
         this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel),
       placeStore: this.store,
+      // Assistant mode's drafts (assistant-mode.md §5.5): an external place refuses other writes, a post elsewhere is drafted.
+      placeExternal: (ctx) => this.assistantPlaceExternal(ctx.agentId, ctx.integrationId, ctx.channel),
+      assistantDraftPost: (ctx, post) => this.assistantDraftPost(ctx, post),
       attachmentReaderFor: (integrationId) =>
         this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
@@ -4163,19 +4177,8 @@ export class Daemon {
           ...(image?.success ? { attachments: [image.data] } : {})
         })
       },
-      recordOutbound: async (ctx, channel, thread, text, ts, integrationId) =>
-        await this.store.appendTranscript({
-          channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
-          thread: thread ?? ctx.deliveryThread,
-          admission: {
-            agentId: ctx.agentId,
-            sessionKey: sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-          },
-          ts,
-          sender: ctx.agentId,
-          kind: 'text',
-          text
-        }),
+      recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
+        this.recordOutboundPost(ctx, channel, thread, text, ts, integrationId),
       maxAttachmentBytes: cfg.limits.maxAttachmentBytes
     })
     await this.mcp.start()
@@ -4877,6 +4880,10 @@ export class Daemon {
     await this.decisionGate.recover()
     await this.decisionRouter.recover()
     await this.collab.syncOrchestrationDeadlines()
+    // A draft post a crash cut short is `outcome_unknown`, never retried (assistant-mode.md §5.10).
+    await this.drafts
+      .recover([...this.agents.keys()])
+      .catch((err) => this.log.warn(`assistant draft recovery failed: ${formatErr(err)}`))
     // #485 startup retention pass: reconcile what accumulated (or was orphaned by a
     // crash) while the daemon was down. Best-effort — never blocks readiness. Runs
     // AFTER replayInbox so replayed durable work is visible to its active-turn guard.
@@ -5170,6 +5177,8 @@ export class Daemon {
         for (const integration of a.integrations) await this.store.setIntegrationRemoved(a.id, integration.id, false)
       }
       this.agents.set(a.id, a as LoadedAgent)
+      // "Always allow" grants end when assistant mode is switched off, and no pending card grants across a switch (§5.5).
+      if (assistantModeOn(previous) !== assistantModeOn(a)) await this.store.assistantDrafts.resetGrants(a.id)
       for (const integration of removed) await this.interruptAgentTurns(a.id, 'stop', 'terminal', integration.id)
       if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
         await this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
@@ -5276,6 +5285,9 @@ export class Daemon {
       await this.syncAgentSchedules(a)
       // Dreaming may have been turned off while this daemon did not hold the agent.
       if (!dreamingPolicyOf(a)?.enabled) this.retireDreamStaging(a.id)
+      // So may assistant mode; and a draft post the previous holder was making stays unknown, never retried.
+      if (!assistantModeOn(a)) await this.store.assistantDrafts.resetGrants(a.id)
+      await this.drafts.recover([a.id])
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
     // detach ACKs only after last-reference connections have actually stopped.
@@ -7656,6 +7668,222 @@ export class Daemon {
     const outcome = await this.permissions.askMemoryWriteApproval(p.hostKey, p.acpSessionId, ask)
     if (outcome === 'allow_session') this.memoryWriteGrants.add(key)
     return outcome === 'allow_once' || outcome === 'allow_session' ? 'allowed' : outcome
+  }
+
+  /** Assistant-mode drafts (assistant-mode.md §5.5), built on first use over the live store. */
+  private assistantDraftService?: AssistantDrafts
+  private get drafts(): AssistantDrafts {
+    this.assistantDraftService ??= new AssistantDrafts({
+      ledger: () => this.store.assistantDrafts,
+      now: () => this.clock.now(),
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) },
+      agent: (agentId) => {
+        const a = this.agents.get(agentId)
+        if (!a) return undefined
+        return {
+          name: a.displayName?.trim() || a.name,
+          ...(a.iconUrl ? { iconUrl: a.iconUrl } : {}),
+          ...(a.assistantMode ? { assistantMode: a.assistantMode } : {}),
+          integrations: a.integrations
+        }
+      },
+      gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      placeEnabled: (agentId, integrationId, channel) => {
+        const int = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)
+        return int !== undefined && conversationAdmitted(integrationRouting(int), channel)
+      },
+      placeExternal: (agentId, integrationId, channel) => this.assistantPlaceExternal(agentId, integrationId, channel),
+      cardPortFor: (integrationId) => {
+        const conn = this.connByIntegration.get(integrationId)
+        return conn ? slackDraftCardPort(conn, integrationId) : undefined
+      },
+      approvalRoute: async (agentId, req) => {
+        const cp =
+          this.cpClient?.supportsServerFeature?.(APPROVAL_DM_ROUTE_V1_FEATURE) === true ? this.cpClient : undefined
+        if (!cp) throw new Error('approval routing is unavailable')
+        return await cp.approvalRoute(
+          { agentId, ...req },
+          this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+        )
+      },
+      sessionLink: (sessionId) => this.sessionLink(sessionId),
+      platformName: (platform) => platformLabel(platform),
+      describeDestination: (target, opts) => this.describeDraftDestination(target, opts),
+      afterPost: (draft, messageId) => this.settleApprovedDraft(draft, messageId)
+    })
+    return this.assistantDraftService
+  }
+
+  /** Record an agent-sent message into the posting session's transcript, in the thread it belongs to. */
+  private async recordOutboundPost(
+    origin: PostOrigin,
+    channel: string,
+    thread: string | undefined,
+    text: string,
+    ts: string,
+    integrationId: string
+  ): Promise<void> {
+    await this.store.appendTranscript({
+      channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
+      thread: thread ?? origin.deliveryThread,
+      admission: {
+        agentId: origin.agentId,
+        sessionKey: sessionKey(origin.platform, origin.channel, origin.thread, origin.agentId, origin.transportScope)
+      },
+      ts,
+      sender: origin.agentId,
+      kind: 'text',
+      text
+    })
+  }
+
+  /** Who or what a draft's target is, for its card: the conversation's name, the DM recipient, the thread link. */
+  private async describeDraftDestination(
+    target: AssistantDraftTarget,
+    opts: { dm: boolean; recipient?: string }
+  ): Promise<Partial<AssistantDraftDestination>> {
+    const gw = this.connForIntegration(target.integrationId)
+    const out: Partial<AssistantDraftDestination> = {}
+    if (opts.dm && opts.recipient) {
+      out.userId = opts.recipient
+      const profile = await gw?.getUserProfile(opts.recipient).catch(() => undefined)
+      const name = profile?.realName?.trim() || profile?.name?.trim()
+      if (name) out.name = name
+    } else if (!opts.dm) {
+      const name = (await gw?.getChannelInfo(target.channel).catch(() => undefined))?.name?.trim()
+      if (name) out.name = name
+    }
+    const link = target.thread
+      ? sessionThreadUrlFor({ platform: target.platform, channel: target.channel, thread: target.thread }, gw)
+      : undefined
+    if (link) out.threadLink = link
+    return out
+  }
+
+  /** An approved draft's post gets what any sent message gets, under the draft's source lineage; no turn, no retry. */
+  private async settleApprovedDraft(draft: AssistantDraft, messageId: string): Promise<void> {
+    const gw = this.connForIntegration(draft.target.integrationId)
+    if (!gw || !draft.source) return
+    const origin: PostOrigin = {
+      agentId: draft.agentId,
+      platform: draft.source.platform,
+      channel: draft.source.channel,
+      thread: draft.source.thread,
+      ...(draft.source.transportScope ? { transportScope: draft.source.transportScope } : {}),
+      deliveryThread: draft.source.thread
+    }
+    await settlePost(
+      origin,
+      {
+        recordOutbound: (o, channel, thread, text, ts, integrationId) =>
+          this.recordOutboundPost(o, channel, thread, text, ts, integrationId),
+        spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req)
+      },
+      gw,
+      {
+        platform: draft.target.platform,
+        integrationId: draft.target.integrationId,
+        channel: draft.target.channel,
+        ...(draft.target.thread ? { updateThread: draft.target.thread } : {}),
+        body: draft.text,
+        providerPostId: messageId,
+        ts: messageId,
+        directMessage: draft.targetDm,
+        // A reply lands in the conversation its own session already holds.
+        seed: draft.kind === 'elsewhere'
+      }
+    )
+  }
+
+  /** Whether a conversation is an external place of this agent's integration (assistant-mode.md §5.3). */
+  private assistantPlaceExternal(agentId: string, integrationId: string | undefined, channel: string): boolean {
+    const int = integrationId ? this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId) : undefined
+    return int !== undefined && conversationTrustLevel(int, channel) === 'external'
+  }
+
+  /** Whether a turn's reply is drafted rather than posted: an assistant-mode agent answering in an external place (§5.5). */
+  private assistantDraftsReply(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: NormalizedMessage,
+    webchat: { continuation?: boolean } | undefined
+  ): boolean {
+    if (msg.headless || (webchat && !webchat.continuation)) return false
+    return assistantModeOn(this.agents.get(agentId)) && this.assistantPlaceExternal(agentId, integrationId, msg.channel)
+  }
+
+  /** A post `sendMessage` aimed at another place goes through approval unless a grant covers the pair (§5.5). */
+  private async assistantDraftPost(ctx: SessionContext, post: InterceptedPost): Promise<PostInterception> {
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
+    const source: AssistantDraftSource = {
+      platform: ctx.platform,
+      integrationId: ctx.integrationId ?? null,
+      channel: ctx.channel,
+      thread: ctx.thread,
+      transportScope: ctx.transportScope ?? null,
+      sessionKey: key,
+      sessionId: live?.outwardSessionId ?? null,
+      // A hook or cron run with no conversation, or an agent call's synthetic one, has no place to grant from.
+      place: (ctx.integrationId !== undefined || ctx.platform === 'webchat') && !isSyntheticA2aChannel(ctx.channel)
+    }
+    return await this.drafts.interceptPost(ctx.agentId, source, post, this.assistantDraftAsker(ctx, live?.entry.msg))
+  }
+
+  /** The person whose message started the live turn, as a draft approver candidate. */
+  private assistantDraftAsker(ctx: SessionContext, msg: NormalizedMessage | undefined): DraftAsker | undefined {
+    if (!msg || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id) return undefined
+    if (msg.platform === 'webchat') return { consoleUserId: msg.sender.id, trusted: true }
+    if (!ctx.integrationId) return undefined
+    const trusted = !this.assistantPlaceExternal(ctx.agentId, ctx.integrationId, ctx.channel)
+    return { integrationId: ctx.integrationId, userId: msg.sender.id, trusted }
+  }
+
+  /** Draft the turn's reply in an external place (assistant-mode.md §5.5); contained, so it never fails the turn. */
+  private async draftExternalReply(p: Pending, run: TurnRun): Promise<void> {
+    const text = (p.draftSections ?? []).join('\n\n').trim()
+    const { plan, entry } = run
+    if (!text || isNoResponseBody(text) || !plan.integrationId) return
+    const { msg } = entry
+    try {
+      await this.drafts.draftReply({
+        agentId: plan.agentId,
+        target: {
+          platform: plan.platform,
+          integrationId: plan.integrationId,
+          channel: plan.channel,
+          thread: plan.thread ?? null
+        },
+        targetDm: plan.isDm,
+        text,
+        source: {
+          platform: plan.platform,
+          integrationId: plan.integrationId,
+          channel: plan.channel,
+          thread: plan.sessionThread,
+          transportScope: msg.transportScope ?? null,
+          sessionKey: plan.sessionKey,
+          sessionId: p.outwardSessionId,
+          place: true
+        },
+        asker:
+          msg.source === 'user' && !msg.sender.isBot
+            ? { integrationId: plan.integrationId, userId: msg.sender.id, trusted: false }
+            : undefined
+      })
+    } catch (err) {
+      this.log.warn(`assistant draft for ${plan.sessionKey} failed: ${formatErr(err)}`)
+    }
+  }
+
+  /** A card button: a draft's when its id names one, else a permission request's. */
+  private async routePermissionChoice(a: {
+    requestId: string
+    optionId: string
+    actor?: { userId: string; name?: string }
+  }): Promise<void> {
+    if (await this.drafts.handleChoice(a).catch(() => false)) return
+    await this.permissions.handlePermissionChoice(a)
   }
 
   /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */
@@ -10536,10 +10764,23 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: true }
     }
 
-    // A DM approval card (slack-approval-dm.md §5.3) lives outside any session conversation —
-    // its origin session may be webchat/GitHub, or Slack under another integration — so the
-    // in-conversation gate below can never admit its click. Route it straight to the
-    // coordinator, whose click-time actor + verify checks are the authorization.
+    // An assistant-mode draft card (assistant-mode.md §5.5) is a DM card too; its own checks authorize the click.
+    if (
+      payload.kind === 'permission-choice' &&
+      (await this.drafts
+        .handleChoice({
+          requestId: payload.requestId,
+          optionId: payload.optionId,
+          ...(msg.userId ? { actor: { userId: msg.userId } } : {}),
+          integrationId: msg.integrationId,
+          agentId: msg.agentId
+        })
+        .catch(() => false))
+    ) {
+      return { msgId: msg.msgId, accepted: true }
+    }
+
+    // A DM approval card (slack-approval-dm.md §5.3) lives outside any conversation: the coordinator's click checks authorize it.
     if (
       (payload.kind === 'permission-choice' || payload.kind === 'elicitation-choice') &&
       this.permissions.dmNotifiedVia(payload.requestId, msg.agentId, msg.integrationId)
@@ -12545,6 +12786,8 @@ export class Daemon {
       sessionThread?: string
       /** The turn's acknowledgement, which takes the notice in place of the answer it stood in for. */
       acknowledgement?: TurnAcknowledgement
+      /** A drafted reply's place hears nothing, not even a failure (assistant-mode.md §5.5). */
+      draftReply?: boolean
     }
   ): Promise<void> {
     // turnFailureReason digs the runtime's own message out of an ACP RequestError's
@@ -12574,9 +12817,8 @@ export class Daemon {
         })
       else if (!replaced) void ctx.replyConn.postMessage(ctx.channel, notice, ctx.thread)
     }
-    // A platform with no free-text reply transport surfaces the failure through its own sink
-    // instead. Registry-driven, so this stays one lookup rather than a platform-name branch.
-    if (!replaced)
+    // A platform with no free-text reply transport surfaces the failure through its own sink, unless the reply is drafted.
+    if (!replaced && !ctx.draftReply)
       await this.platformFailureSinks
         .get(ctx.platform)?.({ reason, integrationId: ctx.integrationId, thread: ctx.thread, channel: ctx.channel })
         .catch((err2: unknown) => this.log.warn(`${ctx.platform}: failure notice failed: ${formatErr(err2)}`))
@@ -13313,7 +13555,8 @@ export class Daemon {
             !msg.headless &&
             msg.source === 'user' &&
             !webchat &&
-            callMeta?.initializeOnly !== true
+            callMeta?.initializeOnly !== true &&
+            !this.assistantDraftsReply(agentId, integrationId, msg, undefined)
           ) {
             try {
               const agent = this.agents.get(agentId)
@@ -14141,18 +14384,16 @@ export class Daemon {
       protectedAddresses: this.compoundMentionAddresses(agentId, msg),
       codexUsageIsPerPrompt: this.isCodexRuntime(agentId),
       features: { turnFinalContextRefresh: this.cfg.features.turnFinalContextRefresh },
-      turnSurfaces: this.turnSurfaces
+      turnSurfaces: this.turnSurfaces,
+      draftReply: this.assistantDraftsReply(agentId, integrationId, msg, webchat)
     })
     // The recorder captures the full activity log (tool/reasoning) independent of
     // output mode — `conv` (built below, once the session key is known) only decides
     // what reaches Slack, never the transcript.
     const rec = new TranscriptRecorder()
     const replyConn = plan.suppressReplyConn ? undefined : this.replyConnFor(agentId, integrationId)
-    // ONE lookup for the platform egress transport: the lease below and the port the output
-    // surface emits through are the SAME object. Resolving it twice — once to lease, once at
-    // turn-state seeding — leaves a window where reconciliation rebinds the integration
-    // between them, and the turn then holds a lease on a client it never writes to.
-    const egressConn = this.platformTurnEgress.get(msg.platform)?.(plan.integrationId)
+    // ONE egress lookup, so the leased client is the one the surface writes through; a drafted reply leases none.
+    const egressConn = plan.draftReply ? undefined : this.platformTurnEgress.get(msg.platform)?.(plan.integrationId)
     const run: TurnRun = { entry, key, plan, agent, replyConn, ...(egressConn ? { egressConn } : {}), evaluation }
     // Startup notices and replies share the queue entry's index and terminal fence from before openSession.
     const pendingWebchat = webchat
@@ -14313,6 +14554,7 @@ export class Daemon {
       await this.commitWebchatReply(p, run, outcome)
       await this.flushPlatformFinals(p, run, sessionId, currentAttributionInfo)
       await this.finalizeDelivery(p, run, { rec, sessionId, handled, outcome, memoryCaptureTarget })
+      if (plan.draftReply) await this.draftExternalReply(p, run)
     } catch (err) {
       const caught = await this.surfaceTurnCatch(err, p, run, sessionId, settlement, currentAttributionInfo)
       if (caught === 'suppressed') return null
@@ -14631,7 +14873,8 @@ export class Daemon {
             thread: msg.thread,
             statusThread: plan.statusThread,
             sessionThread: plan.sessionThread,
-            ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
+            ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {}),
+            ...(plan.draftReply ? { draftReply: true } : {})
           })
       } finally {
         releaseReplyConn()
@@ -15210,6 +15453,7 @@ export class Daemon {
       ...(run.egressConn ? { egress: run.egressConn } : {}),
       ...(callMeta ? { callMeta } : {}),
       ...(turn.webchat ? { webchat: turn.webchat } : {}),
+      ...(plan.draftReply ? { draftSections: [] } : {}),
       ...(plan.githubTurnEligible && githubReply
         ? {
             github: {
@@ -18183,24 +18427,7 @@ export class Daemon {
     return false
   }
 
-  /** Acknowledge the message that started this turn before the agent has anything to say
-   *  (docs/product-conventions.md, "A trigger is acknowledged before it is answered"). For a
-   *  code-host turn the "seen it" reaction is the only signal before the single end-of-turn
-   *  comment lands; in a chat channel it is the only one where no durable indicator exists.
-   *
-   *  On Slack the durable indicator is the agent-session lifecycle: `showActivity` has just
-   *  asked Slack to mark the thread `processing` ("is working…" + Stop), and when Slack took
-   *  that write it IS the acknowledgement — one signal, withdrawn when the turn ends, instead
-   *  of a reaction that stays on the message forever next to it. Only when the write was
-   *  refused (missing scope, API failure, no indicator for this turn) does the reaction fall
-   *  back in, so a turn never shows neither. `indicatorShown` is that outcome; a platform
-   *  without a durable indicator resolves it `false` and reacts as before.
-   *
-   *  Fire-and-forget chrome: never awaited by dispatch, never retried, and never withdrawn —
-   *  it records that the turn was seen, which stays true even if the turn later dies with
-   *  nothing to say. Origins with no inbound message to react to (cron, an agent wake,
-   *  webchat) and platforms with no reactions both fall through silently, and a turn whose
-   *  reply connection is withheld stays as silent here as it is everywhere else. */
+  /** Acknowledge the triggering message (product-conventions.md, "A trigger is acknowledged before it is answered"); a drafted reply's place gets only the reaction. */
   private acknowledgeTrigger(run: TurnRun, indicatorShown: Promise<boolean> = Promise.resolve(false)): void {
     const { entry, plan, replyConn } = run
     const { msg } = entry
@@ -18210,6 +18437,14 @@ export class Daemon {
     if (entry.githubReply) {
       if (plan.githubTurnEligible)
         void this.githubReviews.acknowledgeTrigger(entry.agentId, entry.githubReply).catch(() => {})
+      return
+    }
+    // A drafted reply's place gets a reaction where the platform has one, never text (assistant-mode.md §5.5).
+    if (plan.draftReply) {
+      const conn = this.replyConnFor(entry.agentId, entry.integrationId)
+      const react = (conn as Partial<SlackConnection> | undefined)?.react
+      const at = nativeMessageCoordinates(msg)
+      if (react && at) void react.call(conn, at.channel, at.messageId, 'seen').catch(() => {})
       return
     }
     // A surface with no reaction and no indicator acknowledges with its own output (§7.3 `acknowledge`).
@@ -18238,10 +18473,15 @@ export class Daemon {
     void indicatorShown.then((shown) => (shown ? undefined : place()), place)
   }
 
-  /** Serialize action application per session so in-place edits never race on the
-   *  remembered message ts (two concurrent `progress` actions both posting). Routes to
-   *  the platform's applier by the Pending's platform tag. */
+  /** Serialize action application per session, so in-place edits never race on a remembered message ts; routed by platform. */
   private enqueueApply(p: Pending, action: DaemonRenderAction, opts: { allowWhenSuppressed?: boolean } = {}): void {
+    // A drafted reply keeps its reply sections and drops everything else: the place sees nothing (assistant-mode.md §5.5).
+    if (p.draftSections) {
+      const body = action.kind === 'post' && !('recordOnly' in action && action.recordOnly)
+      if (body && !p.outputSuppressed && !('attributed' in action && action.attributed === false))
+        p.draftSections.push(action.text)
+      return
+    }
     if (p.outputSuppressed && !opts.allowWhenSuppressed) return
     p.signals.applyChain = p.signals.applyChain.then(() => {
       // Check again at execution time: actions queued before an interrupt must not
@@ -20624,6 +20864,8 @@ export class Daemon {
       await this.store.stripDecisionVerdictBodies(this.clock.now()).catch(() => undefined)
       await this.store.stripDecisionModelEvaluationBodies(this.clock.now()).catch(() => undefined)
       await this.store.stripDecisionApiGateEvaluationBodies(this.clock.now()).catch(() => undefined)
+      // Expiry is enforced at the click; this pass retires the expired drafts' cards (assistant-mode.md §5.5).
+      await this.drafts.sweep([...this.agents.keys()]).catch(() => undefined)
       if (!this.draining) this.armStoreRetentionSweep()
     }, SESSION_RETENTION_SWEEP_INTERVAL_MS)
   }
@@ -21931,7 +22173,8 @@ export class Daemon {
       thread: msg.thread,
       statusThread: p.plan.statusThread,
       sessionThread: p.plan.sessionThread,
-      ...(p.entry.acknowledgement ? { acknowledgement: p.entry.acknowledgement.handle } : {})
+      ...(p.entry.acknowledgement ? { acknowledgement: p.entry.acknowledgement.handle } : {}),
+      ...(p.plan.draftReply ? { draftReply: true } : {})
     })
   }
 

@@ -694,6 +694,8 @@ export interface Pending {
   /** Agent questions this turn has already told the channel it could not render (#1794), so a
    *  runtime re-raising the same unrenderable ask posts one notice rather than one per attempt. */
   declinedElicitNotices?: Set<string>
+  /** Assistant mode: the reply sections an external place's turn drafts instead of posting (assistant-mode.md §5.5). */
+  draftSections?: string[]
 }
 
 /** Visible Slack thread messages that establish a new chronological boundary. Any live

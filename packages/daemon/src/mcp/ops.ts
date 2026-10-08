@@ -461,10 +461,12 @@ async function executeRegisteredTool(
       }
     }
   }
-  // Assistant mode (assistant-mode.md §5.5): platform writes stay in the current place, other reads pass the place rule.
-  await assertAssistantPlaceAccess(ctx, name, args, deps)
+  // Assistant mode (assistant-mode.md §5.5): a post elsewhere is drafted, other writes stay here, reads pass the place rule.
+  const verdict = await assertAssistantPlaceAccess(ctx, name, args, deps)
   const handler = HANDLERS.get(name)
-  if (handler) return await handler(ctx, args, deps)
+  const draftPost = verdict?.draft ? deps.assistantDraftPost : undefined
+  if (handler)
+    return await handler(ctx, args, draftPost ? { ...deps, interceptPost: (post) => draftPost(ctx, post) } : deps)
 
   // A platform's own session tools (read-ports.ts `sessionTools`): injected only into a session
   // ON that platform, and refused at call time from anywhere else — they act through THIS

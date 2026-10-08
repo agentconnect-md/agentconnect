@@ -8,6 +8,7 @@ import {
   type PlaceRef,
   type SourcePlace
 } from '../../assistant/place-access.js'
+import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
 import type { SessionRecord, TranscriptRow, TranscriptSessionScope } from '../../store/local-store.js'
 import type { SessionContext } from './context.js'
 import { knownIntegrations, type GatewayDeps } from './gateway.js'
@@ -38,7 +39,14 @@ export interface PlaceAccessDeps extends GatewayDeps {
   /** The integration's snapshot row for a conversation, so privacy needs no platform call when it is known. */
   placeSnapshot?: (integrationId: string, channel: string) => PlaceSnapshotRow | undefined
   placeStore?: PlaceStore
+  /** Whether the session's own conversation is an external place (assistant-mode.md §5.3). */
+  placeExternal?: (ctx: SessionContext) => boolean
+  /** Drafts a post to another place for approval, or lets a granted one through; absent ⇒ such a post is refused. */
+  assistantDraftPost?: (ctx: SessionContext, post: InterceptedPost) => Promise<PostInterception>
 }
+
+/** The gate's word on a call it lets through: `draft` sends the post through approval (§5.5). */
+export type PlaceVerdict = { draft: true } | undefined
 
 const KIND_STRICTNESS: Record<PlaceKind, number> = { channel: 1, group_dm: 2, dm: 3, webchat: 3 }
 const SNAPSHOT_KINDS: Record<NonNullable<PlaceSnapshotRow['kind']>, PlaceKind> = {
@@ -112,6 +120,27 @@ function targetsHere(ctx: SessionContext, platform: unknown, integrationId: unkn
 
 const ANOTHER_CONVERSATION = 'another conversation'
 
+/** The platform writes; the agent-to-agent forms and the parent-session reply of sendMessage are not among them. */
+const PLATFORM_WRITES = new Set([
+  'sendMessage',
+  'shareFile',
+  'scheduleMessage',
+  'addReaction',
+  'deleteMessage',
+  'addBookmark',
+  'removeBookmark',
+  'createCanvas',
+  'createConversation',
+  'updateCanvas',
+  'addListItem',
+  'updateListItem'
+])
+
+function isPlatformWrite(name: string, args: Record<string, unknown>): boolean {
+  if (name === 'sendMessage') return absent(args.sessionId) && absent(args.toAgent)
+  return PLATFORM_WRITES.has(name)
+}
+
 /** What a platform write targets outside the current place; undefined when it stays here or is no platform write. */
 export function writeElsewhere(ctx: SessionContext, name: string, args: Record<string, unknown>): string | undefined {
   switch (name) {
@@ -166,21 +195,30 @@ async function assertReadableHere(
   if (refusal) throw new Error(`${tool}: ${placeRefusalMessage(refusal)}`)
 }
 
-/** The assistant-mode gate before every bridge tool: platform writes stay here, channel reads pass the rule. */
+/** The assistant-mode gate before every bridge tool: a post elsewhere is drafted, other writes stay here, reads pass the rule. */
 export async function assertAssistantPlaceAccess(
   ctx: SessionContext,
   name: string,
   args: Record<string, unknown>,
   deps: PlaceAccessDeps
-): Promise<void> {
-  if (!deps.assistantModeFor?.(ctx.agentId)) return
+): Promise<PlaceVerdict> {
+  if (!deps.assistantModeFor?.(ctx.agentId)) return undefined
   const elsewhere = writeElsewhere(ctx, name, args)
+  // Whether a post needs approval follows from its target, never from the model's judgment (§5.5).
+  if (elsewhere && name === 'sendMessage' && deps.assistantDraftPost) return { draft: true }
   if (elsewhere) {
     throw new Error(
       `${name}: in assistant mode you write only to the conversation you are in, and this targets ${elsewhere}. ` +
         'Nothing was changed. Say it in your reply here instead.'
     )
   }
+  if (isPlatformWrite(name, args) && deps.placeExternal?.(ctx)) {
+    throw new Error(
+      `${name}: this conversation is shared with another organization, so your reply here goes to an internal ` +
+        'member for approval and other writes here are refused. Nothing was changed. Put it in your reply instead.'
+    )
+  }
   const read = PLACE_READS.get(name)
   if (read) await assertReadableHere(ctx, read, args, deps)
+  return undefined
 }

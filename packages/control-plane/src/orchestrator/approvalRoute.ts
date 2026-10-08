@@ -83,6 +83,28 @@ export async function resolveApprovalRoute(
     }
   }
 
+  // One named console user, never the chain: an editor linked to one of the given workspaces, or nobody.
+  if (req.consoleUserId) {
+    const member = editors.find((m) => m.userId === req.consoleUserId)
+    if (!member) return none
+    const pair = await pairOf(member.userId)
+    if (!pair) return none
+    for (const integrationId of req.integrationIds) {
+      const teamId = await workspaceFor(integrationId)
+      if (teamId && pair.teamId === teamId) {
+        const target: ApprovalRouteTarget = {
+          integrationId,
+          teamId,
+          userId: pair.userId,
+          consoleUserId: member.userId,
+          ...(member.displayName ? { displayName: member.displayName } : {})
+        }
+        return { requestId: req.requestId, target }
+      }
+    }
+    return none
+  }
+
   const session = req.sessionId ? await deps.session.getUnscoped(SessionId(req.sessionId)) : null
   const ownerIdentity = session && session.agentId === req.agentId ? session.ownerIdentity : null
   const capped = editors.length > MAX_AUDIENCE

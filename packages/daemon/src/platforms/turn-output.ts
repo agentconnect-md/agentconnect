@@ -205,8 +205,8 @@ export interface TurnFinalSurface<TTurn, TState, TUpdate> {
 export class TurnOutputRegistry<TTurn, TAction, TConv, TMessage> {
   private readonly surfaces = new Map<string, TurnOutputSurface<TTurn, TAction, TConv, TMessage>>()
 
-  constructor(private readonly core: TurnOutputSurface<TTurn, TAction, TConv, TMessage>) {
-    this.register(core)
+  constructor(private readonly coreSurface: TurnOutputSurface<TTurn, TAction, TConv, TMessage>) {
+    this.register(coreSurface)
   }
 
   register(surface: TurnOutputSurface<TTurn, TAction, TConv, TMessage>): void {
@@ -216,7 +216,12 @@ export class TurnOutputRegistry<TTurn, TAction, TConv, TMessage> {
   /** The surface that renders `platform`'s turns — the core surface when the
    *  origin is not a chat platform with one of its own. */
   for(platform: string): TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
-    return this.surfaces.get(platform) ?? this.core
+    return this.surfaces.get(platform) ?? this.coreSurface
+  }
+
+  /** The core surface itself, whatever the origin: its actions are the platform-neutral reply sections. */
+  core(): TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
+    return this.coreSurface
   }
 
   /** The surface REGISTERED for `platform`, with no core fallback. Teardown
