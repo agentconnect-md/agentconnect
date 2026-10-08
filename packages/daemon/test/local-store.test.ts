@@ -863,19 +863,25 @@ describe('LocalStore', () => {
     await s.close()
   })
 
-  it('skips, on request, dream sources in a group DM or a conversation known private', async () => {
+  it('skips, on request, dream sources in a DM, a group DM, or a place not known to be open', async () => {
     const s = await store()
     const sessions = [
-      { channel: 'C-public', thread: 'shared' },
-      { channel: 'G-group', thread: 'group-dm' },
-      { channel: 'C-private', thread: 'private-channel' }
+      { platform: 'slack', channel: 'C-public', thread: 'shared' },
+      { platform: 'slack', channel: 'G-group', thread: 'group-dm' },
+      { platform: 'slack', channel: 'C-private', thread: 'private-channel' },
+      // Nothing known yet, as right after a restart.
+      { platform: 'slack', channel: 'C-unknown', thread: 'undetermined' },
+      // Not a place at all.
+      { platform: 'github', channel: 'example-org/example-repo', thread: 'review' },
+      // A webchat conversation its owner made org-visible.
+      { platform: 'webchat', channel: 'conv-1', thread: 'webchat' }
     ]
-    for (const [i, { channel, thread }] of sessions.entries()) {
-      const key = sessionKey('slack', channel, thread, 'bot-a')
+    for (const [i, { platform, channel, thread }] of sessions.entries()) {
+      const key = sessionKey(platform, channel, thread, 'bot-a')
       await s.upsertSession({
         key,
         agentId: 'bot-a',
-        platform: 'slack',
+        platform,
         channel,
         thread,
         acpSessionId: `acp-${thread}`,
@@ -888,13 +894,16 @@ describe('LocalStore', () => {
     await s.setSessionClassification(sessionKey('slack', 'G-group', 'group-dm', 'bot-a'), {
       conversationKind: 'group_dm'
     })
-    const threads = async (opts?: { skipPrivate?: boolean; privateConversations?: string[] }) =>
+    const threads = async (opts?: Parameters<LocalStore['dreamSessionSources']>[2]) =>
       (await s.dreamSessionSources('bot-a', 20, opts)).map((r) => r.thread)
-    expect(await threads()).toEqual(['private-channel', 'group-dm', 'shared'])
-    expect(await threads({ skipPrivate: true })).toEqual(['private-channel', 'shared'])
-    expect(await threads({ skipPrivate: true, privateConversations: ['C-private', 'C-private'] })).toEqual(['shared'])
-    // The conversation list rides only with skipPrivate.
-    expect(await threads({ privateConversations: ['C-private'] })).toEqual(['private-channel', 'group-dm', 'shared'])
+    const everything = ['webchat', 'review', 'undetermined', 'private-channel', 'group-dm', 'shared']
+    expect(await threads()).toEqual(everything)
+    expect(await threads({ skipPrivate: true })).toEqual(everything.filter((t) => t !== 'group-dm'))
+    const places = { platforms: ['slack', 'webchat'], open: ['C-public', 'C-public'] }
+    expect(await threads({ skipPrivate: true, places })).toEqual(['review', 'shared'])
+    expect(await threads({ skipPrivate: true, places: { ...places, open: [] } })).toEqual(['review'])
+    // Places ride only with skipPrivate.
+    expect(await threads({ places })).toEqual(everything)
     await s.close()
   })
 

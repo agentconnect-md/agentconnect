@@ -110,6 +110,12 @@ export const DREAM_UNBOUND_STAGED_CONTENT_REASON =
  * B binds the reviewed bytes to adoption (task #36 Phase C). */
 export type DreamOperationPolicy = 'blocked' | 'test-only' | 'enabled'
 
+/** Which platforms' sessions are places, and the conversations among them known open (explicitly reported not private). */
+export interface DreamPlaces {
+  platforms: readonly string[]
+  open: readonly string[]
+}
+
 export interface DreamStorePort {
   insertDream(dream: DreamInfo): Promise<void>
   updateDream(dream: DreamInfo): Promise<void>
@@ -136,11 +142,11 @@ export interface DreamStorePort {
    *  records a dream leaves behind — they outlive the session they point at. */
   getSessionByAcpIdForAgent(agentId: string, acpSessionId: string): Promise<{ key: string } | undefined>
   ensureOutwardSessionId(key: string, agentId?: string): Promise<string>
-  /** Newest-first addressable sessions for the agent (transcript sources); `skipPrivate` drops capture-excluded and group-DM sessions and those in `privateConversations`. */
+  /** Newest-first addressable sessions for the agent (transcript sources); `skipPrivate` drops capture-excluded, DM and group-DM sessions and, with `places`, a place's session unless its conversation is open. */
   dreamSessionSources(
     agentId: string,
     limit: number,
-    opts?: { skipPrivate?: boolean; privateConversations?: readonly string[] }
+    opts?: { skipPrivate?: boolean; places?: DreamPlaces }
   ): Promise<
     {
       sessionId: string
@@ -199,8 +205,8 @@ export interface DreamRunnerDeps {
   /** The agent's dreaming policy, or undefined when dreaming is not enabled
    *  (missing binding, non-managed provider, or enabled:false). */
   dreamingPolicyFor(agentId: string): MemoryDreamingPolicy | undefined
-  /** For an agent whose dreams skip private sessions and places (assistant mode, assistant-mode.md §5.5), the conversations known private; undefined ⇒ it mines every session. */
-  privatePlacesFor?(agentId: string): readonly string[] | undefined
+  /** For an agent whose dreams skip private sessions and places (assistant mode, assistant-mode.md §5.5), its places; undefined ⇒ it mines every session. */
+  placesFor?(agentId: string): Promise<DreamPlaces | undefined> | DreamPlaces | undefined
   /** Omission is deliberately `blocked`. Production must never infer authority
    * from runtime configuration; deterministic tests opt in explicitly. */
   operationPolicy?: DreamOperationPolicy
@@ -547,10 +553,10 @@ export class DreamRunner {
       updatedAt: number
     }[]
   > {
-    const privateConversations = this.deps.privatePlacesFor?.(agentId)
+    const places = await this.deps.placesFor?.(agentId)
     const sources = (limit: number) =>
-      privateConversations
-        ? this.deps.store.dreamSessionSources(agentId, limit, { skipPrivate: true, privateConversations })
+      places
+        ? this.deps.store.dreamSessionSources(agentId, limit, { skipPrivate: true, places })
         : this.deps.store.dreamSessionSources(agentId, limit)
     if (explicitWindow !== undefined) return await sources(explicitWindow)
     const recent = await sources(MAX_AUTO_SESSION_WINDOW)

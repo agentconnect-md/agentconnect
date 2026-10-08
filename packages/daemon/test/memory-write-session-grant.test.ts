@@ -34,8 +34,8 @@ function world(excluded = true, key = sessionKey('webchat', 'conv-1', 'conv-1', 
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
   daemon.store = {
     isCaptureExcluded: vi.fn(async () => excluded),
-    // An ordinary channel row, so only the capture gate decides here.
-    getSession: async (k: string) => ({ key: k, channel: 'C-public', conversationKind: 'channel' }),
+    // An ordinary Slack channel row, known open once a test says so, so only the capture gate decides here.
+    getSession: async (k: string) => ({ key: k, platform: 'slack', channel: 'C-public', conversationKind: 'channel' }),
     getSessionByAcpIdForAgent: async () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: async () => new Map<string, string>(),
     upsertElicit: vi.fn(async () => {})
@@ -143,8 +143,14 @@ describe('an assistant-mode agent keeps private sessions out of shared memory (a
   const thread = appendCoordinate(1)
   const key = sessionKey('slack', 'D1', thread, AGENT)
   const dm = { platform: 'slack', thread, deliveryThread: thread } as Partial<SessionContext>
-  const assistant = (w: ReturnType<typeof world>) =>
-    w.daemon.agents.set(AGENT, { id: AGENT, assistantMode: { enabled: true, responsibleUserId: 'user-1' } })
+  const assistant = (w: ReturnType<typeof world>) => {
+    w.daemon.agents.set(AGENT, {
+      id: AGENT,
+      integrations: [{ id: 'int-1', platform: 'slack' }],
+      assistantMode: { enabled: true, responsibleUserId: 'user-1' }
+    })
+    w.daemon.conversationPrivacy.set('C-public', false)
+  }
 
   it('refuses a private append session’s write without a card, whatever grant it held before the switch', async () => {
     const w = world(true, key)

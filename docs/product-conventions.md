@@ -1039,8 +1039,9 @@ altogether, because whatever enters it can be recalled in every other place: dir
 messages, webchat, group DMs and channels the platform reports private. Their turns are
 not distilled, its dreams skip them, and an explicit write from one is refused with that
 explanation instead of asking, so Allow for this session is never offered on any of its
-conversations. A platform that cannot tell whether a channel is private has it treated as
-not private.
+conversations. A conversation counts as private until its platform has said it is not —
+also right after a restart, before that answer comes back — and a platform that cannot
+tell whether a channel is private says it is not.
 
 **Agents on native runtime memory are the exception, and the product must say so.** With
 that backend the runtime persists memory inside its own process for the whole agent, with

@@ -303,8 +303,10 @@ import {
   DreamRunner,
   DreamStateError,
   type DreamLifecycleEvent,
-  type DreamOperationPolicy
+  type DreamOperationPolicy,
+  type DreamPlaces
 } from './dream/runner.js'
+import { describePlace, kindFromRows, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
   conversationAdmitsAgent,
@@ -7554,33 +7556,77 @@ export class Daemon {
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
     const excluded = await this.store.isCaptureExcluded(ctx.agentId, key)
     // Assistant mode keeps private sessions and places out of shared memory: nobody is asked, no earlier grant applies (assistant-mode.md §5.5).
-    if (assistantModeOn(this.agents.get(ctx.agentId)) && (excluded || (await this.sessionInPrivatePlace(key))))
+    if (
+      assistantModeOn(this.agents.get(ctx.agentId)) &&
+      (excluded || (await this.sessionInPrivatePlace(ctx.agentId, key)))
+    )
       return 'closed'
     if (!excluded) return 'allow'
     return this.memoryWriteGrants.has(key) ? 'allow' : 'ask'
   }
 
-  /** Whether a session's place is a group DM or a private channel (assistant-mode.md §5.5); an unknown session counts as one. */
-  private async sessionInPrivatePlace(key: string | undefined): Promise<boolean> {
+  /** Whether a session sits in a place an assistant-mode agent must keep out of shared memory (assistant-mode.md §5.5); fails closed. */
+  private async sessionInPrivatePlace(agentId: string, key: string | undefined): Promise<boolean> {
     const rec = key ? await this.store.getSession(key) : undefined
     if (!rec) return true
-    return rec.conversationKind === 'group_dm' || this.conversationIsPrivate(rec.channel)
+    return (
+      this.placePlatforms().includes(rec.platform) &&
+      !(await this.placeOpenForMemory(agentId, rec, [rec.conversationKind]))
+    )
   }
 
-  /** Whether the platform reported a conversation as a group DM or a private one; a platform that cannot tell reports neither. */
-  private conversationIsPrivate(channel: string): boolean {
-    for (const { channels } of this.channelSnapshots.values())
-      if (channels.some((c) => c.id === channel && (c.kind === 'mpim' || c.isPrivate === true))) return true
-    return this.conversationPrivacy.get(channel) === true
+  /** Whether a place may feed shared memory: only a channel its platform explicitly reported not private; a DM, group DM, webchat or undetermined place may not. */
+  private async placeOpenForMemory(
+    agentId: string,
+    place: { platform: string; channel: string; transportScope?: string | null },
+    kinds: Iterable<string | null | undefined>
+  ): Promise<boolean> {
+    const rowKind = kindFromRows(place.platform, kinds)
+    if (rowKind !== undefined && rowKind !== 'channel') return false
+    // The recall rule's resolver: the snapshot row first, then the platform's own lookup.
+    const described = await describePlace(
+      { platform: place.platform, channel: place.channel },
+      rowKind,
+      this.integrationIdForTransportScope(agentId, place.platform, place.transportScope),
+      this.memoryPlaceDeps()
+    )
+    return described.kind === 'channel' && described.private === false
   }
 
-  /** The conversations the platforms reported to an agent's integrations as group DMs or private ones, plus private lookups, for a dream's source query. */
-  private privateConversations(agentId: string): string[] {
-    const ids = new Set([...this.conversationPrivacy].filter(([, isPrivate]) => isPrivate).map(([id]) => id))
-    for (const integration of this.agents.get(agentId)?.integrations ?? [])
-      for (const c of this.channelSnapshots.get(integration.id)?.channels ?? [])
-        if (c.kind === 'mpim' || c.isPrivate === true) ids.add(c.id)
-    return [...ids]
+  /** describePlace's inputs for memory: the snapshot row, plus the privacy a channel lookup cached; `isPrivate: true` from either wins. */
+  private memoryPlaceDeps(): Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'> {
+    return {
+      gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      placeSnapshot: (integrationId, channel) => {
+        const row = this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel)
+        const looked = this.conversationPrivacy.get(channel)
+        const isPrivate = row?.isPrivate === true || looked === true ? true : (row?.isPrivate ?? looked)
+        return { ...(row?.kind ? { kind: row.kind } : {}), ...(isPrivate !== undefined ? { isPrivate } : {}) }
+      }
+    }
+  }
+
+  /** An assistant-mode agent's places for a dream's source query: the conversations of its sessions known open. */
+  private async dreamPlaces(agentId: string): Promise<DreamPlaces | undefined> {
+    if (!assistantModeOn(this.agents.get(agentId))) return undefined
+    const platforms = this.placePlatforms()
+    const byPlace = new Map<string, { place: SessionRecord; kinds: (string | null | undefined)[] }>()
+    for (const session of await this.store.listSessions(agentId)) {
+      if (!platforms.includes(session.platform)) continue
+      const id = `${session.platform}\u001f${session.channel}`
+      const entry = byPlace.get(id) ?? { place: session, kinds: [] }
+      entry.kinds.push(session.conversationKind)
+      byPlace.set(id, entry)
+    }
+    const open: string[] = []
+    for (const { place, kinds } of byPlace.values())
+      if (await this.placeOpenForMemory(agentId, place, kinds)) open.push(place.channel)
+    return { platforms, open }
+  }
+
+  /** The platforms whose sessions are places (assistant-mode.md §5.2): every chat platform's and webchat's; a code host's or a cron's is none. */
+  private placePlatforms(): string[] {
+    return [...platformIds(), 'webchat']
   }
 
   /** Ask the human behind the session's live turn about ONE write; "for this session" is remembered here. */
@@ -7641,8 +7687,8 @@ export class Daemon {
     if (!output.trim()) return
     // Shared memory never takes a capture-excluded turn, checked before distillation and the external outbox alike; fails closed.
     if (await this.store.isCaptureExcluded(agentId, session?.key)) return
-    // Nor, in assistant mode, a turn in a group DM or a private channel (assistant-mode.md §5.5).
-    if (assistantModeOn(this.agents.get(agentId)) && (await this.sessionInPrivatePlace(session?.key))) return
+    // Nor, in assistant mode, a turn in a place not known to be open (assistant-mode.md §5.5).
+    if (assistantModeOn(this.agents.get(agentId)) && (await this.sessionInPrivatePlace(agentId, session?.key))) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -8635,7 +8681,7 @@ export class Daemon {
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       memoryHomePortsFor: (id) => this.memoryHomePortsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
-      privatePlacesFor: (id) => (assistantModeOn(this.agents.get(id)) ? this.privateConversations(id) : undefined),
+      placesFor: (id) => this.dreamPlaces(id),
       operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>

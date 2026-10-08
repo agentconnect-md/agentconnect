@@ -240,9 +240,9 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     }
     inner.store = await openTestStore()
     // A DM (private session) and an org-visible session in a channel its membership listing reports private.
-    for (const [channel, localExcluded] of [
-      ['D1', true],
-      ['G1', false]
+    for (const [channel, localExcluded, conversationKind] of [
+      ['D1', true, 'dm'],
+      ['G1', false, 'channel']
     ] as const) {
       const key = sessionKey('slack', channel, channel, 'bot-a')
       await inner.store.upsertSession({
@@ -257,18 +257,22 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
         updatedAt: Date.now()
       })
       await inner.store.setLocalCaptureGate('bot-a', key, localExcluded)
+      await inner.store.setSessionClassification(key, { conversationKind })
     }
     inner.channelSnapshots.set('int-1', { channels: [{ id: 'G1', isPrivate: true }], authoritative: true })
     const agent = {
       id: 'bot-a',
       memory: { provider: 'managed', dreaming: { enabled: true } },
-      integrations: [{ id: 'int-1' }]
+      integrations: [{ id: 'int-1', platform: 'slack' }]
     }
     inner.agents.set('bot-a', agent)
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(true)
     inner.agents.set('bot-a', { ...agent, assistantMode: { enabled: true, responsibleUserId: 'user-1' } })
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
-    // The listing reporting it public again makes the channel a source once more.
+    // Right after a restart nothing is known about G1 yet: still skipped, not counted as new activity.
+    inner.channelSnapshots.clear()
+    expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
+    // Only the listing reporting it public makes the channel a source.
     inner.channelSnapshots.set('int-1', { channels: [{ id: 'G1', isPrivate: false }], authoritative: true })
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(true)
     await inner.store.close()

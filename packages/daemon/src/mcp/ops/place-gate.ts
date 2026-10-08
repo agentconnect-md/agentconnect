@@ -69,7 +69,7 @@ export async function describePlace(
   place: PlaceRef,
   rowKind: PlaceKind | undefined,
   integrationId: string | undefined,
-  deps: PlaceAccessDeps
+  deps: Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'>
 ): Promise<SourcePlace> {
   const snapshot = integrationId ? deps.placeSnapshot?.(integrationId, place.channel) : undefined
   let kind = stricter(rowKind, snapshot?.kind ? SNAPSHOT_KINDS[snapshot.kind] : undefined)
