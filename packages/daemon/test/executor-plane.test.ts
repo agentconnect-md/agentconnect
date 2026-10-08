@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareReq, ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect.md/protocol'
 import { sessionKeyDirName } from '../src/acp/host-key.js'
-import { executorMount, ExecutorPlane } from '../src/execution/executor-plane.js'
+import { EXECUTOR_GRANTS, executorMount, ExecutorPlane } from '../src/execution/executor-plane.js'
 import type { PlacementChoice } from '../src/execution/executor-placement.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
 import { cwdWorkspaceIncarnation } from '../src/skills/workspace-incarnation.js'
@@ -259,6 +259,14 @@ describe('the skills a placed session installs', () => {
     const { executor, request } = bound()
     await executor.skillClientFor(SUBJECT, CWD)!.verify([])
     expect(request).toHaveBeenCalledWith('skills', { cwd: CWD, request: { op: 'verify', roots: [] } }, undefined)
+  })
+
+  // P2 keeps executors on daemon acquisition even if a shim advertised skill-git-in-pod-v1 and the grant leaked.
+  it('never takes Git plans, whatever the bound shim holds', () => {
+    const { executor } = bound()
+    expect(EXECUTOR_GRANTS).not.toContain('skills-git')
+    expect(executor.skillClientFor(SUBJECT, CWD)!.gitInPod).toBe(false)
+    expect(executor.skillClientFor(SUBJECT)!.gitInPod).toBe(false)
   })
 
   it('sends the bare request without one, which the shim installs at its own root', async () => {

@@ -422,6 +422,21 @@ describe('dial-in identity handshake', () => {
     }
   )
 
+  it.each([
+    [undefined, false],
+    [['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'source-cache-bundle-v1'], false],
+    [['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'skill-git-in-pod-v1'], true]
+  ])('shows skill-git-in-pod-v1 only to a daemon that offers it (%j)', async (supportedFeatures, shown) => {
+    const { port } = await sandbox({
+      features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'skill-git-in-pod-v1']
+    })
+    const { socket, frames } = await rawDial(port)
+    socket.send(JSON.stringify({ type: 'shim/hello', agentId: 'agent-a', generation: 1, supportedFeatures }))
+    await waitFor(() => frames.length > 0)
+    const identity = JSON.parse(frames[0]!) as { features?: string[] }
+    expect(identity.features?.includes('skill-git-in-pod-v1') ?? false).toBe(shown)
+  })
+
   it('fails the dial when the shim answers with anything but its identity', async () => {
     const clock = new VirtualClock()
     const warnings: string[] = []

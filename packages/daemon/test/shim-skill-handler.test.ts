@@ -38,6 +38,43 @@ async function fixture(content = Buffer.from('hello')) {
 }
 
 describe('cluster skill shim staging', () => {
+  // This image does not advertise skill-git-in-pod-v1, so a Git plan reaching it is refused whole.
+  it('refuses a Git plan reconcile', async () => {
+    const { root, operationId, handler, handle } = await fixture()
+    try {
+      await expect(
+        handler.handle({
+          op: 'reconcile',
+          operationId,
+          handle,
+          authority: {
+            groupId: 'g',
+            term: '1',
+            daemonId: 'd',
+            agentId: 'a',
+            workspaceIncarnation: 'claim-1',
+            shimGeneration: 1
+          },
+          priorRoots: [],
+          replayKey: 'a'.repeat(64),
+          allowDesiredAdoption: false,
+          sources: [
+            {
+              sourceId: 'agent:0',
+              sourceKind: 'git',
+              url: 'https://github.com/acme/skills.git',
+              ref: 'refs/heads/main',
+              plannedCommit: 'c'.repeat(40),
+              selections: []
+            }
+          ]
+        })
+      ).rejects.toThrow(/does not take Git skill plans/)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('skips a source whose selected skill set is oversized, publishing nothing for it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skill-admission-'))
     const workspace = join(root, 'workspace')
@@ -133,6 +170,9 @@ describe('cluster skill shim staging', () => {
         ]
       })
       expect(reply.skipped).toEqual([{ sourceId: 'bad', reason: expect.stringContaining('too many bundles') }])
+      // No Git plan, so the reply is the shape a daemon predating skill-git-in-pod-v1 parses strictly.
+      expect(Object.keys(reply).sort()).toEqual(['conflicts', 'roots', 'skipped'])
+      expect(Object.keys(reply.skipped![0]!).sort()).toEqual(['reason', 'sourceId'])
       expect(reply.roots.map((entry) => [entry.sourceId, entry.path.split('/').at(-1)])).toEqual([['good', 'good']])
     } finally {
       await rm(root, { recursive: true, force: true })

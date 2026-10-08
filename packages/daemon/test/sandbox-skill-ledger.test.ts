@@ -26,6 +26,13 @@ it('retains skill authority across VM replacement but revokes it when storage is
   expect((await microsandboxSkillTarget(replacement, cwd)).workspaceIncarnation).not.toBe(first.workspaceIncarnation)
 })
 
+it('keeps a local VM on daemon acquisition even when its shim holds every capability', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'ac-sandbox-git-'))
+  roots.push(root)
+  const session = { request: async () => undefined, hasCapability: () => true }
+  expect((await microsandboxSkillTarget(session, root)).client.gitInPod).toBe(false)
+})
+
 it('adopts only a ready daemon-owned receipt for the same workspace and agent', async () => {
   const root = await mkdtemp(join(tmpdir(), 'ac-sandbox-ledger-'))
   roots.push(root)

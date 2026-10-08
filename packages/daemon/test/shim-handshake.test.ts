@@ -249,6 +249,34 @@ describe('shim feature negotiation', () => {
     expect(await grantsFor(['cluster-skills-v1'])).toEqual(['exec'])
     expect(await grantsFor(['source-cache-bundle-v1'])).toEqual(['exec', 'bundle'])
   })
+
+  it('grants `skills-git` only to a receipt-paging shim that advertises skill-git-in-pod-v1', async () => {
+    const grantsFor = async (features: string[]): Promise<string[]> => {
+      const clock = new VirtualClock()
+      const { dialer } = scriptedDialer({
+        answer: presents('projected-token', features),
+        verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+        clock
+      })
+      const grants = ['skills', 'skills-wide', 'skills-receipts', 'skills-git']
+      const connection = await runVirtual(
+        clock,
+        dialer.connect(SCRIPTED_ENDPOINT, record({ grants: grants as never }), 500)
+      )
+      return connection.binding.grants
+    }
+    const skills = ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3']
+    // An older image advertises nothing new, so it keeps daemon acquisition.
+    expect(await grantsFor([])).toEqual([])
+    expect(await grantsFor(skills)).toEqual(['skills', 'skills-wide', 'skills-receipts'])
+    expect(await grantsFor(['cluster-skills-v1', 'skill-git-in-pod-v1'])).toEqual(['skills'])
+    expect(await grantsFor([...skills, 'skill-git-in-pod-v1'])).toEqual([
+      'skills',
+      'skills-wide',
+      'skills-receipts',
+      'skills-git'
+    ])
+  })
 })
 
 describe('handshake operability counters', () => {
@@ -347,7 +375,13 @@ describe('shim handshake', () => {
       type: 'shim/hello',
       agentId: 'agent-a',
       generation: 3,
-      supportedFeatures: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'source-cache-bundle-v1']
+      supportedFeatures: [
+        'cluster-skills-v1',
+        'cluster-skills-v2',
+        'cluster-skills-v3',
+        'source-cache-bundle-v1',
+        'skill-git-in-pod-v1'
+      ]
     })
     // The audience is what makes handing over the pod's own token safe: a token minted
     // for anything else must not authenticate here.

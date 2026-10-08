@@ -83,7 +83,9 @@ export async function microsandboxSkillTarget(session: Pick<ShimSession, 'reques
       cwdSkillRequester(session, cwd),
       session.hasCapability('skills-wide'),
       true,
-      session.hasCapability('skills-receipts')
+      session.hasCapability('skills-receipts'),
+      // Local VMs keep daemon acquisition in P2 (source-cache.md §13), whatever their shim advertises.
+      false
     )
   }
 }

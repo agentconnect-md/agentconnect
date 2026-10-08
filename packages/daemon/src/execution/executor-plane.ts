@@ -299,7 +299,9 @@ export class ExecutorPlane implements ExecutionPlane {
       cwd === undefined ? session : cwdSkillRequester(session, cwd),
       session.hasCapability('skills-wide'),
       false,
-      session.hasCapability('skills-receipts')
+      session.hasCapability('skills-receipts'),
+      // Executors keep daemon acquisition in P2 (source-cache.md §13), whatever their shim advertises.
+      false
     )
   }
 
