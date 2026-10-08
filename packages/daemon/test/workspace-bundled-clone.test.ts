@@ -24,13 +24,21 @@ const URL = 'https://cache.example/src/o/anon/x/bundles/b.bundle?X-Amz-Signature
 
 type Answer = string | Error
 
-/** A scripted runner: each subcommand answers from `answers`, every call is recorded. */
+/** The names `rev-parse --glob` would print for the refs a scripted `show-ref` answer holds. */
+const globbedOf = (showRef: Answer | undefined): string =>
+  typeof showRef === 'string'
+    ? bundleRefsOf(showRef)
+        .map((ref) => `${ref}\n`)
+        .join('')
+    : ''
+
+/** A scripted runner: each subcommand answers from `answers` (rev-parse defaults to show-ref's bundle refs), every call is recorded. */
 function scripted(answers: Partial<Record<string, Answer>>, calls: string[][]): GitRunner {
   const runner: GitRunner = {
     withEnv: () => runner,
     raw: async (args) => {
       calls.push(args)
-      const answer = answers[args[0]!] ?? ''
+      const answer = answers[args[0]!] ?? (args[0] === 'rev-parse' ? globbedOf(answers['show-ref']) : '')
       if (answer instanceof Error) throw answer
       return answer
     },
@@ -115,7 +123,8 @@ describe('cloneFromBundle (scripted Git)', () => {
     expect(await h.run()).toBe('hit')
     expect(h.clones).toEqual([[`--bundle-uri=${URL}`]])
     expect(h.calls).toEqual([
-      ['show-ref'],
+      ['rev-parse', '--symbolic-full-name', '--glob=refs/bundles/*'],
+      ['show-ref', '--', ...refs],
       ['fsck', '--connectivity-only'],
       ...refs.map((ref) => ['update-ref', '-d', ref])
     ])
@@ -169,9 +178,22 @@ describe('cloneFromBundle (scripted Git)', () => {
     expect(await empty.run()).toBe('fallback')
     expect(empty.reports).toMatchObject([{ reason: 'no-bundle-refs' }])
 
-    const none = harness({ answers: { 'show-ref': execError(1, '', ['show-ref']) } })
+    // A ref the glob named but that is gone by the time show-ref reads it.
+    const none = harness({
+      answers: { 'rev-parse': 'refs/bundles/main\n', 'show-ref': execError(1, '', ['show-ref']) }
+    })
     expect(await none.run()).toBe('fallback')
     expect(none.reports).toMatchObject([{ reason: 'no-bundle-refs' }])
+  })
+
+  it.each([
+    ['the glob', { 'rev-parse': execError(128, 'boom', ['rev-parse']) }],
+    ['show-ref', { 'rev-parse': 'refs/bundles/main\n', 'show-ref': execError(128, 'boom', ['show-ref']) }]
+  ])('falls back as inspect-failed when %s fails', async (_label, answers) => {
+    const h = harness({ answers })
+    expect(await h.run()).toBe('fallback')
+    expect(h.reports).toMatchObject([{ kind: 'fallback', reason: 'inspect-failed' }])
+    expect(h.clones).toEqual([[`--bundle-uri=${URL}`], []])
   })
 
   it('falls back when a blobless connectivity check fails, or an old shim refuses fsck', async () => {
@@ -331,6 +353,20 @@ describe.skipIf(process.platform === 'win32')('cloneFromBundle (real Git)', () =
     expect(r.argv).toHaveLength(1)
     expect(bundleRefs(r.target)).toEqual([])
     expect(ok(r.target, ['rev-parse', 'refs/heads/main'])).toBe(f.tip)
+  })
+
+  it('hits in a repository whose tags alone overflow a shim frame', async () => {
+    const f = fixture()
+    // One packed-refs file, not thousands of loose refs: well past the shim's 64 KiB stream cap once cloned.
+    const tags = Array.from({ length: 2000 }, (_, i) => `${f.tip} refs/tags/release-${String(i).padStart(6, '0')}`)
+    writeFileSync(join(f.origin, 'packed-refs'), `# pack-refs with: peeled fully-peeled sorted \n${tags.join('\n')}\n`)
+    const bundle = join(f.root, 'good.bundle')
+    ok(f.seed, ['bundle', 'create', '-q', bundle, '--filter=blob:none', 'refs/heads/main'])
+    const r = run(f, bundle, 'blobless')
+
+    expect(await r.result).toBe('hit')
+    expect(git(r.target, ['show-ref']).stdout.length).toBeGreaterThan(64 * 1024)
+    expect(bundleRefs(r.target)).toEqual([])
   })
 
   it('empties and re-clones when an incomplete bundle passes a blobless clone', async () => {

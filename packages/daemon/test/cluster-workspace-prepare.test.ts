@@ -18,6 +18,7 @@ import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
 import { wireTestPlane } from './workspace-plane-support.js'
 import type { ExecutionPlane } from '../src/execution/plane.js'
 import { observeStartup, type StartupPhase } from '../src/session/startup-progress.js'
+import { bundleRefsOf } from '../src/workspace/bundled-clone.js'
 import { GitTransportError, type GitRunner } from '../src/workspace/git-runner.js'
 import { WorkspaceViolationError } from '../src/workspace/workspace-files.js'
 import type { Agent } from '../src/agents/agent-schema.js'
@@ -70,7 +71,7 @@ let probeFailure: Error | undefined
 let cloneFails = false
 /** A bundled clone failing in-band while the same clone without the bundle succeeds. */
 let bundledCloneFails = false
-/** What a bare `show-ref` lists after a clone; undefined keeps the fake's refusal. */
+/** The refs a clone left, as `show-ref` prints them; undefined keeps the fake's refusal. */
 let showRefOut: string | undefined
 /** What the pod's checkout reports as its origin — a resumed volume carries the previous launch's. */
 let originUrl = 'https://github.com/acme/private.git'
@@ -161,7 +162,20 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
       if (sha === undefined) throw new Error(`unknown revision ${ref}`)
       return sha
     }
-    if (args.length === 1 && args[0] === 'show-ref' && showRefOut !== undefined) return showRefOut
+    // The bundle-ref listing: the glob names what `showRefOut` holds, then `show-ref --` reads those names.
+    if (args[0] === 'rev-parse' && args[1] === '--symbolic-full-name' && showRefOut !== undefined) {
+      return bundleRefsOf(showRefOut)
+        .map((ref) => `${ref}\n`)
+        .join('')
+    }
+    if (args[0] === 'show-ref' && args[1] === '--' && showRefOut !== undefined) {
+      const named = new Set(args.slice(2))
+      return showRefOut
+        .split('\n')
+        .filter((line) => named.has(line.split(' ')[1] ?? ''))
+        .map((line) => `${line}\n`)
+        .join('')
+    }
     // No branch of that name yet, so the first drawn one is the one `worktree add` gets.
     if (args[0] === 'show-ref') throw new Error('no such ref')
     // `worktree add` is what CREATES the directory on the volume, so the fake pod learns about it here.

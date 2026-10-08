@@ -62,10 +62,15 @@ export function bundleRefsOf(showRef: string): string[] {
   return bundleRefEntriesOf(showRef).map((entry) => entry.ref)
 }
 
-/** List bundle refs with `show-ref`; its exit 1 means the repository has none. */
+/** Name the bundle refs before `show-ref` reads them: a bare `show-ref` of a tag-heavy repository overflows a shim frame. */
 async function listBundleRefEntries(git: GitRunner): Promise<Array<{ ref: string; oid: string }>> {
+  const names = (await git.raw(['rev-parse', '--symbolic-full-name', `--glob=${BUNDLE_REF_PREFIX}*`]))
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(BUNDLE_REF_PREFIX))
+  if (names.length === 0) return []
   try {
-    return bundleRefEntriesOf(await git.raw(['show-ref']))
+    return bundleRefEntriesOf(await git.raw(['show-ref', '--', ...names]))
   } catch (err) {
     if (err instanceof GitExecError && err.code === 1) return []
     throw err
