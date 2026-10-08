@@ -1206,18 +1206,25 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       const capability = randomBytes(32).toString('base64url')
       const logs: string[] = []
       const onDisk: string[] = []
+      // Git creates and removes lockfiles while this runs, so a path that vanished between listing and reading is skipped.
+      const gone = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === 'ENOENT'
       const scan = async (): Promise<void> => {
         for (const path of await filesUnder(w.root)) {
-          if ((await lstat(path)).isFile() && (await readFile(path)).includes(capability)) onDisk.push(path)
+          try {
+            if ((await lstat(path)).isFile() && (await readFile(path)).includes(capability)) onDisk.push(path)
+          } catch (err) {
+            if (!gone(err)) throw err
+          }
         }
       }
-      const spawned: Array<Promise<void>> = []
-      const r = runner(w, () => spawned.push(scan()))
+      const spawned: Array<Promise<PromiseSettledResult<void>>> = []
+      // Settled at once, so a scan that fails mid-reconcile is reported by the assertion below, never as an unhandled rejection.
+      const r = runner(w, () => spawned.push(Promise.allSettled([scan()]).then(([result]) => result!)))
       const reply = await reconcile(handlerFor(w, r.git, { logs }), {
         sources: [plan(w), plan(w, { sourceId: 'agent:1', url: `${HOST}absent.git` })],
         credentialWindow: { capability }
       })
-      await Promise.all(spawned)
+      expect((await Promise.all(spawned)).filter((result) => result.status === 'rejected')).toEqual([])
       await scan()
       expect(leaves(reply.roots)).toEqual(['alpha'])
       expect(r.calls.length).toBeGreaterThan(0)

@@ -101,8 +101,9 @@ for (const entry of ['index.js', 'git-credential.js', 'gh-token.js', 'glab-token
     process.exit(1)
   }
   const shim = readFileSync(shimPath, 'utf8')
+  // Statement-anchored, so an inlined dependency's doc comment (yaml's `* import … from 'yaml'`) is not read as an import.
   const shimSpecs = [
-    ...shim.matchAll(/\bfrom\s*["']([^"']+)["']/g),
+    ...shim.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm),
     ...shim.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)
   ].map((match) => match[1])
   const shimLeaked = shimSpecs.filter((spec) => !nodeBuiltins.has(spec))
