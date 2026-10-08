@@ -350,7 +350,44 @@ name (`--upload-pack`, `--receive-pack`, `--exec`, `--exec-path`, `--config`,
 with them: the hidden exact alias `--exec=<cmd>`, which `ls-remote` runs as
 `--upload-pack` and `push` as `--receive-pack`, and clone's grouped short
 options (`-qu<cmd>`, `-qc<key=value>`), which are walked letter by letter. The
-skill-acquisition row inherits the same rule.
+skill-acquisition row inherits the same rule through `assertNoRefusedArguments`,
+the execution-reaching half of `validateGitArgs` without the exec inventory: the
+shim's own argv may use forms the exec channel never admits (`read-tree`,
+`cat-file`), so the exec policy itself is not widened.
+
+**In-pod skill Git (P2, `shim/skill-git-acquire.ts`).** Every spawn runs with an
+environment the shim builds from scratch: `GIT_CONFIG_NOSYSTEM=1`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `HOME` a private empty directory, hooks,
+fsmonitor and submodule recursion off, `GIT_ALLOW_PROTOCOL=https`, and the
+caller's `gitcred` helper with its credential-window capability appended last;
+no agent-writable config, hook or `GIT_*` variable is read. Staging is a 0700
+directory under the shim's runtime root, never the agent workspace. Each stream
+is capped at 64 KiB: bundle refs are named with `rev-parse --glob`, `fsck` runs
+with `--no-dangling`, and `ls-remote` is scoped to the ref by name. The
+subdirectory is checked out with `read-tree --reset -u <commit>:<subDir>` into a
+private index and work tree, so only that subtree's blobs are fetched (in one
+batch) and no `.git` exists under the snapshot root. Clone, fetch and that
+checkout may fetch lazily; every inspection runs with `GIT_NO_LAZY_FETCH=1`. A
+timeout or abort is not a bundle fallback: the Source is skipped (timeout) or
+the reconcile cancelled (abort). A refusal (`access_denied`) in a bundled attempt
+may be the presigned GET's, so it falls back once and only the bundle-free attempt
+reports it. A foreign-commit bundle needs no retry: its refs are deleted and the
+planned commit is always fetched from the origin, so the bundle supplies objects
+only. `fsck` is not a complete bundle-integrity gate: a filtered bundle's pack is
+a promisor pack, so trees it lacks pass `fsck`. What closes the gap is that a
+bundled attempt that cannot read the planned commit's subtree without the origin
+(or whose exit-0 clone printed `Could not read <oid>`) falls back to a
+bundle-free clone, and only that clone may report `commit_unavailable`.
+`http.followRedirects=false` means a renamed or transferred repository fails as
+`fetch_failed` in the pod, so the daemon-side plan must carry the current URL
+(the S2 resolver already fails a rename closed as `replaced`). More than
+64 refs under `refs/bundles/` is treated as a hostile bundle and retried
+without it. `ls-remote` runs with `GIT_CEILING_DIRECTORIES` at the staging root,
+because it discovers an enclosing repository and would read its config. A subdirectory missing at the planned commit is
+`commit_unavailable`; any snapshot refusal, including no `SKILL.md`, is
+`limits_exceeded`. The retry core it shares with the workspace clone
+(`source-cache/bundle-retry.ts`) imports nothing, so the single-file shim bundle
+carries no signer or configuration code.
 
 **Acquisition hardening carries over.** A staged skill subdirectory reaches the
 CLI cell only through the existing bounded no-follow snapshot
@@ -542,7 +579,13 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
      not `fsck`-clean (the same `fsck --connectivity-only` check as a workspace
      clone, with the same download-warning and empty-`refs/bundles`
      classification), discards the staging directory and repeats this step once
-     without the bundle (the retry contract, section 7);
+     without the bundle (the retry contract, section 7). A legitimate cache
+     bundle that already holds the planned commit installs it even if the
+     origin ref has since been force-pushed away, because the content is
+     hash-pinned to the daemon's planned commit, whereas the bundle-free path
+     would report `ref_moved`; a timeout on a bundled attempt is not a failure
+     that falls back: it skips the Source for this reconcile, and the next
+     reconcile attempts it again;
    - checks out only the subdirectory at the planned commit, which fetches only
      that subtree's blobs, and passes it through the bounded no-follow snapshot
      (section 6.1); `.git` is dropped.
@@ -831,6 +874,10 @@ over `source_cache_usage`, and quota pressure surfaces as
   grants `skills-git` only to a shim advertising it beside receipt paging
   (`cluster-skills-v3`), and in P2 only to Kubernetes runtime pods: executor
   sessions and local VMs keep daemon acquisition whatever their shim advertises.
+  A shim advertises it only when `gitSupportsInPodSkills` accepts its own
+  `git --version`: ≥ 2.38 for `--bundle-uri` and a release that honors
+  `GIT_NO_LAZY_FETCH` (the floors listed under workspace clone below); an older
+  image keeps daemon acquisition rather than failing the session.
 - **Reconcile plan:** a Git Source entry (`sourceKind: 'git'`: https URL, the
   resolved full ref — `refs/heads/<b>` or `refs/tags/<t>`, absent only for a
   pinned SHA — the 40-hex planned commit, subdirectory, selections,
@@ -995,7 +1042,7 @@ matrix and test-app pod/timing checks run. The chart default remains off while
 | Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, workspace write-back `source-cache/write-back.ts` with the header-signed HEAD/retag/DELETE/lifecycle-read client `source-cache/object-client.ts`, the sweep `source-cache/sweep.ts` and lifecycle check `source-cache/lifecycle.ts`, the metrics recorder `source-cache/metrics.ts`, reconcile plan and write-back in `reconcileSandboxSkills` |
-| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, the `bundle` operations (`shim/bundle-handler.ts`, `shim/bundle-protocol.ts`, daemon side `shim/bundle-client.ts`), credential window in the `gitcred` tunnel, the `--bundle-uri` rule in `workspace/git-command-policy.ts`                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts` over `shim/skill-git-acquire.ts` (with its retry core `source-cache/bundle-retry.ts`), the `bundle` operations (`shim/bundle-handler.ts`, `shim/bundle-protocol.ts`, daemon side `shim/bundle-client.ts`), credential window in the `gitcred` tunnel, the `--bundle-uri` rule in `workspace/git-command-policy.ts`                                                                                                                                                                                                                                                                                                                                      |
 | daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect; the pointer row's compare-and-set in `setSourceCachePointer`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |

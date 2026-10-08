@@ -122,12 +122,4 @@ export function createPresigner(opts: PresignerOptions): SourceCachePresigner {
   }
 }
 
-/** A presigned URL with its signature and credential material removed, for log lines. */
-export function redactPresignedUrl(url: string): string {
-  try {
-    const parsed = new URL(url)
-    return `${parsed.origin}${parsed.pathname}`
-  } catch {
-    return '[invalid url]'
-  }
-}
+export { redactPresignedUrl } from './bundle-retry.js'
