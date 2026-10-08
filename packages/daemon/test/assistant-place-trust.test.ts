@@ -69,12 +69,46 @@ describe('PlaceTrust', () => {
 
   it('runs the transition for a place the spec newly lists, holding it on the live integration until it reconciles', async () => {
     const w = world({ 'int-a': true, 'int-b': false })
-    w.trust.specTurnedExternal('int-a', ['C1'])
-    w.trust.specTurnedExternal('int-b', ['C1'])
+    w.trust.specApplied('int-a', integrationOf('int-a', ['C1']), ['C1'])
+    w.trust.specApplied('int-b', integrationOf('int-b', ['C1']), ['C1'])
     await settle()
     expect(conversationTrustLevel(w.integrations.get('int-a')!, 'C1')).toBe('external')
     expect(w.interrupts).toEqual([['int-a', 'C1']])
     expect(w.reports).toEqual([])
+  })
+
+  // A detection the CP has not confirmed must survive a spec, a listing and a reconnect, or the place reads internal again.
+  it('holds an unconfirmed detection across specs and replays, until a spec lists it', async () => {
+    const w = world({ 'int-a': true })
+    w.trust.detected(['int-a'], 'C1', 'guestMember')
+    const stale = integrationOf('int-a')
+    w.trust.specApplied('int-a', stale, [])
+    expect(conversationTrustLevel(stale, 'C1')).toBe('external')
+    expect(w.trust.replayRows('int-a', [])).toEqual([{ id: 'C1', externalReason: 'guestMember' }])
+    w.trust.specApplied('int-a', integrationOf('int-a', ['C1']), [])
+    expect(w.trust.heldIntegrations()).toEqual([])
+    expect(w.trust.replayRows('int-a', [{ id: 'C1', externalReason: null }])).toEqual([
+      { id: 'C1', externalReason: null }
+    ])
+  })
+
+  it('lets a listing lift a held share but never a held guest, and carries what it keeps', () => {
+    const w = world({ 'int-a': true })
+    w.trust.detected(['int-a'], 'C1', 'externallyShared')
+    w.trust.detected(['int-a'], 'C2', 'guestMember')
+    const listing = [
+      { id: 'C1', externalReason: null },
+      { id: 'C2', externalReason: null },
+      { id: 'C3', externalReason: null }
+    ]
+    expect(w.trust.listed('int-a', listing)).toEqual([
+      { id: 'C1', externalReason: null },
+      { id: 'C2', externalReason: 'guestMember' },
+      { id: 'C3', externalReason: null }
+    ])
+    expect(w.trust.replayRows('int-a', [])).toEqual([{ id: 'C2', externalReason: 'guestMember' }])
+    w.trust.forget('int-a')
+    expect(w.trust.heldIntegrations()).toEqual([])
   })
 
   it('watches member joins only where an assistant-mode agent owns an integration', () => {
@@ -105,11 +139,15 @@ describe('the daemon downgrade transition', () => {
     daemon.activeGateEntries.set('b-c1', entry('bot-b', 'int-b', 'C1'))
     daemon.interruptTurn = vi.fn(async () => {})
     daemon.cpClient = { emitIntegrationChannels: vi.fn() }
-    daemon.channelSnapshots.set('int-a', {
-      channels: [{ id: 'C1', externalReason: null }],
-      authoritative: true
-    })
+    daemon.store = { retractedIntegrations: async () => [], retractedConversations: async () => [] }
     return daemon
+  }
+
+  /** What a CP reconnect replays for the integration. */
+  async function replayed(daemon: any): Promise<unknown[]> {
+    daemon.cpClient = { emitIntegrationChannels: vi.fn() }
+    await daemon.replayChannelSnapshots()
+    return daemon.cpClient.emitIntegrationChannels.mock.calls.map(([report]: [unknown]) => report)
   }
 
   it('cuts only the in-flight turn delivering into the place, keeping queued messages for the draft path', async () => {
@@ -128,8 +166,52 @@ describe('the daemon downgrade transition', () => {
       channels: [{ id: 'C1', externalReason: 'guestMember' }],
       authoritative: false
     })
-    // A reconnect replays the cached listing; it now carries the detection.
-    expect(daemon.channelSnapshots.get('int-a').channels).toEqual([{ id: 'C1', externalReason: 'guestMember' }])
+  })
+
+  it('replays a guest found before any listing, while the CP was away', async () => {
+    const daemon = daemonWorld()
+    daemon.cpClient = undefined
+    daemon.placeTrust.detected(['int-a'], 'C1', 'guestMember')
+    expect(await replayed(daemon)).toEqual([
+      { integrationId: 'int-a', channels: [{ id: 'C1', externalReason: 'guestMember' }], authoritative: false }
+    ])
+  })
+
+  it('keeps a detection made while the CP was away through a listing that rebuilt the cache, and replays it', async () => {
+    const daemon = daemonWorld()
+    daemon.cpClient = undefined
+    daemon.placeTrust.detected(['int-a'], 'C1', 'guestMember')
+    daemon.placeTrust.detected(['int-a'], 'G1', 'externallyShared')
+    const conn = {
+      botUserId: 'UBOT',
+      listBotChannels: async () => [
+        { id: 'C1', externalReason: null },
+        { id: 'C2', externalReason: null }
+      ]
+    }
+    daemon.connByIntegration.set('int-a', conn)
+    await daemon.connections.refreshChannels(conn)
+    expect(await replayed(daemon)).toEqual([
+      {
+        integrationId: 'int-a',
+        channels: [
+          { id: 'C1', externalReason: 'guestMember' },
+          { id: 'C2', externalReason: null },
+          { id: 'G1', externalReason: 'externallyShared' }
+        ]
+      }
+    ])
+    // Once the CP's spec lists them, nothing is held: the replay is the cached listing, which already carried the guest.
+    daemon.placeTrust.specApplied('int-a', integrationOf('int-a', ['C1', 'G1'], 'shared'), [])
+    expect(await replayed(daemon)).toEqual([
+      {
+        integrationId: 'int-a',
+        channels: [
+          { id: 'C1', externalReason: 'guestMember' },
+          { id: 'C2', externalReason: null }
+        ]
+      }
+    ])
   })
 
   it('looks up a member the relay forwarded only for an assistant-mode owner', async () => {

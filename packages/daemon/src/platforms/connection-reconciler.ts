@@ -14,12 +14,10 @@ import { randomUUID } from 'node:crypto'
 import {
   manifestFor,
   originKindOf,
-  placeExternalReasonSticky,
   type FeishuRegion,
   type IntegrationChannel,
   type IntegrationLeave,
-  type IntegrationLeaveOk,
-  type PlaceExternalReason
+  type IntegrationLeaveOk
 } from '@agentconnect.md/protocol'
 import type { PlaceTrust } from '../assistant/place-trust.js'
 import { isAlreadyOutOfChat } from '../daemon/helpers.js'
@@ -1214,14 +1212,8 @@ export class ConnectionReconciler {
         // The listing carries channels only, so observed DM rows survive into the reconnect snapshot.
         const previous = snapshots.get(integrationId)?.channels ?? []
         const direct = previous.filter((x) => x.kind === 'im' || x.kind === 'mpim')
-        // A guest or an outside member is never lifted, so the replayed snapshot keeps one the listing cannot see.
-        const sticky = new Map<string, PlaceExternalReason>()
-        for (const x of previous)
-          if (x.externalReason && placeExternalReasonSticky(x.externalReason)) sticky.set(x.id, x.externalReason)
-        const merged = [
-          ...channels.map((c) => (sticky.has(c.id) ? { ...c, externalReason: sticky.get(c.id)! } : c)),
-          ...direct
-        ]
+        // A detection the CP has not confirmed rides the listing: a guest stays, a share the listing no longer reports lifts.
+        const merged = this.host.placeTrust().listed(integrationId, [...channels, ...direct])
         snapshots.set(integrationId, { channels: merged, authoritative: true })
         this.host.cpClient()?.emitIntegrationChannels({ integrationId, channels: merged })
         await this.maybeIntroduceOnJoin('slack', integrationId, channels)

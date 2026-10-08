@@ -96,7 +96,6 @@ import {
   hasReachedAgentCallHopLimit,
   RD_AGENTMSG_NOT_READY,
   manifestFor,
-  mergePlaceExternalReason,
   originKindOf,
   SessionPurgeReason,
   RD_ACK_NOT_HOLDER,
@@ -1714,7 +1713,8 @@ export class Daemon {
       [...this.agents.values()].some(
         (agent) => assistantModeOn(agent) && agent.integrations.some((integration) => integration.id === integrationId)
       ),
-    report: (integrationId, channel) => this.recordPlaceExternal(integrationId, channel),
+    report: (integrationId, channel) =>
+      this.cpClient?.emitIntegrationChannels({ integrationId, channels: [channel], authoritative: false }),
     interrupt: (integrationId, channel) => this.interruptPlaceTurns(integrationId, channel),
     warn: (message) => this.log.warn(message)
   })
@@ -2397,6 +2397,7 @@ export class Daemon {
     this.gcConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
+    this.placeTrust.forget(integrationId)
   }
 
   private webchatHost(): WebchatHost {
@@ -3716,7 +3717,7 @@ export class Daemon {
       {
         warn: (m) => this.log.warn(m),
         onDecisionConfigApplied: (id, previous, next, modes) => this.onDecisionConfigApplied(id, previous, next, modes),
-        onExternalChannelsAdded: (id, channels) => this.placeTrust.specTurnedExternal(id, channels)
+        onExternalChannels: (id, next, added) => this.placeTrust.specApplied(id, next, added)
       },
       () =>
         void this.reconcile().catch((err) =>
@@ -16576,13 +16577,6 @@ export class Daemon {
     }
   }
 
-  /** Report a place found external to the CP, kept on the cached snapshot so a reconnect replays it. */
-  private recordPlaceExternal(integrationId: string, channel: IntegrationChannel): void {
-    const cached = this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel.id)
-    if (cached) cached.externalReason = mergePlaceExternalReason(cached.externalReason ?? null, channel.externalReason)
-    this.cpClient?.emitIntegrationChannels({ integrationId, channels: [channel], authoritative: false })
-  }
-
   /** The downgrade transition (assistant-mode.md §5.3): cut the in-flight turn posting into the place; queued messages run next. */
   private async interruptPlaceTurns(integrationId: string, channel: string): Promise<void> {
     // Only a turn delivering into the place is cut; a headless run posts nothing there.
@@ -20353,16 +20347,22 @@ export class Daemon {
    *  observation (including Slack direct-conversation discovery) to a full snapshot. */
   private async replayChannelSnapshots(): Promise<void> {
     // Keyed by both sources: a restart keeps the on-disk tombstones but not the in-memory snapshots.
-    const integrationIds = new Set([...this.channelSnapshots.keys(), ...(await this.store.retractedIntegrations())])
+    const integrationIds = new Set([
+      ...this.channelSnapshots.keys(),
+      ...(await this.store.retractedIntegrations()),
+      ...this.placeTrust.heldIntegrations()
+    ])
     for (const integrationId of integrationIds) {
       const snapshot = this.channelSnapshots.get(integrationId)
       // Tombstones replay too: a retraction sent while the CP was unreachable is lost, so the reconnect carries it.
       const removed = [...(await this.store.retractedConversations(integrationId))]
-      if (!snapshot && removed.length === 0) continue
+      // So do places found external meanwhile, whether or not the cache has their row (assistant-mode.md §5.3).
+      const channels = this.placeTrust.replayRows(integrationId, snapshot?.channels ?? [])
+      if (!snapshot && removed.length === 0 && channels.length === 0) continue
       try {
         this.cpClient?.emitIntegrationChannels({
           integrationId,
-          channels: snapshot?.channels ?? [],
+          channels,
           ...(snapshot?.authoritative ? {} : { authoritative: false }),
           ...(removed.length > 0 ? { removed } : {})
         })

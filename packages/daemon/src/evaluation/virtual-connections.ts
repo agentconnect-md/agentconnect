@@ -13,6 +13,7 @@
  * outbound-effect sink ({@link VirtualConnectionWorldPort.recordOutbound}, §7.2)
  * that authorizes — not merely records — every attempted effect.
  */
+import type { PlaceExternalReason } from '@agentconnect.md/protocol'
 import type { SendIdentity } from '../mcp/ops.js'
 import type {
   PlatformChannelHistoryMessage,
@@ -483,6 +484,11 @@ export class VirtualSlackConnection implements PlatformConnection {
 
   async getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }> {
     return this.world.profile(user) ?? { id: user }
+  }
+
+  /** The Arena's participants are one organization: only a share the event itself names makes a room external. */
+  async joinedMemberReason(_user: string, externallyShared = false): Promise<PlaceExternalReason | null> {
+    return externallyShared ? 'externallyShared' : null
   }
 
   async downloadFile(): Promise<Buffer | null> {

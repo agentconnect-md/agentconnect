@@ -20,8 +20,8 @@ export interface WriteIntegrationDeps {
     next: DecisionBundle | undefined,
     nextSessionModes?: readonly IntegrationSessionMode[]
   ) => void
-  /** Called before `onChange` with the conversations a push newly lists as external (assistant-mode.md §5.3). */
-  onExternalChannelsAdded?: (integrationId: string, channels: string[]) => void
+  /** Called before `onChange` on every applied spec, with the conversations it newly lists as external (assistant-mode.md §5.3). */
+  onExternalChannels?: (integrationId: string, next: Integration, added: string[]) => void
 }
 
 /**
@@ -111,11 +111,11 @@ export class CpIntegrationRegistry {
     this.entries.set(integrationId, next)
     this.decisionsChanged(integrationId, previous, next)
     // A first spec is no transition: this daemon had nothing of that integration in flight.
-    if (previous) {
-      const before = new Set(integrationCore(previous.integration).externalChannels)
-      const added = integrationCore(next.integration).externalChannels.filter((channel) => !before.has(channel))
-      if (added.length > 0) this.deps.onExternalChannelsAdded?.(integrationId, added)
-    }
+    const before = new Set(previous ? integrationCore(previous.integration).externalChannels : [])
+    const added = previous
+      ? integrationCore(next.integration).externalChannels.filter((channel) => !before.has(channel))
+      : []
+    this.deps.onExternalChannels?.(integrationId, next.integration, added)
   }
 
   private decisionsChanged(integrationId: string, previous: Entry | undefined, next: Entry | undefined): void {

@@ -131,22 +131,26 @@ describe('CpIntegrationRegistry external places', () => {
     core: { ...integration('i1').core, externalChannels }
   })
 
-  it('names only the places a push newly lists, and none on the first spec', () => {
-    const added = vi.fn()
+  it('hands every applied spec over, naming only the places it newly lists and none on the first spec', () => {
+    const applied = vi.fn()
     const reg = new CpIntegrationRegistry(
       mkdtempSync(join(tmpdir(), 'ac-cpintreg-')),
-      { onExternalChannelsAdded: added },
+      { onExternalChannels: applied },
       vi.fn()
     )
+    const added = () => applied.mock.calls.map(([id, , channels]) => [id, channels])
     reg.upsert(withExternal(['C1']))
-    expect(added).not.toHaveBeenCalled()
     reg.upsert(withExternal(['C1', 'C2']))
-    expect(added).toHaveBeenCalledWith('i1', ['C2'])
-    added.mockClear()
     reg.upsert(withExternal(['C2']))
     reg.converge([withExternal(['C2'])])
-    expect(added).not.toHaveBeenCalled()
     reg.converge([withExternal(['C2', 'C3'])])
-    expect(added).toHaveBeenCalledWith('i1', ['C3'])
+    expect(added()).toEqual([
+      ['i1', []],
+      ['i1', ['C2']],
+      ['i1', []],
+      ['i1', []],
+      ['i1', ['C3']]
+    ])
+    expect(applied.mock.calls.at(-1)![1]).toBe(reg.forAgent(A1)[0])
   })
 })
