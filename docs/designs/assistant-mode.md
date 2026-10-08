@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, sixth revision (2026-10-08). Reviewed by three independent design reviews and
+**Status:** Design, seventh revision (2026-10-08). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -40,8 +40,10 @@ one exists, and does not pretend to defend against effects it cannot defend agai
   too.
 - **One mind behind them.** Something asked of it in one place is known in the others; a
   discussion in an internal channel can be recalled when you ask about it in a DM.
-- **It speaks for the room.** It writes only to the place it is in. Nobody can get at another
-  person's DM; when something cannot be said here, it says "ask me in a DM".
+- **It speaks for the room.** It writes directly only to the place it is in. To post anywhere
+  else — another channel, a conversation on another platform — it shows you the target and the
+  exact text, and posts once you approve. Nobody can get at another person's DM; when something
+  cannot be said here, it says "ask me in a DM".
 - **Shared with another organization.** In a place the platform reports as external (a Slack
   Connect channel) it still knows everything, but every reply is a draft that an internal member
   approves in a DM before it is posted.
@@ -134,14 +136,14 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 
 ## 2. Prior art
 
-| Reference                                                               | Taken                                                                                                                                                                                                                                                                                                                                | Not taken                                                                          |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| Hosted always-on personal and coworker agents (two launched in 2026-09) | Goals outlive conversations; the agent wakes itself; proactive research is read-only; it speaks only when needed; **rules first, free rein on its own computer, consequential actions brought back for approval, waiting without a deadline**; stopping the main task does not stop delegated work; each task in its own environment | The personal form (acting as a user with that user's accounts)                     |
-| An open-source personal-agent template                                  | The approval record: hash-bound, expiring, `outcome_unknown` never retried; idempotent notifications; failure backoff and auto-pause                                                                                                                                                                                                 | Rule-based idea generation; a task model that re-runs from scratch each time       |
-| An open-source coworker-agent template                                  | Scheduled turns run in the original conversation; interruption waits for human review before retry                                                                                                                                                                                                                                   | One task at a time globally                                                        |
-| A durable agent-harness library                                         | The shape of background sub-agents: own conversation, anchored outside the parent's abort, replies delivered back as follow-ups, request ids on every delivery and report; sub-agents cannot spawn sub-agents                                                                                                                        | Using it as a runtime                                                              |
-| A commercial AI coworker for team chat                                  | **Access scoped per person, enforced at recall**; DM content cannot be asked out of it; shared-channel replies drafted in a DM and posted after approval; approval cards lead with a sentence and offer "always allow"; stopping the main task does not stop scheduled ones                                                          | One session per thread plus memory retrieval                                       |
-| An open-source self-hosted multi-agent assistant                        | Read-only as a per-session tool filter; self-scheduled tasks in two tiers (push text without a model / run a turn); push cadence with active hours, random intervals and a dedup record; background replies only raise an unread badge                                                                                               | No distinction between senders in an IM; a per-thread persisted "allow all" bypass |
+| Reference                                                               | Taken                                                                                                                                                                                                                                                                                                                                                             | Not taken                                                                          |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Hosted always-on personal and coworker agents (two launched in 2026-09) | Goals outlive conversations; the agent wakes itself; proactive research is read-only; it speaks only when needed; **rules first, free rein on its own computer, consequential actions brought back for approval, waiting without a deadline**; stopping the main task does not stop delegated work; each task in its own environment                              | The personal form (acting as a user with that user's accounts)                     |
+| An open-source personal-agent template                                  | The approval record: hash-bound, expiring, `outcome_unknown` never retried; idempotent notifications; failure backoff and auto-pause                                                                                                                                                                                                                              | Rule-based idea generation; a task model that re-runs from scratch each time       |
+| An open-source coworker-agent template                                  | Scheduled turns run in the original conversation; interruption waits for human review before retry                                                                                                                                                                                                                                                                | One task at a time globally                                                        |
+| A durable agent-harness library                                         | The shape of background sub-agents: own conversation, anchored outside the parent's abort, replies delivered back as follow-ups, request ids on every delivery and report; sub-agents cannot spawn sub-agents                                                                                                                                                     | Using it as a runtime                                                              |
+| A commercial AI coworker for team chat                                  | **Access scoped per person, enforced at recall**; DM content cannot be asked out of it; shared-channel replies drafted in a DM and posted after approval; approval cards lead with a sentence and offer "always allow"; whether an action needs approval is configured per action, never judged by the model; stopping the main task does not stop scheduled ones | One session per thread plus memory retrieval                                       |
+| An open-source self-hosted multi-agent assistant                        | Read-only as a per-session tool filter; self-scheduled tasks in two tiers (push text without a model / run a turn); push cadence with active hours, random intervals and a dedup record; background replies only raise an unread badge                                                                                                                            | No distinction between senders in an IM; a per-thread persisted "allow all" bypass |
 
 ---
 
@@ -324,7 +326,9 @@ another place, under §5.5.
 > itself (P0a; see below); a DM only from that person's own DM or webchat. Another person's DM,
 > never.
 > **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
-> target only **the current place**; anything cross-place goes through §5.7 as structured fields.
+> act directly only on **the current place**; a post to another place is a draft the asker
+> approves (below). Item and report traffic across places goes through §5.7 as structured fields.
+> The agent-to-agent forms of `sendMessage` are unchanged.
 > **External**: an external place reads like an internal one; what it posts is a draft.
 
 | Current place                | Recallable sources                                | Memory / knowledge | Output                                                |
@@ -350,6 +354,23 @@ below), so opening it everywhere does not reopen what the read rule closes.
   daemon executes it itself, with no sub-session. It expires after 24 hours.
 - Any other card that would land in an external place (a runtime permission request, a
   `propose`) goes to the same DM instead: a card is output too.
+
+**Posts to another place:**
+
+- Asked to post somewhere other than the current place — another channel, a DM, a conversation
+  on another platform — the agent drafts the post instead of sending it. Only places where this
+  agent is enabled can be targets.
+- The draft goes to the same approver as an external place's draft, showing the target and the
+  exact text; **approve** posts it unchanged, **discard** drops it. A target that is itself
+  external needs no second approval.
+- The card offers **"always allow from here to there"**, keyed by the pair of places: a route used
+  often (a DM to the support channel) stops asking, and a grant never covers another source
+  place. Grants live in the daemon store beside the approval records and end when assistant mode
+  is switched off; listing and revoking them comes with Activity (P1).
+- Whether a post needs approval follows from where it goes, never from the model's own judgment
+  of how sensitive it is — a judgment a message in the conversation could talk it out of.
+- A session with no place of its own (a hook, a cron run) drafts every platform post, approved by
+  the responsible user or in the fallback conversation.
 
 **Private places — scoped per place now, per asker later:**
 
@@ -529,7 +550,8 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
 
 - The card is delivered through §5.7 to the item's place of origin, or for an external place to
   the approver's DM (§5.5).
-- **Drafts are the record's first use** (P0a): action "post", executed by the daemon. General
+- **Drafts are the record's first use** (P0a): action "post" — into an external place or into
+  another place (§5.5) — executed by the daemon. General
   `propose` actions come with P1.
 - **Approvers follow the existing two paths** (`allowRuntimeChangesInChat` on ⇒ any participant
   of the conversation may click; off ⇒ the editor path); for an external place, the internal
@@ -574,14 +596,14 @@ conversation only raises an unread badge.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions** |
-| **P0b — background work**         | Direct self-delegation, own coordinates, the persistent parent–child index; the persistent outbox (merge, ack, dead letter, chain depth, failure reports, hop reset, recovery order); sub-session permission requests and the wait cap; list / steer / stop (text list); pause suspends the outbox                                                                  |
-| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours                                                          |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                              |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                            |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                          |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions** |
+| **P0b — background work**         | Direct self-delegation, own coordinates, the persistent parent–child index; the persistent outbox (merge, ack, dead letter, chain depth, failure reports, hop reset, recovery order); sub-session permission requests and the wait cap; list / steer / stop (text list); pause suspends the outbox                                                                                            |
+| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours                                                                                    |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                        |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                      |
 
 ---
 
@@ -688,3 +710,8 @@ that change: group DMs are private on the platform too → they are private plac
 channels are `org` sessions that reach shared memory → the P0a memory bypass also skips private
 places; the flag is the platform-neutral `isPrivate` facet, not a platform field; a refusal stays
 as opaque as the DM rule.
+
+**Seventh revision (2026-10-08)**: writing only to the current place refused a common request —
+"reply to the support thread on the other platform" → a post to another place is a draft the
+asker approves, with "always allow" per pair of places; whether a post needs approval follows
+from its target, never from the model's judgment.
