@@ -48,7 +48,7 @@ describe('skill-git-in-pod-v1 advertisement probe', () => {
       env: { PATH: '/bin', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
     })
     expect(calls[0]!.timeoutMs).toBeLessThanOrEqual(10_000)
-    if (process.platform !== 'win32') expect((await stat(dir)).mode & 0o777).toBe(0o700)
+    expect((await stat(dir)).mode & 0o777).toBe(0o700)
   })
 
   it('keeps the daemon path when Git is missing, failing or stalls', async () => {
@@ -75,7 +75,7 @@ describe('skill-git-in-pod-v1 advertisement probe', () => {
     expect(await readFile(dir, 'utf8')).toBe('not a directory')
   })
 
-  it.skipIf(process.platform === 'win32')('probes this machine’s real Git within the stream cap', async () => {
+  it('probes this machine’s real Git within the stream cap', async () => {
     const result = await probeSkillGitInPod({ stagingDir: await staging() })
     if (result.ok) expect(result.version).toMatch(/^git version \d+\.\d+/)
     else expect(result.reason).toMatch(/too old|git --version/)

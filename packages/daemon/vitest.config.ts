@@ -44,6 +44,8 @@ export const WINDOWS_EXCLUDED = [
   'test/executor-workspace-scope.test.ts',
   // `mode & 0o777` assertions throughout: Windows carries no POSIX mode bits to assert on.
   'test/config-file-env.test.ts',
+  // The in-pod skill probe requires a 0700 staging dir; the shim only runs in Linux pods.
+  'test/shim-skill-git-feature.test.ts',
   'test/evaluation-events.test.ts',
   'test/shim-channels.test.ts',
   'test/skills-cli-cell.test.ts',
