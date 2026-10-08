@@ -39,6 +39,8 @@ export const AgentApprovalRoute = z.object({
   // The agent's connected Slack integrations in the order to try, the session's
   // own bot first when the session is on Slack (§3: one workspace at a time).
   integrationIds: z.array(z.string().uuid()).min(1).max(8),
+  // Route to exactly this console user (an assistant-mode draft's approver); the reply names them or nobody.
+  consoleUserId: z.string().min(1).optional(),
   // Decision-time revalidation (§6.3): the clicking actor's pair and the console
   // user the DM addressed. Present ⇒ the reply carries `allowed`, never `target`.
   verify: z

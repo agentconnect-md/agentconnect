@@ -592,6 +592,94 @@ export function buildApprovalDmIntro(info: {
   ]
 }
 
+/** What an assistant-mode draft card shows (assistant-mode.md §5.5). */
+export interface AssistantDraftCardView {
+  agentName: string
+  kind: 'reply' | 'elsewhere'
+  target: { platform: string; channel: string; isDm: boolean; external: boolean }
+  /** The target platform's own name, for a place the reader cannot open from this workspace. */
+  platformName: string
+  text: string
+  sessionUrl?: string
+}
+
+/** The draft card's buttons; values ride `ac_perm` so both Slack transports already route the click. */
+export const ASSISTANT_DRAFT_CHOICES = { approve: 'approve', discard: 'discard', always: 'always' } as const
+export type AssistantDraftChoice = keyof typeof ASSISTANT_DRAFT_CHOICES
+
+/** How much of a draft one card shows; the markdown block holds 12,000 characters. */
+const DRAFT_CARD_TEXT_CAP = 10_000
+
+function draftPlace(view: AssistantDraftCardView): string {
+  const { target } = view
+  if (target.isDm) return target.platform === 'slack' ? 'a direct message' : `a ${view.platformName} direct message`
+  return target.platform === 'slack'
+    ? `<#${escapeMrkdwnLabel(target.channel)}>`
+    : `a ${escapeMrkdwnLabel(view.platformName)} conversation`
+}
+
+/** The one plain sentence a draft card leads with: where it goes, and that it posts on approval. */
+function draftSentence(view: AssistantDraftCardView): string {
+  const agent = `*${escapeMrkdwnLabel(clampTo(view.agentName, 60))}*`
+  const place = draftPlace(view)
+  if (view.kind === 'reply') {
+    return `${agent} drafted a reply in ${place}, which is shared with another organization. It posts in the same thread once you approve.`
+  }
+  const external = view.target.external ? ', which is shared with another organization,' : ''
+  return `${agent} will post this to ${place}${external} once you approve.`
+}
+
+/** The exact text, quoted; a text longer than the card holds says how much is shown. */
+function draftBody(view: AssistantDraftCardView): unknown[] {
+  const shown = view.text.length > DRAFT_CARD_TEXT_CAP ? view.text.slice(0, DRAFT_CARD_TEXT_CAP) : view.text
+  const quoted = shown
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n')
+  const blocks: unknown[] = [{ type: 'markdown', text: quoted }]
+  const notes: string[] = []
+  if (shown.length < view.text.length) {
+    notes.push(`Showing the first ${shown.length} of ${view.text.length} characters; the whole text posts.`)
+  }
+  if (view.sessionUrl) notes.push(`<${view.sessionUrl}|Open session>`)
+  if (notes.length) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: notes.join(' · ') }] })
+  return blocks
+}
+
+/** A pending draft: the sentence, the exact text, and approve / discard (plus "always allow" for another place). */
+export function buildAssistantDraftCard(
+  draftId: string,
+  view: AssistantDraftCardView,
+  options: { offerAlways: boolean; routingTarget?: string }
+): unknown[] {
+  const button = (choice: AssistantDraftChoice, index: number, text: string, style?: 'primary' | 'danger') => ({
+    type: 'button',
+    action_id: `${PERMISSION_ACTION_PREFIX}:${index}`,
+    text: { type: 'plain_text', text, emoji: true },
+    value: encodePermValue(draftId, ASSISTANT_DRAFT_CHOICES[choice]),
+    ...(style ? { style } : {})
+  })
+  const elements = [
+    button('approve', 0, 'Approve', 'primary'),
+    button('discard', 1, 'Discard', 'danger'),
+    ...(options.offerAlways ? [button('always', 2, 'Always allow from here to there')] : [])
+  ]
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text: draftSentence(view) } },
+    ...draftBody(view),
+    { type: 'actions', ...(options.routingTarget ? { block_id: options.routingTarget } : {}), elements }
+  ]
+}
+
+/** A settled draft: the same sentence and text, the buttons replaced by what happened. */
+export function buildAssistantDraftSettledCard(view: AssistantDraftCardView, outcome: string): unknown[] {
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text: draftSentence(view) } },
+    ...draftBody(view),
+    { type: 'section', text: agentMrkdwn(escapeSlackMrkdwn(outcome)) }
+  ]
+}
+
 /** Terminal rewrite for a DM card orphaned by a restart or takeover (§5.4): only the
  * stored row survives, so this renders from its bounded summary, no ACP params. Pure. */
 export function buildApprovalOrphanCard(command: string, status: string, resolvedByName?: string | null): unknown[] {

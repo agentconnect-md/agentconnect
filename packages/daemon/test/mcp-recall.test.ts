@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { NOT_SHARED_HERE } from '../src/assistant/place-access.js'
 import { executeTool, type MessageGateway, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
+import type { PostInterception } from '../src/assistant/drafts.js'
 import type { PlaceSnapshotRow, PlaceStore } from '../src/mcp/ops/place-gate.js'
 import { ALL_TOOL_NAMES, toolsForIntegrations } from '../src/mcp/tools.js'
 import type { MemoryProvider } from '../src/memory/provider.js'
@@ -459,6 +460,104 @@ describe('the write rule: platform writes stay in the current place', () => {
     await executeTool(inDmOfP, 'createConversation', { name: 'new-room' }, deps)
     expect(gw.postMessage).toHaveBeenCalledTimes(1)
     expect(gw.createConversation).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the write rule under drafts: a post elsewhere goes through approval', () => {
+  const drafted = { handled: true as const, result: { drafted: true, draftId: 'd-1' } }
+
+  function draftingDeps(over: Partial<OpsDeps> = {}) {
+    const gw = fakeGateway({
+      openDirectMessage: vi.fn(async (user: string) => `D_${user}`),
+      getThreadReplies: vi.fn(async () => [
+        { ts: '1.1', sender: 'U1', text: 'root', isBot: false, chrome: false, attachments: [] }
+      ])
+    })
+    const assistantDraftPost = vi.fn(async () => drafted as PostInterception)
+    const deps = makeDeps({ gatewayFor: (id) => (id === 'int-slack' ? gw : undefined), assistantDraftPost, ...over })
+    return { deps, gw, assistantDraftPost }
+  }
+
+  it('hands every posting form aimed elsewhere to the draft, fully resolved, and posts nothing', async () => {
+    const { deps, gw, assistantDraftPost } = draftingDeps()
+    expect(await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'hi' }, deps)).toEqual(
+      drafted.result
+    )
+    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', thread: '1.1', message: 'update' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { toUser: 'U_Q', message: 'psst' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { toUser: ['U_Q'], channel: 'C_DEPLOY', message: 'look' }, deps)
+    expect(assistantDraftPost.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+      { platform: 'slack', integrationId: 'int-slack', channel: 'C_DEPLOY', text: 'hi', directMessage: false },
+      {
+        platform: 'slack',
+        integrationId: 'int-slack',
+        channel: 'C_DEPLOY',
+        thread: '1.1',
+        text: 'update',
+        directMessage: false
+      },
+      { platform: 'slack', integrationId: 'int-slack', channel: 'D_U_Q', text: 'psst', directMessage: true },
+      { platform: 'slack', integrationId: 'int-slack', channel: 'C_DEPLOY', text: '<@U_Q> look', directMessage: false }
+    ])
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('posts as before when a grant lets the post through', async () => {
+    const { deps, gw } = draftingDeps({ assistantDraftPost: vi.fn(async () => ({ handled: false as const })) })
+    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'hi' }, deps)
+    expect(gw.postMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a forwarded file, and keeps refusing the other writes aimed elsewhere', async () => {
+    const { deps, gw, assistantDraftPost } = draftingDeps({
+      resolveAttachment: vi.fn(async () => ({ bytes: Buffer.from('x'), name: 'a.png', mimeType: 'image/png' }))
+    })
+    gw.uploadFile = vi.fn(async () => ({ ok: true as const }))
+    await expect(
+      executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', attachment: 'a.png', message: 'see' }, deps)
+    ).rejects.toThrow(/a file cannot be sent for approval/)
+    await expect(
+      executeTool(inDmOfP, 'addReaction', { channel: 'C_DEPLOY', messageTs: '1.1', emoji: 'eyes' }, deps)
+    ).rejects.toThrow(/write only to the conversation you are in/)
+    expect(assistantDraftPost).not.toHaveBeenCalled()
+    expect(gw.uploadFile).not.toHaveBeenCalled()
+    expect(gw.addReaction).not.toHaveBeenCalled()
+  })
+
+  it('leaves the agent-to-agent forms and every agent outside assistant mode alone', async () => {
+    const { deps, gw, assistantDraftPost } = draftingDeps()
+    await executeTool(inDmOfP, 'sendMessage', { toAgent: 'peer-1', message: 'hi' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { sessionId: 'parent-1', message: 'done' }, deps)
+    expect(deps.messageAgent).toHaveBeenCalledTimes(1)
+    expect(deps.replyToSession).toHaveBeenCalledTimes(1)
+    const plain = { ...deps, assistantModeFor: () => false }
+    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'hi' }, plain)
+    expect(assistantDraftPost).not.toHaveBeenCalled()
+    expect(gw.postMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('in an external place, refuses every write there, drafts a post elsewhere, and still reads', async () => {
+    const shared = ctxAt('slack', 'C_SHARED')
+    const { deps, gw, assistantDraftPost } = draftingDeps({ placeExternal: (ctx) => ctx.channel === 'C_SHARED' })
+    const postAt = new Date(Date.now() + 3_600_000).toISOString()
+    const here: [string, Record<string, unknown>][] = [
+      ['sendMessage', { channel: 'C_SHARED', message: 'hi' }],
+      ['addReaction', { messageTs: '1.1', emoji: 'eyes' }],
+      ['scheduleMessage', { message: 'later', postAt }],
+      ['shareFile', { path: 'chart.png' }]
+    ]
+    for (const [tool, args] of here) {
+      await expect(executeTool(shared, tool, args, deps), tool).rejects.toThrow(/shared with another organization/)
+    }
+    expect(gw.postMessage).not.toHaveBeenCalled()
+    expect(gw.addReaction).not.toHaveBeenCalled()
+    expect(gw.scheduleMessage).not.toHaveBeenCalled()
+    await executeTool(shared, 'sendMessage', { channel: 'C_DEPLOY', message: 'for the team' }, deps)
+    expect(assistantDraftPost).toHaveBeenCalledTimes(1)
+    await executeTool(shared, 'sendMessage', { toAgent: 'peer-1', message: 'hi' }, deps)
+    expect(deps.messageAgent).toHaveBeenCalledTimes(1)
+    await executeTool(shared, 'getChannelHistory', {}, deps)
+    expect(gw.getChannelHistory).toHaveBeenCalledTimes(1)
   })
 })
 

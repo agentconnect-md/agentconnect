@@ -267,6 +267,50 @@ describe('resolveApprovalRoute — route form', () => {
   })
 })
 
+describe('resolveApprovalRoute — one named console user', () => {
+  const world: World = {
+    members: [
+      { userId: 'u-creator', displayName: 'Creator' },
+      { userId: 'u-named', displayName: 'Named' }
+    ],
+    agent: { createdByUserId: 'u-creator' },
+    links: { 'u-creator': linked('U0CREATOR'), 'u-named': linked('U0NAMED', TEAM_B) },
+    integrations: [
+      { id: INTEGRATION_A, botId: 'bot-a' },
+      { id: INTEGRATION_B, botId: 'bot-b' }
+    ],
+    bots: { 'bot-a': { teamId: TEAM_A }, 'bot-b': { teamId: TEAM_B } }
+  }
+
+  it('routes to that user in the workspace their link names, never down the chain', async () => {
+    const routed = await resolveApprovalRoute(
+      routeReq({ consoleUserId: 'u-named', integrationIds: [INTEGRATION_A, INTEGRATION_B], requesterId: 'U0CREATOR' }),
+      deps(world)
+    )
+    expect(routed.target).toEqual({
+      integrationId: INTEGRATION_B,
+      teamId: TEAM_B,
+      userId: 'U0NAMED',
+      consoleUserId: 'u-named',
+      displayName: 'Named'
+    })
+  })
+
+  it('answers nobody for a user who is unlinked there, not an editor, or not a member', async () => {
+    const onlyA = routeReq({ consoleUserId: 'u-named', integrationIds: [INTEGRATION_A] })
+    expect((await resolveApprovalRoute(onlyA, deps(world))).target).toBeUndefined()
+    const restricted = deps({ ...world, agent: { visibility: 'restricted', sharedWith: ['u-creator'] } })
+    expect(
+      (await resolveApprovalRoute(routeReq({ consoleUserId: 'u-named', integrationIds: [INTEGRATION_B] }), restricted))
+        .target
+    ).toBeUndefined()
+    expect(
+      (await resolveApprovalRoute(routeReq({ consoleUserId: 'u-gone', integrationIds: [INTEGRATION_A] }), deps(world)))
+        .target
+    ).toBeUndefined()
+  })
+})
+
 describe('resolveApprovalRoute — verify form', () => {
   const verifyReq = (consoleUserId = 'u-owner', userId = 'U0OWNER', teamId = TEAM_A) =>
     routeReq({ verify: { integrationId: INTEGRATION_A, teamId, userId, consoleUserId } })

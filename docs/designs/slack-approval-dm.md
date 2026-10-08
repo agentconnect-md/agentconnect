@@ -176,6 +176,14 @@ forward lookup instead of a scan. Routing is best-effort (§4.3);
 verification is not — it authorizes an action, so an unanswerable verify
 fails closed.
 
+A third form serves assistant-mode drafts ([assistant-mode.md](assistant-mode.md)
+§5.5): `agent/approval-route` with `consoleUserId` set asks for exactly that
+console user's linked Slack account, never the chain. The reply names that
+user, who must still be an editor linked in one of the listed workspaces, or
+nobody. The daemon ignores a target naming anyone else, which is what a
+control plane that predates the field answers with. A click on such a card is
+verified with the `verify` form like any other DM card.
+
 The CP evaluates the chain of §3 with the `linkedMemberIds` machinery
 (`packages/control-plane/src/orchestrator/linkedDm.ts`): the same
 per-subject-cached forward reads, the same `AUDIENCE_CONCURRENCY`, the same

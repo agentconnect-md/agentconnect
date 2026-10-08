@@ -4,6 +4,7 @@ import {
   MEMORY_CONTINUATION_MAX_BYTES
 } from '../memory/entries/state.js'
 import { randomUUID } from 'node:crypto'
+import { ASSISTANT_DRAFT_SCHEMA, AssistantDraftLedger } from './assistant-drafts.js'
 import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js'
 import {
   APPEND_COORDINATE_PREFIX,
@@ -1316,7 +1317,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 36
+export const SCHEMA_VERSION = 37
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1729,7 +1730,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     }
     const columns = (await db.query('PRAGMA table_info(assistant_item)', [])).rows as { name: string }[]
     if (columns.some((c) => c.name === 'trust')) await db.exec('ALTER TABLE assistant_item DROP COLUMN trust')
-  }
+  },
+  // v37 adds the assistant draft and post-grant tables (assistant-mode.md §5.5), which the CREATE block emits; the bump fences out older members.
+  async () => {}
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1871,6 +1874,8 @@ export class LocalStore {
   private readonly orgForAgent: OrgForAgent | undefined
   /** The assistant item ledger (assistant-mode.md §5.4 ①), over this store's own connection. */
   readonly assistantItems: AssistantItemLedger
+  /** Assistant-mode drafts and "always allow" grants (assistant-mode.md §5.5). */
+  readonly assistantDrafts: AssistantDraftLedger
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -1898,6 +1903,7 @@ export class LocalStore {
       query: (sql, params) => this.db.query(sql, params),
       transaction: (fn) => this.transaction(fn)
     })
+    this.assistantDrafts = new AssistantDraftLedger({ query: (sql, params) => this.db.query(sql, params) })
   }
 
   /**
@@ -1953,6 +1959,7 @@ export class LocalStore {
       ${MEMORY_CONTINUATION_SCHEMA}
       ${SOURCE_CACHE_SCHEMA}
       ${ASSISTANT_ITEM_SCHEMA}
+      ${ASSISTANT_DRAFT_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,

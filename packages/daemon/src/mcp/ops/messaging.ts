@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { MessageGateway, SendIdentity, SessionContext } from './context.js'
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
+import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
 import { optionalString, parseArgs, requiredString } from './args.js'
 import { assertChannelReachable } from './channel-reach.js'
 import {
@@ -388,6 +389,8 @@ export interface MessagingDeps extends GatewayDeps {
     ctx: SessionContext,
     name: string
   ) => Promise<{ bytes: Buffer; name: string; mimeType: string } | undefined>
+  /** Set per call when the post must go through approval (assistant-mode.md §5.5): drafts it, or lets a granted one through. */
+  interceptPost?: (post: InterceptedPost) => Promise<PostInterception>
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
     ctx: SessionContext,
@@ -691,6 +694,24 @@ export async function sendMessage(
             }
           }
         : {})
+    }
+    // Assistant mode: a post to another place is drafted for approval here, once its target is fully resolved.
+    if (deps.interceptPost) {
+      if (attachment) {
+        throw new Error(
+          'sendMessage: a post to another conversation needs approval, and a file cannot be sent for approval. ' +
+            'Nothing was sent; send the text alone.'
+        )
+      }
+      const intercepted = await deps.interceptPost({
+        platform: wantPlatform,
+        integrationId: targetId,
+        channel: postChannel,
+        ...(updateThread !== undefined ? { thread: updateThread } : {}),
+        text: body,
+        directMessage
+      })
+      if (intercepted.handled) return intercepted.result
     }
     // A file share IS the message — the caption is `body`, not a second post. It anchors like
     // any other post where the platform answers with a message id; Slack's does not, and that

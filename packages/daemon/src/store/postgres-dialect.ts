@@ -234,7 +234,31 @@ export const canonicalColumns = [
   'itemId',
   'addedAt',
   'refId',
-  'linkedAt'
+  'linkedAt',
+  'targetPlatform',
+  'targetIntegrationId',
+  'targetChannel',
+  'targetThread',
+  'targetExternal',
+  'targetDm',
+  'sourcePlatform',
+  'sourceIntegrationId',
+  'sourceChannel',
+  'sourceSessionKey',
+  'sourceSessionId',
+  'approverKind',
+  'approverIntegrationId',
+  'approverChannel',
+  'approverUserId',
+  'approverTeamId',
+  'approverConsoleUserId',
+  'cardTs',
+  'offerAlways',
+  'decidedAt',
+  'decidedBy',
+  'decidedByName',
+  'grantedBy',
+  'grantedAt'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

@@ -2650,6 +2650,33 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
+  /** A full member of this workspace: not a guest, not from another organization (assistant-mode.md §5.5); fails closed. */
+  async isFullMember(user: string): Promise<boolean> {
+    if (!this.teamId) return false
+    try {
+      const res = await this.app.client.users.info({ user })
+      const u = (res.user ?? {}) as {
+        team_id?: string
+        is_restricted?: boolean
+        is_ultra_restricted?: boolean
+        is_stranger?: boolean
+        is_bot?: boolean
+        deleted?: boolean
+      }
+      return (
+        u.team_id === this.teamId &&
+        !u.is_restricted &&
+        !u.is_ultra_restricted &&
+        !u.is_stranger &&
+        !u.is_bot &&
+        !u.deleted
+      )
+    } catch (err) {
+      this.deps.log?.debug(`slack: users.info failed for a draft approver: ${(err as Error).message}`)
+      return false
+    }
+  }
+
   /**
    * The ephemeral search credential for one inbound message, by `msgId`.
    *

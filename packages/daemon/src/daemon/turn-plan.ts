@@ -45,6 +45,8 @@ export interface TurnPlanInput {
   codexUsageIsPerPrompt: boolean
   features: { turnFinalContextRefresh: boolean }
   turnSurfaces: DaemonTurnOutputRegistry
+  /** An assistant-mode agent answering in an external place: the reply is drafted, never posted (assistant-mode.md §5.5). */
+  draftReply?: boolean
 }
 
 export interface TurnPlan {
@@ -76,8 +78,10 @@ export interface TurnPlan {
   readonly attributionFooterEnabled: boolean
   readonly approvalSurfaceSuppressed: boolean
 
-  /** True when this turn takes the null-connection seam: headless, non-continuation webchat, or `none`. */
+  /** True when this turn takes the null-connection seam: headless, non-continuation webchat, `none`, or a drafted reply. */
   readonly suppressReplyConn: boolean
+  /** The reply is drafted for approval: nothing reaches the place, the core converger collects the sections. */
+  readonly draftReply: boolean
   readonly startupActivityLabel: 'is thinking…' | 'is starting up…'
   readonly hostAlreadyRunning: boolean
 
@@ -114,14 +118,12 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
   // Footer visibility is an agent-level delivery choice, snapshotted for this turn alongside
   // output mode. Turning it off removes attribution and session-link chrome on every platform.
   const showFooter = agent.output.showFooter
-  // A headless cron fire has no platform target, and webchat streams through the relay reply
-  // sink instead — both leave the connection unset so every apply/status action no-ops.
-  // `none` joins them: only the converger's `recordOnly` bodies land in the transcript.
-  // A continuation turn keeps its platform connection: webchat is an additional sink (§5.2).
-  const suppressReplyConn = msg.headless || (webchat !== undefined && !webchat.continuation) || mode === 'none'
-  // §7.3: the platform's own production rules and its opaque per-turn state both come
-  // from its output surface. The converger itself is built per turn at the call site.
-  const turnSurface = turnSurfaces.for(msg.platform)
+  // Headless, non-continuation webchat, `none` and a drafted reply (assistant-mode.md §5.5) leave the connection unset, so every apply/status action no-ops.
+  const draftReply = input.draftReply === true
+  const suppressReplyConn =
+    msg.headless || (webchat !== undefined && !webchat.continuation) || mode === 'none' || draftReply
+  // §7.3: production rules and per-turn state come from the output surface; a drafted reply takes the core one, whose posts are platform-neutral.
+  const turnSurface = draftReply ? turnSurfaces.core() : turnSurfaces.for(msg.platform)
   const turnCtx: TurnOutputContext<NormalizedMessage> = {
     mode,
     isDm: msg.isDm,
@@ -168,6 +170,7 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
       turnSurfaces.exact(msg.platform)?.elicitCards !== undefined
     ),
     suppressReplyConn,
+    draftReply,
     // Keep the ordinary cold/warm working indicator; startup notices use their own surface.
     startupActivityLabel: input.hostAlreadyRunning ? 'is thinking…' : 'is starting up…',
     hostAlreadyRunning: input.hostAlreadyRunning,
