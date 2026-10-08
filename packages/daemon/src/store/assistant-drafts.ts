@@ -30,15 +30,30 @@ export interface AssistantDraftTarget {
   thread: string | null
 }
 
-/** The place a draft was written from; absent for a session with no place of its own (hook, cron). */
+/** Who or what the target is, resolved when the draft was written, so the card names the actual destination. */
+export interface AssistantDraftDestination {
+  /** The conversation's name, or the DM recipient's display name. */
+  name: string | null
+  /** The DM recipient's platform user id. */
+  userId: string | null
+  /** A link to the target thread, where the platform has one. */
+  threadLink: string | null
+}
+
+/** The session a draft was written from: its lineage for the post's bookkeeping, and the source of a grant. */
 export interface AssistantDraftSource {
   platform: string
   /** Absent for webchat, which has no platform integration. */
   integrationId: string | null
   channel: string
+  /** The session's coordinate within the conversation. */
+  thread: string
+  transportScope: string | null
   sessionKey: string | null
   /** The session's outward id, for the console link on the card. */
   sessionId: string | null
+  /** The conversation is a place a grant may name; false for a hook, a cron run or an agent call's synthetic one. */
+  place: boolean
 }
 
 /** Who approves: a member addressed in their DM, or everyone in the agent's fallback conversation. */
@@ -64,12 +79,15 @@ export interface AssistantDraft {
   targetExternal: boolean
   /** The target is a direct message, which the card names as such. */
   targetDm: boolean
+  destination: AssistantDraftDestination
   text: string
   source: AssistantDraftSource | null
   approver: AssistantDraftApprover | null
   cardTs: string | null
   /** The card offers "always allow from here to there". */
   offerAlways: boolean
+  /** The agent's grant generation when the draft was written; a grant from an older one is never honored. */
+  grantEpoch: number
   status: AssistantDraftStatus
   /** Binds the action, the target and the text; checked again before the post. */
   hash: string
@@ -90,6 +108,7 @@ export interface AssistantDraftCreate {
   target: AssistantDraftTarget
   targetExternal?: boolean
   targetDm?: boolean
+  destination?: Partial<AssistantDraftDestination>
   text: string
   source?: AssistantDraftSource | null
   approver?: AssistantDraftApprover | null
@@ -116,12 +135,18 @@ export const ASSISTANT_DRAFT_SCHEMA = `
         targetThread TEXT,
         targetExternal INTEGER NOT NULL DEFAULT 0,
         targetDm INTEGER NOT NULL DEFAULT 0,
+        targetName TEXT,
+        targetUser TEXT,
+        targetLink TEXT,
         text TEXT NOT NULL,
         sourcePlatform TEXT,
         sourceIntegrationId TEXT,
         sourceChannel TEXT,
+        sourceThread TEXT,
+        sourceTransportScope TEXT,
         sourceSessionKey TEXT,
         sourceSessionId TEXT,
+        sourcePlace INTEGER NOT NULL DEFAULT 0,
         approverKind TEXT,
         approverIntegrationId TEXT,
         approverChannel TEXT,
@@ -130,6 +155,7 @@ export const ASSISTANT_DRAFT_SCHEMA = `
         approverConsoleUserId TEXT,
         cardTs TEXT,
         offerAlways INTEGER NOT NULL DEFAULT 0,
+        grantEpoch INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL CHECK (status IN ('awaiting_review', 'executing', 'succeeded', 'failed',
           'outcome_unknown', 'denied', 'expired')),
         hash TEXT NOT NULL,
@@ -153,8 +179,13 @@ export const ASSISTANT_DRAFT_SCHEMA = `
         targetChannel TEXT NOT NULL,
         grantedBy TEXT,
         grantedAt INTEGER NOT NULL,
+        grantEpoch INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (agentId, sourcePlatform, sourceIntegrationId, sourceChannel, targetPlatform, targetIntegrationId,
           targetChannel)
+      );
+      CREATE TABLE IF NOT EXISTS assistant_grant_epoch (
+        agentId TEXT PRIMARY KEY,
+        grantEpoch INTEGER NOT NULL
       );
 `
 
@@ -190,14 +221,18 @@ function draftOf(row: Row): AssistantDraft {
     },
     targetExternal: Number(row.targetExternal) === 1,
     targetDm: Number(row.targetDm) === 1,
+    destination: { name: str(row.targetName), userId: str(row.targetUser), threadLink: str(row.targetLink) },
     text: String(row.text),
     source: sourcePlatform
       ? {
           platform: sourcePlatform,
           integrationId: str(row.sourceIntegrationId) || null,
           channel: String(row.sourceChannel ?? ''),
+          thread: String(row.sourceThread ?? ''),
+          transportScope: str(row.sourceTransportScope),
           sessionKey: str(row.sourceSessionKey),
-          sessionId: str(row.sourceSessionId)
+          sessionId: str(row.sourceSessionId),
+          place: Number(row.sourcePlace) === 1
         }
       : null,
     approver:
@@ -213,6 +248,7 @@ function draftOf(row: Row): AssistantDraft {
         : null,
     cardTs: str(row.cardTs),
     offerAlways: Number(row.offerAlways) === 1,
+    grantEpoch: Number(row.grantEpoch),
     status: row.status as AssistantDraftStatus,
     hash: String(row.hash),
     createdAt: Number(row.createdAt),
@@ -242,39 +278,47 @@ export class AssistantDraftLedger {
     const id = input.id ?? randomUUID()
     const source = input.source ?? null
     const approver = input.approver ?? null
+    const destination = input.destination ?? {}
+    const row: Record<string, unknown> = {
+      id,
+      agentId: input.agentId,
+      action: 'post',
+      kind: input.kind,
+      targetPlatform: target.platform,
+      targetIntegrationId: target.integrationId,
+      targetChannel: target.channel,
+      targetThread: target.thread,
+      targetExternal: input.targetExternal ? 1 : 0,
+      targetDm: input.targetDm ? 1 : 0,
+      targetName: destination.name ?? null,
+      targetUser: destination.userId ?? null,
+      targetLink: destination.threadLink ?? null,
+      text,
+      sourcePlatform: source?.platform ?? null,
+      sourceIntegrationId: source ? (source.integrationId ?? '') : null,
+      sourceChannel: source?.channel ?? null,
+      sourceThread: source?.thread ?? null,
+      sourceTransportScope: source?.transportScope ?? null,
+      sourceSessionKey: source?.sessionKey ?? null,
+      sourceSessionId: source?.sessionId ?? null,
+      sourcePlace: source?.place ? 1 : 0,
+      approverKind: approver?.kind ?? null,
+      approverIntegrationId: approver?.integrationId ?? null,
+      approverChannel: approver?.channel ?? null,
+      approverUserId: approver?.userId ?? null,
+      approverTeamId: approver?.teamId ?? null,
+      approverConsoleUserId: approver?.consoleUserId ?? null,
+      offerAlways: input.offerAlways ? 1 : 0,
+      grantEpoch: await this.grantEpoch(input.agentId),
+      status: 'awaiting_review',
+      hash: assistantDraftHash(target, text),
+      createdAt: now,
+      expiresAt: now + ASSISTANT_DRAFT_TTL_MS
+    }
+    const columns = Object.keys(row)
     await this.db.query(
-      `INSERT INTO assistant_draft (id, agentId, action, kind, targetPlatform, targetIntegrationId, targetChannel,
-         targetThread, targetExternal, targetDm, text, sourcePlatform, sourceIntegrationId, sourceChannel, sourceSessionKey,
-         sourceSessionId, approverKind, approverIntegrationId, approverChannel, approverUserId, approverTeamId,
-         approverConsoleUserId, offerAlways, status, hash, createdAt, expiresAt)
-       VALUES (?, ?, 'post', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_review', ?, ?, ?)`,
-      [
-        id,
-        input.agentId,
-        input.kind,
-        target.platform,
-        target.integrationId,
-        target.channel,
-        target.thread,
-        input.targetExternal ? 1 : 0,
-        input.targetDm ? 1 : 0,
-        text,
-        source?.platform ?? null,
-        source ? (source.integrationId ?? '') : null,
-        source?.channel ?? null,
-        source?.sessionKey ?? null,
-        source?.sessionId ?? null,
-        approver?.kind ?? null,
-        approver?.integrationId ?? null,
-        approver?.channel ?? null,
-        approver?.userId ?? null,
-        approver?.teamId ?? null,
-        approver?.consoleUserId ?? null,
-        input.offerAlways ? 1 : 0,
-        assistantDraftHash(target, text),
-        now,
-        now + ASSISTANT_DRAFT_TTL_MS
-      ]
+      `INSERT INTO assistant_draft (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+      Object.values(row)
     )
     return (await this.get(id))!
   }
@@ -356,22 +400,37 @@ export class AssistantDraftLedger {
   }
 
   async deleteForAgent(agentId: string): Promise<number> {
-    await this.clearGrants(agentId)
+    await this.db.query('DELETE FROM assistant_post_grant WHERE agentId = ?', [agentId])
+    await this.db.query('DELETE FROM assistant_grant_epoch WHERE agentId = ?', [agentId])
     return (await this.db.query('DELETE FROM assistant_draft WHERE agentId = ?', [agentId])).changes
   }
 
-  /** "Always allow from here to there": keyed by the pair of places, never covering another source. */
+  /** The agent's grant generation: bumped by every reset, so a grant from an older one is never honored. */
+  async grantEpoch(agentId: string): Promise<number> {
+    const row = (await this.db.query('SELECT grantEpoch FROM assistant_grant_epoch WHERE agentId = ?', [agentId]))
+      .rows[0] as Row | undefined
+    return row ? Number(row.grantEpoch) : 0
+  }
+
+  /** "Always allow from here to there", keyed by the pair of places and stamped with the generation it was offered in. */
   async grant(
     agentId: string,
     source: AssistantGrantPlace,
     target: AssistantGrantPlace,
     by: string | null,
+    epoch: number,
     now = Date.now()
   ): Promise<boolean> {
+    // A card from before a reset grants nothing; one racing a reset is written stale and never honored.
+    if ((await this.grantEpoch(agentId)) !== epoch) return false
     const { changes } = await this.db.query(
-      `INSERT OR IGNORE INTO assistant_post_grant (agentId, sourcePlatform, sourceIntegrationId, sourceChannel,
-         targetPlatform, targetIntegrationId, targetChannel, grantedBy, grantedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO assistant_post_grant (agentId, sourcePlatform, sourceIntegrationId, sourceChannel, targetPlatform,
+         targetIntegrationId, targetChannel, grantedBy, grantedAt, grantEpoch)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (agentId, sourcePlatform, sourceIntegrationId, sourceChannel, targetPlatform, targetIntegrationId,
+         targetChannel)
+       DO UPDATE SET grantedBy = excluded.grantedBy, grantedAt = excluded.grantedAt, grantEpoch = excluded.grantEpoch
+       WHERE assistant_post_grant.grantEpoch <> excluded.grantEpoch`,
       [
         agentId,
         source.platform,
@@ -381,17 +440,21 @@ export class AssistantDraftLedger {
         target.integrationId ?? '',
         target.channel,
         by,
-        now
+        now,
+        epoch
       ]
     )
     return changes > 0
   }
 
+  /** Whether a grant of the current generation covers this pair. */
   async granted(agentId: string, source: AssistantGrantPlace, target: AssistantGrantPlace): Promise<boolean> {
     const rows = (
       await this.db.query(
-        `SELECT 1 AS hit FROM assistant_post_grant WHERE agentId = ? AND sourcePlatform = ? AND sourceIntegrationId = ?
-           AND sourceChannel = ? AND targetPlatform = ? AND targetIntegrationId = ? AND targetChannel = ?`,
+        `SELECT 1 AS hit FROM assistant_post_grant g WHERE g.agentId = ? AND g.sourcePlatform = ?
+           AND g.sourceIntegrationId = ? AND g.sourceChannel = ? AND g.targetPlatform = ? AND g.targetIntegrationId = ?
+           AND g.targetChannel = ?
+           AND g.grantEpoch = COALESCE((SELECT e.grantEpoch FROM assistant_grant_epoch e WHERE e.agentId = ?), 0)`,
         [
           agentId,
           source.platform,
@@ -399,15 +462,21 @@ export class AssistantDraftLedger {
           source.channel,
           target.platform,
           target.integrationId ?? '',
-          target.channel
+          target.channel,
+          agentId
         ]
       )
     ).rows
     return rows.length > 0
   }
 
-  /** Grants end when assistant mode is switched off. */
-  async clearGrants(agentId: string): Promise<number> {
+  /** Grants end whenever assistant mode is switched off or on: the generation moves on, so no pending card can grant again. */
+  async resetGrants(agentId: string): Promise<number> {
+    await this.db.query(
+      `INSERT INTO assistant_grant_epoch (agentId, grantEpoch) VALUES (?, 1)
+       ON CONFLICT (agentId) DO UPDATE SET grantEpoch = assistant_grant_epoch.grantEpoch + 1`,
+      [agentId]
+    )
     return (await this.db.query('DELETE FROM assistant_post_grant WHERE agentId = ?', [agentId])).changes
   }
 

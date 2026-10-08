@@ -16,7 +16,8 @@ type SessionLinkConnection = Pick<PlatformConnection, 'workspaceUrl'>
  * daemon platform strategies (§7.4), not in the pre-dispatch manifest and not in
  * the console.
  */
-type SessionLinkStrategy = (connection: SessionLinkConnection | undefined, session: SessionRecord) => string | undefined
+type SessionThread = Pick<SessionRecord, 'platform' | 'channel' | 'thread'>
+type SessionLinkStrategy = (connection: SessionLinkConnection | undefined, session: SessionThread) => string | undefined
 
 const STRATEGIES = new Map<string, SessionLinkStrategy>([
   ['slack', (connection, session) => slackThreadUrl(connection?.workspaceUrl, session.channel, session.thread)]
@@ -24,7 +25,7 @@ const STRATEGIES = new Map<string, SessionLinkStrategy>([
 
 /** No registered strategy means the platform must have persisted an ingress URL
  * (or has no addressable source); core never guesses a Slack-shaped fallback. */
-export function sessionThreadUrlFor(session: SessionRecord, connection?: SessionLinkConnection): string | undefined {
+export function sessionThreadUrlFor(session: SessionThread, connection?: SessionLinkConnection): string | undefined {
   // A session whose coordinate is synthetic belongs to no platform thread, so there is
   // nothing to link: every strategy here builds a URL out of `session.thread`, and doing
   // that with an append coordinate yields a permalink to a message that does not exist.

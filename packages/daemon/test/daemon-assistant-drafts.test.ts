@@ -185,3 +185,63 @@ describe('a reply in an external place', () => {
     }
   })
 })
+
+describe('an approved post to another place', () => {
+  it('gets the bookkeeping of a sent message under the source lineage, without a turn or a second post', async () => {
+    const h = await boot(true)
+    try {
+      const store = (h.daemon as any).store
+      const spawn = vi.spyOn((h.daemon as any).collab, 'spawnChannelRootSession').mockResolvedValue(true)
+      const draft = await store.assistantDrafts.create({
+        agentId: 'bot-a',
+        kind: 'elsewhere',
+        target: { platform: 'slack', integrationId: INT, channel: 'C_EXT', thread: null },
+        text: 'For the shared channel.',
+        source: {
+          platform: 'slack',
+          integrationId: INT,
+          channel: 'D_U1',
+          thread: 'append:dm',
+          transportScope: 'T_FAKE_TEAM',
+          sessionKey: 'k-dm',
+          sessionId: 'outward-dm',
+          place: true
+        },
+        approver: {
+          kind: 'member',
+          integrationId: INT,
+          channel: 'D_U1',
+          userId: 'U1',
+          teamId: 'T_FAKE_TEAM',
+          consoleUserId: null
+        }
+      })
+      const click = { requestId: draft.id, optionId: 'approve', actor: { userId: 'U1' } }
+      await (h.daemon as any).routePermissionChoice(click)
+      await (h.daemon as any).routePermissionChoice(click)
+      expect(h.conn.postMessage).toHaveBeenCalledTimes(1)
+      expect(spawn).toHaveBeenCalledTimes(1)
+      expect(spawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'bot-a',
+          platform: 'slack',
+          integrationId: INT,
+          channel: 'C_EXT',
+          thread: 'posted-1',
+          postTs: 'posted-1',
+          text: 'For the shared channel.',
+          originPlatform: 'slack',
+          originTransportScope: 'T_FAKE_TEAM',
+          originChannel: 'D_U1',
+          originThread: 'append:dm'
+        })
+      )
+      const rows = (await store.db
+        .prepare('SELECT thread, ts, sender, text FROM transcript WHERE text = ?')
+        .all('For the shared channel.')) as { thread: string; ts: string; sender: string }[]
+      expect(rows).toEqual([{ thread: 'posted-1', ts: 'posted-1', sender: 'bot-a', text: 'For the shared channel.' }])
+    } finally {
+      await h.close()
+    }
+  })
+})

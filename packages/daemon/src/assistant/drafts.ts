@@ -7,6 +7,7 @@ import {
   assistantDraftHash,
   type AssistantDraft,
   type AssistantDraftApprover,
+  type AssistantDraftDestination,
   type AssistantDraftKind,
   type AssistantDraftLedger,
   type AssistantDraftSource,
@@ -69,6 +70,13 @@ export interface AssistantDraftsHost {
   approvalRoute?(agentId: string, req: Omit<AgentApprovalRoute, 'agentId'>): Promise<AgentApprovalRouted>
   sessionLink?(sessionId: string): string
   platformName(platform: string): string
+  /** Who or what a target is: the conversation's name, the DM recipient, a thread link. Best effort. */
+  describeDestination(
+    target: AssistantDraftTarget,
+    opts: { dm: boolean; recipient?: string }
+  ): Promise<Partial<AssistantDraftDestination>>
+  /** The post-success bookkeeping a sent message gets (outbound record, root thread, seeded session); no model turn, no retry. */
+  afterPost?(draft: AssistantDraft, messageId: string): Promise<void>
 }
 
 /** A post `sendMessage` resolved and is about to make. */
@@ -79,6 +87,8 @@ export interface InterceptedPost {
   thread?: string
   text: string
   directMessage: boolean
+  /** The DM recipient's platform user id, for the card. */
+  recipient?: string
 }
 
 export type PostInterception = { handled: false } | { handled: true; result: unknown }
@@ -100,7 +110,7 @@ export class AssistantDrafts {
   /** A post to another place (§5.5): refused outside an enabled place, sent under a grant, drafted otherwise. */
   async interceptPost(
     agentId: string,
-    source: AssistantDraftSource | null,
+    source: AssistantDraftSource,
     post: InterceptedPost,
     asker: DraftAsker | undefined
   ): Promise<PostInterception> {
@@ -116,19 +126,24 @@ export class AssistantDrafts {
       thread: post.thread ?? null
     }
     const external = this.host.placeExternal(agentId, post.integrationId, post.channel)
-    if (source && !external && (await this.host.ledger().granted(agentId, grantPlace(source), grantPlace(target)))) {
+    const fromPlace = source.place && !external
+    if (fromPlace && (await this.host.ledger().granted(agentId, grantPlace(source), grantPlace(target)))) {
       return { handled: false }
     }
+    const destination = await this.host
+      .describeDestination(target, { dm: post.directMessage, ...(post.recipient ? { recipient: post.recipient } : {}) })
+      .catch(() => ({}))
     const { draft, rung } = await this.create({
       agentId,
       kind: 'elsewhere',
       target,
       targetDm: post.directMessage,
       targetExternal: external,
+      destination,
       text: post.text,
       source,
       asker,
-      offerAlways: source !== null && !external
+      offerAlways: fromPlace
     })
     return { handled: true, result: draftedResult(draft, rung) }
   }
@@ -142,10 +157,12 @@ export class AssistantDrafts {
     source: AssistantDraftSource
     asker: DraftAsker | undefined
   }): Promise<AssistantDraft> {
+    const destination = await this.host.describeDestination(input.target, { dm: input.targetDm }).catch(() => ({}))
     const { draft, rung } = await this.create({
       ...input,
       kind: 'reply',
       targetExternal: true,
+      destination,
       offerAlways: false
     })
     if (!rung)
@@ -208,6 +225,7 @@ export class AssistantDrafts {
     target: AssistantDraftTarget
     targetDm: boolean
     targetExternal: boolean
+    destination: Partial<AssistantDraftDestination>
     text: string
     source: AssistantDraftSource | null
     asker: DraftAsker | undefined
@@ -226,6 +244,7 @@ export class AssistantDrafts {
       target: input.target,
       targetDm: input.targetDm,
       targetExternal: input.targetExternal,
+      destination: input.destination,
       text: input.text,
       source: input.source,
       approver: routed?.approver ?? null,
@@ -372,12 +391,34 @@ export class AssistantDrafts {
       await this.rewrite(draft.id)
       return
     }
-    if (always && draft.offerAlways && draft.source && !draft.targetExternal) {
-      await ledger.grant(draft.agentId, grantPlace(draft.source), grantPlace(draft.target), by.id, now)
-    }
+    // Never while assistant mode is off; the store refuses a card from an earlier generation (§5.5).
+    const granted =
+      always &&
+      draft.offerAlways &&
+      draft.source?.place === true &&
+      !draft.targetExternal &&
+      this.host.agent(draft.agentId)?.assistantMode?.enabled === true &&
+      (await ledger.grant(
+        draft.agentId,
+        grantPlace(draft.source),
+        grantPlace(draft.target),
+        by.id,
+        draft.grantEpoch,
+        now
+      ))
     const outcome = await this.execute(draft)
     await ledger.settle(draft.id, outcome.status, outcome.detail, this.host.now())
-    await this.rewrite(draft.id, always)
+    // The sent message's bookkeeping, once and after the outcome is recorded: a failure here never re-posts.
+    if (outcome.status === 'succeeded' && outcome.detail.messageId) {
+      await this.host
+        .afterPost?.(draft, outcome.detail.messageId)
+        .catch((err: unknown) =>
+          this.host.log.warn(
+            `assistant draft ${draft.id}: bookkeeping after the post failed: ${(err as Error).message}`
+          )
+        )
+    }
+    await this.rewrite(draft.id, granted)
   }
 
   /** Post the text unchanged. Only a returned message id is success; anything uncertain is never retried. */
@@ -443,7 +484,11 @@ export class AssistantDrafts {
         platform: draft.target.platform,
         channel: draft.target.channel,
         isDm: draft.targetDm,
-        external: draft.targetExternal
+        external: draft.targetExternal,
+        ...(draft.destination.name ? { name: draft.destination.name } : {}),
+        ...(draft.destination.userId ? { userId: draft.destination.userId } : {}),
+        ...(draft.target.thread ? { thread: draft.target.thread } : {}),
+        ...(draft.destination.threadLink ? { threadLink: draft.destination.threadLink } : {})
       },
       platformName: this.host.platformName(draft.target.platform),
       text: draft.text,

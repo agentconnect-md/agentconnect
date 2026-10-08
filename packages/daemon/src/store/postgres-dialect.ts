@@ -258,7 +258,14 @@ export const canonicalColumns = [
   'decidedBy',
   'decidedByName',
   'grantedBy',
-  'grantedAt'
+  'grantedAt',
+  'targetName',
+  'targetUser',
+  'targetLink',
+  'sourceThread',
+  'sourceTransportScope',
+  'sourcePlace',
+  'grantEpoch'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

@@ -596,7 +596,18 @@ export function buildApprovalDmIntro(info: {
 export interface AssistantDraftCardView {
   agentName: string
   kind: 'reply' | 'elsewhere'
-  target: { platform: string; channel: string; isDm: boolean; external: boolean }
+  target: {
+    platform: string
+    channel: string
+    isDm: boolean
+    external: boolean
+    /** The conversation's name, or the DM recipient's display name. */
+    name?: string
+    /** The DM recipient's platform user id. */
+    userId?: string
+    thread?: string
+    threadLink?: string
+  }
   /** The target platform's own name, for a place the reader cannot open from this workspace. */
   platformName: string
   text: string
@@ -610,12 +621,32 @@ export type AssistantDraftChoice = keyof typeof ASSISTANT_DRAFT_CHOICES
 /** How much of a draft one card shows; the markdown block holds 12,000 characters. */
 const DRAFT_CARD_TEXT_CAP = 10_000
 
+/** The actual destination: the recipient of a DM, the conversation by name, and its platform when it is not Slack. */
 function draftPlace(view: AssistantDraftCardView): string {
   const { target } = view
-  if (target.isDm) return target.platform === 'slack' ? 'a direct message' : `a ${view.platformName} direct message`
-  return target.platform === 'slack'
-    ? `<#${escapeMrkdwnLabel(target.channel)}>`
-    : `a ${escapeMrkdwnLabel(view.platformName)} conversation`
+  const slack = target.platform === 'slack'
+  const on = slack ? '' : ` on ${escapeMrkdwnLabel(view.platformName)}`
+  const name = target.name ? escapeMrkdwnLabel(clampTo(target.name, 80)) : undefined
+  if (target.isDm) {
+    const who = slack && target.userId ? `<@${escapeMrkdwnLabel(target.userId)}>` : name ? `*${name}*` : undefined
+    return who ? `a direct message to ${who}${on}` : `a direct message${on}`
+  }
+  if (slack) return `<#${escapeMrkdwnLabel(target.channel)}>${name ? ` (#${name})` : ''}`
+  return `*${name ?? escapeMrkdwnLabel(target.channel)}*${on}`
+}
+
+/** The destination's identifiers: the conversation id, and the thread by link or id. */
+function draftDestinationNote(view: AssistantDraftCardView): string {
+  const { target } = view
+  const parts = [`${escapeMrkdwnLabel(view.platformName)} \`${escapeMrkdwnLabel(target.channel)}\``]
+  if (target.isDm && target.name && target.userId) parts.push(escapeMrkdwnLabel(clampTo(target.name, 80)))
+  if (target.thread) {
+    const link = safeSlackLinkUrl(target.threadLink)
+    parts.push(
+      link ? `<${link}|thread ${escapeMrkdwnLabel(target.thread)}>` : `thread \`${escapeMrkdwnLabel(target.thread)}\``
+    )
+  }
+  return parts.join(' · ')
 }
 
 /** The one plain sentence a draft card leads with: where it goes, and that it posts on approval. */
@@ -637,12 +668,13 @@ function draftBody(view: AssistantDraftCardView): unknown[] {
     .map((line) => `> ${line}`)
     .join('\n')
   const blocks: unknown[] = [{ type: 'markdown', text: quoted }]
-  const notes: string[] = []
+  const notes: string[] = [draftDestinationNote(view)]
   if (shown.length < view.text.length) {
     notes.push(`Showing the first ${shown.length} of ${view.text.length} characters; the whole text posts.`)
   }
-  if (view.sessionUrl) notes.push(`<${view.sessionUrl}|Open session>`)
-  if (notes.length) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: notes.join(' · ') }] })
+  const session = safeSlackLinkUrl(view.sessionUrl)
+  if (session) notes.push(`<${session}|Open session>`)
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: notes.join(' · ') }] })
   return blocks
 }
 

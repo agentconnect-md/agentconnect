@@ -36,7 +36,17 @@ const create = (s: LocalStore, over: Partial<AssistantDraftCreate> = {}) =>
     kind: 'elsewhere',
     target: TARGET,
     text: 'The release is out.',
-    source: { platform: 'slack', integrationId: 'int-a', channel: 'D0ALICE', sessionKey: 'k-1', sessionId: 's-1' },
+    source: {
+      platform: 'slack',
+      integrationId: 'int-a',
+      channel: 'D0ALICE',
+      thread: 'append:1',
+      transportScope: 'T0EXAMPLE',
+      sessionKey: 'k-1',
+      sessionId: 's-1',
+      place: true
+    },
+    destination: { name: 'support', threadLink: 'https://example.slack.test/archives/C0SUPPORT' },
     approver: {
       kind: 'member',
       integrationId: 'int-a',
@@ -62,10 +72,21 @@ describe('assistant drafts: the approval record', () => {
       targetExternal: false,
       targetDm: false,
       text: 'The release is out.',
-      source: { platform: 'slack', integrationId: 'int-a', channel: 'D0ALICE', sessionKey: 'k-1', sessionId: 's-1' },
+      destination: { name: 'support', userId: null, threadLink: 'https://example.slack.test/archives/C0SUPPORT' },
+      source: {
+        platform: 'slack',
+        integrationId: 'int-a',
+        channel: 'D0ALICE',
+        thread: 'append:1',
+        transportScope: 'T0EXAMPLE',
+        sessionKey: 'k-1',
+        sessionId: 's-1',
+        place: true
+      },
       approver: { kind: 'member', userId: 'U0ALICE', teamId: 'T0EXAMPLE', consoleUserId: null },
       cardTs: null,
       offerAlways: true,
+      grantEpoch: 0,
       status: 'awaiting_review',
       createdAt: 1_000,
       expiresAt: 1_000 + ASSISTANT_DRAFT_TTL_MS
@@ -160,29 +181,53 @@ describe('assistant drafts: "always allow from here to there"', () => {
   it('is keyed by the pair of places and never covers another source or target', async () => {
     const s = await open()
     expect(await s.assistantDrafts.granted(AGENT, HERE, THERE)).toBe(false)
-    expect(await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, 1_000)).toBe(true)
-    expect(await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, 2_000)).toBe(false)
+    expect(await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, 0, 1_000)).toBe(true)
+    expect(await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, 0, 2_000)).toBe(false)
     expect(await s.assistantDrafts.granted(AGENT, HERE, THERE)).toBe(true)
     expect(await s.assistantDrafts.granted(AGENT, { ...HERE, channel: 'D0BOB' }, THERE)).toBe(false)
     expect(await s.assistantDrafts.granted(AGENT, HERE, { ...THERE, channel: 'C0OTHER' })).toBe(false)
     expect(await s.assistantDrafts.granted(AGENT, THERE, HERE)).toBe(false)
     expect(await s.assistantDrafts.granted('agent-b', HERE, THERE)).toBe(false)
     const webchat = { platform: 'webchat', integrationId: null, channel: 'conv-1' }
-    await s.assistantDrafts.grant(AGENT, webchat, THERE, null, 1_000)
+    await s.assistantDrafts.grant(AGENT, webchat, THERE, null, 0, 1_000)
     expect(await s.assistantDrafts.granted(AGENT, webchat, THERE)).toBe(true)
   })
 
-  it('ends with assistant mode, and goes with the agent and its drafts', async () => {
+  it('ends with every mode switch, and goes with the agent and its drafts', async () => {
     const s = await open()
-    await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, 1_000)
-    await s.assistantDrafts.grant('agent-b', HERE, THERE, BY.id, 1_000)
-    expect(await s.assistantDrafts.clearGrants(AGENT)).toBe(1)
+    await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, 0, 1_000)
+    await s.assistantDrafts.grant('agent-b', HERE, THERE, BY.id, 0, 1_000)
+    expect(await s.assistantDrafts.resetGrants(AGENT)).toBe(1)
     expect(await s.assistantDrafts.granted(AGENT, HERE, THERE)).toBe(false)
     expect(await s.assistantDrafts.granted('agent-b', HERE, THERE)).toBe(true)
     const draft = await create(s, { agentId: 'agent-b' })
     expect(await s.assistantDrafts.deleteForAgent('agent-b')).toBe(1)
     expect(await s.assistantDrafts.get(draft.id)).toBeUndefined()
     expect(await s.assistantDrafts.granted('agent-b', HERE, THERE)).toBe(false)
+  })
+
+  it('never lets a card from before a reset grant, even one written while the reset ran', async () => {
+    const s = await open()
+    const old = await create(s)
+    expect(old.grantEpoch).toBe(0)
+    await s.assistantDrafts.resetGrants(AGENT)
+    expect(await s.assistantDrafts.grantEpoch(AGENT)).toBe(1)
+    expect(await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, old.grantEpoch, 2_000)).toBe(false)
+    expect(await s.assistantDrafts.granted(AGENT, HERE, THERE)).toBe(false)
+
+    // A grant that slipped in under the old generation, after the reset's delete, is still not honored.
+    await s.assistantDrafts['db'].query(
+      `INSERT INTO assistant_post_grant (agentId, sourcePlatform, sourceIntegrationId, sourceChannel, targetPlatform,
+         targetIntegrationId, targetChannel, grantedBy, grantedAt, grantEpoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [AGENT, 'slack', 'int-a', 'D0ALICE', 'slack', 'int-a', 'C0SUPPORT', BY.id, 2_000, 0]
+    )
+    expect(await s.assistantDrafts.granted(AGENT, HERE, THERE)).toBe(false)
+
+    // A card of the current generation grants, replacing the stale row.
+    const fresh = await create(s)
+    expect(fresh.grantEpoch).toBe(1)
+    expect(await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, fresh.grantEpoch, 3_000)).toBe(true)
+    expect(await s.assistantDrafts.granted(AGENT, HERE, THERE)).toBe(true)
   })
 })
 
@@ -201,18 +246,22 @@ describe.skipIf(usingPostgresStore())('the v36 → v37 draft tables on SQLite', 
     const path = tempStorePath('ac-assistant-v36-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
-    old.exec('DROP TABLE assistant_draft; DROP TABLE assistant_post_grant; PRAGMA user_version = 36')
+    old.exec(
+      'DROP TABLE assistant_draft; DROP TABLE assistant_post_grant; DROP TABLE assistant_grant_epoch; PRAGMA user_version = 36'
+    )
     old.close()
     expect(tables(path)).not.toContain('assistant_draft')
 
     const upgraded = await LocalStore.open(path)
     try {
       expect((await create(upgraded)).status).toBe('awaiting_review')
-      expect(await upgraded.assistantDrafts.grant(AGENT, HERE, THERE, null, 1)).toBe(true)
+      expect(await upgraded.assistantDrafts.grant(AGENT, HERE, THERE, null, 0, 1)).toBe(true)
     } finally {
       await upgraded.close()
     }
-    expect(tables(path)).toEqual(expect.arrayContaining(['assistant_draft', 'assistant_item', 'assistant_post_grant']))
+    expect(tables(path)).toEqual(
+      expect.arrayContaining(['assistant_draft', 'assistant_grant_epoch', 'assistant_item', 'assistant_post_grant'])
+    )
     const db = new DatabaseSync(path)
     expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
     db.close()
@@ -241,6 +290,7 @@ describe.skipIf(!usingPostgresStore())('the v36 → v37 draft tables on PostgreS
       await admin.query(`SET search_path TO ${schema}`)
       await admin.query('DROP TABLE assistant_draft')
       await admin.query('DROP TABLE assistant_post_grant')
+      await admin.query('DROP TABLE assistant_grant_epoch')
       await admin.query('UPDATE _local_store_schema_version SET version = 36 WHERE singleton = true')
 
       const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
@@ -254,7 +304,9 @@ describe.skipIf(!usingPostgresStore())('the v36 → v37 draft tables on PostgreS
           target: TARGET,
           approver: { kind: 'member', userId: 'U0ALICE' }
         })
-        expect(await upgraded.assistantDrafts.grant(AGENT, HERE, THERE, null, 1)).toBe(true)
+        await upgraded.assistantDrafts.resetGrants(AGENT)
+        expect(await upgraded.assistantDrafts.grant(AGENT, HERE, THERE, null, 1, 1)).toBe(true)
+        expect(await upgraded.assistantDrafts.granted(AGENT, HERE, THERE)).toBe(true)
       } finally {
         await upgraded.close()
       }

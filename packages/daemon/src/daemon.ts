@@ -294,6 +294,13 @@ import {
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { askerIdentity, assistantItemToolsFor, assistantModeOn } from './mcp/ops/assistant-items.js'
 import { AssistantDrafts, type DraftAsker, type InterceptedPost, type PostInterception } from './assistant/drafts.js'
+import type {
+  AssistantDraft,
+  AssistantDraftDestination,
+  AssistantDraftSource,
+  AssistantDraftTarget
+} from './store/assistant-drafts.js'
+import { settlePost, type PostOrigin } from './mcp/ops/messaging.js'
 import { slackDraftCardPort } from './platforms/slack/draft-card.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
@@ -4148,19 +4155,8 @@ export class Daemon {
           ...(image?.success ? { attachments: [image.data] } : {})
         })
       },
-      recordOutbound: async (ctx, channel, thread, text, ts, integrationId) =>
-        await this.store.appendTranscript({
-          channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
-          thread: thread ?? ctx.deliveryThread,
-          admission: {
-            agentId: ctx.agentId,
-            sessionKey: sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-          },
-          ts,
-          sender: ctx.agentId,
-          kind: 'text',
-          text
-        }),
+      recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
+        this.recordOutboundPost(ctx, channel, thread, text, ts, integrationId),
       maxAttachmentBytes: cfg.limits.maxAttachmentBytes
     })
     await this.mcp.start()
@@ -4866,6 +4862,10 @@ export class Daemon {
     await this.decisionGate.recover()
     await this.decisionRouter.recover()
     await this.collab.syncOrchestrationDeadlines()
+    // A draft post a crash cut short is `outcome_unknown`, never retried (assistant-mode.md §5.10).
+    await this.drafts
+      .recover([...this.agents.keys()])
+      .catch((err) => this.log.warn(`assistant draft recovery failed: ${formatErr(err)}`))
     // #485 startup retention pass: reconcile what accumulated (or was orphaned by a
     // crash) while the daemon was down. Best-effort — never blocks readiness. Runs
     // AFTER replayInbox so replayed durable work is visible to its active-turn guard.
@@ -4890,10 +4890,6 @@ export class Daemon {
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
     this.armStoreRetentionSweep()
-    // A draft post a crash cut short is `outcome_unknown`, never retried (assistant-mode.md §5.10).
-    void this.drafts
-      .recover([...this.agents.keys()])
-      .catch((err) => this.log.warn(`assistant draft recovery failed: ${formatErr(err)}`))
     if (this.sourceCacheSweeper && this.k8sPlane)
       this.sourceCacheSweeper.start(`${this.k8sPlane.memberId}/${randomUUID().slice(0, 8)}`)
     this.startupComplete = true
@@ -5163,8 +5159,8 @@ export class Daemon {
         for (const integration of a.integrations) await this.store.setIntegrationRemoved(a.id, integration.id, false)
       }
       this.agents.set(a.id, a as LoadedAgent)
-      // "Always allow" grants end when assistant mode is switched off (assistant-mode.md §5.5).
-      if (assistantModeOn(previous) && !assistantModeOn(a)) await this.store.assistantDrafts.clearGrants(a.id)
+      // "Always allow" grants end when assistant mode is switched off, and no pending card grants across a switch (§5.5).
+      if (assistantModeOn(previous) !== assistantModeOn(a)) await this.store.assistantDrafts.resetGrants(a.id)
       for (const integration of removed) await this.interruptAgentTurns(a.id, 'stop', 'terminal', integration.id)
       if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
         await this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
@@ -5272,7 +5268,7 @@ export class Daemon {
       // Dreaming may have been turned off while this daemon did not hold the agent.
       if (!dreamingPolicyOf(a)?.enabled) this.retireDreamStaging(a.id)
       // So may assistant mode; and a draft post the previous holder was making stays unknown, never retried.
-      if (!assistantModeOn(a)) await this.store.assistantDrafts.clearGrants(a.id)
+      if (!assistantModeOn(a)) await this.store.assistantDrafts.resetGrants(a.id)
       await this.drafts.recover([a.id])
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
@@ -7692,9 +7688,92 @@ export class Daemon {
         )
       },
       sessionLink: (sessionId) => this.sessionLink(sessionId),
-      platformName: (platform) => platformLabel(platform)
+      platformName: (platform) => platformLabel(platform),
+      describeDestination: (target, opts) => this.describeDraftDestination(target, opts),
+      afterPost: (draft, messageId) => this.settleApprovedDraft(draft, messageId)
     })
     return this.assistantDraftService
+  }
+
+  /** Record an agent-sent message into the posting session's transcript, in the thread it belongs to. */
+  private async recordOutboundPost(
+    origin: PostOrigin,
+    channel: string,
+    thread: string | undefined,
+    text: string,
+    ts: string,
+    integrationId: string
+  ): Promise<void> {
+    await this.store.appendTranscript({
+      channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
+      thread: thread ?? origin.deliveryThread,
+      admission: {
+        agentId: origin.agentId,
+        sessionKey: sessionKey(origin.platform, origin.channel, origin.thread, origin.agentId, origin.transportScope)
+      },
+      ts,
+      sender: origin.agentId,
+      kind: 'text',
+      text
+    })
+  }
+
+  /** Who or what a draft's target is, for its card: the conversation's name, the DM recipient, the thread link. */
+  private async describeDraftDestination(
+    target: AssistantDraftTarget,
+    opts: { dm: boolean; recipient?: string }
+  ): Promise<Partial<AssistantDraftDestination>> {
+    const gw = this.connForIntegration(target.integrationId)
+    const out: Partial<AssistantDraftDestination> = {}
+    if (opts.dm && opts.recipient) {
+      out.userId = opts.recipient
+      const profile = await gw?.getUserProfile(opts.recipient).catch(() => undefined)
+      const name = profile?.realName?.trim() || profile?.name?.trim()
+      if (name) out.name = name
+    } else if (!opts.dm) {
+      const name = (await gw?.getChannelInfo(target.channel).catch(() => undefined))?.name?.trim()
+      if (name) out.name = name
+    }
+    const link = target.thread
+      ? sessionThreadUrlFor({ platform: target.platform, channel: target.channel, thread: target.thread }, gw)
+      : undefined
+    if (link) out.threadLink = link
+    return out
+  }
+
+  /** An approved draft's post gets what any sent message gets, under the draft's source lineage; no turn, no retry. */
+  private async settleApprovedDraft(draft: AssistantDraft, messageId: string): Promise<void> {
+    const gw = this.connForIntegration(draft.target.integrationId)
+    if (!gw || !draft.source) return
+    const origin: PostOrigin = {
+      agentId: draft.agentId,
+      platform: draft.source.platform,
+      channel: draft.source.channel,
+      thread: draft.source.thread,
+      ...(draft.source.transportScope ? { transportScope: draft.source.transportScope } : {}),
+      deliveryThread: draft.source.thread
+    }
+    await settlePost(
+      origin,
+      {
+        recordOutbound: (o, channel, thread, text, ts, integrationId) =>
+          this.recordOutboundPost(o, channel, thread, text, ts, integrationId),
+        spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req)
+      },
+      gw,
+      {
+        platform: draft.target.platform,
+        integrationId: draft.target.integrationId,
+        channel: draft.target.channel,
+        ...(draft.target.thread ? { updateThread: draft.target.thread } : {}),
+        body: draft.text,
+        providerPostId: messageId,
+        ts: messageId,
+        directMessage: draft.targetDm,
+        // A reply lands in the conversation its own session already holds.
+        seed: draft.kind === 'elsewhere'
+      }
+    )
   }
 
   /** Whether a conversation is an external place of this agent's integration (assistant-mode.md §5.3). */
@@ -7718,18 +7797,17 @@ export class Daemon {
   private async assistantDraftPost(ctx: SessionContext, post: InterceptedPost): Promise<PostInterception> {
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
     const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
-    // A hook or cron run with no conversation, or an agent call's synthetic one, has no place to grant from.
-    const hasPlace =
-      (ctx.integrationId !== undefined || ctx.platform === 'webchat') && !isSyntheticA2aChannel(ctx.channel)
-    const source = hasPlace
-      ? {
-          platform: ctx.platform,
-          integrationId: ctx.integrationId ?? null,
-          channel: ctx.channel,
-          sessionKey: key,
-          sessionId: live?.outwardSessionId ?? null
-        }
-      : null
+    const source: AssistantDraftSource = {
+      platform: ctx.platform,
+      integrationId: ctx.integrationId ?? null,
+      channel: ctx.channel,
+      thread: ctx.thread,
+      transportScope: ctx.transportScope ?? null,
+      sessionKey: key,
+      sessionId: live?.outwardSessionId ?? null,
+      // A hook or cron run with no conversation, or an agent call's synthetic one, has no place to grant from.
+      place: (ctx.integrationId !== undefined || ctx.platform === 'webchat') && !isSyntheticA2aChannel(ctx.channel)
+    }
     return await this.drafts.interceptPost(ctx.agentId, source, post, this.assistantDraftAsker(ctx, live?.entry.msg))
   }
 
@@ -7763,8 +7841,11 @@ export class Daemon {
           platform: plan.platform,
           integrationId: plan.integrationId,
           channel: plan.channel,
+          thread: plan.sessionThread,
+          transportScope: msg.transportScope ?? null,
           sessionKey: plan.sessionKey,
-          sessionId: p.outwardSessionId
+          sessionId: p.outwardSessionId,
+          place: true
         },
         asker:
           msg.source === 'user' && !msg.sender.isBot

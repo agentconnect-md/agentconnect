@@ -849,18 +849,23 @@ they are an internal member (on Slack, a full member of the installing workspace
 and not from the other organization), otherwise the agent's responsible user, otherwise its
 fallback conversation. A session with no conversation of its own (a hook or cron run) goes to
 the responsible user or the fallback conversation. The card leads with one sentence naming the
-target and saying it will post, shows the exact text, and offers Approve and Discard; a post to
-another place also offers "Always allow from here to there". Only the addressed member's click
+actual destination (the conversation by name, the recipient of a direct message, and the
+platform when it is not the card's own) and saying it will post, identifies the conversation and
+any thread, shows the exact text, and offers Approve and Discard; a post to another place also
+offers "Always allow from here to there". Only the addressed member's click
 counts, re-verified like an approval DM's when the responsible user was chosen for it; anyone in
 the fallback conversation may decide.
 
-Approve posts the text unchanged, once, a reply in its original thread. Discard drops it. A
+Approve posts the text unchanged, once, a reply in its original thread. The approved post is
+recorded and threaded like any message the agent sends, so a reply to it reaches the agent; no
+turn runs for it. Discard drops it. A
 draft expires after 24 hours and is never posted afterwards. A post whose outcome is uncertain
 (no message id came back, the connection failed mid-post, or a restart cut it short) says "not
 sure this went through" on the card and is never retried. "Always allow from here to there" lets
 later posts from the same conversation to the same target go out without a card; it never
 covers another source conversation or an external target, and every grant ends when assistant
-mode is switched off. Whether a post needs approval follows from its target, never from the
+mode is switched off. A card shown before assistant mode was switched off or on grants nothing,
+even when clicked later. Whether a post needs approval follows from its target, never from the
 model's judgment.
 
 Runtime permission requests in an external place take the editor path: no card or notice

@@ -496,7 +496,14 @@ describe('the write rule under drafts: a post elsewhere goes through approval', 
         text: 'update',
         directMessage: false
       },
-      { platform: 'slack', integrationId: 'int-slack', channel: 'D_U_Q', text: 'psst', directMessage: true },
+      {
+        platform: 'slack',
+        integrationId: 'int-slack',
+        channel: 'D_U_Q',
+        text: 'psst',
+        directMessage: true,
+        recipient: 'U_Q'
+      },
       { platform: 'slack', integrationId: 'int-slack', channel: 'C_DEPLOY', text: '<@U_Q> look', directMessage: false }
     ])
     expect(gw.postMessage).not.toHaveBeenCalled()
