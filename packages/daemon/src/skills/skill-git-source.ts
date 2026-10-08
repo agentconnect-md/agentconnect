@@ -7,7 +7,8 @@ import { createGunzip } from 'node:zlib'
 import { workspaceGitOriginOf, type AgentSkillEntry } from '@agentconnect.md/protocol'
 import { extract as extractTar, list as listTar, type ReadEntry } from 'tar'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
-import { daemonLocalGitEnv, workspaceGitEnvBase } from '../workspace/git-injection.js'
+import { daemonLocalGitEnv, openDaemonSkillCredentialWindow, workspaceGitEnvBase } from '../workspace/git-injection.js'
+import { GITCRED_CAPABILITY_ENV } from '../gitcred/env.js'
 import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 import { MAX_SKILL_FILE_BYTES } from './skill-limits.js'
 import { discardResponse, fetchWithRedirectPolicy, readBoundedBody, retryAfterMs } from '../codehost/rest-read.js'
@@ -171,14 +172,15 @@ export function buildSkillGitAcquisitionEnv(opts: {
   cloneUrl: string
   privateHome: string
   useGitCredential: boolean
+  /** A skill credential window's capability, presented in place of the agent's (source-cache.md §8). */
+  windowCapability?: string
 }): Record<string, string> {
+  const credentialed = opts.useGitCredential && workspaceGitOriginOf(opts.cloneUrl) === 'https://github.com'
   const configured = {
     ...workspaceGitEnvBase(opts.cloneUrl),
-    // Acquisition runs on THIS daemon even for a cluster agent, so the helper pointers must name
-    // the daemon's own shim and socket, never the sandbox pod's (see daemonLocalGitEnv).
-    ...(opts.useGitCredential && workspaceGitOriginOf(opts.cloneUrl) === 'https://github.com'
-      ? daemonLocalGitEnv(opts.agentId, opts.cloneUrl)
-      : {})
+    // Acquisition runs on THIS daemon even for a cluster agent, so the helper names the daemon's own shim and socket.
+    ...(credentialed ? daemonLocalGitEnv(opts.agentId, opts.cloneUrl) : {}),
+    ...(credentialed && opts.windowCapability ? { [GITCRED_CAPABILITY_ENV]: opts.windowCapability } : {})
   }
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
@@ -276,11 +278,25 @@ function parseCredentialOutput(output: Buffer): GitSkillCredential {
 /** Ask only the daemon-configured, GitHub URL-scoped helper. Stdout is bounded
  * and never included in errors because it carries the short-lived token. */
 export async function loadScopedGitSkillCredential(request: GitSkillCredentialRequest): Promise<GitSkillCredential> {
+  // The daemon's own window for exactly this repository while this fill runs; none for the agent's workspace repo (source-cache.md §8).
+  const window = openDaemonSkillCredentialWindow(request.agentId, request.repositoryPath)
+  try {
+    return await fillScopedGitSkillCredential(request, window?.capability)
+  } finally {
+    window?.close()
+  }
+}
+
+async function fillScopedGitSkillCredential(
+  request: GitSkillCredentialRequest,
+  windowCapability: string | undefined
+): Promise<GitSkillCredential> {
   const env = buildSkillGitAcquisitionEnv({
     agentId: request.agentId,
     cloneUrl: request.cloneUrl,
     privateHome: request.privateHome,
-    useGitCredential: true
+    useGitCredential: true,
+    ...(windowCapability ? { windowCapability } : {})
   })
   return await new Promise<GitSkillCredential>((resolve, reject) => {
     let child
@@ -827,9 +843,7 @@ async function verifyGithubRepositoryIdentity(
   // A private repository is admitted: identity and name fence it, not visibility (shared-skills.md §3).
 }
 
-/** The exact `owner/repo` a Git skill entry acquires from, or undefined when the entry is not a
- *  bounded GitHub source. Used to recognize the daemon's own credential ask for a private source
- *  (cp/gitcred-server.ts `privateGithubSkillRepoOf`). */
+/** The exact `owner/repo` a bounded GitHub skill entry acquires from; gitcred matches window asks against it. */
 export function gitSkillRepositoryPath(entry: Pick<AgentSkillEntry, 'source' | 'ref' | 'subDir'>): string | undefined {
   try {
     // Only the source string decides the repository; the numeric id is verified at acquisition.

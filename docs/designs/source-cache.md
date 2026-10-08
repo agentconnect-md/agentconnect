@@ -491,6 +491,40 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
    that repository only) is minted only while the window is open. On an isolated
    pod no runtime is running yet; on the agent pod the residual exposure is the
    unselected content of an enabled repository for the token's lifetime.
+   A window is a random capability (`cp/skill-credential-window.ts`) bound to
+   the agent, a subject and the exact set of private repositories, closed in
+   `finally` and never older than the 15-minute skills request timeout.
+   `gitcred` compares it in constant time and admits with it only those
+   repositories, on the `git` plane, while the replicated spec still lists them
+   as private skill sources; it never yields a workspace, additional-repository
+   or `gh` token. The per-agent capability (`AC_GITCRED_CAPABILITY`, which the
+   pod runtime also holds) is refused for a private skill repository and
+   audited as denied, on the daemon-local socket and the pod tunnel alike. This
+   closes the implied runtime grant of [shared-skills.md](shared-skills.md) §3:
+   a runtime can no longer mint a private skill token at any time.
+   **Today (S3)** the only window is daemon-subject: the daemon's own
+   acquisition (`loadScopedGitSkillCredential`, used by images without
+   `skill-git-in-pod-v1`) opens one for exactly one repository around each
+   credential fill and presents its capability in `AC_GITCRED_CAPABILITY`, so
+   those images keep private skills; that Git keeps running in daemon-owned
+   directories with global and system configuration disabled, never inside an
+   agent checkout (#2841). When the skill repository is the agent's own GitHub
+   workspace repository, the fill opens no window and presents the agent
+   capability, which `gitcred` still admits for the workspace repository by
+   folding it onto the workspace key; a window therefore never has to reach that
+   key, and a workspace-repo skill whose entry lacks `private: true` keeps
+   installing. Nothing opens a pod-subject window yet: **S5b** introduces the
+   per-reconcile, pod-subject window described above, handed to the shim's Git
+   child for the reconcile's private Sources. An agent whose only credential
+   need is a private skill source gets the `gitcred` tunnel too, window-gated.
+   Tunnels open when a pod's channel binds, so a pod bound by a daemon that
+   predates this may lack it: the binding records whether the pod serves
+   `gitcred` (`servesTunnel`), and an S5b reconcile for such a pod must route
+   its private Sources through the daemon acquisition path. S5b must also bind
+   a pod-subject window to the tunnel (pod) it is handed through, so two pods
+   of the same agent (an isolated reconcile pod and the agent pod, say) cannot
+   use each other's window capability; S3 records `subject` but does not
+   enforce it at admission.
 3. For each Git Source the shim, in a private temporary directory:
    - clones blobless (`--filter=blob:none --no-checkout`), with `--bundle-uri`
      when a URL was given, so a skill shares the `blobless` pointer with the
@@ -829,8 +863,11 @@ over `source_cache_usage`, and quota pressure surfaces as
   `refs/heads/<branch>`, origin commit, shape, size cap) → (handle, bytes,
   SHA-256); `upload` (handle, presigned PUT URL, signed headers) → (bytes,
   SHA-256); `discard` (handle). No field carries a filesystem path.
-- **Credential window:** `gitcred` issuance for skill repositories is admitted
-  only while the daemon holds a reconcile open for that pod.
+- **Credential window:** `gitcred` issuance for private skill repositories is
+  admitted only for a live window capability the daemon minted (section 8);
+  the per-agent capability is refused for them. Today the daemon mints one
+  daemon-subject window per credential fill of its own acquisition; S5b adds
+  the per-reconcile, pod-subject window, bound to the pod's tunnel.
 
 All operations are daemon-initiated, as today's `begin` / `upload` / `reconcile`.
 

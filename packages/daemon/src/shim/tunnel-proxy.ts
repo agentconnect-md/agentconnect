@@ -129,6 +129,11 @@ export class TunnelProxy {
     return this.stopped
   }
 
+  /** Whether the pod serves `tunnel` on this live proxy. */
+  serves(tunnel: TunnelName): boolean {
+    return !this.stopped && this.listening.has(tunnel)
+  }
+
   private accept(event: ShimEvent): void {
     const entry = this.streams.get(event.streamId)
     if (event.event.kind === 'connect') {

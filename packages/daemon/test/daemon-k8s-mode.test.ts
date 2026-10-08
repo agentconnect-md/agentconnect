@@ -1752,6 +1752,20 @@ describe('daemon --k8s mode', () => {
         workspace: { mode: 'git-repo', additionalRepos: [{ repoFullName: 'acme/own', repoId: '2' }] }
       })
       expect(planeOptions.tunnelsFor('anon')).toEqual(['mcp'])
+      // A skill-only agent (scratch, no marker) with a private skill source gets the socket, window-gated (source-cache.md §8).
+      const privateSkill = { name: 'tools', source: 'acme/skills', githubRepoId: '9', private: true, skills: [] }
+      ;(k8sDaemon as any).agents.set('skill-only', {
+        id: 'skill-only',
+        workspace: { mode: 'from-scratch' },
+        skills: [privateSkill]
+      })
+      expect(planeOptions.tunnelsFor('skill-only')).toEqual(['mcp', 'gitcred'])
+      ;(k8sDaemon as any).agents.set('public-skill', {
+        id: 'public-skill',
+        workspace: { mode: 'from-scratch' },
+        skills: [{ ...privateSkill, private: undefined }]
+      })
+      expect(planeOptions.tunnelsFor('public-skill')).toEqual(['mcp'])
       // And nothing for the member's own runtime probe, whose channel is granted `probe` alone —
       // asking it to serve a socket would be refused, and the refusal logged, on every boot.
       expect(planeOptions.tunnelsFor('ac-runtime-probe-0f0f0f0f')).toEqual([])

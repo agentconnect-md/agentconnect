@@ -584,6 +584,11 @@ export class WorkspaceManager {
     return agent.workspace.gitCredential !== undefined
   }
 
+  /** Whether the agent's pods get the gitcred tunnel: a helper-backed credential, or a private skill source whose tokens only a window mints. */
+  needsGitcredTunnel(agent: Agent): boolean {
+    return this.helperBackedCredential(agent) || this.skillGitCredentialEnabled(agent)
+  }
+
   /**
    * Whether the spec carries a REPO-BEARING consumer of one spec-hosted provider (§24.4): that
    * provider's workspace, or an authorized additional repository on it. A hook is deliberately not

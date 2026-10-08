@@ -14,6 +14,8 @@ export const MAX_CLUSTER_SKILL_MANIFEST_PAGE = 512
 export const MAX_CLUSTER_SKILL_CHUNK_BYTES = 128 * 1024
 export const MAX_CLUSTER_SKILL_SELECTIONS = 256
 export const MAX_CLUSTER_SKILL_CONTROL_BYTES = 220 * 1024
+/** How long the daemon waits on one skill reconcile; a skill credential window never outlives it. */
+export const SKILLS_RECONCILE_TIMEOUT_MS = 15 * 60_000
 export const MAX_SKILL_GIT_URL_LENGTH = 2048
 export const MAX_SKILL_GET_URL_LENGTH = 8192
 

@@ -24,6 +24,7 @@ import {
   MAX_CLUSTER_SKILL_CONTROL_BYTES,
   MAX_CLUSTER_SKILL_FILES,
   MAX_CLUSTER_SKILL_TOTAL_BYTES,
+  SKILLS_RECONCILE_TIMEOUT_MS,
   type ClusterSkillBegin,
   type ClusterSkillBeginReply,
   type ClusterSkillFile,
@@ -109,7 +110,7 @@ export class ClusterSkillClient {
     if (!this.receiptPaging) {
       const request = ClusterSkillReconcileSchema.parse({ op: 'reconcile', ...input })
       return ClusterSkillReconcileReplySchema.parse(
-        await this.requester.request('skills', request, { timeoutMs: 15 * 60_000 })
+        await this.requester.request('skills', request, { timeoutMs: SKILLS_RECONCILE_TIMEOUT_MS })
       )
     }
     const priorRoots = ClusterSkillLedgerSchema.parse({ roots: input.priorRoots }).roots
@@ -132,7 +133,9 @@ export class ClusterSkillClient {
       }
     }
     let page = ClusterSkillReceiptPageSchema.parse(
-      await this.requester.request('skills', ClusterSkillReconcileSchema.parse(request), { timeoutMs: 15 * 60_000 })
+      await this.requester.request('skills', ClusterSkillReconcileSchema.parse(request), {
+        timeoutMs: SKILLS_RECONCILE_TIMEOUT_MS
+      })
     )
     const extras = skillReplyExtras(page)
     const result = { roots: [...page.roots], conflicts: page.conflicts, ...extras }

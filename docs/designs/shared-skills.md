@@ -208,7 +208,13 @@ through its hardened Git path and gives the CLI only a private local snapshot:
   repository, next to the workspace repository and explicit additional-repo
   rows, and mints a `contents:read` installation token scoped to that one
   repository. No grant row is stored, so unselecting or deleting the source
-  revokes it. On the daemon, the anonymous numeric-identity read answers 404
+  revokes it. The daemon's `gitcred` issues that token only inside a **skill
+  credential window** it opens itself ([source-cache.md](source-cache.md) §8):
+  the per-agent helper capability, which the agent's runtime also holds, is
+  refused for a private skill repository and the refusal is audited, so the
+  runtime (including one in a GitHub-App workspace pod) can no longer clone an
+  enabled private skill repository itself. A repository that is also the
+  workspace or an explicit additional-repo row keeps that grant. On the daemon, the anonymous numeric-identity read answers 404
   for a private repository; the existing credential fallback then obtains the
   token through the URL-scoped helper and every later API read carries it,
   while codeload still receives only GitHub's short-lived archive query. A
