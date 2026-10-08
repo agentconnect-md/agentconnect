@@ -38,6 +38,7 @@ export const DEFAULT_SKILL_GIT_TIMEOUT_MS = 10 * 60_000
 const EMPTY_CONFIG = '/dev/null'
 const PLANNED_REF = 'refs/agentconnect/planned'
 const COMMIT_RE = /^[0-9a-f]{40}$/
+const ZERO_OID = '0'.repeat(40)
 const STAGING_LABEL = 'skill Git staging'
 // A single-branch bundle carries one ref; more than this is hostile and would cost one spawn per ref.
 const MAX_BUNDLE_REFS = 64
@@ -328,6 +329,10 @@ export type SkillGitAcquireResult =
       root: string
       /** The blobless clone's git dir, kept for a write-back bundle. */
       gitDir: string
+      /** The clone's work tree, the directory a write-back bundle is created in. */
+      repo: string
+      /** Set when the plan asked for write-back and the clone's `refs/heads/<branch>` names the planned commit, as the origin's does. */
+      writeBackRef?: string
       snapshot: SkillSourceSnapshot
       bundle: SkillGitBundleOutcome
       /** Remove the staging directory; the caller does this once it is done with `root` and `gitDir`. */
@@ -336,7 +341,7 @@ export type SkillGitAcquireResult =
   | { kind: 'skipped'; sourceId: string; code: SkillSkipCode; reason: string }
 
 type Outcome =
-  | { kind: 'ok'; root: string; gitDir: string; snapshot: SkillSourceSnapshot }
+  | { kind: 'ok'; root: string; gitDir: string; snapshot: SkillSourceSnapshot; writeBackRef?: string }
   | { kind: 'skip'; code: SkillSkipCode; reason: string }
 
 interface Attempt {
@@ -457,12 +462,38 @@ async function acquireOnce(
   if (missing?.kind === 'skip' && missing.code === 'commit_unavailable' && bundleUrl !== undefined)
     throw new BundleFallback('connectivity', 'the planned subtree is unreadable without the origin')
   if (missing) return missing
+  let snapshot: SkillSourceSnapshot
   try {
-    const snapshot = await inspectLocalSkillSource(attempt.tree, { limits })
-    return { kind: 'ok', root: attempt.tree, gitDir: attempt.gitDir, snapshot }
+    snapshot = await inspectLocalSkillSource(attempt.tree, { limits })
   } catch (err) {
     if (err instanceof SkillSourceSnapshotError) return skip('limits_exceeded')
     throw err
+  }
+  const writeBackRef = plan.writeBack ? await writeBackRefOf(attempt) : undefined
+  return { kind: 'ok', root: attempt.tree, gitDir: attempt.gitDir, snapshot, ...(writeBackRef ? { writeBackRef } : {}) }
+}
+
+// The branch a write-back bundle names: only while the origin's branch, as this clone fetched it, still names the planned commit.
+async function writeBackRefOf(attempt: Attempt): Promise<string | undefined> {
+  const { plan } = attempt
+  const branch = plan.ref
+  if (branch === undefined || !isValidBranchRef(branch)) return undefined
+  const tipOf = async (ref: string): Promise<string | undefined> => {
+    const output = await attempt.run(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
+    return output.code === 0 ? output.stdout.trim() : undefined
+  }
+  try {
+    if ((await tipOf(`refs/remotes/origin/${branch.slice('refs/heads/'.length)}`)) !== plan.plannedCommit)
+      return undefined
+    const local = await tipOf(branch)
+    if (local !== undefined) return local === plan.plannedCommit ? branch : undefined
+    // A non-default branch has no local ref after a clone; the zero old value refuses one that appeared meanwhile.
+    await must(attempt, ['update-ref', branch, plan.plannedCommit, ZERO_OID])
+    return branch
+  } catch (err) {
+    // Write-back is best-effort: only a cancellation propagates, anything else just offers no candidate.
+    if (err instanceof SkillGitAbortedError || (err instanceof Error && err.name === 'AbortError')) throw err
+    return undefined
   }
 }
 
@@ -532,6 +563,8 @@ export async function acquireSkillGitSource(input: SkillGitAcquireInput): Promis
       commit: plan.plannedCommit,
       root: outcome.root,
       gitDir: outcome.gitDir,
+      repo: attempt.repo,
+      ...(outcome.writeBackRef ? { writeBackRef: outcome.writeBackRef } : {}),
       snapshot: outcome.snapshot,
       bundle,
       release: () => discard(attempt.dir)

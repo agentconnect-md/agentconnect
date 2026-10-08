@@ -464,6 +464,9 @@ export class ShimDialer {
     const supportsBundles = identity.features?.includes('source-cache-bundle-v1') === true
     // Git plan replies page like receipts, so an image without receipt paging never takes Git plans.
     const supportsGitPlans = supportsReceipts && identity.features?.includes('skill-git-in-pod-v1') === true
+    // Skill write-back uploads through `bundle`, so it needs that grant beside Git plans.
+    const supportsSkillWriteBack =
+      supportsGitPlans && supportsBundles && identity.features?.includes('skill-git-writeback-v1') === true
     return {
       ...record,
       grants: record.grants.filter((grant) =>
@@ -477,7 +480,9 @@ export class ShimDialer {
                 ? supportsBundles
                 : grant === 'skills-git'
                   ? supportsGitPlans
-                  : true
+                  : grant === 'skills-git-writeback'
+                    ? supportsSkillWriteBack
+                    : true
       )
     }
   }

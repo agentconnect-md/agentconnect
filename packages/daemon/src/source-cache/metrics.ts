@@ -2,7 +2,7 @@ import { metrics, type Attributes, type Meter } from '@opentelemetry/api'
 import type { SourceCacheClass, SourceCacheShape } from './keys.js'
 import type { SourceCacheReadOutcome } from './read-plan.js'
 import type { SourceCacheLifecycleStatus, SourceCacheSweepCounts, SourceCacheSweepPass } from './sweep.js'
-import type { SourceCacheWriteOutcome } from './write-back.js'
+import type { SourceCacheWriteOutcome, SourceCacheWriteScope } from './write-back.js'
 
 // Source Cache metrics (source-cache.md §12): labels are closed daemon-authored values, never an org, key, URL or repository.
 
@@ -10,7 +10,10 @@ export interface SourceCacheMetrics {
   /** One clone's cache outcome; a hit also counts the bundle row's bytes. */
   read(outcome: SourceCacheReadOutcome): void
   /** One write-back decision; a written bundle also counts its bytes. */
-  writeBack(outcome: SourceCacheWriteOutcome, scope: { shape: SourceCacheShape; repoClass: SourceCacheClass }): void
+  writeBack(
+    outcome: SourceCacheWriteOutcome,
+    scope: { shape: SourceCacheShape; repoClass: SourceCacheClass; scope?: SourceCacheWriteScope }
+  ): void
   /** One completed sweep pass, its non-zero per-step row counts and released bytes. */
   sweepPass(pass: Extract<SourceCacheSweepPass, { kind: 'done' }>): void
   /** One lifecycle check's result; the status gauge reports the latest. */
@@ -37,6 +40,7 @@ const READ_REASONS = new Set([
   'cleanup-failed'
 ])
 const WRITE_TRIGGERS = new Set(['miss', 'fallback', 'stale', 'delta'])
+const WRITE_SCOPES = new Set(['workspace', 'skill'])
 const WRITE_STAGES = new Set([
   'measure',
   'create',
@@ -112,7 +116,7 @@ export function createSourceCacheMetrics(meter: SourceCacheMeter): SourceCacheMe
   })
   const writeBacks = meter.createCounter('agentconnect.source_cache.write_backs', {
     unit: '{write}',
-    description: 'Source Cache write-back decisions, by outcome, reason, shape and class'
+    description: 'Source Cache write-back decisions, by outcome, reason, shape, class and scope'
   })
   const writeBytes = meter.createCounter('agentconnect.source_cache.write_bytes', {
     unit: 'By',
@@ -155,23 +159,26 @@ export function createSourceCacheMetrics(meter: SourceCacheMeter): SourceCacheMe
         if (bytes > 0) readBytes.add(bytes, { shape, class: repoClass })
       }
     },
-    writeBack(outcome, scope) {
-      const shape = shapeOf(scope.shape)
-      const repoClass = classOf(scope.repoClass)
+    writeBack(outcome, labels) {
+      const shape = shapeOf(labels.shape)
+      const repoClass = classOf(labels.repoClass)
+      // Whose clone was bundled; an unlabeled caller is a workspace, the only scope before skills.
+      const scope = closed(WRITE_SCOPES, labels.scope, 'workspace')
+      const base = { shape, class: repoClass, scope }
       let attributes: Attributes
       if (outcome.kind === 'written') {
         const trigger = closed(WRITE_TRIGGERS, outcome.trigger)
-        attributes = { outcome: 'written', reason: trigger, shape, class: repoClass }
+        attributes = { outcome: 'written', reason: trigger, ...base }
         const bytes = positiveOf(outcome.bytes)
-        if (bytes > 0) writeBytes.add(bytes, { trigger, shape, class: repoClass })
+        if (bytes > 0) writeBytes.add(bytes, { trigger, ...base })
       } else if (outcome.kind === 'skipped') {
-        attributes = { outcome: 'skipped', reason: closed(SKIP_REASONS, outcome.reason), shape, class: repoClass }
+        attributes = { outcome: 'skipped', reason: closed(SKIP_REASONS, outcome.reason), ...base }
       } else if (outcome.kind === 'failed') {
-        attributes = { outcome: 'failed', reason: closed(WRITE_STAGES, outcome.stage), shape, class: repoClass }
+        attributes = { outcome: 'failed', reason: closed(WRITE_STAGES, outcome.stage), ...base }
       } else if (outcome.kind === 'lost-race') {
-        attributes = { outcome: 'lost_race', reason: 'none', shape, class: repoClass }
+        attributes = { outcome: 'lost_race', reason: 'none', ...base }
       } else {
-        attributes = { outcome: 'other', reason: 'other', shape, class: repoClass }
+        attributes = { outcome: 'other', reason: 'other', ...base }
       }
       writeBacks.add(1, attributes)
     },

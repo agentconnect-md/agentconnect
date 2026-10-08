@@ -8,6 +8,7 @@ import { applyFileSinkPayload } from './file-sink.js'
 import { DEFAULT_SHIM_PATHS, type ShimPaths } from './sandbox-paths.js'
 import { ClusterSkillHandler } from './skill-handler.js'
 import type { ClusterSkillRequestContext } from './skill-handler.js'
+import type { SkillWriteBackStaging } from './skill-git-writeback.js'
 import { GitExecPayloadSchema, type GitExecResult } from './git-exec.js'
 import type { ShimCapability } from './protocol.js'
 import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
@@ -56,6 +57,8 @@ export interface ExecHandlerDeps {
   /** Test seam: the shim's own environment, which SRT sets its bridge in; default `process.env`. */
   shimEnv?: Record<string, string | undefined>
   log?: { info: (m: string) => void; warn: (m: string) => void }
+  /** The bundle handler's staging for skill write-back; set only when this shim advertises `skill-git-writeback-v1`. */
+  skillWriteBack?: SkillWriteBackStaging
 }
 
 /** Applied when the caller names no deadline; the ceiling bounds one that is too generous. */
@@ -123,7 +126,8 @@ export function createExecHandler(
     stagingRoot: paths.skillStagingDir,
     workspaceRoot: deps.workspaceRoot,
     stateRoot: join(deps.workspaceRoot, '.agentconnect', 'cluster-skill-state'),
-    git
+    git,
+    ...(deps.skillWriteBack ? { writeBack: deps.skillWriteBack } : {})
   })
   const workspaceSkills = new Map<string, ClusterSkillHandler>()
   return async (capability, payload, abort, context) => {
@@ -148,7 +152,8 @@ export function createExecHandler(
           stagingRoot: join(paths.skillStagingDir, createHash('sha256').update(cwd).digest('hex')),
           workspaceRoot: cwd,
           stateRoot: join(cwd, '.agentconnect', 'cluster-skill-state'),
-          git
+          git,
+          ...(deps.skillWriteBack ? { writeBack: deps.skillWriteBack } : {})
         })
         workspaceSkills.set(cwd, handler)
       }

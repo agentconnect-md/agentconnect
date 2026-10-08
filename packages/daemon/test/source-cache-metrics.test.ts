@@ -150,14 +150,27 @@ describe('Source Cache write-back metrics', () => {
     const m = fakeMeter()
     m.metrics.writeBack({ kind: 'written', trigger: 'delta', bundleKey: KEY, bytes: 4096 }, scope)
     expect(m.of('write_backs').map((s) => s.attributes)).toEqual([
-      { outcome: 'written', reason: 'delta', shape: 'blobless', class: 'anon' }
+      { outcome: 'written', reason: 'delta', shape: 'blobless', class: 'anon', scope: 'workspace' }
     ])
     expect(m.of('write_bytes')).toEqual([
       {
         name: 'agentconnect.source_cache.write_bytes',
         value: 4096,
-        attributes: { trigger: 'delta', shape: 'blobless', class: 'anon' }
+        attributes: { trigger: 'delta', shape: 'blobless', class: 'anon', scope: 'workspace' }
       }
+    ])
+  })
+
+  it('labels a skill write-back with the skill scope, and an unknown scope as other', () => {
+    const m = fakeMeter()
+    m.metrics.writeBack({ kind: 'written', trigger: 'miss', bundleKey: KEY, bytes: 10 }, { ...scope, scope: 'skill' })
+    m.metrics.writeBack({ kind: 'lost-race', bundleKey: KEY }, { ...scope, scope: ORG } as never)
+    expect(m.of('write_backs').map((s) => s.attributes)).toEqual([
+      { outcome: 'written', reason: 'miss', shape: 'blobless', class: 'anon', scope: 'skill' },
+      { outcome: 'lost_race', reason: 'none', shape: 'blobless', class: 'anon', scope: 'other' }
+    ])
+    expect(m.of('write_bytes').map((s) => s.attributes)).toEqual([
+      { trigger: 'miss', shape: 'blobless', class: 'anon', scope: 'skill' }
     ])
   })
 
@@ -165,7 +178,7 @@ describe('Source Cache write-back metrics', () => {
     const m = fakeMeter()
     m.metrics.writeBack({ kind: 'skipped', reason, detail: `${ORG} ${URL_SECRET}` }, scope)
     expect(m.of('write_backs').map((s) => s.attributes)).toEqual([
-      { outcome: 'skipped', reason, shape: 'blobless', class: 'anon' }
+      { outcome: 'skipped', reason, shape: 'blobless', class: 'anon', scope: 'workspace' }
     ])
     expect(m.of('write_bytes')).toEqual([])
   })
@@ -175,8 +188,8 @@ describe('Source Cache write-back metrics', () => {
     m.metrics.writeBack({ kind: 'failed', stage: 'upload', detail: URL_SECRET, bundleKey: KEY }, scope)
     m.metrics.writeBack({ kind: 'lost-race', bundleKey: KEY }, { shape: 'full', repoClass: 'cred' })
     expect(m.of('write_backs').map((s) => s.attributes)).toEqual([
-      { outcome: 'failed', reason: 'upload', shape: 'blobless', class: 'anon' },
-      { outcome: 'lost_race', reason: 'none', shape: 'full', class: 'cred' }
+      { outcome: 'failed', reason: 'upload', shape: 'blobless', class: 'anon', scope: 'workspace' },
+      { outcome: 'lost_race', reason: 'none', shape: 'full', class: 'cred', scope: 'workspace' }
     ])
     expect(m.of('write_bytes')).toEqual([])
   })
@@ -267,7 +280,7 @@ describe('Source Cache metric cardinality', () => {
     m.metrics.lifecycle('unknown')
     const observed = m.observe('agentconnect.source_cache.lifecycle.status')
 
-    const allowedKeys = new Set(['outcome', 'reason', 'shape', 'class', 'trigger', 'step', 'result', 'status'])
+    const allowedKeys = new Set(['outcome', 'reason', 'shape', 'class', 'scope', 'trigger', 'step', 'result', 'status'])
     const attributeSets = [...m.samples.map((s) => s.attributes), ...observed.map((o) => o.attributes)]
     expect(attributeSets.length).toBeGreaterThan(40)
     for (const attributes of attributeSets) {

@@ -50,13 +50,14 @@ export const SHIM_PARENT_FD_ENV = 'AC_SHIM_PARENT_FD'
 /** `1` under a boundary that passes stdio alone: stdin stays open past the identity line, and its end-of-file means stop or a gone daemon. */
 export const SHIM_STDIN_LIFELINE_ENV = 'AC_SHIM_STDIN_LIFELINE'
 
-/** `cluster-skills-v2` widens the skill manifest; `source-cache-bundle-v1` serves `bundle`; `skill-git-in-pod-v1` serves `skills-git`. */
+/** `cluster-skills-v2` widens the manifest; `source-cache-bundle-v1` serves `bundle`; `skill-git-in-pod-v1` `skills-git`; `skill-git-writeback-v1` `skills-git-writeback`. */
 export const ShimFeatureSchema = z.enum([
   'cluster-skills-v1',
   'cluster-skills-v2',
   'cluster-skills-v3',
   'source-cache-bundle-v1',
-  'skill-git-in-pod-v1'
+  'skill-git-in-pod-v1',
+  'skill-git-writeback-v1'
 ])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>
 
@@ -88,6 +89,8 @@ export const ShimCapabilitySchema = z.enum([
   'skills-receipts',
   // Git skill Sources arrive as reconcile plan entries the shim clones itself (source-cache.md §8, §13).
   'skills-git',
+  // A Git plan entry may ask the shim to bundle its clone for write-back, uploaded over `bundle` (source-cache.md §9, §13).
+  'skills-git-writeback',
   // Create, upload and discard a shim-minted Source Cache bundle handle (source-cache.md §9, §13).
   'bundle',
   /** Report which runtimes this image actually provides, by asking them. The daemon cannot learn

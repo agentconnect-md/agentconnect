@@ -30,6 +30,15 @@ export type BundleFallbackReason =
   | 'cleanup-failed'
   | 'acquire-failed'
 
+/** Fallbacks that mean the bundle itself was bad or unusable; a download warning or unseen stderr may be transient and skips. */
+export const WRITE_BACK_FALLBACK_REASONS: ReadonlySet<BundleFallbackReason> = new Set([
+  'clone-failed',
+  'no-bundle-refs',
+  'inspect-failed',
+  'connectivity',
+  'cleanup-failed'
+])
+
 /** An in-band failure of a bundled attempt: the caller discards it and retries once without the bundle. */
 export class BundleFallback extends Error {
   constructor(

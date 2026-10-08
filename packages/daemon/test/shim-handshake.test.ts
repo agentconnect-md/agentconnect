@@ -277,6 +277,37 @@ describe('shim feature negotiation', () => {
       'skills-git'
     ])
   })
+
+  it('grants `skills-git-writeback` only beside `skills-git` and `bundle`, to a shim that advertises skill-git-writeback-v1', async () => {
+    const grantsFor = async (features: string[]): Promise<string[]> => {
+      const clock = new VirtualClock()
+      const { dialer } = scriptedDialer({
+        answer: presents('projected-token', features),
+        verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+        clock
+      })
+      const grants = ['skills', 'skills-wide', 'skills-receipts', 'skills-git', 'skills-git-writeback', 'bundle']
+      const connection = await runVirtual(
+        clock,
+        dialer.connect(SCRIPTED_ENDPOINT, record({ grants: grants as never }), 500)
+      )
+      return connection.binding.grants
+    }
+    const gitPlans = ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'skill-git-in-pod-v1']
+    const writeBack = 'skill-git-writeback-v1'
+    // An S5b image advertises Git plans and bundles but not write-back: it never gets a writeBack field.
+    expect(await grantsFor([...gitPlans, 'source-cache-bundle-v1'])).not.toContain('skills-git-writeback')
+    expect(await grantsFor([...gitPlans, writeBack])).not.toContain('skills-git-writeback')
+    expect(await grantsFor(['source-cache-bundle-v1', writeBack])).not.toContain('skills-git-writeback')
+    expect(await grantsFor([...gitPlans, 'source-cache-bundle-v1', writeBack])).toEqual([
+      'skills',
+      'skills-wide',
+      'skills-receipts',
+      'skills-git',
+      'skills-git-writeback',
+      'bundle'
+    ])
+  })
 })
 
 describe('handshake operability counters', () => {
@@ -380,7 +411,8 @@ describe('shim handshake', () => {
         'cluster-skills-v2',
         'cluster-skills-v3',
         'source-cache-bundle-v1',
-        'skill-git-in-pod-v1'
+        'skill-git-in-pod-v1',
+        'skill-git-writeback-v1'
       ]
     })
     // The audience is what makes handing over the pod's own token safe: a token minted

@@ -66,6 +66,7 @@ export const RUNTIME_GRANTS: ShimCapability[] = [
   'skills-wide',
   'skills-receipts',
   'skills-git',
+  'skills-git-writeback',
   'bundle'
 ]
 

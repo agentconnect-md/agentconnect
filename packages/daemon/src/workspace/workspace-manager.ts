@@ -318,7 +318,7 @@ export class WorkspaceManager {
   private readonly sessionSelections = new Map<string, SessionSelection>()
   private planeResolver: PlaneResolver | undefined
   private sourceCacheReader: SourceCacheWorkspaceReader | undefined
-  private sourceCacheWriter: SourceCacheWriter | undefined
+  private sourceCacheWriter: Pick<SourceCacheWriter, 'consider'> | undefined
   // Joins every Git this manager runs; aborted once, when shutdown stops waiting on work it could not otherwise cancel.
   private readonly shutdown = new AbortController()
 
@@ -342,7 +342,7 @@ export class WorkspaceManager {
   }
 
   /** The pool member's Source Cache writer (source-cache.md §9); unset means no clone writes back. */
-  setSourceCacheWriter(writer: SourceCacheWriter | undefined): void {
+  setSourceCacheWriter(writer: Pick<SourceCacheWriter, 'consider'> | undefined): void {
     this.sourceCacheWriter = writer
   }
 

@@ -7,6 +7,7 @@ import type { SourceCacheWriteTarget } from '../src/source-cache/read-plan.js'
 import {
   createSourceCacheWriter,
   type SourceCacheBundleStager,
+  type SourceCacheStagedWriteRequest,
   type SourceCacheWriteRequest,
   type SourceCacheWriterDeps
 } from '../src/source-cache/write-back.js'
@@ -442,8 +443,8 @@ describe('Source Cache write-back is never an exception into the session', () =>
     await h.writer.consider(h.request({ target: target('cred', 'full'), credentialed: true }))
     await h.writer.consider(h.request({ stager: undefined }))
     expect(h.scopes).toEqual([
-      { shape: 'full', repoClass: 'cred' },
-      { shape: 'blobless', repoClass: 'anon' }
+      { shape: 'full', repoClass: 'cred', scope: 'workspace' },
+      { shape: 'blobless', repoClass: 'anon', scope: 'workspace' }
     ])
     expect(JSON.stringify(h.scopes)).not.toContain('org_1')
   })
@@ -493,5 +494,106 @@ describe('Source Cache write-back is never an exception into the session', () =>
     release()
     expect(await first).toMatchObject({ kind: 'written' })
     expect(await other).toMatchObject({ kind: 'written' })
+  })
+})
+
+describe('Source Cache write-back of a shim-staged skill bundle (§8, §9)', () => {
+  const HANDLE = '0b5c3f8e-8d0a-4c4e-9a1e-0123456789ab'
+  function staged(h: ReturnType<typeof harness>, extra: Partial<SourceCacheStagedWriteRequest> = {}) {
+    return {
+      target: target(),
+      staged: { handle: HANDLE, bytes: BYTES, sha256: SHA, branch: 'refs/heads/main' },
+      trigger: 'miss' as const,
+      stager: h.stager,
+      credentialed: false,
+      ...extra
+    }
+  }
+
+  it('reserves, signs, uploads, verifies, commits, retags and moves the pointer without measuring or creating', async () => {
+    const h = harness({ pointerTarget: OLD_TARGET })
+    const outcome = await h.writer.considerStaged(staged(h, { target: { ...target(), observedTargetKey: OLD_TARGET } }))
+    expect(outcome).toMatchObject({ kind: 'written', trigger: 'miss', bytes: BYTES })
+    expect(h.calls).toEqual([
+      'read-pointer',
+      'reserve',
+      'presign',
+      'upload',
+      'head',
+      'commit',
+      'retag:ac-cache=live',
+      'pointer'
+    ])
+    expect(h.reserved).toEqual([
+      { key: expect.stringMatching(/^src\/org_1\/anon\//), bytes: BYTES, expiresAt: NOW + 3_600_000 }
+    ])
+    expect(h.pointed).toEqual([{ bundleKey: h.reserved[0]!.key, expectedTargetKey: OLD_TARGET }])
+    expect(h.discarded).toEqual([HANDLE])
+    expect(h.scopes).toEqual([{ shape: 'blobless', repoClass: 'anon', scope: 'skill' }])
+  })
+
+  it('writes cred only for a credentialed clone, and never crosses classes either way', async () => {
+    const h = harness()
+    expect(await h.writer.considerStaged(staged(h, { target: target('cred'), credentialed: true }))).toMatchObject({
+      kind: 'written'
+    })
+    expect(h.reserved[0]!.key).toMatch(/^src\/org_1\/cred\/github:42\//)
+    expect(await h.writer.considerStaged(staged(h, { target: target('cred'), credentialed: false }))).toEqual({
+      kind: 'skipped',
+      reason: 'class-mismatch'
+    })
+    expect(await h.writer.considerStaged(staged(h, { target: target('anon'), credentialed: true }))).toEqual({
+      kind: 'skipped',
+      reason: 'class-mismatch'
+    })
+    expect(h.reserved).toHaveLength(1)
+    expect(h.discarded).toEqual([HANDLE, HANDLE, HANDLE])
+  })
+
+  it.each([
+    ['the bucket lacks its lifecycle rules', { allowWrites: () => false }, 'lifecycle-missing'],
+    [
+      'the quota refuses the reservation',
+      { reserve: { admitted: false as const, reason: 'over-quota' as const } },
+      'reservation-over-quota'
+    ],
+    ['the store is not open', { noStore: true }, 'store-unavailable'],
+    ['the pointer moved since planning', { pointerTarget: OLD_TARGET }, 'pointer-moved']
+  ])('discards the handle and writes nothing when %s', async (_label, options, reason) => {
+    const h = harness(options as Options)
+    expect(await h.writer.considerStaged(staged(h))).toEqual({ kind: 'skipped', reason })
+    expect(h.calls).not.toContain('upload')
+    expect(h.discarded).toEqual([HANDLE])
+  })
+
+  it('refuses a bundle of another branch or past the cap, and discards a failed upload', async () => {
+    const h = harness({ uploadError: new Error('reset') })
+    const other = staged(h, { staged: { handle: HANDLE, bytes: BYTES, sha256: SHA, branch: 'refs/heads/dev' } })
+    expect(await h.writer.considerStaged(other)).toEqual({ kind: 'skipped', reason: 'branch-diverged' })
+    const big = staged(h, {
+      staged: { handle: HANDLE, bytes: 2 * 1024 * 1024, sha256: SHA, branch: 'refs/heads/main' }
+    })
+    expect(await h.writer.considerStaged(big)).toEqual({ kind: 'skipped', reason: 'over-cap' })
+    expect(await h.writer.considerStaged(staged(h))).toMatchObject({ kind: 'failed', stage: 'upload' })
+    expect(h.discarded).toEqual([HANDLE, HANDLE, HANDLE])
+  })
+
+  it('shares one write per pointer with workspace write-back, and discards the loser', async () => {
+    const h = harness()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const slow: SourceCacheBundleStager = {
+      ...h.stager,
+      create: async (input) => {
+        await gate
+        return h.stager.create(input)
+      }
+    }
+    const workspace = h.writer.consider(h.request({ stager: slow }))
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(await h.writer.considerStaged(staged(h))).toEqual({ kind: 'skipped', reason: 'in-flight' })
+    expect(h.discarded).toEqual([HANDLE])
+    release()
+    expect(await workspace).toMatchObject({ kind: 'written' })
   })
 })

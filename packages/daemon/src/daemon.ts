@@ -652,6 +652,7 @@ import { makeLogger, type Logger } from './log.js'
 import {
   createCredentialedCacheReadAuthorizer,
   createSkillReadPlanner,
+  createSkillCachePlanner,
   createSourceCache,
   createSourceCacheReadPlanner,
   createSourceCacheSweeper,
@@ -660,7 +661,6 @@ import {
   type SourceCache,
   type SourceCacheMetrics,
   type SourceCachePresigner,
-  type SourceCacheSkillReader,
   type SourceCacheSweeper
 } from './source-cache/index.js'
 import { CodeHostRefResolver } from './codehost/ref-resolver.js'
@@ -1708,8 +1708,8 @@ export class Daemon {
   private gitSkillSources?: GitSkillSourceCache
   private gitSkillRefs?: (entry: AgentSkillEntrySchema, agentId: string) => Promise<string | null>
   private gitSkillRefPlans?: (entry: AgentSkillEntrySchema, agentId: string) => Promise<SkillRefPlan>
-  /** Presigned skill GETs of each Source's own class; set only when a Source Cache bucket is configured. */
-  private skillReads?: SourceCacheSkillReader
+  /** A skill Source's GET URL and write-back intent, in its own class; set only when a Source Cache bucket is configured. */
+  private skillCachePlan?: ReturnType<typeof createSkillCachePlanner>
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
   // Latest channel report per integrationId plus whether it came from a complete
@@ -2003,7 +2003,7 @@ export class Daemon {
           onOutcome: (outcome) => cacheMetrics.read(outcome)
         })
       )
-      this.skillReads = createSkillReadPlanner({
+      const skillReads = createSkillReadPlanner({
         store: () => this.store as LocalStore | undefined,
         presigner: this.sourceCache.presigner,
         orgForAgent: (agentId) => this.orgForAgent(agentId),
@@ -2026,17 +2026,22 @@ export class Daemon {
         onLifecycle: (status) => cacheMetrics.lifecycle(status)
       })
       this.sourceCacheSweeper = sweeper
-      this.workspaces.setSourceCacheWriter(
-        createSourceCacheWriter({
-          store: () => this.store as LocalStore | undefined,
-          presigner: this.sourceCache.presigner,
-          objects: this.sourceCache.objects,
-          limits: this.sourceCache.config.limits,
-          allowWrites: () => sweeper.lifecycle() !== 'missing',
-          log: sourceCacheLog,
-          onOutcome: (outcome, scope) => cacheMetrics.writeBack(outcome, scope)
-        })
-      )
+      // One writer for workspaces and skills, so one write per pointer and its concurrency cap hold across both.
+      const writer = createSourceCacheWriter({
+        store: () => this.store as LocalStore | undefined,
+        presigner: this.sourceCache.presigner,
+        objects: this.sourceCache.objects,
+        limits: this.sourceCache.config.limits,
+        allowWrites: () => sweeper.lifecycle() !== 'missing',
+        log: sourceCacheLog,
+        onOutcome: (outcome, scope) => cacheMetrics.writeBack(outcome, scope)
+      })
+      this.workspaces.setSourceCacheWriter(writer)
+      this.skillCachePlan = createSkillCachePlanner({
+        reads: skillReads,
+        writer,
+        maxBytes: this.sourceCache.config.limits.maxBundleBytes
+      })
     }
     this.decisionEvaluator = new DecisionEvaluator({
       orgForAgent: (agentId) => this.orgForAgent(agentId),
@@ -6467,10 +6472,7 @@ export class Daemon {
                 ...acquireOptions,
                 destination
               }),
-        ...(client.gitInPod && peer.pod ? { inPod: this.inPodSkillDeps(agent, peer.pod) } : {}),
-        // Write-back is S6's; until then a candidate is only noted.
-        onWriteBackCandidates: (candidates) =>
-          this.log.debug(`skills: ${candidates.length} in-pod write-back candidate(s) for ${agent.id} left unused`)
+        ...(client.gitInPod && peer.pod ? { inPod: this.inPodSkillDeps(agent, peer.pod) } : {})
       },
       {
         agentId: agent.id,
@@ -6508,8 +6510,11 @@ export class Daemon {
       servesGitcred: pod.servesGitcred,
       openWindow: (repos) => this.gitCredServer?.openPodSkillWindow(agent.id, pod.subject, repos),
       windowAdmits: (repo) => this.gitCredServer?.admitsPodSkillRepo(agent.id, repo) ?? false,
-      ...(this.skillReads
-        ? { getUrl: (entry, resolution) => this.skillReads!.getUrl({ agentId: agent.id, entry, resolution }) }
+      ...(this.skillCachePlan
+        ? {
+            cachePlan: (entry, resolution, options) =>
+              this.skillCachePlan!({ agentId: agent.id, entry, resolution }, options)
+          }
         : {}),
       // A public entry naming a repository the agent capability grants keeps that grant on the daemon path.
       daemonOnly: (entry) => {

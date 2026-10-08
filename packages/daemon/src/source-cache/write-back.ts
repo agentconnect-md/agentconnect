@@ -1,5 +1,6 @@
 import type { LocalStore, SourceCacheReserveResult } from '../store/local-store.js'
 import type { BundleFallbackReason } from '../workspace/bundled-clone.js'
+import { WRITE_BACK_FALLBACK_REASONS } from './bundle-retry.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 import type { SourceCacheLimits } from './config.js'
 import { bundleKey, newBundleId, refHash, type SourceCacheClass, type SourceCacheShape } from './keys.js'
@@ -7,7 +8,7 @@ import type { SourceCacheObjectClient } from './object-client.js'
 import type { SourceCachePresigner } from './presigner.js'
 import type { SourceCacheWriteTarget } from './read-plan.js'
 
-// Workspace write-back (source-cache.md §7 item 4, §9): asynchronous, best-effort, and never an exception into a session.
+// Workspace and skill write-back (source-cache.md §7 item 4, §8, §9): asynchronous, best-effort, never an exception into a session.
 
 /** A delta above either threshold after a hit makes the clone a write-back candidate (§7). */
 export const WRITE_BACK_DELTA_OBJECTS = 5_000
@@ -15,14 +16,7 @@ export const WRITE_BACK_DELTA_BYTES = 50 * 1024 * 1024
 /** A hit on a bundle older than this is a candidate too. */
 export const WRITE_BACK_MAX_BUNDLE_AGE_MS = 7 * 24 * 60 * 60_000
 const DEFAULT_MAX_CONCURRENT = 2
-/** Fallbacks that mean the bundle itself was bad or unusable; a download warning or unseen stderr may be transient and skips. */
-export const WRITE_BACK_FALLBACK_REASONS: ReadonlySet<BundleFallbackReason> = new Set([
-  'clone-failed',
-  'no-bundle-refs',
-  'inspect-failed',
-  'connectivity',
-  'cleanup-failed'
-])
+export { WRITE_BACK_FALLBACK_REASONS }
 
 /** The shim's `bundle` operations as the writer needs them; the handle is minted in the pod, never a path. */
 export interface SourceCacheBundleStager {
@@ -50,6 +44,20 @@ export interface SourceCacheWriteRequest {
   credentialed: boolean
   abort?: AbortSignal
 }
+
+/** A bundle the shim already created (a skill clone's): the writer skips measuring and `create`, and still discards it. */
+export interface SourceCacheStagedWriteRequest {
+  target: SourceCacheWriteTarget
+  staged: { handle: string; bytes: number; sha256: string; branch: string }
+  trigger: Exclude<SourceCacheWriteTrigger, 'delta'>
+  stager: Pick<SourceCacheBundleStager, 'upload' | 'discard'>
+  /** Whether the clone the daemon planned carried the managed credential. */
+  credentialed: boolean
+  abort?: AbortSignal
+}
+
+/** The `scope` metric label: whose clone the bundle came from. */
+export type SourceCacheWriteScope = 'workspace' | 'skill'
 
 export type SourceCacheWriteTrigger = 'miss' | 'fallback' | 'stale' | 'delta'
 export type SourceCacheWriteStage =
@@ -80,8 +88,10 @@ export type SourceCacheWriteOutcome =
   | { kind: 'failed'; stage: SourceCacheWriteStage; detail: string; bundleKey?: string }
 
 export interface SourceCacheWriter {
-  /** Decide and run one write-back; always resolves. */
+  /** Decide and run one workspace write-back; always resolves. */
   consider(request: SourceCacheWriteRequest): Promise<SourceCacheWriteOutcome>
+  /** Run one write-back of a shim-staged skill bundle; always resolves and always discards its handle. */
+  considerStaged(request: SourceCacheStagedWriteRequest): Promise<SourceCacheWriteOutcome>
 }
 
 export interface SourceCacheWriterDeps {
@@ -96,10 +106,10 @@ export interface SourceCacheWriterDeps {
   log: { debug(message: string): void; info(message: string): void; warn(message: string): void }
   /** False while the bucket affirmatively lacks the lifecycle rules (§14 fallback); omitted means always allowed. */
   allowWrites?: () => boolean
-  /** Metrics hook; `scope` is the target's shape and class, never its org or key. */
+  /** Metrics hook; `scope` is the target's shape, class and whose clone it was, never its org or key. */
   onOutcome?: (
     outcome: SourceCacheWriteOutcome,
-    scope: { shape: SourceCacheShape; repoClass: SourceCacheClass }
+    scope: { shape: SourceCacheShape; repoClass: SourceCacheClass; scope: SourceCacheWriteScope }
   ) => void
 }
 
@@ -128,7 +138,11 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
   const maxAgeMs = deps.thresholds?.maxBundleAgeMs ?? WRITE_BACK_MAX_BUNDLE_AGE_MS
   const inFlight = new Set<string>()
 
-  const record = (target: SourceCacheWriteTarget, outcome: SourceCacheWriteOutcome): SourceCacheWriteOutcome => {
+  const record = (
+    target: SourceCacheWriteTarget,
+    outcome: SourceCacheWriteOutcome,
+    scope: SourceCacheWriteScope
+  ): SourceCacheWriteOutcome => {
     const where = target.pointerKey
     if (outcome.kind === 'written') {
       deps.log.info(
@@ -144,7 +158,7 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
       )
     }
     try {
-      deps.onOutcome?.(outcome, { shape: target.shape, repoClass: target.repoClass })
+      deps.onOutcome?.(outcome, { shape: target.shape, repoClass: target.repoClass, scope })
     } catch {
       // A metrics hook never fails a write-back.
     }
@@ -182,11 +196,15 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
     return skip('fresh')
   }
 
+  // Gates both paths share: the bucket's lifecycle, and the class the daemon's own clone instruction used (§9 step 2).
+  const admit = (target: SourceCacheWriteTarget, credentialed: boolean): void => {
+    if (deps.allowWrites && !deps.allowWrites()) skip('lifecycle-missing')
+    if (credentialed !== (target.repoClass === 'cred')) skip('class-mismatch')
+  }
+
   const run = async (request: SourceCacheWriteRequest): Promise<SourceCacheWriteOutcome> => {
     const { target, stager, abort } = request
-    if (deps.allowWrites && !deps.allowWrites()) return skip('lifecycle-missing')
-    // The class is the one the daemon's own clone instruction used, never one the pod names (§9 step 2).
-    if (request.credentialed !== (target.repoClass === 'cred')) return skip('class-mismatch')
+    admit(target, request.credentialed)
     if (stager === undefined) return skip('unsupported-shim')
     const branch = target.ref.slice('refs/heads/'.length)
     let commit: string
@@ -201,10 +219,29 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
       return skip('unresolved', detailOf(err))
     }
     const trigger = await triggerOf(request, commit)
+    return await publish(target, trigger, stager, abort, () =>
+      stager.create(
+        { cwd: request.checkout, ref: target.ref, commit, shape: target.shape, maxBytes: deps.limits.maxBundleBytes },
+        abort
+      )
+    )
+  }
+
+  // Reserve, sign, upload, verify, commit, retag and move the pointer; `create` is skipped for a pre-staged bundle.
+  const publish = async (
+    target: SourceCacheWriteTarget,
+    trigger: SourceCacheWriteTrigger,
+    stager: Pick<SourceCacheBundleStager, 'upload' | 'discard'>,
+    abort: AbortSignal | undefined,
+    create:
+      | (() => Promise<{ handle: string; bytes: number; sha256: string }>)
+      | { handle: string; bytes: number; sha256: string }
+  ): Promise<SourceCacheWriteOutcome> => {
     const flight = `${target.orgId}\n${target.pointerKey}`
     if (inFlight.has(flight)) return skip('in-flight')
     if (inFlight.size >= maxConcurrent) return skip('busy')
     inFlight.add(flight)
+    // Only a handle this call created is discarded here; a pre-staged one belongs to its caller.
     let handle: string | undefined
     let stage: SourceCacheWriteStage = 'create'
     let key: string | undefined
@@ -213,11 +250,11 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
       const pointer = await store.getSourceCacheObject(target.orgId, target.pointerKey)
       if ((pointer?.targetKey ?? null) !== target.observedTargetKey) return skip('pointer-moved')
 
-      const staged = await stager.create(
-        { cwd: request.checkout, ref: target.ref, commit, shape: target.shape, maxBytes: deps.limits.maxBundleBytes },
-        abort
-      )
-      handle = staged.handle
+      let staged: { handle: string; bytes: number; sha256: string }
+      if (typeof create === 'function') {
+        staged = await create()
+        handle = staged.handle
+      } else staged = create
       if (staged.bytes > deps.limits.maxBundleBytes) return skip('over-cap')
 
       stage = 'reserve'
@@ -244,7 +281,7 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
       })
 
       stage = 'upload'
-      const uploaded = await stager.upload({ handle, url: put.url, headers: put.headers }, abort)
+      const uploaded = await stager.upload({ handle: staged.handle, url: put.url, headers: put.headers }, abort)
       if (uploaded.bytes !== staged.bytes || uploaded.sha256 !== staged.sha256) throw new Error('upload reply mismatch')
 
       stage = 'verify'
@@ -285,18 +322,40 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
     }
   }
 
+  const runStaged = async (request: SourceCacheStagedWriteRequest): Promise<SourceCacheWriteOutcome> => {
+    const { target, staged } = request
+    admit(target, request.credentialed)
+    // The pod names the branch it bundled; it must be the one this target was planned for.
+    if (staged.branch !== target.ref || !target.ref.startsWith('refs/heads/')) return skip('branch-diverged')
+    return await publish(target, request.trigger, request.stager, request.abort, staged)
+  }
+
+  const settle = async (
+    target: SourceCacheWriteTarget,
+    scope: SourceCacheWriteScope,
+    work: () => Promise<SourceCacheWriteOutcome>,
+    failedAt: SourceCacheWriteStage
+  ): Promise<SourceCacheWriteOutcome> => {
+    let outcome: SourceCacheWriteOutcome
+    try {
+      outcome = await work()
+    } catch (err) {
+      outcome = err instanceof Stop ? err.outcome : { kind: 'failed', stage: failedAt, detail: detailOf(err) }
+    }
+    try {
+      return record(target, outcome, scope)
+    } catch {
+      return outcome
+    }
+  }
+
   return {
-    async consider(request) {
-      let outcome: SourceCacheWriteOutcome
+    consider: (request) => settle(request.target, 'workspace', () => run(request), 'measure'),
+    async considerStaged(request) {
       try {
-        outcome = await run(request)
-      } catch (err) {
-        outcome = err instanceof Stop ? err.outcome : { kind: 'failed', stage: 'measure', detail: detailOf(err) }
-      }
-      try {
-        return record(request.target, outcome)
-      } catch {
-        return outcome
+        return await settle(request.target, 'skill', () => runStaged(request), 'reserve')
+      } finally {
+        await request.stager.discard(request.staged.handle, request.abort).catch(() => undefined)
       }
     }
   }
