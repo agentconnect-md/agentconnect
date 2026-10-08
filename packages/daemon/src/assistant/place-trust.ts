@@ -22,7 +22,7 @@ export interface PlaceTrustDeps {
 }
 
 export class PlaceTrust {
-  /** Detections the CP's spec has not confirmed yet, by integration then conversation: replayed on reconnect, held on every spec. */
+  /** Detections replayed on every reconnect: a share until a spec lists it, a guest or an outside member until it is unbound or unlisted. */
   private readonly pending = new Map<string, Map<string, PlaceExternalReason>>()
 
   constructor(private readonly deps: PlaceTrustDeps) {}
@@ -58,14 +58,15 @@ export class PlaceTrust {
     }
   }
 
-  /** A CP spec was applied: a place it lists is confirmed, one it misses yet holds stays external, and a newly listed one is downgraded. */
+  /** A CP spec was applied: a held place it misses stays external, a held share it lists is the CP's now, and a newly listed place is downgraded. */
   specApplied(integrationId: string, next: Integration, added: readonly string[]): void {
     const held = this.pending.get(integrationId)
     if (held) {
       const listed = new Set(integrationCore(next).externalChannels)
-      for (const channel of [...held.keys()]) {
-        if (listed.has(channel)) held.delete(channel)
-        else noteExternalChannel(next, channel)
+      for (const [channel, reason] of [...held]) {
+        // The spec names the set, not the reason, so listing a place never confirms a guest or an outside member.
+        if (!listed.has(channel)) noteExternalChannel(next, channel)
+        else if (!placeExternalReasonSticky(reason)) held.delete(channel)
       }
       if (held.size === 0) this.pending.delete(integrationId)
     }
@@ -78,11 +79,11 @@ export class PlaceTrust {
     }
   }
 
-  /** A membership listing's rows, carrying what is held: its null lifts a held share, never a guest or an outside member. */
+  /** A complete membership listing's rows, carrying what is held: its null lifts a held share, never a guest or an outside member. */
   listed(integrationId: string, rows: readonly IntegrationChannel[]): IntegrationChannel[] {
     const held = this.pending.get(integrationId)
     if (!held) return [...rows]
-    return rows.map((row) => {
+    const carried = rows.map((row) => {
       const stored = held.get(row.id)
       if (stored === undefined) return row
       const merged = mergePlaceExternalReason(stored, row.externalReason)
@@ -90,6 +91,12 @@ export class PlaceTrust {
       else held.set(row.id, merged)
       return { ...row, externalReason: merged }
     })
+    // A member join is seen only in a channel the bot is in, so a held guest the listing lacks is a channel it left.
+    const present = new Set(rows.map((row) => row.id))
+    for (const [channel, reason] of [...held])
+      if (!present.has(channel) && placeExternalReasonSticky(reason)) held.delete(channel)
+    if (held.size === 0) this.pending.delete(integrationId)
+    return carried
   }
 
   /** What a reconnect replays: the cached rows with what is held, plus a row for each held place the cache never saw. */
@@ -106,7 +113,7 @@ export class PlaceTrust {
     return replayed
   }
 
-  /** The integrations holding detections the CP has not confirmed. */
+  /** The integrations holding detections to replay. */
   heldIntegrations(): string[] {
     return [...this.pending.keys()]
   }

@@ -1,6 +1,6 @@
 // A place of an assistant-mode agent turning external (assistant-mode.md §5.3): it reads external at once, reaches the CP, and cuts only that place's turn.
 import { describe, expect, it, vi } from 'vitest'
-import type { IntegrationChannel } from '@agentconnect.md/protocol'
+import { mergePlaceExternalReason, type IntegrationChannel } from '@agentconnect.md/protocol'
 import { PlaceTrust, type PlaceTrustDeps } from '../src/assistant/place-trust.js'
 import { Daemon } from '../src/daemon.js'
 import { conversationTrustLevel } from '../src/router/routing-rule.js'
@@ -78,18 +78,34 @@ describe('PlaceTrust', () => {
   })
 
   // A detection the CP has not confirmed must survive a spec, a listing and a reconnect, or the place reads internal again.
-  it('holds an unconfirmed detection across specs and replays, until a spec lists it', async () => {
+  it('holds a share across specs and replays until a spec lists it, and a guest even after', async () => {
     const w = world({ 'int-a': true })
-    w.trust.detected(['int-a'], 'C1', 'guestMember')
+    w.trust.detected(['int-a'], 'C1', 'externallyShared')
+    w.trust.detected(['int-a'], 'C2', 'guestMember')
     const stale = integrationOf('int-a')
     w.trust.specApplied('int-a', stale, [])
     expect(conversationTrustLevel(stale, 'C1')).toBe('external')
-    expect(w.trust.replayRows('int-a', [])).toEqual([{ id: 'C1', externalReason: 'guestMember' }])
-    w.trust.specApplied('int-a', integrationOf('int-a', ['C1']), [])
-    expect(w.trust.heldIntegrations()).toEqual([])
-    expect(w.trust.replayRows('int-a', [{ id: 'C1', externalReason: null }])).toEqual([
-      { id: 'C1', externalReason: null }
+    expect(conversationTrustLevel(stale, 'C2')).toBe('external')
+    expect(w.trust.replayRows('int-a', [])).toEqual([
+      { id: 'C1', externalReason: 'externallyShared' },
+      { id: 'C2', externalReason: 'guestMember' }
     ])
+    // A spec lists the set, not the reason: it takes over the share, never the guest.
+    w.trust.specApplied('int-a', integrationOf('int-a', ['C1', 'C2']), [])
+    expect(w.trust.replayRows('int-a', [{ id: 'C1', externalReason: null }])).toEqual([
+      { id: 'C1', externalReason: null },
+      { id: 'C2', externalReason: 'guestMember' }
+    ])
+  })
+
+  it('drops a held guest only for a channel a complete listing no longer has', () => {
+    const w = world({ 'int-a': true })
+    w.trust.detected(['int-a'], 'C1', 'guestMember')
+    w.trust.detected(['int-a'], 'C9', 'externalMember')
+    expect(w.trust.listed('int-a', [{ id: 'C1', externalReason: null }])).toEqual([
+      { id: 'C1', externalReason: 'guestMember' }
+    ])
+    expect(w.trust.replayRows('int-a', [])).toEqual([{ id: 'C1', externalReason: 'guestMember' }])
   })
 
   it('lets a listing lift a held share but never a held guest, and carries what it keeps', () => {
@@ -211,6 +227,39 @@ describe('the daemon downgrade transition', () => {
           { id: 'C2', externalReason: null }
         ]
       }
+    ])
+  })
+
+  // A guest found in an already shared channel while the CP was away: the reconnect's unchanged spec lists the channel,
+  // which says nothing of the guest, so the guest is still replayed and an unshare later cannot lift it.
+  it('replays a guest in an already shared channel past an unchanged spec, so a later unshare keeps it external', async () => {
+    const daemon = daemonWorld()
+    const live = daemon.agents.get('bot-a').integrations[0]
+    live.core.externalChannels = ['C1']
+    daemon.channelSnapshots.set('int-a', {
+      channels: [{ id: 'C1', externalReason: 'externallyShared' }],
+      authoritative: true
+    })
+    daemon.cpClient = undefined
+    daemon.placeTrust.detected(['int-a'], 'C1', 'guestMember')
+    await settle()
+    expect(daemon.interruptTurn).not.toHaveBeenCalled()
+
+    // Reconnect: the CP re-sends the spec it has, which lists C1 for the share alone.
+    daemon.placeTrust.specApplied('int-a', integrationOf('int-a', ['C1'], 'shared'), [])
+    expect(await replayed(daemon)).toEqual([
+      { integrationId: 'int-a', channels: [{ id: 'C1', externalReason: 'guestMember' }] }
+    ])
+
+    // Slack stops sharing C1: the listing's null reaches the CP carrying the guest, which no report lifts.
+    const conn = { botUserId: 'UBOT', listBotChannels: async () => [{ id: 'C1', externalReason: null }] }
+    daemon.connByIntegration.set('int-a', conn)
+    await daemon.connections.refreshChannels(conn)
+    const sent = daemon.cpClient.emitIntegrationChannels.mock.calls.at(-1)[0]
+    expect(sent).toEqual({ integrationId: 'int-a', channels: [{ id: 'C1', externalReason: 'guestMember' }] })
+    expect(mergePlaceExternalReason('guestMember', sent.channels[0].externalReason)).toBe('guestMember')
+    expect(await replayed(daemon)).toEqual([
+      { integrationId: 'int-a', channels: [{ id: 'C1', externalReason: 'guestMember' }] }
     ])
   })
 
