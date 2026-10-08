@@ -57,6 +57,8 @@ export const WINDOWS_EXCLUDED = [
   'test/shim-skill-handler.test.ts',
   'test/shim-bundle-handler.test.ts',
   'test/shim-skill-git-acquire.test.ts',
+  'test/shim-skill-git-feature.test.ts',
+  'test/sandbox-skill-reconcile.test.ts',
   'test/shim-cancellation.test.ts',
   'test/shim-exec-handler.test.ts',
   'test/shim-dial-in.test.ts',

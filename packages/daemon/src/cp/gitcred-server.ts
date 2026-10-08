@@ -107,8 +107,12 @@ export interface GitCredServerDeps {
   skillWindows?: SkillCredentialWindows
 }
 
+/** The first line a tunnel proxy sends on a gitcred connection; it carries the server's per-boot key so no pod can forge one. */
+const TUNNEL_GREETING_OP = 'via'
+
 export class GitCredServer {
   private server?: Server
+  private readonly tunnelKey = randomBytes(32).toString('base64url')
   private readonly capabilities = new Map<string, string>()
   private readonly log: GitCredServerDeps['log']
   private readonly workspaceRepoOf?: (agentId: string) => string | undefined
@@ -197,26 +201,74 @@ export class GitCredServer {
     return this.skillWindows.open({ agentId, subject: DAEMON_SKILL_WINDOW_SUBJECT, repos: [repo] })
   }
 
+  /** A pod-subject window for one skill reconcile over the spec's private skill repositories in `repos`; usable only through that pod's tunnel. */
+  openPodSkillWindow(agentId: string, subject: string, repos: readonly string[]): SkillCredentialWindow | undefined {
+    if (subject === DAEMON_SKILL_WINDOW_SUBJECT) throw new Error('a pod skill window needs a pod subject')
+    // The pod's Git child holds only this capability, so the workspace repository is windowed too.
+    const admitted = repos.filter((repo) => this.admitsPodSkillRepo(agentId, repo))
+    return admitted.length > 0 ? this.skillWindows.open({ agentId, subject, repos: admitted }) : undefined
+  }
+
+  /** Whether a pod skill window for this agent would cover `repo`. */
+  admitsPodSkillRepo(agentId: string, repo: string): boolean {
+    return this.privateGithubSkillRepoOf?.(agentId, repo) === true
+  }
+
   /** The same predicate the workspace fold applies to an implicit-host ask. */
   private isGithubWorkspaceRepo(agentId: string, repo: string): boolean {
     if ((this.providerOf?.(agentId) ?? IMPLICIT_CREDENTIAL_PROVIDER) !== IMPLICIT_CREDENTIAL_PROVIDER) return false
     return this.workspaceRepoOf?.(agentId)?.toLowerCase() === repo.toLowerCase()
   }
 
+  /** The line a tunnel proxy writes before any pod byte, tagging the connection with the pod it serves (source-cache.md §8). */
+  tunnelGreeting(subject: string): Buffer {
+    return Buffer.from(`${JSON.stringify({ op: TUNNEL_GREETING_OP, subject, key: this.tunnelKey })}\n`, 'utf8')
+  }
+
   private serve(sock: Socket): void {
     let buf = ''
+    // undefined until the first line: a greeting names the tunnel's pod, anything else is a daemon-local request.
+    let via: string | null | undefined
+    let handled = false
     sock.on('data', (chunk) => {
       buf += chunk.toString('utf8')
-      const nl = buf.indexOf('\n')
-      if (nl === -1) return
-      const line = buf.slice(0, nl)
-      buf = buf.slice(nl + 1)
-      void this.handle(line, sock)
+      for (let nl = buf.indexOf('\n'); nl !== -1 && !handled; nl = buf.indexOf('\n')) {
+        const line = buf.slice(0, nl)
+        buf = buf.slice(nl + 1)
+        if (via === undefined) {
+          const greeted = this.greetingSubject(line)
+          if (greeted === false) {
+            handled = true
+            sock.end(`${JSON.stringify({ ok: false, error: 'invalid tunnel greeting' })}\n`)
+            return
+          }
+          via = greeted
+          if (greeted !== null) continue
+        }
+        handled = true
+        void this.handle(line, sock, via ?? undefined)
+      }
     })
     sock.on('error', () => sock.destroy())
   }
 
-  private async handle(line: string, sock: Socket): Promise<void> {
+  /** The subject a greeting line names, null for a plain request line, false for a forged greeting. */
+  private greetingSubject(line: string): string | null | false {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      return null
+    }
+    const value = parsed as { op?: unknown; subject?: unknown; key?: unknown } | null
+    if (!value || value.op !== TUNNEL_GREETING_OP) return null
+    if (typeof value.subject !== 'string' || value.subject === '' || typeof value.key !== 'string') return false
+    const expected = Buffer.from(this.tunnelKey)
+    const presented = Buffer.from(value.key)
+    return expected.length === presented.length && timingSafeEqual(expected, presented) ? value.subject : false
+  }
+
+  private async handle(line: string, sock: Socket, via?: string): Promise<void> {
     const reply = (msg: unknown) => {
       sock.write(JSON.stringify(msg) + '\n')
       sock.end()
@@ -227,7 +279,8 @@ export class GitCredServer {
     } catch {
       return reply({ ok: false, error: 'malformed request' })
     }
-    const principal = req && typeof req.agentId === 'string' ? this.principalOf(req.agentId, req.capability) : undefined
+    const principal =
+      req && typeof req.agentId === 'string' ? this.principalOf(req.agentId, req.capability, via) : undefined
     if (!principal) {
       this.audit('rejected', req?.agentId, req?.plane === 'gh' ? 'gh' : 'git', req?.repoFullName, true)
       return reply({ ok: false, error: 'local credential capability required' })
@@ -346,8 +399,8 @@ export class GitCredServer {
     }
   }
 
-  /** Who presented the request: the agent capability, a live skill window for this agent, or nobody. */
-  private principalOf(agentId: string, presented?: string): 'agent' | AdmittedSkillWindow | undefined {
+  /** Who presented the request: the agent capability, a live skill window for this agent and this connection's subject, or nobody. */
+  private principalOf(agentId: string, presented?: string, via?: string): 'agent' | AdmittedSkillWindow | undefined {
     if (!presented) return undefined
     const expected = this.capabilities.get(agentId)
     if (expected) {
@@ -355,7 +408,8 @@ export class GitCredServer {
       const b = Buffer.from(presented)
       if (a.length === b.length && timingSafeEqual(a, b)) return 'agent'
     }
-    return this.skillWindows.admit(agentId, presented)
+    // A pod window opens only through its own pod's tunnel; a daemon window only on an untunneled connection.
+    return this.skillWindows.admit(agentId, presented, via ?? DAEMON_SKILL_WINDOW_SUBJECT)
   }
 
   private audit(

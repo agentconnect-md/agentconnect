@@ -42,6 +42,8 @@ export interface LocalExecutorDeps {
   generations: LaunchGenerations
   /** Where this daemon's own sockets are; a local VM reaches every one of them through its shim. */
   tunnelSocketPath: (tunnel: TunnelName) => string | undefined
+  /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
+  tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   log: Logger
   clock?: Clock
   /** Test seam: the dial's budget. */
@@ -82,6 +84,7 @@ export class LocalExecutor {
     this.tunnels = new TunnelBinder({
       tunnelsFor: () => [...TunnelNameSchema.options],
       tunnelSocketPath: deps.tunnelSocketPath,
+      ...(deps.tunnelGreeting === undefined ? {} : { tunnelGreeting: deps.tunnelGreeting }),
       log: deps.log
     })
     this.binder = new ChannelBinder<LocalLaunch>({

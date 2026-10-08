@@ -13,6 +13,8 @@ import { createExecHandler } from './exec-handler.js'
 import { sweepMarkedUntilClear } from './marked-sweep.js'
 import { resolveCommandInPath } from './path-resolve.js'
 import { ShimServer } from './server.js'
+import { probeSkillGitInPod } from './skill-git-feature.js'
+import { SKILL_GIT_IN_POD_FEATURE } from './skill-protocol.js'
 import { TunnelHost } from './tunnel-host.js'
 
 if (process.argv[2] === '__sandbox-runtime' || process.argv[2] === '__sandbox-runtime-offline') {
@@ -76,6 +78,10 @@ async function main(): Promise<number> {
     // Not fatal: without staging the shim only stops advertising Source Cache write-back.
     log.warn(`bundle staging unavailable at ${paths.bundleStagingDir}: ${(error as Error).message}`)
   }
+  // Only a Git that serves `--bundle-uri` and honors GIT_NO_LAZY_FETCH, over a usable staging dir, installs skills in the pod.
+  const skillGit = await probeSkillGitInPod({ stagingDir: paths.skillStagingDir })
+  if (!skillGit.ok)
+    log.warn(`in-pod Git skill install unavailable (${skillGit.reason}); the daemon acquires Git skills`)
   const exec = createExecHandler({ workspaceRoot, paths, log })
   const bundles = createBundleHandler({ workspaceRoot, stagingDir: paths.bundleStagingDir, log })
   // Watchers own long-lived processes and stay outside the git-only exec inventory.
@@ -115,7 +121,8 @@ async function main(): Promise<number> {
       'cluster-skills-v1',
       'cluster-skills-v2',
       'cluster-skills-v3',
-      ...(bundleStaging ? [SOURCE_CACHE_BUNDLE_FEATURE] : [])
+      ...(bundleStaging ? [SOURCE_CACHE_BUNDLE_FEATURE] : []),
+      ...(skillGit.ok ? [SKILL_GIT_IN_POD_FEATURE] : [])
     ],
     log
   })

@@ -501,4 +501,172 @@ describe('cluster skill coordinator', () => {
     ).rejects.toThrow(/lost duty authority/)
     expect(calls).toEqual(['begin', 'reconcile'])
   })
+
+  describe('Git plan sources (source-cache.md §8)', () => {
+    const COMMIT = 'c'.repeat(40)
+    const DIGEST = 'd'.repeat(64)
+    const sourceId = `agent:0:${DIGEST}:${COMMIT}`
+    const plan = {
+      sourceId,
+      sourceKind: 'git' as const,
+      url: 'https://github.com/acme/skills.git',
+      ref: 'refs/heads/main',
+      plannedCommit: COMMIT,
+      subDir: 'skills',
+      selections: ['alpha']
+    }
+    const receipt = (path: string, id = sourceId, kind: 'agent' | 'managed' = 'agent') => ({
+      path,
+      sourceId: id,
+      sourceKind: kind,
+      digest: createHash('sha256').update(JSON.stringify([])).digest('hex'),
+      files: []
+    })
+    const resolution = { definitionDigest: DIGEST, resolvedCommit: COMMIT }
+
+    function harness(reply: Record<string, unknown>) {
+      const hashes: string[] = []
+      const commits: Array<{ ledger: unknown }> = []
+      const requests: Array<Record<string, unknown>> = []
+      const store: ClusterSkillJournalStore = {
+        beginClusterSkillReconcile: async (input) => {
+          hashes.push(input.desiredHash)
+          return {
+            ok: true,
+            operationId: '11111111-1111-4111-8111-111111111111',
+            replayKey: 'a'.repeat(64),
+            priorRevision: 0,
+            priorLedger: { roots: [] },
+            resumed: false
+          }
+        },
+        authorizeClusterSkillMutation: async () => true,
+        commitClusterSkillReconcile: async (input) => {
+          commits.push({ ledger: input.ledger })
+          return { ok: true, revision: 1 }
+        }
+      }
+      const client = new ClusterSkillClient(
+        {
+          request: async (_capability, payload) => {
+            requests.push(payload as Record<string, unknown>)
+            return (payload as { op: string }).op === 'begin' ? { handle: 'opaque-handle-1234' } : reply
+          }
+        },
+        true,
+        true,
+        true,
+        true
+      )
+      const reconcile = (extra: Record<string, unknown> = {}) =>
+        new ClusterSkillCoordinator(store).reconcile({
+          authority: { groupId: 'g', term: '1', daemonId: 'd', agentId: 'a', workspaceIncarnation: 'claim' },
+          skillsAgentId: 'codex',
+          shimGeneration: 1,
+          sources: [plan],
+          gitResolutions: [resolution],
+          client,
+          ...extra
+        })
+      return { hashes, commits, requests, reconcile }
+    }
+
+    it('sends the plan and window, uploads nothing, and maps the reply kind `agent` onto the plan', async () => {
+      const h = harness({
+        roots: [receipt('.agents/skills/alpha')],
+        conflicts: [],
+        gitSources: [{ sourceId, resolvedCommit: COMMIT, leaves: ['alpha'] }]
+      })
+      const ledger = await h.reconcile({ credentialWindow: { capability: 'w'.repeat(43) } })
+      expect(h.requests.map((r) => r.op)).toEqual(['begin', 'reconcile'])
+      expect(h.requests[0]!.files).toEqual([])
+      expect(h.requests[1]).toMatchObject({ sources: [plan], credentialWindow: { capability: 'w'.repeat(43) } })
+      expect(ledger).toEqual({ roots: [receipt('.agents/skills/alpha')], gitResolutions: [resolution] })
+    })
+
+    it('moves the desired hash with the planned commit, never with the GET URL', async () => {
+      const h = harness({ roots: [], conflicts: [], skipped: [{ sourceId, reason: 'x', code: 'fetch_failed' }] })
+      await h.reconcile()
+      await h.reconcile({ sources: [{ ...plan, getUrl: 'https://cache.example/bundle?sig=1' }] })
+      expect(h.hashes[1]).toBe(h.hashes[0])
+      const moved = harness({
+        roots: [],
+        conflicts: [],
+        skipped: [{ sourceId: `agent:0:${DIGEST}:${'e'.repeat(40)}`, reason: 'x', code: 'fetch_failed' }]
+      })
+      await moved.reconcile({
+        sources: [{ ...plan, sourceId: `agent:0:${DIGEST}:${'e'.repeat(40)}`, plannedCommit: 'e'.repeat(40) }]
+      })
+      expect(moved.hashes[0]).not.toBe(h.hashes[0])
+    })
+
+    it('treats a reported commit other than the planned one as a skipped Source with no ledger resolution', async () => {
+      const h = harness({
+        roots: [receipt('.agents/skills/alpha')],
+        conflicts: [],
+        gitSources: [{ sourceId, resolvedCommit: 'f'.repeat(40), leaves: ['alpha'] }]
+      })
+      const ledger = await h.reconcile()
+      expect(ledger.skipped).toEqual([{ sourceId, reason: expect.any(String), code: 'commit_unavailable' }])
+      expect(ledger.gitResolutions).toEqual([])
+      expect(JSON.stringify(h.commits)).not.toContain('f'.repeat(40))
+    })
+
+    it('reads a budget drop as a prune that keeps its resolution, and any other skip as a preserve that drops it', async () => {
+      const pruned = harness({
+        roots: [],
+        conflicts: [],
+        skipped: [{ sourceId, reason: 'it does not fit', code: 'limits_exceeded' }]
+      })
+      expect((await pruned.reconcile()).gitResolutions).toEqual([resolution])
+      const failed = harness({ roots: [], conflicts: [], skipped: [{ sourceId, reason: 'x', code: 'fetch_failed' }] })
+      expect((await failed.reconcile()).gitResolutions).toEqual([])
+    })
+
+    it('refuses a Git receipt whose leaves the pod did not report, or a Git result for another source', async () => {
+      const missing = harness({ roots: [receipt('.agents/skills/alpha')], conflicts: [] })
+      await expect(missing.reconcile()).rejects.toThrow(/incomplete Git source receipt/)
+      const wrong = harness({
+        roots: [receipt('.agents/skills/alpha')],
+        conflicts: [],
+        gitSources: [{ sourceId, resolvedCommit: COMMIT, leaves: ['beta'] }]
+      })
+      await expect(wrong.reconcile()).rejects.toThrow(/incomplete Git source receipt/)
+      const foreign = harness({
+        roots: [],
+        conflicts: [],
+        gitSources: [{ sourceId: `agent:1:${DIGEST}:${COMMIT}`, resolvedCommit: COMMIT, leaves: [] }]
+      })
+      await expect(foreign.reconcile()).rejects.toThrow(/unexpected Git source/)
+    })
+
+    it('hands write-back candidates to their consumer and nothing else', async () => {
+      const candidate = {
+        sourceId,
+        branch: 'refs/heads/main',
+        commit: COMMIT,
+        handle: '0b5c3f8e-8d0a-4c4e-9a1e-0123456789ab'
+      }
+      const h = harness({
+        roots: [receipt('.agents/skills/alpha')],
+        conflicts: [],
+        gitSources: [{ sourceId, resolvedCommit: COMMIT, leaves: ['alpha'] }],
+        writeBackCandidates: [candidate]
+      })
+      const seen: unknown[] = []
+      const ledger = await h.reconcile({ onWriteBackCandidates: (c: unknown[]) => seen.push(...c) })
+      expect(seen).toEqual([candidate])
+      expect(ledger).not.toHaveProperty('writeBackCandidates')
+    })
+
+    it('journals a fallback under the failed run’s desired hash', async () => {
+      const h = harness({ roots: [], conflicts: [], skipped: [{ sourceId, reason: 'x', code: 'fetch_failed' }] })
+      const journaled: string[] = []
+      await h.reconcile({ onJournaled: (hash: string) => journaled.push(hash) })
+      const fallback = harness({ roots: [], conflicts: [] })
+      await fallback.reconcile({ sources: [], journalAs: journaled[0] })
+      expect(h.hashes).toEqual(journaled)
+      expect(fallback.hashes).toEqual(journaled)
+    })
+  })
 })

@@ -33,6 +33,8 @@ export interface TunnelProxyDeps {
   /** This daemon's own socket for a tunnel, or undefined when it serves none — an unserved
    *  tunnel must be refused rather than dialled somewhere plausible. */
   socketPathFor: (tunnel: TunnelName) => string | undefined
+  /** Bytes written to the daemon socket before any pod byte, naming this pod to the server (gitcred's window binding). */
+  greeting?: (tunnel: TunnelName) => Buffer | undefined
   /** Dials a local unix socket. Injected so a test can stand in for the daemon's server. */
   dial?: (path: string) => Socket
   log: { info: (m: string) => void; warn: (m: string) => void }
@@ -184,6 +186,9 @@ export class TunnelProxy {
       this.refuse(streamId, `could not reach the ${tunnel} socket: ${(err as Error).message}`)
       return
     }
+    // Written before any pod byte can be, so the server reads the pod's identity from this proxy, never from the pod.
+    const greeting = this.deps.greeting?.(tunnel)
+    if (greeting) socket.write(greeting)
     const idleMs = STREAM_IDLE_MS[tunnel]
     const timer = idleMs === null ? undefined : setTimeout(() => this.close(streamId, `idle for ${idleMs}ms`), idleMs)
     timer?.unref?.()

@@ -6,7 +6,10 @@ import type { ClusterSkillClient } from '../shim/skill-client.js'
 import {
   ClusterSkillReconcileResultSchema,
   type ClusterSkillFile,
-  type ClusterSkillSkippedSource
+  type ClusterSkillSkippedSource,
+  type GitSkillPlan,
+  type SkillCredentialWindowGrant,
+  type SkillWriteBackCandidate
 } from '../shim/skill-protocol.js'
 import { inspectLocalSkillSource, type SkillSourceSnapshotLimits } from './skill-source-snapshot.js'
 
@@ -19,6 +22,16 @@ export interface ClusterSkillSnapshotSource {
   /** Admission for THIS source — a Git collection needs the wide profile, a lone bundle the default. */
   limits?: Partial<SkillSourceSnapshotLimits>
 }
+
+/** What one reconcile installs: a source the daemon uploads, or a Git plan entry the pod clones itself. */
+export type ClusterSkillReconcileSource = ClusterSkillSnapshotSource | GitSkillPlan
+
+/** A source the manifest budget dropped is pruned, not preserved, so it keeps its resolution and is not re-acquired next time. */
+export function isBudgetSkip(entry: Pick<ClusterSkillSkippedSource, 'code'>): boolean {
+  return entry.code === 'limits_exceeded'
+}
+
+const isGitPlan = (source: ClusterSkillReconcileSource): source is GitSkillPlan => source.sourceKind === 'git'
 
 export function clusterSkillSupportRequired(input: {
   configuredSources: number
@@ -58,11 +71,19 @@ export class ClusterSkillCoordinator {
     authority: Omit<ClusterSkillReconcileAuthority, 'operationId'>
     skillsAgentId: string
     shimGeneration: number
-    sources: ClusterSkillSnapshotSource[]
+    sources: ClusterSkillReconcileSource[]
     gitResolutions?: NonNullable<ClusterSkillLedger['gitResolutions']>
     client: ClusterSkillClient
     initialLedger?: ClusterSkillLedger
     isLaunchCurrent?: () => boolean
+    /** The pod-subject window a Git plan's private Sources fill through; only its capability is sent. */
+    credentialWindow?: SkillCredentialWindowGrant
+    /** Write-back is S6's: candidates arrive here and are otherwise unused. */
+    onWriteBackCandidates?: (candidates: SkillWriteBackCandidate[]) => void
+    /** Told the journaled desired hash once the run is journaled, so a fallback can resume this operation. */
+    onJournaled?: (desiredHash: string) => void
+    /** Journal under a failed run's desired hash: the store resumes its operation and the shim replays its own publication. */
+    journalAs?: string
   }): Promise<ClusterSkillLedger & { skipped?: ClusterSkillSkippedSource[] }> {
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
@@ -72,11 +93,12 @@ export class ClusterSkillCoordinator {
     if (new Set(sources.map((source) => source.sourceId)).size !== sources.length) {
       throw new Error('cluster skill sources contain duplicate identities')
     }
-    // Descriptors only. Buffering every body here would hold a whole widened source — up to the
-    // aggregate envelope — in a 2 GiB pool daemon; each is re-read just before its own upload.
+    // Descriptors only: buffering a widened source here would strain a 2 GiB pool daemon, so each body is re-read at upload.
     const files: ClusterSkillFile[] = []
-    const sourceDirs = new Map(sources.map((source) => [source.sourceId, source.sourceDir]))
-    for (const source of sources) {
+    const uploaded = sources.filter((source): source is ClusterSkillSnapshotSource => !isGitPlan(source))
+    const plans = new Map(sources.filter(isGitPlan).map((plan) => [plan.sourceId, plan]))
+    const sourceDirs = new Map(uploaded.map((source) => [source.sourceId, source.sourceDir]))
+    for (const source of uploaded) {
       const inspected = await inspectLocalSkillSource(source.sourceDir, { limits: source.limits })
       for (const file of inspected.files) {
         files.push({
@@ -91,7 +113,15 @@ export class ClusterSkillCoordinator {
     const desiredHash = createHash('sha256')
       .update(
         JSON.stringify({
-          sources: sources.map(({ sourceDir: _sourceDir, limits: _limits, ...source }) => source),
+          // A presigned GET changes every run but not what installs; a planned commit does, so it moves the hash.
+          sources: sources.map((source) => {
+            if (isGitPlan(source)) {
+              const { getUrl: _getUrl, ...plan } = source
+              return plan
+            }
+            const { sourceDir: _sourceDir, limits: _limits, ...rest } = source
+            return rest
+          }),
           files
         })
       )
@@ -99,10 +129,11 @@ export class ClusterSkillCoordinator {
     const begun = await this.store.beginClusterSkillReconcile({
       ...input.authority,
       operationId,
-      desiredHash,
+      desiredHash: input.journalAs ?? desiredHash,
       replayKey: randomBytes(32).toString('hex')
     })
     if (!begun.ok) throw new Error('cluster skill reconciliation lost duty authority')
+    input.onJournaled?.(input.journalAs ?? desiredHash)
     const authority = { ...input.authority, operationId: begun.operationId }
     const { handle } = await input.client.begin({
       operationId: authority.operationId,
@@ -128,31 +159,53 @@ export class ClusterSkillCoordinator {
           begun.priorRevision === 0 ? (input.initialLedger ?? begun.priorLedger).roots : begun.priorLedger.roots,
         replayKey: begun.replayKey,
         allowDesiredAdoption: false,
-        sources: sources.map((source) => ({
-          sourceId: source.sourceId,
-          sourceKind: source.sourceKind,
-          selections: source.selections
-        }))
+        sources: sources.map((source) =>
+          isGitPlan(source)
+            ? source
+            : { sourceId: source.sourceId, sourceKind: source.sourceKind, selections: source.selections }
+        ),
+        ...(input.credentialWindow && plans.size > 0 ? { credentialWindow: input.credentialWindow } : {})
       })
     )
     if (reply.conflicts.length > 0) throw new Error('cluster skill ownership conflict')
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
     }
-    const expectedSources = new Map(sources.map((source) => [source.sourceId, source]))
-    // A skipped source must be one this run asked for; its prior roots (if any) ride the receipt
-    // untouched, so the selection check below does not apply to it.
-    const skipped = reply.skipped ?? []
+    // A Git plan Source installs under the ledger kind `agent`, as the daemon path records it.
+    const expectedKinds = new Map(
+      sources.map((source) => [source.sourceId, isGitPlan(source) ? ('agent' as const) : source.sourceKind])
+    )
+    // The daemon's planned commit is the ledger's authority; a pod that reports another one has its Source treated as skipped.
+    const gitResults = new Map<string, { leaves: string[] }>()
+    const mismatched: ClusterSkillSkippedSource[] = []
+    for (const result of reply.gitSources ?? []) {
+      const plan = plans.get(result.sourceId)
+      if (!plan || gitResults.has(result.sourceId))
+        throw new Error('cluster skill shim reported an unexpected Git source')
+      gitResults.set(result.sourceId, { leaves: result.leaves })
+      if (result.resolvedCommit !== plan.plannedCommit) {
+        mismatched.push({
+          sourceId: result.sourceId,
+          reason: 'the sandbox reported a commit other than the planned one',
+          code: 'commit_unavailable'
+        })
+      }
+    }
+    // A skipped source must be one this run asked for; its untouched prior roots skip the selection check.
+    const skipped = [...(reply.skipped ?? [])]
     const skippedIds = new Set<string>()
     for (const entry of skipped) {
-      if (!expectedSources.has(entry.sourceId) || skippedIds.has(entry.sourceId)) {
+      if (!expectedKinds.has(entry.sourceId) || skippedIds.has(entry.sourceId)) {
         throw new Error('cluster skill shim skipped an unexpected source')
       }
       skippedIds.add(entry.sourceId)
     }
-    // With a skipped source the shim preserves every prior root it did not rebuild; those carry
-    // the receipt this run started from (possibly an earlier revision's source id) and are admitted
-    // only as exactly that — path, source id and kind as the prior ledger recorded them.
+    for (const entry of mismatched) {
+      if (skippedIds.has(entry.sourceId)) throw new Error('cluster skill shim skipped an unexpected source')
+      skipped.push(entry)
+      skippedIds.add(entry.sourceId)
+    }
+    // With a skip the shim preserves prior roots, admitted only exactly as the prior ledger recorded them.
     const priorRoots =
       begun.priorRevision === 0 ? (input.initialLedger ?? begun.priorLedger).roots : begun.priorLedger.roots
     const preservedPrior = new Set(
@@ -160,8 +213,8 @@ export class ClusterSkillCoordinator {
     )
     const returnedSelections = new Map<string, Set<string>>()
     for (const root of reply.roots) {
-      const expected = expectedSources.get(root.sourceId)
-      if (!expected || expected.sourceKind !== root.sourceKind) {
+      const expected = expectedKinds.get(root.sourceId)
+      if (expected === undefined || expected !== root.sourceKind) {
         if (preservedPrior.has(`${root.path}\0${root.sourceId}\0${root.sourceKind}`)) continue
         throw new Error('cluster skill shim returned an unexpected source receipt')
       }
@@ -169,20 +222,32 @@ export class ClusterSkillCoordinator {
       selected.add(root.path.split('/').at(-1)!)
       returnedSelections.set(root.sourceId, selected)
     }
+    const leavesMatch = (sourceId: string, leaves: readonly string[]): boolean => {
+      const returned = returnedSelections.get(sourceId) ?? new Set<string>()
+      return leaves.every((leaf) => returned.has(leaf)) && returned.size === new Set(leaves).size
+    }
     for (const source of sources) {
-      if (source.expectedLeaves.length === 0 || skippedIds.has(source.sourceId)) continue
-      const returned = returnedSelections.get(source.sourceId) ?? new Set<string>()
-      if (
-        source.expectedLeaves.some((selection) => !returned.has(selection)) ||
-        returned.size !== source.expectedLeaves.length
-      ) {
+      if (skippedIds.has(source.sourceId)) continue
+      if (isGitPlan(source)) {
+        // The pod resolved the selections, so its reported leaves are what the receipt must hold.
+        const result = gitResults.get(source.sourceId)
+        if (!result || !leavesMatch(source.sourceId, result.leaves)) {
+          throw new Error('cluster skill shim returned an incomplete Git source receipt')
+        }
+        continue
+      }
+      if (source.expectedLeaves.length === 0) continue
+      if (!leavesMatch(source.sourceId, source.expectedLeaves)) {
         throw new Error('cluster skill shim returned an incomplete selection receipt')
       }
     }
-    // A skipped Git source keeps no resolution: the next preparation must acquire and retry it
-    // rather than read "installed at this commit" for bytes that never published.
-    const skippedGitPrefixes = [...skippedIds]
-      .map((sourceId) => /^agent:\d+:([0-9a-f]+):/.exec(sourceId)?.[1])
+    if (reply.writeBackCandidates?.some((candidate) => !plans.has(candidate.sourceId))) {
+      throw new Error('cluster skill shim offered write-back for an unexpected source')
+    }
+    // A skipped Git source loses its resolution so it is retried; a budget drop was pruned and keeps it, so it is not re-acquired.
+    const skippedGitPrefixes = skipped
+      .filter((entry) => !isBudgetSkip(entry))
+      .map((entry) => /^agent:\d+:([0-9a-f]+):/.exec(entry.sourceId)?.[1])
       .filter((digest): digest is string => digest !== undefined)
     const gitResolutions = (input.gitResolutions ?? []).filter(
       (resolution) => !skippedGitPrefixes.includes(resolution.definitionDigest)
@@ -197,6 +262,7 @@ export class ClusterSkillCoordinator {
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
     }
+    if (reply.writeBackCandidates?.length) input.onWriteBackCandidates?.(reply.writeBackCandidates)
     // `skipped` only when something was: the committed ledger and the returned value stay equal otherwise.
     return skipped.length > 0 ? { ...ledger, skipped } : ledger
   }

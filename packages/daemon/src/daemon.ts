@@ -418,22 +418,15 @@ import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import { GitSkillSourceCache } from './skills/git-skill-source-cache.js'
 import { acceptedDreamSkillSources } from './skills/dream-skills.js'
 import { acquireGitSkillSource, gitSkillRepositoryPath } from './skills/skill-git-source.js'
-import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
-import { resolveSkillSelections } from './skills/skill-cli-selection.js'
-import {
-  currentGitResolutions,
-  gitResolutionDigest,
-  resolveTrackedCommits,
-  retainedAfterTracking
-} from './skills/install-skills.js'
 import { GitSkillRefTracker } from './skills/git-skill-ref-tracker.js'
-import { createSkillRefResolution } from './skills/skill-ref-resolution.js'
-import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
 import {
-  ClusterSkillCoordinator,
-  clusterSkillSupportRequired,
-  type ClusterSkillSnapshotSource
-} from './skills/cluster-skill-coordinator.js'
+  createSkillRefPlanResolution,
+  createSkillRefResolution,
+  type SkillRefPlan
+} from './skills/skill-ref-resolution.js'
+import { reconcileSandboxSkillSources, type InPodSkillDeps } from './skills/sandbox-skill-reconcile.js'
+import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
+import { ClusterSkillCoordinator, clusterSkillSupportRequired } from './skills/cluster-skill-coordinator.js'
 import {
   OutputConverger,
   renderStatusBar,
@@ -658,6 +651,7 @@ import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import {
   createCredentialedCacheReadAuthorizer,
+  createSkillReadPlanner,
   createSourceCache,
   createSourceCacheReadPlanner,
   createSourceCacheSweeper,
@@ -666,6 +660,7 @@ import {
   type SourceCache,
   type SourceCacheMetrics,
   type SourceCachePresigner,
+  type SourceCacheSkillReader,
   type SourceCacheSweeper
 } from './source-cache/index.js'
 import { CodeHostRefResolver } from './codehost/ref-resolver.js'
@@ -1712,6 +1707,9 @@ export class Daemon {
   /** Extracted Git skill sources per (agent, repository, commit), so a new session reuses what an earlier one fetched. */
   private gitSkillSources?: GitSkillSourceCache
   private gitSkillRefs?: (entry: AgentSkillEntrySchema, agentId: string) => Promise<string | null>
+  private gitSkillRefPlans?: (entry: AgentSkillEntrySchema, agentId: string) => Promise<SkillRefPlan>
+  /** Presigned skill GETs of each Source's own class; set only when a Source Cache bucket is configured. */
+  private skillReads?: SourceCacheSkillReader
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
   // Latest channel report per integrationId plus whether it came from a complete
@@ -2005,6 +2003,13 @@ export class Daemon {
           onOutcome: (outcome) => cacheMetrics.read(outcome)
         })
       )
+      this.skillReads = createSkillReadPlanner({
+        store: () => this.store as LocalStore | undefined,
+        presigner: this.sourceCache.presigner,
+        orgForAgent: (agentId) => this.orgForAgent(agentId),
+        log: { debug: (m) => this.log.debug(m), warn: (m) => this.log.warn(m) },
+        onOutcome: (outcome) => cacheMetrics.read(outcome)
+      })
       const sourceCacheLog = {
         debug: (m: string) => this.log.debug(m),
         info: (m: string) => this.log.info(m),
@@ -2717,6 +2722,7 @@ export class Daemon {
       launcher: this.vmLauncher,
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
       tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
       log: this.log,
       clock: this.clock
     })
@@ -2730,6 +2736,7 @@ export class Daemon {
       launcher: this.localSrt,
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
       tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
       log: this.log,
       clock: this.clock
     })
@@ -2886,6 +2893,7 @@ export class Daemon {
           // Which daemon sockets this agent's pod needs (see tunnelsForAgent); an unknown id, the member's own probe, gets none.
           tunnelsFor: (agentId) => this.tunnelsForAgent(agentId),
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+          tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
           onSandboxBound: () => this.memoryOutbox?.wake(),
           log: {
@@ -3233,13 +3241,15 @@ export class Daemon {
       warn: (message) => this.log.warn(message)
     })
     // Re-read per new session's preparation: a public ref through the shared anonymous check, a private one per agent.
-    this.gitSkillRefs = createSkillRefResolution({
+    const skillRefDeps = {
       anonymous: new GitSkillRefTracker({
         stateRoot: join(root, 'skill-installs'),
-        warn: (message) => this.log.warn(message)
+        warn: (message: string) => this.log.warn(message)
       }),
       credentialed: this.codeHostRefs
-    })
+    }
+    this.gitSkillRefs = createSkillRefResolution(skillRefDeps)
+    this.gitSkillRefPlans = createSkillRefPlanResolution(skillRefDeps)
   }
 
   /** Phase 13 — resolve host candidates and the image's separate executable catalog. */
@@ -4507,6 +4517,7 @@ export class Daemon {
       // The same policy the pool's plane is given: only the daemon knows which of its own sockets this agent needs.
       tunnelsFor: (agentId) => this.tunnelsForAgent(agentId),
       tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
       log: {
         info: (m) => this.log.info(m),
         warn: (m) => this.log.warn(m),
@@ -6262,6 +6273,11 @@ export class Daemon {
       : this.workspaces.prepareWorkspace(agent, opts)
   }
 
+  /** The gitcred greeting that binds a pod-subject skill window to this subject's tunnel (source-cache.md §8). */
+  private gitcredTunnelGreeting(subject: string, tunnel: TunnelName): Buffer | undefined {
+    return tunnel === 'gitcred' ? this.gitCredServer?.tunnelGreeting(subject) : undefined
+  }
+
   /** `mcp` for every pod agent; `gitcred` for any agent with a managed credential or a private skill source, the latter window-gated (source-cache.md §8). */
   private tunnelsForAgent(agentId: string): TunnelName[] {
     const agent = this.agents.get(agentId)
@@ -6278,8 +6294,10 @@ export class Daemon {
   private async reconcileClusterSkills(
     agent: Agent,
     pod: SandboxSubject,
-    plane: Pick<K8sRuntimePlane, 'skillClientFor' | 'workspaceIncarnationFor' | 'shimGenerationFor'> | undefined = this
-      .k8sPlane,
+    plane:
+      | (Pick<K8sRuntimePlane, 'skillClientFor' | 'workspaceIncarnationFor' | 'shimGenerationFor'> &
+          Partial<Pick<K8sRuntimePlane, 'servesTunnel'>>)
+      | undefined = this.k8sPlane,
     cwd?: string
   ): Promise<ClusterSkillLedger | undefined> {
     const reported = plane?.workspaceIncarnationFor?.(pod)
@@ -6291,7 +6309,9 @@ export class Daemon {
       // Receipts are relative to the directory installed into, so installs into a cwd keep a ledger of their own.
       workspaceIncarnation: reported && cwd ? cwdWorkspaceIncarnation(reported, cwd) : reported,
       shimGeneration,
-      isLaunchCurrent
+      isLaunchCurrent,
+      // Only the pool's plane serves tunnels per pod; an executor's client is never granted `skills-git`.
+      ...(plane?.servesTunnel ? { pod: { subject: pod, servesGitcred: plane.servesTunnel(pod, 'gitcred') } } : {})
     })
     if (cwd !== undefined && reported && shimGeneration !== undefined) {
       await this.retireShimRootSkills(agent, plane?.skillClientFor?.(pod), reported, shimGeneration, isLaunchCurrent)
@@ -6389,6 +6409,8 @@ export class Daemon {
       isLaunchCurrent: () => boolean
       localAuthority?: { groupId: string; term: string; daemonId: string }
       initialLedger?: ClusterSkillLedger
+      /** A Kubernetes runtime pod: a client granted `skills-git` there installs Git skills in the pod. */
+      pod?: { subject: string; servesGitcred: boolean }
     }
   ): Promise<ClusterSkillLedger | undefined> {
     const { client, workspaceIncarnation, shimGeneration } = peer
@@ -6426,174 +6448,75 @@ export class Daemon {
     if (shimGeneration === undefined || !duty || !daemonId) {
       throw new Error('cluster skill preparation authority is unavailable')
     }
-    const scratch = await mkdtemp(join(tmpdir(), 'agentconnect-cluster-skills-'))
-    try {
-      // ONE budget for the whole manifest, spent in source order. Per-source allowances would each
-      // pass and only their sum be refused — inside `begin`, past every warn-and-skip boundary.
-      const admits = client.manifestLimits
-      let admittedFiles = 0
-      let admittedBytes = 0
-      const admit = (fileCount: number, totalBytes: number): void => {
-        if (admittedFiles + fileCount > admits.maxFiles || admittedBytes + totalBytes > admits.maxTotalBytes) {
-          throw new Error(`it does not fit the remaining skill manifest budget (${fileCount} files)`)
-        }
-        admittedFiles += fileCount
-        admittedBytes += totalBytes
-      }
-      const gitSources: ClusterSkillSnapshotSource[] = []
-      const managed = this.managedSkillCache
-        ? await this.managedSkillCache.resolve(agent).catch((error: unknown) => {
-            this.log.warn(`skills: managed sources unavailable for ${agent.id} (${(error as Error).message})`)
-            return []
-          })
-        : []
-      const configuredGitSources = agent.skills.flatMap((entry, index) => {
-        if (!entry.githubRepoId) return []
-        const parsed = AgentSkillEntrySchema.safeParse(entry)
-        if (parsed.success && parsed.data.githubRepoId) return [{ index, entry: parsed.data }]
-        this.log.warn(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
-        return []
-      })
-      const trackedCommits = await resolveTrackedCommits(
-        configuredGitSources.map(({ entry }) => entry),
-        (entry) => this.trackedGitSkillCommit(entry, agent)
-      )
-      const resolutionsByDefinition = new Map(
-        retainedAfterTracking(
-          currentGitResolutions(
-            configuredGitSources.map(({ entry }) => entry),
-            priorLedger?.gitResolutions ?? []
-          ),
-          trackedCommits
-        ).map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
-      )
-      // Every source's acquisition (a download, or a cache hit's access check) is its own network round
-      // trip, so they run at once; what follows stays in source order, which is the order the manifest
-      // budget is spent in.
-      const acquireOptions = {
-        agentId: agent.id,
-        useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
-      }
-      const acquisitions = new Map(
-        configuredGitSources.map(({ index, entry: currentEntry }) => {
-          const plannedCommit =
-            trackedCommits.get(gitResolutionDigest(currentEntry)) ??
-            resolutionsByDefinition.get(gitResolutionDigest(currentEntry))
-          const acquiring = this.gitSkillSources
-            ? this.gitSkillSources.resolve(currentEntry, plannedCommit, acquireOptions)
-            : acquireGitSkillSource(plannedCommit ? { ...currentEntry, ref: plannedCommit } : currentEntry, {
-                ...acquireOptions,
-                destination: join(scratch, `git-${index}`)
-              })
-          // Settled here so a failed source is reported in its turn below, never as an unhandled rejection.
-          return [
-            index,
-            acquiring.then(
-              (acquired) => ({ ok: true as const, acquired, plannedCommit }),
-              (error: unknown) => ({ ok: false as const, error })
-            )
-          ] as const
-        })
-      )
-      await Promise.all(acquisitions.values())
-      for (const { index, entry: currentEntry } of configuredGitSources) {
-        try {
-          const definitionDigest = gitResolutionDigest(currentEntry)
-          const outcome = await acquisitions.get(index)!
-          if (!outcome.ok) throw outcome.error
-          const { acquired, plannedCommit } = outcome
-          const resolvedCommit = acquired.resolvedCommit.toLowerCase()
-          if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
-            throw new Error(`Git source "${currentEntry.name}" did not resolve to its planned commit`)
-          }
-          resolutionsByDefinition.set(definitionDigest, resolvedCommit)
-          const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
-            limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
-          })
-          const selected = await resolveSkillSelections(
-            currentEntry.name,
-            acquired.sourceDir,
-            inspected.files,
-            currentEntry.skills
-          )
-          // Charged last, so a source this `try` goes on to reject never spends budget later ones need.
-          admit(inspected.fileCount, inspected.totalBytes)
-          gitSources.push({
-            sourceId: `agent:${index}:${definitionDigest}:${resolvedCommit}`,
-            sourceKind: 'agent',
-            sourceDir: acquired.sourceDir,
-            selections: selected.cliSelections,
-            expectedLeaves: selected.expectedLeaves,
-            limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
-          })
-        } catch (error) {
-          this.log.warn(
-            `skills: Git source ${currentEntry.name} unavailable for ${agent.id} (${(error as Error).message})`
-          )
-        }
-      }
-      const localSource = async (
-        source: (typeof managed)[number] | (typeof dreamed)[number]
-      ): Promise<ClusterSkillSnapshotSource[]> => {
-        try {
-          const inspected = await inspectLocalSkillSource(source.sourceDir)
-          admit(inspected.fileCount, inspected.totalBytes)
-        } catch (error) {
-          this.log.warn(`skills: ${source.kind} source ${source.name} unavailable for ${agent.id} (${error})`)
+    const managed = this.managedSkillCache
+      ? await this.managedSkillCache.resolve(agent).catch((error: unknown) => {
+          this.log.warn(`skills: managed sources unavailable for ${agent.id} (${(error as Error).message})`)
           return []
+        })
+      : []
+    const acquireOptions = { agentId: agent.id, useGitCredential: this.workspaces.skillGitCredentialEnabled(agent) }
+    return await reconcileSandboxSkillSources(
+      {
+        store: this.store,
+        log: this.log,
+        trackedCommit: (entry) => this.trackedGitSkillCommit(entry, agent),
+        acquire: (entry, plannedCommit, destination) =>
+          this.gitSkillSources
+            ? this.gitSkillSources.resolve(entry, plannedCommit, acquireOptions)
+            : acquireGitSkillSource(plannedCommit ? { ...entry, ref: plannedCommit } : entry, {
+                ...acquireOptions,
+                destination
+              }),
+        ...(client.gitInPod && peer.pod ? { inPod: this.inPodSkillDeps(agent, peer.pod) } : {}),
+        // Write-back is S6's; until then a candidate is only noted.
+        onWriteBackCandidates: (candidates) =>
+          this.log.debug(`skills: ${candidates.length} in-pod write-back candidate(s) for ${agent.id} left unused`)
+      },
+      {
+        agentId: agent.id,
+        skills: agent.skills,
+        managed,
+        dreamed,
+        ...(priorLedger ? { priorLedger } : {}),
+        target: {
+          authority: { groupId: duty.groupId, term: duty.term, daemonId, agentId: agent.id, workspaceIncarnation },
+          skillsAgentId,
+          shimGeneration,
+          client,
+          ...(peer.initialLedger ? { initialLedger: peer.initialLedger } : {}),
+          isLaunchCurrent: peer.isLaunchCurrent
         }
-        return [
-          {
-            sourceId: source.key,
-            sourceKind: source.kind,
-            sourceDir: source.sourceDir,
-            selections: [source.name],
-            expectedLeaves: [source.name]
-          }
-        ]
       }
-      // Managed then Dream, each sorted within its group: the seam applies later-source precedence.
-      const localSources: ClusterSkillSnapshotSource[] = []
-      for (const group of [managed, dreamed]) {
-        for (const source of [...group].sort((a, b) => a.key.localeCompare(b.key))) {
-          localSources.push(...(await localSource(source)))
-        }
+    )
+  }
+
+  /** The in-pod Git skill path's daemon half (source-cache.md §8): trusted resolution, the pod's window, its GET URLs. */
+  private inPodSkillDeps(agent: Agent, pod: { subject: string; servesGitcred: boolean }): InPodSkillDeps {
+    const workspaceRepo =
+      agent.workspace.mode === 'git-repo' &&
+      agent.workspace.gitRepo &&
+      this.workspaces.managedCredentialProvider(agent) === IMPLICIT_CREDENTIAL_PROVIDER
+        ? gitRepoLabel(agent.workspace.gitRepo)?.toLowerCase()
+        : undefined
+    const additional = new Set(
+      (agent.workspace.additionalRepos ?? [])
+        .filter((row) => row.provider === IMPLICIT_CREDENTIAL_PROVIDER)
+        .map((row) => row.repoFullName.toLowerCase())
+    )
+    return {
+      resolve: (entry) => this.gitSkillRefPlans?.(entry, agent.id) ?? Promise.resolve({ ok: false }),
+      servesGitcred: pod.servesGitcred,
+      openWindow: (repos) => this.gitCredServer?.openPodSkillWindow(agent.id, pod.subject, repos),
+      windowAdmits: (repo) => this.gitCredServer?.admitsPodSkillRepo(agent.id, repo) ?? false,
+      ...(this.skillReads
+        ? { getUrl: (entry, resolution) => this.skillReads!.getUrl({ agentId: agent.id, entry, resolution }) }
+        : {}),
+      // A public entry naming a repository the agent capability grants keeps that grant on the daemon path.
+      daemonOnly: (entry) => {
+        if (entry.private === true) return false
+        const repo = gitSkillRepositoryPath(entry)?.toLowerCase()
+        return repo !== undefined && (repo === workspaceRepo || additional.has(repo))
       }
-      const sources = [...gitSources, ...localSources]
-      const gitResolutions = currentGitResolutions(
-        configuredGitSources.map(({ entry }) => entry),
-        [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
-      )
-      const reconciled = await new ClusterSkillCoordinator(this.store).reconcile({
-        authority: {
-          groupId: duty.groupId,
-          term: duty.term,
-          daemonId,
-          agentId: agent.id,
-          workspaceIncarnation
-        },
-        skillsAgentId,
-        shimGeneration,
-        sources,
-        gitResolutions,
-        client,
-        initialLedger: peer.initialLedger,
-        isLaunchCurrent: peer.isLaunchCurrent
-      })
-      // Named per source so the operator can fix the repository; the session goes on without it.
-      const sourceNames = new Map(
-        configuredGitSources.map(({ index, entry }) => [`agent:${index}:`, entry.name] as const)
-      )
-      for (const entry of reconciled.skipped ?? []) {
-        const name =
-          [...sourceNames].find(([prefix]) => entry.sourceId.startsWith(prefix))?.[1] ??
-          sources.find((source) => source.sourceId === entry.sourceId)?.selections.join(',') ??
-          entry.sourceId
-        this.log.warn(`skills: source ${name} skipped for ${agent.id}; keeping what is installed (${entry.reason})`)
-      }
-      return reconciled
-    } finally {
-      await rm(scratch, { recursive: true, force: true })
     }
   }
 
