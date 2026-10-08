@@ -112,7 +112,9 @@ const TEAM_VISIBLE =
 
 const nextCheckProp = {
   type: 'string',
-  description: 'When you will check on it next: an ISO-8601 instant with an offset, e.g. `2026-10-09T09:00:00+08:00`.'
+  description:
+    'When it should be checked on next: an ISO-8601 instant with an offset, e.g. `2026-10-09T09:00:00+08:00`. ' +
+    'It is recorded, not scheduled: nothing wakes you at that time yet.'
 }
 const itemIdProp = { type: 'string', minLength: 1, description: 'The item id from listItems or the standing list.' }
 
@@ -121,8 +123,10 @@ export const ASSISTANT_ITEM_TOOLS: ToolDescriptor[] = [
     name: 'takeItem',
     description:
       'Put work someone asked of you into your item ledger, so you follow it until it is done and report to them ' +
-      'here. First restate in your reply what you will do, what counts as done and when you will check next, and ' +
-      'call this only after the person confirms. Check listItems before restating: when an open item already ' +
+      'here. First restate in your reply what you will do, what counts as done and when it should be checked next, ' +
+      'and call this only after the person confirms. You cannot wake yourself yet: never promise to come back or ' +
+      'check in on your own at a time; say the next check is noted and that you will pick it up when someone ' +
+      'next talks to you. Check listItems before restating: when an open item already ' +
       'covers the request, ask "attach this to <who>’s item?" instead and, on a yes, call followItem rather than ' +
       `taking a second item. ${TEAM_VISIBLE} When the request came in a direct message, say so as you take it. The ` +
       'person asking and this conversation become the first follower.',
