@@ -14820,8 +14820,16 @@ export class Daemon {
       const built = buildCodeHostDecisionState({ ...context, agent: decisionAgentContext(agent) }, decision)
       return built.unsupported ? undefined : built.state
     }
-    if (msg.source !== 'user') return undefined
     const context = decisionAgentContext(agent)
+    if (msg.source === 'cron') return modelSelectionState('cron', msg.text, context)
+    if (msg.source === 'agent') {
+      const caller = this.agents.get(msg.sender.id)
+      return modelSelectionState('agent', msg.text, context, {
+        id: msg.sender.id,
+        ...(caller ? { name: decisionAgentContext(caller).name } : {})
+      })
+    }
+    if (msg.source !== 'user') return undefined
     const record = await this.store.channelRecordRef(channel, transcriptCoords(msg).ts, agent.id)
     if (!record) return modelSelectionState('chat', msg.text, context)
     const window = await this.store.decisionWindow(

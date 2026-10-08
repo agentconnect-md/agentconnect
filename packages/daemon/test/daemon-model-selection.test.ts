@@ -264,6 +264,48 @@ describe('session-pinned Decision model', () => {
     )
   })
 
+  it.each(['agent', 'cron'] as const)(
+    'evaluates a session a %s message starts on its own text, once',
+    async (source) => {
+      const { internal, prompted, evaluate } = await start(scaffold())
+      const send = async (turnId: string, text: string) => {
+        const done = vi.fn()
+        await internal.dispatch(
+          agentId,
+          {
+            msgId: 'webchat:dispatched',
+            traceId: turnId,
+            source,
+            platform: 'webchat',
+            channel: 'dispatched',
+            sender: { id: source === 'agent' ? agentId : 'cron:nightly', isBot: source === 'agent' },
+            text,
+            mentionedBots: [],
+            isDm: true,
+            trigger: 'dm'
+          },
+          undefined,
+          { conversationId: 'dispatched', turnId, evaluation: true, sink: { output: vi.fn(), done } }
+        )
+        await vi.waitFor(() => expect(done).toHaveBeenCalledOnce(), WAIT)
+      }
+      await send('first', 'Implement the migration')
+      await send('second', 'Also add a test')
+      expect(evaluate).toHaveBeenCalledOnce()
+      expect(evaluate.mock.calls[0]![0].state).toEqual({
+        source,
+        agent: { name: 'Example agent', description: '' },
+        currentMessage: {
+          ...(source === 'agent' ? { sender: { id: agentId, name: 'Example agent' } } : {}),
+          text: 'Implement the migration'
+        },
+        history: [],
+        truncated: false
+      })
+      expect(prompted).toEqual(['model-capable', 'model-capable'])
+    }
+  )
+
   it('shares one code-host snapshot between model and repository selection before opening a runtime', async () => {
     const { internal, evaluate, started } = await start(scaffold())
     const read = vi.spyOn(codeHostTurnFinal, 'codeHostPullRequestContext').mockResolvedValue({
