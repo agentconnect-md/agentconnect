@@ -1915,6 +1915,15 @@ request budget, the existing opening-only state remains
 `{ source: "chat", agent, currentMessage: { text }, history: [], truncated }`, with text
 bounded to an 8 KiB UTF-8 prefix. An empty history does not cause a later re-evaluation.
 
+A session started by another agent's message, such as `sendMessage`, or by a
+schedule uses the same opening-only shape with `source: "agent"` or `source: "cron"`.
+`currentMessage.text` is the brief or the schedule's prompt; an agent message also
+carries `currentMessage.sender` with the sending id and, when that agent is on the
+serving daemon, its name. History stays empty: a private agent-to-agent exchange is
+never conversation evidence (§4), and the brief, not the channel the wake lands in,
+is what the selection judges. One developer agent can therefore pick a runtime per
+delegated task without the caller naming one.
+
 Code-host hooks use the same loader, state builder and request fitter as hook routing
 ([code-host-decisions.md §5.1](code-host-decisions.md#51-the-state-jev-sees)).
 `source` names the provider (`github`, `gitlab`, or `gitea`); `currentMessage` is the
@@ -1981,8 +1990,9 @@ The session store saves the selected runtime/model and run settings in the exist
 Decision snapshot; no message content or provider credentials are added to CP storage.
 
 Acceptance covers cross-runtime startup, isolation between conversations,
-once-per-session evaluation, restart and fallback persistence, manual precedence, rule
-order, score intervals, bounded PR/MR context, and binding access.
+once-per-session evaluation, agent- and schedule-started sessions, restart and
+fallback persistence, manual precedence, rule order, score intervals, bounded PR/MR
+context, and binding access.
 
 ### 10.7. Chained Decisions
 
