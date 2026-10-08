@@ -262,15 +262,25 @@ interface DreamRecord {
    per-turn capture and explicit memory writes skip for them too. A session is
    private by the gate capture reads — the CP-confirmed `private` bit once it has
    arrived, the daemon's local verdict (DM, webchat, A2A child, launch-correlated)
-   before that, and excluded when neither is known. A place is private when it is
-   a group DM or a channel its platform reports private; that is not a session
-   visibility (such sessions are `org`), so the daemon reads it from what it
-   already holds: the session's own classification (a `group_dm` conversation
-   kind), the channel snapshot built from the platform-neutral `isPrivate`
-   and group-DM kind of membership listings (`PlatformChannelRef`) and observed
-   conversations (`ObservedChat`), and the `isPrivate` a channel lookup returned
-   (`PlatformChannelInfo`). A platform that cannot tell reports not private. Both
-   filters run in the source query, before the cap, so a skipped session neither
+   before that, and excluded when neither is known. A place — a chat platform's
+   conversation or a webchat conversation — counts as private unless its
+   platform has explicitly reported it a channel that is not private; that is not
+   a session visibility (group DMs and channels are `org`). The daemon decides it
+   with the same resolver the recall rule uses (`describePlace`): the session's
+   own classification (a `dm` or `group_dm` conversation kind is private), then
+   the channel snapshot of the session's integration, built from the
+   platform-neutral `isPrivate` and conversation kind of membership listings
+   (`PlatformChannelRef`) and observed conversations (`ObservedChat`) and joined
+   by the `isPrivate` a channel lookup cached, and only when that leaves it open a
+   live `getChannelInfo` (`PlatformChannelInfo`). `isPrivate: true` from either
+   source wins over `false`, and a platform that cannot tell reports `isPrivate: false`
+   explicitly. A place still undetermined — right after a restart, before the
+   membership listing reloads or the chat is observed or looked up, or when the
+   lookup fails — fails closed: its turns are not captured, writes there are
+   refused, and a dream skips its sessions. A webchat conversation never comes
+   open. Sessions that are no place (a code host's, a cron's) follow the capture
+   gate alone. A dream resolves each place of the agent's sessions once and
+   filters in the source query, before the cap, so a skipped session neither
    takes a slot nor counts as new activity for a scheduled tick. What a person
    says to an assistant in a DM, a group DM or a private channel therefore never
    reaches its shared memory, where every other place could recall it; the

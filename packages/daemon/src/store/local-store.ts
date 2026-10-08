@@ -4957,11 +4957,11 @@ export class LocalStore {
     ).map((row) => this.dreamFromRow(row))
   }
 
-  /** Newest-first addressable sessions to mine as dream transcript sources; `skipPrivate` leaves out capture-excluded and group-DM sessions and those in `privateConversations`. */
+  /** Newest-first addressable sessions to mine as dream transcript sources; `skipPrivate` leaves out capture-excluded, DM and group-DM sessions and, with `places`, a place's session unless its conversation is open. */
   async dreamSessionSources(
     agentId: string,
     limit: number,
-    opts: { skipPrivate?: boolean; privateConversations?: readonly string[] } = {}
+    opts: { skipPrivate?: boolean; places?: { platforms: readonly string[]; open: readonly string[] } } = {}
   ): Promise<
     {
       sessionId: string
@@ -4972,18 +4972,27 @@ export class LocalStore {
       updatedAt: number
     }[]
   > {
-    const privateConversations = opts.skipPrivate ? [...new Set(opts.privateConversations ?? [])] : []
+    const placePlatforms = opts.skipPrivate ? [...new Set(opts.places?.platforms ?? [])] : []
+    const open = placePlatforms.length > 0 ? [...new Set(opts.places?.open ?? [])] : []
+    const marks = (values: readonly string[]) => values.map(() => '?').join(',')
+    // A place's session stays only when its conversation is known open; an undetermined one is skipped.
+    const placeFilter =
+      placePlatforms.length === 0
+        ? ''
+        : open.length === 0
+          ? `AND platform NOT IN (${marks(placePlatforms)})`
+          : `AND (platform NOT IN (${marks(placePlatforms)}) OR channel IN (${marks(open)}))`
     const rows = (await this.db
       .prepare(
         // Outward ids (§1.1) become the dream's durable provenance; a pre-v12 row answers with the ACP id it was reported under.
         `SELECT COALESCE(sessionId, acpSessionId) AS sessionId, key, channel, thread, transportScope, updatedAt
          FROM sessions
          WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
-         ${opts.skipPrivate ? `AND ${CAPTURE_OPEN_SQL} AND (conversationKind IS NULL OR conversationKind <> 'group_dm')` : ''}
-         ${privateConversations.length > 0 ? `AND channel NOT IN (${privateConversations.map(() => '?').join(',')})` : ''}
+         ${opts.skipPrivate ? `AND ${CAPTURE_OPEN_SQL} AND (conversationKind IS NULL OR conversationKind NOT IN ('dm', 'group_dm'))` : ''}
+         ${placeFilter}
          ORDER BY updatedAt DESC LIMIT ?`
       )
-      .all(agentId, ...privateConversations, limit)) as {
+      .all(agentId, ...placePlatforms, ...open, limit)) as {
       sessionId: string
       key: string
       channel: string

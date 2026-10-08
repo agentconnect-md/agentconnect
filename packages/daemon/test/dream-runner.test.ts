@@ -12,6 +12,7 @@ import {
   DreamStateError,
   type DreamExtractionResult,
   type DreamLifecycleEvent,
+  type DreamPlaces,
   type DreamStorePort
 } from '../src/dream/runner.js'
 import { LocalStore } from '../src/store/local-store.js'
@@ -153,17 +154,18 @@ class FakeStore implements DreamStorePort {
   async supersededDreams(): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.status === 'superseded')
   }
-  /** Sessions the capture gate excludes or classified group DMs, by sessionId; only a `skipPrivate` query leaves them out. */
+  /** Sessions the capture gate excludes, by sessionId; only a `skipPrivate` query leaves them out. */
   privateSessions = new Set<string>()
+  /** Every fixture session is a place's; with `places`, only one in an open conversation stays. */
   async dreamSessionSources(
     _agentId: string,
     _limit: number,
-    opts: { skipPrivate?: boolean; privateConversations?: readonly string[] } = {}
+    opts: { skipPrivate?: boolean; places?: DreamPlaces } = {}
   ): Promise<{ sessionId: string; key: string; channel: string; thread: string; updatedAt: number }[]> {
     const now = Date.now()
     const skipped = (s: { sessionId: string; channel: string }) =>
       opts.skipPrivate === true &&
-      (this.privateSessions.has(s.sessionId) || (opts.privateConversations ?? []).includes(s.channel))
+      (this.privateSessions.has(s.sessionId) || (opts.places !== undefined && !opts.places.open.includes(s.channel)))
     return this.sources
       .filter((s) => !skipped(s))
       .map((s) => ({ key: `k:${s.channel}:${s.thread}`, ...s, updatedAt: s.updatedAt ?? now }))
@@ -219,8 +221,8 @@ async function setup(opts: {
   historyFor?: MemoryHomePorts['historyFor']
   /** The agent is in assistant mode: its dreams leave private sessions and places out. */
   assistantMode?: boolean
-  /** The conversations its daemon knows private. */
-  privateConversations?: string[]
+  /** The conversations its daemon knows open. */
+  openConversations?: string[]
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   const sandbox = opts.sandbox ? pod() : undefined
@@ -235,7 +237,10 @@ async function setup(opts: {
     memoryHomePortsFor: (id) => (id === 'a1' ? home(root, historyFor) : undefined),
     dreamingPolicyFor: () => opts.policy ?? { enabled: true },
     ...(opts.assistantMode !== undefined
-      ? { privatePlacesFor: () => (opts.assistantMode ? (opts.privateConversations ?? []) : undefined) }
+      ? {
+          placesFor: () =>
+            opts.assistantMode ? { platforms: ['slack'], open: opts.openConversations ?? [] } : undefined
+        }
       : {}),
     operationPolicy: opts.operationPolicy ?? 'test-only',
     store,
@@ -389,19 +394,21 @@ describe('DreamRunner pipeline', () => {
   // assistant-mode.md §5.5: an assistant-mode agent's dreams skip private sessions and places; every other agent mines them as before.
   it.each([
     { assistantMode: true, mined: ['sess-channel'] },
-    { assistantMode: false, mined: ['sess-dm', 'sess-private-channel', 'sess-channel'] },
-    { assistantMode: undefined, mined: ['sess-dm', 'sess-private-channel', 'sess-channel'] }
+    { assistantMode: false, mined: ['sess-dm', 'sess-private-channel', 'sess-undetermined', 'sess-channel'] },
+    { assistantMode: undefined, mined: ['sess-dm', 'sess-private-channel', 'sess-undetermined', 'sess-channel'] }
   ])(
     'mines private sessions and places only outside assistant mode ($assistantMode)',
     async ({ assistantMode, mined }) => {
       for (const sessionWindow of [undefined, 5]) {
         const { store, runner, prompts } = await setup({
           ...(assistantMode !== undefined ? { assistantMode } : {}),
-          privateConversations: ['G1']
+          openConversations: ['C1']
         })
+        // U1's privacy is not known yet (right after a restart), so it is skipped like G1, which is private.
         store.sources = [
           { sessionId: 'sess-dm', channel: 'D1', thread: 'D1' },
           { sessionId: 'sess-private-channel', channel: 'G1', thread: 'T2' },
+          { sessionId: 'sess-undetermined', channel: 'U1', thread: 'T3' },
           { sessionId: 'sess-channel', channel: 'C1', thread: 'T1' }
         ]
         store.privateSessions.add('sess-dm')
@@ -414,13 +421,14 @@ describe('DreamRunner pipeline', () => {
     }
   )
 
-  it('skips the scheduled tick of an assistant-mode agent whose only new sessions are private', async () => {
-    const assistant = await setup({ assistantMode: true, privateConversations: ['G1'] })
-    const plain = await setup({ assistantMode: false, privateConversations: ['G1'] })
+  it('skips the scheduled tick of an assistant-mode agent whose only new sessions are private or undetermined', async () => {
+    const assistant = await setup({ assistantMode: true, openConversations: ['C1'] })
+    const plain = await setup({ assistantMode: false, openConversations: ['C1'] })
     for (const { store } of [assistant, plain]) {
       store.sources = [
         { sessionId: 'sess-dm', channel: 'D1', thread: 'D1' },
-        { sessionId: 'sess-private-channel', channel: 'G1', thread: 'T2' }
+        { sessionId: 'sess-private-channel', channel: 'G1', thread: 'T2' },
+        { sessionId: 'sess-undetermined', channel: 'U1', thread: 'T3' }
       ]
       store.privateSessions.add('sess-dm')
     }
