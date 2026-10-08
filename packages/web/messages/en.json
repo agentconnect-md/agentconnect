@@ -5697,7 +5697,23 @@
         "builtinRejected": "Slack rejected this workspace authorization. Reinstall the app to reconnect it.",
         "joinPublicChannels": "Automatically join public channels",
         "joinPublicChannelsEnabled": "When an agent reads or posts in a public channel this bot has not joined, the bot joins automatically and remains a member. Slack announces the join, and the membership applies to every agent using this bot. Private channels still require an invitation.",
-        "joinPublicChannelsDisabled": "Agents can only read and post in channels this bot has already joined."
+        "joinPublicChannelsDisabled": "Agents can only read and post in channels this bot has already joined.",
+        "conversationDefaults": "Defaults for new conversations",
+        "conversationDefaultsHint": "What a channel or direct message starts as until someone changes it in the list below. With Off, the bot stays silent in any channel it is added to or joins until an editor enables it there, whichever agents use this bot.",
+        "channelsDefault": "Channels",
+        "dmsDefault": "Direct messages",
+        "defaultRespondTo": "Respond to",
+        "defaultSessionMode": "Session mode",
+        "defaultTrigger": {
+          "off": "Off",
+          "mention": "@-mentions",
+          "any": "All messages",
+          "dmOn": "On"
+        },
+        "defaultSessionModes": {
+          "createNew": "Per thread",
+          "append": "Single session"
+        }
       },
       "replaceToken": {
         "title": "Replace bot token",

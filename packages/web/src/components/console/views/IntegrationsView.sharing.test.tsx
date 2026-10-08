@@ -36,6 +36,7 @@ vi.mock('@/lib/data-context', () => ({
     deleteIntegration: vi.fn(),
     setBotShareable: vi.fn(),
     setBotJoinPublicChannels: vi.fn(),
+    setBotConversationDefaults: vi.fn(),
     setChannelAgent: vi.fn()
   })
 }))
@@ -114,6 +115,26 @@ describe('the join-public-channels switch', () => {
     const toggle = host.querySelector<HTMLButtonElement>(JOIN)
     expect(toggle).not.toBeNull()
     expect(toggle?.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('shows the conversation defaults beside the switch, reflecting the bot’s setting', async () => {
+    mocks.bots = [
+      bot({
+        id: 'sl-3',
+        platform: 'slack',
+        conversationDefaults: {
+          channel: { trigger: 'off', sessionMode: 'append' },
+          dm: { trigger: 'any', sessionMode: 'createNew' }
+        }
+      })
+    ]
+    const row = await botRow('Slack', 'sl-3')
+    await act(async () => row.click())
+    const field = (label: string) => host.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)
+    expect(field('Channels — Respond to')?.value).toBe('off')
+    expect(field('Channels — Session mode')?.value).toBe('append')
+    expect(field('Direct messages — Respond to')?.value).toBe('any')
+    expect(field('Direct messages — Session mode')?.value).toBe('createNew')
   })
 
   it('renders none for a Linear workspace', async () => {

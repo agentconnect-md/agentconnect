@@ -23,6 +23,7 @@ import { multiAgentUnsupportedMessage } from '../../platforms/sharing.js'
 import { botJoinsPublicChannels } from '../../platforms/slack/provider.js'
 import { deleteBotIdentity } from '../uninstall.js'
 import { pushBotConfig } from '../bot-config-push.js'
+import { botConversationDefaults } from '../../domain/conversation-defaults.js'
 import type { CpPlatformRegistry } from '../../platforms/provider.js'
 
 export function toBotDto(b: BotRecord, platforms: Pick<CpPlatformRegistry, 'get'>): BotDtoT {
@@ -40,6 +41,7 @@ export function toBotDto(b: BotRecord, platforms: Pick<CpPlatformRegistry, 'get'
     createdBy: b.createdBy && !isSyntheticEmail(b.createdBy.email) ? b.createdBy.userId : null,
     shareable: b.shareable,
     joinPublicChannels: botJoinsPublicChannels(b),
+    conversationDefaults: botConversationDefaults(b),
     transport: b.transport,
     inUseByAgentId: b.inUseByAgentId,
     agentIds: b.agentIds,
@@ -173,6 +175,15 @@ export function botRoutes(deps: HttpDeps) {
         let bot = await deps.repos.bot.get(orgOf(req), BotId(req.params.id))
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
+        }
+        // The conversation defaults are a plain per-bot setting too: stored whole, then the
+        // bot's routes recompile so the relay's fence for unconfigured conversations follows.
+        if (req.body.conversationDefaults !== undefined) {
+          await deps.repos.bot.update(bot.orgId, bot.id, { conversationDefaults: req.body.conversationDefaults })
+          bot = (await deps.repos.bot.get(bot.orgId, bot.id)) ?? bot
+          await pushBotConfig(deps, app.log, bot)
+          if (req.body.shareable === undefined && req.body.joinPublicChannels === undefined)
+            return toBotDto(bot, deps.platforms)
         }
         // The join switch is a plain per-bot setting: no membership to recount, so no
         // mutation lease. Gated on the manifest FIRST, like `shareable` below — a flag no

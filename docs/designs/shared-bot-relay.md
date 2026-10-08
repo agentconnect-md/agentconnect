@@ -449,6 +449,10 @@ route per installed agent or a per-agent slug fan-out. If that owner is active b
 currently unplaced, CP emits no scoped route and adds the conversation to the relay
 mute fence so it cannot fall through to another agent's unscoped default. This
 availability fence does not count as `gatedOffChannels`; the trigger remains On.
+The assignment also carries `offByDefault` by conversation kind (the bot's conversation
+defaults, resource-visibility.md §14.2): where the bot's channel or DM default is Off, a
+conversation no row has reached yet resolves to nothing at every rung, closing the window
+between the bot entering a conversation and the membership report seeding its row.
 This also preserves state and repairs ownership when an integration is removed;
 `No default` is not an operator state.
 

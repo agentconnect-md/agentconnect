@@ -5,7 +5,12 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon, Toggle } from '@/components/ui'
-import type { BotDto, SlackBotRefreshDto } from '@/lib/api'
+import {
+  PLATFORM_CONVERSATION_DEFAULTS,
+  type BotConversationDefaults,
+  type BotDto,
+  type SlackBotRefreshDto
+} from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import type { WebBotSettingsFragments } from '../contract'
 import { slackApi } from './api'
@@ -323,7 +328,7 @@ function SlackDeleteNotice({ bot }: { bot: BotDto }) {
  * reaches only the channels it was added to. Private channels are invitation-only either
  * way. Slack alone declares `publicChannelJoin`, so only its rows render this.
  */
-function SlackRowSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
+function SlackJoinPublicChannels({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
   const t = useTranslations('Platforms.slack.settings')
   const { setBotJoinPublicChannels } = useConsoleData()
   const [busy, setBusy] = useState(false)
@@ -363,6 +368,139 @@ function SlackRowSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean })
         ariaLabel={t('joinPublicChannels')}
       />
     </div>
+  )
+}
+
+const DEFAULTS_FIELD =
+  'rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] leading-normal text-(--text-primary) disabled:opacity-60'
+
+/**
+ * The bot's conversation defaults (`PATCH /bots/:id` `conversationDefaults`): what a channel or a
+ * DM starts as until someone changes it on its own row below — trigger and session mode, for
+ * every org-visible agent on the bot. Off is the fence a workspace with outside members wants: a
+ * channel the bot is added to, or joins by itself, stays silent until an editor enables it there.
+ * A private agent's conversations start Off regardless (resource-visibility.md §14).
+ */
+function SlackConversationDefaults({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
+  const t = useTranslations('Platforms.slack.settings')
+  const { setBotConversationDefaults } = useConsoleData()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const defaults = bot.conversationDefaults ?? PLATFORM_CONVERSATION_DEFAULTS
+  const save = async (next: BotConversationDefaults) => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await setBotConversationDefaults(bot.id, next)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const sessionModes = (
+    <>
+      <option value="createNew">{t('defaultSessionModes.createNew')}</option>
+      <option value="append">{t('defaultSessionModes.append')}</option>
+    </>
+  )
+  const label = (room: string, setting: string) => `${room} — ${setting}`
+  return (
+    <div className="mb-3 rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-2">
+      <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
+        {t('conversationDefaults')}
+      </div>
+      <div className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+        {t('conversationDefaultsHint')}
+      </div>
+      <div className="mt-2 grid grid-cols-[auto_1fr_1fr] items-center gap-x-3 gap-y-2 font-sans text-[12px] leading-normal text-(--text-secondary)">
+        <span />
+        <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.08em] text-(--text-tertiary)">
+          {t('defaultRespondTo')}
+        </span>
+        <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.08em] text-(--text-tertiary)">
+          {t('defaultSessionMode')}
+        </span>
+        <span>{t('channelsDefault')}</span>
+        <select
+          className={DEFAULTS_FIELD}
+          aria-label={label(t('channelsDefault'), t('defaultRespondTo'))}
+          value={defaults.channel.trigger}
+          disabled={!canWrite || busy}
+          onChange={(e) =>
+            void save({
+              ...defaults,
+              channel: { ...defaults.channel, trigger: e.target.value as BotConversationDefaults['channel']['trigger'] }
+            })
+          }
+        >
+          <option value="off">{t('defaultTrigger.off')}</option>
+          <option value="mention">{t('defaultTrigger.mention')}</option>
+          <option value="any">{t('defaultTrigger.any')}</option>
+        </select>
+        <select
+          className={DEFAULTS_FIELD}
+          aria-label={label(t('channelsDefault'), t('defaultSessionMode'))}
+          value={defaults.channel.sessionMode}
+          disabled={!canWrite || busy}
+          onChange={(e) =>
+            void save({
+              ...defaults,
+              channel: {
+                ...defaults.channel,
+                sessionMode: e.target.value as BotConversationDefaults['channel']['sessionMode']
+              }
+            })
+          }
+        >
+          {sessionModes}
+        </select>
+        <span>{t('dmsDefault')}</span>
+        <select
+          className={DEFAULTS_FIELD}
+          aria-label={label(t('dmsDefault'), t('defaultRespondTo'))}
+          value={defaults.dm.trigger}
+          disabled={!canWrite || busy}
+          onChange={(e) =>
+            void save({
+              ...defaults,
+              dm: { ...defaults.dm, trigger: e.target.value as BotConversationDefaults['dm']['trigger'] }
+            })
+          }
+        >
+          <option value="off">{t('defaultTrigger.off')}</option>
+          <option value="any">{t('defaultTrigger.dmOn')}</option>
+        </select>
+        <select
+          className={DEFAULTS_FIELD}
+          aria-label={label(t('dmsDefault'), t('defaultSessionMode'))}
+          value={defaults.dm.sessionMode}
+          disabled={!canWrite || busy}
+          onChange={(e) =>
+            void save({
+              ...defaults,
+              dm: { ...defaults.dm, sessionMode: e.target.value as BotConversationDefaults['dm']['sessionMode'] }
+            })
+          }
+        >
+          {sessionModes}
+        </select>
+      </div>
+      {error && (
+        <div className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">{error}</div>
+      )}
+    </div>
+  )
+}
+
+/** The bot-level settings at the top of the expanded Slack row: the join switch and the conversation defaults. */
+function SlackRowSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
+  return (
+    <>
+      <SlackJoinPublicChannels bot={bot} canWrite={canWrite} />
+      <SlackConversationDefaults bot={bot} canWrite={canWrite} />
+    </>
   )
 }
 

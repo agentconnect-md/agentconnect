@@ -1698,6 +1698,48 @@ describe('bot sharing capability (PATCH /bots/:id)', () => {
     expect(empty.statusCode).toBe(400)
   })
 
+  it('stores a bot’s conversation defaults whole, merged beside the join switch, and reports them resolved', async () => {
+    const { app } = withSpy()
+    const slack = await seedBot({ platform: 'slack', transport: 'socket' })
+
+    // Nothing stored ⇒ the platform's defaults, which is what every bot had before.
+    const before = await app.app.inject({ method: 'GET', url: `${ORG}/bots` })
+    expect(
+      (before.json() as { id: string; conversationDefaults: unknown }[]).find((b) => b.id === slack)
+        ?.conversationDefaults
+    ).toEqual({
+      channel: { trigger: 'mention', sessionMode: 'createNew' },
+      dm: { trigger: 'any', sessionMode: 'createNew' }
+    })
+
+    const defaults = {
+      channel: { trigger: 'off', sessionMode: 'append' },
+      dm: { trigger: 'any', sessionMode: 'createNew' }
+    }
+    const set = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${slack}`,
+      payload: { conversationDefaults: defaults }
+    })
+    expect(set.statusCode).toBe(200)
+    expect(set.json()).toMatchObject({ conversationDefaults: defaults })
+
+    // The same bag as the join switch, merged under the lock, so neither write drops the other.
+    await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${slack}`, payload: { joinPublicChannels: false } })
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: slack } })).platformConfig).toEqual({
+      conversationDefaults: defaults,
+      joinPublicChannels: false
+    })
+
+    // Stored whole: a half-set default is refused rather than read as the platform's for the rest.
+    const half = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${slack}`,
+      payload: { conversationDefaults: { channel: { trigger: 'off' } } }
+    })
+    expect(half.statusCode).toBe(400)
+  })
+
   it('leaves Slack’s HTTP bots shareable, and its socket bots refused on transport', async () => {
     const { app } = withSpy()
     const http = await seedBot({ platform: 'slack', transport: 'http' })

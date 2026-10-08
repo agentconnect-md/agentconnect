@@ -5697,7 +5697,23 @@
         "builtinRejected": "Slack 拒绝了这个工作区的授权。请重新安装该应用以恢复连接。",
         "joinPublicChannels": "自动加入公共频道",
         "joinPublicChannelsEnabled": "当 Agent 在此机器人尚未加入的公共频道中读取或发布消息时，机器人会自动加入并保持成员身份。Slack 会宣布此次加入，且成员身份适用于使用此机器人的所有 Agent。私人频道仍需要邀请。",
-        "joinPublicChannelsDisabled": "Agent 只能在此机器人已加入的频道中读取和发布消息。"
+        "joinPublicChannelsDisabled": "Agent 只能在此机器人已加入的频道中读取和发布消息。",
+        "conversationDefaults": "新会话的默认设置",
+        "conversationDefaultsHint": "频道或私信在下方列表中被更改之前的初始状态。设为“关闭”时，无论哪些 Agent 使用此机器人，机器人在被加入或自行加入的频道中都保持静默，直到编辑者在该频道启用它。",
+        "channelsDefault": "频道",
+        "dmsDefault": "私信",
+        "defaultRespondTo": "响应",
+        "defaultSessionMode": "会话模式",
+        "defaultTrigger": {
+          "off": "关闭",
+          "mention": "@提及",
+          "any": "所有消息",
+          "dmOn": "开启"
+        },
+        "defaultSessionModes": {
+          "createNew": "每个线程",
+          "append": "单一会话"
+        }
       },
       "replaceToken": {
         "title": "替换 Bot token",

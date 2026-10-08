@@ -738,6 +738,16 @@ visibility.
   default everywhere, DMs open to the whole workspace, per-channel "All
   messages" opt-in. Observed direct conversations now have rows so an editor
   can explicitly turn those defaults Off.
+- **A bot may change those defaults.** `Bot.platformConfig.conversationDefaults`
+  (`PATCH /bots/:id`; the console's "Defaults for new conversations" on the expanded
+  bot row) sets what a channel and a 1:1 DM start as — trigger and session mode — for
+  every org-visible install on the bot; a group DM takes the channel default. Rows a
+  human already decided are untouched. With the channel default Off, a conversation
+  nobody has configured is Off _before its row exists_: a shared bot's assignment
+  carries `offByDefault` by kind, and the relay resolves an unconfigured conversation
+  to nothing ahead of the keyword and `defaultAgentId` rungs. Adding the bot to a
+  channel, or the bot joining one by itself, therefore activates nothing until an
+  editor enables the row. Restricted installs keep this section's own seeding.
 - **Restricted agents are gated: every conversation defaults to Off.** When
   the bot is invited to a channel, the channel appears on the integration card
   in a pending/Off state. An **editor must enable it in the Console**, choosing

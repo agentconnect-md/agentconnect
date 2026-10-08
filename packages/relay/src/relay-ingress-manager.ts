@@ -1632,7 +1632,7 @@ export class RelayIngressManager {
     if (!assignment) return undefined
     // A channel switched Off takes no shortcut either — the modal it opens acts on a
     // session in a conversation the operator has silenced.
-    if (assignment.mutedChannels?.includes(coords.channelId)) return undefined
+    if (this.router.channelMuted(botId, coords.channelId)) return undefined
     const allowedInChannel = (agentId: string): boolean =>
       !assignment.gatedAgentIds?.includes(agentId) ||
       assignment.routes.some((route) => route.agentId === agentId && route.scope?.channel === coords.channelId)

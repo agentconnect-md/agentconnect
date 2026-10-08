@@ -915,6 +915,18 @@ export type ChannelTrigger = 'off' | 'mention' | 'any'
  *  responds in. */
 export type ChannelSessionMode = 'createNew' | 'append'
 
+/** A bot's defaults for conversations nobody has configured yet, by kind (`PATCH /bots/:id`). */
+export interface BotConversationDefaults {
+  channel: { trigger: ChannelTrigger; sessionMode: ChannelSessionMode }
+  dm: { trigger: 'off' | 'any'; sessionMode: ChannelSessionMode } // a 1:1 DM is On or Off
+}
+
+/** What every bot had before the setting existed: @-mention in a room, On in a DM. */
+export const PLATFORM_CONVERSATION_DEFAULTS: BotConversationDefaults = {
+  channel: { trigger: 'mention', sessionMode: 'createNew' },
+  dm: { trigger: 'any', sessionMode: 'createNew' }
+}
+
 // One conversation the integration's bot is in (daemon-reported) + its trigger
 // choice. kind 'im' rows are DM conversations and 'mpim' rows are Slack group DMs;
 // both are observed rather than enumerable and appear for every agent visibility.
@@ -983,6 +995,7 @@ export interface BotDto {
   transport: 'socket' | 'http'
   shareable: boolean // shared-bot opt-in — when true it may serve many agents at once
   joinPublicChannels?: boolean // Slack: the bot may enter a PUBLIC channel on first use; missing (older CP) ⇒ true
+  conversationDefaults?: BotConversationDefaults // what a new conversation starts as; missing (older CP) ⇒ the platform's
   inUseByAgentId: string | null // classic-bot occupancy; ALWAYS null for a shareable bot
   agentIds: string[] // every agent currently installed on the bot (a shared bot may have many)
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
@@ -4696,7 +4709,7 @@ export async function leaveIntegrationConversation(
 /** Flip a bot's shared-bot opt-in (PATCH /bots/:id). */
 export async function updateBot(
   id: string,
-  patch: { shareable?: boolean; joinPublicChannels?: boolean }
+  patch: { shareable?: boolean; joinPublicChannels?: boolean; conversationDefaults?: BotConversationDefaults }
 ): Promise<BotDto> {
   return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, patch)
 }

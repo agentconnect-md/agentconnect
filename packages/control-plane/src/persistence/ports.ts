@@ -51,7 +51,8 @@ import type {
   SessionStayedHomeReason,
   BotRevocationEvidence,
   PlaceExternalReason,
-  RuntimeStrategyEntries
+  RuntimeStrategyEntries,
+  BotConversationDefaults
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -3443,6 +3444,8 @@ export interface BotUpdate {
   /** May the bot enter a PUBLIC channel on first use (Slack `conversations.join`)? Kept in
    *  the `platformConfig` bag (merged under the same lock), absent ⇒ true. */
   joinPublicChannels?: boolean
+  /** What a conversation nobody has configured starts as, by kind. Kept in the same bag. */
+  conversationDefaults?: BotConversationDefaults
 }
 
 export interface BotRepo {
@@ -5525,6 +5528,9 @@ export interface IntegrationChannelRepo {
       /** Per-conversation seed overriding `defaultTrigger` on a NEW row (§14.8: a gated
        *  agent's DM with a member of its own audience). Existing rows are unaffected. */
       defaultTriggerByChannel?: ReadonlyMap<string, SeedTrigger>
+      /** The bot's conversation defaults for a NEW row's trigger (below both seeds above)
+       *  and session mode. Absent ⇒ the platform's. */
+      seed?: BotConversationDefaults
       authoritative?: boolean
       removed?: string[]
     }
@@ -5540,7 +5546,7 @@ export interface IntegrationChannelRepo {
   upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: SeedTrigger }
+    opts?: { defaultTrigger?: SeedTrigger; seed?: BotConversationDefaults }
   ): Promise<IntegrationChannelRecord>
   /** Conversations across EVERY integration of a shared bot — the route compiler's
    *  ownership source. */
@@ -5575,7 +5581,7 @@ export interface IntegrationChannelRepo {
     integrationId: IntegrationId,
     channelId: string,
     agentId: AgentId,
-    opts?: { defaultTrigger?: SeedTrigger; kind?: ConversationKind }
+    opts?: { defaultTrigger?: SeedTrigger; kind?: ConversationKind; seed?: BotConversationDefaults }
   ): Promise<IntegrationChannelRecord>
   /**
    * The org's conversation-name directory for the given coordinates — the read a

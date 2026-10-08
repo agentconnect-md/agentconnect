@@ -21,6 +21,7 @@
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { isGatedAgent } from '../../orchestrator/placement.js'
+import { botConversationDefaults } from '../../domain/conversation-defaults.js'
 import { servedAgents } from '../../orchestrator/servedAgents.js'
 import type { DaemonWsDeps } from '../deps.js'
 import type { AgentRecord, SeedTrigger, IntegrationRecord } from '../../persistence/ports.js'
@@ -76,15 +77,19 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     // §14.8: a gated DM whose counterpart is already in the agent's audience seeds to
     // the ordinary DM default instead. Only the gated arm asks — a public install has
     // no Off to override — and a resolver that answers nothing leaves §14.2 intact.
-    const bot = defaultTrigger && deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
-    seeded = owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
+    // The bot row is also where a public install's seeds come from: its conversation defaults.
+    const bot = deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
+    seeded =
+      defaultTrigger && owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
+    const seed = bot ? botConversationDefaults(bot) : undefined
     const written = await deps.integrationChannel.replaceSnapshot(
       integration.id,
       p.channels,
-      defaultTrigger || p.authoritative === false || p.removed?.length
+      defaultTrigger || seed || p.authoritative === false || p.removed?.length
         ? {
             ...(defaultTrigger ? { defaultTrigger } : {}),
             ...(seeded?.size ? { defaultTriggerByChannel: seeded } : {}),
+            ...(seed ? { seed } : {}),
             ...(p.authoritative === false ? { authoritative: false } : {}),
             ...(p.removed?.length ? { removed: p.removed } : {})
           }

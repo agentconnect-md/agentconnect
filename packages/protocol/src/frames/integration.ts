@@ -179,6 +179,42 @@ export const IntegrationSessionMode = z.object({
 })
 export type IntegrationSessionMode = z.infer<typeof IntegrationSessionMode>
 
+/**
+ * What a conversation nobody has configured yet starts as on one bot, by kind. Stored in
+ * `Bot.platformConfig.conversationDefaults` (an operator setting, `PATCH /bots/:id`), read
+ * wherever a conversation row is seeded and, for a shared bot, compiled into the relay's
+ * fence for conversations no row has reached yet. A restricted agent's conversations keep
+ * their own fail-closed seeding (resource-visibility.md §14) whatever the bot says here.
+ */
+export const BotConversationDefaults = z.object({
+  channel: z.object({ trigger: z.enum(['off', 'mention', 'any']), sessionMode: ChannelSessionMode }),
+  // A 1:1 DM needs no mention distinction: it is On or Off.
+  dm: z.object({ trigger: z.enum(['off', 'any']), sessionMode: ChannelSessionMode })
+})
+export type BotConversationDefaults = z.infer<typeof BotConversationDefaults>
+
+/** The defaults every bot had before the setting existed: @-mention in a room, On in a DM. */
+export const PLATFORM_CONVERSATION_DEFAULTS: BotConversationDefaults = {
+  channel: { trigger: 'mention', sessionMode: 'createNew' },
+  dm: { trigger: 'any', sessionMode: 'createNew' }
+}
+
+/** The stored shape: every leaf optional, so a bot written by an older console still resolves. */
+const StoredConversationDefaults = z.object({
+  channel: BotConversationDefaults.shape.channel.partial().optional(),
+  dm: BotConversationDefaults.shape.dm.partial().optional()
+})
+
+/** A bot's stored defaults over the platform's; an absent or unreadable bag means the platform's. */
+export function resolveConversationDefaults(stored: unknown): BotConversationDefaults {
+  const parsed = StoredConversationDefaults.safeParse(stored)
+  const partial = parsed.success ? parsed.data : {}
+  return {
+    channel: { ...PLATFORM_CONVERSATION_DEFAULTS.channel, ...partial.channel },
+    dm: { ...PLATFORM_CONVERSATION_DEFAULTS.dm, ...partial.dm }
+  }
+}
+
 /** Who is in a place (assistant-mode.md §5.3): only organization members, or possibly anyone else. */
 export const PlaceTrustLevel = z.enum(['internal', 'external'])
 export type PlaceTrustLevel = z.infer<typeof PlaceTrustLevel>

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   BotArbitrationRouter,
   arbitrate,
+  conversationOff,
   type BotAssignment,
   type RouteTarget,
   toBotAssignment,
@@ -251,6 +252,74 @@ describe('HTTP-bot arbitration (§10)', () => {
       // gatedOffChannels only steers the notice; arbitration must still refuse.
       const a = { ...assignment(), mutedChannels: ['C2'], gatedOffChannels: ['C2'] }
       expect(arbitrate(a, msg({ channel: 'C2', text: 'anything' }), empty())).toBeNull()
+    })
+  })
+
+  // The bot's conversation defaults: a conversation NO ROW has reached yet is Off when the
+  // bot says so, before the membership report seeds its row. Without the fence the unscoped
+  // keyword and defaultAgentId rungs answer a bare @bot in any channel the bot just entered.
+  describe('conversations no row has reached yet (offByDefault)', () => {
+    const channelsOff = { channel: true, dm: false }
+    const bare = () => msg({ channel: 'CX', text: '<@UBOT> hi', mentionedBots: [BOTUSER] })
+
+    it('a bare @bot in an unconfigured channel resolves to nothing when channels default to Off', () => {
+      const a = { ...assignment(), offByDefault: channelsOff }
+      expect(arbitrate(a, bare(), empty())).toBeNull()
+      // …and the slug rung cannot reopen it.
+      expect(
+        arbitrate(a, msg({ channel: 'CX', text: '<@UBOT> bob ship it', mentionedBots: [BOTUSER] }), empty())
+      ).toBeNull()
+    })
+
+    it('a configured channel keeps its route', () => {
+      const a = { ...assignment(), offByDefault: channelsOff }
+      const t = arbitrate(a, msg({ channel: 'C1', text: '<@UBOT> deploy', mentionedBots: [BOTUSER] }), empty())
+      expect(t).toEqual({ agentId: ALICE, daemonId: D1, integrationId: 'iA' })
+    })
+
+    it('a DM stays open while only channels default to Off, and closes when DMs do', () => {
+      const dm = msg({ channel: 'D9', isDm: true, text: 'hi' })
+      expect(arbitrate({ ...assignment(), offByDefault: channelsOff }, dm, empty())).toEqual({
+        agentId: ALICE,
+        daemonId: D1,
+        integrationId: 'iA'
+      })
+      expect(arbitrate({ ...assignment(), offByDefault: { channel: false, dm: true } }, dm, empty())).toBeNull()
+    })
+
+    it('an assignment without the field (an older CP) is open, as before', () => {
+      expect(arbitrate(assignment(), bare(), empty())).toEqual({ agentId: ALICE, daemonId: D1, integrationId: 'iA' })
+    })
+
+    it('classifies a bare id by the platform manifest: a Slack D… id is a DM', () => {
+      const a = { ...assignment(), offByDefault: channelsOff }
+      expect(conversationOff(a, 'CX')).toBe(true)
+      expect(conversationOff(a, 'D9')).toBe(false)
+      expect(conversationOff(a, 'C1')).toBe(false)
+    })
+
+    it('rides the rc/routes hot update', () => {
+      const router = new BotArbitrationRouter()
+      router.upsert(assignment())
+      expect(router.channelMuted('bot-1', 'CX')).toBe(false)
+      router.updateRoutes(
+        'bot-1',
+        toRoutesPatch({
+          botId: 'bot-1',
+          members: assignment().members,
+          agents: [],
+          routes: assignment().routes,
+          gatedAgentIds: [],
+          mutedChannels: [],
+          gatedOffChannels: [],
+          offByDefault: channelsOff,
+          noticedDmConversations: [],
+          conversationDefaults: [],
+          routedConversations: []
+        })
+      )
+      expect(router.channelMuted('bot-1', 'CX')).toBe(true)
+      expect(router.channelMuted('bot-1', 'C1')).toBe(false)
     })
   })
 })
