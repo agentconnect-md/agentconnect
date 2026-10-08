@@ -55,7 +55,7 @@ if printf '%s\n' "$refs" | grep -vqx "$want"; then
   exit 1
 fi
 git -C "$tmp/bundled" rev-parse --verify HEAD >/dev/null
-git -C "$tmp/bundled" fsck --connectivity-only >/dev/null
+git -C "$tmp/bundled" fsck --connectivity-only --no-dangling >/dev/null
 git clone -q --filter=blob:none --no-checkout "file://$tmp/source" "$tmp/partial"
 cat >"$tmp/fake-upload-pack" <<'EOF'
 #!/bin/sh

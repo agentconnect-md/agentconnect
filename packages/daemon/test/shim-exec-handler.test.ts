@@ -486,14 +486,14 @@ describe('sandbox exec handler', () => {
     ).rejects.toBeInstanceOf(ExecRefusedError)
   })
 
-  it('runs fsck --connectivity-only', async () => {
-    const root = repository()
-    const result = (await handler(root)('exec', {
-      tool: 'git',
-      args: ['fsck', '--connectivity-only']
-    })) as GitExecResult
-    expect(result.code, result.stderr).toBe(0)
-  })
+  it.each([[['fsck', '--connectivity-only']], [['fsck', '--connectivity-only', '--no-dangling']]])(
+    'runs %j',
+    async (args) => {
+      const root = repository()
+      const result = (await handler(root)('exec', { tool: 'git', args })) as GitExecResult
+      expect(result.code, result.stderr).toBe(0)
+    }
+  )
 
   it('enumerates and deletes refs/bundles with rev-parse --glob and update-ref -d', async () => {
     // Both the pre-2.50 and the 2.50+ imported-ref layouts are cleaned by listing, never by a fixed name.
