@@ -107,32 +107,7 @@ export function sniffImageMimeType(bytes: Buffer): SessionImageAttachment['mimeT
   return undefined
 }
 
-/**
- * Fetch the bytes of the first candidate image so its transcript row can carry it
- * for console replay. Webchat images arrive inline already; a platform attachment
- * (Slack/Telegram/Discord/Feishu) is only an auth-gated URL, so without this the
- * console can render nothing but the `[attached: …]` label. A provider that
- * declares no usable type is settled by the bytes, and the corrected `mimeType`
- * rides along so the mention, the transcript row and the ACP block all agree.
- *
- * The bytes are memoized onto the attachment, so `buildAttachmentBlocks` reuses
- * them: one download serves the transcript and the prompt. `maxBytes` is the
- * caller's prompt cap, mirroring `buildAttachmentBlocks`, so an over-cap file is
- * skipped identically here; the tighter transcript ceiling is enforced by the
- * `SessionImageAttachment` schema in `transcriptImageAttachments`.
- *
- * The console history frame's budget (`WEBCHAT_IMAGE_MAX_BYTES`) is far tighter
- * than `maxBytes` above, so a full-res download routinely clears the prompt cap
- * but not the transcript one. When that happens — or the full download was
- * never attempted because the declared size already exceeded `maxBytes` — a
- * provider-supplied smaller rendition (`thumbnailUrl`: Slack `thumb_*`, a
- * smaller Telegram `PhotoSize`, a resized Discord `proxy_url`) is fetched
- * separately and kept in `transcriptThumbnail`, never in `inlineData`, so the
- * agent's own prompt block always sees the full-resolution bytes.
- *
- * ponytail: one image per message. A second one keeps the label; showing more
- * needs chunked/off-frame image reads, not a bigger cap.
- */
+// Reuse full-resolution prompt bytes and fetch a separate bounded thumbnail for console replay when needed.
 export async function hydrateTranscriptImage(
   attachments: Attachment[] | undefined,
   deps: Pick<AttachmentDeps, 'download' | 'maxBytes'>
@@ -140,9 +115,9 @@ export async function hydrateTranscriptImage(
   const image = attachments?.find(
     (att) => att.mimeType.startsWith('image/') || att.mimeType === 'application/octet-stream'
   )
-  if (!image || image.inlineData) return
+  if (!image) return
   const cap = deps.maxBytes ?? Infinity
-  if (!(typeof image.size === 'number' && image.size > cap)) {
+  if (!image.inlineData && !(typeof image.size === 'number' && image.size > cap)) {
     const bytes = await deps.download(image).catch(() => null)
     if (bytes && bytes.byteLength <= cap) {
       image.inlineData = bytes

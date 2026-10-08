@@ -77,24 +77,38 @@ export async function resolveDecisionImages(
   download?: DecisionImageDownload
 ): Promise<DecisionImage[]> {
   const attachments = input.attachments.filter(candidate)
-  if (attachments.length > DECISION_IMAGE_MAX_COUNT) throw new DecisionProviderError('unsupported_input')
+  if (attachments.filter((attachment) => attachment.mimeType.startsWith('image/')).length > DECISION_IMAGE_MAX_COUNT)
+    throw new DecisionProviderError('unsupported_input')
   const images: DecisionImage[] = []
   let total = 0
   for (const attachment of attachments) {
     signal.throwIfAborted()
+    const declaredImage = attachment.mimeType.startsWith('image/')
     const maxBytes = Math.min(DECISION_IMAGE_MAX_BYTES, DECISION_IMAGES_MAX_BYTES - total)
-    if (maxBytes <= 0 || (attachment.size !== undefined && attachment.size > maxBytes))
+    if (maxBytes <= 0 || (attachment.size !== undefined && attachment.size > maxBytes)) {
+      if (!declaredImage) continue
       throw new DecisionProviderError('unsupported_input')
-    let bytes = inlineBytes(attachment.inlineData)
-    if (!bytes && attachment.sourceUrl && download) {
-      bytes =
-        (await downloadBeforeAbort(
-          () => download(agentId, input.integrationId, attachment, maxBytes, signal),
-          signal
-        )) ?? undefined
+    }
+    let bytes: Buffer | undefined
+    try {
+      bytes = inlineBytes(attachment.inlineData)
+      if (!bytes && attachment.sourceUrl && download) {
+        bytes =
+          (await downloadBeforeAbort(
+            () => download(agentId, input.integrationId, attachment, maxBytes, signal),
+            signal
+          )) ?? undefined
+      }
+    } catch (error) {
+      signal.throwIfAborted()
+      if (!declaredImage) continue
+      throw error
     }
     signal.throwIfAborted()
-    if (!bytes || bytes.length === 0 || bytes.length > maxBytes) throw new DecisionProviderError('unsupported_input')
+    if (!bytes || bytes.length === 0 || bytes.length > maxBytes) {
+      if (!declaredImage) continue
+      throw new DecisionProviderError('unsupported_input')
+    }
     const signature = bytes.subarray(0, 6).toString('ascii')
     const mimeType =
       sniffImageMimeType(bytes) ?? (signature === 'GIF87a' || signature === 'GIF89a' ? 'image/gif' : undefined)
@@ -102,6 +116,7 @@ export async function resolveDecisionImages(
       if (attachment.mimeType === 'application/octet-stream') continue
       throw new DecisionProviderError('unsupported_input')
     }
+    if (images.length >= DECISION_IMAGE_MAX_COUNT) throw new DecisionProviderError('unsupported_input')
     if (attachment.name.length > 1024) throw new DecisionProviderError('unsupported_input')
     attachment.inlineData = bytes
     attachment.mimeType = mimeType

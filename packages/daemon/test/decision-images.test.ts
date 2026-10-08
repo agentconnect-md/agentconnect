@@ -103,6 +103,41 @@ describe('Decision image inputs', () => {
     expect(Buffer.isBuffer(attachment.inlineData)).toBe(true)
   })
 
+  it('keeps ordinary unknown files as text metadata even when probes cannot read them', async () => {
+    const { evaluator, download, fetcher } = setup()
+    const unknown = (over: Partial<Attachment> = {}) =>
+      image({
+        mimeType: 'application/octet-stream',
+        inlineData: undefined,
+        sourceUrl: 'https://private.example.test/file',
+        ...over
+      })
+    download
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce(Buffer.alloc(DECISION_IMAGE_MAX_BYTES + 1))
+    const attachments = [
+      unknown({ size: DECISION_IMAGE_MAX_BYTES + 1 }),
+      unknown(),
+      unknown(),
+      unknown(),
+      ...Array.from({ length: 9 }, () => unknown({ inlineData: Buffer.from('ordinary file') })),
+      image()
+    ]
+    expect((await evaluator.evaluate(input(attachments))).status).toBe('answered')
+    expect(download).toHaveBeenCalledTimes(3)
+    const body = JSON.parse(fetcher.mock.calls[0]![1]!.body as string)
+    expect(body.input[0].content.filter((part: { type: string }) => part.type === 'input_image')).toHaveLength(1)
+  })
+
+  it('counts unknown files once their bytes identify them as images', async () => {
+    const { evaluator, fetcher } = setup()
+    expect(
+      await evaluator.evaluate(input(Array.from({ length: 9 }, () => image({ mimeType: 'application/octet-stream' }))))
+    ).toEqual({ status: 'unavailable', reason: 'unsupported_input' })
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
   it('keeps image bytes outside the text budget', async () => {
     const { evaluator, fetcher } = setup()
     const bytes = Buffer.concat([png, Buffer.alloc(64 * 1024)])

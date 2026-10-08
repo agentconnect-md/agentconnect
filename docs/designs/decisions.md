@@ -922,7 +922,7 @@ private platform images are downloaded through the originating integration's rea
 port on the daemon. Providers without an image adapter retain their existing
 text/caption behavior and do not download images for evaluation.
 
-The daemon allows at most eight candidate images, 4 MiB per image, and 8 MiB total.
+The daemon allows at most eight identified or declared images, 4 MiB per image, and 8 MiB total.
 It checks declared size before downloading, verifies actual size and image signatures,
 and supports PNG, JPEG, WebP, and GIF. The platform downloader also enforces its
 configured attachment cap. Downloads share the evaluation's deadline and cancellation;
@@ -930,7 +930,10 @@ a missing, invalid, unsupported, or oversized image makes the OpenAI evaluation
 unavailable rather than silently evaluating its caption alone. Successfully read bytes
 are reused by later chain steps and normal prompt assembly. Unknown binary MIME types
 are inspected because some platforms do not identify images until download; a binary
-that is not an image remains text/attachment metadata.
+that is not an image, exceeds the probe budget, or cannot be downloaded remains
+text/attachment metadata and does not consume the image count. Declared images on
+platforms without attachment downloads (currently Google Chat and Linear) make
+the evaluation unavailable unless their bytes are already inline.
 
 The provider receives text state followed by image metadata identifying the current
 message and inline image parts. Image bytes have a separate budget from the 32 KiB
