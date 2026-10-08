@@ -165,8 +165,16 @@ describe('isValidBranchRef', () => {
 })
 
 describe('fsck', () => {
-  it('admits exactly --connectivity-only', () => admits(['fsck', '--connectivity-only']))
+  it.each([[['fsck', '--connectivity-only']], [['fsck', '--connectivity-only', '--no-dangling']]])(
+    'admits exactly %j',
+    (args) => admits(args)
+  )
   it.each([
+    [['fsck', '--no-dangling']],
+    [['fsck', '--no-dangling', '--connectivity-only']],
+    [['fsck', '--connectivity-only --no-dangling']],
+    [['fsck', '--connectivity-only', '--no-dangling', '--lost-found']],
+    [['fsck', '--connectivity-only', '--no-dangl']],
     [['fsck']],
     [['fsck', '--full']],
     [['fsck', '--connectivity-only', '--lost-found']],

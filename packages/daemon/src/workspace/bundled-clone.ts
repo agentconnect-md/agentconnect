@@ -148,8 +148,8 @@ export async function cloneFromBundle(input: BundledCloneInput): Promise<Bundled
     if (refs.length === 0) throw new Fallback('no-bundle-refs', 'no ref under refs/bundles/ after the clone')
     // The bundle's tip, captured before its refs go, is what a write-back measures the origin delta from.
     const tips = new Set(entries.map((entry) => entry.oid))
-    // Both shapes: an incomplete bundle can leave a full clone exit 0 with broken history, a blobless one before checkout.
-    await step('connectivity', () => git.raw(['fsck', '--connectivity-only']))
+    // Both shapes: an incomplete bundle can leave a full clone exit 0 with broken history; dangling objects are not a failure.
+    await step('connectivity', () => git.raw(['fsck', '--connectivity-only', '--no-dangling']))
     await step('cleanup-failed', () => removeBundleRefs(git, refs))
     input.report?.(tips.size === 1 ? { kind: 'hit', tip: [...tips][0]! } : { kind: 'hit' })
     return 'hit'

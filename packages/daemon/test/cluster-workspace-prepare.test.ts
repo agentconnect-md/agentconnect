@@ -2297,7 +2297,7 @@ describe('workspace clones read the Source Cache (source-cache.md §7)', () => {
     const staged = clone.args[2]
     expect(calls.find((call) => call.args[0] === 'fsck')).toMatchObject({
       cwd: staged,
-      args: ['fsck', '--connectivity-only']
+      args: ['fsck', '--connectivity-only', '--no-dangling']
     })
     // The check runs under the local env, so it can never fetch the missing objects it is looking for.
     expect(calls.find((call) => call.args[0] === 'fsck')!.env.GIT_NO_LAZY_FETCH).toBe('1')

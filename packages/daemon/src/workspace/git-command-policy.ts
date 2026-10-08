@@ -65,6 +65,9 @@ const REFUSED_SUBCOMMAND_ARGUMENT: Record<string, RegExp[]> = {
 const CLONE_REFUSED_SHORT = new Set(['u', 'c'])
 const CLONE_VALUE_SHORT = new Set(['o', 'b', 'j'])
 
+// `--no-dangling` keeps a bundle's unreachable history from overflowing a shim frame.
+const ADMITTED_FSCK = [['--connectivity-only'], ['--connectivity-only', '--no-dangling']]
+
 const BUNDLE_URI_PREFIX = '--bundle-uri=https://'
 const MAX_BUNDLE_URI_LENGTH = 8192
 const BRANCH_REF_PREFIX = 'refs/heads/'
@@ -157,7 +160,12 @@ export function validateGitArgs(args: string[]): void {
       throw new ExecRefusedError(`argument ${argument} is refused for git clone`)
     }
   }
-  if (subcommand === 'fsck' && (rest.length !== 1 || rest[0] !== '--connectivity-only')) {
-    throw new ExecRefusedError('git fsck is admitted only as fsck --connectivity-only')
+  if (
+    subcommand === 'fsck' &&
+    !ADMITTED_FSCK.some(
+      (form) => form.length === rest.length && form.every((argument, index) => argument === rest[index])
+    )
+  ) {
+    throw new ExecRefusedError('git fsck is admitted only as fsck --connectivity-only [--no-dangling]')
   }
 }

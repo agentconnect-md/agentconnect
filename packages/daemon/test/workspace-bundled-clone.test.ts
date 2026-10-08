@@ -125,7 +125,7 @@ describe('cloneFromBundle (scripted Git)', () => {
     expect(h.calls).toEqual([
       ['rev-parse', '--symbolic-full-name', '--glob=refs/bundles/*'],
       ['show-ref', '--', ...refs],
-      ['fsck', '--connectivity-only'],
+      ['fsck', '--connectivity-only', '--no-dangling'],
       ...refs.map((ref) => ['update-ref', '-d', ref])
     ])
     // The tip is captured before the refs go, for the write-back delta (source-cache.md §7).
@@ -143,7 +143,7 @@ describe('cloneFromBundle (scripted Git)', () => {
   it('checks connectivity for a full clone too, and falls back when its history is incomplete', async () => {
     const ok = harness({ shape: 'full' })
     expect(await ok.run()).toBe('hit')
-    expect(ok.calls).toContainEqual(['fsck', '--connectivity-only'])
+    expect(ok.calls).toContainEqual(['fsck', '--connectivity-only', '--no-dangling'])
     const broken = harness({
       shape: 'full',
       answers: { 'show-ref': showRef('refs/bundles/main'), fsck: execError(2, 'missing tree', ['fsck']) }
@@ -309,6 +309,24 @@ describe.skipIf(process.platform === 'win32')('cloneFromBundle (real Git)', () =
     appendFileSync(path, pack.stdout)
   }
 
+  /** A blobless bundle of main whose pack also carries `extra` unreachable root commits, as a real bundle's history can. */
+  function danglingBundle(seed: string, tip: string, path: string, extra: number): void {
+    const stream = Array.from(
+      { length: extra },
+      (_, i) => `commit refs/x/${i}\ncommitter T <t@e> ${i} +0000\ndata 1\nm\n\n`
+    )
+    const imported = spawnSync('git', ['fast-import', '--quiet'], { cwd: seed, env, input: stream.join('') })
+    if (imported.status !== 0) throw new Error(`fast-import: ${imported.stderr.toString()}`)
+    const revs = ['refs/heads/main', ...Array.from({ length: extra }, (_, i) => `refs/x/${i}`)].join('\n')
+    const pack = spawnSync('git', ['pack-objects', '--stdout', '--revs', '--filter=blob:none'], {
+      cwd: seed,
+      env,
+      input: `${revs}\n`
+    })
+    writeFileSync(path, `# v3 git bundle\n@filter=blob:none\n${tip} refs/heads/main\n\n`)
+    appendFileSync(path, pack.stdout)
+  }
+
   function shimRunner(root: string, cwd: string): GitRunner {
     const handle = createExecHandler({ workspaceRoot: root, log: { info: () => {}, warn: () => {} } })
     const requester: ShimRequester = { request: async (capability, payload) => await handle(capability, payload) }
@@ -353,6 +371,17 @@ describe.skipIf(process.platform === 'win32')('cloneFromBundle (real Git)', () =
     expect(r.argv).toHaveLength(1)
     expect(bundleRefs(r.target)).toEqual([])
     expect(ok(r.target, ['rev-parse', 'refs/heads/main'])).toBe(f.tip)
+  })
+
+  it('hits when the bundle leaves enough dangling objects to overflow a shim frame', async () => {
+    const f = fixture()
+    const bundle = join(f.root, 'dangling.bundle')
+    danglingBundle(f.seed, f.tip, bundle, 1500)
+    const r = run(f, bundle, 'blobless')
+
+    expect(await r.result).toBe('hit')
+    expect(git(r.target, ['fsck', '--connectivity-only']).stdout.length).toBeGreaterThan(64 * 1024)
+    expect(bundleRefs(r.target)).toEqual([])
   })
 
   it('hits in a repository whose tags alone overflow a shim frame', async () => {
