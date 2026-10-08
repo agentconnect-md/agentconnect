@@ -916,14 +916,35 @@ accepted. The endpoint allows at most 128 image parts and exposes `detail` value
 [OpenAI guide](https://developers.openai.com/api/docs/guides/decisions) and
 [API contract](https://developers.openai.com/api/reference/resources/decisions/methods/create).
 
-AgentConnect's Decision consumers currently supply text and quoted context only.
-The new adapter does not download attachments or send image parts; an attachment's
-caption or filename does not mean the model inspected its pixels. End-to-end
-visual Decisions require a separate daemon-side attachment-resolution path, image
-byte/count budgets independent of text budgets, and evaluation-record handling
-that does not embed base64 images into raw JSON previews. Those bytes must remain
-on the daemon/relay data plane. Live ingress and standalone previews would both
-need to supply the same explicit image evidence contract.
+Current-message images are now supported for OpenAI chat gates, shared-bot routing,
+session model selection, and repository selection. Inline webchat bytes are reused;
+private platform images are downloaded through the originating integration's read
+port on the daemon. Providers without an image adapter retain their existing
+text/caption behavior and do not download images for evaluation.
+
+The daemon allows at most eight candidate images, 4 MiB per image, and 8 MiB total.
+It checks declared size before downloading, verifies actual size and image signatures,
+and supports PNG, JPEG, WebP, and GIF. The platform downloader also enforces its
+configured attachment cap. Downloads share the evaluation's deadline and cancellation;
+a missing, invalid, unsupported, or oversized image makes the OpenAI evaluation
+unavailable rather than silently evaluating its caption alone. Successfully read bytes
+are reused by later chain steps and normal prompt assembly. Unknown binary MIME types
+are inspected because some platforms do not identify images until download; a binary
+that is not an image remains text/attachment metadata.
+
+The provider receives text state followed by image metadata identifying the current
+message and inline image parts. Image bytes have a separate budget from the 32 KiB
+text/metadata request budget. Frozen state and evaluation diagnostics contain no image
+bytes or private download URLs: request diagnostics replace image data with an omission
+marker, and image-response diagnostics retain only the validated normalized evaluation.
+Raw upstream error responses are omitted because they may echo the input image.
+All image reads and inference stay on the daemon/relay data plane.
+
+This implementation evaluates images attached to the current message. Historical
+messages remain text/caption evidence; standalone Console Try and `evaluateDecision`
+inputs remain text-only. Historical visual context and a Console image-upload preview
+need a separate bounded data-plane upload/read contract; they must not send image bytes
+through the existing control-plane preview frames.
 
 ### 7.3 Jev request and normalized result
 

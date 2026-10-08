@@ -20,6 +20,7 @@ import {
   type ResolvedDecisionBundle,
   type ResolvedDecisionGate
 } from './bundle.js'
+import { decisionImageInput } from './images.js'
 import { ChainRawBodies, type DecisionEvaluationInput } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
 import { DecisionLaneRuntime, laneId, verdictKey, type Lane } from './lanes.js'
@@ -484,6 +485,7 @@ export class DecisionGate {
               evaluationId: `${row.seq}:${c.agentId}:${index}`,
               decision: definitionOf(step.decisionId),
               state: built.state,
+              ...decisionImageInput(c.target, c.integrationId),
               deadlineAt: row.deadlineAt,
               ...bodies.hooks(index)
             },

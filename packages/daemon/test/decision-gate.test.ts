@@ -170,6 +170,22 @@ const settle = async (): Promise<void> => {
 }
 
 describe('DecisionGate', () => {
+  it('carries current image sources and their integration outside the frozen text state', async () => {
+    const h = await harness()
+    const attachments = [
+      { id: 'image', name: 'photo.png', mimeType: 'image/png', sourceUrl: 'https://private.example.test/image' }
+    ]
+    const posted = await h.post('C1', { attachments })
+    await h.candidate(posted)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    expect(h.calls[0]!.input.imageInput).toEqual({ attachments, integrationId: 'int-a', messageId: posted.msg.msgId })
+    expect(JSON.stringify(h.calls[0]!.input.state)).not.toContain('private.example.test')
+    h.calls[0]!.resolve(no)
+    await h.gate.idle()
+    const verdict = await h.store.getDecisionVerdict(posted.record.seq, AGENT)
+    expect(verdict!.inputJson).not.toContain('private.example.test')
+  })
+
   it("gives the Decision the gated agent's name and description, and freezes them with the input", async () => {
     const h = await harness()
     const posted = await h.post()
