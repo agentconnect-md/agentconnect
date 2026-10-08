@@ -58,6 +58,7 @@ describe('githubRepository.resolve', () => {
     expect(answer).toEqual({
       ok: true,
       commit: SHA.toLowerCase(),
+      ref: 'refs/heads/main',
       validators: { identityEtag: '"id-1"', identityPath: 'Acme/Infra', refEtag: '"ref-1"', commit: SHA.toLowerCase() }
     })
     expect(h.seen.map((s) => s.url)).toEqual([
@@ -77,8 +78,65 @@ describe('githubRepository.resolve', () => {
     const h = harness([status(304), status(304)])
     const prior = { identityEtag: '"id-1"', identityPath: 'acme/infra', refEtag: '"ref-1"', commit: OTHER }
     const answer = await h.run({}, prior)
-    expect(answer).toEqual({ ok: true, commit: OTHER, validators: prior })
+    expect(answer).toEqual({ ok: true, commit: OTHER, ref: 'refs/heads/main', validators: prior })
     expect(h.seen.map((s) => s.headers['if-none-match'])).toEqual(['"id-1"', '"ref-1"'])
+  })
+
+  it('reads a tag through tags/<name>', async () => {
+    const h = harness([repo(), sha(SHA)])
+    expect(await h.run({ ref: { kind: 'tag', name: 'v1.0' } })).toMatchObject({
+      ok: true,
+      commit: SHA.toLowerCase(),
+      ref: 'refs/tags/v1.0'
+    })
+    expect(h.seen[1]!.url).toBe('https://api.github.com/repos/Acme/Infra/commits/tags%2Fv1.0')
+  })
+
+  it('resolves HEAD to the default branch the identity read names, and remembers it for a 304', async () => {
+    const body = (branch: string) =>
+      identity(`{"id": 501, "full_name": "acme/infra", "default_branch": "${branch}"}`, { headers: { etag: '"id-2"' } })
+    const h = harness([body('trunk'), sha(SHA)])
+    const first = await h.run({ ref: { kind: 'default' } })
+    expect(first).toMatchObject({ ok: true, commit: SHA.toLowerCase(), ref: 'refs/heads/trunk' })
+    expect(h.seen[1]!.url).toBe('https://api.github.com/repos/acme/infra/commits/heads%2Ftrunk')
+    if (!first.ok) throw new Error('unreachable')
+    expect(first.validators.defaultBranch).toBe('trunk')
+
+    const again = harness([status(304), status(304)])
+    expect(await again.run({ ref: { kind: 'default' } }, first.validators)).toMatchObject({
+      ok: true,
+      ref: 'refs/heads/trunk'
+    })
+    // A moved default branch is another ref: its old etag is never sent.
+    const moved = harness([body('main'), sha(OTHER)])
+    expect(await moved.run({ ref: { kind: 'default' } }, first.validators)).toMatchObject({
+      ok: true,
+      commit: OTHER,
+      ref: 'refs/heads/main'
+    })
+    expect(moved.seen[1]!.headers['if-none-match']).toBeUndefined()
+  })
+
+  it('never revalidates a HEAD ask against an identity etag that recorded no default branch', async () => {
+    const h = harness([repo(), sha(SHA)])
+    await h.run({ ref: { kind: 'default' } }, { identityEtag: '"id-1"', identityPath: 'acme/infra' })
+    expect(h.seen[0]!.headers['if-none-match']).toBeUndefined()
+  })
+
+  it('fails HEAD as unavailable when the host names no default branch', async () => {
+    expect(await harness([repo()]).run({ ref: { kind: 'default' } })).toMatchObject({
+      ok: false,
+      reason: 'unavailable',
+      detail: 'invalid_metadata'
+    })
+  })
+
+  it('asks for the workspace git token, or one scoped to a named repository', () => {
+    expect(githubRepository.readTokenAsk({ externalId: '501' })).toEqual({ plane: 'git' })
+    expect(githubRepository.readTokenAsk({ externalId: '501', repoFullName: 'acme/skills' })).toEqual({
+      plane: 'git',
+      repoFullName: 'acme/skills'
+    })
   })
 
   it('refuses a different repository behind the id, and a renamed one', async () => {

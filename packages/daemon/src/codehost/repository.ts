@@ -1,10 +1,10 @@
 // The code-host repository seam (source-cache.md §5, gitlab-com-integration.md §8.1): `resolveRef` per provider.
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import type { CredPlane, GitCredentialCache } from '../cp/git-credential.js'
-import { assertBranchRef } from '../source-cache/keys.js'
 import { githubRepository } from '../github/repository.js'
 import { gitlabRepository } from '../gitlab/repository.js'
 import type { CodeHostSpecHosts, QualifiedCodeHostProvider } from './credentials.js'
+import type { RepositoryRefSpec } from './ref-spec.js'
 
 /** A credentialed repository as resolution addresses it: provider-qualified numeric id plus its current path. */
 export interface CodeHostRepositoryRef {
@@ -17,25 +17,18 @@ export interface CodeHostRepositoryRef {
   path: string
 }
 
-export type RepositoryRefSpec = { kind: 'branch'; name: string } | { kind: 'commit'; sha: string }
-
-const COMMIT_SHA = /^[0-9a-f]{40}$/i
-
-/** `refs/heads/<b>` or a 40-hex commit (lower-cased); undefined for anything else. */
-export function parseResolvableRef(ref: string): RepositoryRefSpec | undefined {
-  if (COMMIT_SHA.test(ref)) return { kind: 'commit', sha: ref.toLowerCase() }
-  try {
-    assertBranchRef(ref)
-  } catch {
-    return undefined
-  }
-  return { kind: 'branch', name: ref.slice('refs/heads/'.length) }
-}
+export {
+  concreteRef,
+  normalizeSkillRef,
+  parseResolvableRef,
+  resolvableRefName,
+  type RepositoryRefSpec
+} from './ref-spec.js'
 
 export type ResolveRefFailureReason = 'access_denied' | 'not_found' | 'replaced' | 'ref_not_found' | 'unavailable'
 
 export type ResolveRefResult =
-  | { ok: true; commit: string; checkedAt: number }
+  | { ok: true; commit: string; checkedAt: number; ref?: string }
   | { ok: false; reason: ResolveRefFailureReason; detail: string; checkedAt: number }
 
 /** Conditional-request state carried across refreshes; never served without a fresh 200 or 304. */
@@ -45,11 +38,13 @@ export interface RefValidators {
   identityPath?: string
   refEtag?: string
   commit?: string
+  /** The default branch the identity read named, so a 304 still answers `HEAD`. */
+  defaultBranch?: string
 }
 
 /** One provider's answer before core caching. */
 export type ProviderAnswer =
-  | { ok: true; commit: string; validators: RefValidators }
+  | { ok: true; commit: string; validators: RefValidators; ref?: string }
   | {
       ok: false
       reason: ResolveRefFailureReason
@@ -65,6 +60,8 @@ export interface RepositoryTokenAsk {
   provider?: QualifiedCodeHostProvider
   externalRepoId?: string
   requestedAccess?: 'read'
+  /** A token scoped to this one repository (`owner/repo`) rather than the workspace's. */
+  repoFullName?: string
 }
 
 export interface RepositoryReadToken {
@@ -86,6 +83,7 @@ export function gitCredReadTokens(cache: Pick<GitCredentialCache, 'get' | 'inval
       const entry = await cache.get(agentId, 'fetch', {
         plane: ask.plane,
         ...(ask.provider !== undefined ? { provider: ask.provider } : {}),
+        ...(ask.repoFullName !== undefined ? { repo: ask.repoFullName } : {}),
         ...(ask.externalRepoId !== undefined ? { externalRepoId: ask.externalRepoId } : {}),
         ...(ask.requestedAccess !== undefined ? { requestedAccess: ask.requestedAccess } : {})
       })
@@ -97,7 +95,8 @@ export function gitCredReadTokens(cache: Pick<GitCredentialCache, 'get' | 'inval
     invalidate(agentId, ask, token) {
       cache.invalidate(agentId, token, {
         plane: ask.plane,
-        ...(ask.provider !== undefined ? { provider: ask.provider } : {})
+        ...(ask.provider !== undefined ? { provider: ask.provider } : {}),
+        ...(ask.repoFullName !== undefined ? { repo: ask.repoFullName } : {})
       })
     }
   }
@@ -122,8 +121,8 @@ export interface CodeHostRepositoryModule {
   readonly provider: CodeHostProvider
   /** The REST root resolution talks to for one spec; the instance comes off the spec per call (§24.4). */
   apiBaseUrl(spec: CodeHostSpecHosts): string
-  /** The CP-minted read credential this host resolves with; `externalId` is the spec's id when it carries one. */
-  readTokenAsk(repository: { externalId?: string }): RepositoryTokenAsk
+  /** The CP-minted read credential this host resolves with; `repoFullName` asks for a repository-scoped one. */
+  readTokenAsk(repository: { externalId?: string; repoFullName?: string }): RepositoryTokenAsk
   /** Identity by numeric id, then ref to commit; never throws. */
   resolve(input: ProviderResolveInput, ctx: ProviderResolveContext): Promise<ProviderAnswer>
 }

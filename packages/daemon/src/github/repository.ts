@@ -1,4 +1,5 @@
 // GitHub's member of the code-host repository seam: identity by numeric id, then a conditional commit lookup.
+import { concreteRef } from '../codehost/ref-spec.js'
 import type {
   CodeHostRepositoryModule,
   ProviderAnswer,
@@ -56,7 +57,11 @@ async function failure(response: Response, missing: Failure['reason'], ctx: Prov
 
 async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext): Promise<ProviderAnswer> {
   const { repository, prior } = input
-  const identityEtag = prior?.identityPath !== undefined ? prior.identityEtag : undefined
+  // A `HEAD` ask revalidates only when the prior read recorded the default branch a 304 must stand for.
+  const identityEtag =
+    prior?.identityPath !== undefined && (input.ref.kind !== 'default' || prior.defaultBranch !== undefined)
+      ? prior.identityEtag
+      : undefined
   const identity = await get(
     input,
     ctx,
@@ -67,10 +72,12 @@ async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext)
   if (!(identity instanceof Response)) return identity
   let fullName: string
   let nextIdentityEtag: string | undefined
+  let defaultBranch: string | undefined
   if (identity.status === 304 && identityEtag !== undefined && prior?.identityPath !== undefined) {
     await discardResponse(identity)
     fullName = prior.identityPath
     nextIdentityEtag = identityEtag
+    defaultBranch = prior.defaultBranch
   } else if (identity.status === 200) {
     nextIdentityEtag = identity.headers.get('etag') ?? undefined
     let raw: string
@@ -84,19 +91,28 @@ async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext)
       return { ok: false, reason: 'unavailable', detail: 'invalid_metadata' }
     if (parsed.id !== repository.externalId) return { ok: false, reason: 'replaced', detail: 'id_mismatch' }
     fullName = parsed.fullName
+    defaultBranch = parsed.defaultBranch
   } else {
     return failure(identity, 'not_found', ctx)
   }
   if (fullName.toLowerCase() !== repository.path.toLowerCase()) {
     return { ok: false, reason: 'replaced', detail: 'renamed' }
   }
-  const validators = { ...(nextIdentityEtag ? { identityEtag: nextIdentityEtag } : {}), identityPath: fullName }
+  const validators = {
+    ...(nextIdentityEtag ? { identityEtag: nextIdentityEtag } : {}),
+    identityPath: fullName,
+    ...(defaultBranch !== undefined ? { defaultBranch } : {})
+  }
 
   // Identity proves access, so a pinned commit is taken as given (source-cache.md §5).
   if (input.ref.kind === 'commit') return { ok: true, commit: input.ref.sha, validators }
+  const target = concreteRef(input.ref, defaultBranch)
+  if (!target) return { ok: false, reason: 'unavailable', detail: 'invalid_metadata' }
 
-  const refPath = `/repos/${fullName}/commits/${encodeURIComponent(`heads/${input.ref.name}`)}`
-  const conditional = prior?.refEtag !== undefined && prior.commit !== undefined ? prior.refEtag : undefined
+  const refPath = `/repos/${fullName}/commits/${encodeURIComponent(`${target.kind === 'tag' ? 'tags' : 'heads'}/${target.name}`)}`
+  // A moved default branch is another ref, so the old branch's etag never revalidates it.
+  const sameRef = input.ref.kind !== 'default' || prior?.defaultBranch === defaultBranch
+  const conditional = sameRef && prior?.refEtag !== undefined && prior.commit !== undefined ? prior.refEtag : undefined
   let lookup = await get(input, ctx, refPath, 'application/vnd.github.sha', conditional)
   if (!(lookup instanceof Response)) return lookup
   if (lookup.status === 304) {
@@ -105,6 +121,7 @@ async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext)
       return {
         ok: true,
         commit: prior.commit,
+        ref: target.fullName,
         validators: { ...validators, refEtag: conditional, commit: prior.commit }
       }
     }
@@ -121,13 +138,21 @@ async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext)
   }
   if (!COMMIT_SHA.test(commit)) return { ok: false, reason: 'unavailable', detail: 'invalid_sha' }
   const sha = commit.toLowerCase()
-  return { ok: true, commit: sha, validators: { ...validators, ...(refEtag ? { refEtag } : {}), commit: sha } }
+  return {
+    ok: true,
+    commit: sha,
+    ref: target.fullName,
+    validators: { ...validators, ...(refEtag ? { refEtag } : {}), commit: sha }
+  }
 }
 
 export const githubRepository: CodeHostRepositoryModule = {
   provider: 'github',
   apiBaseUrl: () => GITHUB_API_BASE,
-  // The workspace git-plane token: always metadata:read plus contents, qualified by the cache once v2 is advertised.
-  readTokenAsk: () => ({ plane: 'git' }),
+  // The git-plane token (metadata:read plus contents): the workspace's, or one scoped to a named skill repository.
+  readTokenAsk: (repository) => ({
+    plane: 'git',
+    ...(repository.repoFullName !== undefined ? { repoFullName: repository.repoFullName } : {})
+  }),
   resolve
 }

@@ -415,6 +415,7 @@ import {
   retainedAfterTracking
 } from './skills/install-skills.js'
 import { GitSkillRefTracker } from './skills/git-skill-ref-tracker.js'
+import { createSkillRefResolution } from './skills/skill-ref-resolution.js'
 import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
 import {
   ClusterSkillCoordinator,
@@ -1606,8 +1607,8 @@ export class Daemon {
   private readonly runtimeEnvironment: RuntimeEnvironment
   /** The pool member's Source Cache signer; undefined outside --k8s or when no bucket is configured. */
   private readonly sourceCache?: SourceCache
-  /** The `resolveRef` cache behind credentialed Source Cache reads; only with a Source Cache. */
-  private readonly sourceCacheRefs?: CodeHostRefResolver
+  /** The per-agent `resolveRef` cache behind credentialed cache reads and credentialed skill refs; bucket or not. */
+  private readonly codeHostRefs: CodeHostRefResolver
   /** The member's share of the Source Cache sweep and lifecycle check; only with a Source Cache. */
   private readonly sourceCacheSweeper?: SourceCacheSweeper
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
@@ -1697,7 +1698,7 @@ export class Daemon {
   private managedSkillCache?: ManagedSkillCache
   /** Extracted Git skill sources per (agent, repository, commit), so a new session reuses what an earlier one fetched. */
   private gitSkillSources?: GitSkillSourceCache
-  private gitSkillRefs?: GitSkillRefTracker
+  private gitSkillRefs?: (entry: AgentSkillEntrySchema, agentId: string) => Promise<string | null>
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
   // Latest channel report per integrationId plus whether it came from a complete
@@ -1961,19 +1962,19 @@ export class Daemon {
       ...(opts.sourceCacheFetch ? { fetch: opts.sourceCacheFetch } : {}),
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
     })
+    // Lazy closures: the credential cache and the store are built in later boot phases.
+    const tokens = gitCredReadTokens({
+      get: (...args) => this.gitCreds.get(...args),
+      invalidate: (...args) => this.gitCreds.invalidate(...args)
+    })
+    this.codeHostRefs = new CodeHostRefResolver({ tokens, log: { warn: (m) => this.log.warn(m) } })
     if (this.sourceCache) {
       const cacheMetrics = opts.sourceCacheMetrics ?? defaultSourceCacheMetrics
-      // Lazy closures: the credential cache and the store are built in later boot phases.
-      const tokens = gitCredReadTokens({
-        get: (...args) => this.gitCreds.get(...args),
-        invalidate: (...args) => this.gitCreds.invalidate(...args)
-      })
-      this.sourceCacheRefs = new CodeHostRefResolver({ tokens, log: { warn: (m) => this.log.warn(m) } })
       this.workspaces.setSourceCacheReader(
         createSourceCacheReadPlanner({
           store: () => this.store as LocalStore | undefined,
           presigner: this.sourceCache.presigner,
-          authorize: createCredentialedCacheReadAuthorizer({ resolver: this.sourceCacheRefs, tokens }),
+          authorize: createCredentialedCacheReadAuthorizer({ resolver: this.codeHostRefs, tokens }),
           orgForAgent: (agentId) => this.orgForAgent(agentId),
           log: { debug: (m) => this.log.debug(m), warn: (m) => this.log.warn(m) },
           onOutcome: (outcome) => cacheMetrics.read(outcome)
@@ -3202,11 +3203,13 @@ export class Daemon {
     this.gitSkillSources = new GitSkillSourceCache(join(root, 'git-skill-sources'), {
       warn: (message) => this.log.warn(message)
     })
-    // A tracking Git skill ref is re-read per new session's preparation, so the
-    // tracker's TTL + conditional reads are what keep that affordable.
-    this.gitSkillRefs = new GitSkillRefTracker({
-      stateRoot: join(root, 'skill-installs'),
-      warn: (message) => this.log.warn(message)
+    // Re-read per new session's preparation: a public ref through the shared anonymous check, a private one per agent.
+    this.gitSkillRefs = createSkillRefResolution({
+      anonymous: new GitSkillRefTracker({
+        stateRoot: join(root, 'skill-installs'),
+        warn: (message) => this.log.warn(message)
+      }),
+      credentialed: this.codeHostRefs
     })
   }
 
@@ -5114,7 +5117,7 @@ export class Daemon {
       this.scheduler.unregister(id)
       this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
-      this.sourceCacheRefs?.forgetAgent(id)
+      this.codeHostRefs.forgetAgent(id)
       this.gitCredServer?.revoke(id)
       this.runtimeCommands.forget(id)
       void this.store.deleteRuntimeCommands(id).catch(() => undefined)
@@ -5195,7 +5198,7 @@ export class Daemon {
         void this.store.deleteRuntimeCommands(a.id).catch(() => undefined)
         if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
-          this.sourceCacheRefs?.forgetAgent(a.id)
+          this.codeHostRefs.forgetAgent(a.id)
           this.gitCredServer?.revoke(a.id)
         }
         try {
@@ -5224,7 +5227,7 @@ export class Daemon {
       // Additional repositories and grants reach sessions started from now (decision 19): running turns keep their roots, and the next credential request mints at the new authorization.
       if (change.additionalRepos && !workspaceNeedsColdRecovery) {
         this.gitCreds.remove(a.id)
-        this.sourceCacheRefs?.forgetAgent(a.id)
+        this.codeHostRefs.forgetAgent(a.id)
         // Codex's `:workspace` profile reopens only the `.git` that existed at launch, so its shared process is reclaimed once idle.
         const shared =
           change.alwaysRootAdded && this.isCodexRuntime(a.id) ? this.hosts.get(agentHostKey(a.id)) : undefined
@@ -6232,15 +6235,9 @@ export class Daemon {
       : this.workspaces.prepareWorkspace(agent, opts)
   }
 
-  /** The commit a tracking Git skill ref points at now, or null when unknown —
-   *  unknown keeps whatever commit the workspace already installed. */
+  /** The commit a tracking Git skill ref points at now, or null when unknown (the installed commit then stands). */
   private trackedGitSkillCommit(entry: AgentSkillEntrySchema, agent: Agent): Promise<string | null> {
-    return (
-      this.gitSkillRefs?.resolve(entry, {
-        agentId: agent.id,
-        useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
-      }) ?? Promise.resolve(null)
-    )
+    return this.gitSkillRefs?.(entry, agent.id) ?? Promise.resolve(null)
   }
 
   /** Skills through a shim, whichever plane holds the environment: a pod of the pool, or a session's on an executor. */

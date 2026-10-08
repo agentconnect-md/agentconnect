@@ -53,6 +53,7 @@ describe('gitlabRepository.resolve', () => {
     expect(await h.run()).toEqual({
       ok: true,
       commit: SHA.toLowerCase(),
+      ref: 'refs/heads/release/1.0',
       validators: {
         identityEtag: 'W/"p1"',
         identityPath: 'Group/Sub/Proj',
@@ -77,8 +78,31 @@ describe('gitlabRepository.resolve', () => {
   it('reuses the prior answer on 304', async () => {
     const prior = { identityEtag: 'W/"p1"', identityPath: 'group/sub/proj', refEtag: 'W/"b1"', commit: OTHER }
     const h = harness([status(304), status(304)])
-    expect(await h.run({}, prior)).toEqual({ ok: true, commit: OTHER, validators: prior })
+    expect(await h.run({}, prior)).toEqual({
+      ok: true,
+      commit: OTHER,
+      ref: 'refs/heads/release/1.0',
+      validators: prior
+    })
     expect(h.seen.map((s) => s.headers['if-none-match'])).toEqual(['W/"p1"', 'W/"b1"'])
+  })
+
+  it('reads a tag from the tags collection and HEAD from the project default branch', async () => {
+    const tag = harness([project(), branch(SHA)])
+    expect(await tag.run({ ref: { kind: 'tag', name: 'v2' } })).toMatchObject({ ok: true, ref: 'refs/tags/v2' })
+    expect(tag.seen[1]!.url).toBe('https://gitlab.com/api/v4/projects/77/repository/tags/v2')
+
+    const head = harness([
+      json({ id: 77, path_with_namespace: 'group/sub/proj', default_branch: 'main' }, { etag: 'W/"p2"' }),
+      branch(SHA)
+    ])
+    expect(await head.run({ ref: { kind: 'default' } })).toMatchObject({
+      ok: true,
+      commit: SHA.toLowerCase(),
+      ref: 'refs/heads/main',
+      validators: { defaultBranch: 'main' }
+    })
+    expect(head.seen[1]!.url).toBe('https://gitlab.com/api/v4/projects/77/repository/branches/main')
   })
 
   it('refuses a replaced or renamed project', async () => {

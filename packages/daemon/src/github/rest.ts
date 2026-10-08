@@ -20,7 +20,9 @@ export function githubApiHeaders(opts: {
 }
 
 /** A repository's identity fields, or undefined when the body is not a JSON object; a field is set only when it is a string. */
-export function parseGithubRepositoryIdentity(raw: string): { id?: string; fullName?: string } | undefined {
+export function parseGithubRepositoryIdentity(
+  raw: string
+): { id?: string; fullName?: string; defaultBranch?: string } | undefined {
   let metadata: unknown
   try {
     // Quote every positive `id` before parsing so an id beyond Number.MAX_SAFE_INTEGER compares exactly.
@@ -32,7 +34,10 @@ export function parseGithubRepositoryIdentity(raw: string): { id?: string; fullN
   const record = metadata as Record<string, unknown>
   return {
     ...(typeof record.id === 'string' ? { id: record.id } : {}),
-    ...(typeof record.full_name === 'string' ? { fullName: record.full_name } : {})
+    ...(typeof record.full_name === 'string' ? { fullName: record.full_name } : {}),
+    ...(typeof record.default_branch === 'string' && record.default_branch
+      ? { defaultBranch: record.default_branch }
+      : {})
   }
 }
 

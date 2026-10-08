@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import { CodeHostRefResolver } from '../src/codehost/ref-resolver.js'
-import type {
-  CodeHostRepositoryModule,
-  ProviderAnswer,
-  ProviderResolveContext,
-  ProviderResolveInput,
-  RepositoryReadTokens,
-  RepositoryTokenAsk
+import {
+  normalizeSkillRef,
+  parseResolvableRef,
+  type CodeHostRepositoryModule,
+  type ProviderAnswer,
+  type ProviderResolveContext,
+  type ProviderResolveInput,
+  type RepositoryReadTokens,
+  type RepositoryTokenAsk
 } from '../src/codehost/repository.js'
 import { GitCredUnavailableError } from '../src/cp/git-credential.js'
+import { githubRepository } from '../src/github/repository.js'
+import { resolveCredentialedSkillRef } from '../src/skills/skill-ref-resolution.js'
 
 const SHA_A = 'a'.repeat(40)
 const SHA_B = 'b'.repeat(40)
@@ -313,5 +317,116 @@ describe('CodeHostRefResolver', () => {
     expect(h.calls).toHaveLength(2)
     expect(await h.resolve('agent-a')).toMatchObject({ ok: true, commit: SHA_B })
     expect(h.calls).toHaveLength(2)
+  })
+})
+
+describe('skill refs through CodeHostRefResolver', () => {
+  const skill = (over: Record<string, unknown> = {}) =>
+    ({
+      name: 'private',
+      source: 'acme/skills',
+      githubRepoId: '77',
+      private: true,
+      skills: [],
+      ...over
+    }) as never
+
+  it('normalizes a bare branch, refs/heads, a tag, HEAD or absent, and a pinned SHA', () => {
+    expect(normalizeSkillRef(undefined)).toEqual(['HEAD'])
+    expect(normalizeSkillRef('HEAD')).toEqual(['HEAD'])
+    expect(normalizeSkillRef('main')).toEqual(['refs/heads/main', 'refs/tags/main'])
+    expect(normalizeSkillRef('refs/heads/release/1')).toEqual(['refs/heads/release/1'])
+    expect(normalizeSkillRef('refs/tags/v1')).toEqual(['refs/tags/v1'])
+    expect(normalizeSkillRef(SHA_A.toUpperCase())).toEqual([SHA_A])
+    expect(parseResolvableRef('HEAD')).toEqual({ kind: 'default' })
+    expect(parseResolvableRef('refs/tags/v1.0')).toEqual({ kind: 'tag', name: 'v1.0' })
+    expect(parseResolvableRef('refs/tags/bad..name')).toBeUndefined()
+    expect(parseResolvableRef('refs/remotes/origin/main')).toBeUndefined()
+  })
+
+  it('resolves a bare branch, a tag, HEAD and a SHA, each keyed apart', async () => {
+    const h = build(async (input) => ({
+      ok: true,
+      commit: input.ref.kind === 'commit' ? input.ref.sha : SHA_B,
+      validators: {},
+      ...(input.ref.kind === 'default' ? { ref: 'refs/heads/trunk' } : {})
+    }))
+    const at = (ref: string | undefined) =>
+      resolveCredentialedSkillRef(h.resolver, skill(ref !== undefined ? { ref } : {}), 'agent-a')
+    expect(await at('main')).toMatchObject({ ok: true, commit: SHA_B })
+    expect(await at('refs/tags/v1')).toMatchObject({ ok: true, commit: SHA_B })
+    expect(await at(undefined)).toMatchObject({ ok: true, commit: SHA_B, ref: 'refs/heads/trunk' })
+    expect(await at('HEAD')).toMatchObject({ ok: true, ref: 'refs/heads/trunk' })
+    expect(await at(SHA_A)).toMatchObject({ ok: true, commit: SHA_A })
+    expect(h.calls.map((c) => c.ref)).toEqual([
+      { kind: 'branch', name: 'main' },
+      { kind: 'tag', name: 'v1' },
+      { kind: 'default' },
+      { kind: 'commit', sha: SHA_A }
+    ])
+  })
+
+  it('scopes the token ask to the skill repository and keeps it apart from a workspace-token answer', async () => {
+    const asks: RepositoryTokenAsk[] = []
+    const mod = fakeModule(async () => ok(SHA_A))
+    const resolver = new CodeHostRefResolver({
+      tokens: {
+        async get(_agentId, ask) {
+          asks.push(ask)
+          return { token: 't' }
+        },
+        invalidate() {}
+      },
+      modules: () => ({ ...mod.module, readTokenAsk: githubRepository.readTokenAsk }),
+      now: () => 1
+    })
+    await resolveCredentialedSkillRef(resolver, skill({ ref: 'main' }), 'agent-a')
+    await resolver.resolveRef({
+      agentId: 'agent-a',
+      repository: { provider: 'github', externalId: '77', cloneUrl: '', path: 'acme/skills' },
+      ref: 'refs/heads/main',
+      hosts: {}
+    })
+    expect(asks).toEqual([{ plane: 'git', repoFullName: 'acme/skills' }, { plane: 'git' }])
+    expect(mod.calls).toHaveLength(2)
+  })
+
+  it('resolves a renamed skill repository to replaced, against the real GitHub module', async () => {
+    const fetch = (async () =>
+      new Response('{"id": 77, "full_name": "acme/renamed-skills"}', { status: 200 })) as typeof globalThis.fetch
+    const resolver = new CodeHostRefResolver({
+      tokens: fakeTokens().tokens,
+      fetch,
+      now: () => 1
+    })
+    expect(await resolveCredentialedSkillRef(resolver, skill({ ref: 'main' }), 'agent-a')).toMatchObject({
+      ok: false,
+      reason: 'replaced',
+      detail: 'renamed'
+    })
+  })
+
+  it('keys an answer by the API base, so another instance never reuses it', async () => {
+    let base = 'https://gitlab.example.test/api/v4'
+    const mod = fakeModule(async () => ok(SHA_A))
+    const resolver = new CodeHostRefResolver({
+      tokens: fakeTokens().tokens,
+      modules: () => ({ ...mod.module, provider: 'gitlab', apiBaseUrl: () => base }),
+      now: () => 1
+    })
+    const request = {
+      agentId: 'agent-a',
+      repository: { provider: 'gitlab' as const, externalId: '9', cloneUrl: '', path: 'g/p' },
+      ref: REF,
+      hosts: {}
+    }
+    await resolver.resolveRef(request)
+    await resolver.resolveRef(request)
+    base = 'https://gitlab.other.test/api/v4'
+    await resolver.resolveRef(request)
+    expect(mod.calls.map((c) => c.apiBaseUrl)).toEqual([
+      'https://gitlab.example.test/api/v4',
+      'https://gitlab.other.test/api/v4'
+    ])
   })
 })

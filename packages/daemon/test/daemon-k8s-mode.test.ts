@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { CodeHostRefResolver } from '../src/codehost/ref-resolver.js'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -2619,6 +2620,8 @@ describe('daemon --k8s mode: Source Cache signer (source-cache.md §12)', () => 
       // No reader either, so every workspace clone keeps today's argv and reads no store.
       expect(cacheReaderOf(instance)).toBeUndefined()
       expect(sweeperOf(instance)).toBeUndefined()
+      // Credentialed skill refs still resolve per agent, bucket or not.
+      expect((instance as unknown as { codeHostRefs: unknown }).codeHostRefs).toBeInstanceOf(CodeHostRefResolver)
       expect(fetch).not.toHaveBeenCalled()
     } finally {
       vi.unstubAllEnvs()
@@ -2678,6 +2681,7 @@ describe('daemon --k8s mode: Source Cache signer (source-cache.md §12)', () => 
       const instance = daemon({ root: root(), k8s: false })
       expect(instance.sourceCacheSigner()).toBeUndefined()
       expect(sweeperOf(instance)).toBeUndefined()
+      expect((instance as unknown as { codeHostRefs: unknown }).codeHostRefs).toBeInstanceOf(CodeHostRefResolver)
     } finally {
       vi.unstubAllEnvs()
     }
