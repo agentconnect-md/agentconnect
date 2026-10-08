@@ -10,8 +10,10 @@ import { localMemoryHome } from '../src/memory/home.js'
 import {
   buildDistillationPrompt,
   MEMORY_DISTILLATION_SYSTEM_PROMPT,
+  READ_ONLY_MODE_MEMORY_WRITES_NOTE,
   readOnlyExtractionMode
 } from '../src/memory/distill.js'
+import { dreamSystemPrompt } from '../src/dream/dreamer.js'
 import { ManagedMemoryProvider } from '../src/memory/provider.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
@@ -38,6 +40,13 @@ describe('managed memory auto-distillation', () => {
     expect(MEMORY_DISTILLATION_SYSTEM_PROMPT).not.toContain(injection)
     expect(prompt).toContain(injection)
     expect(prompt).not.toContain('Rules:')
+  })
+
+  it('tells the model the read-only/plan mode does not forbid writeMemory (#2854)', () => {
+    expect(READ_ONLY_MODE_MEMORY_WRITES_NOTE).toContain('NATIVE shell and file')
+    expect(MEMORY_DISTILLATION_SYSTEM_PROMPT).toContain(READ_ONLY_MODE_MEMORY_WRITES_NOTE)
+    expect(dreamSystemPrompt(false)).toContain(READ_ONLY_MODE_MEMORY_WRITES_NOTE)
+    expect(dreamSystemPrompt(true)).toContain(READ_ONLY_MODE_MEMORY_WRITES_NOTE)
   })
 
   it('builds an additive prompt with existing memory and the finished turn', async () => {
