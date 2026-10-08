@@ -14,7 +14,9 @@ import {
   decisionChainIds,
   DecisionBundleDefinition,
   gateUsageRules,
+  mergePlaceExternalReason,
   PlaceExternalReason,
+  placeExternalReasonSticky,
   type Platform,
   type FeishuRegion
 } from '@agentconnect.md/protocol'
@@ -825,6 +827,9 @@ export class PgIntegrationRepo implements IntegrationRepo {
   }
 }
 
+/** The detections a later report never lifts (assistant-mode.md §5.3). */
+const STICKY_EXTERNAL_REASONS: string[] = PlaceExternalReason.options.filter(placeExternalReasonSticky)
+
 // Every record read joins the bound gate Decision and the bot's router, so both ride each projection.
 const CHANNEL_INCLUDE = {
   decision: true,
@@ -968,11 +973,13 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
           where: { integrationId, channelId: { in: channels.map((c) => c.id) } },
           select: { channelId: true, externalReason: true }
         })
-      ).map((row) => [row.channelId, row.externalReason])
+      ).map((row) => [row.channelId, PlaceExternalReason.safeParse(row.externalReason).data ?? null])
     )
-    const externalChanged = channels.some(
-      (c) => c.externalReason !== undefined && (c.externalReason ?? null) !== (before.get(c.id) ?? null)
-    )
+    // The spec carries only which places are external, so a reason turning sticky changes nothing there.
+    const externalChanged = channels.some((c) => {
+      const stored = before.get(c.id) ?? null
+      return (mergePlaceExternalReason(stored, c.externalReason) === null) !== (stored === null)
+    })
     if (opts?.authoritative !== false) {
       await this.db.integrationChannel.deleteMany({
         where: { integrationId, kind: 'channel', channelId: { notIn: channels.map((c) => c.id) } }
@@ -1009,9 +1016,13 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
           ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, ${c.externalReason ?? null}, NOW(), NOW()
         )
         ON CONFLICT ("integrationId", "channelId") DO UPDATE SET
-          -- Tri-state like the glyph: an omitting reporter keeps the detection, an enumerating null lifts it.
-          "externalReason" = CASE WHEN ${c.externalReason !== undefined}::boolean THEN EXCLUDED."externalReason"
-                                  ELSE "integration_channel"."externalReason" END,
+          -- Tri-state like the glyph, merged as mergePlaceExternalReason does: a sticky reason is never lifted or replaced.
+          "externalReason" = CASE
+            WHEN NOT ${c.externalReason !== undefined}::boolean THEN "integration_channel"."externalReason"
+            WHEN "integration_channel"."externalReason" = ANY(${STICKY_EXTERNAL_REASONS}::text[])
+              THEN "integration_channel"."externalReason"
+            ELSE EXCLUDED."externalReason"
+          END,
           "name" = CASE WHEN ${setName}::boolean THEN EXCLUDED."name" ELSE "integration_channel"."name" END,
           "spaceId" = CASE WHEN ${c.spaceId !== undefined}::boolean THEN EXCLUDED."spaceId"
                            ELSE "integration_channel"."spaceId" END,

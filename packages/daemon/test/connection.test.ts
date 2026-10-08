@@ -715,6 +715,97 @@ describe('SlackConnection membership events', () => {
     expect(changed).toBe(3)
   })
 
+  // assistant-mode.md §5.3: another member joining is looked up once, and only for an assistant-mode owner.
+  describe('a member joining', () => {
+    const joinWorld = (users: Record<string, object>, watched: boolean) => {
+      const handlers = new Map<string, (a: { event: unknown; body?: unknown }) => unknown>()
+      const info = vi.fn(async ({ user }: { user: string }) => ({ user: users[user] }))
+      const external: [string, string][] = []
+      const conn = new SlackConnection(
+        {
+          ...deps(),
+          checksJoinedMembers: () => watched,
+          onPlaceExternal: (channel: string, reason: string) => external.push([channel, reason])
+        } as any,
+        () =>
+          ({
+            ...fakeAppWithEvents(handlers),
+            client: {
+              auth: { test: async () => ({ user_id: 'UBOT', team_id: 'T1' }) },
+              views: { open: async () => {}, update: async () => {} },
+              users: { info }
+            }
+          }) as any
+      )
+      const join = async (user: string, body?: unknown) =>
+        await handlers.get('member_joined_channel')!({ event: { user, channel: 'C1' }, ...(body ? { body } : {}) })
+      return { conn, info, external, join }
+    }
+
+    it('marks the channel external for a guest or an outside member, and not for a full member', async () => {
+      const w = joinWorld(
+        {
+          UGUEST: { id: 'UGUEST', team_id: 'T1', is_restricted: true },
+          UOUT: { id: 'UOUT', team_id: 'T9' },
+          UFULL: { id: 'UFULL', team_id: 'T1' }
+        },
+        true
+      )
+      await w.conn.start()
+      await w.join('UGUEST')
+      await w.join('UOUT')
+      await w.join('UFULL')
+      expect(w.info).toHaveBeenCalledTimes(3)
+      expect(w.external).toEqual([
+        ['C1', 'guestMember'],
+        ['C1', 'externalMember']
+      ])
+    })
+
+    it('reads a share off the envelope when the member is a full one, or when the lookup fails', async () => {
+      const w = joinWorld({ UFULL: { id: 'UFULL', team_id: 'T1' } }, true)
+      w.info.mockImplementationOnce(async () => {
+        throw new Error('ratelimited')
+      })
+      await w.conn.start()
+      await w.join('UFULL', { is_ext_shared_channel: true })
+      await w.join('UFULL', { is_ext_shared_channel: true })
+      expect(w.external).toEqual([
+        ['C1', 'externallyShared'],
+        ['C1', 'externallyShared']
+      ])
+    })
+
+    it('makes no lookup for an integration no assistant-mode agent owns', async () => {
+      const w = joinWorld({ UGUEST: { id: 'UGUEST', team_id: 'T1', is_restricted: true } }, false)
+      await w.conn.start()
+      await w.join('UGUEST', { is_ext_shared_channel: true })
+      expect(w.info).not.toHaveBeenCalled()
+      expect(w.external).toEqual([])
+    })
+  })
+
+  // assistant-mode.md §5.3: the Events API envelope says when a message comes from a Slack Connect channel.
+  it('marks a message from a Slack Connect channel as externally shared, from the envelope', async () => {
+    let messageHandler!: (a: { message: unknown; body?: unknown }) => unknown
+    const delivered: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), onMessage: (msg: unknown) => delivered.push(msg) } as any,
+      () =>
+        ({
+          ...fakeAppWithEvents(new Map()),
+          message(h: (a: { message: unknown; body?: unknown }) => unknown) {
+            messageHandler = h
+          }
+        }) as any
+    )
+    await conn.start()
+    const message = (ts: string) => ({ type: 'message', channel: 'C1', ts, user: 'U1', text: 'hi' })
+    await messageHandler({ message: message('1730000000.000001'), body: { is_ext_shared_channel: true } })
+    await messageHandler({ message: message('1730000000.000002'), body: { is_ext_shared_channel: false } })
+    expect(delivered.map((msg) => msg.externallyShared)).toEqual([true, undefined])
+  })
+
   it('acknowledges the permission-update URL button', async () => {
     const actions = new Map<string, (a: any) => unknown>()
     const conn = new SlackConnection(deps() as any, () => fakeAppWithEvents(new Map(), actions) as any)

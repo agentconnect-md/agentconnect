@@ -6,13 +6,16 @@ import {
   decodeSlackStatusOverflowValue,
   SLACK_APP_HOME_ACTION_PREFIX,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  type PlaceExternalReason,
   type SlackAppHomeContext
 } from '@agentconnect.md/protocol'
 import {
   extractSlackMessageText,
   isSlackSystemMessage,
   normalizeSlackResponseFinalization,
-  slackExternalReason
+  slackEnvelopeExternallyShared,
+  slackExternalReason,
+  slackMemberExternalReason
 } from '@agentconnect.md/message'
 import type { Agent, Integration } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
@@ -424,6 +427,10 @@ export interface SlackDeps {
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
+  /** Whether an assistant-mode agent owns an integration on this socket, so a member join is worth a lookup (assistant-mode.md §5.3). */
+  checksJoinedMembers?: () => boolean
+  /** Fired when a member join shows a channel is external: a guest, an outside member, or a share. */
+  onPlaceExternal?: (channel: string, reason: PlaceExternalReason) => void
   /** Fired when Slack explicitly revokes this install's bot token over the socket (`app_uninstalled`, or `tokens_revoked` naming a bot). */
   onCredentialRevoked?: (revocation: CredentialRevocation) => void
   /** Fired when a user interacts with the status modal's selects, or raises a cancel —
@@ -554,7 +561,7 @@ type SlackSearchContextResponse = {
 }
 
 export type AppLike = {
-  message: (handler: (args: { message: unknown }) => Promise<void> | void) => void
+  message: (handler: (args: { message: unknown; body?: unknown }) => Promise<void> | void) => void
   // `body` is the Events API envelope (team id, event time) Bolt hands every listener beside the event itself.
   event: (type: string, handler: (args: { event: unknown; body?: unknown }) => Promise<void> | void) => void
   action: (actionId: string | RegExp, handler: (args: BlockActionArgs) => Promise<void> | void) => void
@@ -572,6 +579,7 @@ export type AppLike = {
         user_id?: string
         bot_id?: string
         team_id?: string
+        enterprise_id?: string
         url?: string
       }>
     }
@@ -998,6 +1006,8 @@ export class SlackConnection implements PlatformConnection {
   /** Slack app/workspace ids are public metadata used only for the OAuth settings link. */
   private appId = ''
   private teamId = ''
+  /** The installing Enterprise Grid organization, which tells its other workspaces apart from outside members. */
+  private enterpriseId = ''
   /** A workspace-wide missing scope should create one card, not one per streamed write. */
   private missingScopes = new Set<string>()
   private permissionUpdateAnnounced = false
@@ -1065,6 +1075,7 @@ export class SlackConnection implements PlatformConnection {
     this.botId = auth.bot_id ?? ''
     this.workspaceUrl = auth.url ?? ''
     this.teamId = auth.team_id && /^T[A-Z0-9]+$/.test(auth.team_id) ? auth.team_id : ''
+    this.enterpriseId = auth.enterprise_id ?? ''
     log?.debug(`slack: auth.test ok → bot user ${this.botUserId} (bot_id ${this.botId || 'n/a'})`)
     // Send-only (shared bot): no Socket Mode socket, no event/action handlers, no
     // app.start(). Identity is resolved above (for mention rendering / echo id); the
@@ -1073,9 +1084,11 @@ export class SlackConnection implements PlatformConnection {
       log?.info('slack: send-only connection ready (shared bot — inbound via relay)')
       return
     }
-    const deliver = (ev: SlackMessageEvent, kind: string) => {
+    const deliver = (ev: SlackMessageEvent, kind: string, envelope: unknown) => {
       if (isSlackSystemMessage(ev) || ev.user === this.botUserId || ev.bot_id === this.botId) return
       const msg = normalizeSlackEvent(this.withAssistantThread(ev), { traceId: this.deps.newTraceId() })
+      // The envelope says the conversation is shared with another organization (assistant-mode.md §5.3).
+      if (slackEnvelopeExternallyShared(envelope)) msg.externallyShared = true
       log?.debug(
         `slack: inbound ${kind} ch=${msg.channel} thread=${msg.thread ?? 'none'} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} mentions=[${msg.mentionedBots.join(',')}] text=${JSON.stringify(msg.text.slice(0, 80))}`
       )
@@ -1084,9 +1097,8 @@ export class SlackConnection implements PlatformConnection {
       this.rememberSearchToken(msg.msgId, ev.action_token)
       this.deps.onMessage(msg)
     }
-    // message.* events: DMs, and channels the bot reads (needs the matching
-    // `message.channels`/`message.groups`/`message.im` bot-event subscriptions).
-    this.app.message(async ({ message }) => {
+    // message.* events: DMs and the channels the bot reads (the message.channels / .groups / .im subscriptions).
+    this.app.message(async ({ message, body }) => {
       const ev = message as SlackMessageEvent
       if (ev.type !== 'message' || !ev.channel) {
         log?.debug(
@@ -1115,15 +1127,13 @@ export class SlackConnection implements PlatformConnection {
         )
         return
       }
-      deliver(ev, 'message')
+      deliver(ev, 'message', body)
     })
-    // app_mention events: fired whenever the bot is @-mentioned (needs only the
-    // `app_mentions:read` scope). Dedup against the message.* path happens in the
-    // daemon by msgId, since both carry the same channel:ts.
-    this.app.event('app_mention', async ({ event }) => {
+    // Every @-mention of the bot (app_mentions:read); the daemon dedups it against message.* by msgId.
+    this.app.event('app_mention', async ({ event, body }) => {
       const ev = event as SlackMessageEvent
       if (!ev.channel) return
-      deliver(ev, 'app_mention')
+      deliver(ev, 'app_mention', body)
     })
     // An Assistant DM thread names its root here (message.im stays the source of user text).
     this.app.event('assistant_thread_started', async ({ event }) => {
@@ -1158,12 +1168,16 @@ export class SlackConnection implements PlatformConnection {
       if (!ev.channel || !ev.thread_ts) return
       await this.agentSessionStopped(ev.channel, ev.thread_ts, ev.user)
     })
-    // Membership changes: the bot was invited to (member_joined_channel, filtered
-    // to our own user id) or removed from (channel_left / group_left) a channel.
-    // The daemon re-lists + re-reports the membership snapshot on each fire.
-    this.app.event('member_joined_channel', async ({ event }) => {
+    // The bot joining (its own member_joined_channel) or leaving (channel_left / group_left) re-lists membership.
+    this.app.event('member_joined_channel', async ({ event, body }) => {
       const ev = event as { user?: string; channel?: string }
-      if (ev.user !== this.botUserId) return
+      if (ev.user !== this.botUserId) {
+        // Someone else joined: only an assistant-mode owner looks them up (assistant-mode.md §5.3).
+        if (!ev.user || !ev.channel || this.deps.checksJoinedMembers?.() !== true) return
+        const reason = await this.joinedMemberReason(ev.user, slackEnvelopeExternallyShared(body))
+        if (reason) this.deps.onPlaceExternal?.(ev.channel, reason)
+        return
+      }
       log?.debug(`slack: bot joined channel ${ev.channel ?? '?'}`)
       this.deps.onChannelsChanged?.()
     })
@@ -2634,6 +2648,21 @@ export class SlackConnection implements PlatformConnection {
   async leaveChannel(channel: string): Promise<void> {
     await this.app.client.conversations.leave({ channel })
     this.deps.log?.debug(`slack: left channel ${channel}`)
+  }
+
+  /** Why a member who joined makes the channel external: one `users.info` for a guest or an outside member, else the envelope's share, else null. */
+  async joinedMemberReason(user: string, externallyShared = false): Promise<PlaceExternalReason | null> {
+    try {
+      const res = await this.app.client.users.info({ user })
+      const reason = slackMemberExternalReason(res.user ?? {}, {
+        ...(this.teamId ? { teamId: this.teamId } : {}),
+        ...(this.enterpriseId ? { enterpriseId: this.enterpriseId } : {})
+      })
+      if (reason) return reason
+    } catch (err) {
+      this.deps.log?.warn(`slack: looking up a member who joined ${user} failed: ${(err as Error).message}`)
+    }
+    return externallyShared ? 'externallyShared' : null
   }
 
   async getUserProfile(

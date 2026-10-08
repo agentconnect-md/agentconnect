@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { IntegrationChannel, IntegrationCoreEnvelope, IntegrationRevoked, IntegrationRevokedOk } from './integration.js'
+import {
+  IntegrationChannel,
+  IntegrationCoreEnvelope,
+  IntegrationRevoked,
+  IntegrationRevokedOk,
+  mergePlaceExternalReason
+} from './integration.js'
 import { buildEnvelope, decodeEnvelope, encode } from '../codec.js'
 import { isInstallWideFrameType } from '../frame-scope.js'
 
@@ -72,6 +78,17 @@ describe('detected external places on the wire', () => {
     expect(IntegrationChannel.parse({ id: 'C2', externalReason: null }).externalReason).toBeNull()
     expect(IntegrationChannel.parse({ id: 'C3' }).externalReason).toBeUndefined()
     expect(() => IntegrationChannel.parse({ id: 'C4', externalReason: 'rumor' })).toThrow()
+  })
+
+  it('lifts a share only, and never lifts or replaces a guest or an outside member', () => {
+    expect(mergePlaceExternalReason('externallyShared', null)).toBeNull()
+    expect(mergePlaceExternalReason('externallyShared', undefined)).toBe('externallyShared')
+    expect(mergePlaceExternalReason('externallyShared', 'guestMember')).toBe('guestMember')
+    expect(mergePlaceExternalReason(null, 'externallyShared')).toBe('externallyShared')
+    for (const sticky of ['guestMember', 'externalMember'] as const) {
+      expect(mergePlaceExternalReason(sticky, null)).toBe(sticky)
+      expect(mergePlaceExternalReason(sticky, 'externallyShared')).toBe(sticky)
+    }
   })
 })
 

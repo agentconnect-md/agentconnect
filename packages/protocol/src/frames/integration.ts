@@ -185,10 +185,28 @@ export type PlaceTrustLevel = z.infer<typeof PlaceTrustLevel>
 
 /** Why a platform module detected a place as external; names the evidence, never the platform. */
 export const PlaceExternalReason = z.enum([
-  // The membership listing says the conversation is shared with another organization.
-  'externallyShared'
+  // The platform says the conversation is shared with another organization; lifted once it no longer does.
+  'externallyShared',
+  // A guest account joined the conversation; sticky.
+  'guestMember',
+  // A member of another organization joined the conversation; sticky.
+  'externalMember'
 ])
 export type PlaceExternalReason = z.infer<typeof PlaceExternalReason>
+
+/** Whether a detection outlives later reports: only a share is lifted when the platform stops reporting it. */
+export function placeExternalReasonSticky(reason: PlaceExternalReason): boolean {
+  return reason !== 'externallyShared'
+}
+
+/** A place's stored reason after a report (absent keeps it, null lifts it); a sticky reason is never lifted or replaced. */
+export function mergePlaceExternalReason(
+  stored: PlaceExternalReason | null,
+  reported: PlaceExternalReason | null | undefined
+): PlaceExternalReason | null {
+  if (reported === undefined || (stored !== null && placeExternalReasonSticky(stored))) return stored
+  return reported
+}
 
 // §6.3 core routing envelope: the platform-independent routing, gating, and ingress knobs core reads, never duplicated in `config`.
 export const IntegrationCoreEnvelope = z.object({

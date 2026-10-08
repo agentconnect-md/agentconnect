@@ -252,6 +252,8 @@ export type TurnInterruptReason =
   | 'handover'
   // The stall watchdog (#1915): a prompt whose runtime went silent past `limits.turnStallTimeoutMs`.
   | 'stalled'
+  // assistant-mode.md §5.3: the place turned external, so the turn's reply must not post unapproved.
+  | 'place turned external'
 
 /** What an interrupt means for the agent's admitted-but-unrun durable rows. `terminal` ends that
  *  work here (pause, removal, host respawn); `handoff` leaves the rows for the successor holder to

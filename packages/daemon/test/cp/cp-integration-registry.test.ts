@@ -123,3 +123,30 @@ describe('CpIntegrationRegistry (memory-only)', () => {
     expect(applied).toHaveBeenLastCalledWith('i2', expect.anything(), undefined, undefined)
   })
 })
+
+// assistant-mode.md §5.3: a push that newly lists a place external is the downgrade transition's trigger.
+describe('CpIntegrationRegistry external places', () => {
+  const withExternal = (externalChannels: string[]): IntegrationSpec => ({
+    ...integration('i1'),
+    core: { ...integration('i1').core, externalChannels }
+  })
+
+  it('names only the places a push newly lists, and none on the first spec', () => {
+    const added = vi.fn()
+    const reg = new CpIntegrationRegistry(
+      mkdtempSync(join(tmpdir(), 'ac-cpintreg-')),
+      { onExternalChannelsAdded: added },
+      vi.fn()
+    )
+    reg.upsert(withExternal(['C1']))
+    expect(added).not.toHaveBeenCalled()
+    reg.upsert(withExternal(['C1', 'C2']))
+    expect(added).toHaveBeenCalledWith('i1', ['C2'])
+    added.mockClear()
+    reg.upsert(withExternal(['C2']))
+    reg.converge([withExternal(['C2'])])
+    expect(added).not.toHaveBeenCalled()
+    reg.converge([withExternal(['C2', 'C3'])])
+    expect(added).toHaveBeenCalledWith('i1', ['C3'])
+  })
+})

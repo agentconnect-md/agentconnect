@@ -14,11 +14,14 @@ import { randomUUID } from 'node:crypto'
 import {
   manifestFor,
   originKindOf,
+  placeExternalReasonSticky,
   type FeishuRegion,
   type IntegrationChannel,
   type IntegrationLeave,
-  type IntegrationLeaveOk
+  type IntegrationLeaveOk,
+  type PlaceExternalReason
 } from '@agentconnect.md/protocol'
+import type { PlaceTrust } from '../assistant/place-trust.js'
 import { isAlreadyOutOfChat } from '../daemon/helpers.js'
 import type { CallMeta } from '../daemon/turn-types.js'
 import type { Clock, TimerHandle } from '@agentconnect.md/connection'
@@ -167,6 +170,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   refreshChannels(conn: SlackConnection): Promise<void>
   onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void
   srcIntegrationIds(conn: unknown): string[]
+  /** Where a platform's finding that a place is external goes (assistant-mode.md §5.3). */
+  placeTrust(): PlaceTrust
   /** Drain the in-flight turns holding `conn` before it is stopped. */
   waitForConnectionUses(conn: PlatformConnection): Promise<void>
   observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): Promise<void>
@@ -345,6 +350,9 @@ export class ConnectionReconciler {
         )
       },
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
+      checksJoinedMembers: () => this.host.placeTrust().watches(this.host.srcIntegrationIds(conn())),
+      onPlaceExternal: (channel, reason) =>
+        this.host.placeTrust().detected(this.host.srcIntegrationIds(conn()), channel, reason),
       onCredentialRevoked: (revocation) =>
         this.revocations.report(this.revocableIntegrations(conn(), group), revocation),
       onMessageShortcut: (shortcut) => this.host.slackShortcutSession(shortcut, this.host.srcIntegrationIds(conn())),
@@ -1189,14 +1197,7 @@ export class ConnectionReconciler {
     }
   }
 
-  /**
-   * Re-list the channels this connection's bot is a member of and report the
-   * snapshot to the CP for every integration bound to the connection (one bot ⇒
-   * one membership set, fanned out per integrationId). Best-effort + never throws:
-   * a Slack API failure keeps the previous snapshot (listBotChannels returns null),
-   * and the emit is a no-op while the CP is down — the cached snapshot is re-emitted
-   * on the next CP (re)connect (see startCpClient's onReady).
-   */
+  /** Re-list the bot's channels and report them per bound integration; never throws, and the cached snapshot replays on a CP reconnect. */
   async refreshChannels(conn: SlackConnection): Promise<void> {
     try {
       const channels = await conn.listBotChannels()
@@ -1210,13 +1211,17 @@ export class ConnectionReconciler {
       const snapshots = this.host.channelSnapshots()
       for (const [integrationId, c] of this.host.bindings().slack) {
         if (c !== conn) continue
-        // Preserve observed direct rows: the membership listing carries channels
-        // only, while 1:1 and group DMs arrive incrementally. A refresh must not wipe
-        // them from the reconnect snapshot.
-        const direct = (snapshots.get(integrationId)?.channels ?? []).filter(
-          (x) => x.kind === 'im' || x.kind === 'mpim'
-        )
-        const merged = [...channels, ...direct]
+        // The listing carries channels only, so observed DM rows survive into the reconnect snapshot.
+        const previous = snapshots.get(integrationId)?.channels ?? []
+        const direct = previous.filter((x) => x.kind === 'im' || x.kind === 'mpim')
+        // A guest or an outside member is never lifted, so the replayed snapshot keeps one the listing cannot see.
+        const sticky = new Map<string, PlaceExternalReason>()
+        for (const x of previous)
+          if (x.externalReason && placeExternalReasonSticky(x.externalReason)) sticky.set(x.id, x.externalReason)
+        const merged = [
+          ...channels.map((c) => (sticky.has(c.id) ? { ...c, externalReason: sticky.get(c.id)! } : c)),
+          ...direct
+        ]
         snapshots.set(integrationId, { channels: merged, authoritative: true })
         this.host.cpClient()?.emitIntegrationChannels({ integrationId, channels: merged })
         await this.maybeIntroduceOnJoin('slack', integrationId, channels)

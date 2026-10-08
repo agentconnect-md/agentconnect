@@ -824,7 +824,19 @@ Enabling a room or group DM of such an agent asks first: everyone in it will be 
 the content of the agent's other places out of it, so it should be enabled only if everyone
 there is fully trusted. Turning the mode on while rooms or group DMs are already enabled
 names them in the same warning. A 1:1 DM and webchat carry no warning. Rooms are enabled
-one at a time: a decision's Apply to all reaches only the rooms already enabled.
+one at a time: a decision's Apply to all reaches only the rooms already enabled. The warning
+is the same wherever a room is enabled, including a decision started from the organization's
+Bots list.
+
+A room or group DM is external when the platform says people from outside the organization
+are in it. On Slack that is a Slack Connect conversation, read from the membership listing and
+from every event Slack delivers from the conversation, or a guest or a member of another
+organization joining it, found with one user lookup per join. The lookup is made only for an
+agent in assistant mode; no other agent changes. A share is lifted once Slack no longer
+reports it; a guest or an outside member never is. When an enabled place turns external, the
+reply already in progress there is stopped before it can post; messages waiting behind it, and
+everything the agent knows, are kept. Enabling a 1:1 DM trusts the person in it, so a DM never
+turns external.
 
 ## No-response control marker
 

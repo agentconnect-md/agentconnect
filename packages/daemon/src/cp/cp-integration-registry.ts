@@ -20,6 +20,8 @@ export interface WriteIntegrationDeps {
     next: DecisionBundle | undefined,
     nextSessionModes?: readonly IntegrationSessionMode[]
   ) => void
+  /** Called before `onChange` with the conversations a push newly lists as external (assistant-mode.md §5.3). */
+  onExternalChannelsAdded?: (integrationId: string, channels: string[]) => void
 }
 
 /**
@@ -108,6 +110,12 @@ export class CpIntegrationRegistry {
     resolveDecisionBundle(integrationCore(next.integration).decisions, this.deps.warn)
     this.entries.set(integrationId, next)
     this.decisionsChanged(integrationId, previous, next)
+    // A first spec is no transition: this daemon had nothing of that integration in flight.
+    if (previous) {
+      const before = new Set(integrationCore(previous.integration).externalChannels)
+      const added = integrationCore(next.integration).externalChannels.filter((channel) => !before.has(channel))
+      if (added.length > 0) this.deps.onExternalChannelsAdded?.(integrationId, added)
+    }
   }
 
   private decisionsChanged(integrationId: string, previous: Entry | undefined, next: Entry | undefined): void {

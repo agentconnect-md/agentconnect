@@ -115,6 +115,14 @@ export interface HttpSlackAssistantThreadStarted extends HttpSlackInteractionRec
   userId?: string
 }
 
+/** Someone other than the bot joined a channel; the owning daemon decides whether the place turned external. */
+export interface HttpSlackMemberJoined extends HttpSlackInteractionReceipt {
+  channelId: string
+  userId: string
+  /** The envelope said the channel is shared with another organization. */
+  externallyShared: boolean
+}
+
 export interface HttpSlackSessionShortcut extends HttpSlackInteractionReceipt {
   channelId: string
   threadTs: string
@@ -422,6 +430,8 @@ export interface SlackHttpIngestDeps {
   onAppHomeOpened?: (opened: HttpSlackAppHomeOpened) => void
   /** Forward an Assistant "new chat" to the DM's owning daemon, which starts a fresh session where the DM appends. */
   onAssistantThreadStarted?: (started: HttpSlackAssistantThreadStarted) => void
+  /** Forward another member's join to the channel's owning daemon (assistant-mode.md §5.3); the relay looks nobody up. */
+  onMemberJoined?: (joined: HttpSlackMemberJoined) => void
   appHomeContext?: (channelId?: string) => SlackAppHomeContext
   /** The bot's credential is definitively dead (an uninstall, a token revocation, or a probe saying so); report it so the CP revokes the bot. */
   onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', proof: SlackRevocationProof) => void
@@ -535,7 +545,12 @@ export class SlackHttpIngest {
   }
 
   // Handle verified events after acknowledgement, dropping own echoes and unsupported event types.
-  async handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number, eventId?: string): Promise<void> {
+  async handleEvent(
+    event: SlackMessageEvent | undefined,
+    eventAtMs?: number,
+    eventId?: string,
+    externallyShared = false
+  ): Promise<void> {
     try {
       if (event?.type === 'app_home_opened') {
         if (event.tab === 'home' && event.user)
@@ -584,6 +599,16 @@ export class SlackHttpIngest {
         await this.refreshChannels()
         return
       }
+      if (event?.type === 'member_joined_channel') {
+        if (event.user && event.channel)
+          this.deps.onMemberJoined?.({
+            channelId: event.channel,
+            userId: event.user,
+            externallyShared,
+            interactionId: eventId ?? `${event.channel}:${event.user}:${eventAtMs ?? ''}`
+          })
+        return
+      }
       if (event?.bot_id && (!this.botUserId || !this.slackBotId)) return
       if (!event || isSlackSystemMessage(event)) return
       // send-message-routing-rework.md §5: the ONE edit wrapper that survives ingest is
@@ -614,6 +639,8 @@ export class SlackHttpIngest {
         return
       }
       const msg = normalizeSlackMessage(event)
+      // The envelope says the conversation is shared with another organization (assistant-mode.md §5.3).
+      if (msg && externallyShared) msg.externallyShared = true
       if (msg)
         await this.deps.onMessage(msg, event.action_token ? { searchActionToken: event.action_token } : undefined)
     } catch (err) {

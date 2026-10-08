@@ -274,6 +274,41 @@ describe('slack ingress plugin — review-pinned regressions', () => {
     expect(vi.mocked(h.forwardAction).mock.calls[0]![1]).toEqual(ROUTE)
   })
 
+  // assistant-mode.md §5.3: another member's join reaches the channel's owning daemon with the envelope's share flag.
+  it('forwards a verified member join to the owning daemon, carrying the share flag', async () => {
+    const h = host()
+    const ingest = slackIngressPlugin.buildIngest(slackAssignment(), h)!
+    const envelope = {
+      type: 'event_callback',
+      api_app_id: 'A1',
+      team_id: 'T9',
+      event_id: 'Ev-join',
+      is_ext_shared_channel: true,
+      event: { type: 'member_joined_channel', channel: 'C1', user: 'U-GUEST' }
+    }
+    const raw = Buffer.from(JSON.stringify(envelope))
+    const ts = '1720000000'
+    const signature = `v0=${createHmac('sha256', 'sig')
+      .update(`v0:${ts}:${raw.toString('utf8')}`)
+      .digest('hex')}`
+    const headers = { 'x-slack-signature': signature, 'x-slack-request-timestamp': ts }
+
+    const verified = (await slackIngressPlugin.verify(ingest, raw, envelope, headers, 1_720_000_000_000))!
+    expect(verified).toMatchObject({ kind: 'event', externallyShared: true })
+    await slackIngressPlugin.handle(ingest, verified, h)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(h.forwardAction).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(h.forwardAction).mock.calls[0]![0]).toMatchObject({
+      source: 'platform_action',
+      platformId: 'slack',
+      agentId: ROUTE.agentId,
+      integrationId: ROUTE.integrationId,
+      userId: 'U-GUEST',
+      payload: { kind: 'member-joined', channelId: 'C1', userId: 'U-GUEST', externallyShared: true }
+    })
+  })
+
   it('revocation reports carry the OBSERVING assignment revision, not the current one', () => {
     // An older ingest's report can land after a re-assign bumped the live revision; it must fence on its own.
     const h = host()

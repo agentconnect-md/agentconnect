@@ -53,6 +53,11 @@ import {
   visibleBotPlatformTabs
 } from '@/components/console/platforms/host-projections'
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
+import {
+  placeEnableNeedsWarning,
+  placeName,
+  useAssistantPlaceWarning
+} from '@/components/console/AssistantPlaceWarning'
 import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import GithubCard from '@/components/console/GithubCard'
 import GiteaCard from '@/components/console/GiteaCard'
@@ -295,6 +300,8 @@ function BotsCard({
   } = useConsoleData()
   // On an owner-as-default platform the seat IS a private agent's grant, so moving it is confirmed first.
   const ownerGuard = useOwnerChangeGuard()
+  // Starting a gate on an Off room of an assistant-mode agent enables it, so it warns as the agent's page does.
+  const placeWarning = useAssistantPlaceWarning()
   const decisions = useOptionalDecisionsPrototype()
   const gates = useChannelGates()
   // The shared-bot conversation whose By decision rules modal is open, and a failed Stop to surface.
@@ -479,6 +486,7 @@ function BotsCard({
           // A single-owner bot's rooms take the same By decision gate as that agent's Integrations tab.
           const ownerId = !b.shareable ? (b.agentIds[0] ?? null) : null
           const showGate = gates.offered && ownerId !== null && gates.decisionTriggers(b.platform)
+          const ownerAssistant = ownerId !== null && getAgent(ownerId)?.assistantMode?.enabled === true
           const chanGrid = showDefaultDispatch || showGate ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
           // A shared relay bot routes By decision where its platform offers that trigger and has no per-owner gate.
           const routable =
@@ -704,7 +712,24 @@ function BotsCard({
                                       botId: b.id,
                                       platform: b.platform,
                                       integrationId: canWrite ? (c.integrationId ?? undefined) : undefined,
-                                      row: c.row
+                                      row: c.row,
+                                      beforeAdd: (open) =>
+                                        placeEnableNeedsWarning(
+                                          c.row,
+                                          gates.rowTrigger(b.id, c.row),
+                                          'decision',
+                                          ownerAssistant
+                                        )
+                                          ? void placeWarning.confirmBefore(
+                                              {
+                                                title: t('channelList.assistantPlace.title', {
+                                                  name: placeName(c.row, glyph)
+                                                }),
+                                                confirmLabel: t('channelList.assistantPlace.confirm')
+                                              },
+                                              open
+                                            )
+                                          : open()
                                     })}
                                   </span>
                                 )}
@@ -817,6 +842,7 @@ function BotsCard({
           </div>
         ))}
       {ownerGuard.dialog}
+      {placeWarning.dialog}
     </div>
   )
 }
