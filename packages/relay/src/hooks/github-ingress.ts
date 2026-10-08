@@ -78,6 +78,8 @@ export interface GithubIngressDeps {
 interface GithubPayload {
   action?: string
   changes?: { base?: unknown }
+  /** The label a `labeled` action just applied. */
+  label?: { name?: string }
   installation?: { id?: number }
   repository?: GithubRepositoryRef
   sender?: { login?: string; type?: string; avatar_url?: string }
@@ -193,6 +195,7 @@ export interface GithubMatchCtx {
   eventAction: string
   installationId: string | undefined // String(payload.installation.id); absent ⇒ never matches
   labels: string[] // the subject's CURRENT labels (not payload.label)
+  appliedLabel?: string // the label a `labeled` action just applied
   senderType: string | undefined // 'User' | 'Bot' | …
   senderLogin?: string
   // P3 gating inputs: thread authors and the authored text; handles match locally, actor permission is always live.
@@ -262,6 +265,16 @@ export function githubTeamOwner(repository: GithubRepositoryRef | undefined): st
 
 function requestsGithubAppReviewer(login: string | undefined, appSlug: string | undefined): boolean {
   return !!login && !!appSlug && login.toLowerCase() === `${appSlug}[bot]`.toLowerCase()
+}
+
+/** A bot applying a label the rule filters on is a deliberate handoff; any other bot label churn stays vetoed. */
+function isFilteredBotLabel(rule: RcHookAssign, ctx: GithubMatchCtx): boolean {
+  return (
+    (ctx.eventAction === 'issues:labeled' || ctx.eventAction === 'pull_request:labeled') &&
+    !!ctx.appliedLabel &&
+    !!rule.github?.labelFilter?.length &&
+    labelFilterAdmits(rule.github.labelFilter, [ctx.appliedLabel])
+  )
 }
 
 /** Release automation is a bot by design; this App's own release is not admitted, or an agent editing its notes would re-trigger itself. */
@@ -357,12 +370,13 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
         ctx.eventAction === 'pull_request:auto_merge_disabled'))
   )
     return 'no-match'
-  // Decision 10: bots are vetoed except this App's same-repository PR revisions, deployments, which cannot loop, and other bots' releases.
+  // Decision 10: bots are vetoed except this App's same-repository PR revisions, deployments, which cannot loop, other bots' releases, and filtered labels.
   if (
     ctx.senderType === 'Bot' &&
     !isConfiguredAppPullRequest(rule, ctx) &&
     !isGithubDeploymentEvent(ctx.event) &&
-    !isForeignBotRelease(rule, ctx)
+    !isForeignBotRelease(rule, ctx) &&
+    !isFilteredBotLabel(rule, ctx)
   )
     return 'no-match'
   // A restated release action fires only on its explicit pattern, so one publish is one turn under `release:*`.
@@ -414,11 +428,12 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   if (rule.github.mentionOnly && !summoned) return 'no-match'
   if (!labelFilterAdmits(rule.github.labelFilter, ctx.labels)) return 'no-match'
 
-  // Association labels prove nothing: thread events resolve the live role; push, deployments and releases rely on the installation gate.
+  // Association labels prove nothing: thread events resolve the live role; push, deployments, releases and bot labels rely on the installation gate.
   return ctx.event === 'push' ||
     isGithubDeploymentEvent(ctx.event) ||
     ctx.event === 'release' ||
-    isInternalAppPullRequest(rule, ctx)
+    isInternalAppPullRequest(rule, ctx) ||
+    (ctx.senderType === 'Bot' && isFilteredBotLabel(rule, ctx))
     ? 'trusted'
     : 'needs-authz'
 }
@@ -1076,6 +1091,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         eventAction: cleanupEvent ?? (action ? `${event}:${action}` : event),
         installationId: payload.installation?.id !== undefined ? String(payload.installation.id) : undefined,
         labels: (subject?.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
+        ...(payload.label?.name ? { appliedLabel: payload.label.name } : {}),
         senderType: payload.sender?.type,
         senderLogin: payload.sender?.login,
         subjectAuthorLogin: subject?.user?.login,

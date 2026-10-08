@@ -2178,6 +2178,24 @@ describe('github ingress', () => {
       expect(h.sent).toHaveLength(0)
     })
 
+    it('a [bot] applying a filtered label fires on the installation gate alone', async () => {
+      h.authzResult = false
+      h.table.upsert(rule({}, { events: ['issues:*'], labelFilter: ['Ready'] }))
+      const labeled = (name: string, labels: string[]) =>
+        issuesPayload({
+          action: 'labeled',
+          label: { name },
+          sender: { login: 'example-planner[bot]', type: 'Bot' },
+          issue: { labels: labels.map((label) => ({ name: label })) }
+        })
+      await post('issues', labeled('ready', ['ready'])) // hit, casing aside
+      await post('issues', labeled('bug', ['bug', 'ready'])) // another label while a filtered one is current
+      await post('issues', issuesPayload({ action: 'edited', sender: { login: 'example-planner[bot]', type: 'Bot' } }))
+      await flush()
+      expect(h.sent).toHaveLength(1)
+      expect(h.authzRequests).toHaveLength(0)
+    })
+
     it('issue_comment sources body/url/association from the comment and continues the thread session', async () => {
       h.table.upsert(rule({}, { events: ['issue_comment:created'] }))
       await post(
@@ -3562,6 +3580,26 @@ describe('githubRuleVerdict (pure predicate)', () => {
     expect(githubRuleVerdict(r, { ...appPr, senderType: 'Bot', subjectAuthorLogin: 'dependabot[bot]' })).toBe(
       'no-match'
     )
+  })
+
+  it('admits a bot label only when it is the applied label of a filtered rule', () => {
+    const botLabel = {
+      ...ctx,
+      eventAction: 'issues:labeled',
+      labels: ['ready'],
+      appliedLabel: 'ready',
+      senderType: 'Bot',
+      senderLogin: 'example-planner[bot]'
+    }
+    const filtered = rule({}, { events: ['issues:*'], labelFilter: ['ready'] })
+
+    expect(githubRuleVerdict(filtered, botLabel)).toBe('trusted')
+    expect(githubRuleVerdict(filtered, { ...botLabel, senderType: 'User' })).toBe('needs-authz')
+    expect(githubRuleVerdict(filtered, { ...botLabel, appliedLabel: 'bug', labels: ['bug', 'ready'] })).toBe('no-match')
+    expect(githubRuleVerdict(rule({}, { events: ['issues:*'] }), botLabel)).toBe('no-match')
+    expect(githubRuleVerdict(filtered, { ...botLabel, eventAction: 'issues:unlabeled' })).toBe('no-match')
+    const prLabel = { ...botLabel, event: 'pull_request', eventAction: 'pull_request:labeled' }
+    expect(githubRuleVerdict(rule({}, { events: ['pull_request:*'], labelFilter: ['ready'] }), prLabel)).toBe('trusted')
   })
 
   it('applies comment subject scope only when commentFamilies is non-empty', () => {

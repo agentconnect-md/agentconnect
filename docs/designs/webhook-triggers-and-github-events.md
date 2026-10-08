@@ -352,6 +352,15 @@ automation publishes most of them, while an agent editing its own release notes
 must not re-trigger itself; without a known App slug every bot release is
 vetoed. Publishing or editing a release needs write access, so a release is
 likewise trusted on the installation gate.
+A bot applying a label is admitted when that applied label is in the row's label
+filter: an issue or pull request `labeled` delivery whose `label` matches, from any
+bot including the configured App, so a planning agent or another App can hand a
+thread to the agent that filters on the label. Only the applied label counts, not
+the subject's current set, so a bot's other label changes, comments and edits stay
+vetoed, and the same label fires again only after it is removed and re-applied. A
+row without a label filter admits no bot labels. Applying a label needs triage
+access, which the installation granted, so the delivery is trusted on the installation
+gate, since a bot has no repository role to look up.
 
 Closed, deleted, and reopened issue or pull-request lifecycle events do not start
 turns. Ordinary issue/PR title and body edits are also silent. A PR edit carrying
@@ -979,7 +988,8 @@ without the relay, while a webhook always requires a public ingress process.
 - GitHub signature verification is mandatory before matching or doorbells.
 - Repository matching uses numeric IDs.
 - Installation membership comes from CP-owned records.
-- Bot senders never trigger GitHub hooks.
+- Bot senders never trigger GitHub hooks, except for the listed lifecycle,
+  deployment, release and filtered-label exceptions.
 - Issue/PR actors pass live repository-role checks; payload associations never authorize.
 - External Issues and pull requests require an explicit maintainer request.
 - Event bodies remain relay-to-daemon only.
