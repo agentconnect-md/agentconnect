@@ -168,3 +168,12 @@ export function integrationCore(int: Integration): IntegrationCore {
     decisions: core?.decisions ?? EMPTY_DECISION_BUNDLE
   }
 }
+
+/** Hold a local detection on the live spec until the CP's next push replaces it (assistant-mode.md §5.3); true when it was already external. */
+export function noteExternalChannel(int: Integration, channel: string): boolean {
+  const listed = integrationCore(int).externalChannels
+  if (listed.includes(channel)) return true
+  const core = int.core as Partial<IntegrationCore> | undefined
+  if (core) core.externalChannels = [...listed, channel]
+  return false
+}

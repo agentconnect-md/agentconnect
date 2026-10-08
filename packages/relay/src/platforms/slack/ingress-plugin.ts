@@ -20,6 +20,7 @@
  */
 import { createHash } from 'node:crypto'
 import type { RdMsgPlatformAction } from '@agentconnect.md/protocol'
+import { slackEnvelopeExternallyShared } from '@agentconnect.md/message'
 import {
   SlackHttpIngest,
   type HttpSlackSessionAction,
@@ -27,6 +28,7 @@ import {
   type HttpSlackSessionStop,
   type HttpSlackAppHomeOpened,
   type HttpSlackAssistantThreadStarted,
+  type HttpSlackMemberJoined,
   type SlackInteractiveBody,
   type SlackMessageEvent
 } from './http-ingest.js'
@@ -294,10 +296,50 @@ export function forwardAssistantThreadStarted(
     )
 }
 
-/** The plugin's typed verified product: one authenticated Slack delivery, as
- *  the two HTTP routes parse it. Opaque to core (§8). */
+// Another member's join goes to the channel's owning daemon, which looks them up only for an assistant-mode agent (assistant-mode.md §5.3).
+export function forwardMemberJoined(host: RelayIngressHost, botId: string, joined: HttpSlackMemberJoined): void {
+  const route = host.directory.resolveTarget(botId, { channelId: joined.channelId })
+  if (!route) return
+  const digest = createHash('sha256')
+    .update(JSON.stringify([botId, 'member-joined', joined]))
+    .digest('hex')
+  const rd: RdMsgPlatformAction = {
+    source: 'platform_action',
+    platformId: 'slack',
+    agentId: route.agentId,
+    integrationId: route.integrationId,
+    sessionKey: sessionKeyOf({ channel: joined.channelId }),
+    msgId: `slack-action:${digest}`,
+    botId,
+    userId: joined.userId,
+    payload: {
+      kind: 'member-joined',
+      channelId: joined.channelId,
+      userId: joined.userId,
+      ...(joined.externallyShared ? { externallyShared: true } : {})
+    }
+  }
+  // A daemon predating the action refuses it as unsupported, which costs only the detection.
+  void host
+    .forwardAction(rd, route)
+    .then((ack) => {
+      if (!ack.accepted)
+        host.log.debug(`relay-ingress(${botId}): daemon declined a member join (${ack.reason ?? 'unknown'})`)
+    })
+    .catch((err) => host.log.warn(`relay-ingress(${botId}): member join forward failed: ${(err as Error).message}`))
+}
+
+/** The plugin's typed verified product: one authenticated Slack delivery as the two HTTP routes parse it; opaque to core (§8). */
 export type SlackVerifiedDelivery =
-  | { kind: 'event'; event?: SlackMessageEvent; eventAtMs?: number; dedupKey?: string; eventId?: string }
+  | {
+      kind: 'event'
+      event?: SlackMessageEvent
+      eventAtMs?: number
+      dedupKey?: string
+      eventId?: string
+      /** The envelope's `is_ext_shared_channel` (assistant-mode.md §5.3). */
+      externallyShared?: boolean
+    }
   | { kind: 'interaction'; body: SlackInteractiveBody }
 
 function headerString(v: string | string[] | undefined): string | undefined {
@@ -336,6 +378,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         onSessionStopped: (stop) => forwardSessionStop(host, botId, stop),
         onAppHomeOpened: (opened) => forwardAppHomeOpened(host, botId, opened),
         onAssistantThreadStarted: (started) => forwardAssistantThreadStarted(host, botId, started),
+        onMemberJoined: (joined) => forwardMemberJoined(host, botId, joined),
         appHomeContext: (channelId) => ({
           webAppUrl: host.webAppUrl(),
           orgSlug: a.orgSlug,
@@ -419,7 +462,8 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
       ...(dedupKey ? { dedupKey } : {}),
       // The per-delivery receipt a redelivery reuses — the daemon-side dedup id of a
       // forwarded non-chat event is minted from it.
-      ...(env?.event_id ? { eventId: env.event_id } : {})
+      ...(env?.event_id ? { eventId: env.event_id } : {}),
+      ...(slackEnvelopeExternallyShared(env) ? { externallyShared: true } : {})
     }
   },
 
@@ -436,7 +480,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
     // and a forward miss is bounded loss. Failures log exactly as the live
     // route logs them today.
     void ingest
-      .handleEvent(verified.event, verified.eventAtMs, verified.eventId)
+      .handleEvent(verified.event, verified.eventAtMs, verified.eventId, verified.externallyShared === true)
       .catch((err) => host.log.warn(`slack ingress: event handler error: ${(err as Error).message}`))
     return {}
   }

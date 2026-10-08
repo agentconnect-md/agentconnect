@@ -182,6 +182,8 @@ export const NormalizedPlatformMessageSchema = z.object({
    *  so cross-source merges order correctly (merged-conversation-view.md §6). */
   platformTimeMs: z.number().int().positive().optional(),
   headless: z.boolean().optional(),
+  /** The platform delivered this message as one from a conversation shared with another organization (assistant-mode.md §5.3). */
+  externallyShared: z.literal(true).optional(),
   /** Daemon-minted coordinates, not a platform destination: a headless cron keeps a key it never posts to. */
   syntheticChannel: z.literal(true).optional(),
   /** UNTRUSTED provider authorship claim for an agent-authored platform message

@@ -308,6 +308,7 @@ import {
   type DreamPlaces
 } from './dream/runner.js'
 import { describePlace, kindFromRows, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
+import { PlaceTrust } from './assistant/place-trust.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
   conversationAdmitsAgent,
@@ -1708,6 +1709,18 @@ export class Daemon {
   private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
   // A conversation's privacy as its platform reported it on a channel lookup (`PlatformChannelInfo.isPrivate`), by id.
   private readonly conversationPrivacy = new Map<string, boolean>()
+  /** Places of assistant-mode agents turning external, and the transition that follows (assistant-mode.md §5.3). */
+  private readonly placeTrust = new PlaceTrust({
+    integration: (integrationId) => this.integrationConfigById(integrationId),
+    assistantOwned: (integrationId) =>
+      [...this.agents.values()].some(
+        (agent) => assistantModeOn(agent) && agent.integrations.some((integration) => integration.id === integrationId)
+      ),
+    report: (integrationId, channel) =>
+      this.cpClient?.emitIntegrationChannels({ integrationId, channels: [channel], authoritative: false }),
+    interrupt: (integrationId, channel) => this.interruptPlaceTurns(integrationId, channel),
+    warn: (message) => this.log.warn(message)
+  })
   private cpAgents?: CpAgentRegistry
   private cpIntegrations?: CpIntegrationRegistry
   private botUserIds: Record<string, string> = {}
@@ -2312,6 +2325,7 @@ export class Daemon {
       refreshChannels: (conn) => this.connections.refreshChannels(conn),
       onInbound: (msg, srcIntegrationIds) => this.onInbound(msg, srcIntegrationIds),
       srcIntegrationIds: (conn) => this.srcIntegrationIds(conn),
+      placeTrust: () => this.placeTrust,
       waitForConnectionUses: (conn) => this.waitForConnectionUses(conn),
       observeTelegramChat: (chat, integrationIds) =>
         this.observedChannelsSync.observeTelegramChat(chat, integrationIds),
@@ -2395,6 +2409,7 @@ export class Daemon {
     this.gcConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
+    this.placeTrust.forget(integrationId)
   }
 
   private webchatHost(): WebchatHost {
@@ -3707,7 +3722,8 @@ export class Daemon {
       this.agentsDir,
       {
         warn: (m) => this.log.warn(m),
-        onDecisionConfigApplied: (id, previous, next, modes) => this.onDecisionConfigApplied(id, previous, next, modes)
+        onDecisionConfigApplied: (id, previous, next, modes) => this.onDecisionConfigApplied(id, previous, next, modes),
+        onExternalChannels: (id, next, added) => this.placeTrust.specApplied(id, next, added)
       },
       () =>
         void this.reconcile().catch((err) =>
@@ -9247,6 +9263,8 @@ export class Daemon {
     // Telegram reply-based session threading, ABOVE the record: it is the normalization that
     // produces the physical thread step 1 writes, and it has no store writes. No-op elsewhere.
     await this.canonicalizeTelegramThread(msg)
+    // Before the turn this message starts reads the place's trust level (assistant-mode.md §5.3).
+    this.placeTrust.observe(msg, srcIntegrationIds ?? [])
     // Step 1 (message-intake.md §5): the channel record is written before anything may drop the message.
     const record = await this.recordChannelInbound(msg, srcIntegrationIds)
     // Later rows of this conversation wait behind this one until the ladder has placed it (§5.1).
@@ -9984,6 +10002,8 @@ export class Daemon {
     }
     const feishuConn = this.fsConnByIntegration.get(msg.integrationId)
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
+    // Before the turn this message starts reads the place's trust level (assistant-mode.md §5.3).
+    this.placeTrust.observe(normalized, [msg.integrationId])
     // Step 1 (§5/§6): a relay-forwarded IM records exactly like direct ingress. Pre-addressed, so
     // the owning org is known outright and no conversation-row scan is needed.
     // A routed forward's host window is recorded first, so it precedes the message as background.
@@ -10454,6 +10474,14 @@ export class Daemon {
     const payload = msg.payload
     if (payload.kind === 'app-home-opened') {
       await conn.welcomeBuiltin(payload.channelId, agent, integration)
+      return { msgId: msg.msgId, accepted: true }
+    }
+    // The HTTP arm of a member join (assistant-mode.md §5.3); only an assistant-mode owner spends the lookup.
+    if (payload.kind === 'member-joined') {
+      if (this.placeTrust.watches([integration.id])) {
+        const reason = await conn.joinedMemberReason(payload.userId, payload.externallyShared === true)
+        if (reason) this.placeTrust.detected([integration.id], payload.channelId, reason)
+      }
       return { msgId: msg.msgId, accepted: true }
     }
     // The HTTP arm of Slack's "new chat": the Socket Mode arm reaches the same rotation from the connection.
@@ -16562,6 +16590,25 @@ export class Daemon {
     }
   }
 
+  /** The downgrade transition (assistant-mode.md §5.3): cut the in-flight turn posting into the place; queued messages run next. */
+  private async interruptPlaceTurns(integrationId: string, channel: string): Promise<void> {
+    // Only a turn delivering into the place is cut; a headless run posts nothing there.
+    const inPlace = [...this.activeGateEntries].filter(
+      ([, entry]) =>
+        entry.integrationId === integrationId &&
+        entry.msg.channel === channel &&
+        !entry.msg.headless &&
+        assistantModeOn(this.agents.get(entry.agentId))
+    )
+    for (const [key, entry] of inPlace) {
+      await this.interruptTurn(entry.agentId, key, 'place turned external', undefined, {
+        integrationId,
+        preserveQueued: true,
+        allowSameKeyAdmissions: true
+      })
+    }
+  }
+
   // ── §7.3 force-cancel backstop ──────────────────────────────────────────────
 
   // Interrupt matching active/cold and queued work by logical session key; callers own muting.
@@ -20313,16 +20360,22 @@ export class Daemon {
    *  observation (including Slack direct-conversation discovery) to a full snapshot. */
   private async replayChannelSnapshots(): Promise<void> {
     // Keyed by both sources: a restart keeps the on-disk tombstones but not the in-memory snapshots.
-    const integrationIds = new Set([...this.channelSnapshots.keys(), ...(await this.store.retractedIntegrations())])
+    const integrationIds = new Set([
+      ...this.channelSnapshots.keys(),
+      ...(await this.store.retractedIntegrations()),
+      ...this.placeTrust.heldIntegrations()
+    ])
     for (const integrationId of integrationIds) {
       const snapshot = this.channelSnapshots.get(integrationId)
       // Tombstones replay too: a retraction sent while the CP was unreachable is lost, so the reconnect carries it.
       const removed = [...(await this.store.retractedConversations(integrationId))]
-      if (!snapshot && removed.length === 0) continue
+      // So do places found external meanwhile, whether or not the cache has their row (assistant-mode.md §5.3).
+      const channels = this.placeTrust.replayRows(integrationId, snapshot?.channels ?? [])
+      if (!snapshot && removed.length === 0 && channels.length === 0) continue
       try {
         this.cpClient?.emitIntegrationChannels({
           integrationId,
-          channels: snapshot?.channels ?? [],
+          channels,
           ...(snapshot?.authoritative ? {} : { authoritative: false }),
           ...(removed.length > 0 ? { removed } : {})
         })

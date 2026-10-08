@@ -686,6 +686,42 @@ describe('SlackHttpIngest events', () => {
     ])
   })
 
+  // assistant-mode.md §5.3: another member's join goes to the owning daemon; the relay itself looks nobody up.
+  it('forwards another member joining with the envelope share flag, and calls no Slack API for it', async () => {
+    const info = vi.fn()
+    const conversations = vi.fn()
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { info, conversations } }
+    const onMemberJoined = vi.fn()
+    const d = deps(web, { onMemberJoined })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+
+    await ingest.handleEvent({ type: 'member_joined_channel', user: 'UGUEST', channel: 'C1' }, 1000, 'Ev1', true)
+    await ingest.handleEvent({ type: 'member_joined_channel', user: 'UOTHER', channel: 'C2' }, 2000, 'Ev2')
+
+    expect(onMemberJoined.mock.calls.map(([joined]) => joined)).toEqual([
+      { channelId: 'C1', userId: 'UGUEST', externallyShared: true, interactionId: 'Ev1' },
+      { channelId: 'C2', userId: 'UOTHER', externallyShared: false, interactionId: 'Ev2' }
+    ])
+    expect(info).not.toHaveBeenCalled()
+    expect(conversations).not.toHaveBeenCalled()
+    expect(d.onMessage).not.toHaveBeenCalled()
+  })
+
+  it('marks a message from a Slack Connect channel as externally shared', async () => {
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: 'BBOT' })) } }
+    const d = deps(web)
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    const message = (ts: string) => ({ type: 'message', channel: 'C1', user: 'U1', text: 'hi', ts })
+
+    await ingest.handleEvent(message('1730000000.000001'), undefined, undefined, true)
+    await ingest.handleEvent(message('1730000000.000002'))
+
+    const forwarded = (d.onMessage as ReturnType<typeof vi.fn>).mock.calls.map(([msg]) => msg.externallyShared)
+    expect(forwarded).toEqual([true, undefined])
+  })
+
   it.each(['channel_left', 'group_left'])('refreshes after the self-scoped %s event', async (type) => {
     const conversations = vi.fn(async () => ({ channels: [{ id: 'C1', name: 'remaining' }] }))
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }

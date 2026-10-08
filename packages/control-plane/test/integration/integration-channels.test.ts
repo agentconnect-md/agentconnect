@@ -2339,6 +2339,62 @@ describe('detected external places', () => {
     expect(converged).toHaveLength(2)
   })
 
+  it('keeps a guest or an outside member through every later report, and pushes only when the set changes', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const converged: unknown[] = []
+    const converge = async (agent: unknown) => void converged.push(agent)
+    const reportPartial = (channels: IntegrationChannel[]) =>
+      report(DAEMON, id, channels, undefined, undefined, false, undefined, undefined, converge)
+    const listing = (c1: IntegrationChannel['externalReason']) =>
+      report(
+        DAEMON,
+        id,
+        [
+          { id: 'C1', name: 'partners', externalReason: c1 },
+          { id: 'C2', name: 'deploys', externalReason: null },
+          { id: 'C3', name: 'support', externalReason: null }
+        ],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        converge
+      )
+    await listing(null)
+    expect(converged).toHaveLength(0)
+
+    // A daemon's detection is a partial report: it touches no other row.
+    await reportPartial([{ id: 'C1', externalReason: 'guestMember' }])
+    await reportPartial([{ id: 'C2', externalReason: 'externalMember' }])
+    expect(await externalOf(id)).toEqual(
+      new Map([
+        ['C1', 'guestMember'],
+        ['C2', 'externalMember'],
+        ['C3', null]
+      ])
+    )
+    expect(converged).toHaveLength(2)
+
+    // A listing that finds no share, or a share, neither lifts nor replaces them; nothing re-pushes.
+    await listing(null)
+    await listing('externallyShared')
+    expect((await externalOf(id)).get('C1')).toBe('guestMember')
+    expect((await externalOf(id)).get('C2')).toBe('externalMember')
+    expect(converged).toHaveLength(2)
+
+    // A share turning sticky changes the reason, not the set, so it does not re-push either.
+    await reportPartial([{ id: 'C3', externalReason: 'externallyShared' }])
+    expect(converged).toHaveLength(3)
+    await reportPartial([{ id: 'C3', externalReason: 'guestMember' }])
+    await listing(null)
+    expect((await externalOf(id)).get('C3')).toBe('guestMember')
+    expect(converged).toHaveLength(3)
+  })
+
   it('carries the detected set to the daemon with the spec', async () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()

@@ -535,7 +535,9 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       { kind: 'elicitation-confirm', requestId: 'elicit-5', fields: { ac_elicit_f0: 'main', ac_elicit_f1: ['lint'] } },
       // An EMPTY record is a real submission: a form of nothing but optional fields, all left
       // alone, and the daemon's own accept check is what decides whether that is an answer.
-      { kind: 'elicitation-confirm', requestId: 'elicit-6', fields: {} }
+      { kind: 'elicitation-confirm', requestId: 'elicit-6', fields: {} },
+      { kind: 'member-joined', channelId: 'C123', userId: 'U7', externallyShared: true },
+      { kind: 'member-joined', channelId: 'C123', userId: 'U8' }
     ]
     for (const payload of actions) {
       expect(RdSlackAction.safeParse(payload).success).toBe(true)
@@ -554,6 +556,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       }).success
     ).toBe(false)
     expect(RdSlackAction.safeParse({ kind: 'agent-session-stopped', channelId: 'C123' }).success).toBe(false)
+    expect(RdSlackAction.safeParse({ kind: 'member-joined', channelId: 'C123' }).success).toBe(false)
     // No form is wider than the card cap.
     const wideForm = Object.fromEntries(
       Array.from({ length: ELICIT_FORM_WIRE_FIELD_CAP + 1 }, (_, i) => [`ac_elicit_f${i}`, 'x'])
