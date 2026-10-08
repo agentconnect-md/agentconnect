@@ -539,29 +539,36 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
    audited as denied, on the daemon-local socket and the pod tunnel alike. This
    closes the implied runtime grant of [shared-skills.md](shared-skills.md) §3:
    a runtime can no longer mint a private skill token at any time.
-   **Today (S3)** the only window is daemon-subject: the daemon's own
-   acquisition (`loadScopedGitSkillCredential`, used by images without
-   `skill-git-in-pod-v1`) opens one for exactly one repository around each
-   credential fill and presents its capability in `AC_GITCRED_CAPABILITY`, so
-   those images keep private skills; that Git keeps running in daemon-owned
-   directories with global and system configuration disabled, never inside an
-   agent checkout (#2841). When the skill repository is the agent's own GitHub
-   workspace repository, the fill opens no window and presents the agent
-   capability, which `gitcred` still admits for the workspace repository by
-   folding it onto the workspace key; a window therefore never has to reach that
-   key, and a workspace-repo skill whose entry lacks `private: true` keeps
-   installing. Nothing opens a pod-subject window yet: **S5b** introduces the
-   per-reconcile, pod-subject window described above, handed to the shim's Git
-   child for the reconcile's private Sources. An agent whose only credential
-   need is a private skill source gets the `gitcred` tunnel too, window-gated.
-   Tunnels open when a pod's channel binds, so a pod bound by a daemon that
-   predates this may lack it: the binding records whether the pod serves
-   `gitcred` (`servesTunnel`), and an S5b reconcile for such a pod must route
-   its private Sources through the daemon acquisition path. S5b must also bind
-   a pod-subject window to the tunnel (pod) it is handed through, so two pods
-   of the same agent (an isolated reconcile pod and the agent pod, say) cannot
-   use each other's window capability; S3 records `subject` but does not
-   enforce it at admission.
+   The daemon's own acquisition (`loadScopedGitSkillCredential`, used by
+   images without `skill-git-in-pod-v1`) opens a daemon-subject window for
+   exactly one repository around each credential fill and presents its
+   capability in `AC_GITCRED_CAPABILITY`, so those images keep private skills;
+   that Git keeps running in daemon-owned directories with global and system
+   configuration disabled, never inside an agent checkout (#2841). When the
+   skill repository is the agent's own GitHub workspace repository, that fill
+   opens no window and presents the agent capability, which `gitcred` still
+   admits for the workspace repository by folding it onto the workspace key; a
+   workspace-repo skill whose entry lacks `private: true` keeps installing.
+   An in-pod reconcile (S5b) opens one **pod-subject** window per reconcile
+   (`GitCredServer.openPodSkillWindow`) over exactly the plan's private
+   repositories that are cloned (a `keepInstalled` entry is not), the
+   workspace repository included because the pod's Git child holds no other
+   capability, hands its capability to the shim in the Git plan request, and
+   closes it in `finally`. An agent whose only credential need is a private
+   skill source gets the `gitcred` tunnel too, window-gated. A window is bound
+   to the pod it was handed to: the tunnel proxy writes a greeting line
+   (`{"op":"via","subject","key"}`, the key a per-boot secret only the daemon
+   holds) on every daemon-side `gitcred` connection before any pod byte, and
+   `gitcred` admits a window only when its subject equals the connection's
+   (an untunneled, daemon-local connection is the `daemon` subject). Two pods
+   of one agent therefore cannot spend each other's window, and a daemon window
+   is refused through any tunnel. Tunnels open when a pod's channel binds, so a
+   pod bound by a daemon that predates this may lack `gitcred`: the binding
+   records whether the pod serves it (`servesTunnel`), and such a reconcile
+   routes its private Sources through the daemon acquisition path. A public
+   entry naming a repository the agent capability grants (the GitHub
+   workspace or an additional repository) also stays on the daemon path, which
+   presents that capability.
 3. For each Git Source the shim, in a private temporary directory:
    - clones blobless (`--filter=blob:none --no-checkout`), with `--bundle-uri`
      when a URL was given, so a skill shares the `blobless` pointer with the
@@ -594,39 +601,77 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
    source order, and publishes through the existing ledger and mutation helper.
    Source order, per-source skipping, the manifest budget and the receipt reply
    are unchanged.
-   **Today (S5a, dormant)** `shim/skill-handler.ts` takes Git plan entries over
+   `shim/skill-handler.ts` takes Git plan entries over
    `shim/skill-git-plan.ts`: up to four clones at once, each in
    `<staging>/<handle>/<sha256(sourceId)>`, removed when the reconcile ends
    whatever its outcome. Selections resolve in the pod over the acquired tree
    (`resolveSkillSelections`), and a Git Source installs with the ledger kind
-   `agent`, as on the daemon path. One manifest budget is charged as
-   `reconcileSandboxSkills` charges it: Git Sources first (the acquired
-   subtree's files and bytes, nothing for a skipped Source), then managed, then
-   Dream, each in request order. A source that does not fit is reported in
-   `skipped` with `limits_exceeded` but, unlike a failed Source, triggers no
-   prior-root preservation, so its roots are pruned exactly as the daemon path
-   prunes an over-budget source. Any other failure of a Git Source (a §11 code,
-   an acquisition error, a timeout, a selection the CLI cannot honor) skips only
+   `agent`, as on the daemon path. One manifest budget is charged as the daemon
+   path charges it: Git Sources first (the acquired subtree's files and bytes,
+   nothing for a skipped Source), then managed, then Dream, each in request
+   order. A source that does not fit is reported in `skipped` with
+   `limits_exceeded` and is pruned exactly as the daemon path prunes an
+   over-budget source; the coordinator reads that code as a prune, keeps the
+   Source's resolution (so the next preparation does not re-acquire it) and
+   logs it as not installed. Any other failure of a Git Source (a §11 code, an
+   acquisition error, a timeout, a selection the CLI cannot honor) skips only
    that Source and keeps its prior roots. Acquisition is bounded under the
    daemon's 15-minute `SKILLS_RECONCILE_TIMEOUT_MS`: each Git spawn gets 2
    minutes, each Source 4 minutes, and all Sources together 8 minutes; a Source
    that a deadline reaches, started or not, is skipped as `fetch_failed`, so a
    stalled remote never fails the reconcile. A `keepInstalled` entry is not
    cloned: its prior roots are preserved and charged by the receipt's selected
-   files (the daemon path charges the re-acquired subtree; S5b's golden test
-   decides whether to align them), and one with no prior root is skipped as
-   `commit_unavailable`. The reply roots of a Git Source carry `sourceKind:
-'agent'`, not the request's `'git'`, so S5b maps a plan's kind before the
-   coordinator compares receipts. The reply reports each installed
-   Git Source's `resolvedCommit`, always the planned commit, and the leaves it
-   staged. The per-reconcile window capability arrives as the reconcile's
-   optional `credentialWindow` and reaches only the Git child's
-   `AC_GITCRED_*` environment, for a github.com Source.
+   files, where the daemon path re-acquires the retained commit and charges the
+   whole subtree; the pod path can therefore admit a later source the daemon
+   path would drop, a difference the S5b golden test asserts. One with no prior
+   root is skipped as `commit_unavailable`. The reply roots of a Git Source
+   carry `sourceKind: 'agent'`; the coordinator maps a plan entry to that kind
+   before it compares receipts, and checks each plan's receipts against the
+   leaves the pod reported. The reply reports each installed Git Source's
+   `resolvedCommit` and the leaves it staged. The per-reconcile window
+   capability arrives as the reconcile's optional `credentialWindow` and
+   reaches only the Git child's `AC_GITCRED_*` environment, for a github.com
+   Source.
 5. The daemon closes the credential window, records the ledger with the resolved
    commits, and later handles write-back candidates (section 9).
 
 A shim without `skill-git-in-pod-v1` keeps today's path: the daemon acquires and
 uploads. This decision does not depend on whether a bucket is configured.
+
+**Daemon routing (S5b, `skills/sandbox-skill-reconcile.ts`).** A Kubernetes
+runtime pod whose shim is granted `skills-git` gets a Git plan; executor
+sessions and local VMs never do. Per Source: a private one goes in-pod only
+when the pod serves `gitcred` and a pod window would admit its repository, and anything the plan cannot carry stays on the
+daemon path, so one reconcile may mix plan entries with uploaded Git sources.
+The planned commit is always the daemon's (`createSkillRefPlanResolution`:
+`resolveRef` per agent for a credentialed Source, the shared anonymous check
+otherwise, a pinned SHA as given); a failed resolution of an installed Source
+plans `keepInstalled` at the ledger's commit with no GET URL, and of a Source
+never installed skips it for this preparation. The URL passes the daemon's Git
+origin policy (`resolveBoundedGitSkillSource`) before it enters a plan, and the
+plan entries without GET URLs are bounded to the control frame less a 16 KiB
+reserve and an upper bound of the uploaded entries; a Source past it takes the
+daemon path, and its uploaded entry is charged against the same bound. The ledger's `gitResolutions` record the daemon's planned
+commits: a reply whose `resolvedCommit` differs from the plan is treated as a
+skipped Source and its resolution is not written. An in-pod reconcile that
+throws before its ledger commits (an unparseable or refused reply, lost
+authority, a frame error) is re-run on the daemon path for that preparation;
+the fallback journals under the failed run's desired hash, so the store resumes
+that operation and the shim replays whatever it had already published instead
+of reporting it as foreign. In-pod write-back candidates reach a no-op consumer
+until write-back lands (S6).
+
+**Skill reads (S5b, `createSkillReadPlanner`).** With a bucket configured,
+a plan entry gets a GET URL from a pointer keyed like a workspace's
+(`skillPointerKey`: org, class, repository, the full branch or tag ref, shape
+`blobless`): `cred` (`github:<githubRepoId>`) only for a credentialed Source
+whose `resolveRef` succeeded for the reading agent, `anon` (the canonical
+URL's hash) otherwise, so an anonymous declaration of a private URL never
+reads a `cred` entry. A pinned SHA reads no pointer; a no-ref Source keys on
+the default branch `resolveRef` named. The anonymous check reports no ref
+name, so an anonymous Source whose entry does not spell a full ref takes no
+GET URL in P2. Only its misses reach the `reads` metric: the pod does not
+report a bundled clone's outcome in P2.
 
 ## 9. Write-back
 
@@ -904,8 +949,10 @@ over `source_cache_usage`, and quota pressure surfaces as
   sessions and local VMs keep daemon acquisition whatever their shim advertises.
   A shim advertises it only when `gitSupportsInPodSkills` accepts its own
   `git --version`: ≥ 2.38 for `--bundle-uri` and a release that honors
-  `GIT_NO_LAZY_FETCH` (the floors listed under workspace clone below); an older
-  image keeps daemon acquisition rather than failing the session.
+  `GIT_NO_LAZY_FETCH` (the floors listed under workspace clone below), and its
+  skill staging directory is a private 0700 directory; `shim/skill-git-feature.ts`
+  probes both once at start with one 10-second, 64 KiB-bounded spawn. An older
+  image, or any doubt, keeps daemon acquisition rather than failing the session.
 - **Reconcile plan:** a Git Source entry (`sourceKind: 'git'`: https URL, the
   resolved full ref — `refs/heads/<b>` or `refs/tags/<t>`, absent only for a
   pinned SHA — the 40-hex planned commit, subdirectory, selections,
@@ -942,9 +989,10 @@ over `source_cache_usage`, and quota pressure surfaces as
   SHA-256); `discard` (handle). No field carries a filesystem path.
 - **Credential window:** `gitcred` issuance for private skill repositories is
   admitted only for a live window capability the daemon minted (section 8);
-  the per-agent capability is refused for them. Today the daemon mints one
-  daemon-subject window per credential fill of its own acquisition; S5b adds
-  the per-reconcile, pod-subject window, bound to the pod's tunnel.
+  the per-agent capability is refused for them. The daemon mints one
+  daemon-subject window per credential fill of its own acquisition and one
+  per-reconcile, pod-subject window for an in-pod reconcile, admitted only
+  through that pod's tunnel (the proxy's keyed greeting names the subject).
 
 All operations are daemon-initiated, as today's `begin` / `upload` / `reconcile`.
 
@@ -963,6 +1011,13 @@ Each phase ships and rolls back alone.
   `skill-git-in-pod-v1` and the in-pod Git skill install, skill write-back.
   Images without the capability keep the daemon-acquisition path, including its
   daemon-local cache (#2697), which is removed once those images age out.
+  - **Retirement record (S5b).** The first runtime image that advertises
+    `skill-git-in-pod-v1` is AgentConnect **v2.4.0** (chart `2.4.0`, app
+    `v2.4.0`), the release that carries S5b. Daemon acquisition for Kubernetes
+    runtime pods, and with it the daemon-local cache (#2697), can be removed
+    once no supported pool runs an older runtime image; executor sessions and
+    local VMs keep it until they get their own in-pod path.
+    Follow-up issue: #2856.
 - **P3 — non-GitHub admission.** `credential?` skill identity on the wire, GitLab
   admission and preview, arbitrary-host public Sources, skipped-Source status in
   the console.
@@ -1069,13 +1124,13 @@ matrix and test-app pod/timing checks run. The chart default remains off while
 
 ## 15. Change index
 
-| Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, workspace write-back `source-cache/write-back.ts` with the header-signed HEAD/retag/DELETE/lifecycle-read client `source-cache/object-client.ts`, the sweep `source-cache/sweep.ts` and lifecycle check `source-cache/lifecycle.ts`, the metrics recorder `source-cache/metrics.ts`, reconcile plan and write-back in `reconcileSandboxSkills` |
-| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts` over `shim/skill-git-acquire.ts` (with its retry core `source-cache/bundle-retry.ts`), the `bundle` operations (`shim/bundle-handler.ts`, `shim/bundle-protocol.ts`, daemon side `shim/bundle-client.ts`), credential window in the `gitcred` tunnel, the `--bundle-uri` rule in `workspace/git-command-policy.ts`                                                                                                                                                                                                                                                                                                                                      |
-| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect; the pointer row's compare-and-set in `setSourceCachePointer`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| chart         | `sourceCache.*` values, member credentials, the bucket lifecycle rule document in the chart README                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, workspace write-back `source-cache/write-back.ts` with the header-signed HEAD/retag/DELETE/lifecycle-read client `source-cache/object-client.ts`, the sweep `source-cache/sweep.ts` and lifecycle check `source-cache/lifecycle.ts`, the metrics recorder `source-cache/metrics.ts`, the in-pod reconcile plan and its routing in `skills/sandbox-skill-reconcile.ts` (with the Git plan receipts in `skills/cluster-skill-coordinator.ts`), the skill read planner `createSkillReadPlanner` over `skillPointerKey`, the pod-subject window in `cp/gitcred-server.ts` bound by the tunnel greeting (`shim/tunnel-proxy.ts`, `remote/tunnel-binder.ts`) |
+| daemon (shim) | The `skill-git-in-pod-v1` probe `shim/skill-git-feature.ts`, in-pod Git skill acquisition in `shim/skill-handler.ts` over `shim/skill-git-acquire.ts` (with its retry core `source-cache/bundle-retry.ts`), the `bundle` operations (`shim/bundle-handler.ts`, `shim/bundle-protocol.ts`, daemon side `shim/bundle-client.ts`), credential window in the `gitcred` tunnel, the `--bundle-uri` rule in `workspace/git-command-policy.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect; the pointer row's compare-and-set in `setSourceCachePointer`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| chart         | `sourceCache.*` values, member credentials, the bucket lifecycle rule document in the chart README                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

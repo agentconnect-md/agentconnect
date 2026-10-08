@@ -76,8 +76,8 @@ export class SkillCredentialWindows {
     }
   }
 
-  /** The live window `capability` opens for `agentId`, compared in constant time; expired ones are dropped. */
-  admit(agentId: string, capability: string | undefined): AdmittedSkillWindow | undefined {
+  /** The live window `capability` opens for `agentId` presented by `subject` (the connection's pod, or the daemon), compared in constant time. */
+  admit(agentId: string, capability: string | undefined, subject: string): AdmittedSkillWindow | undefined {
     if (!capability) return undefined
     const presented = digestOf(capability)
     const now = this.now()
@@ -87,7 +87,8 @@ export class SkillCredentialWindows {
         this.windows.delete(window.id)
         continue
       }
-      if (timingSafeEqual(window.digest, presented) && window.agentId === agentId) found = window
+      if (timingSafeEqual(window.digest, presented) && window.agentId === agentId && window.subject === subject)
+        found = window
     }
     if (!found) return undefined
     const repos = found.repos

@@ -115,21 +115,30 @@ export function credRepoId(provider: string, externalId: string): string {
   return `${provider}:${externalId}`
 }
 
+/** Validate a full ref under `prefix` against a subset of `git check-ref-format`. */
+function assertFullRefUnder(ref: string, prefix: 'refs/heads/' | 'refs/tags/', label: string): void {
+  if (typeof ref !== 'string' || !ref.startsWith(prefix) || ref.length > 1024)
+    invalid(`ref must be a ${prefix}<${label}> name`)
+  const name = ref.slice(prefix.length)
+  if (!name || name.endsWith('/') || name.endsWith('.') || name.includes('..') || name.includes('@{')) {
+    invalid(`ref is not a valid ${label} name`)
+  }
+  if (name === '@' || /[\u0000- \u007f~^:?*[\\]/.test(name)) invalid(`ref is not a valid ${label} name`)
+  for (const component of name.split('/')) {
+    if (!component || component.startsWith('.') || component.endsWith('.lock'))
+      invalid(`ref is not a valid ${label} name`)
+  }
+}
+
 /** Validate a branch ref against a subset of `git check-ref-format` and require `refs/heads/`. */
 export function assertBranchRef(ref: string): void {
-  if (typeof ref !== 'string' || !ref.startsWith('refs/heads/') || ref.length > 1024) {
-    invalid('ref must be a refs/heads/<branch> name')
-  }
-  const branch = ref.slice('refs/heads/'.length)
-  if (!branch || branch.endsWith('/') || branch.endsWith('.') || branch.includes('..') || branch.includes('@{')) {
-    invalid('ref is not a valid branch name')
-  }
-  if (branch === '@' || /[\u0000- \u007f~^:?*[\\]/.test(branch)) invalid('ref is not a valid branch name')
-  for (const component of branch.split('/')) {
-    if (!component || component.startsWith('.') || component.endsWith('.lock')) {
-      invalid('ref is not a valid branch name')
-    }
-  }
+  assertFullRefUnder(ref, 'refs/heads/', 'branch')
+}
+
+/** A skill Source's full ref: a branch or a tag (source-cache.md §8). */
+export function assertSkillRef(ref: string): void {
+  if (typeof ref === 'string' && ref.startsWith('refs/tags/')) assertFullRefUnder(ref, 'refs/tags/', 'tag')
+  else assertBranchRef(ref)
 }
 
 /** The `refHash` segment: SHA-256 of the full ref name. */
@@ -161,6 +170,12 @@ function repoPrefix({ org, class: cls, repo }: SourceCacheRepoKey): string {
 export function pointerKey(input: SourceCacheRepoKey & { ref: string; shape: SourceCacheShape }): SourceCacheObjectKey {
   if (!SHAPES.includes(input.shape)) invalid('shape must be blobless or full')
   return `${repoPrefix(input)}/refs/${refHash(input.ref)}/${input.shape}/latest` as SourceCacheObjectKey
+}
+
+/** A skill Source's pointer: the same layout, keyed on its full branch or tag ref, always `blobless` (source-cache.md §4, §8). */
+export function skillPointerKey(input: SourceCacheRepoKey & { ref: string }): SourceCacheObjectKey {
+  assertSkillRef(input.ref)
+  return `${repoPrefix(input)}/refs/${sha256Hex(input.ref)}/blobless/latest` as SourceCacheObjectKey
 }
 
 /** `src/<org>/<class>/<repo>/bundles/<uuid>.bundle`. */

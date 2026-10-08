@@ -60,7 +60,10 @@ export {
   type CredentialedCacheReadDecision
 } from './authorize-read.js'
 export {
+  createSkillReadPlanner,
   createSourceCacheReadPlanner,
+  type SkillBundleRequest,
+  type SourceCacheSkillReader,
   type SourceCacheMissReason,
   type SourceCacheReadOutcome,
   type SourceCacheReadPlannerDeps,

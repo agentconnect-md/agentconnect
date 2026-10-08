@@ -70,6 +70,8 @@ export interface ExecutorPlaneDeps {
   /** Which of this daemon's own sockets a session needs a tunnel to, and where each one is — the same policy the pool's plane is given. */
   tunnelsFor?: (agentId: string) => TunnelName[]
   tunnelSocketPath?: (tunnel: TunnelName) => string | undefined
+  /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
+  tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   clock?: Clock
   /** Test seams: the dial's budget and the loss grace. */
@@ -137,6 +139,7 @@ export class ExecutorPlane implements ExecutionPlane {
     this.tunnels = new TunnelBinder({
       ...(deps.tunnelsFor === undefined ? {} : { tunnelsFor: deps.tunnelsFor }),
       ...(deps.tunnelSocketPath === undefined ? {} : { tunnelSocketPath: deps.tunnelSocketPath }),
+      ...(deps.tunnelGreeting === undefined ? {} : { tunnelGreeting: deps.tunnelGreeting }),
       log: deps.log
     })
     this.binder = new ChannelBinder<ExecutorLaunch>({

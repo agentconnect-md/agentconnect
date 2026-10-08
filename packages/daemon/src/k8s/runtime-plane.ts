@@ -93,6 +93,8 @@ export interface K8sRuntimePlaneOptions {
    */
   tunnelsFor?: (agentId: string) => TunnelName[]
   tunnelSocketPath?: (tunnel: TunnelName) => string | undefined
+  /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
+  tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   /** Lifetime of an issued session credential. The shim renews at half of it, so a test that has
    *  to cross a renewal shortens it rather than waiting out the default. */
   credentialTtlMs?: number
@@ -273,6 +275,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   const tunnels = new TunnelBinder({
     ...(options.tunnelsFor === undefined ? {} : { tunnelsFor: options.tunnelsFor }),
     ...(options.tunnelSocketPath === undefined ? {} : { tunnelSocketPath: options.tunnelSocketPath }),
+    ...(options.tunnelGreeting === undefined ? {} : { tunnelGreeting: options.tunnelGreeting }),
     log: options.log ?? SILENT
   })
 

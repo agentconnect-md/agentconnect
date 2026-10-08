@@ -3,6 +3,7 @@
  * path → repo parsing, the gh wrapper's repo-argument normalization, and the
  * gitcred.sock server's key routing (plane split + workspace folding).
  */
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -18,6 +19,8 @@ import {
 } from '../../src/cp/gitcred-server.js'
 import { GitCredUnavailableError, type GitCredentialCache } from '../../src/cp/git-credential.js'
 import { MAX_SKILL_WINDOW_TTL_MS, SkillCredentialWindows } from '../../src/cp/skill-credential-window.js'
+import { TunnelBinder, type TunnelSession } from '../../src/remote/tunnel-binder.js'
+import type { ShimEvent } from '../../src/shim/protocol.js'
 
 describe('repoFromPath (git credential path → owner/repo)', () => {
   it('parses plain, leading-slash, .git and LFS-subpath forms', () => {
@@ -567,6 +570,130 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       } finally {
         skillRepos.delete('acme/infra')
       }
+    })
+
+    // A tunnel's connection: the proxy's greeting line first, then the pod's bytes.
+    const askVia = (
+      sockPath: string,
+      greeting: Buffer | string,
+      capability: string,
+      extra: Record<string, unknown> = {}
+    ) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const sock = createConnection(sockPath)
+        let buf = ''
+        sock.on('connect', () => {
+          sock.write(greeting)
+          sock.write(JSON.stringify({ op: 'get', agentId: 'a1', capability, repoFullName: SKILL, ...extra }) + '\n')
+        })
+        sock.on('data', (c) => {
+          buf += c.toString('utf8')
+          const nl = buf.indexOf('\n')
+          if (nl === -1) return
+          sock.destroy()
+          resolve(JSON.parse(buf.slice(0, nl)) as Record<string, unknown>)
+        })
+        sock.on('error', reject)
+      })
+
+    it('admits a pod window only through its own pod’s tunnel', async () => {
+      const { sockPath, gets } = await bootGithub()
+      const window = server!.openPodSkillWindow('a1', 'a1/session-1', [SKILL])!
+      expect(window).toMatchObject({ subject: 'a1/session-1', repos: [SKILL] })
+      // The same agent's other pod, or the daemon-local socket, cannot spend it.
+      expect(await askVia(sockPath, server!.tunnelGreeting('a1'), window.capability)).toMatchObject({ ok: false })
+      expect(await ask(sockPath, window.capability)).toMatchObject({ ok: false })
+      expect(gets).toHaveLength(0)
+      expect(await askVia(sockPath, server!.tunnelGreeting('a1/session-1'), window.capability)).toMatchObject({
+        ok: true,
+        password: 'ghs_test'
+      })
+      expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: SKILL } }])
+    })
+
+    it('refuses a daemon window through any tunnel and a greeting without the server key', async () => {
+      const { sockPath, gets, capability } = await bootGithub()
+      const daemon = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL] })
+      expect(await askVia(sockPath, server!.tunnelGreeting('a1'), daemon.capability)).toMatchObject({ ok: false })
+      const forged = JSON.stringify({ op: 'via', subject: 'a1', key: 'x'.repeat(43) }) + '\n'
+      expect(await askVia(sockPath, forged, daemon.capability)).toMatchObject({ ok: false })
+      // A tunnel still carries the agent capability's own grants.
+      expect(
+        await askVia(sockPath, server!.tunnelGreeting('a1'), capability, { repoFullName: undefined })
+      ).toMatchObject({ ok: true })
+      expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git' } }])
+    })
+
+    it('opens a pod window over only the spec’s private skill repositories, the workspace one included', async () => {
+      skillRepos.add('acme/infra')
+      try {
+        await bootGithub()
+        expect(server!.openPodSkillWindow('a1', 'a1', ['acme/public'])).toBeUndefined()
+        expect(server!.openPodSkillWindow('a1', 'a1', [SKILL, 'acme/infra', 'acme/public'])?.repos).toEqual([
+          SKILL,
+          'acme/infra'
+        ])
+        expect(() => server!.openPodSkillWindow('a1', 'daemon', [SKILL])).toThrow('pod subject')
+      } finally {
+        skillRepos.delete('acme/infra')
+      }
+    })
+
+    it('binds a window to the tunnel it was handed through, end to end over two pods of one agent', async () => {
+      const { sockPath, gets } = await bootGithub()
+      const binder = new TunnelBinder({
+        tunnelsFor: () => ['gitcred'],
+        tunnelSocketPath: () => sockPath,
+        tunnelGreeting: (subject) => server!.tunnelGreeting(subject),
+        log: { info: () => {}, warn: () => {} }
+      })
+      // A pod announces a connection, sends one gitcred request, and reads the reply its tunnel delivers.
+      const pod = (subject: string) => {
+        let listener: ((event: ShimEvent) => void) | undefined
+        const replies = new Map<string, (line: Record<string, unknown>) => void>()
+        const session: TunnelSession = {
+          agentId: 'a1',
+          generation: 1,
+          request: async (_capability, payload) => {
+            const frame = payload as { op: string; streamId?: string; chunk?: string }
+            if (frame.op === 'data')
+              replies.get(frame.streamId!)?.(JSON.parse(Buffer.from(frame.chunk!, 'base64').toString()))
+            return { socketPath: '/pod/gitcred.sock' }
+          },
+          onEvent: (fn) => (listener = fn),
+          offEvent: () => {},
+          onAttach: () => {},
+          offAttach: () => {},
+          onLost: () => {}
+        }
+        return {
+          session,
+          ask: (capability: string) =>
+            new Promise<Record<string, unknown>>((resolve) => {
+              const streamId = randomUUID()
+              replies.set(streamId, resolve)
+              listener!({ type: 'shim/event', streamId, event: { kind: 'connect', tunnel: 'gitcred' } })
+              const line = JSON.stringify({ op: 'get', agentId: 'a1', capability, repoFullName: SKILL }) + '\n'
+              listener!({
+                type: 'shim/event',
+                streamId,
+                event: { kind: 'chunk', data: Buffer.from(line).toString('base64') }
+              })
+            }),
+          subject
+        }
+      }
+      const isolated = pod('a1/session-1')
+      const shared = pod('a1')
+      await binder.ensure(isolated.subject, isolated.session)
+      await binder.ensure(shared.subject, shared.session)
+      const window = server!.openPodSkillWindow('a1', isolated.subject, [SKILL])!
+      expect(await shared.ask(window.capability)).toMatchObject({ ok: false })
+      expect(gets).toHaveLength(0)
+      expect(await isolated.ask(window.capability)).toMatchObject({ ok: true })
+      window.close()
+      expect(await isolated.ask(window.capability)).toMatchObject({ ok: false })
+      binder.releaseAll('test over')
     })
 
     it('leaves workspace and additional-repository issuance to the agent capability unchanged', async () => {

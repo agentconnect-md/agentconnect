@@ -16,6 +16,8 @@ export interface TunnelBinderDeps {
    */
   tunnelsFor?: (agentId: string) => TunnelName[]
   tunnelSocketPath?: (tunnel: TunnelName) => string | undefined
+  /** The line that tags a subject's connection to a daemon socket with that subject (gitcred's pod window binding). */
+  tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -45,7 +47,12 @@ export class TunnelBinder {
     if (!entry) {
       entry = {
         generation: session.generation,
-        proxy: new TunnelProxy({ session, socketPathFor, log: this.deps.log })
+        proxy: new TunnelProxy({
+          session,
+          socketPathFor,
+          greeting: (tunnel) => this.deps.tunnelGreeting?.(subject, tunnel),
+          log: this.deps.log
+        })
       }
       this.proxies.set(subject, entry)
     }

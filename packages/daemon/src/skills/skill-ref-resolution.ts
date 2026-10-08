@@ -45,18 +45,58 @@ export interface SkillRefResolutionDeps {
   credentialed: Pick<CodeHostRefResolver, 'resolveRef'>
 }
 
+/** A Git skill Source's resolution as the in-pod plan uses it: the daemon's planned commit, the full ref it followed, and who vouched. */
+export type SkillRefPlan =
+  | {
+      ok: true
+      commit: string
+      /** The full `refs/heads/*` or `refs/tags/*` name, when the resolution knows it; absent for a pinned SHA. */
+      ref?: string
+      pinned: boolean
+      /** `resolveRef` succeeded for THIS agent: the only authority a `cred` cache read may rest on (source-cache.md §5). */
+      credentialed: boolean
+    }
+  | { ok: false }
+
+/** A full branch or tag name spelled out in the entry itself, which an anonymous commit check cannot report. */
+function entryFullRef(entry: AgentSkillEntry): string | undefined {
+  const ref = resolveBoundedGitSkillSource(entry).ref
+  return ref !== undefined && /^refs\/(?:heads|tags)\/./.test(ref) ? ref : undefined
+}
+
+/** Resolve a Git skill Source for an in-pod plan: pinned as given, credentialed per agent, anonymous through the shared check. */
+export function createSkillRefPlanResolution(
+  deps: SkillRefResolutionDeps
+): (entry: AgentSkillEntry, agentId: string) => Promise<SkillRefPlan> {
+  return async (entry, agentId) => {
+    let pinned: boolean
+    try {
+      pinned = isPinnedGitSkillRef(entry)
+    } catch {
+      return { ok: false }
+    }
+    if (pinned) {
+      return { ok: true, commit: resolveBoundedGitSkillSource(entry).ref!.toLowerCase(), pinned, credentialed: false }
+    }
+    if (!isCredentialedSkillSource(entry)) {
+      const commit = await deps.anonymous.resolve(entry)
+      if (commit === null) return { ok: false }
+      const ref = entryFullRef(entry)
+      return { ok: true, commit, ...(ref ? { ref } : {}), pinned, credentialed: false }
+    }
+    const result = await resolveCredentialedSkillRef(deps.credentialed, entry, agentId)
+    if (!result.ok) return { ok: false }
+    return { ok: true, commit: result.commit, ...(result.ref ? { ref: result.ref } : {}), pinned, credentialed: true }
+  }
+}
+
 /** The planned commit for a tracking skill ref, or null when unknown (the installed commit then stands). */
 export function createSkillRefResolution(
   deps: SkillRefResolutionDeps
 ): (entry: AgentSkillEntry, agentId: string) => Promise<string | null> {
+  const plan = createSkillRefPlanResolution(deps)
   return async (entry, agentId) => {
-    try {
-      if (isPinnedGitSkillRef(entry)) return null
-    } catch {
-      return null
-    }
-    if (!isCredentialedSkillSource(entry)) return deps.anonymous.resolve(entry)
-    const result = await resolveCredentialedSkillRef(deps.credentialed, entry, agentId)
-    return result.ok ? result.commit : null
+    const resolved = await plan(entry, agentId)
+    return resolved.ok && !resolved.pinned ? resolved.commit : null
   }
 }

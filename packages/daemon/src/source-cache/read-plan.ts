@@ -1,12 +1,17 @@
+import type { AgentSkillEntry } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
+import { isCredentialedSkillSource, type SkillRefPlan } from '../skills/skill-ref-resolution.js'
+import { resolveBoundedGitSkillSource } from '../skills/skill-git-source.js'
 import { credentialProviderOf } from '../codehost/credentials.js'
 import type { LocalStore, SourceCacheObjectRow } from '../store/local-store.js'
 import type { BundleFallbackReason } from '../workspace/bundled-clone.js'
 import type { AuthorizeCredentialedCacheRead } from './authorize-read.js'
 import {
   anonRepoId,
+  credRepoId,
   parseSourceCacheObjectKey,
   pointerKey,
+  skillPointerKey,
   type SourceCacheClass,
   type SourceCacheObjectKey,
   type SourceCacheShape
@@ -117,6 +122,58 @@ function usable(row: SourceCacheObjectRow | undefined, kind: SourceCacheObjectRo
   return row !== undefined && row.kind === kind && row.state === 'committed' && row.claimedBy === null
 }
 
+/** The usable bundle a pointer row names, presigned; throws a Miss for anything less (§4, §7). */
+async function bundleBehind(
+  deps: Pick<SourceCacheReadPlannerDeps, 'presigner' | 'log'>,
+  store: Pick<LocalStore, 'getSourceCacheObject' | 'touchSourceCacheRead'>,
+  input: {
+    orgId: string
+    repoClass: SourceCacheClass
+    repo: string
+    latest: SourceCacheObjectKey
+    pointer: SourceCacheObjectRow | undefined
+    shape: SourceCacheShape
+  },
+  now: () => number
+): Promise<WorkspaceBundlePlan> {
+  const { orgId, repoClass, repo, latest, pointer } = input
+  if (pointer === undefined) return miss('no-pointer', latest)
+  if (!usable(pointer, 'pointer') || pointer.targetKey === null) return miss('unusable-pointer', latest)
+  const target = parseSourceCacheObjectKey(pointer.targetKey)
+  if (target?.kind !== 'bundle' || target.orgId !== orgId || target.repoClass !== repoClass || target.repoId !== repo) {
+    return miss('unusable-pointer', latest)
+  }
+  const bundleKey = pointer.targetKey as SourceCacheObjectKey
+  const bundle = await store.getSourceCacheObject(orgId, bundleKey)
+  if (
+    !usable(bundle, 'bundle') ||
+    bundle!.shape !== input.shape ||
+    bundle!.repoClass !== repoClass ||
+    bundle!.repoId !== repo ||
+    bundle!.refHash !== pointer.refHash
+  ) {
+    return miss('unusable-bundle', bundleKey)
+  }
+  const { url } = await deps.presigner.presignGet(bundleKey)
+  if (!url.startsWith('https://')) return miss('not-https', bundleKey)
+  // Stamped on GET issuance only; a lost stamp costs eviction accuracy, never the read.
+  const at = now()
+  await Promise.all([latest, bundleKey].map((key) => store.touchSourceCacheRead({ orgId, key, at }))).catch(
+    (err: unknown) => {
+      deps.log.warn(`source cache: could not record a read of ${bundleKey} (${(err as Error).message})`)
+    }
+  )
+  return {
+    url,
+    bundleKey,
+    pointerKey: latest,
+    repoClass,
+    shape: input.shape,
+    bundleCreatedAt: bundle!.createdAt,
+    bytes: bundle!.bytes
+  }
+}
+
 export function createSourceCacheReadPlanner(deps: SourceCacheReadPlannerDeps): SourceCacheWorkspaceReader {
   const now = deps.now ?? Date.now
 
@@ -175,46 +232,7 @@ export function createSourceCacheReadPlanner(deps: SourceCacheReadPlannerDeps): 
       pointerKey: latest,
       observedTargetKey: pointer?.targetKey ?? null
     }
-    if (pointer === undefined) return miss('no-pointer', latest)
-    if (!usable(pointer, 'pointer') || pointer.targetKey === null) return miss('unusable-pointer', latest)
-    const target = parseSourceCacheObjectKey(pointer.targetKey)
-    if (
-      target?.kind !== 'bundle' ||
-      target.orgId !== orgId ||
-      target.repoClass !== repoClass ||
-      target.repoId !== repo
-    ) {
-      return miss('unusable-pointer', latest)
-    }
-    const bundleKey = pointer.targetKey as SourceCacheObjectKey
-    const bundle = await store.getSourceCacheObject(orgId, bundleKey)
-    if (
-      !usable(bundle, 'bundle') ||
-      bundle!.shape !== request.shape ||
-      bundle!.repoClass !== repoClass ||
-      bundle!.repoId !== repo ||
-      bundle!.refHash !== pointer.refHash
-    ) {
-      return miss('unusable-bundle', bundleKey)
-    }
-    const { url } = await deps.presigner.presignGet(bundleKey)
-    if (!url.startsWith('https://')) return miss('not-https', bundleKey)
-    // Stamped on GET issuance only; a lost stamp costs eviction accuracy, never the read.
-    const at = now()
-    await Promise.all([latest, bundleKey].map((key) => store.touchSourceCacheRead({ orgId, key, at }))).catch(
-      (err: unknown) => {
-        deps.log.warn(`source cache: could not record a read of ${bundleKey} (${(err as Error).message})`)
-      }
-    )
-    return {
-      url,
-      bundleKey,
-      pointerKey: latest,
-      repoClass,
-      shape: request.shape,
-      bundleCreatedAt: bundle!.createdAt,
-      bytes: bundle!.bytes
-    }
+    return await bundleBehind(deps, store, { orgId, repoClass, repo, latest, pointer, shape: request.shape }, now)
   }
 
   return {
@@ -238,6 +256,75 @@ export function createSourceCacheReadPlanner(deps: SourceCacheReadPlannerDeps): 
           })
         }
         return found.target ? { target: found.target } : {}
+      }
+    }
+  }
+}
+
+/** One Git skill Source's read for the reading agent: its entry and the daemon's own resolution of it. */
+export interface SkillBundleRequest {
+  agentId: string
+  entry: AgentSkillEntry
+  resolution: SkillRefPlan
+}
+
+export interface SourceCacheSkillReader {
+  /** A presigned GET of the Source's own access class for `--bundle-uri`, or undefined; never throws, never logged. */
+  getUrl(request: SkillBundleRequest): Promise<string | undefined>
+}
+
+/** The skill read planner (source-cache.md §4, §5, §8): a Source reads only its own class, and `cred` only on its agent's `resolveRef`. */
+export function createSkillReadPlanner(
+  deps: Pick<SourceCacheReadPlannerDeps, 'store' | 'presigner' | 'orgForAgent' | 'now' | 'log' | 'onOutcome'>
+): SourceCacheSkillReader {
+  const now = deps.now ?? Date.now
+  const record = (outcome: SourceCacheReadOutcome): void => {
+    if (outcome.kind !== 'miss') return
+    const line = `source cache: skill miss (reason=${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ''})`
+    if (outcome.reason === 'error' || outcome.reason === 'not-https') deps.log.warn(line)
+    else deps.log.debug(line)
+    try {
+      deps.onOutcome?.(outcome)
+    } catch {
+      // A metrics hook never fails a plan.
+    }
+  }
+  const resolve = async (request: SkillBundleRequest, found: { repoClass?: SourceCacheClass }): Promise<string> => {
+    const { entry, resolution } = request
+    if (!resolution.ok) return miss('unauthorized', 'resolution_failed')
+    // A pinned SHA has no ref to follow, so it has no pointer.
+    if (resolution.pinned) return miss('no-pointer', 'pinned')
+    if (resolution.ref === undefined) return miss('no-pointer', 'ref_unknown')
+    let repo: string
+    if (isCredentialedSkillSource(entry)) {
+      found.repoClass = 'cred'
+      if (!resolution.credentialed) return miss('unauthorized', 'no_resolve_ref')
+      repo = credRepoId('github', entry.githubRepoId)
+    } else {
+      // An anonymous declaration reads only the URL's own anon entry, whatever the repository's visibility.
+      found.repoClass = 'anon'
+      repo = anonRepoId(resolveBoundedGitSkillSource(entry).cloneUrl)
+    }
+    const orgId = deps.orgForAgent(request.agentId)
+    if (orgId === undefined) return miss('no-org', request.agentId)
+    const store = deps.store() ?? miss('error', 'store not open')
+    const repoClass = found.repoClass
+    const latest = skillPointerKey({ org: orgId, class: repoClass, repo, ref: resolution.ref })
+    const pointer = await store.getSourceCacheObject(orgId, latest)
+    const plan = await bundleBehind(deps, store, { orgId, repoClass, repo, latest, pointer, shape: 'blobless' }, now)
+    return plan.url
+  }
+  return {
+    async getUrl(request) {
+      const found: { repoClass?: SourceCacheClass } = {}
+      try {
+        return await resolve(request, found)
+      } catch (err) {
+        const repoClass = found.repoClass ? { repoClass: found.repoClass } : {}
+        const reason = err instanceof Miss ? err.reason : 'error'
+        const detail = err instanceof Miss ? err.message : ((err as Error)?.message ?? String(err))
+        record({ kind: 'miss', reason, shape: 'blobless', ...repoClass, detail })
+        return undefined
       }
     }
   }
