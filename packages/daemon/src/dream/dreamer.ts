@@ -3,6 +3,7 @@ import { posix } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { MAX_ORGANIZATION_SUGGESTION_BODY_BYTES, type SkillBundleTextFile } from '@agentconnect.md/protocol'
 import { MEMORY_FORMAT_GUIDANCE } from '../memory/frontmatter.js'
+import { READ_ONLY_MODE_MEMORY_WRITES_NOTE } from '../memory/distill.js'
 
 /**
  * Pure dream-pipeline pieces (design: docs/designs/memory-dreaming.md §4–5):
@@ -163,6 +164,7 @@ ${MEMORY_FORMAT_GUIDANCE}
 - Return JSON only with three explicit categories:
   {"agentSkills":[],"organizationKnowledge":[],"organizationSkills":[]}.
 - WRITE the rebuilt store with \`writeMemory\`, one call per topic file. Your JSON reply carries ONLY the review-queue proposals above — the memory itself is what you wrote.
+${READ_ONLY_MODE_MEMORY_WRITES_NOTE}
 - Those writes land in an EMPTY staging area that REPLACES the live store if a human adopts it: write every file you are keeping, copying an unchanged one byte-for-byte from the snapshot. A file you never write is deleted — that is how you prune.
 - \`readMemory\` reads back what you have staged so far, never the live store. The existing store is the snapshot in your working directory; read it with your file tools.
 - Do NOT write MEMORY.md. The index is generated from your files' \`description\` headers, so a good description is what makes a memory findable — that is where the effort belongs.
