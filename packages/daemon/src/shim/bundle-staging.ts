@@ -3,12 +3,12 @@ import { join } from 'node:path'
 import { ExecRefusedError } from '../workspace/git-command-policy.js'
 
 // A real directory (not a symlink), private to this shim's user.
-function assertPrivateDirectory(dir: string, stats: Stats): void {
+function assertPrivateDirectory(dir: string, stats: Stats, label = 'bundle staging'): void {
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new ExecRefusedError(`bundle staging is not a real directory: ${dir}`)
+    throw new ExecRefusedError(`${label} is not a real directory: ${dir}`)
   }
   if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) {
-    throw new ExecRefusedError(`bundle staging is not owned by the shim user: ${dir}`)
+    throw new ExecRefusedError(`${label} is not owned by the shim user: ${dir}`)
   }
 }
 
@@ -22,12 +22,17 @@ export function prepareBundleStaging(dir: string): void {
 
 // Refuse to stage a bundle unless the directory is still a private 0700 directory of this user.
 export function assertBundleStagingPrivate(dir: string): void {
+  assertStagingPrivate(dir, 'bundle staging')
+}
+
+// Refuse a shim staging directory that is not a private 0700 directory of this user; `label` names it in the error.
+export function assertStagingPrivate(dir: string, label: string): void {
   let stats: Stats
   try {
     stats = lstatSync(dir)
   } catch {
-    throw new ExecRefusedError(`bundle staging directory is missing: ${dir}`)
+    throw new ExecRefusedError(`${label} directory is missing: ${dir}`)
   }
-  assertPrivateDirectory(dir, stats)
-  if ((stats.mode & 0o077) !== 0) throw new ExecRefusedError(`bundle staging is not mode 0700: ${dir}`)
+  assertPrivateDirectory(dir, stats, label)
+  if ((stats.mode & 0o077) !== 0) throw new ExecRefusedError(`${label} is not mode 0700: ${dir}`)
 }

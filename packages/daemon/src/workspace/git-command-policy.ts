@@ -41,22 +41,23 @@ const REFUSED_LONG_OPTIONS = [
 // Ad-hoc config in any short spelling: -c k=v, -ck=v.
 const REFUSED_SHORT_CONFIG = /^-c/
 
+// Exec-channel policy, not execution: admitted only for the workspace sync's `checkout --no-track -B <branch> <ref>`.
+const REFUSED_CHECKOUT_ARGUMENT = [
+  /^-f$/,
+  /^--force$/,
+  /^--$/,
+  /^-m$/,
+  /^--merge$/,
+  /^-p$/,
+  /^--patch$/,
+  /^--ours$/,
+  /^--theirs$/,
+  /^--orphan/,
+  /^--detach$/
+]
+
 // These spellings reach execution only for the named subcommand.
 const REFUSED_SUBCOMMAND_ARGUMENT: Record<string, RegExp[]> = {
-  // Admitted only for the workspace sync's `checkout --no-track -B <branch> <ref>`; every form that discards or restores files stays out.
-  checkout: [
-    /^-f$/,
-    /^--force$/,
-    /^--$/,
-    /^-m$/,
-    /^--merge$/,
-    /^-p$/,
-    /^--patch$/,
-    /^--ours$/,
-    /^--theirs$/,
-    /^--orphan/,
-    /^--detach$/
-  ],
   clone: [/^-u/],
   config: [/^-e$/, /^--edit/]
 }
@@ -152,6 +153,19 @@ export function validateGitArgs(args: string[]): void {
   if (!subcommand || !ALLOWED_GIT_SUBCOMMANDS.has(subcommand)) {
     throw new ExecRefusedError(`git ${subcommand ?? '(none)'} is not in the permitted inventory`)
   }
+  assertNoRefusedArguments(args)
+  if (subcommand !== 'checkout') return
+  for (const argument of rest) {
+    if (REFUSED_CHECKOUT_ARGUMENT.some((pattern) => pattern.test(argument))) {
+      throw new ExecRefusedError(`argument ${argument} is refused for git ${subcommand}`)
+    }
+  }
+}
+
+/** The execution-reaching refusals alone, without the exec inventory: what shim-internal Git argv is checked against. */
+export function assertNoRefusedArguments(args: string[]): void {
+  const [subcommand, ...rest] = args
+  if (!subcommand || subcommand.startsWith('-')) throw new ExecRefusedError('git argv must start with a subcommand')
   const bundleUri = subcommand === 'clone' ? validateBundleUri(rest) : -1
   rest.forEach((argument, index) => {
     if (index === bundleUri) return

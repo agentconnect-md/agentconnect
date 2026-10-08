@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { ExecRefusedError, isValidBranchRef, validateGitArgs } from '../src/workspace/git-command-policy.js'
+import {
+  ExecRefusedError,
+  assertNoRefusedArguments,
+  isValidBranchRef,
+  validateGitArgs
+} from '../src/workspace/git-command-policy.js'
 
 // Pure, I/O-free table of the shim's Git argv policy; real-Git execution lives in shim-exec-handler.test.ts.
 
@@ -190,4 +195,53 @@ describe('refs/bundles cleanup shape', () => {
     [['update-ref', '-d', 'refs/bundles/main']],
     [['update-ref', '-d', 'refs/bundles/heads/main']]
   ])('admits %j', (args) => admits(args))
+})
+
+describe('assertNoRefusedArguments (shim-internal argv)', () => {
+  it.each([
+    [['clone', '--upl=x', 'u', 'd']],
+    [['clone', '-qu', 'x', 'u', 'd']],
+    [['clone', '--bundle=https://h/b', 'u', 'd']],
+    [['clone', '--bundle-uri=file:///etc/passwd', 'u', 'd']],
+    [['fetch', '--upload-pack=x', 'origin']],
+    [['ls-remote', '--exec=x', 'u']],
+    [['read-tree', '-ccore.fsmonitor=x', 'HEAD']],
+    [['read-tree', '--config-env=core.pager=EVIL', 'HEAD']],
+    [['config', '--edit']],
+    [['fsck']],
+    [['fsck', '--full']],
+    [['--upload-pack=x']],
+    [[]]
+  ])('refuses %j', (args) => {
+    expect(() => assertNoRefusedArguments(args)).toThrow(ExecRefusedError)
+  })
+
+  it.each([
+    [
+      [
+        'clone',
+        '-q',
+        '--filter=blob:none',
+        '--no-checkout',
+        '--bundle-uri=https://cache.example/b',
+        '--',
+        'https://h/r',
+        '/s/repo'
+      ]
+    ],
+    [['read-tree', '--reset', '-u', 'abc:skills']],
+    [['checkout', '--detach', 'abc']],
+    [['checkout', '--', 'x']],
+    [['cat-file', '-e', 'abc^{commit}']],
+    [['fsck', '--connectivity-only', '--no-dangling']]
+  ])('admits %j, which the exec inventory need not', (args) => {
+    expect(() => assertNoRefusedArguments(args)).not.toThrow()
+  })
+
+  it('leaves the exec policy as strict as before for checkout and the inventory', () => {
+    refuses(['checkout', '--detach', 'abc'])
+    refuses(['checkout', '--', 'x'])
+    refuses(['read-tree', '--reset', '-u', 'abc'])
+    refuses(['cat-file', '-e', 'abc'])
+  })
 })
