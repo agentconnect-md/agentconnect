@@ -12,7 +12,9 @@ import {
   type ProviderCredentialsRequest
 } from '@agentconnect.md/protocol'
 import { KeyServerError, type KeyGrant, type KeyServerClient } from '../key-server/client.js'
-import { DecisionProviderError, evaluateTypesafe } from './typesafe.js'
+import { evaluateTypesafe } from './typesafe.js'
+import { DecisionProviderError } from './provider.js'
+import { evaluateOpenai, openaiQuestion } from './openai.js'
 
 export interface DecisionEvaluationInput {
   agentId: string
@@ -29,10 +31,16 @@ export interface DecisionEvaluationInput {
 
 /** The exact request body sent to the provider; state building measures its byte budget against it. */
 export function decisionRequestBody(input: {
-  decision: Pick<DecisionDraft, 'model' | 'question'>
+  decision: Pick<DecisionDraft, 'model' | 'question'> & { providerId?: string }
   state: Record<string, unknown>
 }): string {
   const question = DecisionQuestion.parse(input.decision.question)
+  if (input.decision.providerId === 'openai')
+    return JSON.stringify({
+      model: input.decision.model,
+      input: JSON.stringify(input.state),
+      questions: [openaiQuestion(question)]
+    })
   return JSON.stringify({
     model: input.decision.model,
     state: input.state,
@@ -118,7 +126,12 @@ export class DecisionEvaluator {
 
   catalog(): DecisionCatalogReply {
     const cloudAvailable = !!this.deps.keyServer() && ProviderEndpoint.safeParse(this.deps.cloudBaseUrl).success
-    return { providers: DECISION_PROVIDER_PROFILES.map((profile) => ({ ...profile, cloudAvailable })) }
+    return {
+      providers: DECISION_PROVIDER_PROFILES.map((profile) => ({
+        ...profile,
+        cloudAvailable: profile.id === 'typesafe' && cloudAvailable
+      }))
+    }
   }
 
   close(): void {
@@ -148,6 +161,7 @@ export class DecisionEvaluator {
     const { agentId, evaluationId, decision } = input
     const orgId = this.deps.orgForAgent(agentId)
     if (!orgId) return unavailable('credentials')
+    const provider = decision.providerId === 'openai' ? 'openai' : 'typesafe'
     let body: string
     let question: DecisionQuestion
     try {
@@ -167,7 +181,7 @@ export class DecisionEvaluator {
     try {
       let credentials
       try {
-        credentials = (await this.deps.credentials({ agentId, provider: 'typesafe' }, signal)).credentials
+        credentials = (await this.deps.credentials({ agentId, provider }, signal)).credentials
       } catch {
         signal.throwIfAborted()
         return unavailable('credentials')
@@ -176,9 +190,10 @@ export class DecisionEvaluator {
       if (credentials) {
         credentials = {
           ...credentials,
-          endpoint: credentials.endpoint ?? PROVIDER_KEY_PROFILES.typesafe.defaultEndpoint
+          endpoint: credentials.endpoint ?? PROVIDER_KEY_PROFILES[provider].defaultEndpoint
         }
       } else {
+        if (provider !== 'typesafe') return unavailable('credentials')
         issuer = this.deps.keyServer()
         const endpoint = ProviderEndpoint.safeParse(this.deps.cloudBaseUrl)
         if (!issuer || !endpoint.success) return unavailable('credentials')
@@ -193,7 +208,8 @@ export class DecisionEvaluator {
       }
       if (this.deps.orgForAgent(agentId) !== orgId) return unavailable('credentials')
       input.onRawRequest?.(body)
-      return await evaluateTypesafe(question, body, credentials, signal, this.deps.fetch, input.onRawResponse)
+      const evaluate = provider === 'openai' ? evaluateOpenai : evaluateTypesafe
+      return await evaluate(question, body, credentials, signal, this.deps.fetch, input.onRawResponse)
     } catch (error) {
       // Consumer cancellation must never become a fail-open provider outcome.
       this.shutdown.signal.throwIfAborted()

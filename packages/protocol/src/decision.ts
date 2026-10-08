@@ -74,6 +74,12 @@ export const DECISION_PROVIDER_PROFILES = [
       { id: 'jev-latest', label: 'Jev latest', questionTypes: ['boolean', 'choice', 'score'] },
       { id: 'jev-preview', label: 'Jev preview', questionTypes: ['boolean', 'choice', 'score'] }
     ]
+  },
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    kind: 'openai',
+    models: [{ id: 'gpt-6-luna', label: 'GPT-6 Luna', questionTypes: ['boolean', 'choice', 'score'] }]
   }
 ] satisfies Array<{
   id: string
