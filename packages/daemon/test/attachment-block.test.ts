@@ -216,6 +216,19 @@ describe('hydrateTranscriptImage', () => {
     expect(blocks[0]).toMatchObject({ type: 'image', data: png.toString('base64') })
   })
 
+  it('fetches a transcript thumbnail after a Decision has already loaded full image bytes', async () => {
+    const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(WEBCHAT_IMAGE_MAX_BYTES)])
+    const jpegThumb = Buffer.from([0xff, 0xd8, 0xff, 0x00])
+    const download = vi.fn(async () => jpegThumb)
+    const attachments = [att({ inlineData: png, thumbnailUrl: 'https://files/thumb' })]
+    await hydrateTranscriptImage(attachments, { download })
+    expect(download).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sourceUrl: 'https://files/thumb' }))
+    expect(attachments[0]!.inlineData).toBe(png)
+    expect(transcriptImageAttachments(attachments)).toEqual([
+      { name: 'a.png', mimeType: 'image/jpeg', data: jpegThumb.toString('base64') }
+    ])
+  })
+
   it('skips the thumbnail fetch when the full image already fits the transcript budget', async () => {
     const download = vi.fn(async () => Buffer.from('IMG'))
     const attachments = [att({ thumbnailUrl: 'https://files/thumb' })]

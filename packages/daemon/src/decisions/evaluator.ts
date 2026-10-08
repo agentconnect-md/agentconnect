@@ -15,30 +15,51 @@ import { KeyServerError, type KeyGrant, type KeyServerClient } from '../key-serv
 import { evaluateTypesafe } from './typesafe.js'
 import { DecisionProviderError } from './provider.js'
 import { evaluateOpenai, openaiQuestion } from './openai.js'
+import {
+  decisionImageParts,
+  resolveDecisionImages,
+  type DecisionImage,
+  type DecisionImageInput,
+  type DecisionImageDownload
+} from './images.js'
 
 export interface DecisionEvaluationInput {
   agentId: string
   evaluationId: string
   decision: Pick<DecisionDraft, 'providerId' | 'model' | 'question'>
   state: Record<string, unknown>
+  imageInput?: DecisionImageInput
   /** Epoch ms the whole decision stage must finish by; it shortens the evaluator's own timeout. */
   deadlineAt?: number
-  /** Receives the exact request body just before it is sent; never called when no request goes out. */
+  // Receives the request just before sending, with image bytes omitted; absent when no request goes out.
   onRawRequest?: (text: string) => void
-  /** Receives the provider's response body text, kept off DecisionEvaluation so it never reaches a frame. */
+  // Receives text-response diagnostics or an image-safe normalized result; raw image error bodies are omitted.
   onRawResponse?: (text: string) => void
 }
 
-/** The exact request body sent to the provider; state building measures its byte budget against it. */
+// Serialize provider input or an image-redacted diagnostic copy.
 export function decisionRequestBody(input: {
   decision: Pick<DecisionDraft, 'model' | 'question'> & { providerId?: string }
   state: Record<string, unknown>
+  images?: readonly DecisionImage[]
+  imageMessageId?: string
+  redactImages?: boolean
 }): string {
   const question = DecisionQuestion.parse(input.decision.question)
   if (input.decision.providerId === 'openai')
     return JSON.stringify({
       model: input.decision.model,
-      input: JSON.stringify(input.state),
+      input: input.images?.length
+        ? [
+            {
+              role: 'user',
+              content: [
+                { type: 'input_text', text: JSON.stringify(input.state) },
+                ...decisionImageParts(input.images, input.imageMessageId ?? '', input.redactImages)
+              ]
+            }
+          ]
+        : JSON.stringify(input.state),
       questions: [openaiQuestion(question)]
     })
   return JSON.stringify({
@@ -48,7 +69,7 @@ export function decisionRequestBody(input: {
   })
 }
 
-/** The raw fields a verdict's answerJson keeps: the sent request verbatim (already capped at 32 KiB) and the capped response. */
+// Verdict diagnostics retain bounded request metadata and response text, with image payloads omitted.
 export function rawAnswerFields(
   raw: string | undefined,
   request?: string
@@ -112,6 +133,7 @@ export interface DecisionEvaluatorDeps {
   keyServer(): KeyServerClient | undefined
   cloudBaseUrl?: string
   fetch?: typeof fetch
+  downloadImage?: DecisionImageDownload
   timeoutMs?: number
   now?: () => number
   warn?(message: string): void
@@ -207,9 +229,35 @@ export class DecisionEvaluator {
         credentials = { apiKey: grant.key, endpoint: endpoint.data, headers: {} }
       }
       if (this.deps.orgForAgent(agentId) !== orgId) return unavailable('credentials')
-      input.onRawRequest?.(body)
+      let rawRequest = body
+      let hasImages = false
+      if (provider === 'openai' && input.imageInput) {
+        const images = await resolveDecisionImages(agentId, input.imageInput, signal, this.deps.downloadImage)
+        if (images.length) {
+          const request = { ...input, images, imageMessageId: input.imageInput.messageId }
+          rawRequest = decisionRequestBody({ ...request, redactImages: true })
+          if (Buffer.byteLength(rawRequest, 'utf8') > DECISION_REQUEST_MAX_BYTES)
+            return unavailable('unsupported_input')
+          body = decisionRequestBody(request)
+          hasImages = true
+        }
+      }
+      signal.throwIfAborted()
+      if (this.deps.orgForAgent(agentId) !== orgId) return unavailable('credentials')
+      input.onRawRequest?.(rawRequest)
       const evaluate = provider === 'openai' ? evaluateOpenai : evaluateTypesafe
-      return await evaluate(question, body, credentials, signal, this.deps.fetch, input.onRawResponse)
+      // Image responses keep only the validated answer below; error bodies can echo image payloads.
+      const result = await evaluate(
+        question,
+        body,
+        credentials,
+        signal,
+        this.deps.fetch,
+        hasImages ? undefined : input.onRawResponse
+      )
+      if (hasImages)
+        input.onRawResponse?.(JSON.stringify({ imageResponse: 'Raw provider body omitted', evaluation: result }))
+      return result
     } catch (error) {
       // Consumer cancellation must never become a fail-open provider outcome.
       this.shutdown.signal.throwIfAborted()

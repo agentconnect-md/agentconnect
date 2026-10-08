@@ -251,6 +251,21 @@ const entry = (agentId: string, participant: boolean): RdRoutingConstraintEntry 
 })
 
 describe('DecisionRouter', () => {
+  it('passes the current message images with the carrier integration to the evaluator', async () => {
+    const h = await harness()
+    const m = await h.post()
+    const attachments = [
+      { id: 'image', name: 'photo.png', mimeType: 'image/png', sourceUrl: 'https://private.example.test/image' }
+    ]
+    m.msg.attachments = attachments
+    await h.router.intake(m.candidate)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    expect(h.calls[0]!.input.imageInput).toEqual({ attachments, integrationId: `int-${A}`, messageId: m.msg.msgId })
+    expect(JSON.stringify(h.calls[0]!.input.state)).not.toContain('private.example.test')
+    h.calls[0]!.resolve({ status: 'unavailable', reason: 'unsupported_input' })
+    await h.router.close()
+  })
+
   it('fans out through matched child rules and records the selected terminal agent', async () => {
     const h = await harness()
     h.state.routing = {

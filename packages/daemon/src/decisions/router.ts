@@ -33,6 +33,7 @@ import {
   type ResolvedDecisionBundle,
   type ResolvedRoutedChannel
 } from './bundle.js'
+import { decisionImageInput } from './images.js'
 import { ChainRawBodies, type DecisionEvaluationInput, type RawAnswerFields } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
 import { DEFAULT_DECISION_GATE_LIMITS } from './gate.js'
@@ -661,6 +662,7 @@ export class DecisionRouter {
               evaluationId: `${row.seq}:${row.subject}:${index}`,
               decision: definitionOf(step.decisionId),
               state: built.state,
+              ...decisionImageInput(delivery.msg, row.integrationId),
               deadlineAt: row.deadlineAt,
               ...bodies.hooks(index)
             },

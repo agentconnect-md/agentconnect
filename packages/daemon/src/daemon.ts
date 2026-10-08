@@ -590,6 +590,7 @@ import {
   type RouterAdmitResult
 } from './decisions/router.js'
 import { routerFingerprint, resolveDecisionBundle } from './decisions/bundle.js'
+import { decisionImageInput } from './decisions/images.js'
 import { buildDecisionState, decisionAgentContext, largestDecisionRequest } from './decisions/state.js'
 import {
   buildCodeHostDecisionState,
@@ -2017,6 +2018,15 @@ export class Daemon {
       },
       keyServer: () => (this.k8s ? this.modelSessions.keyServer : undefined),
       cloudBaseUrl: this.k8s ? process.env.TYPESAFE_MODEL_BASE_URL?.trim() : undefined,
+      downloadImage: (agentId, integrationId, attachment, maxBytes, signal) => {
+        signal.throwIfAborted()
+        return attachment.sourceUrl
+          ? (this.commandConnFor(agentId, integrationId)?.downloadFile(
+              attachment.sourceUrl,
+              Math.min(maxBytes, this.cfg.limits.maxAttachmentBytes)
+            ) ?? Promise.resolve(null))
+          : Promise.resolve(null)
+      },
       now: modelKeyNow,
       warn: (message) => this.log.warn(message)
     })
@@ -14745,7 +14755,8 @@ export class Daemon {
             purpose: 'model_selection'
           }),
         state: (decision) => this.sessionDecisionState(entry, agent, decision),
-        evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
+        evaluate: (input, signal) =>
+          this.decisionEvaluator.evaluate({ ...input, ...decisionImageInput(entry.msg, entry.integrationId) }, signal),
         onResult: (result) => {
           evidence = result
         }
@@ -14915,6 +14926,7 @@ export class Daemon {
                 agentId: agent.id,
                 evaluationId: `${evaluationId}:${index}`,
                 decision: { ...decision, question: chunk.question },
+                ...decisionImageInput(entry.msg, entry.integrationId),
                 state
               },
               signal

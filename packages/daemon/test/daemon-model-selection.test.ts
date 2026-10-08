@@ -306,6 +306,39 @@ describe('session-pinned Decision model', () => {
     }
   )
 
+  it('passes current inline images to session model selection without putting bytes in text state', async () => {
+    const { internal, evaluate } = await start(scaffold())
+    const bytes = Buffer.from('89504e470d0a1a0a00000000494d414745', 'hex')
+    const attachments = [{ id: 'photo', name: 'photo.png', mimeType: 'image/png', inlineData: bytes }]
+    const done = vi.fn()
+    await internal.dispatch(
+      agentId,
+      {
+        msgId: 'webchat:image-selection',
+        traceId: 'image-turn',
+        source: 'user',
+        platform: 'webchat',
+        channel: 'image-selection',
+        sender: { id: 'user', isBot: false },
+        text: 'Inspect this photo',
+        mentionedBots: [],
+        isDm: true,
+        trigger: 'dm',
+        attachments
+      },
+      undefined,
+      { conversationId: 'image-selection', turnId: 'image-turn', evaluation: true, sink: { output: vi.fn(), done } }
+    )
+    await vi.waitFor(() => expect(done).toHaveBeenCalledOnce(), WAIT)
+    expect(evaluate).toHaveBeenCalledOnce()
+    expect(evaluate.mock.calls[0]![0].imageInput).toEqual({
+      attachments,
+      integrationId: undefined,
+      messageId: 'webchat:image-selection'
+    })
+    expect(JSON.stringify(evaluate.mock.calls[0]![0].state)).not.toContain(bytes.toString('base64'))
+  })
+
   it('shares one code-host snapshot between model and repository selection before opening a runtime', async () => {
     const { internal, evaluate, started } = await start(scaffold())
     const read = vi.spyOn(codeHostTurnFinal, 'codeHostPullRequestContext').mockResolvedValue({
