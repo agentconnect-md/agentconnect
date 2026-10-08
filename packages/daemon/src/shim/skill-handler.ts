@@ -35,8 +35,18 @@ import {
   type ClusterSkillPriorReply,
   type ClusterSkillReceipt,
   type ClusterSkillReceiptPage,
-  type ClusterSkillSkippedSource
+  type ClusterSkillSkippedSource,
+  type GitSkillPlan,
+  type GitSkillSourceResult
 } from './skill-protocol.js'
+import {
+  acquireGitPlanSources,
+  chargeSkillManifestBudget,
+  type GitPlanOutcome,
+  type SkillGitPlanDeps
+} from './skill-git-plan.js'
+import { DEFAULT_SHIM_PATHS } from './sandbox-paths.js'
+import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 
 interface Operation {
   handle: string
@@ -63,6 +73,10 @@ export interface ClusterSkillHandlerDeps {
   stateRoot?: string
   inactiveMs?: number
   now?: () => number
+  /** How a Git plan Source is cloned in-pod; the helper and socket default to the image's. */
+  git?: Partial<SkillGitPlanDeps>
+  /** The one manifest budget a Git plan reconcile charges; defaults to what a paging shim admits. */
+  manifestLimits?: { maxFiles: number; maxTotalBytes: number }
 }
 
 const sourceDirectory = (sourceId: string): string => createHash('sha256').update(sourceId).digest('hex')
@@ -254,8 +268,6 @@ export class ClusterSkillHandler {
     abort?: AbortSignal,
     context?: ClusterSkillRequestContext
   ): Promise<ClusterSkillReceiptPage> {
-    // This image does not advertise skill-git-in-pod-v1, so a Git plan is a daemon bug, refused whole.
-    if (isGitPlanReconcile(input)) throw new Error('this shim does not take Git skill plans')
     const operation = this.operationFor(input, context)
     if (operation.result) throw new Error('cluster skill reconciliation is already complete')
     if (JSON.stringify(operation.authority) !== JSON.stringify(input.authority)) {
@@ -288,14 +300,22 @@ export class ClusterSkillHandler {
       }
     }
     const declaredSources = new Set([...operation.files.values()].map((file) => file.sourceId))
-    if (input.sources.some((source) => !declaredSources.has(source.sourceId))) {
+    if (input.sources.some((source) => source.sourceKind !== 'git' && !declaredSources.has(source.sourceId))) {
       throw new Error('reconcile source was not declared')
     }
+    // A Git plan Source is cloned here, so uploaded files under its id would share its staging directory.
+    if (input.sources.some((source) => source.sourceKind === 'git' && declaredSources.has(source.sourceId))) {
+      throw new Error('a Git plan source must not be uploaded')
+    }
+    const gitPlan = isGitPlanReconcile(input)
+    // A Git plan Source installs as the agent's own Git source, the kind the daemon path records.
     const sourceMeta = new Map(
-      input.sources.flatMap((source) => (source.sourceKind === 'git' ? [] : [[source.sourceId, source] as const]))
+      input.sources.map(
+        (source) =>
+          [source.sourceId, { sourceKind: source.sourceKind === 'git' ? 'agent' : source.sourceKind }] as const
+      )
     )
-    // A prior root preserved for a skipped source may carry an earlier revision's source id (a Git
-    // source id names its commit), so its kind comes from the prior receipt, not this run's sources.
+    // A preserved prior root may carry an earlier revision's source id, so its kind comes from the prior receipt.
     const priorKinds = new Map(input.priorRoots.map((root) => [`${root.path}\0${root.sourceId}`, root.sourceKind]))
     const ownedRoot = (root: Omit<CandidateSkillBundle, 'sourceDir'>) => {
       const sourceKind =
@@ -313,6 +333,11 @@ export class ClusterSkillHandler {
     const cleanups: Array<() => void> = []
     // Sources whose CLI stage failed: reported, and their prior roots left exactly as they are.
     const skipped: ClusterSkillSkippedSource[] = []
+    // Sources the manifest budget dropped: reported, but pruned like the daemon path prunes them.
+    const budgetDropped: ClusterSkillSkippedSource[] = []
+    const gitSources: GitSkillSourceResult[] = []
+    const gitStaging = (sourceId: string): string =>
+      join(this.deps.stagingRoot, input.handle, sourceDirectory(sourceId))
     try {
       const replayingPublication = await hasSkillPublicationOperation(
         this.deps.workspaceRoot,
@@ -320,17 +345,59 @@ export class ClusterSkillHandler {
         input.operationId,
         input.replayKey
       )
-      // Each source stages through the CLI in its own disposable cell, so the cells run at once;
-      // their results are taken in source order below, which is the order they have always had.
+      const git = gitPlan
+        ? await this.acquireGitPlan(input, operation, mutationSignal)
+        : new Map<string, GitPlanOutcome>()
+      const dropped = gitPlan ? this.chargeBudget(input, operation, git) : new Set<string>()
+      const kept: string[] = []
+      const staging: Array<{
+        source: ClusterSkillReconcile['sources'][number]
+        snapshot: string
+        selections: string[]
+      }> = []
+      for (const source of input.sources) {
+        const outcome = git.get(source.sourceId)
+        if (dropped.has(source.sourceId)) {
+          budgetDropped.push({
+            sourceId: source.sourceId,
+            reason: 'it does not fit the remaining skill manifest budget',
+            code: 'limits_exceeded'
+          })
+        } else if (!outcome) {
+          staging.push({ source, snapshot: gitStaging(source.sourceId), selections: source.selections })
+        } else if (outcome.kind === 'skipped') {
+          skipped.push({ sourceId: source.sourceId, reason: outcome.reason, code: outcome.code })
+        } else if (outcome.kind === 'keep') {
+          // Resolution failed on an installed Source: its roots stay exactly as the prior receipt has them.
+          const roots = input.priorRoots.filter((root) => root.sourceId === source.sourceId)
+          if (roots.length === 0) {
+            skipped.push({
+              sourceId: source.sourceId,
+              reason: 'no installed revision to keep',
+              code: 'commit_unavailable'
+            })
+            continue
+          }
+          kept.push(...roots.map((root) => root.path))
+          gitSources.push(
+            gitResult(
+              outcome.plan,
+              roots.map((root) => root.path.split('/').at(-1)!)
+            )
+          )
+        } else {
+          staging.push({ source, snapshot: outcome.root, selections: outcome.cliSelections })
+        }
+      }
+      // Each source stages in its own disposable CLI cell, so the cells run at once; results are taken in source order.
       const stagings = await Promise.all(
-        input.sources.map(async (source) => {
-          const snapshot = join(this.deps.stagingRoot, input.handle, sourceDirectory(source.sourceId))
+        staging.map(async ({ source, snapshot, selections }) => {
           const staged: CandidateSkillBundle[] = []
           try {
             const cell = await stageSkillsCliCell({
               sourceSnapshot: snapshot,
               agentId: operation.skillsAgentId,
-              selectedSkills: source.selections
+              selectedSkills: selections
             })
             cleanups.push(cell.cleanup)
             for (const bundle of cell.bundles) {
@@ -349,6 +416,17 @@ export class ClusterSkillHandler {
                 treeDigest: treeDigest(files)
               })
             }
+            const outcome = git.get(source.sourceId)
+            if (outcome?.kind === 'acquired') {
+              const leaves = staged.map((bundle) => bundle.relativeRoot.split('/').at(-1)!)
+              const expected = outcome.expectedLeaves
+              if (
+                expected.length > 0 &&
+                (leaves.length !== expected.length || expected.some((l) => !leaves.includes(l)))
+              )
+                throw new Error('the skills CLI did not install the selected skills')
+              gitSources.push(gitResult(outcome.plan, leaves))
+            }
             return { source, staged }
           } catch (error) {
             return { source, error }
@@ -356,22 +434,17 @@ export class ClusterSkillHandler {
         })
       )
       for (const outcome of stagings) {
-        // One source failing its CLI stage — an oversized asset, too many files, a CLI crash — costs
-        // that source its skills for this run, never the agent its session: the others still publish,
-        // the failed source keeps whatever it had, and the daemon logs the named reason.
+        // A failed CLI stage costs that source this run, never the session: the others publish and it keeps what it had.
         if ('error' in outcome) {
           if (mutationSignal.aborted) throw outcome.error
           const reason = outcome.error instanceof Error ? outcome.error.message : 'unknown skills CLI error'
-          skipped.push({ sourceId: outcome.source.sourceId, reason: reason.slice(0, 1024) })
+          skipped.push({ sourceId: outcome.source.sourceId, reason: reason.slice(0, 1024), code: 'cli_failed' })
           continue
         }
         candidates.push(...outcome.staged)
       }
-      // A Git source id names its commit, so a skipped source's prior roots carry the PREVIOUS
-      // revision's id and cannot be matched by id. As on the daemon-local path, a run that skipped
-      // anything says nothing about intent: every prior root not rebuilt this run is preserved,
-      // and pruning waits for the next run that builds every source (shared-skills.md §6.3).
-      const preserveOwned = skipped.length > 0 ? input.priorRoots.map((root) => root.path) : []
+      // A run that skipped anything says nothing about intent, so every prior root not rebuilt stays (shared-skills.md §6.3).
+      const preserveOwned = skipped.length > 0 ? input.priorRoots.map((root) => root.path) : kept
       // Validate the largest possible result before publication; conflicts and installed roots are subsets of this set.
       const desiredRoots = [
         ...new Map(candidates.map((candidate) => [candidate.relativeRoot, ownedRoot(candidate)])).values()
@@ -395,12 +468,13 @@ export class ClusterSkillHandler {
         agentId: 'cluster-shim',
         runtime: operation.skillsAgentId,
         cliVersion: PINNED_SKILLS_CLI_VERSION,
-        // A run that skipped a source has not met its plan: never let its fingerprint short-circuit
-        // the next preparation's retry.
+        // A run that skipped a source has not met its plan, so its fingerprint never short-circuits the retry.
         fingerprint:
           skipped.length > 0
             ? `failed:${randomBytes(16).toString('hex')}`
-            : createHash('sha256').update(JSON.stringify(input.sources)).digest('hex'),
+            : createHash('sha256')
+                .update(JSON.stringify(fingerprintSources(input.sources)))
+                .digest('hex'),
         ...(preserveOwned.length > 0 ? { preserveOwned } : {}),
         ...(replayingPublication
           ? {}
@@ -423,7 +497,10 @@ export class ClusterSkillHandler {
         skillReplyFor(input, {
           roots: result.owned.map(ownedRoot),
           conflicts: result.conflicts,
-          ...(skipped.length > 0 ? { skipped } : {})
+          ...(skipped.length + budgetDropped.length > 0
+            ? { skipped: inSourceOrder(input, [...skipped, ...budgetDropped]) }
+            : {}),
+          ...(gitPlan ? { gitSources: inSourceOrder(input, gitSources) } : {})
         })
       )
       if (input.priorRootCount !== undefined) {
@@ -437,7 +514,68 @@ export class ClusterSkillHandler {
       return ClusterSkillReconcileReplySchema.parse(reply)
     } finally {
       for (const cleanup of cleanups) cleanup()
+      // A Git Source's clone never outlives its reconcile, whatever the outcome.
+      await Promise.all(
+        input.sources
+          .filter((source) => source.sourceKind === 'git')
+          .map((source) => rm(gitStaging(source.sourceId), { recursive: true, force: true }))
+      )
     }
+  }
+
+  // The window capability lives only in this call's arguments and the Git child's env.
+  private async acquireGitPlan(
+    input: ClusterSkillReconcile,
+    operation: Operation,
+    abort: AbortSignal
+  ): Promise<Map<string, GitPlanOutcome>> {
+    const plans = input.sources.filter((source): source is GitSkillPlan => source.sourceKind === 'git')
+    const outcomes = await acquireGitPlanSources({
+      plans,
+      stagingFor: (sourceId) => join(this.deps.stagingRoot, input.handle, sourceDirectory(sourceId)),
+      agentId: operation.authority.agentId,
+      ...(input.credentialWindow ? { window: input.credentialWindow } : {}),
+      deps: {
+        credentialHelper: DEFAULT_SHIM_PATHS.gitCredentialHelper,
+        credentialSocket: process.env[GITCRED_SOCKET_ENV]?.trim() || DEFAULT_SHIM_PATHS.tunnels.gitcred,
+        ...this.deps.git
+      },
+      abort
+    })
+    return new Map(outcomes.map((outcome) => [outcome.plan.sourceId, outcome]))
+  }
+
+  // One budget over what this pod would install: a Git Source's clone, a kept Source's prior roots, an uploaded source's manifest.
+  private chargeBudget(
+    input: ClusterSkillReconcile,
+    operation: Operation,
+    git: Map<string, GitPlanOutcome>
+  ): Set<string> {
+    const declared = [...operation.files.values()]
+    const charges = input.sources.flatMap((source) => {
+      const outcome = git.get(source.sourceId)
+      // A skipped Source spends nothing, as a failed acquisition spends nothing on the daemon path.
+      if (outcome?.kind === 'skipped') return []
+      const { sourceId, sourceKind } = source
+      if (outcome?.kind === 'acquired')
+        return [{ sourceId, sourceKind, fileCount: outcome.fileCount, totalBytes: outcome.totalBytes }]
+      const files =
+        outcome?.kind === 'keep'
+          ? input.priorRoots.filter((root) => root.sourceId === sourceId).flatMap((root) => root.files)
+          : declared.filter((file) => file.sourceId === sourceId)
+      return [
+        {
+          sourceId,
+          sourceKind,
+          fileCount: files.length,
+          totalBytes: files.reduce((total, file) => total + file.size, 0)
+        }
+      ]
+    })
+    return chargeSkillManifestBudget(
+      charges,
+      this.deps.manifestLimits ?? { maxFiles: MAX_CLUSTER_SKILL_FILES, maxTotalBytes: MAX_CLUSTER_SKILL_TOTAL_BYTES }
+    )
   }
 
   private assertBoundAuthority(authority: ClusterSkillBegin['authority'], context?: ClusterSkillRequestContext): void {
@@ -528,6 +666,25 @@ export class ClusterSkillHandler {
     await rm(join(this.deps.stagingRoot, handle), { recursive: true, force: true })
   }
 }
+
+const gitResult = (plan: GitSkillPlan, leaves: string[]): GitSkillSourceResult => ({
+  sourceId: plan.sourceId,
+  resolvedCommit: plan.plannedCommit,
+  leaves
+})
+
+const inSourceOrder = <T extends { sourceId: string }>(input: ClusterSkillReconcile, rows: T[]): T[] => {
+  const order = new Map(input.sources.map((source, index) => [source.sourceId, index]))
+  return [...rows].sort((a, b) => order.get(a.sourceId)! - order.get(b.sourceId)!)
+}
+
+// A presigned GET URL changes every run but not what installs, so it never moves the fingerprint.
+const fingerprintSources = (sources: ClusterSkillReconcile['sources']): unknown[] =>
+  sources.map((source) => {
+    if (source.sourceKind !== 'git' || source.getUrl === undefined) return source
+    const { getUrl: _getUrl, ...rest } = source
+    return rest
+  })
 
 function compareDecimalTerms(left: string, right: string): number {
   if (left.length !== right.length) return left.length < right.length ? -1 : 1

@@ -1,4 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { existsSync, realpathSync } from 'node:fs'
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,7 +8,18 @@ import { describe, expect, it } from 'vitest'
 import type { ShimRequester } from '../src/shim/channels.js'
 import { ClusterSkillClient } from '../src/shim/skill-client.js'
 import { ClusterSkillHandler } from '../src/shim/skill-handler.js'
-import { MAX_CLUSTER_SKILL_CHUNK_BYTES, MAX_CLUSTER_SKILL_CONTROL_BYTES } from '../src/shim/skill-protocol.js'
+import {
+  MAX_CLUSTER_SKILL_CHUNK_BYTES,
+  MAX_CLUSTER_SKILL_CONTROL_BYTES,
+  type ClusterSkillReconcile
+} from '../src/shim/skill-protocol.js'
+import {
+  SkillGitAbortedError,
+  runLocalSkillGit,
+  type SkillGitInvocation,
+  type SkillGitRunner
+} from '../src/shim/skill-git-acquire.js'
+import { skillGitCredentialFor } from '../src/shim/skill-git-plan.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
 import { treeDigest } from '../src/skills/skill-install-ledger.js'
 import { ClusterSkillCoordinator } from '../src/skills/cluster-skill-coordinator.js'
@@ -38,43 +51,6 @@ async function fixture(content = Buffer.from('hello')) {
 }
 
 describe('cluster skill shim staging', () => {
-  // This image does not advertise skill-git-in-pod-v1, so a Git plan reaching it is refused whole.
-  it('refuses a Git plan reconcile', async () => {
-    const { root, operationId, handler, handle } = await fixture()
-    try {
-      await expect(
-        handler.handle({
-          op: 'reconcile',
-          operationId,
-          handle,
-          authority: {
-            groupId: 'g',
-            term: '1',
-            daemonId: 'd',
-            agentId: 'a',
-            workspaceIncarnation: 'claim-1',
-            shimGeneration: 1
-          },
-          priorRoots: [],
-          replayKey: 'a'.repeat(64),
-          allowDesiredAdoption: false,
-          sources: [
-            {
-              sourceId: 'agent:0',
-              sourceKind: 'git',
-              url: 'https://github.com/acme/skills.git',
-              ref: 'refs/heads/main',
-              plannedCommit: 'c'.repeat(40),
-              selections: []
-            }
-          ]
-        })
-      ).rejects.toThrow(/does not take Git skill plans/)
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
   it('skips a source whose selected skill set is oversized, publishing nothing for it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skill-admission-'))
     const workspace = join(root, 'workspace')
@@ -892,5 +868,496 @@ describe('cluster skill shim staging', () => {
     await chmod(join(skill, 'asset.bin'), 0o600)
     await writeFile(join(skill, 'extra.txt'), 'extra')
     await expect(handler.handle({ op: 'verify', roots: [receipt] })).resolves.toEqual({ intact: [false] })
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sources (real Git)', () => {
+  const HOST = 'https://github.com/acme/'
+  const GIT_URL = `${HOST}skills.git`
+  const HELPER = '/opt/agentconnect/bin/git-credential'
+  const SOCKET = '/run/agentconnect/gitcred.sock'
+  const authority = {
+    groupId: 'g',
+    term: '1',
+    daemonId: 'd',
+    agentId: 'a',
+    workspaceIncarnation: 'w',
+    shimGeneration: 1
+  }
+  const gitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'T',
+    GIT_AUTHOR_EMAIL: 't@e',
+    GIT_COMMITTER_NAME: 'T',
+    GIT_COMMITTER_EMAIL: 't@e',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null'
+  }
+  const ok = (cwd: string, args: string[]): string => {
+    const result = spawnSync('git', args, { cwd, env: gitEnv })
+    if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr.toString()}`)
+    return result.stdout.toString().trim()
+  }
+  const body = (name: string): string => `---\nname: ${name}\ndescription: fixture\n---\n# ${name}\n`
+  const gitId = (commit: string): string => `agent:0:${'d'.repeat(64)}:${commit}`
+
+  // A bare origin whose `skills/` holds alpha (2 files) and beta (1 file), and the private dirs a shim works in.
+  async function world() {
+    const root = realpathSync(await mkdtemp(join(tmpdir(), 'ac-shim-skills-git-')))
+    const origin = join(root, 'skills.git')
+    const seed = join(root, 'seed')
+    ok(root, ['init', '-q', '--bare', '--initial-branch=main', origin])
+    ok(origin, ['config', 'uploadpack.allowFilter', 'true'])
+    await mkdir(join(seed, 'skills', 'alpha'), { recursive: true })
+    await mkdir(join(seed, 'skills', 'beta'), { recursive: true })
+    ok(seed, ['init', '-q', '--initial-branch=main'])
+    await writeFile(join(seed, 'skills', 'alpha', 'SKILL.md'), body('alpha'))
+    await writeFile(join(seed, 'skills', 'alpha', 'notes.md'), 'alpha notes\n')
+    await writeFile(join(seed, 'skills', 'beta', 'SKILL.md'), body('beta'))
+    await writeFile(join(seed, 'README.md'), 'outside the subdirectory\n')
+    ok(seed, ['add', '-A'])
+    ok(seed, ['commit', '-qm', 'one'])
+    ok(seed, ['remote', 'add', 'origin', origin])
+    ok(seed, ['push', '-q', 'origin', 'main'])
+    const tip = ok(seed, ['rev-parse', 'HEAD'])
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    const staging = join(root, 'staging')
+    await mkdir(staging, { mode: 0o700 })
+    return { root, origin, tip, workspace, staging, state: join(root, 'state') }
+  }
+  type World = Awaited<ReturnType<typeof world>>
+
+  // The real runner behind the test's github.com names: `<HOST><name>.git` is `<root>/<name>.git`.
+  function runner(w: World, onSpawn?: (invocation: SkillGitInvocation) => void) {
+    const calls: SkillGitInvocation[] = []
+    const git: SkillGitRunner = async (invocation) => {
+      calls.push(invocation)
+      onSpawn?.(invocation)
+      const args = invocation.args.map((arg) =>
+        arg.startsWith(HOST) ? `file://${join(w.root, arg.slice(HOST.length))}` : arg
+      )
+      return await runLocalSkillGit({ ...invocation, args })
+    }
+    return { git, calls }
+  }
+
+  function handlerFor(
+    w: World,
+    git: SkillGitRunner,
+    options: {
+      logs?: string[]
+      limits?: { maxFiles: number }
+      manifestFiles?: number
+      sourceTimeoutMs?: number
+      deadlineMs?: number
+    } = {}
+  ): ClusterSkillHandler {
+    return new ClusterSkillHandler({
+      stagingRoot: w.staging,
+      workspaceRoot: w.workspace,
+      stateRoot: w.state,
+      git: {
+        git,
+        allowFileProtocol: true,
+        shimEnv: { PATH: process.env.PATH },
+        credentialHelper: HELPER,
+        credentialSocket: SOCKET,
+        log: { warn: (message) => options.logs?.push(message) },
+        ...(options.limits ? { limits: options.limits } : {}),
+        ...(options.sourceTimeoutMs !== undefined ? { sourceTimeoutMs: options.sourceTimeoutMs } : {}),
+        ...(options.deadlineMs !== undefined ? { deadlineMs: options.deadlineMs } : {})
+      },
+      ...(options.manifestFiles !== undefined
+        ? { manifestLimits: { maxFiles: options.manifestFiles, maxTotalBytes: 1024 * 1024 } }
+        : {})
+    })
+  }
+
+  const plan = (w: World, overrides: Record<string, unknown> = {}) => ({
+    sourceId: gitId(w.tip),
+    sourceKind: 'git' as const,
+    url: GIT_URL,
+    ref: 'refs/heads/main',
+    plannedCommit: w.tip,
+    subDir: 'skills',
+    selections: ['alpha'],
+    ...overrides
+  })
+
+  // Uploads `files` per source id, then reconciles `sources` through the daemon's client.
+  async function reconcile(
+    handler: ClusterSkillHandler,
+    input: {
+      uploads?: Record<string, Record<string, string>>
+      sources: ClusterSkillReconcile['sources']
+      priorRoots?: ClusterSkillReconcile['priorRoots']
+      credentialWindow?: { capability: string }
+    }
+  ) {
+    const client = new ClusterSkillClient(
+      { request: (_cap, payload) => handler.handle(payload) },
+      true,
+      true,
+      true,
+      true
+    )
+    const operationId = randomUUID()
+    const contents = Object.entries(input.uploads ?? {}).flatMap(([sourceId, files]) =>
+      Object.entries(files).map(([path, text]) => ({ sourceId, path, content: Buffer.from(text) }))
+    )
+    const files = contents.map(({ sourceId, path, content }) => ({
+      sourceId,
+      path,
+      size: content.length,
+      sha256: sha256(content)
+    }))
+    const { handle } = await client.begin({ operationId, authority, skillsAgentId: 'codex', files })
+    for (const [index, file] of files.entries())
+      await client.upload(operationId, handle, file, contents[index]!.content)
+    return await client.reconcile({
+      operationId,
+      handle,
+      authority,
+      priorRoots: input.priorRoots ?? [],
+      replayKey: randomBytes(32).toString('hex'),
+      allowDesiredAdoption: false,
+      sources: input.sources,
+      ...(input.credentialWindow ? { credentialWindow: input.credentialWindow } : {})
+    })
+  }
+
+  const managed = { 'managed:m': { 'mskill/SKILL.md': body('mskill'), 'mskill/extra.md': 'extra\n' } }
+  const dream = { 'dream:d': { 'dskill/SKILL.md': body('dskill') } }
+  const uploaded = [
+    { sourceId: 'managed:m', sourceKind: 'managed' as const, selections: ['mskill'] },
+    { sourceId: 'dream:d', sourceKind: 'dream' as const, selections: ['dskill'] }
+  ]
+  const leaves = (roots: Array<{ path: string }>): string[] => roots.map((root) => root.path.split('/').at(-1)!).sort()
+
+  async function filesUnder(dir: string): Promise<string[]> {
+    const found: string[] = []
+    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) found.push(path, ...(await filesUnder(path)))
+      else found.push(path)
+    }
+    return found
+  }
+
+  it('merges Git plan, managed and Dream sources in source order and reports the Git result', async () => {
+    const w = await world()
+    try {
+      const r = runner(w)
+      const reply = await reconcile(handlerFor(w, r.git), {
+        uploads: { ...managed, ...dream },
+        sources: [plan(w), ...uploaded]
+      })
+      expect(reply.roots.map((root) => [root.sourceId, root.sourceKind, root.path.split('/').at(-1)])).toEqual([
+        [gitId(w.tip), 'agent', 'alpha'],
+        ['dream:d', 'dream', 'dskill'],
+        ['managed:m', 'managed', 'mskill']
+      ])
+      expect(reply.gitSources).toEqual([{ sourceId: gitId(w.tip), resolvedCommit: w.tip, leaves: ['alpha'] }])
+      expect(reply.skipped).toBeUndefined()
+      expect(await readFile(join(w.workspace, '.agents/skills/alpha/notes.md'), 'utf8')).toBe('alpha notes\n')
+      expect(existsSync(join(w.workspace, '.agents/skills/beta'))).toBe(false)
+      expect(r.calls.every((call) => call.env.AC_GITCRED_CAPABILITY === undefined)).toBe(true)
+      expect(await readdir(w.staging)).toEqual([])
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it('gives a later source precedence over a Git plan Source on the same skill', async () => {
+    const w = await world()
+    try {
+      const reply = await reconcile(handlerFor(w, runner(w).git), {
+        uploads: { 'managed:m': { 'alpha/SKILL.md': body('alpha') } },
+        sources: [plan(w), { sourceId: 'managed:m', sourceKind: 'managed', selections: ['alpha'] }]
+      })
+      expect(reply.roots.map((root) => [root.sourceId, root.path])).toEqual([['managed:m', '.agents/skills/alpha']])
+      expect(existsSync(join(w.workspace, '.agents/skills/alpha/notes.md'))).toBe(false)
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  const budgetCases = [
+    { order: 'git-first', manifestFiles: 6, git: 'installed', installed: ['alpha', 'dskill', 'mskill'], dropped: [] },
+    { order: 'git-first', manifestFiles: 4, git: 'installed', installed: ['alpha', 'dskill'], dropped: ['managed:m'] },
+    { order: 'git-last', manifestFiles: 4, git: 'installed', installed: ['alpha', 'dskill'], dropped: ['managed:m'] },
+    { order: 'git-first', manifestFiles: 3, git: 'installed', installed: ['alpha'], dropped: ['managed:m', 'dream:d'] },
+    { order: 'git-first', manifestFiles: 2, git: 'dropped', installed: ['mskill'], dropped: ['git', 'dream:d'] },
+    { order: 'git-first', manifestFiles: 3, git: 'fetch_failed', installed: ['dskill', 'mskill'], dropped: [] }
+  ] as const
+
+  it.each(budgetCases)(
+    'charges one budget Git first, then managed, then Dream: %j',
+    async ({ order, manifestFiles, git, installed, dropped }) => {
+      const w = await world()
+      try {
+        const source = git === 'fetch_failed' ? plan(w, { url: `${HOST}absent.git` }) : plan(w)
+        const reply = await reconcile(handlerFor(w, runner(w).git, { manifestFiles }), {
+          uploads: { ...managed, ...dream },
+          sources: order === 'git-first' ? [source, ...uploaded] : [...uploaded, source]
+        })
+        expect(leaves(reply.roots)).toEqual(installed)
+        const ids = dropped.map((id) => (id === 'git' ? source.sourceId : id))
+        expect(new Set(reply.skipped ?? [])).toEqual(
+          new Set([
+            ...(git === 'fetch_failed'
+              ? [expect.objectContaining({ sourceId: source.sourceId, code: 'fetch_failed' })]
+              : []),
+            ...ids.map((sourceId) => ({ sourceId, reason: expect.any(String), code: 'limits_exceeded' }))
+          ])
+        )
+      } finally {
+        await rm(w.root, { recursive: true, force: true })
+      }
+    },
+    120_000
+  )
+
+  it('prunes a managed source the Git Source pushed out of the budget, as the daemon path does', async () => {
+    const w = await world()
+    try {
+      const r = runner(w)
+      const first = await reconcile(handlerFor(w, r.git), { uploads: managed, sources: [uploaded[0]!] })
+      expect(leaves(first.roots)).toEqual(['mskill'])
+      const second = await reconcile(handlerFor(w, r.git, { manifestFiles: 4 }), {
+        uploads: managed,
+        sources: [plan(w), uploaded[0]!],
+        priorRoots: first.roots
+      })
+      expect(leaves(second.roots)).toEqual(['alpha'])
+      expect(second.skipped).toEqual([expect.objectContaining({ sourceId: 'managed:m', code: 'limits_exceeded' })])
+      expect(existsSync(join(w.workspace, '.agents/skills/mskill'))).toBe(false)
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it.each([
+    ['ref_moved', { plannedCommit: 'f'.repeat(40) }, {}],
+    ['fetch_failed', { url: `${HOST}absent.git` }, {}],
+    ['limits_exceeded', {}, { limits: { maxFiles: 1 } }]
+  ] as const)(
+    'a %s Source keeps its prior root and reports its code',
+    async (code, change, options) => {
+      const w = await world()
+      try {
+        const first = await reconcile(handlerFor(w, runner(w).git), { sources: [plan(w)] })
+        expect(leaves(first.roots)).toEqual(['alpha'])
+        const next = plan(w, { ...change, sourceId: gitId('e'.repeat(40)) })
+        const reply = await reconcile(handlerFor(w, runner(w).git, options), {
+          uploads: managed,
+          sources: [next, uploaded[0]!],
+          priorRoots: first.roots
+        })
+        expect(reply.skipped).toEqual([{ sourceId: next.sourceId, reason: expect.any(String), code }])
+        expect(reply.roots.map((root) => [root.sourceId, root.path.split('/').at(-1)])).toEqual([
+          [gitId(w.tip), 'alpha'],
+          ['managed:m', 'mskill']
+        ])
+        expect(reply.gitSources).toBeUndefined()
+        expect(await readFile(join(w.workspace, '.agents/skills/alpha/SKILL.md'), 'utf8')).toBe(body('alpha'))
+        expect(await readdir(w.staging)).toEqual([])
+      } finally {
+        await rm(w.root, { recursive: true, force: true })
+      }
+    },
+    120_000
+  )
+
+  it('keeps a keepInstalled Source’s roots without cloning it', async () => {
+    const w = await world()
+    try {
+      const first = await reconcile(handlerFor(w, runner(w).git), { sources: [plan(w)] })
+      const r = runner(w)
+      const reply = await reconcile(handlerFor(w, r.git), {
+        sources: [plan(w, { keepInstalled: true })],
+        priorRoots: first.roots
+      })
+      expect(r.calls).toEqual([])
+      expect(reply.roots).toEqual(first.roots)
+      expect(reply.skipped).toBeUndefined()
+      expect(reply.gitSources).toEqual([{ sourceId: gitId(w.tip), resolvedCommit: w.tip, leaves: ['alpha'] }])
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it('answers a reconcile without Git entries in the pre-skill-git-in-pod-v1 shape, spawning no Git', async () => {
+    const w = await world()
+    try {
+      const r = runner(w)
+      const reply = await reconcile(handlerFor(w, r.git), { uploads: managed, sources: [uploaded[0]!] })
+      expect(Object.keys(reply).sort()).toEqual(['conflicts', 'roots'])
+      expect(r.calls).toEqual([])
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it('hands the window capability only to the Git child env, never to disk or a log', async () => {
+    const w = await world()
+    try {
+      const capability = randomBytes(32).toString('base64url')
+      const logs: string[] = []
+      const onDisk: string[] = []
+      const scan = async (): Promise<void> => {
+        for (const path of await filesUnder(w.root)) {
+          if ((await lstat(path)).isFile() && (await readFile(path)).includes(capability)) onDisk.push(path)
+        }
+      }
+      const spawned: Array<Promise<void>> = []
+      const r = runner(w, () => spawned.push(scan()))
+      const reply = await reconcile(handlerFor(w, r.git, { logs }), {
+        sources: [plan(w), plan(w, { sourceId: 'agent:1', url: `${HOST}absent.git` })],
+        credentialWindow: { capability }
+      })
+      await Promise.all(spawned)
+      await scan()
+      expect(leaves(reply.roots)).toEqual(['alpha'])
+      expect(r.calls.length).toBeGreaterThan(0)
+      for (const call of r.calls) {
+        expect(call.env.AC_GITCRED_CAPABILITY).toBe(capability)
+        expect(call.env.AC_GITCRED_AGENT).toBe('a')
+        expect(call.env.AC_GITCRED_SOCKET).toBe(SOCKET)
+        const config = Object.entries(call.env).filter(([key]) => key.startsWith('GIT_CONFIG_VALUE_'))
+        expect(config.map(([, value]) => value)).toContain(`!sh '${HELPER}' 'a'`)
+        expect(call.args.join(' ')).not.toContain(capability)
+      }
+      expect(logs.length).toBeGreaterThan(0)
+      expect(logs.join('\n')).not.toContain(capability)
+      expect(onDisk).toEqual([])
+      expect(process.env.AC_GITCRED_CAPABILITY).not.toBe(capability)
+
+      const after = runner(w)
+      await reconcile(handlerFor(w, after.git), { sources: [plan(w)], priorRoots: reply.roots })
+      expect(after.calls.length).toBeGreaterThan(0)
+      expect(after.calls.every((call) => call.env.AC_GITCRED_CAPABILITY === undefined)).toBe(true)
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it('removes a Git Source’s staging when the reconcile fails part-way', async () => {
+    const w = await world()
+    try {
+      const abort = new AbortController()
+      const r = runner(w, () => abort.abort())
+      const handler = handlerFor(w, r.git)
+      const operationId = randomUUID()
+      const { handle } = (await handler.handle({
+        op: 'begin',
+        operationId,
+        authority,
+        skillsAgentId: 'codex',
+        files: []
+      })) as { handle: string }
+      await expect(
+        handler.handle(
+          {
+            op: 'reconcile',
+            operationId,
+            handle,
+            authority,
+            priorRoots: [],
+            replayKey: 'a'.repeat(64),
+            allowDesiredAdoption: false,
+            sources: [plan(w)]
+          },
+          abort.signal
+        )
+      ).rejects.toThrow()
+      expect(r.calls.length).toBeGreaterThan(0)
+      expect((await filesUnder(w.staging)).filter((path) => path.includes('skill-git-'))).toEqual([])
+      expect(existsSync(join(w.staging, handle, createHash('sha256').update(gitId(w.tip)).digest('hex')))).toBe(false)
+      expect(await readdir(w.workspace)).toEqual([])
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  // A remote that accepts the connection and never answers: the spawn ends only when its signal fires.
+  function stalling(w: World) {
+    const real = runner(w)
+    const stalled: SkillGitInvocation[] = []
+    const git: SkillGitRunner = async (invocation) => {
+      if (!invocation.args.some((arg) => arg.startsWith(`${HOST}stall`))) return await real.git(invocation)
+      stalled.push(invocation)
+      return await new Promise((_resolve, reject) => {
+        const fail = () => reject(new SkillGitAbortedError('git was cancelled'))
+        if (invocation.abort?.aborted) fail()
+        else invocation.abort?.addEventListener('abort', fail, { once: true })
+      })
+    }
+    return { git, stalled }
+  }
+
+  it('skips a stalled Source at its deadline and still installs the others', async () => {
+    const w = await world()
+    try {
+      const r = stalling(w)
+      const stall = plan(w, { sourceId: 'agent:stall', url: `${HOST}stall.git` })
+      const reply = await reconcile(handlerFor(w, r.git, { sourceTimeoutMs: 200 }), {
+        uploads: managed,
+        sources: [stall, uploaded[0]!]
+      })
+      expect(r.stalled.length).toBeGreaterThan(0)
+      expect(leaves(reply.roots)).toEqual(['mskill'])
+      expect(reply.skipped).toEqual([
+        { sourceId: 'agent:stall', reason: 'fetching the repository timed out', code: 'fetch_failed' }
+      ])
+      expect(reply.gitSources ?? []).toEqual([])
+      expect(await readdir(w.staging)).toEqual([])
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it('skips every Source the acquisition deadline reaches, started or not, without failing the reconcile', async () => {
+    const w = await world()
+    try {
+      const r = stalling(w)
+      const stalls = [1, 2, 3, 4, 5].map((n) => plan(w, { sourceId: `agent:stall${n}`, url: `${HOST}stall${n}.git` }))
+      const reply = await reconcile(handlerFor(w, r.git, { deadlineMs: 200 }), { sources: stalls })
+      expect(reply.roots).toEqual([])
+      expect(reply.skipped?.map((entry) => [entry.sourceId, entry.code])).toEqual(
+        stalls.map((entry) => [entry.sourceId, 'fetch_failed'])
+      )
+      expect(r.stalled.some((call) => call.args.includes(`${HOST}stall5.git`))).toBe(false)
+      expect(await readdir(w.staging)).toEqual([])
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it('skips a keepInstalled Source that has no installed root instead of claiming it', async () => {
+    const w = await world()
+    try {
+      const r = runner(w)
+      const reply = await reconcile(handlerFor(w, r.git), { sources: [plan(w, { keepInstalled: true })] })
+      expect(r.calls).toEqual([])
+      expect(reply.roots).toEqual([])
+      expect(reply.gitSources ?? []).toEqual([])
+      expect(reply.skipped).toEqual([
+        { sourceId: gitId(w.tip), reason: 'no installed revision to keep', code: 'commit_unavailable' }
+      ])
+    } finally {
+      await rm(w.root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it('attaches the window credential only to a github.com Source', () => {
+    const deps = { credentialHelper: HELPER, credentialSocket: SOCKET }
+    const window = { capability: 'cap' }
+    const gitlab = { ...plan({ tip: 'a'.repeat(40) } as World), url: 'https://gitlab.com/o/r.git' }
+    expect(skillGitCredentialFor(gitlab, window, 'a', deps)).toBeUndefined()
+    const github = { ...gitlab, url: 'https://github.com/o/r.git' }
+    expect(skillGitCredentialFor(github, window, 'a', deps)?.env.AC_GITCRED_CAPABILITY).toBe('cap')
+    expect(skillGitCredentialFor(github, undefined, 'a', deps)).toBeUndefined()
   })
 })

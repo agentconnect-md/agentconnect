@@ -187,6 +187,11 @@ export const ClusterSkillSourceSchema = z.union([ClusterSkillUploadedSourceSchem
 
 export const ClusterSkillPriorRootSchema = ClusterSkillOwnedRootSchema
 
+/** The reconcile's skill credential window (§8): its capability reaches only the shim's Git child env, never disk or a log. */
+export const SkillCredentialWindowGrantSchema = z
+  .object({ capability: z.string().regex(/^[A-Za-z0-9_-]{16,512}$/) })
+  .strict()
+
 export const ClusterSkillReconcileSchema = z
   .object({
     op: z.literal('reconcile'),
@@ -197,10 +202,14 @@ export const ClusterSkillReconcileSchema = z
     priorRootCount: z.number().int().min(0).max(MAX_SKILL_BUNDLES).optional(),
     replayKey: z.string().regex(/^[a-f0-9]{64}$/),
     allowDesiredAdoption: z.boolean(),
-    sources: z.array(ClusterSkillSourceSchema).max(MAX_CLUSTER_SKILL_SOURCES)
+    sources: z.array(ClusterSkillSourceSchema).max(MAX_CLUSTER_SKILL_SOURCES),
+    credentialWindow: SkillCredentialWindowGrantSchema.optional()
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (value.credentialWindow && !value.sources.some((source) => source.sourceKind === 'git')) {
+      ctx.addIssue({ code: 'custom', message: 'a credential window rides only a Git plan reconcile' })
+    }
     const ids = new Set<string>()
     for (const source of value.sources) {
       if (ids.has(source.sourceId)) ctx.addIssue({ code: 'custom', message: 'duplicate reconcile source' })
@@ -271,7 +280,7 @@ export const SkillSkipCodeSchema = z.enum([
   'limits_exceeded',
   'cli_failed'
 ])
-/** A source the shim could not install this run: its prior roots stay untouched and the run counts as failed, so the next preparation retries. */
+/** A source the shim could not install this run: its prior roots stay untouched and the run counts as failed, except a source the manifest budget dropped, which is pruned as the daemon path prunes it. */
 export const ClusterSkillSkippedSourceSchema = z
   .object({
     sourceId: z.string().min(1).max(160),
@@ -441,6 +450,7 @@ export type ClusterSkillReconcileReply = z.infer<typeof ClusterSkillReconcileRes
 export type ClusterSkillSkippedSource = z.infer<typeof ClusterSkillSkippedSourceSchema>
 export type ClusterSkillSource = z.infer<typeof ClusterSkillSourceSchema>
 export type GitSkillPlan = z.infer<typeof GitSkillPlanSchema>
+export type SkillCredentialWindowGrant = z.infer<typeof SkillCredentialWindowGrantSchema>
 export type SkillSkipCode = z.infer<typeof SkillSkipCodeSchema>
 export type GitSkillSourceResult = z.infer<typeof GitSkillSourceResultSchema>
 export type SkillWriteBackCandidate = z.infer<typeof SkillWriteBackCandidateSchema>

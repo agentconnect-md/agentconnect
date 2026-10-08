@@ -594,6 +594,34 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
    source order, and publishes through the existing ledger and mutation helper.
    Source order, per-source skipping, the manifest budget and the receipt reply
    are unchanged.
+   **Today (S5a, dormant)** `shim/skill-handler.ts` takes Git plan entries over
+   `shim/skill-git-plan.ts`: up to four clones at once, each in
+   `<staging>/<handle>/<sha256(sourceId)>`, removed when the reconcile ends
+   whatever its outcome. Selections resolve in the pod over the acquired tree
+   (`resolveSkillSelections`), and a Git Source installs with the ledger kind
+   `agent`, as on the daemon path. One manifest budget is charged as
+   `reconcileSandboxSkills` charges it: Git Sources first (the acquired
+   subtree's files and bytes, nothing for a skipped Source), then managed, then
+   Dream, each in request order. A source that does not fit is reported in
+   `skipped` with `limits_exceeded` but, unlike a failed Source, triggers no
+   prior-root preservation, so its roots are pruned exactly as the daemon path
+   prunes an over-budget source. Any other failure of a Git Source (a §11 code,
+   an acquisition error, a timeout, a selection the CLI cannot honor) skips only
+   that Source and keeps its prior roots. Acquisition is bounded under the
+   daemon's 15-minute `SKILLS_RECONCILE_TIMEOUT_MS`: each Git spawn gets 2
+   minutes, each Source 4 minutes, and all Sources together 8 minutes; a Source
+   that a deadline reaches, started or not, is skipped as `fetch_failed`, so a
+   stalled remote never fails the reconcile. A `keepInstalled` entry is not
+   cloned: its prior roots are preserved and charged by the receipt's selected
+   files (the daemon path charges the re-acquired subtree; S5b's golden test
+   decides whether to align them), and one with no prior root is skipped as
+   `commit_unavailable`. The reply roots of a Git Source carry `sourceKind:
+'agent'`, not the request's `'git'`, so S5b maps a plan's kind before the
+   coordinator compares receipts. The reply reports each installed
+   Git Source's `resolvedCommit`, always the planned commit, and the leaves it
+   staged. The per-reconcile window capability arrives as the reconcile's
+   optional `credentialWindow` and reaches only the Git child's
+   `AC_GITCRED_*` environment, for a github.com Source.
 5. The daemon closes the credential window, records the ledger with the resolved
    commits, and later handles write-back candidates (section 9).
 
@@ -888,7 +916,9 @@ over `source_cache_usage`, and quota pressure surfaces as
   without a bundle. The reply keeps its receipts and `skipped` list, whose
   entries gain an optional section 11 `code` beside the free-text reason, and
   gains per-Source `gitSources` (resolved commit, skill leaves) and
-  `writeBackCandidates`. Every new field is optional, and a shim sends them only
+  `writeBackCandidates`. A Git plan reconcile may carry `credentialWindow`
+  (the window capability, section 8); the schema refuses it on any other
+  reconcile. Every new field is optional, and a shim sends them only
   in the reply to a Git plan, so a daemon predating the capability, whose reply
   schema is strict, never receives one. The schema admits any https URL, so the
   plan builder runs the daemon's Git origin policy before a URL reaches the pod
