@@ -464,6 +464,24 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       for (const secret of [capability, window.capability, 'ghs_test']) expect(logged).not.toContain(secret)
     })
 
+    it('refuses the agent capability an explicit github provider on a private skill repository', async () => {
+      const { sockPath, gets } = await bootGithub()
+      expect(await ask(sockPath, server!.capabilityFor('a1'), { provider: 'github' })).toMatchObject({
+        ok: false,
+        denied: 'repository'
+      })
+      expect(gets).toHaveLength(0)
+    })
+
+    it('opens no daemon window for a repository the spec does not list as a private skill', async () => {
+      const { sockPath, gets, capability } = await bootGithub()
+      // A public skill that is also an authorized additional repository keeps the agent capability's grant.
+      expect(server!.openDaemonSkillWindow('a1', 'acme/shared')).toBeUndefined()
+      expect(await ask(sockPath, capability, { repoFullName: 'acme/shared' })).toMatchObject({ ok: true })
+      expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: 'acme/shared' } }])
+      expect(server!.skillWindows.size()).toBe(0)
+    })
+
     it('refuses once the window closes or its TTL passes', async () => {
       const { sockPath, gets } = await bootGithub()
       const closed = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL] })
@@ -538,12 +556,17 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     })
 
     it('opens a daemon window when the same path is not the workspace host', async () => {
-      const { sockPath, gets } = await bootGithub({ providerOf: () => 'gitlab' })
-      const window = server!.openDaemonSkillWindow('a1', 'acme/infra')
-      expect(window).toBeDefined()
-      // The window still never reaches the workspace key.
-      expect(await ask(sockPath, window!.capability, { repoFullName: 'acme/infra' })).toMatchObject({ ok: false })
-      expect(gets).toHaveLength(0)
+      skillRepos.add('acme/infra')
+      try {
+        const { sockPath, gets } = await bootGithub({ providerOf: () => 'gitlab' })
+        const window = server!.openDaemonSkillWindow('a1', 'acme/infra')
+        expect(window).toBeDefined()
+        // Granted as the named GitHub skill repository, never the GitLab workspace key.
+        expect(await ask(sockPath, window!.capability, { repoFullName: 'acme/infra' })).toMatchObject({ ok: true })
+        expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: 'acme/infra' } }])
+      } finally {
+        skillRepos.delete('acme/infra')
+      }
     })
 
     it('leaves workspace and additional-repository issuance to the agent capability unchanged', async () => {

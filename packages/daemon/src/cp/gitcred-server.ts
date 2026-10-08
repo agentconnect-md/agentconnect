@@ -190,9 +190,10 @@ export class GitCredServer {
     this.skillWindows.closeAgent(agentId)
   }
 
-  /** A daemon-subject window for one skill repository; undefined for the agent's own GitHub workspace repository, which the agent capability folds onto. */
+  /** A daemon-subject window for one private skill repository; undefined otherwise, so the agent capability keeps its workspace and additional-repository grants. */
   openDaemonSkillWindow(agentId: string, repo: string): SkillCredentialWindow | undefined {
-    if (this.isGithubWorkspaceRepo(agentId, repo)) return undefined
+    if (this.privateGithubSkillRepoOf?.(agentId, repo) !== true || this.isGithubWorkspaceRepo(agentId, repo))
+      return undefined
     return this.skillWindows.open({ agentId, subject: DAEMON_SKILL_WINDOW_SUBJECT, repos: [repo] })
   }
 
@@ -233,8 +234,9 @@ export class GitCredServer {
     }
     const plane: CredPlane = req.plane === 'gh' ? 'gh' : req.plane === 'glab' ? 'glab' : 'git'
     let repo = typeof req.repoFullName === 'string' && req.repoFullName.includes('/') ? req.repoFullName : undefined
-    const privateSkill =
-      repo !== undefined && req.provider === undefined && this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
+    // An omitted provider and an explicit `github` are the same GitHub ask; both meet the private-skill gate.
+    const githubAsk = req.provider === undefined || req.provider === IMPLICIT_CREDENTIAL_PROVIDER
+    const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
     // A window capability opens exactly its own private skill repositories on the git plane, nothing else.
     const window = principal === 'agent' ? undefined : principal
     if (window && (plane !== 'git' || repo === undefined || !privateSkill || !window.covers(repo))) {
