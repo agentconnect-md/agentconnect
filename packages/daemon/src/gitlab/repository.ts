@@ -1,5 +1,6 @@
-// GitLab's member of the code-host repository seam: the project API by numeric id, then the branch's commit.
+// GitLab's member of the code-host repository seam: the project API by numeric id, then the branch's or tag's commit.
 import { parseCodeHostJson } from '../codehost/json.js'
+import { concreteRef } from '../codehost/ref-spec.js'
 import type {
   CodeHostRepositoryModule,
   ProviderAnswer,
@@ -77,15 +78,21 @@ const idText = (value: unknown): string | undefined =>
 
 async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext): Promise<ProviderAnswer> {
   const { repository, prior } = input
-  const identityEtag = prior?.identityPath !== undefined ? prior.identityEtag : undefined
+  // A `HEAD` ask revalidates only when the prior read recorded the default branch a 304 must stand for.
+  const identityEtag =
+    prior?.identityPath !== undefined && (input.ref.kind !== 'default' || prior.defaultBranch !== undefined)
+      ? prior.identityEtag
+      : undefined
   const project = await get(input, ctx, `/projects/${repository.externalId}`, identityEtag)
   if (!(project instanceof Response)) return project
   let pathWithNamespace: string
   let nextIdentityEtag: string | undefined
+  let defaultBranch: string | undefined
   if (project.status === 304 && identityEtag !== undefined && prior?.identityPath !== undefined) {
     await discardResponse(project)
     pathWithNamespace = prior.identityPath
     nextIdentityEtag = identityEtag
+    defaultBranch = prior.defaultBranch
   } else if (project.status === 200) {
     nextIdentityEtag = project.headers.get('etag') ?? undefined
     const record = await readJson(project)
@@ -94,6 +101,7 @@ async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext)
     }
     if (idText(record.id) !== repository.externalId) return { ok: false, reason: 'replaced', detail: 'id_mismatch' }
     pathWithNamespace = record.path_with_namespace
+    if (typeof record.default_branch === 'string' && record.default_branch) defaultBranch = record.default_branch
   } else {
     return failure(project, 'not_found', ctx)
   }
@@ -102,14 +110,20 @@ async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext)
   }
   const validators = {
     ...(nextIdentityEtag ? { identityEtag: nextIdentityEtag } : {}),
-    identityPath: pathWithNamespace
+    identityPath: pathWithNamespace,
+    ...(defaultBranch !== undefined ? { defaultBranch } : {})
   }
 
   // Identity proves access, so a pinned commit is taken as given (source-cache.md §5).
   if (input.ref.kind === 'commit') return { ok: true, commit: input.ref.sha, validators }
+  const target = concreteRef(input.ref, defaultBranch)
+  if (!target) return { ok: false, reason: 'unavailable', detail: 'invalid_metadata' }
 
-  const branchPath = `/projects/${repository.externalId}/repository/branches/${encodeURIComponent(input.ref.name)}`
-  const conditional = prior?.refEtag !== undefined && prior.commit !== undefined ? prior.refEtag : undefined
+  const collection = target.kind === 'tag' ? 'tags' : 'branches'
+  const branchPath = `/projects/${repository.externalId}/repository/${collection}/${encodeURIComponent(target.name)}`
+  // A moved default branch is another ref, so the old branch's etag never revalidates it.
+  const sameRef = input.ref.kind !== 'default' || prior?.defaultBranch === defaultBranch
+  const conditional = sameRef && prior?.refEtag !== undefined && prior.commit !== undefined ? prior.refEtag : undefined
   let branch = await get(input, ctx, branchPath, conditional)
   if (!(branch instanceof Response)) return branch
   if (branch.status === 304) {
@@ -118,6 +132,7 @@ async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext)
       return {
         ok: true,
         commit: prior.commit,
+        ref: target.fullName,
         validators: { ...validators, refEtag: conditional, commit: prior.commit }
       }
     }
@@ -133,7 +148,12 @@ async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext)
     return { ok: false, reason: 'unavailable', detail: 'invalid_sha' }
   }
   const sha = commit.toLowerCase()
-  return { ok: true, commit: sha, validators: { ...validators, ...(refEtag ? { refEtag } : {}), commit: sha } }
+  return {
+    ok: true,
+    commit: sha,
+    ref: target.fullName,
+    validators: { ...validators, ...(refEtag ? { refEtag } : {}), commit: sha }
+  }
 }
 
 export const gitlabRepository: CodeHostRepositoryModule = {

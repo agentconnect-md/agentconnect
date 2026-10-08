@@ -5,6 +5,7 @@ import type { CodeHostSpecHosts } from './credentials.js'
 import {
   codeHostRepository,
   parseResolvableRef,
+  resolvableRefName,
   type CodeHostRepositoryModule,
   type CodeHostRepositoryRef,
   type ProviderAnswer,
@@ -19,10 +20,12 @@ import { MAX_RETRY_AFTER_MS } from './rest-read.js'
 export interface ResolveRefRequest {
   agentId: string
   repository: CodeHostRepositoryRef
-  /** `refs/heads/<b>` or a 40-hex commit. */
+  /** `refs/heads/<b>`, `refs/tags/<t>`, `HEAD` or a 40-hex commit. */
   ref: string
   /** The spec's host fields, so the instance is a per-call data dependency (§24.4). */
   hosts: CodeHostSpecHosts
+  /** `repository` reads with a token scoped to this repository (a skill Source), not the workspace's; default `workspace`. */
+  tokenScope?: 'workspace' | 'repository'
 }
 
 export interface CodeHostRefResolverOptions {
@@ -97,7 +100,9 @@ export class CodeHostRefResolver {
       request.repository.provider,
       apiBaseUrl,
       request.repository.externalId,
-      ref.kind === 'commit' ? ref.sha : `refs/heads/${ref.name}`
+      request.repository.path.toLowerCase(),
+      request.tokenScope ?? 'workspace',
+      resolvableRefName(ref)
     ].join('\u0000')
     const cached = this.cache.get(key)
     if (cached && this.now() < cached.expiresAt) {
@@ -153,7 +158,12 @@ export class CodeHostRefResolver {
     let entry: CachedResolution
     if (answer.ok) {
       entry = {
-        result: { ok: true, commit: answer.commit, checkedAt },
+        result: {
+          ok: true,
+          commit: answer.commit,
+          checkedAt,
+          ...(answer.ref !== undefined ? { ref: answer.ref } : {})
+        },
         expiresAt: checkedAt + this.ttlMs,
         validators: answer.validators,
         failures: 0
@@ -185,7 +195,10 @@ export class CodeHostRefResolver {
     ref: NonNullable<ReturnType<typeof parseResolvableRef>>,
     prior: RefValidators | undefined
   ): Promise<ProviderAnswer> {
-    const tokenAsk: RepositoryTokenAsk = module.readTokenAsk({ externalId: request.repository.externalId })
+    const tokenAsk: RepositoryTokenAsk = module.readTokenAsk({
+      externalId: request.repository.externalId,
+      ...(request.tokenScope === 'repository' ? { repoFullName: request.repository.path } : {})
+    })
     for (let attempt = 0; ; attempt += 1) {
       let token: string
       try {

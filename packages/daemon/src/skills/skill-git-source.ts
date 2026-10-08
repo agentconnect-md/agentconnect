@@ -10,7 +10,7 @@ import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { daemonLocalGitEnv, workspaceGitEnvBase } from '../workspace/git-injection.js'
 import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 import { MAX_SKILL_FILE_BYTES } from './skill-limits.js'
-import { discardResponse, fetchWithRedirectPolicy, readBoundedBody } from '../codehost/rest-read.js'
+import { discardResponse, fetchWithRedirectPolicy, readBoundedBody, retryAfterMs } from '../codehost/rest-read.js'
 import { GITHUB_API_BASE, githubApiHeaders, parseGithubRepositoryIdentity } from '../github/rest.js'
 
 const GITHUB_SHORTHAND = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/
@@ -859,6 +859,17 @@ export interface ResolveGitSkillCommitOptions {
 
 export type GitSkillCommitResolution = { status: 'resolved'; commit: string; etag?: string } | { status: 'unchanged' }
 
+/** A refused commit lookup, carrying how long the host asked us to wait when it said. */
+export class GitSkillCommitResolutionError extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterMs?: number
+  ) {
+    super(message)
+    this.name = 'GitSkillCommitResolutionError'
+  }
+}
+
 /** What `entry.ref` points at right now — one bounded API read (a bare SHA),
  * conditional when the caller carries an etag. This deliberately SKIPS the
  * repository identity fence {@link acquireGitSkillSource} runs twice: the answer
@@ -898,8 +909,9 @@ export async function resolveGitSkillCommit(
     }
     if (response.status !== 200) {
       const status = response.status
+      const wait = retryAfterMs(response)
       await discardResponse(response)
-      throw new Error(`skill GitHub commit resolution failed with status ${status}`)
+      throw new GitSkillCommitResolutionError(`skill GitHub commit resolution failed with status ${status}`, wait)
     }
     const etag = response.headers.get('etag') ?? undefined
     const commit = (await readBoundedBody(response, 128, 'skill GitHub commit resolution')).toString('utf8').trim()

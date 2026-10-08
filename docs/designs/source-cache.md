@@ -224,9 +224,10 @@ Result caching:
 
 - **Only trusted results are shared.** A result the daemon computed itself —
   `resolveRef`, or the anonymous REST check for a github.com address — may be
-  cached for 60 s, as `GitSkillRefTracker` does today: across agents for an
-  anonymous github.com Source, and per (agent, Source, ref) for a credentialed
-  one, so revoked upstream access stops `cred` reads within 60 s.
+  cached for 60 s: across agents for an anonymous github.com Source
+  (`GitSkillRefTracker`, which never presents a credential), and per (agent,
+  Source, ref) for a credentialed one (`CodeHostRefResolver`), so revoked
+  upstream access stops `cred` reads within 60 s.
 - **A pod's `ls-remote` answer is never shared.** It is used only by the
   preparation of the pod that produced it and is not cached, not coalesced with
   another pod's in-flight resolution, and never becomes another agent's planned
@@ -264,6 +265,23 @@ Daemon implementation (P1, CP1.4):
 - `authorizeCredentialedCacheRead(agent, workspace)` in
   `source-cache/authorize-read.ts` is the one gate the workspace read path calls
   before a `cred` GET.
+
+Daemon implementation (P2, CP2.2):
+
+- `CodeHostRefResolver` is built whether or not a bucket is configured; without
+  one it serves only skill refs and makes no object-store traffic.
+- A credentialed skill Source (`private`, `githubRepoId`) resolves through
+  `resolveRef` with a token scoped to the skill repository
+  (`RepositoryTokenAsk.repoFullName`), never the workspace token. A public one
+  uses `GitSkillRefTracker`'s anonymous check, which fails over with the same
+  backoff and lets a failure replace a cached success at once.
+- `parseResolvableRef` is widened to `refs/tags/<t>` and `HEAD`; its sibling
+  `normalizeSkillRef` maps a skill's spelling to those forms: absent or `HEAD`
+  asks for the default branch, which the identity read names and the answer
+  reports as `refs/heads/<default>`; a bare name is tried as a branch, then as
+  a tag; a pinned SHA is taken as given.
+- The daemon-acquisition path, cluster and local alike, plans its commit from
+  these two resolvers.
 
 ## 6. Trust model
 
