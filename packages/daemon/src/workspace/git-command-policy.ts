@@ -108,31 +108,39 @@ function validateBundleUri(rest: string[]): number {
   if (!argument.startsWith(BUNDLE_URI_PREFIX)) {
     throw new ExecRefusedError('--bundle-uri is admitted only as --bundle-uri=https://…')
   }
-  const value = argument.slice('--bundle-uri='.length)
-  if (value.length > MAX_BUNDLE_URI_LENGTH) throw new ExecRefusedError('--bundle-uri value is too long')
-  if (!/^[\x21-\x7e]+$/.test(value) || value.includes('\\')) {
-    throw new ExecRefusedError('--bundle-uri value contains a forbidden character')
-  }
+  const problem = bundleUriProblem(argument.slice('--bundle-uri='.length))
+  if (problem) throw new ExecRefusedError(`--bundle-uri ${problem}`)
+  return index
+}
+
+// Why a `--bundle-uri` value is refused, or undefined when it is admitted; shared by the exec rule and the skill plan schema.
+export function bundleUriProblem(value: string): string | undefined {
+  if (!value.startsWith('https://')) return 'must be an https URL'
+  if (value.length > MAX_BUNDLE_URI_LENGTH) return 'value is too long'
+  if (!/^[\x21-\x7e]+$/.test(value) || value.includes('\\')) return 'value contains a forbidden character'
   const authority = value.slice('https://'.length).split(/[/?#]/, 1)[0] ?? ''
-  if (authority === '' || authority.includes('@')) {
-    throw new ExecRefusedError('--bundle-uri must name a host and carry no userinfo')
-  }
+  if (authority === '' || authority.includes('@')) return 'must name a host and carry no userinfo'
   let url: URL
   try {
     url = new URL(value)
   } catch {
-    throw new ExecRefusedError('--bundle-uri value is not a URL')
+    return 'value is not a URL'
   }
   if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.hostname === '') {
-    throw new ExecRefusedError('--bundle-uri must be an https URL with a host and no userinfo')
+    return 'must be an https URL with a host and no userinfo'
   }
-  return index
+  return undefined
 }
 
 // Git's ref-format rules (git check-ref-format), restricted to a full `refs/heads/*` name.
 export function isValidBranchRef(ref: string): boolean {
-  if (ref.length > MAX_REF_LENGTH || !ref.startsWith(BRANCH_REF_PREFIX)) return false
-  if (ref.length === BRANCH_REF_PREFIX.length || ref === '@') return false
+  return isValidFullRef(ref, BRANCH_REF_PREFIX)
+}
+
+// Git's ref-format rules (git check-ref-format) for a full ref under `prefix`.
+export function isValidFullRef(ref: string, prefix: string): boolean {
+  if (ref.length > MAX_REF_LENGTH || !ref.startsWith(prefix)) return false
+  if (ref.length === prefix.length || ref === '@') return false
   if (/[\x00-\x20\x7f~^:?*[\\]/.test(ref)) return false
   if (ref.includes('..') || ref.includes('@{') || ref.includes('//')) return false
   if (ref.endsWith('/') || ref.endsWith('.')) return false

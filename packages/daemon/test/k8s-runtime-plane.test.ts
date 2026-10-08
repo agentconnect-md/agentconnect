@@ -338,6 +338,21 @@ describe('k8s runtime plane assembly', () => {
     expect(await plane.bundleStagerFor?.('agent-b', '/agent/checkout')).toBeUndefined()
   })
 
+  it.each([
+    [
+      'takes',
+      ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'skill-git-in-pod-v1'] as ShimFeature[],
+      true
+    ],
+    ['does not take', ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'] as ShimFeature[], false]
+  ])("hands out a skills client that %s Git plans by the bound shim's `skills-git`", async (_label, features, git) => {
+    const plane = await planeUnderTest(fakeApi())
+    const ensuring = plane.ensureChannel('agent-a')
+    shimAgainst(shimPort(plane), { workspaceRoot: '/agent', features })
+    await ensuring
+    expect(plane.skillClientFor?.('agent-a')?.gitInPod).toBe(git)
+  })
+
   it('resolves a dialing pod back to its launch, through the ADOPTED pod name', async () => {
     // The whole mapping: a TokenReview yields a pod name, the record is keyed by the pod the
     // Sandbox named, and warm-pool adoption means that name is the pool's, not the sandbox's.

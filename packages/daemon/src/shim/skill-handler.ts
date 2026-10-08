@@ -15,7 +15,9 @@ import {
   ClusterSkillRequestSchema,
   ClusterSkillReconcileReplySchema,
   ClusterSkillReconcileResultSchema,
+  isGitPlanReconcile,
   skillReceiptPage,
+  skillReplyFor,
   MAX_CLUSTER_SKILL_FILES,
   MAX_CLUSTER_SKILL_SOURCES,
   MAX_CLUSTER_SKILL_TOTAL_BYTES,
@@ -252,6 +254,8 @@ export class ClusterSkillHandler {
     abort?: AbortSignal,
     context?: ClusterSkillRequestContext
   ): Promise<ClusterSkillReceiptPage> {
+    // This image does not advertise skill-git-in-pod-v1, so a Git plan is a daemon bug, refused whole.
+    if (isGitPlanReconcile(input)) throw new Error('this shim does not take Git skill plans')
     const operation = this.operationFor(input, context)
     if (operation.result) throw new Error('cluster skill reconciliation is already complete')
     if (JSON.stringify(operation.authority) !== JSON.stringify(input.authority)) {
@@ -287,7 +291,9 @@ export class ClusterSkillHandler {
     if (input.sources.some((source) => !declaredSources.has(source.sourceId))) {
       throw new Error('reconcile source was not declared')
     }
-    const sourceMeta = new Map(input.sources.map((source) => [source.sourceId, source]))
+    const sourceMeta = new Map(
+      input.sources.flatMap((source) => (source.sourceKind === 'git' ? [] : [[source.sourceId, source] as const]))
+    )
     // A prior root preserved for a skipped source may carry an earlier revision's source id (a Git
     // source id names its commit), so its kind comes from the prior receipt, not this run's sources.
     const priorKinds = new Map(input.priorRoots.map((root) => [`${root.path}\0${root.sourceId}`, root.sourceKind]))
@@ -413,11 +419,13 @@ export class ClusterSkillHandler {
         publicationKey: input.replayKey,
         candidates
       })
-      const reply = ClusterSkillReconcileResultSchema.parse({
-        roots: result.owned.map(ownedRoot),
-        conflicts: result.conflicts,
-        ...(skipped.length > 0 ? { skipped } : {})
-      })
+      const reply = ClusterSkillReconcileResultSchema.parse(
+        skillReplyFor(input, {
+          roots: result.owned.map(ownedRoot),
+          conflicts: result.conflicts,
+          ...(skipped.length > 0 ? { skipped } : {})
+        })
+      )
       if (input.priorRootCount !== undefined) {
         operation.result = reply
         return await this.receipt(

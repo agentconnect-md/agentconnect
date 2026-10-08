@@ -228,6 +228,7 @@ describe('cluster spawn driver', () => {
           'skills',
           'skills-wide',
           'skills-receipts',
+          'skills-git',
           'bundle'
         ],
         podName: 'sb-1',

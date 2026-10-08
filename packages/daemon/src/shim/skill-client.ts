@@ -12,7 +12,10 @@ import {
   ClusterSkillPriorReplySchema,
   ClusterSkillReceiptPageSchema,
   ClusterSkillVerifySchema,
+  budgetSkillPlanUrls,
+  isGitPlanReconcile,
   skillControlPages,
+  skillReplyExtras,
   ClusterSkillUploadReplySchema,
   ClusterSkillVerifyReplySchema,
   LEGACY_MAX_CLUSTER_SKILL_FILES,
@@ -42,7 +45,9 @@ export class ClusterSkillClient {
     private readonly wide = false,
     // Enabled when the caller supplies a matching shim bundle; retained images may predate this field.
     readonly fileModes = false,
-    private readonly receiptPaging = false
+    private readonly receiptPaging = false,
+    // Mirrors the `skills-git` grant: the bound shim takes Git plan Sources and clones them itself.
+    readonly gitInPod = false
   ) {}
 
   /** What the BOUND image admits, so a caller can drop one oversized source instead of failing a launch. */
@@ -97,6 +102,10 @@ export class ClusterSkillClient {
   }
 
   async reconcile(input: Omit<ClusterSkillReconcile, 'op' | 'priorRootCount'>): Promise<ClusterSkillReconcileReply> {
+    if (isGitPlanReconcile(input)) {
+      if (!this.gitInPod || !this.receiptPaging) throw new Error('this sandbox image does not take Git skill plans')
+      input = budgetSkillPlanUrls(input)
+    }
     if (!this.receiptPaging) {
       const request = ClusterSkillReconcileSchema.parse({ op: 'reconcile', ...input })
       return ClusterSkillReconcileReplySchema.parse(
@@ -125,11 +134,8 @@ export class ClusterSkillClient {
     let page = ClusterSkillReceiptPageSchema.parse(
       await this.requester.request('skills', ClusterSkillReconcileSchema.parse(request), { timeoutMs: 15 * 60_000 })
     )
-    const result = {
-      roots: [...page.roots],
-      conflicts: page.conflicts,
-      ...(page.skipped && page.skipped.length > 0 ? { skipped: page.skipped } : {})
-    }
+    const extras = skillReplyExtras(page)
+    const result = { roots: [...page.roots], conflicts: page.conflicts, ...extras }
     while (page.nextOffset !== undefined) {
       if (page.nextOffset !== result.roots.length) throw new Error('inconsistent skill receipt offset')
       page = ClusterSkillReceiptPageSchema.parse(
@@ -143,7 +149,7 @@ export class ClusterSkillClient {
       if (
         page.roots.length === 0 ||
         JSON.stringify(page.conflicts) !== JSON.stringify(result.conflicts) ||
-        JSON.stringify(page.skipped ?? []) !== JSON.stringify(result.skipped ?? [])
+        JSON.stringify(skillReplyExtras(page)) !== JSON.stringify(extras)
       )
         throw new Error('inconsistent skill receipt page')
       result.roots.push(...page.roots)

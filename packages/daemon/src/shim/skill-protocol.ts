@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { createHash } from 'node:crypto'
 import { ClusterSkillOwnedRootSchema, ClusterSkillPathSchema } from '../store/cluster-skill-ledger.js'
 import { MAX_SKILL_BUNDLES } from '../skills/skill-limits.js'
+import { bundleUriProblem, isValidBranchRef, isValidFullRef } from '../workspace/git-command-policy.js'
 
 export const MAX_CLUSTER_SKILL_SOURCES = 64
 // A Git source is a whole collection repo; these mirror GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, and the
@@ -13,6 +14,11 @@ export const MAX_CLUSTER_SKILL_MANIFEST_PAGE = 512
 export const MAX_CLUSTER_SKILL_CHUNK_BYTES = 128 * 1024
 export const MAX_CLUSTER_SKILL_SELECTIONS = 256
 export const MAX_CLUSTER_SKILL_CONTROL_BYTES = 220 * 1024
+export const MAX_SKILL_GIT_URL_LENGTH = 2048
+export const MAX_SKILL_GET_URL_LENGTH = 8192
+
+/** Advertised by a shim that clones Git skill Sources itself; the daemon's grant for it is `skills-git`. */
+export const SKILL_GIT_IN_POD_FEATURE = 'skill-git-in-pod-v1' as const
 
 /** What `cluster-skills-v1` admits — a daemon takes over a running pod, so it may be older than us.
  *  That image has no `manifest` op, so its whole file list must still fit one `begin` frame. */
@@ -109,13 +115,73 @@ export const ClusterSkillUploadSchema = z
   })
   .strict()
 
-export const ClusterSkillSourceSchema = z
+const SelectionsSchema = z.array(z.string().min(1).max(128)).max(MAX_CLUSTER_SKILL_SELECTIONS)
+const CommitSchema = z.string().regex(/^[a-f0-9]{40}$/, { message: 'must be a full lowercase SHA-1' })
+
+/** A source the daemon acquired and uploaded file by file. */
+export const ClusterSkillUploadedSourceSchema = z
   .object({
     sourceId: z.string().min(1).max(160),
     sourceKind: z.enum(['agent', 'managed', 'dream']),
-    selections: z.array(z.string().min(1).max(128)).max(MAX_CLUSTER_SKILL_SELECTIONS)
+    selections: SelectionsSchema
   })
   .strict()
+
+// An https clone address with a host, no userinfo, query or fragment, and nothing Git could read as an option.
+const SkillGitUrlSchema = z
+  .string()
+  .max(MAX_SKILL_GIT_URL_LENGTH)
+  .refine((value) => {
+    if (!/^https:\/\/[\x21-\x7e]+$/.test(value) || value.includes('\\')) return false
+    try {
+      const url = new URL(value)
+      return url.hostname !== '' && url.username === '' && url.password === '' && !url.search && !url.hash
+    } catch {
+      return false
+    }
+  }, 'must be an https clone URL without userinfo, query or fragment')
+
+// The resolved full ref a tracked Source follows; a bare name or `HEAD` is resolved by the daemon first.
+const SkillGitRefSchema = z
+  .string()
+  .refine(
+    (value) => isValidBranchRef(value) || isValidFullRef(value, 'refs/tags/'),
+    'must be a full refs/heads/* or refs/tags/* name'
+  )
+
+// A contained relative directory; no component Git could read as an option or that names repository metadata.
+const SkillGitSubDirSchema = ClusterSkillPathSchema.refine(
+  (value) => value.split('/').every((part) => !part.startsWith('-') && part.toLowerCase() !== '.git'),
+  'subdirectory must not name an option or .git'
+)
+
+/** A Git Source the shim clones itself (source-cache.md §8); `ref` is absent only for a pinned SHA. */
+export const GitSkillPlanSchema = z
+  .object({
+    sourceId: z.string().min(1).max(160),
+    sourceKind: z.literal('git'),
+    url: SkillGitUrlSchema,
+    ref: SkillGitRefSchema.optional(),
+    // Every P2 Source is daemon-resolved, so the commit to install is always named.
+    plannedCommit: CommitSchema,
+    subDir: SkillGitSubDirSchema.optional(),
+    selections: SelectionsSchema,
+    // Resolution failed on an installed Source: keep its installed roots at `plannedCommit` rather than fail it.
+    keepInstalled: z.boolean().optional(),
+    // A presigned GET of the Source's own access class, passed as `--bundle-uri`; dropped when the plan is over budget.
+    getUrl: z
+      .string()
+      .max(MAX_SKILL_GET_URL_LENGTH)
+      .superRefine((value, ctx) => {
+        const problem = bundleUriProblem(value)
+        if (problem) ctx.addIssue({ code: 'custom', message: `getUrl ${problem}` })
+      })
+      .optional()
+  })
+  .strict()
+  .refine((value) => !(value.keepInstalled && value.getUrl), 'a keepInstalled entry carries no getUrl')
+
+export const ClusterSkillSourceSchema = z.union([ClusterSkillUploadedSourceSchema, GitSkillPlanSchema])
 
 export const ClusterSkillPriorRootSchema = ClusterSkillOwnedRootSchema
 
@@ -192,24 +258,56 @@ export const ClusterSkillManifestReplySchema = z
 export const ClusterSkillUploadReplySchema = z
   .object({ received: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILE_BYTES), complete: z.boolean() })
   .strict()
-/** A source whose CLI stage failed inside the shim — an oversized asset, too many files, a CLI
- *  crash. Its prior roots were preserved untouched and nothing new was published for it; the daemon
- *  logs the reason and the run counts as failed so the next preparation retries. Sent only when
- *  non-empty, so a shim without the field parses unchanged against this daemon and vice versa. */
+/** Why a Source was skipped (source-cache.md §11): an enumerated code, never Git's or the CLI's raw output. */
+export const SkillSkipCodeSchema = z.enum([
+  'resolution_failed',
+  'access_denied',
+  'ref_moved',
+  'commit_unavailable',
+  'sha_fetch_refused',
+  'fetch_failed',
+  'limits_exceeded',
+  'cli_failed'
+])
+/** A source the shim could not install this run: its prior roots stay untouched and the run counts as failed, so the next preparation retries. */
 export const ClusterSkillSkippedSourceSchema = z
   .object({
     sourceId: z.string().min(1).max(160),
-    reason: z.string().min(1).max(1024)
+    // Free text stays for daemons that predate `code`.
+    reason: z.string().min(1).max(1024),
+    code: SkillSkipCodeSchema.optional()
+  })
+  .strict()
+/** What the shim installed from one Git plan Source: the commit it checked out and the skill leaves it found. */
+export const GitSkillSourceResultSchema = z
+  .object({
+    sourceId: z.string().min(1).max(160),
+    resolvedCommit: CommitSchema,
+    leaves: z.array(z.string().min(1).max(128)).max(MAX_CLUSTER_SKILL_SELECTIONS)
+  })
+  .strict()
+/** A Git plan clone the shim kept for the daemon's asynchronous write-back (source-cache.md §9). */
+export const SkillWriteBackCandidateSchema = z
+  .object({
+    sourceId: z.string().min(1).max(160),
+    branch: z.string().refine(isValidBranchRef, 'must be a full refs/heads/* name'),
+    commit: CommitSchema,
+    handle: z.uuid()
   })
   .strict()
 export const ClusterSkillReconcileResultSchema = z
   .object({
     roots: z.array(ClusterSkillPriorRootSchema).max(MAX_SKILL_BUNDLES),
     conflicts: z.array(RelativeSkillPathSchema).max(MAX_SKILL_BUNDLES),
-    skipped: z.array(ClusterSkillSkippedSourceSchema).max(MAX_CLUSTER_SKILL_SOURCES).optional()
+    skipped: z.array(ClusterSkillSkippedSourceSchema).max(MAX_CLUSTER_SKILL_SOURCES).optional(),
+    // Present only in the reply to a Git plan reconcile; an older daemon's strict schema refuses them.
+    gitSources: z.array(GitSkillSourceResultSchema).max(MAX_CLUSTER_SKILL_SOURCES).optional(),
+    writeBackCandidates: z.array(SkillWriteBackCandidateSchema).max(MAX_CLUSTER_SKILL_SOURCES).optional()
   })
   .strict()
   .superRefine((value, ctx) => {
+    const leaves = (value.gitSources ?? []).reduce((total, source) => total + source.leaves.length, 0)
+    if (leaves > MAX_CLUSTER_SKILL_SELECTIONS) ctx.addIssue({ code: 'custom', message: 'too many Git skill leaves' })
     const paths = new Set<string>()
     for (const root of value.roots) {
       if (paths.has(root.path)) ctx.addIssue({ code: 'custom', message: 'duplicate result root' })
@@ -255,19 +353,74 @@ export function skillControlPages<T>(
 
 export function skillReceiptPage(result: ClusterSkillReconcileReply, offset: number): ClusterSkillReceiptPage {
   if (offset > result.roots.length) throw new Error('skill receipt offset exceeds result')
-  // `skipped` rides on every page like `conflicts`, so a paged reply cannot lose it.
-  const skipped = result.skipped && result.skipped.length > 0 ? { skipped: result.skipped } : {}
+  // Everything but the roots rides on every page like `conflicts`, so a paged reply cannot lose it.
+  const extras = skillReplyExtras(result)
   const overhead = Buffer.byteLength(
-    JSON.stringify({ roots: [], conflicts: result.conflicts, ...skipped, nextOffset: MAX_SKILL_BUNDLES })
+    JSON.stringify({ roots: [], conflicts: result.conflicts, ...extras, nextOffset: MAX_SKILL_BUNDLES })
   )
   const roots = skillControlPages(result.roots.slice(offset), MAX_SKILL_BUNDLES, overhead)[0]!
   const nextOffset = offset + roots.length
   return ClusterSkillReceiptPageSchema.parse({
     roots,
     conflicts: result.conflicts,
-    ...skipped,
+    ...extras,
     ...(nextOffset < result.roots.length ? { nextOffset } : {})
   })
+}
+
+/** A reply's optional lists, each only when non-empty, so a shim never sends a field an older daemon refuses. */
+export function skillReplyExtras(
+  result: Pick<ClusterSkillReconcileReply, 'skipped' | 'gitSources' | 'writeBackCandidates'>
+): Pick<ClusterSkillReconcileReply, 'skipped' | 'gitSources' | 'writeBackCandidates'> {
+  return {
+    ...(result.skipped && result.skipped.length > 0 ? { skipped: result.skipped } : {}),
+    ...(result.gitSources && result.gitSources.length > 0 ? { gitSources: result.gitSources } : {}),
+    ...(result.writeBackCandidates && result.writeBackCandidates.length > 0
+      ? { writeBackCandidates: result.writeBackCandidates }
+      : {})
+  }
+}
+
+/** True when a reconcile carries a Git plan Source, the only request whose reply may use the Git-plan reply fields. */
+export function isGitPlanReconcile(request: Pick<ClusterSkillReconcile, 'sources'>): boolean {
+  return request.sources.some((source) => source.sourceKind === 'git')
+}
+
+/** The reply a shim may send for `request`: without a Git plan it is exactly the pre-`skill-git-in-pod-v1` shape. */
+export function skillReplyFor(
+  request: Pick<ClusterSkillReconcile, 'sources'>,
+  reply: ClusterSkillReconcileReply
+): ClusterSkillReconcileReply {
+  if (isGitPlanReconcile(request)) return { roots: reply.roots, conflicts: reply.conflicts, ...skillReplyExtras(reply) }
+  const skipped = (reply.skipped ?? []).map(({ sourceId, reason }) => ({ sourceId, reason }))
+  return { roots: reply.roots, conflicts: reply.conflicts, ...(skipped.length > 0 ? { skipped } : {}) }
+}
+
+/** Drop GET URLs, last Source first, until the sent reconcile frame without prior roots fits; those clones run without a bundle. */
+export function budgetSkillPlanUrls<T extends Pick<ClusterSkillReconcile, 'sources'>>(
+  request: T,
+  limit = MAX_CLUSTER_SKILL_CONTROL_BYTES
+): T {
+  const sources = [...request.sources]
+  // Measures the frame reconcile() sends once prior roots page out, with the widest priorRootCount.
+  const frame = (): unknown => ({
+    op: 'reconcile',
+    ...request,
+    priorRoots: [],
+    priorRootCount: MAX_SKILL_BUNDLES,
+    sources
+  })
+  const measured = (): number => Buffer.byteLength(JSON.stringify(frame()))
+  let bytes = measured()
+  for (let index = sources.length - 1; index >= 0 && bytes > limit; index--) {
+    const source = sources[index]!
+    if (source.sourceKind !== 'git' || source.getUrl === undefined) continue
+    const withoutUrl = { ...source }
+    delete withoutUrl.getUrl
+    sources[index] = withoutUrl
+    bytes -= Buffer.byteLength(JSON.stringify(source)) - Buffer.byteLength(JSON.stringify(withoutUrl))
+  }
+  return { ...request, sources }
 }
 
 export const ClusterSkillVerifyReplySchema = z.object({ intact: z.array(z.boolean()).max(512) }).strict()
@@ -284,6 +437,11 @@ export type ClusterSkillBeginReply = z.infer<typeof ClusterSkillBeginReplySchema
 export type ClusterSkillUploadReply = z.infer<typeof ClusterSkillUploadReplySchema>
 export type ClusterSkillReconcileReply = z.infer<typeof ClusterSkillReconcileResultSchema>
 export type ClusterSkillSkippedSource = z.infer<typeof ClusterSkillSkippedSourceSchema>
+export type ClusterSkillSource = z.infer<typeof ClusterSkillSourceSchema>
+export type GitSkillPlan = z.infer<typeof GitSkillPlanSchema>
+export type SkillSkipCode = z.infer<typeof SkillSkipCodeSchema>
+export type GitSkillSourceResult = z.infer<typeof GitSkillSourceResultSchema>
+export type SkillWriteBackCandidate = z.infer<typeof SkillWriteBackCandidateSchema>
 export type ClusterSkillPrior = z.infer<typeof ClusterSkillPriorSchema>
 export type ClusterSkillPriorReply = z.infer<typeof ClusterSkillPriorReplySchema>
 export type ClusterSkillReceipt = z.infer<typeof ClusterSkillReceiptSchema>
