@@ -9,6 +9,7 @@ import { AGENTMSG_NOT_READY_RETRY } from '../src/cp/agentmsg-retry.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import * as monotonic from '../src/store/monotonic-ts.js'
+import { isAppendCoordinate } from '../src/session/append-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -31,6 +32,8 @@ function scaffold(
     allowedCallerAgentIds?: string[]
     outboundPolicy?: 'all' | 'selected'
     allowedTargetAgentIds?: string[]
+    /** Slack integrations in order; each listed channel runs the `append` session mode. */
+    integrations?: { id: string; appendChannels?: string[] }[]
   }[]
 ): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-daemon-msgagent-'))
@@ -53,7 +56,17 @@ function scaffold(
         status: 'active',
         runtime: 'claude',
         workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
-        integrations: [],
+        integrations: (a.integrations ?? []).map((integration) => ({
+          id: integration.id,
+          platform: 'slack',
+          core: {
+            bindRules: [{ match: { kind: 'mention' } }],
+            ...(integration.appendChannels
+              ? { sessionModes: integration.appendChannels.map((channel) => ({ channel, mode: 'append' })) }
+              : {})
+          },
+          config: { botToken: `xoxb-${integration.id}`, appToken: `xapp-${integration.id}` }
+        })),
         output: { mode: 'low' },
         ...(a.callPolicy ? { callPolicy: a.callPolicy } : {}),
         ...(a.allowedCallerAgentIds ? { allowedCallerAgentIds: a.allowedCallerAgentIds } : {}),
@@ -372,6 +385,105 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
+  it('refuses a postless self wake as self in the preflight and at admission, ahead of policy and the hop cap', async () => {
+    const root = scaffold([{ id: 'bot-a', outboundPolicy: 'selected', allowedTargetAgentIds: [] }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const req = baseReq({ toAgentId: 'bot-a', postless: true })
+    expect(d.collab.wakeRejectionReason(req)).toBe('self')
+    expect(await call(req)).toEqual({ delivered: false, targetSession: 'slack:C1:100.1:bot-a', reason: 'self' })
+    // A caller turn already at the cap still reads as self on both sides.
+    d.activeTurnCallMeta.set('slack:C1:100.1:bot-a', {
+      callFrom: 'bot-b',
+      hopCount: MAX_AGENT_CALL_HOPS - 1,
+      deliveryId: 'd0'
+    })
+    expect(d.collab.wakeRejectionReason(req)).toBe('self')
+    expect(await call(req)).toMatchObject({ delivered: false, reason: 'self' })
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it.each<[string, string | null, Partial<MessageAgentReq>]>([
+    ['no proof', null, {}],
+    ['only the post ts', null, { transcriptTs: '200.2' }],
+    ['only the pairing id', null, { agentCallDeliveryId: 'paired-self-1' }],
+    [
+      'a full pairing plus the postless marker',
+      'self',
+      { transcriptTs: '200.2', agentCallDeliveryId: 'paired-self-1', postless: true }
+    ]
+  ])('refuses at admission an internal self wake carrying %s (preflight: %s)', async (_label, preflight, proof) => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const req = baseReq({ toAgentId: 'bot-a', thread: '200.2', ...proof })
+    // The preflight runs before the root post exists, so only the postless marker refuses there.
+    expect((daemon as any).collab.wakeRejectionReason(req)).toBe(preflight)
+    expect(await call(req)).toEqual({ delivered: false, targetSession: 'slack:C1:200.2:bot-a', reason: 'self' })
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('admits a paired channel-root self wake past a CP directory that refuses the pair, and only that wake', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const admits = vi.spyOn(d.cpCollab, 'admits').mockReturnValue(false)
+    const self = baseReq({
+      toAgentId: 'bot-a',
+      thread: '200.2',
+      transcriptTs: '200.2',
+      agentCallDeliveryId: 'paired-self-1'
+    })
+    expect(d.collab.wakeRejectionReason(self)).toBeNull()
+    expect(await call(self)).toEqual({ delivered: true, targetSession: 'slack:C1:200.2:bot-a' })
+    // The same refusal still stops a peer wake from that caller.
+    expect(d.collab.wakeRejectionReason(baseReq())).toBe('not_allowed')
+    expect(await call(baseReq())).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(calls.map((c) => c.agentId)).toEqual(['bot-a'])
+    admits.mockRestore()
+    await daemon.stop()
+  })
+
+  it('still applies coordinate integrity to a paired channel-root self wake', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const placement = (agentId: string) => ({
+      agentId,
+      daemonId: 'local-daemon',
+      callPolicy: 'all' as const,
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all' as const,
+      allowedTargetAgentIds: []
+    })
+    d.cpCollab.replace({
+      generation: 5,
+      channels: [
+        { orgId: TEST_ORG, platform: 'slack', channelId: 'C1', agents: [placement('bot-a'), placement('bot-b')] },
+        { orgId: TEST_ORG, platform: 'slack', channelId: 'C_EXECS', agents: [placement('bot-b')] }
+      ],
+      agents: [
+        { ...placement('bot-a'), orgId: TEST_ORG },
+        { ...placement('bot-b'), orgId: TEST_ORG }
+      ]
+    })
+    // A known channel the caller is not in, and an IM channel the snapshot does not know.
+    for (const channel of ['C_EXECS', 'C_GHOST']) {
+      const self = baseReq({
+        toAgentId: 'bot-a',
+        channel,
+        thread: '900.1',
+        transcriptTs: '900.1',
+        agentCallDeliveryId: `paired-${channel}`
+      })
+      expect(d.collab.wakeRejectionReason(self)).toBe('not_allowed')
+      expect(await call(self)).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    }
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
   it.each(['U1122334455', '<@U1122334455>', ' U1122334455 ', '\t<@U1122334455>\n'])(
     'rejects Slack target %s before publishing a misleading visible message',
     async (toAgentId) => {
@@ -679,6 +791,218 @@ describe('messageAgent: same-daemon delivery', () => {
   })
 })
 
+/** Seed the caller's mid-turn session row, which a woken child takes as its origin. */
+async function seedCallerSession(daemon: any, over: Record<string, unknown> = {}): Promise<string> {
+  const key = (over.key as string | undefined) ?? sessionKey('slack', 'C1', '100.1', 'bot-a')
+  await daemon.store.upsertSession({
+    key,
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: '100.1',
+    acpSessionId: 'acp-parent-1',
+    sessionId: 'sid-parent-1',
+    state: 'prompting',
+    lastDeliveredTs: null,
+    updatedAt: Date.now(),
+    ...over
+  })
+  return key
+}
+
+const scopeOf = (daemon: any, integrationId: string): string => daemon.transportScopeForIntegrationIds([integrationId])
+
+describe('messageAgent: a peer wake keys on the target conversation’s session mode', () => {
+  const appendTarget = () =>
+    scaffold([
+      { id: 'bot-a' },
+      { id: 'bot-b', integrations: [{ id: 'int-bot-b', appendChannels: ['C1'] }] },
+      { id: 'bot-c' }
+    ])
+
+  it('keys a postless wake to an append target on the coordinate it mints, keeping the delivery thread', async () => {
+    const { daemon, calls, call } = await bootWithDispatchSpy(appendTarget())
+    const d = daemon as any
+    const scope = scopeOf(d, 'int-bot-b')
+    expect(scope).toMatch(/^slack:/)
+    expect(await d.store.currentAppendCoordinate('bot-b', 'C1', scope)).toBeUndefined()
+
+    const res = await call(baseReq({ postless: true }))
+
+    const coordinate = await d.store.currentAppendCoordinate('bot-b', 'C1', scope)
+    expect(isAppendCoordinate(coordinate)).toBe(true)
+    expect(res).toEqual({ delivered: true, targetSession: sessionKey('slack', 'C1', coordinate, 'bot-b', scope) })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      agentId: 'bot-b',
+      integrationId: 'int-bot-b',
+      msg: { channel: 'C1', thread: '100.1', sessionThread: coordinate, transportScope: scope, headless: true }
+    })
+    await daemon.stop()
+  })
+
+  it('folds wakes from another thread and another caller onto that one session', async () => {
+    const { daemon, calls, call } = await bootWithDispatchSpy(appendTarget())
+    const first = await call(baseReq({ postless: true }))
+    const otherThread = await call(baseReq({ postless: true, callerThread: '300.1', thread: '300.1' }))
+    const otherCaller = await call(
+      baseReq({ postless: true, callerAgentId: 'bot-c', callerThread: '400.1', thread: '400.1' })
+    )
+    expect(otherThread.targetSession).toBe(first.targetSession)
+    expect(otherCaller.targetSession).toBe(first.targetSession)
+    expect(calls.map((c) => c.msg.thread)).toEqual(['100.1', '300.1', '400.1'])
+    expect(new Set(calls.map((c) => c.msg.sessionThread)).size).toBe(1)
+    await daemon.stop()
+  })
+
+  it('lands a channel-root wake on the existing reservation, keeping the post thread and its ts', async () => {
+    const { daemon, calls, call } = await bootWithDispatchSpy(appendTarget())
+    const d = daemon as any
+    const scope = scopeOf(d, 'int-bot-b')
+    const reserved = await d.store.resolveAppendCoordinate('bot-b', 'C1', scope, 1)
+
+    const res = await call(baseReq({ thread: '200.2', transcriptTs: '200.2', agentCallDeliveryId: 'paired-1' }))
+
+    expect(res).toEqual({ delivered: true, targetSession: sessionKey('slack', 'C1', reserved, 'bot-b', scope) })
+    expect(calls[0]!.msg).toMatchObject({
+      channel: 'C1',
+      thread: '200.2',
+      sessionThread: reserved,
+      transcriptTs: '200.2'
+    })
+    expect(calls[0]!.msg.headless).toBeUndefined()
+    expect(await d.store.currentAppendCoordinate('bot-b', 'C1', scope)).toBe(reserved)
+    await daemon.stop()
+  })
+
+  it('keys a createNew target on the delivery thread, or on the delivery id without one, and mints nothing', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b', integrations: [{ id: 'int-bot-b' }] }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const scope = scopeOf(d, 'int-bot-b')
+    expect(await call(baseReq({ postless: true }))).toEqual({
+      delivered: true,
+      targetSession: sessionKey('slack', 'C1', '100.1', 'bot-b', scope)
+    })
+    expect(await call(baseReq({ thread: '200.2', transcriptTs: '200.2', agentCallDeliveryId: 'paired-1' }))).toEqual({
+      delivered: true,
+      targetSession: sessionKey('slack', 'C1', '200.2', 'bot-b', scope)
+    })
+    const threadless = baseReq({ postless: true })
+    delete threadless.thread
+    const spy = vi.spyOn(monotonic, 'monotonicTs').mockReturnValue('999000222')
+    expect(await call(threadless)).toEqual({
+      delivered: true,
+      targetSession: sessionKey('slack', 'C1', '999000222', 'bot-b', scope)
+    })
+    spy.mockRestore()
+    expect(calls.map((c) => c.msg.sessionThread)).toEqual([undefined, undefined, undefined])
+    expect(calls[2]!.msg.thread).toBe('999000222')
+    expect(await d.store.currentAppendCoordinate('bot-b', 'C1', scope)).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('reads the target’s mode, not the caller’s, through the target’s first integration on the platform', async () => {
+    const root = scaffold([
+      { id: 'bot-a', integrations: [{ id: 'int-bot-a', appendChannels: ['C1'] }] },
+      { id: 'bot-b', integrations: [{ id: 'int-bot-b' }, { id: 'int-bot-b-append', appendChannels: ['C1'] }] }
+    ])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const res = await call(baseReq({ postless: true }))
+    // An appending caller, and a later appending integration of the target, change nothing.
+    expect(res.targetSession).toBe(sessionKey('slack', 'C1', '100.1', 'bot-b', scopeOf(d, 'int-bot-b')))
+    expect(calls[0]!.integrationId).toBe('int-bot-b')
+    expect(calls[0]!.msg.sessionThread).toBeUndefined()
+    expect(await d.store.currentAppendCoordinate('bot-b', 'C1', scopeOf(d, 'int-bot-b-append'))).toBeUndefined()
+    expect(await d.store.currentAppendCoordinate('bot-a', 'C1', scopeOf(d, 'int-bot-a'))).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('keys a paired channel-root self wake in an appending conversation onto the caller’s own session', async () => {
+    const root = scaffold([{ id: 'bot-a', integrations: [{ id: 'int-bot-a', appendChannels: ['C1'] }] }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const scope = scopeOf(d, 'int-bot-a')
+    const coordinate = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1)
+    const callerKey = await seedCallerSession(d, {
+      key: sessionKey('slack', 'C1', coordinate, 'bot-a', scope),
+      thread: coordinate,
+      transportScope: scope
+    })
+
+    const res = await call(
+      baseReq({
+        toAgentId: 'bot-a',
+        callerThread: coordinate,
+        callerTransportScope: scope,
+        thread: '200.2',
+        transcriptTs: '200.2',
+        agentCallDeliveryId: 'paired-self-1'
+      })
+    )
+
+    // Pinned as-is: the "child" is the caller's own session, linked to itself as parent.
+    expect(res).toEqual({ delivered: true, targetSession: callerKey })
+    expect(calls[0]).toMatchObject({
+      agentId: 'bot-a',
+      msg: { thread: '200.2', sessionThread: coordinate },
+      callMeta: { callFrom: 'bot-a', originSessionId: 'sid-parent-1' }
+    })
+    expect(d.collab.childSessionLinks.get(callerKey)).toMatchObject({
+      parentSessionId: 'sid-parent-1',
+      agentId: 'bot-a'
+    })
+    await daemon.stop()
+  })
+})
+
+describe('messageAgent: what a woken child inherits on this daemon', () => {
+  it('seals a private caller’s child with parentPrivate, and drops it once the caller’s gate opens', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    // No caller row means no origin, so there is nothing to seal.
+    await call(baseReq())
+    expect(calls[0]!.callMeta).not.toHaveProperty('originSessionId')
+    expect(calls[0]!.callMeta).not.toHaveProperty('parentPrivate')
+    const callerKey = await seedCallerSession(d)
+    // A caller session with no capture-gate row reads as excluded.
+    await call(baseReq())
+    expect(calls[1]!.callMeta).toMatchObject({ originSessionId: 'sid-parent-1', parentPrivate: true })
+    await d.store.setLocalCaptureGate('bot-a', callerKey, false)
+    await call(baseReq())
+    expect(calls[2]!.callMeta.originSessionId).toBe('sid-parent-1')
+    expect(calls[2]!.callMeta).not.toHaveProperty('parentPrivate')
+    // A CP-confirmed private state outranks the open local verdict.
+    await d.store.applyCpCaptureGate('bot-a', callerKey, true, 1)
+    await call(baseReq())
+    expect(calls[3]!.callMeta.parentPrivate).toBe(true)
+    await daemon.stop()
+  })
+
+  it('never marks a messageAgent child platformOrigin, whichever form woke it', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    await seedCallerSession(daemon)
+    await call(baseReq({ postless: true }))
+    await call(baseReq({ thread: '200.2', transcriptTs: '200.2', agentCallDeliveryId: 'paired-1' }))
+    await call(
+      baseReq({ toAgentId: 'bot-a', thread: '300.3', transcriptTs: '300.3', agentCallDeliveryId: 'paired-self-1' })
+    )
+    expect(calls.map((c) => c.agentId)).toEqual(['bot-b', 'bot-b', 'bot-a'])
+    for (const { callMeta } of calls) {
+      expect(callMeta).not.toHaveProperty('platformOrigin')
+      expect(callMeta).toMatchObject({
+        callFrom: 'bot-a',
+        originSessionId: 'sid-parent-1',
+        originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
+      })
+    }
+    await daemon.stop()
+  })
+})
+
 describe('messageAgent: §6.7 daemon-managed auto-inheritance (hop/origin + reply correlation)', () => {
   // Seed the CURRENT in-flight turn's trusted callMeta for a caller's logical sessionKey,
   // simulating a worker whose turn was started by messageAgent (callFrom=main, correlationId=x).
@@ -799,6 +1123,41 @@ describe('messageAgent: §6.7 daemon-managed auto-inheritance (hop/origin + repl
     expect(calls).toHaveLength(0)
     await daemon.stop()
   })
+
+  it('admits the last hop below the cap and refuses the next, in the preflight and at admission alike', async () => {
+    const root = scaffold([{ id: 'main' }, { id: 'worker' }, { id: 'third' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const worker = { platform: 'slack', channel: 'C1', thread: '100.1', agentId: 'worker' }
+    const req = baseReq({ callerAgentId: 'worker', toAgentId: 'third' })
+    seedActiveTurn(daemon, worker, { callFrom: 'main', hopCount: MAX_AGENT_CALL_HOPS - 2, deliveryId: 'd0' })
+    expect(d.collab.wakeRejectionReason(req)).toBeNull()
+    expect(await call(req)).toMatchObject({ delivered: true })
+    expect(calls[0]!.callMeta.hopCount).toBe(MAX_AGENT_CALL_HOPS - 1)
+
+    seedActiveTurn(daemon, worker, { callFrom: 'main', hopCount: MAX_AGENT_CALL_HOPS - 1, deliveryId: 'd1' })
+    expect(d.collab.wakeRejectionReason(req)).toBe('hop_limit')
+    expect(await call(req)).toEqual({ delivered: false, targetSession: 'slack:C1:100.1:third', reason: 'hop_limit' })
+    expect(calls).toHaveLength(1)
+    await daemon.stop()
+  })
+
+  it('inherits no correlation on a reply whose inbound turn had none, and honors an explicit one on a human turn', async () => {
+    const root = scaffold([{ id: 'main' }, { id: 'worker' }, { id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    seedActiveTurn(
+      daemon,
+      { platform: 'slack', channel: 'C1', thread: '100.1', agentId: 'worker' },
+      { callFrom: 'main', hopCount: 0, deliveryId: 'd0' }
+    )
+    expect((await call(baseReq({ callerAgentId: 'worker', toAgentId: 'main' }))).delivered).toBe(true)
+    expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'worker', hopCount: 1 })
+    expect(calls[0]!.callMeta).not.toHaveProperty('correlationId')
+
+    expect((await call(baseReq({ correlationId: 'manual-1' }))).delivered).toBe(true)
+    expect(calls[1]!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 0, correlationId: 'manual-1' })
+    await daemon.stop()
+  })
 })
 
 describe('messageAgent: cross-daemon routing (P2, source side)', () => {
@@ -881,6 +1240,45 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
       await daemon.stop()
     }
   )
+
+  it('forwards parentPrivate only for a capture-excluded origin, alongside the caller’s external origin', async () => {
+    const root = scaffold([{ id: 'bot-a' }]) // bot-b is remote
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const sent: any[] = []
+    d.relays = {
+      stop: vi.fn(async () => {}),
+      sendAgentMsg: vi.fn(async (payload: any) => {
+        sent.push(payload)
+        return { deliveryId: payload.deliveryId, delivered: true }
+      })
+    }
+    // No caller row: no origin to seal and no audience to carry.
+    await call(baseReq())
+    expect(sent[0]).not.toHaveProperty('parentPrivate')
+    expect(sent[0]).not.toHaveProperty('externalOrigin')
+
+    const callerKey = await seedCallerSession(d)
+    await d.store.setSessionClassification(callerKey, {
+      sourceBindingKind: 'external',
+      externalProvider: 'slack',
+      externalRealmKey: 'T1',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'int-a'
+    })
+    await call(baseReq())
+    expect(sent[1]).toMatchObject({
+      originSessionId: 'sid-parent-1',
+      parentPrivate: true,
+      externalOrigin: { provider: 'slack', realmKey: 'T1', resourceKind: 'conversation', resourceKey: 'C1' }
+    })
+    await d.store.setLocalCaptureGate('bot-a', callerKey, false)
+    await call(baseReq())
+    expect(sent[2].originSessionId).toBe('sid-parent-1')
+    expect(sent[2]).not.toHaveProperty('parentPrivate')
+    await daemon.stop()
+  })
 
   it('omits needsReply on the wire with no origin to report to, and for a plain wake', async () => {
     const root = scaffold([{ id: 'bot-a' }])
@@ -1758,6 +2156,108 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     expect(calls).toHaveLength(2) // no third dispatch
     await daemon.stop()
   })
+
+  it('refuses a forwarded hop at the cap (cached) and admits the hop below it without adding one', async () => {
+    const { daemon, calls } = await bootWithDispatchSpy(scaffold([{ id: 'bot-b' }]))
+    withSnapshot(daemon)
+    const d = daemon as any
+    expect(await d.handleRelayAgentMsg(fwd({ deliveryId: 'd-cap', hopCount: MAX_AGENT_CALL_HOPS }))).toEqual({
+      deliveryId: 'd-cap',
+      delivered: false,
+      reason: 'hop_limit'
+    })
+    expect(d.relayAgentMsgAcks.has('bot-a:d-cap')).toBe(true)
+    expect(calls).toHaveLength(0)
+    const last = await d.handleRelayAgentMsg(fwd({ deliveryId: 'd-last', hopCount: MAX_AGENT_CALL_HOPS - 1 }))
+    expect(last.delivered).toBe(true)
+    expect(calls[0]!.callMeta.hopCount).toBe(MAX_AGENT_CALL_HOPS - 1)
+    await daemon.stop()
+  })
+
+  it('stamps a forwarded parentPrivate only when true and carries the external origin, never platformOrigin', async () => {
+    const { daemon, calls } = await bootWithDispatchSpy(scaffold([{ id: 'bot-b' }]))
+    withSnapshot(daemon)
+    const d = daemon as any
+    const externalOrigin = { provider: 'slack', realmKey: 'T1', resourceKind: 'conversation', resourceKey: 'C1' }
+    await d.handleRelayAgentMsg(
+      fwd({ deliveryId: 'd-1', originSessionId: 'sid-remote-parent', parentPrivate: true, externalOrigin })
+    )
+    await d.handleRelayAgentMsg(fwd({ deliveryId: 'd-2', originSessionId: 'sid-remote-parent', parentPrivate: false }))
+    expect(calls).toHaveLength(2)
+    expect(calls[0]!.callMeta).toMatchObject({
+      originSessionId: 'sid-remote-parent',
+      parentPrivate: true,
+      externalOrigin
+    })
+    expect(calls[1]!.callMeta).not.toHaveProperty('parentPrivate')
+    expect(calls[1]!.callMeta).not.toHaveProperty('externalOrigin')
+    for (const { callMeta } of calls) expect(callMeta).not.toHaveProperty('platformOrigin')
+    await daemon.stop()
+  })
+
+  it('keys an append-mode callee on its own append coordinate, folding wakes from other threads', async () => {
+    const root = scaffold([{ id: 'bot-b', integrations: [{ id: 'int-bot-b', appendChannels: ['C1'] }] }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    const d = daemon as any
+    const scope = scopeOf(d, 'int-bot-b')
+    const first = await d.handleRelayAgentMsg(fwd())
+    const coordinate = await d.store.currentAppendCoordinate('bot-b', 'C1', scope)
+    expect(isAppendCoordinate(coordinate)).toBe(true)
+    expect(first).toEqual({
+      deliveryId: 'd-1',
+      delivered: true,
+      childSessionId: sessionKey('slack', 'C1', coordinate, 'bot-b', scope)
+    })
+    // A forwarded channel-root wake from another thread joins the same session.
+    const second = await d.handleRelayAgentMsg(
+      fwd({ deliveryId: 'd-2', coords: { platform: 'slack', channel: 'C1', thread: '300.1' }, transcriptTs: '300.1' })
+    )
+    expect(second.childSessionId).toBe(first.childSessionId)
+    expect(calls.map((c) => [c.integrationId, c.msg.thread, c.msg.sessionThread])).toEqual([
+      ['int-bot-b', '100.1', coordinate],
+      ['int-bot-b', '300.1', coordinate]
+    ])
+    expect(calls[1]!.msg.transcriptTs).toBe('300.1')
+    await daemon.stop()
+  })
+
+  it('keys a createNew callee on the forwarded thread, or on the msgId without one', async () => {
+    const { daemon, calls } = await bootWithDispatchSpy(
+      scaffold([{ id: 'bot-b', integrations: [{ id: 'int-bot-b' }] }])
+    )
+    withSnapshot(daemon)
+    const d = daemon as any
+    const scope = scopeOf(d, 'int-bot-b')
+    expect((await d.handleRelayAgentMsg(fwd())).childSessionId).toBe(sessionKey('slack', 'C1', '100.1', 'bot-b', scope))
+    const threadless = await d.handleRelayAgentMsg(
+      fwd({ deliveryId: 'd-2', coords: { platform: 'slack', channel: 'C1' } })
+    )
+    // Unlike the same-daemon path, which keys a threadless wake on the bare delivery id.
+    expect(threadless.childSessionId).toBe(sessionKey('slack', 'C1', 'agentcall:C1:d-2', 'bot-b', scope))
+    expect(calls[1]!.msg).not.toHaveProperty('thread')
+    expect(calls.every((c) => c.msg.sessionThread === undefined)).toBe(true)
+    expect(await d.store.currentAppendCoordinate('bot-b', 'C1', scope)).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('reads the mode of the integration the relay chose, else of the target’s first integration', async () => {
+    const root = scaffold([
+      { id: 'bot-b', integrations: [{ id: 'int-bot-b' }, { id: 'int-bot-b-append', appendChannels: ['C1'] }] }
+    ])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    const d = daemon as any
+    const plain = await d.handleRelayAgentMsg(fwd())
+    expect(plain.childSessionId).toBe(sessionKey('slack', 'C1', '100.1', 'bot-b', scopeOf(d, 'int-bot-b')))
+    const chosen = await d.handleRelayAgentMsg(fwd({ deliveryId: 'd-2', integrationId: 'int-bot-b-append' }))
+    const scope = scopeOf(d, 'int-bot-b-append')
+    const coordinate = await d.store.currentAppendCoordinate('bot-b', 'C1', scope)
+    expect(isAppendCoordinate(coordinate)).toBe(true)
+    expect(chosen.childSessionId).toBe(sessionKey('slack', 'C1', coordinate, 'bot-b', scope))
+    expect(calls.map((c) => c.integrationId)).toEqual(['int-bot-b', 'int-bot-b-append'])
+    await daemon.stop()
+  })
 })
 
 /**
@@ -1804,6 +2304,36 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     const res = await (daemon as any).collab.replyToSession(replyReq({ sessionId: 'some-other-session' }))
     expect(res).toEqual({ delivered: false, reason: 'not_authorized' })
     expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('refuses a reply whose next hop reaches the cap, marking it failed, and delivers the hop below it', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    await seedCallerSession(d, { state: 'idle' })
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    const inbound = (hopCount: number) => ({
+      callFrom: 'bot-a',
+      hopCount,
+      deliveryId: `d${hopCount}`,
+      originSessionId: 'sid-parent-1',
+      originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
+    })
+    armTurn(d, callerKey, inbound(MAX_AGENT_CALL_HOPS - 1))
+    expect(await d.collab.replyToSession(replyReq())).toEqual({ delivered: false, reason: 'hop_limit' })
+    expect(calls).toHaveLength(0)
+    expect(d.collab.childSessionLinks.get(callerKey)).toMatchObject({
+      parentSessionId: 'sid-parent-1',
+      replyState: 'failed'
+    })
+
+    armTurn(d, callerKey, inbound(MAX_AGENT_CALL_HOPS - 2))
+    expect(await d.collab.replyToSession(replyReq())).toMatchObject({
+      delivered: true,
+      targetSession: 'slack:C1:100.1:bot-a'
+    })
+    expect(calls[0]!.callMeta.hopCount).toBe(MAX_AGENT_CALL_HOPS - 1)
     await daemon.stop()
   })
 

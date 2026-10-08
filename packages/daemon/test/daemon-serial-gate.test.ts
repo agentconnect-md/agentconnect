@@ -562,6 +562,83 @@ describe('P4 serial gate', () => {
     await daemon.stop()
   })
 
+  it.each(['fail-stop', '!stop'] as const)(
+    'drops a parent report queued behind the running turn on %s, and the child link still reads queued-for-parent',
+    async (cut) => {
+      const g = gatedHost()
+      if (cut === 'fail-stop') g.failNext(1)
+      const daemon = await boot(g.host)
+      const d = daemon as any
+      const key = 'slack:C1:T1:bot-a'
+      const reportRows = async () =>
+        ((await d.store.listInboxBySessionKeyFifo()) as { msg: string }[]).filter(
+          (row) => JSON.parse(row.msg).parentReport === true
+        )
+      const head = d.dispatch('bot-a', msg('100', 'first'), 'int-a') as Promise<unknown>
+      const headSettled = head.then(
+        () => 'resolved',
+        (err: Error) => err.message
+      )
+      await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
+      const parentSid = (await d.store.getSession(key))!.sessionId as string
+      // A child of that session reports back to it from its own live turn.
+      const childKey = 'slack:C2:200.1:bot-b'
+      await d.store.upsertSession({
+        key: childKey,
+        agentId: 'bot-b',
+        platform: 'slack',
+        channel: 'C2',
+        thread: '200.1',
+        acpSessionId: 'acp-child-1',
+        state: 'prompting',
+        lastDeliveredTs: null,
+        updatedAt: Date.now(),
+        originSessionId: parentSid,
+        needsParentReply: 1
+      })
+      d.activeTurnCallMeta.set(childKey, {
+        callFrom: 'bot-a',
+        hopCount: 1,
+        deliveryId: 'd1',
+        originSessionId: parentSid
+      })
+      const reply = await d.collab.replyToSession({
+        callerAgentId: 'bot-b',
+        platform: 'slack',
+        callerChannel: 'C2',
+        callerThread: '200.1',
+        sessionId: parentSid,
+        text: 'report'
+      })
+      expect(reply).toEqual({ delivered: true, targetSession: key })
+      expect(d.serialQueue.get(key).map((entry: any) => entry.msg.parentReport)).toEqual([true])
+      expect(await reportRows()).toHaveLength(1)
+      expect(d.collab.childSessionLinks.get(childKey)?.replyState).toBe('queued-for-parent')
+
+      if (cut === '!stop') await d.interruptTurn('bot-a', key, 'stop', 'acp-1')
+      g.releaseAll()
+      if (cut === 'fail-stop') expect(await headSettled).toBe('boom-1')
+      else await headSettled
+      await vi.waitFor(() => expect(d.inflight.has(key)).toBe(false), WAIT)
+
+      // Pinned as-is: the report never ran and its row is gone, yet the link still says queued.
+      expect(g.started).toHaveLength(1)
+      expect(d.serialQueue.has(key)).toBe(false)
+      expect(await reportRows()).toEqual([])
+      expect(d.collab.childSessionLinks.get(childKey)?.replyState).toBe('queued-for-parent')
+      // So the parent is still told the reply will arrive in its next turn.
+      const status = await d.collab.viewSessionStatus({
+        callerAgentId: 'bot-a',
+        platform: 'slack',
+        callerChannel: 'C1',
+        callerThread: 'T1',
+        sessionId: childKey
+      })
+      expect(status).toMatchObject({ reply: { state: 'queued-for-parent' }, nextAction: 'finish-turn-and-wait' })
+      await daemon.stop()
+    }
+  )
+
   it('queue_full fast-fail at the depth cap (backpressure §4.4)', async () => {
     const g = gatedHost()
     const daemon = await boot(g.host)

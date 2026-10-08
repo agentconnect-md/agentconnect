@@ -1225,6 +1225,16 @@ describe('SessionManager', () => {
     await (await store).close()
   })
 
+  it('keeps the persisted parent link through a later ordinary turn that carries no origin', async () => {
+    const store = await newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'from parent' }), undefined, undefined, 'origin-sess-9')
+    await sm.handle('bot-a', msg({ ts: '100.2', text: 'a human follow-up' }))
+    expect((await store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.originSessionId).toBe('origin-sess-9')
+    await store.close()
+  })
+
   // §5.3 `toAgent.needsReply`: the parent asked to be told how this session ends. The obligation
   // outlives the waking turn, so it must ride the STANDING context (and be persisted), not the
   // delivered message text.
