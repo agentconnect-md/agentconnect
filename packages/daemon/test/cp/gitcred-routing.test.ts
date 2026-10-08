@@ -17,6 +17,7 @@ import {
   type GitCredServerDeps
 } from '../../src/cp/gitcred-server.js'
 import { GitCredUnavailableError, type GitCredentialCache } from '../../src/cp/git-credential.js'
+import { MAX_SKILL_WINDOW_TTL_MS, SkillCredentialWindows } from '../../src/cp/skill-credential-window.js'
 
 describe('repoFromPath (git credential path → owner/repo)', () => {
   it('parses plain, leading-slash, .git and LFS-subpath forms', () => {
@@ -222,10 +223,15 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       privateGithubSkillRepoOf: (_agentId: string, repoFullName: string) =>
         repoFullName.toLowerCase() === 'example-org/example-skills'
     })
+    const window = server!.skillWindows.open({
+      agentId: 'a1',
+      subject: 'daemon',
+      repos: ['example-org/example-skills']
+    })
     const res = await roundtrip(sockPath, {
       op: 'get',
       agentId: 'a1',
-      capability,
+      capability: window.capability,
       repoFullName: 'Example-Org/Example-Skills'
     })
     expect(res.ok).toBe(true)
@@ -293,7 +299,13 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       workspaceRepoIdOf: () => '4455668',
       privateGithubSkillRepoOf: (_agentId: string, repoFullName: string) => repoFullName.toLowerCase() === 'acme/tools'
     })
-    const res = await roundtrip(sockPath, { op: 'get', agentId: 'a1', capability, repoFullName: 'acme/tools' })
+    const window = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: ['acme/tools'] })
+    const res = await roundtrip(sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability: window.capability,
+      repoFullName: 'acme/tools'
+    })
     expect(res.ok).toBe(true)
     expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: 'acme/tools' } }])
 
@@ -415,5 +427,144 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1', capability })).resolves.toMatchObject({ ok: false })
     expect(gets).toHaveLength(0)
     expect(warnings).toHaveLength(3)
+  })
+
+  describe('skill credential windows (source-cache.md §8)', () => {
+    const SKILL = 'acme/private-skills'
+    const OTHER_SKILL = 'acme/other-skills'
+    let now = 1_000
+    const skillRepos = new Set([SKILL, OTHER_SKILL])
+    const bootGithub = (extra?: Partial<GitCredServerDeps>) => {
+      now = 1_000
+      return boot('acme/infra', {
+        providerOf: () => 'github',
+        privateGithubSkillRepoOf: (_agentId, repo) => skillRepos.has(repo.toLowerCase()),
+        githubAdditionalRepoOf: (_agentId, repo) => repo.toLowerCase() === 'acme/shared',
+        skillWindows: new SkillCredentialWindows(() => now),
+        ...extra
+      })
+    }
+    const ask = (sockPath: string, capability: string, extra: Record<string, unknown> = {}) =>
+      roundtrip(sockPath, { op: 'get', agentId: 'a1', capability, repoFullName: SKILL, ...extra })
+
+    it('refuses a private skill token to the agent capability alone and grants it inside a window', async () => {
+      const { sockPath, gets, warnings, logs, capability } = await bootGithub()
+      const refused = await ask(sockPath, capability)
+      expect(refused).toMatchObject({ ok: false, denied: 'repository' })
+      expect(gets).toHaveLength(0)
+      expect(warnings.join('\n')).toContain('outcome=denied')
+      expect(warnings.join('\n')).toContain('private skill outside a skill credential window')
+
+      const window = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL] })
+      const granted = await ask(sockPath, window.capability)
+      expect(granted).toMatchObject({ ok: true, password: 'ghs_test' })
+      expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: SKILL } }])
+      // Neither bearer nor token ever reaches the log.
+      const logged = [...logs, ...warnings].join('\n')
+      for (const secret of [capability, window.capability, 'ghs_test']) expect(logged).not.toContain(secret)
+    })
+
+    it('refuses once the window closes or its TTL passes', async () => {
+      const { sockPath, gets } = await bootGithub()
+      const closed = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL] })
+      closed.close()
+      expect(await ask(sockPath, closed.capability)).toMatchObject({ ok: false })
+
+      const expiring = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL], ttlMs: 5_000 })
+      expect(await ask(sockPath, expiring.capability)).toMatchObject({ ok: true })
+      now += 5_000
+      expect(await ask(sockPath, expiring.capability)).toMatchObject({ ok: false })
+      expect(gets).toHaveLength(1)
+    })
+
+    it('clamps a window to the skills request timeout', async () => {
+      const { sockPath } = await bootGithub()
+      const long = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL], ttlMs: 60 * 60_000 })
+      now += MAX_SKILL_WINDOW_TTL_MS
+      expect(await ask(sockPath, long.capability)).toMatchObject({ ok: false })
+    })
+
+    it('scopes a window to its repositories and its agent', async () => {
+      const { sockPath, gets } = await bootGithub()
+      server!.capabilityFor('a2')
+      const window = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL] })
+      // Repo B is also an enabled private skill source, but not this window's.
+      expect(await ask(sockPath, window.capability, { repoFullName: OTHER_SKILL })).toMatchObject({
+        ok: false,
+        denied: 'repository'
+      })
+      // Agent Y presenting agent X's window is not authorized at all.
+      expect(await ask(sockPath, window.capability, { agentId: 'a2' })).toMatchObject({ ok: false })
+      // Revoking the agent closes its windows.
+      server!.revoke('a1')
+      expect(await ask(sockPath, window.capability)).toMatchObject({ ok: false })
+      expect(gets).toHaveLength(0)
+    })
+
+    it('never turns a window capability into a workspace, additional-repository or gh token', async () => {
+      const { sockPath, gets } = await bootGithub()
+      const window = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL, 'acme/infra'] })
+      expect(await ask(sockPath, window.capability, { repoFullName: undefined })).toMatchObject({ ok: false })
+      expect(await ask(sockPath, window.capability, { repoFullName: 'acme/infra' })).toMatchObject({ ok: false })
+      expect(await ask(sockPath, window.capability, { repoFullName: 'acme/shared' })).toMatchObject({ ok: false })
+      expect(await ask(sockPath, window.capability, { plane: 'gh' })).toMatchObject({ ok: false })
+      expect(await ask(sockPath, window.capability, { provider: 'gitlab' })).toMatchObject({ ok: false })
+      expect(gets).toHaveLength(0)
+    })
+
+    it('keeps a window ask named when the skill repository is also the workspace', async () => {
+      skillRepos.add('acme/infra')
+      try {
+        const { sockPath, gets } = await bootGithub()
+        const window = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: ['acme/infra'] })
+        expect(await ask(sockPath, window.capability, { repoFullName: 'acme/infra' })).toMatchObject({ ok: true })
+        expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: 'acme/infra' } }])
+      } finally {
+        skillRepos.delete('acme/infra')
+      }
+    })
+
+    it('opens no daemon window for the agent’s own GitHub workspace repository, which the agent capability folds onto', async () => {
+      const { sockPath, gets, capability } = await bootGithub()
+      // A workspace-repo skill entry that lacks `private: true` still fills through the workspace fold.
+      expect(server!.openDaemonSkillWindow('a1', 'Acme/Infra')).toBeUndefined()
+      expect(await ask(sockPath, capability, { repoFullName: 'acme/infra' })).toMatchObject({ ok: true })
+      expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git' } }])
+      // Any other skill repository gets a window, closed with the agent.
+      const window = server!.openDaemonSkillWindow('a1', SKILL)
+      expect(window).toMatchObject({ subject: 'daemon', repos: [SKILL] })
+      expect(server!.skillWindows.size()).toBe(1)
+      window!.close()
+    })
+
+    it('opens a daemon window when the same path is not the workspace host', async () => {
+      const { sockPath, gets } = await bootGithub({ providerOf: () => 'gitlab' })
+      const window = server!.openDaemonSkillWindow('a1', 'acme/infra')
+      expect(window).toBeDefined()
+      // The window still never reaches the workspace key.
+      expect(await ask(sockPath, window!.capability, { repoFullName: 'acme/infra' })).toMatchObject({ ok: false })
+      expect(gets).toHaveLength(0)
+    })
+
+    it('leaves workspace and additional-repository issuance to the agent capability unchanged', async () => {
+      skillRepos.add('acme/shared')
+      try {
+        const { sockPath, gets, erases, capability } = await bootGithub()
+        expect(await ask(sockPath, capability, { repoFullName: undefined })).toMatchObject({ ok: true })
+        expect(await ask(sockPath, capability, { repoFullName: 'acme/infra' })).toMatchObject({ ok: true })
+        // A private skill the spec also lists as an additional repository keeps its explicit grant.
+        expect(await ask(sockPath, capability, { repoFullName: 'acme/shared' })).toMatchObject({ ok: true })
+        expect(gets).toEqual([
+          { agentId: 'a1', opts: { plane: 'git' } },
+          { agentId: 'a1', opts: { plane: 'git' } },
+          { agentId: 'a1', opts: { plane: 'git', repo: 'acme/shared' } }
+        ])
+        // Erase stays open to the agent capability: git presenting a rejected token only invalidates it.
+        await roundtrip(sockPath, { op: 'erase', agentId: 'a1', capability, repoFullName: SKILL, password: 'x' })
+        expect(erases).toEqual([{ agentId: 'a1', password: 'x', opts: { plane: 'git', repo: SKILL } }])
+      } finally {
+        skillRepos.delete('acme/shared')
+      }
+    })
   })
 })

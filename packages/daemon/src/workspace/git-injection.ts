@@ -539,6 +539,13 @@ let targetFor: ((agentId: string, cwd?: string) => GitCredentialTarget) | undefi
 let daemonTarget: GitCredentialTarget | undefined
 let preWarm: ((agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>) | undefined
 let capabilityFor: ((agentId: string) => string) | undefined
+let openSkillWindow: ((agentId: string, repo: string) => SkillCredentialWindowHandle | undefined) | undefined
+
+/** A daemon-opened skill credential window: its capability replaces the agent's for one acquisition. */
+export interface SkillCredentialWindowHandle {
+  capability: string
+  close(): void
+}
 
 export function initGitInjection(opts: {
   /** Resolves the filesystem an agent's git runs in, on the SAME predicate the execution plane's `gitRunnerFor` answers with — a remote runner running with daemon-local pointers is exactly the bug this seam exists to remove. The path narrows it where one agent's sessions run in different filesystems (session-executors.md §5). */
@@ -553,11 +560,22 @@ export function initGitInjection(opts: {
   preWarm: (agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>
   /** Runtime-only local socket capability. Never written to a config file. */
   capabilityFor: (agentId: string) => string
+  /** Opens a daemon-subject skill credential window (source-cache.md §8); absent or undefined ⇒ the agent capability is presented. */
+  openSkillCredentialWindow?: (agentId: string, repo: string) => SkillCredentialWindowHandle | undefined
 }): void {
   targetFor = opts.targetFor
   daemonTarget = opts.daemonTarget
   preWarm = opts.preWarm
   capabilityFor = opts.capabilityFor
+  openSkillWindow = opts.openSkillCredentialWindow
+}
+
+/** Open a window for Git the daemon runs itself on one skill repository; the caller closes it in `finally`. */
+export function openDaemonSkillCredentialWindow(
+  agentId: string,
+  repo: string
+): SkillCredentialWindowHandle | undefined {
+  return openSkillWindow?.(agentId, repo)
 }
 
 /** This daemon's own filesystem: the helper shim and run dir it (re)writes on every boot. */

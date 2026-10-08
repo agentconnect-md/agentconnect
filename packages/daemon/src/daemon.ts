@@ -127,6 +127,7 @@ import {
 import { ShimWorkspaceFs } from './shim/workspace-fs-channel.js'
 import { ShimWorkspaceFiles } from './shim/workspace-files-channel.js'
 import { ClusterSkillClient } from './shim/skill-client.js'
+import type { TunnelName } from './shim/tunnel.js'
 import { ShimChannelLostError, type ShimRequester } from './shim/channels.js'
 import type { ClusterSkillLedger } from './store/cluster-skill-ledger.js'
 import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
@@ -2846,17 +2847,8 @@ export class Daemon {
           generations: this.dataPlane!.store,
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
           servesAgent: (agentId) => this.servesAgent(agentId),
-          // Which sockets this agent's pod needs, and where this daemon serves them — both are on
-          // the daemon's own filesystem, so without a tunnel they exist nowhere the pod can reach.
-          // `mcp` for every pod agent: any session may carry tools and the listener lives as long as the pod.
-          // `gitcred` follows the credential marker, the predicate the pod gitconfig and the local carve use,
-          // so a scratch agent gets it; tunnels open once per pod, so the repo list would strand a late grant.
-          // An unknown id gets neither: the member's own runtime probe is granted `probe` alone.
-          tunnelsFor: (agentId) => {
-            const agent = this.agents.get(agentId)
-            if (!agent) return []
-            return this.workspaces.helperBackedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
-          },
+          // Which daemon sockets this agent's pod needs (see tunnelsForAgent); an unknown id, the member's own probe, gets none.
+          tunnelsFor: (agentId) => this.tunnelsForAgent(agentId),
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
           onSandboxBound: () => this.memoryOutbox?.wake(),
@@ -2999,8 +2991,7 @@ export class Daemon {
           (row) => row.provider === IMPLICIT_CREDENTIAL_PROVIDER && row.repoFullName.toLowerCase() === wanted
         )
       },
-      // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): the daemon's own
-      // acquisition asks for exactly that owner/repo, and it is GitHub whatever the workspace is.
+      // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): issued only inside a skill credential window.
       privateGithubSkillRepoOf: (agentId: string, repoFullName: string) => {
         const wanted = repoFullName.toLowerCase()
         return (this.agents.get(agentId)?.skills ?? []).some(
@@ -3026,6 +3017,8 @@ export class Daemon {
       // `targetFor` says about the agent's workspace git.
       daemonTarget: daemonCredentialTarget,
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
+      // Daemon-run skill acquisition opens its own window per credential fill, except on the workspace repo (source-cache.md §8).
+      openSkillCredentialWindow: (agentId, repo) => this.gitCredServer!.openDaemonSkillWindow(agentId, repo),
       preWarm: async (agentId, reason, repository) => {
         // An additional repository warms the key its own helper ask lands on, never the workspace's — a scratch agent has none.
         if (repository !== undefined) {
@@ -4483,11 +4476,7 @@ export class Daemon {
         ),
       replace: (placed) => this.replaceLostExecutor(placed),
       // The same policy the pool's plane is given: only the daemon knows which of its own sockets this agent needs.
-      tunnelsFor: (agentId) => {
-        const agent = this.agents.get(agentId)
-        if (!agent) return []
-        return this.workspaces.helperBackedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
-      },
+      tunnelsFor: (agentId) => this.tunnelsForAgent(agentId),
       tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
       log: {
         info: (m) => this.log.info(m),
@@ -6233,6 +6222,13 @@ export class Daemon {
           opts
         )
       : this.workspaces.prepareWorkspace(agent, opts)
+  }
+
+  /** `mcp` for every pod agent; `gitcred` for any agent with a managed credential or a private skill source, the latter window-gated (source-cache.md §8). */
+  private tunnelsForAgent(agentId: string): TunnelName[] {
+    const agent = this.agents.get(agentId)
+    if (!agent) return []
+    return this.workspaces.needsGitcredTunnel(agent) ? ['mcp', 'gitcred'] : ['mcp']
   }
 
   /** The commit a tracking Git skill ref points at now, or null when unknown (the installed commit then stands). */
