@@ -474,6 +474,10 @@ export class VirtualSlackConnection implements PlatformConnection {
     return [...this.world.members(channel)]
   }
 
+  async listMemberIds(channel: string): Promise<string[]> {
+    return [...this.world.members(channel)].map((m) => m.id)
+  }
+
   async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {
     return [...this.world.channels(this.integrationId)]
   }

@@ -1312,7 +1312,8 @@ refused like any private place. Only such a read is let past the reach gate, and
 (`memberRead`). Before it returns anything, the read durably marks the session
 (`assistant_widened_session`). From then on every turn of that session, whoever started it, is
 refused ledger writes, every agent-to-agent `sendMessage` form, and platform posts or drafts aimed
-at another place, until `!new` retires the session.
+at another place, until the session is retired: `!new` (a fresh coordinate in `append`, a cleared
+context otherwise) or a purge deletes the mark.
 
 The join is an **operator switch**, per bot: `Bot.platformConfig.joinPublicChannels` (the
 generic bag, so no migration), flipped by `PATCH /bots/:id` and rendered by the Slack module's

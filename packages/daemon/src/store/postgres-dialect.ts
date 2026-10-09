@@ -97,6 +97,7 @@ export const canonicalColumns = [
   'mainAgentId',
   'mainSessionKey',
   'manifestDigest',
+  'markedAt',
   'memoryHome',
   'memoryProvider',
   'mergeRequestIid',
