@@ -90,7 +90,8 @@ describe('local workspace upload', () => {
   })
 })
 
-describe('shim transfer staging', () => {
+// The shim runs only in Linux sandbox pods; its staging dir needs POSIX modes.
+describe.skipIf(process.platform === 'win32')('shim transfer staging', () => {
   it('stages through the fd-anchored descent into a bundle handle that the bundle upload sends', async () => {
     const anchor = workspace()
     const staging = join(mkdtempSync(join(tmpdir(), 'ac-transfer-stage-')), 'bundle-staging')
