@@ -117,6 +117,9 @@ async function world(
   })
   const click = (requestId: string, optionId: string, userId = 'U0ALICE') =>
     drafts.handleChoice({ requestId, optionId, actor: { userId, name: userId.toLowerCase() } })
+  // An editor in the console; the control plane has already checked they may edit the agent.
+  const decide = (draftId: string, choice: 'approve' | 'always' | 'discard', agentId = AGENT) =>
+    drafts.decideFromConsole({ agentId, draftId, choice, decider: { userId: 'usr-editor', name: 'Grace' } })
   const only = async () => {
     const rows = (await s.assistantDrafts['db'].query('SELECT id FROM assistant_draft', [])).rows as { id: string }[]
     expect(rows).toHaveLength(1)
@@ -129,6 +132,7 @@ async function world(
     gateway,
     route,
     click,
+    decide,
     only,
     advance: (ms: number) => (now += ms),
     enabled,
@@ -516,6 +520,174 @@ describe('an external place reply', () => {
       '1700000000.000100',
       expect.any(Object)
     )
+  })
+})
+
+describe('a decision from the console', () => {
+  it('approves as a click would: one unchanged post, the editor recorded, the card rewritten without buttons', async () => {
+    const w = await world()
+    await w.post({ ...TO_SUPPORT, thread: '1700000000.000100' })
+    const draft = await w.only()
+    expect(await w.decide(draft.id, 'approve')).toEqual({
+      result: 'decided',
+      status: 'succeeded',
+      granted: false,
+      failure: null
+    })
+    expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
+    expect(w.gateway.postMessage).toHaveBeenCalledWith(
+      'C0SUPPORT',
+      'The release is out.',
+      '1700000000.000100',
+      expect.objectContaining({ username: 'Butler', agentAuthorId: AGENT })
+    )
+    expect(w.afterPost).toHaveBeenCalledTimes(1)
+    expect(await w.only()).toMatchObject({
+      status: 'succeeded',
+      decidedBy: 'user:usr-editor',
+      decidedByName: 'Grace',
+      messageId: '1700000000.000200'
+    })
+    expect(w.port.updateCard).toHaveBeenLastCalledWith(
+      'D_U0ALICE',
+      'card-1',
+      expect.objectContaining({ outcome: '✅ Posted — approved by Grace in the console.' })
+    )
+    // The card no longer offers buttons, and neither a stale click nor a second decision posts again.
+    expect('draftId' in w.port.updateCard.mock.calls.at(-1)![2]).toBe(false)
+    await w.click(draft.id, 'approve')
+    expect(await w.decide(draft.id, 'approve')).toMatchObject({ result: 'already-decided', status: 'succeeded' })
+    expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('grants "always allow" only where the card offered it, under the live mode and the card’s generation', async () => {
+    const w = await world()
+    await w.post()
+    expect(await w.decide((await w.only()).id, 'always')).toMatchObject({ status: 'succeeded', granted: true })
+    expect(w.port.updateCard.mock.calls.at(-1)![2]).toMatchObject({
+      outcome: expect.stringContaining('without asking')
+    })
+    expect(await w.post()).toEqual({ handled: false })
+    expect((await w.store.assistantDrafts.listGrants(AGENT, 10))[0]).toMatchObject({ grantedBy: 'user:usr-editor' })
+
+    await w.store.assistantDrafts.deleteForAgent(AGENT)
+    await w.post({ ...TO_SUPPORT, channel: 'C0SHARED' })
+    expect(await w.decide((await w.only()).id, 'always')).toMatchObject({ status: 'succeeded', granted: false })
+
+    await w.store.assistantDrafts.deleteForAgent(AGENT)
+    await w.post()
+    const old = await w.only()
+    await w.switchMode(false)
+    await w.switchMode(true)
+    expect(await w.decide(old.id, 'always')).toMatchObject({ status: 'succeeded', granted: false })
+    expect(await w.post()).toMatchObject({ handled: true })
+  })
+
+  it('discards: nothing is posted and the card says who discarded it', async () => {
+    const w = await world()
+    await w.post()
+    const draft = await w.only()
+    expect(await w.decide(draft.id, 'discard')).toEqual({
+      result: 'decided',
+      status: 'denied',
+      granted: false,
+      failure: null
+    })
+    expect(w.port.updateCard.mock.calls.at(-1)![2]).toMatchObject({
+      outcome: '🗑️ Discarded by Grace in the console. Nothing was posted.'
+    })
+    await w.click(draft.id, 'approve')
+    expect(w.gateway.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('refuses an expired draft as expired, and retires its card', async () => {
+    const w = await world()
+    await w.post()
+    const draft = await w.only()
+    w.advance(ASSISTANT_DRAFT_TTL_MS)
+    expect(await w.decide(draft.id, 'discard')).toEqual({
+      result: 'expired',
+      status: 'expired',
+      granted: false,
+      failure: null
+    })
+    expect(w.port.updateCard.mock.calls.at(-1)![2]).toMatchObject({ outcome: expect.stringContaining('Expired') })
+    expect(await w.decide(draft.id, 'approve')).toMatchObject({ result: 'expired' })
+    expect(w.gateway.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('refuses a draft already decided on its card', async () => {
+    const w = await world()
+    await w.post()
+    const draft = await w.only()
+    await w.click(draft.id, 'discard')
+    expect(await w.decide(draft.id, 'approve')).toMatchObject({ result: 'already-decided', status: 'denied' })
+    expect(w.gateway.postMessage).not.toHaveBeenCalled()
+    expect((await w.only()).decidedBy).toBe('T0EXAMPLE:U0ALICE')
+  })
+
+  it('posts exactly once when a card click and a console approval race', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const w = await world({
+      post: async () => {
+        await gate
+        return '1700000000.000200'
+      }
+    })
+    await w.post()
+    const draft = await w.only()
+    const racing = Promise.all([w.click(draft.id, 'approve'), w.decide(draft.id, 'approve')])
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    release()
+    const [, decision] = await racing
+    expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
+    expect(['decided', 'already-decided']).toContain(decision.result)
+    expect(await w.only()).toMatchObject({ status: 'succeeded' })
+  })
+
+  it('reads another agent’s draft, or an unknown one, as not found', async () => {
+    const w = await world()
+    await w.post()
+    const draft = await w.only()
+    expect(await w.decide(draft.id, 'approve', 'agent-b')).toEqual({
+      result: 'not-found',
+      status: null,
+      granted: false,
+      failure: null
+    })
+    expect(await w.decide('no-such-draft', 'discard')).toMatchObject({ result: 'not-found' })
+    expect((await w.only()).status).toBe('awaiting_review')
+  })
+
+  it('decides a draft nobody could be reached for, which has no card to rewrite', async () => {
+    const w = await world({ route: async (req) => ({ requestId: req.requestId }) })
+    await w.post(TO_SUPPORT, PLACELESS, null)
+    expect(await w.decide((await w.only()).id, 'approve')).toMatchObject({ status: 'succeeded' })
+    expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
+    expect(w.port.updateCard).not.toHaveBeenCalled()
+  })
+
+  it('reports an uncertain or a failed post without retrying it', async () => {
+    const unsure = await world({ post: async () => undefined })
+    await unsure.post()
+    const draft = await unsure.only()
+    expect(await unsure.decide(draft.id, 'approve')).toMatchObject({
+      result: 'decided',
+      status: 'outcome_unknown',
+      failure: 'the platform returned no message id'
+    })
+    expect(await unsure.decide(draft.id, 'approve')).toMatchObject({ result: 'already-decided' })
+    expect(unsure.gateway.postMessage).toHaveBeenCalledTimes(1)
+
+    const w = await world()
+    await w.post()
+    w.enabled.delete('C0SUPPORT')
+    expect(await w.decide((await w.only()).id, 'approve')).toMatchObject({
+      status: 'failed',
+      failure: expect.stringMatching(/no longer enabled/)
+    })
+    expect(w.gateway.postMessage).not.toHaveBeenCalled()
   })
 })
 

@@ -108,7 +108,7 @@ describe('assistant drafts: the approval record', () => {
     await expect(create(s, { target: { ...TARGET, channel: '' } })).rejects.toThrow(/needs a platform/)
   })
 
-  it('lets exactly one approval begin, and none once the record expired', async () => {
+  it('lets exactly one approval begin, and no decision once the record expired', async () => {
     const s = await open()
     const draft = await create(s)
     const results = await Promise.all([
@@ -121,6 +121,7 @@ describe('assistant drafts: the approval record', () => {
 
     const late = await create(s)
     expect(await s.assistantDrafts.begin(late.id, BY, late.expiresAt)).toBe(false)
+    expect(await s.assistantDrafts.deny(late.id, BY, late.expiresAt)).toBe(false)
     expect(await s.assistantDrafts.expire(late.id, late.expiresAt)).toBe(true)
     expect(await s.assistantDrafts.begin(late.id, BY, late.expiresAt - 1)).toBe(false)
     expect((await s.assistantDrafts.get(late.id))?.status).toBe('expired')

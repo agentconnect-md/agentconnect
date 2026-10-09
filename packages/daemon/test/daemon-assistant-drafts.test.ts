@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
 import { Daemon } from '../src/daemon.js'
 import type { AssistantDraft } from '../src/store/assistant-drafts.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -113,6 +114,7 @@ async function boot(assistant: boolean) {
   }
   return {
     daemon,
+    root,
     conn,
     ask,
     drafts,
@@ -169,6 +171,67 @@ describe('a reply in an external place', () => {
         expect.objectContaining({ agentAuthorId: 'bot-a' })
       )
       expect((await h.drafts())[0]).toMatchObject({ status: 'succeeded', messageId: 'posted-1' })
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('is approved from the console through the card’s own path: one post, the card rewritten, a racing click refused', async () => {
+    const h = await boot(true)
+    try {
+      await h.ask()
+      const [draft] = await h.drafts()
+      const deps = buildCpClientDeps((h.daemon as any).cpClientDepsHost(h.root, 'wss://cp.example.test', () => {}))
+      const decide = deps.assistantActivity!.write({
+        agentId: 'bot-a',
+        operation: 'decide-draft',
+        draftId: draft!.id,
+        choice: 'approve',
+        decider: { userId: 'usr-editor', name: 'Grace' }
+      })
+      const click = (h.daemon as any).routePermissionChoice({
+        requestId: draft!.id,
+        optionId: 'approve',
+        actor: { userId: 'U1' }
+      })
+      const [answer] = await Promise.all([decide, click])
+      expect(h.conn.postMessage).toHaveBeenCalledTimes(1)
+      expect(h.conn.postMessage).toHaveBeenCalledWith('C_EXT', draft!.text, TS, expect.any(Object))
+      expect(answer).toMatchObject({
+        operation: 'decide-draft',
+        result: expect.stringMatching(/^(decided|already-decided)$/)
+      })
+      expect((await h.drafts())[0]).toMatchObject({ status: 'succeeded', messageId: 'posted-1' })
+      // Whoever won, the DM card is rewritten to the outcome and offers no buttons.
+      const [channel, ts, blocks] = h.conn.updateBlocks.mock.calls.at(-1) as unknown as [string, string, unknown[]]
+      expect([channel, ts]).toEqual(['D_U1', 'card-1'])
+      expect(JSON.stringify(blocks)).toContain('Posted')
+      expect(JSON.stringify(blocks)).not.toContain('"actions"')
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('is discarded from the console, recorded under the editor, and never posted', async () => {
+    const h = await boot(true)
+    try {
+      await h.ask()
+      const [draft] = await h.drafts()
+      const deps = buildCpClientDeps((h.daemon as any).cpClientDepsHost(h.root, 'wss://cp.example.test', () => {}))
+      expect(
+        await deps.assistantActivity!.write({
+          agentId: 'bot-a',
+          operation: 'decide-draft',
+          draftId: draft!.id,
+          choice: 'discard',
+          decider: { userId: 'usr-editor', name: 'Grace' }
+        })
+      ).toEqual({ operation: 'decide-draft', result: 'decided', status: 'denied', granted: false, failure: null })
+      expect((await h.drafts())[0]).toMatchObject({ decidedBy: 'user:usr-editor', decidedByName: 'Grace' })
+      expect(JSON.stringify(h.conn.updateBlocks.mock.calls.at(-1))).toContain('Discarded by Grace in the console')
+      const click = { requestId: draft!.id, optionId: 'approve', actor: { userId: 'U1' } }
+      await (h.daemon as any).routePermissionChoice(click)
+      expect(h.conn.postMessage).not.toHaveBeenCalled()
     } finally {
       await h.close()
     }

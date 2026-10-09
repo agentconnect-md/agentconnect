@@ -7,6 +7,7 @@ import { useFormatter, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
   ApiError,
+  decideAssistantDraft,
   deleteAssistantItem,
   fetchAssistantDrafts,
   fetchAssistantGrants,
@@ -15,7 +16,9 @@ import {
   fetchAssistantSubsessions,
   memberDisplayName,
   revokeAssistantGrant,
+  type AssistantDraftDecision,
   type AssistantDraftDto,
+  type AssistantDraftOutcomeDto,
   type AssistantGrantDto,
   type AssistantItemDto,
   type AssistantItemStatus,
@@ -43,6 +46,14 @@ const SUBSESSION_STATE_CLASS: Record<AssistantSubsessionDto['state'], string> = 
 }
 
 type Translate = ReturnType<typeof useTranslations<'Agents.detail.activity'>>
+
+/** How a decision on a draft ended: its outcome, or why the daemon refused it. */
+type DraftResult = { outcome: AssistantDraftOutcomeDto } | { refused: 'expired' | 'decided' | 'gone' }
+
+const DRAFT_REFUSALS: Record<string, 'expired' | 'decided'> = {
+  DRAFT_EXPIRED: 'expired',
+  DRAFT_ALREADY_DECIDED: 'decided'
+}
 
 /** Names a conversation from the agent's integrations; webchat and unknown rows fall back to the platform and id. */
 function usePlaceLabel(
@@ -108,7 +119,8 @@ function ConfirmStrip({
   keep,
   busy,
   onConfirm,
-  onKeep
+  onKeep,
+  tone = 'danger'
 }: {
   prompt: string
   confirm: string
@@ -116,6 +128,7 @@ function ConfirmStrip({
   busy: boolean
   onConfirm: () => void
   onKeep: () => void
+  tone?: 'danger' | 'primary'
 }) {
   return (
     <div
@@ -123,7 +136,7 @@ function ConfirmStrip({
       className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)"
     >
       <span className="min-w-0 flex-1">{prompt}</span>
-      <Button variant="danger" size="xs" disabled={busy} onClick={onConfirm}>
+      <Button variant={tone} size="xs" disabled={busy} onClick={onConfirm}>
         {confirm}
       </Button>
       <Button variant="secondary" size="xs" disabled={busy} onClick={onKeep}>
@@ -177,6 +190,31 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
     await grants.mutate((page) => page && { ...page, grants: page.grants.filter((grant) => grant.id !== grantId) }, {
       revalidate: false
     })
+  }
+
+  // A decided draft keeps its row and shows how it ended, even after a refresh stops listing it.
+  const [decided, setDecided] = useState<Record<string, { draft: AssistantDraftDto; result: DraftResult }>>({})
+  const pendingDrafts = drafts.data?.drafts ?? []
+  const draftRows = [
+    ...pendingDrafts,
+    ...Object.values(decided)
+      .map((entry) => entry.draft)
+      .filter((draft) => !pendingDrafts.some((pending) => pending.id === draft.id))
+  ]
+  const waiting = pendingDrafts.filter((draft) => !decided[draft.id]).length
+
+  const decideDraft = async (draft: AssistantDraftDto, decision: AssistantDraftDecision) => {
+    const settle = (result: DraftResult) => setDecided((prev) => ({ ...prev, [draft.id]: { draft, result } }))
+    try {
+      settle({ outcome: await decideAssistantDraft(agentId, draft.id, decision) })
+    } catch (err) {
+      const refused = err instanceof ApiError ? DRAFT_REFUSALS[err.code ?? ''] : undefined
+      if (refused) return settle({ refused })
+      if (err instanceof ApiError && err.status === 404) return settle({ refused: 'gone' })
+      // It may have run without an answer: read the list again rather than guess.
+      if (err instanceof ApiError && err.code === 'DECISION_UNCONFIRMED') void drafts.mutate()
+      throw err
+    }
   }
 
   return (
@@ -238,15 +276,17 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
       </Section>
 
       {canEdit ? (
-        <Section title={t('drafts.title')} count={drafts.data?.drafts.length} kind="drafts">
-          <Listing
-            state={drafts}
-            count={drafts.data?.drafts.length}
-            truncated={drafts.data?.truncated}
-            empty={t('drafts.empty')}
-          >
-            {drafts.data?.drafts.map((draft, i) => (
-              <DraftRow key={draft.id} agentId={agentId} draft={draft} first={i === 0} />
+        <Section title={t('drafts.title')} count={waiting} kind="drafts">
+          <Listing state={drafts} count={draftRows.length} truncated={drafts.data?.truncated} empty={t('drafts.empty')}>
+            {draftRows.map((draft, i) => (
+              <DraftRow
+                key={draft.id}
+                agentId={agentId}
+                draft={draft}
+                first={i === 0}
+                result={decided[draft.id]?.result}
+                onDecide={decideDraft}
+              />
             ))}
           </Listing>
         </Section>
@@ -490,11 +530,26 @@ function SubsessionRow({ subsession, first }: { subsession: AssistantSubsessionD
   )
 }
 
-function DraftRow({ agentId, draft, first }: { agentId: string; draft: AssistantDraftDto; first: boolean }) {
+function DraftRow({
+  agentId,
+  draft,
+  first,
+  result,
+  onDecide
+}: {
+  agentId: string
+  draft: AssistantDraftDto
+  first: boolean
+  result: DraftResult | undefined
+  onDecide: (draft: AssistantDraftDto, decision: AssistantDraftDecision) => Promise<void>
+}) {
   const t = useTranslations('Agents.detail.activity')
   const format = useFormatter()
   const { members } = useConsoleData()
   const placeLabel = usePlaceLabel(agentId)
+  const [confirming, setConfirming] = useState<AssistantDraftDecision | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
   const target = draft.target.name
     ? draft.target.dm
       ? t('dmWith', { name: draft.target.name })
@@ -507,6 +562,26 @@ function DraftRow({ agentId, draft, first }: { agentId: string; draft: Assistant
     : approver.kind === 'conversation'
       ? placeLabel(approver)
       : (approver.name ?? (member ? memberDisplayName(member) : (approver.userId ?? t('drafts.noApprover'))))
+
+  const decide = async (decision: AssistantDraftDecision) => {
+    setBusy(true)
+    setFailure(null)
+    try {
+      await onDecide(draft, decision)
+    } catch (err) {
+      setFailure(
+        err instanceof ApiError && err.code === 'DECISION_UNCONFIRMED'
+          ? t('drafts.unconfirmed')
+          : err instanceof ApiError && err.code === 'DAEMON_FEATURE_MISSING'
+            ? t('drafts.upgradeDaemon')
+            : t('drafts.decideFailed')
+      )
+    } finally {
+      setBusy(false)
+      setConfirming(null)
+    }
+  }
+
   return (
     <div className={`px-4 py-3 ${first ? '' : 'border-t border-(--border-subtle)'}`} data-assistant-draft={draft.id}>
       <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
@@ -533,6 +608,77 @@ function DraftRow({ agentId, draft, first }: { agentId: string; draft: Assistant
           })}
         </span>
       </div>
+      {result ? (
+        <DraftOutcome result={result} />
+      ) : confirming ? (
+        <ConfirmStrip
+          prompt={
+            confirming === 'discard'
+              ? t('drafts.discardConfirm')
+              : t(confirming === 'approve' ? 'drafts.approveConfirm' : 'drafts.approveAlwaysConfirm', { target })
+          }
+          confirm={confirming === 'discard' ? t('drafts.discard') : t('drafts.approve')}
+          keep={t('drafts.cancel')}
+          busy={busy}
+          tone={confirming === 'discard' ? 'danger' : 'primary'}
+          onConfirm={() => void decide(confirming)}
+          onKeep={() => setConfirming(null)}
+        />
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2" data-assistant-draft-actions>
+          <Button variant="primary" size="xs" onClick={() => setConfirming('approve')}>
+            {t('drafts.approve')}
+          </Button>
+          <Button variant="secondary" size="xs" onClick={() => setConfirming('discard')}>
+            {t('drafts.discard')}
+          </Button>
+          {draft.offerAlways ? (
+            <Button variant="secondary" size="xs" onClick={() => setConfirming('approve_always')}>
+              {t('drafts.approveAlways')}
+            </Button>
+          ) : null}
+        </div>
+      )}
+      {failure && !result ? (
+        <div role="alert" className="mt-1 font-sans text-[12px] text-(--status-error)">
+          {failure}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+const OUTCOME_CLASS: Record<AssistantDraftOutcomeDto['status'], string> = {
+  succeeded: 'text-(--status-online-text)',
+  denied: 'text-(--text-secondary)',
+  failed: 'text-(--status-error)',
+  outcome_unknown: 'text-(--status-paused)'
+}
+
+/** What a decision did, in place of the draft's buttons. */
+function DraftOutcome({ result }: { result: DraftResult }) {
+  const t = useTranslations('Agents.detail.activity')
+  let text: string
+  let tone = 'text-(--text-secondary)'
+  if ('refused' in result) {
+    text = t(`drafts.outcome.${result.refused}`)
+  } else {
+    const { status, alwaysAllowed, failure } = result.outcome
+    tone = OUTCOME_CLASS[status]
+    text =
+      status === 'succeeded' && alwaysAllowed
+        ? t('drafts.outcome.succeededAlways')
+        : status === 'failed'
+          ? t('drafts.outcome.failed', { reason: failure ?? t('drafts.outcome.unknownReason') })
+          : t(`drafts.outcome.${status}`)
+  }
+  return (
+    <div
+      role="status"
+      className={`mt-2 rounded-md bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-medium leading-normal ${tone}`}
+      data-assistant-draft-outcome
+    >
+      {text}
     </div>
   )
 }
