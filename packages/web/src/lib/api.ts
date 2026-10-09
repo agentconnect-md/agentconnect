@@ -783,6 +783,8 @@ export type CreateIntegrationInput =
       slack?: { botToken: string; appToken: string } | { botToken: string; signingSecret: string }
     })
   | (CreateIntegrationBase & { platform: 'qq'; qq?: { appId: string; appSecret: string } })
+  // iLink ClawBot credentials are minted by QR login, then pasted in (QR-in-console later).
+  | (CreateIntegrationBase & { platform: 'weixin'; weixin?: { accountId: string; botToken: string; baseUrl?: string } })
   | (CreateIntegrationBase & { platform: 'telegram'; telegram?: { botToken: string } })
   | (CreateIntegrationBase & { platform: 'discord'; discord?: { botToken: string } })
   | (CreateIntegrationBase & {

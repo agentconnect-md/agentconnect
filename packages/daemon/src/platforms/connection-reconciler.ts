@@ -56,6 +56,7 @@ import { consolidateLinear, linearConnKey, LinearConnection } from './linear/con
 import { consolidateGoogleChat, GoogleChatConnection } from './googlechat/connection.js'
 import type { GoogleChatWriteBudgets } from './googlechat/write-budget.js'
 import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
+import { WeixinConnection, consolidateWeixin, WeixinConnKey } from './weixin/connection.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 import { CredentialRevocationReporter } from './credential-revocation.js'
@@ -74,6 +75,7 @@ export type PlatformConnection =
   | LinearConnection
   | QQConnection
   | GoogleChatConnection
+  | WeixinConnection
 
 /**
  * The UI-action callbacks every platform connection is constructed with — a status-bar tap,
@@ -147,6 +149,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     linear: ReadonlyMap<string, LinearConnection>
     qq?: ReadonlyMap<string, QQConnection>
     googlechat: ReadonlyMap<string, GoogleChatConnection>
+    weixin?: ReadonlyMap<string, WeixinConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
    *  matches — the bot user id on Slack/Discord, the @username on Telegram, the open_id on
@@ -156,6 +159,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindDiscord(integrationId: string, conn: DiscordConnection, botUserId: string): void
   bindFeishu(integrationId: string, conn: FeishuConnection, botOpenId: string): void
   bindQQ?(integrationId: string, conn: QQConnection, botUserId: string): void
+  /** The iLink account id (`<uuid>-im-bot`) — the binding's bot identity. */
+  bindWeixin?(integrationId: string, conn: WeixinConnection, botUserId: string): void
   /** Linear's app user IS the bot identity — the id the ingress self-echo guard matches (§7.2). */
   bindLinear(integrationId: string, conn: LinearConnection, appUserId: string): void
   /** The Chat app's `users/…` identity, once discovered; '' until then. */
@@ -226,6 +231,39 @@ export class ConnectionReconciler {
         }
       }
       for (const { integrationId } of group.integrations) this.host.bindQQ?.(integrationId, conn, conn.botUserId)
+    }
+  }
+
+  readonly WeixinPool = new ConnectionPool<WeixinConnection>('weixin', (conn) => WeixinConnKey(conn.group))
+
+  async reconcileWeixinConnections(): Promise<void> {
+    for (const [key, group] of consolidateWeixin(this.host.transportAgents())) {
+      let conn = this.WeixinPool.find(key)
+      if (!conn) {
+        if (!this.WeixinPool.beginConnect(key)) continue
+        conn = new WeixinConnection(group, {
+          log: this.log,
+          onMessage: (msg) => {
+            if (conn) this.host.channelNameResolver()?.noteMessage(conn, msg)
+            this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
+          }
+        })
+        try {
+          await conn.start()
+          if (this.host.draining() || !consolidateWeixin(this.host.transportAgents()).has(key)) {
+            await conn.stop()
+            continue
+          }
+          this.WeixinPool.add(conn)
+        } catch {
+          await conn.stop()
+          this.log.warn('weixin: could not start bot connection; retry on next reconcile')
+          continue
+        } finally {
+          this.WeixinPool.endConnect(key)
+        }
+      }
+      for (const { integrationId } of group.integrations) this.host.bindWeixin?.(integrationId, conn, conn.botUserId)
     }
   }
 
@@ -461,8 +499,13 @@ export class ConnectionReconciler {
     const QQByIntegration = new Map<string, string>()
     for (const [key, group] of QQGroups)
       for (const { integrationId } of group.integrations) QQByIntegration.set(integrationId, key)
+    const weixinGroups = consolidateWeixin(agents)
+    const weixinByIntegration = new Map<string, string>()
+    for (const [key, group] of weixinGroups)
+      for (const { integrationId } of group.integrations) weixinByIntegration.set(integrationId, key)
     const allDesiredIds = new Set([
       ...QQByIntegration.keys(),
+      ...weixinByIntegration.keys(),
       ...directByIntegration.keys(),
       ...sharedByIntegration.keys(),
       ...telegramByIntegration.keys(),
@@ -475,6 +518,9 @@ export class ConnectionReconciler {
     const bindings = this.host.bindings()
     for (const [id, conn] of bindings.qq ?? []) {
       if (QQConnKey(conn.group) !== QQByIntegration.get(id)) this.host.unbindIntegration(id)
+    }
+    for (const [id, conn] of bindings.weixin ?? []) {
+      if (WeixinConnKey(conn.group) !== weixinByIntegration.get(id)) this.host.unbindIntegration(id)
     }
     // Unbinding drops the connection mapping, the bot identity and the channel
     // snapshot together — the three indexes an evicted integration must leave behind.
@@ -547,6 +593,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.discordPool, new Set([...discord.values()].map(discordConnKey)))
     await this.prunePool(this.feishuPool, new Set([...feishu.values()].map(feishuConnKey)))
     await this.prunePool(this.QQPool, new Set(QQGroups.keys()))
+    await this.prunePool(this.WeixinPool, new Set(weixinGroups.keys()))
     await this.prunePool(this.linearPool, new Set([...linear.values()].map((group) => group.key)))
     await this.prunePool(this.googleChatPool, new Set(googleChat.keys()))
   }

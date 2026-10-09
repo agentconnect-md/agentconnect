@@ -81,6 +81,20 @@ export const IntegrationQQConfig = z.object({ appId: z.string().min(1), appSecre
 export type IntegrationQQConfig = z.infer<typeof IntegrationQQConfig>
 
 /**
+ * The Weixin (iLink ClawBot) config payload — Tencent's official personal-bot
+ * channel at ilinkai.weixin.qq.com. `botToken` is minted by QR login and is
+ * plaintext secret material — NEVER log it. `accountId` is the bot's iLink
+ * account id (`<uuid>-im-bot`), also the long-poll identity. `baseUrl` exists
+ * for a test double; production leaves it absent.
+ */
+export const IntegrationWeixinConfig = z.object({
+  botToken: z.string(),
+  accountId: z.string().min(1),
+  baseUrl: z.string().url().optional()
+})
+export type IntegrationWeixinConfig = z.infer<typeof IntegrationWeixinConfig>
+
+/**
  * The Telegram config payload — long-polling + routing (grammY). Telegram has a
  * SINGLE BotFather HTTP token — no app-level token and no signing secret
  * (long-polling authenticates every getUpdates call with the bot token).

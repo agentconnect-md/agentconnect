@@ -355,7 +355,10 @@ import { CpRoutingLayer } from './router/cp-routing-layer.js'
 import { SlackConnection, slackTsToMs, type SlackAppFactory, type SlackStatusOptions } from './slack/connection.js'
 import { QQConnection } from './platforms/qq/connection.js'
 import { createQQTurnOutput } from './platforms/qq/surface.js'
+import { WeixinConnection } from './platforms/weixin/connection.js'
+import { createWeixinTurnOutput } from './platforms/weixin/surface.js'
 import { QQCommandChrome } from './platforms/qq/command-chrome.js'
+import { WeixinCommandChrome } from './platforms/weixin/command-chrome.js'
 import { TelegramConnection, type TelegramCallback } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
@@ -1359,6 +1362,7 @@ export class Daemon {
     registry.register(linearCommandChrome)
     registry.register(QQCommandChrome)
     registry.register(googleChatCommandChrome)
+    registry.register(WeixinCommandChrome)
     return registry
   })()
 
@@ -1444,6 +1448,20 @@ export class Daemon {
       })
       registry.register(
         createQQTurnOutput(async (p, text) => {
+          if (p.plan.transcriptChannel && p.plan.statusThread)
+            await this.store.appendTranscript({
+              channel: p.plan.transcriptChannel,
+              thread: p.plan.statusThread,
+              admission: { agentId: p.plan.agentId, sessionKey: p.plan.sessionKey },
+              ts: monotonicTs(),
+              sender: p.plan.agentId,
+              kind: 'text',
+              text
+            })
+        })
+      )
+      registry.register(
+        createWeixinTurnOutput(async (p, text) => {
           if (p.plan.transcriptChannel && p.plan.statusThread)
             await this.store.appendTranscript({
               channel: p.plan.transcriptChannel,
@@ -1563,6 +1581,7 @@ export class Daemon {
   // connByIntegration so Slack reconcile (which reads `.appToken`) never sees a Feishu conn.
   private fsConnByIntegration = new Map<string, FeishuConnection>()
   private QQConnByIntegration = new Map<string, QQConnection>()
+  private WeixinConnByIntegration = new Map<string, WeixinConnection>()
   // integrationId -> the LinearConnection that owns it. Linear's only reply surface is the
   // agent activity feed (§4.6), so this is the egress port every Linear write resolves through.
   private lnConnByIntegration = new Map<string, LinearConnection>()
@@ -2337,6 +2356,7 @@ export class Daemon {
         discord: this.dcConnByIntegration,
         feishu: this.fsConnByIntegration,
         qq: this.QQConnByIntegration,
+        weixin: this.WeixinConnByIntegration,
         linear: this.lnConnByIntegration,
         googlechat: this.gcConnByIntegration
       }),
@@ -2351,6 +2371,7 @@ export class Daemon {
       bindFeishu: (integrationId, conn, botOpenId) =>
         this.bind(this.fsConnByIntegration, integrationId, conn, botOpenId),
       bindQQ: (id, conn, botId) => this.bind(this.QQConnByIntegration, id, conn, botId),
+      bindWeixin: (id, conn, botId) => this.bind(this.WeixinConnByIntegration, id, conn, botId),
       bindLinear: (integrationId, conn, appUserId) =>
         this.bind(this.lnConnByIntegration, integrationId, conn, appUserId),
       bindGoogleChat: (integrationId, conn, appUserName) =>
@@ -2443,6 +2464,7 @@ export class Daemon {
     this.fsConnByIntegration.delete(integrationId)
     this.lnConnByIntegration.delete(integrationId)
     this.QQConnByIntegration.delete(integrationId)
+    this.WeixinConnByIntegration.delete(integrationId)
     this.gcConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
@@ -4880,6 +4902,7 @@ export class Daemon {
   /** Phase 27 — Slack connections gate boot; the long-poll/gateway platforms deliberately do not. */
   private async openPlatformConnections(agents: LoadedAgent[]): Promise<void> {
     void this.connections.reconcileQQConnections().catch(() => this.log.warn('qq: initial connect failed'))
+    void this.connections.reconcileWeixinConnections().catch(() => this.log.warn('weixin: initial connect failed'))
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     await this.connections.openInitialSlackConnections(agents)
     // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
@@ -5366,6 +5389,7 @@ export class Daemon {
       await this.connections.reconcileLinearConnections()
       await this.connections.reconcileGoogleChatConnections()
       await this.connections.reconcileQQConnections()
+      await this.connections.reconcileWeixinConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
@@ -13137,6 +13161,7 @@ export class Daemon {
    */
   private readonly platformTurnEgress = new Map<string, (integrationId?: string) => PlatformConnection | undefined>([
     ['qq', (id) => (id ? this.QQConnByIntegration.get(id) : undefined)],
+    ['weixin', (id) => (id ? this.WeixinConnByIntegration.get(id) : undefined)],
     ['linear', (integrationId) => (integrationId ? this.lnConnByIntegration.get(integrationId) : undefined)],
     ['googlechat', (integrationId) => (integrationId ? this.gcConnByIntegration.get(integrationId) : undefined)]
   ])

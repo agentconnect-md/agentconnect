@@ -16,6 +16,7 @@ import {
   IntegrationLinearConfig,
   IntegrationSlackConfig,
   IntegrationTelegramConfig,
+  IntegrationWeixinConfig,
   ManagedSkillEntry
 } from '@agentconnect.md/protocol'
 
@@ -67,6 +68,10 @@ export type LinearConfig = z.infer<typeof LinearConfigSchema>
 /** Google Chat carries the app's project identity plus its service-account key; ingress is relay-terminated (§3). */
 export const GoogleChatConfigSchema = IntegrationGoogleChatConfig
 export type GoogleChatConfig = z.infer<typeof GoogleChatConfigSchema>
+
+/** Weixin iLink carries the QR-minted bot token + account id; the daemon owns the long-poll connection. */
+export const WeixinConfigSchema = IntegrationWeixinConfig
+export type WeixinConfig = z.infer<typeof WeixinConfigSchema>
 
 /**
  * One integration entry — §6.4 FINAL SHAPE, migrated together with the protocol

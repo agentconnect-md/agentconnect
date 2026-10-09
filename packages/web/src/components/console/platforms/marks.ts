@@ -9,6 +9,7 @@ import { LinearMark } from './linear/mark'
 import { SlackMark } from './slack/mark'
 import { TelegramMark } from './telegram/mark'
 import { QQMark } from './qq/mark'
+import { WeixinMark } from './weixin/mark'
 
 /**
  * The BRAND-MARK view of the platform registry — deliberately a second, tiny
@@ -38,6 +39,7 @@ const MARKS = new Map<string, PlatformMarkComponent>([
   ['linear', LinearMark],
   ['qq', QQMark],
   ['googlechat', GoogleChatMark],
+  ['weixin', WeixinMark],
   // Lark and Feishu are one platform id (`feishu`) with the cloud on a separate
   // `region` field, so nothing in the console routes a bare 'lark' here today.
   // The alias is kept because the id IS the other cloud's brand name and the

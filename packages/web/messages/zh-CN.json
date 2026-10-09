@@ -2002,6 +2002,10 @@
         "googlechat": {
           "create": "在 Google Cloud 中配置一个 Chat 应用",
           "existing": "一个未使用的 Google Chat 应用"
+        },
+        "weixin": {
+          "create": "粘贴扫码登录获得的 iLink 凭证",
+          "existing": "一个未使用的微信 bot"
         }
       },
       "api": {
@@ -5883,6 +5887,14 @@
         "unreachable": "无法连接到 Google。请重试。",
         "deploymentApp": "这是部署自带的 Chat 应用，请在 Google Chat 中给它发一条消息来连接。"
       }
+    },
+    "weixin": {
+      "checking": "正在校验凭证…",
+      "connect": "连接",
+      "step1": "在 daemon 所在机器上运行 iLink 扫码登录（`weixin-agent-sdk` 或 agentconnect weixin login CLI），用微信扫码，复制它打印的 Account ID 与 Bot Token。",
+      "step1Warning": "iLink 会话会过期——bot 停止回复时重新扫码并在此处更新 token。",
+      "step2": "粘贴 Account ID 与 Bot Token —— 必填",
+      "loginCli": "登录 CLI（扫码）"
     }
   }
 }

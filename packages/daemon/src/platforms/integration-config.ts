@@ -36,7 +36,8 @@ import {
   GoogleChatConfigSchema,
   LinearConfigSchema,
   SlackConfigSchema,
-  TelegramConfigSchema
+  TelegramConfigSchema,
+  WeixinConfigSchema
 } from '../agents/agent-schema.js'
 
 /** The per-platform module schemas for the opaque `config` payload — the wire
@@ -49,7 +50,8 @@ const CONFIG_SCHEMAS = {
   feishu: FeishuConfigSchema,
   linear: LinearConfigSchema,
   qq: IntegrationQQConfig,
-  googlechat: GoogleChatConfigSchema
+  googlechat: GoogleChatConfigSchema,
+  weixin: WeixinConfigSchema
 } as const
 
 /** The union of every platform's validated config, derived from the registry

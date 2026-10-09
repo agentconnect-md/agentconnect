@@ -17,6 +17,7 @@ import { linearModule } from './linear'
 import { slackModule } from './slack'
 import { QQModule } from './qq'
 import { telegramModule } from './telegram'
+import { WeixinModule } from './weixin'
 
 /**
  * The console's platform registry (§10) — the single platform-set authority
@@ -37,7 +38,8 @@ const MODULES: readonly WebPlatformModule[] = [
   feishuModule,
   linearModule,
   QQModule,
-  googleChatModule
+  googleChatModule,
+  WeixinModule
 ]
 
 const BY_ID = new Map(MODULES.map((m) => [m.platformId, m]))

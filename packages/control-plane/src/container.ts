@@ -295,6 +295,7 @@ import { CodeHostTrustedActorService } from './codehost/trusted-actor.service.js
 import { botIdentityProjector } from './platforms/bot-identity.js'
 import { buildPendingInstallReapers, platformBackgroundLoops } from './platforms/lifecycle.js'
 import { createQQCpProvider } from './platforms/qq/provider.js'
+import { createWeixinCpProvider } from './platforms/weixin/provider.js'
 import { QQCredentialRoutes } from './platforms/qq/routes.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
@@ -2387,6 +2388,7 @@ export function buildContainer(
   // above.
   composedPlatforms = buildCpPlatformRegistry([
     createQQCpProvider(undefined, [QQCredentialRoutes(httpDeps)]),
+    createWeixinCpProvider(),
     createTelegramCpProvider({
       verifyBot: verifyTelegramBot,
       syncBotIcon: syncTelegramBotIcon,

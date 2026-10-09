@@ -2002,6 +2002,10 @@
         "googlechat": {
           "create": "Configure a Chat app in Google Cloud",
           "existing": "An unused Google Chat app"
+        },
+        "weixin": {
+          "create": "Paste iLink credentials from QR login",
+          "existing": "An unused Weixin bot"
         }
       },
       "api": {
@@ -5883,6 +5887,14 @@
         "unreachable": "Google could not be reached. Try again.",
         "deploymentApp": "This Chat app belongs to this deployment; connect it by sending the app a message in Google Chat."
       }
+    },
+    "weixin": {
+      "checking": "Checking credentials…",
+      "connect": "Connect",
+      "step1": "Run the iLink QR login (`weixin-agent-sdk` or the agentconnect weixin login CLI) on the daemon host, scan with WeChat, then copy the account id and bot token it prints.",
+      "step1Warning": "iLink sessions expire — when the bot stops replying, re-run the QR login and update the token here.",
+      "step2": "Paste the Account ID & Bot Token — required to connect",
+      "loginCli": "Login CLI (QR)"
     }
   }
 }

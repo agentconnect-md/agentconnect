@@ -147,6 +147,9 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
  */
 const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
   ['qq', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/, appendKinds: ['channel'] }],
+  // iLink ClawBot is DM-only — every conversation is one peer keyed `dm:<peerId>`;
+  // there is no channel/grant surface, so membership stays `observed`.
+  ['weixin', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/ }],
   // Slack is the only platform with an authoritative membership snapshot — which
   // is why the branches this replaces read "Slack does X, everyone else does Y".
   // It is also the only platform whose normalizer attributes bot authorship AND

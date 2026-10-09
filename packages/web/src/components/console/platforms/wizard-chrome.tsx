@@ -37,7 +37,7 @@ export type IdentityCardKey =
 
 /** The mode-card pair for a module with one brand. */
 export function identityCards(
-  platform: 'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq' | 'googlechat'
+  platform: 'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq' | 'googlechat' | 'weixin'
 ): {
   create: IdentityCardKey
   existing: IdentityCardKey
@@ -58,7 +58,7 @@ export function identityCards(
  *  values, never a sentence — the host resolves it for the active locale. */
 /** A room noun for the hint. Linear's arm names an ISSUE it delegates to the app,
  *  which is why this is not just the two chat rooms. */
-export type InviteHintTarget = 'channel' | 'group' | 'issue' | 'space'
+export type InviteHintTarget = 'channel' | 'group' | 'issue' | 'space' | 'conversation'
 
 /** The host messages an invite hint can name — the two arms of its hint row. */
 export type InviteHint = {

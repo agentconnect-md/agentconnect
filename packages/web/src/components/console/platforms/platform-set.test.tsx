@@ -172,7 +172,8 @@ describe('platform set', () => {
       'Feishu',
       'Linear',
       'QQ',
-      'Google Chat'
+      'Google Chat',
+      'Weixin'
     ])
   })
 
