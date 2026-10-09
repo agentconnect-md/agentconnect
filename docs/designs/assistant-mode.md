@@ -325,23 +325,24 @@ another place, under §5.5.
 ### 5.5 Permission rules
 
 > **Read**: any place may recall any non-private channel; a private channel or group DM only from
-> itself (P0a; see below); a DM only from that person's own DM or webchat. Another person's DM,
-> never.
+> itself — and, from P1, on a turn its member started in their own DM (see below); a DM only from
+> that person's own DM or webchat. Another person's DM, never.
 > **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
 > act directly only on **the current place**; a post to another place is a draft the asker
 > approves (below). Item and report traffic across places goes through §5.7 as structured fields.
 > The agent-to-agent forms of `sendMessage` are unchanged.
 > **External**: an external place reads like an internal one; what it posts is a draft.
 
-| Current place                | Recallable sources                                | Memory / knowledge | Output                                                |
-| ---------------------------- | ------------------------------------------------- | ------------------ | ----------------------------------------------------- |
-| P's DM                       | P's own DM and webchat, every non-private channel | all¹               | posted                                                |
-| Internal channel or group DM | itself, every non-private channel                 | all¹               | posted                                                |
-| External channel or group DM | itself, every non-private channel                 | all¹               | **drafted**: posted after an internal member approves |
-| Webchat                      | as a DM, by the conversation's owner              | all¹               | posted                                                |
+| Current place                | Recallable sources                                                                                         | Memory / knowledge | Output                                                |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------- |
+| P's DM                       | P's own DM and webchat, every non-private channel; on P's own turns, the private places P belongs to (P1)² | all¹               | posted                                                |
+| Internal channel or group DM | itself, every non-private channel                                                                          | all¹               | posted                                                |
+| External channel or group DM | itself, every non-private channel                                                                          | all¹               | **drafted**: posted after an internal member approves |
+| Webchat                      | as a DM, by the conversation's owner                                                                       | all¹               | posted                                                |
 
 ¹ Shared memory never holds content from DMs, webchat or private places (the memory bypass
 below), so opening it everywhere does not reopen what the read rule closes.
+² Per-asker widening, bound to the turn rather than the place; see "Private places" below.
 
 **Drafts in an external place:**
 
@@ -380,21 +381,33 @@ below), so opening it everywhere does not reopen what the read rule closes.
   daemon's platform-neutral `isPrivate` facet (`PlatformChannelInfo` / `ObservedChat`). A platform
   that cannot tell reports not private — notably Discord, whose permission-restricted channels
   read as open.
-- The target is **per-asker scoping**: an answer draws only on places the person asking can see,
-  so a private place's content reaches only its members — the practice of the coworker agent in
-  §2. It needs a membership cache per source and the identity links of P1 (webchat users), and
-  platforms without a member list (Discord, Telegram) cannot support it; it ships in P1.
+- The target is **per-asker scoping in the asker's own DM**: a private place's content reaches
+  only its members, and only where the asker is the whole audience. An answer in a shared place
+  is read by everyone present, so scoping by what the asker alone may see is rejected there.
 - **Until then (P0a) a private place is read only from itself**: no other place, not even a
   member's DM, can recall it; the place itself still recalls every non-private channel.
   Per-asker scoping only widens this, so nothing that works in P0a stops working later.
-- **P1 widens it in the asker's own DM only.** Per-asker scoping is safe only where the asker is
-  the whole audience: an answer in a channel or group DM is read by everyone present, so a source
-  the asker may see but the room may not would leak. In a person's 1:1 DM with the agent, a private
-  place is listed and readable when that person is a member of it right now — checked live at read
-  time (cached for at most about a minute), on the same platform and workspace, and only where the
-  platform declares its member listing authoritative. Channels, group DMs, webchat and external
-  places keep the P0a rule; webchat waits for identity links; a membership that cannot be
-  confirmed is refused as opaquely as any other private place.
+- **P1 widens it on the asker's own turns in their DM.** In a person P's 1:1 DM with the agent, on
+  a turn started by P's own message, a private place is listed and readable when P is a member of
+  it right now — checked live at read time (cached for at most about a minute), on the same
+  platform and workspace, and only where the daemon's platform adapter declares its member listing
+  authoritative. A membership that cannot be confirmed is refused as opaquely as any other private
+  place. Channels, group DMs, webchat and external places keep the P0a rule; webchat waits for
+  identity links.
+- **The widening is bound to the turn, not the place.** Turns in P's DM session that P did not
+  start — a report round, a patrol's or a sub-session's report, a cron run, a later `handoff` — and
+  every sub-session or patrol get the P0a source set.
+- **A turn that read a private place this way writes only to P's DM.** For the rest of that turn
+  the daemon refuses ledger writes (taking, updating or following an item — item summaries and
+  observations are team-visible and feed every place's standing summary), self-delegation, and
+  posts or drafts aimed at any other place. This is a refusal by tool, not an output filter.
+- **Memory**: DMs are already outside shared memory. When the per-person memory space lands,
+  anything it captures from such a turn is injected only where P is the whole audience.
+- **Revocation**: after P leaves the place, excerpts already in P's DM context stay there; like
+  the downgrade rule, the context was never the risk — new reads are refused and nothing leaves
+  P's DM.
+- **The error metric**: "outside the allowed set" now depends on the place, whether the turn is
+  P's own, and live membership, and is evaluated with all three.
 - Other places do not see a private place in recall's listing, and a refused read answers as
   opaquely as the DM rule: "I can't share that here", never where the content lives.
 
@@ -828,4 +841,8 @@ console.
 
 **Twelfth revision (2026-10-10)**: per-asker recall applies only where the asker is the whole
 audience — their own DM with the agent — with membership checked live on platforms whose member
-listing is authoritative; every shared place keeps the P0a private-place rule.
+listing is authoritative; every shared place keeps the P0a private-place rule. Architecture review
+of that change: the Read box, the `P's DM` row and the target now state the same rule; the widening
+is bound to a turn P started, never a report, patrol, cron or sub-session turn; a widened turn
+writes only to P's DM (no ledger writes, self-delegation or posts elsewhere); per-person memory
+captured from it stays in P's DM; revocation residue and the metric's inputs are stated.
