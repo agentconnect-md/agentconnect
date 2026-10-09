@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, eleventh revision (2026-10-10). Reviewed by three independent design reviews and
+**Status:** Design, twelfth revision (2026-10-10). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -325,23 +325,25 @@ another place, under §5.5.
 ### 5.5 Permission rules
 
 > **Read**: any place may recall any non-private channel; a private channel or group DM only from
-> itself (P0a; see below); a DM only from that person's own DM or webchat. Another person's DM,
-> never.
+> itself — and, from P1, on a turn its member started in their own DM (see below); a DM only from
+> that person's own DM or webchat. Another person's DM, never.
 > **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
 > act directly only on **the current place**; a post to another place is a draft the asker
 > approves (below). Item and report traffic across places goes through §5.7 as structured fields.
-> The agent-to-agent forms of `sendMessage` are unchanged.
+> The agent-to-agent forms of `sendMessage` are unchanged, except in a session marked by a
+> per-asker read (below).
 > **External**: an external place reads like an internal one; what it posts is a draft.
 
-| Current place                | Recallable sources                                | Memory / knowledge | Output                                                |
-| ---------------------------- | ------------------------------------------------- | ------------------ | ----------------------------------------------------- |
-| P's DM                       | P's own DM and webchat, every non-private channel | all¹               | posted                                                |
-| Internal channel or group DM | itself, every non-private channel                 | all¹               | posted                                                |
-| External channel or group DM | itself, every non-private channel                 | all¹               | **drafted**: posted after an internal member approves |
-| Webchat                      | as a DM, by the conversation's owner              | all¹               | posted                                                |
+| Current place                | Recallable sources                                                                                         | Memory / knowledge | Output                                                |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------- |
+| P's DM                       | P's own DM and webchat, every non-private channel; on P's own turns, the private places P belongs to (P1)² | all¹               | posted                                                |
+| Internal channel or group DM | itself, every non-private channel                                                                          | all¹               | posted                                                |
+| External channel or group DM | itself, every non-private channel                                                                          | all¹               | **drafted**: posted after an internal member approves |
+| Webchat                      | as a DM, by the conversation's owner                                                                       | all¹               | posted                                                |
 
 ¹ Shared memory never holds content from DMs, webchat or private places (the memory bypass
 below), so opening it everywhere does not reopen what the read rule closes.
+² Per-asker widening, bound to the turn rather than the place; see "Private places" below.
 
 **Drafts in an external place:**
 
@@ -380,14 +382,46 @@ below), so opening it everywhere does not reopen what the read rule closes.
   daemon's platform-neutral `isPrivate` facet (`PlatformChannelInfo` / `ObservedChat`). A platform
   that cannot tell reports not private — notably Discord, whose permission-restricted channels
   read as open.
-- The target is **per-asker scoping**: an answer draws only on places the person asking can see,
-  so a private place's content reaches only its members — the practice of the coworker agent in
-  §2. It needs a membership cache per source and the identity links of P1 (webchat users), and
-  platforms without a member list (Discord, Telegram) cannot support it; it ships in P1.
+- The target is **per-asker scoping in the asker's own DM**: a private place's content reaches
+  only its members, and only where the asker is the whole audience. An answer in a shared place
+  is read by everyone present, so scoping by what the asker alone may see is rejected there.
 - **Until then (P0a) a private place is read only from itself**: no other place, not even a
   member's DM, can recall it; the place itself still recalls every non-private channel.
   Per-asker scoping only widens this, so nothing that works in P0a stops working later.
-- Other places do not see a private place in recall's listing, and a refused read answers as
+- **P1 widens it on the asker's own turns in their DM.** In a person P's 1:1 DM with the agent, on a
+  turn started by P's own message, a private place is readable, when it is named, if P is a member
+  of it right now — checked live at read time (cached for at most about a minute), on the same
+  platform and workspace, and only where the daemon's platform adapter declares its member listing
+  authoritative. A membership that cannot be confirmed is refused as opaquely as any other private
+  place. Recall's listing never shows a private place, even to a member: the agent lists places on
+  its own, before it knows what it needs, so only an actual read widens. Channels, group DMs,
+  webchat and external places keep the P0a rule; webchat waits for identity links.
+- **The widening is bound to the turn, not the place.** Turns in P's DM session that P did not
+  start — a report round, a patrol's or a sub-session's report, a cron run, a later `handoff` — and
+  every sub-session or patrol get the P0a source set.
+- **A session that read a private place this way writes only to P's DM.** The recalled content
+  stays in the DM's long-session context, so the restriction follows the session, not the turn:
+  from the first widened read until that session is retired (`!new`, or a rollover that starts a
+  fresh context), every turn in it — P's own, a report round or a cron run alike — is refused
+  ledger writes (taking, updating or following an item: item summaries and observations are
+  team-visible and feed every place's standing summary), self-delegation, posts or drafts aimed
+  at any other place, and every agent-to-agent send — a direct `toAgent` call, a `toAgent` +
+  `channel` post at a channel root, and a reply into another session through `sessionId` — since
+  each carries the content into a session or place P does not alone see. The mark is stored with
+  the session so it survives a restart or handover, and the refusal tells P that starting a new
+  conversation lifts it. The restriction follows the content, not only the session: the DM's own
+  history still holds the earlier answers, so any session that reads it back — through `recall` or
+  a history read of the DM — once any session there was marked, a retired one included, is marked
+  too, a sub-session or patrol included. This is a refusal by tool, not an output filter; writes
+  that leave through other tools are an open question (§9).
+- **Memory**: DMs are already outside shared memory. When the per-person memory space lands,
+  anything it captures from such a session is injected only where P is the whole audience.
+- **Revocation**: after P leaves the place, excerpts already in P's DM context stay there; like
+  the downgrade rule, the context was never the risk — new reads are refused, and the session's
+  mark still keeps anything from leaving P's DM.
+- **The error metric**: "outside the allowed set" now depends on the place, whether the turn is
+  P's own, and live membership, and is evaluated with all three.
+- No place sees a private place in recall's listing, and a refused read answers as
   opaquely as the DM rule: "I can't share that here", never where the content lives.
 
 - Webchat ↔ IM recognition depends on identity links (P1); in P0 webchat recalls only itself and
@@ -677,14 +711,14 @@ badge are not in it yet.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                                                        |
-| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap                                                                      |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893). Next: the target patrol (after per-runtime tests) on the credential-less host; `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                               |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                             |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                            |
+| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap                          |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893). Next: per-asker recall in the asker's DM (§5.5); the target patrol (after per-runtime tests) on the credential-less host; `remind`; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                   |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                 |
 
 ---
 
@@ -725,6 +759,10 @@ badge are not in it yet.
 7. **Wording of item summaries**: the restatement when an item is taken is the only review point
    for what becomes team-visible.
 8. Whether distillation on a normal OpenCode host runs under `plan` (live, unverified).
+9. **Other writes from a session marked by a per-asker read**: code-host comments and issues, MCP
+   tools and a shell with network access are not refused, so recalled content can still leave
+   P's DM through them, on P's request or in a later turn. Closing them means a restricted tool
+   set for marked sessions, which would leave the DM little more than read-only until `!new`.
 
 ---
 
@@ -817,3 +855,15 @@ drafts (#2880, #2881) is recorded in §5.11.
 replay recovery, `propose` for patrols with its four departures from the approval record, the
 webchat Sub-sessions panel, read-only sub-session pages, and who may stop a sub-session from the
 console.
+
+**Twelfth revision (2026-10-10)**: per-asker recall applies only where the asker is the whole
+audience — their own DM with the agent — with membership checked live on platforms whose member
+listing is authoritative; every shared place keeps the P0a private-place rule. Architecture review
+of that change: the Read box, the `P's DM` row and the target now state the same rule; the widening
+is bound to a turn P started, never a report, patrol, cron or sub-session turn, and to a read of a
+named place, never to recall's listing; a session that made a widened read writes only to P's DM —
+no ledger writes, self-delegation, posts elsewhere or agent-to-agent sends — until it is retired,
+because the content stays in its context across turns, and a later session that reads the DM's
+history back is marked too; per-person memory captured from it stays in P's DM; revocation residue
+and the metric's inputs are stated; writes through code-host, MCP and shell tools are left open
+(§9).
