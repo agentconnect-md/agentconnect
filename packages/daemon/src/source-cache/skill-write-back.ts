@@ -41,7 +41,7 @@ export function createSkillCachePlanner(
     const getUrl = plan.getUrl !== undefined ? { getUrl: plan.getUrl } : {}
     const { target } = plan
     const writer = deps.writer
-    // Only a branch is written back in P2: a tag, a pinned SHA and an anonymous no-ref Source never are.
+    // Only a branch is written back in P2: a tag, a pinned SHA and an anonymous Source with no named ref never are.
     if (!options.writeBack || !writer || !target || !target.ref.startsWith('refs/heads/')) return getUrl
     // The clone carried the managed credential only for a private entry; the writer refuses any other class pairing.
     const credentialed = isCredentialedSkillSource(request.entry)

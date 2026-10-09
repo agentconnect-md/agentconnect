@@ -23,6 +23,8 @@ import {
 } from '../src/skills/skill-git-source.js'
 import { resolveTrackedCommits, retainedAfterTracking, gitResolutionDigest } from '../src/skills/install-skills.js'
 
+// These cases are about the commit; naming the ref is covered in git-skill-ref-name.test.ts.
+const unnamed = async () => ({ kind: 'unnamed' as const, reason: 'absent' as const })
 const FIRST = 'a'.repeat(40)
 const MOVED = 'b'.repeat(40)
 const entry = (over: Record<string, unknown> = {}) =>
@@ -48,6 +50,7 @@ describe('GitSkillRefTracker (anonymous github.com check)', () => {
     const seen: Array<string | undefined> = []
     let answer: GitSkillCommitResolution = { status: 'resolved', commit: FIRST, etag: 'W/"one"' }
     const tracker = new GitSkillRefTracker({
+      nameRef: unnamed,
       stateRoot,
       ttlMs: 60_000,
       now: () => now,
@@ -79,6 +82,7 @@ describe('GitSkillRefTracker (anonymous github.com check)', () => {
     let release: (() => void) | undefined
     const gate = new Promise<void>((resolve) => (release = resolve))
     const tracker = new GitSkillRefTracker({
+      nameRef: unnamed,
       stateRoot,
       resolve: async () => {
         calls += 1
@@ -97,6 +101,7 @@ describe('GitSkillRefTracker (anonymous github.com check)', () => {
     let calls = 0
     let fail = false
     const tracker = new GitSkillRefTracker({
+      nameRef: unnamed,
       stateRoot,
       ttlMs: 1,
       now: () => now,
@@ -131,6 +136,7 @@ describe('GitSkillRefTracker (anonymous github.com check)', () => {
     let calls = 0
     let wait = 120_000
     const tracker = new GitSkillRefTracker({
+      nameRef: unnamed,
       stateRoot,
       now: () => now,
       resolve: async () => {
@@ -157,6 +163,7 @@ describe('GitSkillRefTracker (anonymous github.com check)', () => {
   it('answers null for a ref pinned to a commit, without asking', async () => {
     let calls = 0
     const tracker = new GitSkillRefTracker({
+      nameRef: unnamed,
       stateRoot,
       resolve: async () => {
         calls += 1
@@ -173,6 +180,7 @@ describe('GitSkillRefTracker (anonymous github.com check)', () => {
   it('never answers a credentialed Source and never asks with a credential', async () => {
     const asked: ResolveGitSkillCommitOptions[] = []
     const tracker = new GitSkillRefTracker({
+      nameRef: unnamed,
       stateRoot,
       resolve: async (_e, opts) => {
         asked.push(opts)
@@ -226,6 +234,7 @@ function routed(opts: { revoked?: Set<string>; host?: (input: ProviderResolveInp
   })
   const anonymousCalls: ResolveGitSkillCommitOptions[] = []
   const anonymous = new GitSkillRefTracker({
+    nameRef: unnamed,
     stateRoot,
     now: () => now,
     resolve: async (_e, o) => {
