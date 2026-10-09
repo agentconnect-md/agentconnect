@@ -12486,6 +12486,7 @@ export class Daemon {
       serialQueue: () => this.serialQueue,
       activeGateEntries: () => this.activeGateEntries,
       sdkLease: () => this.sdkLease,
+      safetyDrained: (agentId) => this.waitForSafetyDrain(agentId),
       cpClient: () => this.cpClient,
       cpAgents: () => this.cpAgents,
       cpCollab: () => this.cpCollab,
@@ -14232,6 +14233,8 @@ export class Daemon {
             }
             // A completed turn never replays, even in a shutdown drain; a cold turn that shutdown aborted keeps its row.
             if (!this.retainsInboxRow(entry, false)) await this.removeInbox(entry)
+            if (isSubsessionCoordinate(sessionThreadOf(entry.msg)))
+              await this.settleSubsessionTurn(entry, key, ended === 'completed' ? 'completed' : 'interrupted')
             entry.resolve(sessionId)
           } else {
             await this.removeInbox(entry)
@@ -14240,6 +14243,7 @@ export class Daemon {
         } catch (err) {
           // A shutdown drain's throw is the deadline-cancel of an admitted turn, whose row startup replay recovers.
           if (!this.retainsInboxRow(entry, true)) await this.removeInbox(entry)
+          if (isSubsessionCoordinate(sessionThreadOf(entry.msg))) await this.settleSubsessionTurn(entry, key, 'failed')
           entry.reject(err)
           // Fail-stop: do NOT auto-continue draining onto a session whose turn just failed.
           // Reject every queued follow-up with a clear notice (their own promises) and drop
@@ -18782,6 +18786,23 @@ export class Daemon {
     if (entry.inboxId === undefined) return false
     if (entry.inboxHandedOff === true) return true
     return this.draining && (failed || entry.cancelledReason === 'shutdown')
+  }
+
+  /** assistant-mode.md §5.7: a sub-session's turn ended, its delivery row already removed or kept for replay. */
+  private async settleSubsessionTurn(
+    entry: QueueEntry,
+    key: string,
+    outcome: 'completed' | 'interrupted' | 'failed'
+  ): Promise<void> {
+    await this.collab.settleSubsessionTurn({
+      agentId: entry.agentId,
+      key,
+      msg: entry.msg,
+      outcome,
+      reason: entry.cancelledReason,
+      replayed: this.retainsInboxRow(entry, outcome === 'failed'),
+      hopCount: entry.callMeta?.hopCount
+    })
   }
 
   /** End the turn's acknowledgement once; a row runLoop keeps for replay makes it `rerun`, so the replay adopts it. */
