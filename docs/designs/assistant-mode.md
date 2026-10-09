@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, tenth revision (2026-10-09). Reviewed by three independent design reviews and
+**Status:** Design, eleventh revision (2026-10-10). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -441,7 +441,10 @@ until use shows they are needed; the rest of this section and §5.7 describe tha
      one-shot grant".
   4. The user's permission policy is never changed; an `ask`-policy agent gets the warning in
      §1.8.
-- **Webchat**: a text list (list / stop) in P0b; the dock panel in P1.
+- **Webchat**: the session-detail dock's Sub-sessions panel (#2885) lists the sub-sessions a
+  conversation opened (patrols included) and stops a running one; who may stop is whoever may
+  continue that session today. A sub-session's own page is read-only (#2893): talking to one
+  directly is deferred.
 - **What stopping guarantees**: the current turn; a background process the runtime started may
   keep running; the adapter is never killed.
 - **Limits**: no sub-sessions of sub-sessions; at most `maxConcurrentSubsessions` running (P0b
@@ -494,11 +497,11 @@ agent-owned, CAS-claimed, duty-gated, re-armed on `agentsGained`):
 
 ### 5.8 Stopping
 
-| Action                                        | Effect                                                                                                          | Who                       |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                | today's `!stop` rules     |
-| Stop one piece of work (named, or in webchat) | Interrupts that sub-session's current turn                                                                      | same / console editor     |
-| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission |
+| Action                                        | Effect                                                                                                          | Who                                                     |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                | today's `!stop` rules                                   |
+| Stop one piece of work (named, or in webchat) | Interrupts that sub-session's current turn                                                                      | same / whoever may continue that session in the console |
+| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission                               |
 
 No new "stop everything". The sender rules for `!stop`, `!new` and pause are **unchanged and not
 narrowed** — effects at this level cannot be defended against, and the design does not pretend
@@ -518,14 +521,20 @@ killed sub-sessions do not restart. Stopping never undoes completed effects.
   that refuses anything needing approval. Layer (b) is missing, so every runtime's patrol is
   marked _degraded_ on the settings page and the residual is that of a degraded runtime plus the
   agent's own credentials on the host.
-- **Outcomes**: a report or silence — no `propose` yet. The report goes to the item's **origin
+- **Outcomes**: a report, a `propose` (§5.10), or silence; the item gets an observation either
+  way, and a run that records nothing counts as a failure. The report goes to the item's **origin
   place** through the existing parent-report path into that place's long session, which speaks;
   other followers are not told in this version.
 - **Limits**: one patrol at a time per agent, outside the user's `maxConcurrentSubsessions`;
   `dailyPatrolBudget`; after a failure the next attempt backs off by `min(60, 2ⁿ)` minutes and five
-  consecutive failures stop that item's patrols with one report.
+  consecutive failures stop that item's patrols with one report until someone sets a new next
+  check. A patrol's own next check must be at least five minutes ahead; `dailyPatrolBudget`
+  defaults to 50.
+- **Recovery**: a patrol replayed after a restart or handover settles from state stored with the
+  running patrol (its observation baseline and any held report), so an empty replay still counts
+  as a failure. Stopping a patrol from the dock ends it silently with its check done.
 
-The rest of this section is the target.
+Shipped in #2887; `propose` from patrols in #2895. The rest of this section is the target.
 
 ```
 patrolSchedule fires / hook event (P2) / an item's nextCheck is due
@@ -599,6 +608,28 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   see §5.7 step 1.
 - The card reuses `OrganizationSuggestion`'s component, not its review route.
 
+**P1 ships `propose` for patrols only** (#2895): `propose({ sentence, why, task })`, at most once
+per patrol run; an approved proposal opens a sub-session with the agent's own permission mode in
+the item's origin place, counted against `maxConcurrentSubsessions` (a full cap refuses the
+approval and the proposal stays awaiting review). It departs from the record above in four
+places:
+
+1. **Expiry is 24 hours**, as for drafts — a patrol often runs overnight, so 30 minutes would
+   expire nearly every proposal.
+2. **The inbox row is not written in the approval transaction**: the transaction holds the state
+   change, the sub-session key and the index row; the task's reserved `subsession:task-`
+   coordinate keeps its row out of generic replay, and a recovery sweep catches a crash before the
+   row exists.
+3. **The item version is in the hash but does not cancel an approval**: a later update to the
+   item would otherwise void every proposal; a closed or deleted item is still refused, and the
+   task's prompt shows both versions and says to check the current state first.
+4. **Approvers** are the responsible user or the fallback conversation through the draft card,
+   plus the agent's editors in the console's Activity view, not the in-place card under the in-chat
+   approval rule.
+
+A cut execution settles from the sub-session's durable end: reported ⇒ `succeeded`, failure report
+already sent ⇒ `failed`, otherwise `outcome_unknown` with one "please check" report.
+
 ### 5.11 Activity
 
 The console's agent page gains an Activity view: items, scheduled wakes, running sub-sessions,
@@ -646,14 +677,14 @@ badge are not in it yet.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                     |
-| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap   |
-| P1 — while nobody is around       | Minimal patrol first (§5.9: `nextCheck` wakes, own host, degraded, report or silence), then the target patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                            |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                          |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                                                        |
+| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap                                                                      |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893). Next: the target patrol (after per-runtime tests) on the credential-less host; `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                               |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                             |
 
 ---
 
@@ -781,3 +812,8 @@ while their routing is deferred.
 sub-session on the agent's own host, marked degraded for lacking the credential-less host, which
 reports to the item's origin place or stays silent, with no `propose` yet; console approval of
 drafts (#2880, #2881) is recorded in §5.11.
+
+**Eleventh revision (2026-10-10)**: records what P1 shipped — the minimal patrol's limits and
+replay recovery, `propose` for patrols with its four departures from the approval record, the
+webchat Sub-sessions panel, read-only sub-session pages, and who may stop a sub-session from the
+console.
