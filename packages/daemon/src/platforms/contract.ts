@@ -322,6 +322,8 @@ export interface PlatformConnection {
   ): Promise<PlatformThreadMessage[]>
   /** Open (or resolve) the 1:1 conversation with `user`; the MCP `toUser` form. */
   openDirectMessage?(user: string): Promise<string>
+  /** Every current member of a conversation, all pages (`authoritativeMembers` in read-ports.ts). */
+  listMemberIds?(channel: string): Promise<string[]>
   /** AUTHORITATIVE bot membership, when the platform can enumerate it
    *  (`membershipEnumeration: 'authoritative'`). `null` ⇒ not answerable now. */
   listBotChannels?(): Promise<PlatformChannelRef[] | null>

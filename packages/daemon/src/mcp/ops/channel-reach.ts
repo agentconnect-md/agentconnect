@@ -1,3 +1,4 @@
+import type { PlaceRef } from '../../assistant/place-access.js'
 import { platformLabel, reachesPublicChannelsOnly } from '../../platforms/read-ports.js'
 import type { MessageGateway, SessionContext } from './context.js'
 
@@ -34,7 +35,8 @@ export async function assertChannelReachable(
   gw: MessageGateway,
   platform: string,
   channel: string,
-  tool: string
+  tool: string,
+  memberRead?: PlaceRef
 ): Promise<void> {
   if (!reachesPublicChannelsOnly(platform)) return
   if (platform === ctx.platform && channel === ctx.channel) return
@@ -49,6 +51,8 @@ export async function assertChannelReachable(
     )
   }
   if (!(info.isPrivate || info.isIm)) return
+  // A private channel or group DM the asker's membership opened for this read (assistant-mode.md §5.5); never a DM.
+  if (!info.isIm && memberRead?.platform === platform && memberRead.channel === channel) return
   throw new Error(
     `${tool}: ${channel} is a private ${platformLabel(platform)} conversation, and this session was not started ` +
       'there. A private channel or direct message is reachable only from a conversation the agent was invoked in; ' +

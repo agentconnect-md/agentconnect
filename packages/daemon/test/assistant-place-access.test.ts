@@ -92,14 +92,38 @@ describe('placeRefusalMessage', () => {
 })
 
 describe('checkPlaceRead', () => {
-  it('counts a refused read by tool and reason only, and nothing for an allowed one', () => {
+  it('counts a refused read by tool and reason only, and nothing for an allowed one', async () => {
     const recorder = { refused: vi.fn() }
-    expect(checkPlaceRead('recall', channel, otherDm, recorder)).toBe('direct')
-    expect(checkPlaceRead('getChannelHistory', channel, privateChannel, recorder)).toBe('private')
-    expect(checkPlaceRead('recall', ownDm, channel, recorder)).toBeUndefined()
+    expect(await checkPlaceRead('recall', channel, otherDm, undefined, recorder)).toBe('direct')
+    expect(await checkPlaceRead('getChannelHistory', channel, privateChannel, undefined, recorder)).toBe('private')
+    expect(await checkPlaceRead('recall', ownDm, channel, undefined, recorder)).toBeUndefined()
     expect(recorder.refused.mock.calls).toEqual([
       ['recall', 'direct'],
       ['getChannelHistory', 'private']
+    ])
+  })
+
+  // Per-asker scoping (§5.5) widens a private place only, so the refused-read count follows the widened verdict.
+  it('asks about membership only for a private place, and counts it refused only when that fails', async () => {
+    const recorder = { refused: vi.fn() }
+    const member = vi.fn(async () => true)
+    expect(await checkPlaceRead('recall', ownDm, privateChannel, member, recorder)).toBeUndefined()
+    expect(await checkPlaceRead('recall', ownDm, groupDm, member, recorder)).toBeUndefined()
+    expect(await checkPlaceRead('recall', ownDm, otherDm, member, recorder)).toBe('direct')
+    expect(await checkPlaceRead('recall', ownDm, { ...privateChannel, private: undefined }, member, recorder)).toBe(
+      'undetermined'
+    )
+    expect(member).toHaveBeenCalledTimes(2)
+    const failing = vi.fn(async (): Promise<boolean> => {
+      throw new Error('lookup failed')
+    })
+    expect(await checkPlaceRead('getReactions', ownDm, privateChannel, failing, recorder)).toBe('private')
+    expect(await checkPlaceRead('listBookmarks', ownDm, privateChannel, async () => false, recorder)).toBe('private')
+    expect(recorder.refused.mock.calls).toEqual([
+      ['recall', 'direct'],
+      ['recall', 'undetermined'],
+      ['getReactions', 'private'],
+      ['listBookmarks', 'private']
     ])
   })
 })

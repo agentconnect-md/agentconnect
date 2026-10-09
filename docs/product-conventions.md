@@ -842,6 +842,22 @@ reply already in progress there is stopped before it can post; messages waiting 
 everything the agent knows, are kept. Enabling a 1:1 DM trusts the person in it, so a DM never
 turns external.
 
+## Assistant-mode recall in a person's own DM
+
+An agent in assistant mode reads a private channel or group DM only from that conversation,
+with one exception: a person's own 1:1 DM with the agent. There, on a turn the person started with
+their own message, the agent may list and read a private channel or group DM the person is a
+member of right now. The conversation must be on the same platform and workspace as the DM, on a
+platform whose member list is complete (Slack). Membership is checked when the read happens and
+trusted for at most a minute. When it cannot be confirmed, the answer is the same "I can't share
+that here" as for any other private place. Reports from sub-sessions, scheduled runs, patrols and
+every other conversation keep the ordinary rule. Another person's DM is never readable.
+
+Once a DM conversation has read a private place this way, it writes only to that DM: it changes
+no item, sends nothing to any agent, itself included, and posts or drafts nothing anywhere else.
+This holds for every later turn of that conversation and across restarts. When it refuses, the
+agent tells the person that starting a new conversation with `!new` lifts it.
+
 ## Assistant-mode drafts
 
 An agent in assistant mode posts directly only in the conversation it is answering. Two kinds

@@ -8,6 +8,7 @@ import { ASSISTANT_DRAFT_SCHEMA, AssistantDraftLedger } from './assistant-drafts
 import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js'
 import { ASSISTANT_PATROL_SCHEMA, AssistantPatrolLedger } from './assistant-patrols.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
+import { ASSISTANT_WIDENED_SCHEMA, AssistantWidenedSessions } from './assistant-widened.js'
 import {
   APPEND_COORDINATE_PREFIX,
   appendCoordinate,
@@ -1320,7 +1321,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 40
+export const SCHEMA_VERSION = 41
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1827,7 +1828,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       DROP TABLE assistant_draft;
       ALTER TABLE assistant_draft_v40 RENAME TO assistant_draft;
     `)
-  }
+  },
+  // v41 adds the per-asker widened-session marks (assistant-mode.md §5.5), which the CREATE block emits; the bump fences out older members.
+  async () => {}
 ]
 
 /** The approval record's columns as of v40, which the v40 rebuild copies across where the old table has them. */
@@ -2020,6 +2023,8 @@ export class LocalStore {
   readonly assistantSubsessions: AssistantSubsessionIndex
   /** Per-item patrol state (assistant-mode.md §5.9). */
   readonly assistantPatrols: AssistantPatrolLedger
+  /** Sessions that read a private place through the asker's membership (assistant-mode.md §5.5). */
+  readonly assistantWidened: AssistantWidenedSessions
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -2053,6 +2058,7 @@ export class LocalStore {
       transaction: (fn) => this.transaction(fn)
     })
     this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
+    this.assistantWidened = new AssistantWidenedSessions({ query: (sql, params) => this.db.query(sql, params) })
   }
 
   /**
@@ -2110,6 +2116,7 @@ export class LocalStore {
       ${ASSISTANT_ITEM_SCHEMA}
       ${ASSISTANT_DRAFT_SCHEMA}
       ${ASSISTANT_SUBSESSION_SCHEMA}
+      ${ASSISTANT_WIDENED_SCHEMA}
       ${ASSISTANT_PATROL_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
@@ -3675,7 +3682,10 @@ export class LocalStore {
          WHERE key = ? AND acpSessionId IS ?`
       )
       .run(cursorTs, at, key, expectAcpSessionId ?? null)
-    return Number(res.changes) > 0
+    if (Number(res.changes) === 0) return false
+    // A cleared context no longer holds what a per-asker read brought in (assistant-mode.md §5.5).
+    await this.db.prepare('DELETE FROM assistant_widened_session WHERE sessionKey = ?').run(key)
+    return true
   }
 
   /** Drop a conversation's reservation, but only while it still names `coordinate` — a
@@ -4519,6 +4529,10 @@ export class LocalStore {
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
+      // A purged session takes its widened-read mark with it (assistant-mode.md §5.5).
+      await tx
+        .prepare('DELETE FROM assistant_widened_session WHERE agentId = ? AND sessionKey = ?')
+        .run(rec.agentId, key)
       // A purged sub-session leaves its parent's index (assistant-mode.md §5.6).
       if (isSubsessionCoordinate(rec.thread))
         await tx

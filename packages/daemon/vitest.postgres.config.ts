@@ -32,6 +32,7 @@ export default defineConfig({
       'test/assistant-patrols.test.ts',
       'test/assistant-proposals.test.ts',
       'test/assistant-activity.test.ts',
+      'test/assistant-widened.test.ts',
       'test/postgres-async-database.int.test.ts',
       'test/postgres-pool-store.int.test.ts',
       'test/postgres-transcript-org.int.test.ts',

@@ -469,8 +469,14 @@ async function executeRegisteredTool(
   const verdict = await assertAssistantPlaceAccess(ctx, name, args, deps)
   const handler = HANDLERS.get(name)
   const draftPost = verdict?.draft ? deps.assistantDraftPost : undefined
+  // Only this call's verdict may open a private place to the reach gate (§5.5), never a value carried in on `deps`.
+  const callDeps: OpsDeps = { ...deps, memberRead: verdict?.memberRead }
   if (handler)
-    return await handler(ctx, args, draftPost ? { ...deps, interceptPost: (post) => draftPost(ctx, post) } : deps)
+    return await handler(
+      ctx,
+      args,
+      draftPost ? { ...callDeps, interceptPost: (post) => draftPost(ctx, post) } : callDeps
+    )
 
   // A platform's own session tools (read-ports.ts `sessionTools`): injected only into a session
   // ON that platform, and refused at call time from anywhere else — they act through THIS
