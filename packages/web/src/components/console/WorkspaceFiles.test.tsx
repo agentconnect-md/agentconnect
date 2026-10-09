@@ -652,6 +652,120 @@ it('loads and expands the directories a new-file path names', async () => {
   expect(container?.textContent).toContain('intro.md')
 })
 
+it('creates a file inside an empty folder from its tree row', async () => {
+  workspace.entries = [{ name: 'reference', type: 'dir', size: null, mtime: null }]
+  workspace.listings = { reference: [] }
+  await renderWorkspace()
+
+  const add = container?.querySelector<HTMLButtonElement>('button[aria-label="Add file in reference"]')
+  expect(add).not.toBeNull()
+  await act(async () => add?.click())
+  await act(async () => Promise.resolve())
+
+  expect(vi.mocked(fetchWorkspaceFiles).mock.calls.map((call) => call[1].path)).toContain('reference')
+  const breadcrumb = container?.querySelector<HTMLElement>('nav[aria-label="Workspace path"]')
+  expect(breadcrumb?.textContent).toContain('reference')
+  const path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
+  const content = container?.querySelector<HTMLTextAreaElement>('textarea[aria-label="New file content"]')
+  await changeValue(path!, 'notes.md')
+  await changeValue(content!, 'draft')
+  await clickButton('Save changes')
+  expect(writeWorkspaceFile).toHaveBeenCalledWith('agent-a', 'reference/notes.md', { content: 'draft' })
+})
+
+it('navigates to an ancestor directory from the breadcrumb and creates there', async () => {
+  workspace.entries = [{ name: 'docs', type: 'dir', size: null, mtime: null }]
+  workspace.listings = {
+    docs: [{ name: 'guides', type: 'dir', size: null, mtime: null }],
+    'docs/guides': [{ name: 'README.md', type: 'file', size: workspace.file.size, mtime: workspace.file.mtime }]
+  }
+  await renderWorkspace()
+  await clickButton('docs')
+  await act(async () => Promise.resolve())
+  await clickButton('guides')
+  await act(async () => Promise.resolve())
+  await clickButton('README.md')
+
+  const nav = () => container!.querySelector<HTMLElement>('nav[aria-label="Workspace path"]')!
+  const crumb = (label: string) =>
+    Array.from(nav().querySelectorAll('button')).find((button) => button.textContent?.trim() === label)
+  // The open file is the current segment; only its ancestors navigate.
+  expect(crumb('README.md')).toBeUndefined()
+  await act(async () => crumb('docs')?.click())
+
+  expect(nav().textContent).toContain('docs')
+  expect(nav().textContent).not.toContain('README.md')
+  expect(crumb('docs')).toBeUndefined()
+  expect(container?.textContent).toContain('Select a file to preview.')
+
+  await clickButton('Add file')
+  const path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
+  await changeValue(path!, 'notes.md')
+  await clickButton('Save changes')
+  expect(writeWorkspaceFile).toHaveBeenCalledWith('agent-a', 'docs/notes.md', { content: '' })
+})
+
+it('moves the breadcrumb to a clicked folder and keeps the tree highlight in sync with it', async () => {
+  workspace.entries = [{ name: 'docs', type: 'dir', size: null, mtime: null }]
+  workspace.listings = {
+    docs: [{ name: 'guides', type: 'dir', size: null, mtime: null }],
+    'docs/guides': [{ name: 'README.md', type: 'file', size: workspace.file.size, mtime: workspace.file.mtime }]
+  }
+  await renderWorkspace()
+  const nav = () => container!.querySelector<HTMLElement>('nav[aria-label="Workspace path"]')!
+  const highlighted = () =>
+    Array.from(container!.querySelectorAll('[data-file-browser-pane="tree"] [aria-current="page"]')).map((row) =>
+      row.textContent?.trim()
+    )
+
+  await clickButton('docs')
+  await act(async () => Promise.resolve())
+  expect(nav().textContent).toContain('docs')
+  expect(highlighted()).toEqual(['docs'])
+
+  await clickButton('guides')
+  await act(async () => Promise.resolve())
+  expect(nav().textContent).toContain('guides')
+  expect(highlighted()).toEqual(['guides'])
+
+  await clickButton('README.md')
+  expect(highlighted()).toEqual(['README.md'])
+
+  // Navigating from the breadcrumb moves the tree highlight back to that folder.
+  const crumb = Array.from(nav().querySelectorAll('button')).find((button) => button.textContent?.trim() === 'docs')
+  await act(async () => crumb?.click())
+  expect(highlighted()).toEqual(['docs'])
+
+  await clickButton('Add file')
+  const path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
+  await changeValue(path!, 'guides/')
+  expect(highlighted()).toEqual(['guides'])
+})
+
+it('navigates back to the root from the breadcrumb root label', async () => {
+  workspace.entries = [{ name: 'docs', type: 'dir', size: null, mtime: null }]
+  workspace.listings = {
+    docs: [{ name: 'README.md', type: 'file', size: workspace.file.size, mtime: workspace.file.mtime }]
+  }
+  await renderWorkspace()
+  await clickButton('docs')
+  await act(async () => Promise.resolve())
+  await clickButton('README.md')
+
+  const nav = container!.querySelector<HTMLElement>('nav[aria-label="Workspace path"]')!
+  const rootCrumb = Array.from(nav.querySelectorAll('button')).find(
+    (button) => button.textContent?.trim() === 'workspace'
+  )
+  expect(rootCrumb).toBeDefined()
+  await act(async () => rootCrumb?.click())
+
+  await clickButton('Add file')
+  const path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
+  await changeValue(path!, 'top.md')
+  await clickButton('Save changes')
+  expect(writeWorkspaceFile).toHaveBeenCalledWith('agent-a', 'top.md', { content: '' })
+})
+
 it('keeps file identity in the breadcrumb and confirms deletion inline', async () => {
   workspace.entries = [
     {

@@ -177,6 +177,8 @@ export function WorkspaceFiles({
   const [editor, setEditor] = useState<FileBrowserEditorDraft | null>(null)
   const [deleteDraft, setDeleteDraft] = useState<DeleteDraft | null>(null)
   const [mobileListSignal, setMobileListSignal] = useState(0)
+  // The directory the breadcrumb was navigated to; an open file's own directory wins over it.
+  const [directory, setDirectory] = useState('')
   const [gitPulling, setGitPulling] = useState(false)
   const [gitMsg, setGitMsg] = useState<string | null>(null)
   // Bumped after a pull to re-fetch both the git status and the tree.
@@ -247,6 +249,7 @@ export function WorkspaceFiles({
     setEditor(null)
     setDeleteDraft(null)
     setMobileListSignal(0)
+    setDirectory('')
     autoOpenedRef.current = false
     return () => {
       viewerRequestRef.current += 1
@@ -370,7 +373,7 @@ export function WorkspaceFiles({
   const dirtyMap = useMemo(() => workspaceDirtyMap(git), [git])
 
   const root = dirs['']
-  const selectedDirectory = viewer ? viewer.path.split('/').slice(0, -1).join('/') : ''
+  const selectedDirectory = viewer ? viewer.path.split('/').slice(0, -1).join('/') : directory
   const workspaceRoot = workdir?.replace(/\/+$/, '').split('/').at(-1) || 'Workspace'
   // The breadcrumb's root has always NAMED the root being browsed; with more than one to browse it
   // becomes the control that chooses it. With nothing to choose it stays the plain label it was.
@@ -392,11 +395,34 @@ export function WorkspaceFiles({
       />
     ) : null
 
-  const startCreate = () => {
+  const expandTo = (dirPath: string) => {
+    const parts = dirPath.split('/').filter(Boolean)
+    if (parts.length > 0) openPath(parts.map((_, index) => parts.slice(0, index + 1).join('/')))
+  }
+
+  // Breadcrumb or tree navigation: close the preview and make `dirPath` the directory a new file lands in.
+  const navigateTo = (dirPath: string, expand = true) => {
+    if (editor) return
+    autoOpenedRef.current = true
+    viewerRequestRef.current += 1
+    setViewer(null)
     setDeleteDraft(null)
+    setDirectory(dirPath)
+    if (expand) expandTo(dirPath)
+  }
+
+  // A folder row both toggles and becomes the breadcrumb's location, so the row's own toggle decides its expansion.
+  const openFolder = (dirPath: string) => {
+    toggleDir(dirPath)
+    navigateTo(dirPath, false)
+  }
+
+  const startCreate = (dirPath = selectedDirectory) => {
+    setDeleteDraft(null)
+    if (dirPath !== selectedDirectory) expandTo(dirPath)
     setEditor({
       target: '',
-      directory: selectedDirectory,
+      directory: dirPath,
       name: '',
       content: '',
       mtime: null,
@@ -501,7 +527,11 @@ export function WorkspaceFiles({
     openPath(parts.map((_, index) => parts.slice(0, index + 1).join('/')))
   }
 
-  const breadcrumbPath = editor ? editor.target || editor.directory : (viewer?.path ?? '')
+  const breadcrumbPath = editor ? editor.target || editor.directory : (viewer?.path ?? directory)
+  // The tree highlights the breadcrumb's location, including directories typed into a new-file draft.
+  const typedDirectories =
+    editor?.target === '' ? editor.name.replace(/^\/+/, '').split('/').slice(0, -1).filter(Boolean) : []
+  const highlightedPath = [breadcrumbPath, ...typedDirectories].filter(Boolean).join('/')
   const viewerCanEdit =
     canEdit && !!viewer?.file?.exists && viewer.file.encoding === 'utf8' && !!viewer.file.mtime && !viewer.loading
   const viewerCanDelete = canEdit && !!viewer?.file?.exists && !!viewer.file.mtime && !viewer.loading
@@ -539,7 +569,21 @@ export function WorkspaceFiles({
                   chevron={open ? 'chevron-down' : 'chevron-right'}
                   icon={open ? 'folder-open' : 'folder'}
                   name={e.name}
-                  onClick={() => toggleDir(full)}
+                  selected={highlightedPath === full}
+                  onClick={() => openFolder(full)}
+                  action={
+                    canEdit && !editor ? (
+                      <button
+                        type="button"
+                        className="iconbtn h-[22px] w-[22px] flex-none rounded-xs"
+                        aria-label={t('addFileIn', { path: full })}
+                        title={t('addFileIn', { path: full })}
+                        onClick={() => startCreate(full)}
+                      >
+                        <Icon name="plus" size={13} />
+                      </button>
+                    ) : undefined
+                  }
                 />
                 {open && renderLevel(full, depth + 1, openPreview)}
               </Fragment>
@@ -555,7 +599,7 @@ export function WorkspaceFiles({
               name={e.name}
               title={meta}
               trailing={status ? <StatusBadge ch={status} /> : undefined}
-              selected={viewer?.path === full}
+              selected={highlightedPath === full}
               onClick={
                 e.type === 'file'
                   ? () => {
@@ -628,6 +672,7 @@ export function WorkspaceFiles({
             draftName={editor?.name ?? ''}
             onDraftNameChange={updateCreateName}
             onBack={isMobile && editor ? backFromEditor : undefined}
+            onNavigate={editor ? undefined : navigateTo}
             disabled={editor?.saving}
             ariaLabel={t('workspacePath')}
           />
@@ -675,7 +720,7 @@ export function WorkspaceFiles({
                 </>
               ) : canEdit ? (
                 <>
-                  <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
+                  <Button variant="secondary" size="xs" className="flex-none" onClick={() => startCreate()}>
                     <Icon name="file-plus" size={13} />
                     {t('addFile')}
                   </Button>

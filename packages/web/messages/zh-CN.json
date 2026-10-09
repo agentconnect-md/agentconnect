@@ -2128,6 +2128,7 @@
       "deleting": "删除中…",
       "deleteFile": "删除文件",
       "addFile": "添加文件",
+      "addFileIn": "在 {path} 中添加文件",
       "edit": "编辑",
       "delete": "删除",
       "workspacePath": "工作区路径",
