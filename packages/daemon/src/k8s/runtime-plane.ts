@@ -491,7 +491,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     // Routed even with no pod bound, so each root refuses on its own terms: a session's can say its sandbox was removed.
     workspaceFilesFor: (agentId) =>
-      new RoutedWorkspaceFiles(async (root) => new ShimWorkspaceFiles(await sessionForPath(agentId, root))),
+      new RoutedWorkspaceFiles(async (root) => {
+        const session = await sessionForPath(agentId, root)
+        return new ShimWorkspaceFiles(session, undefined, session.hasCapability('transfer'))
+      }),
     workspaceFsFor: (agentId) => {
       // Paths are composed on the mount the agent's own pod reported; a session pod's is asked for its own paths.
       const [first] = boundSubjectsOf(agentId)

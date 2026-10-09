@@ -1,10 +1,6 @@
-// Session file download (inbound-file-attachments.md §5.1): byte slices from the owning daemon, assembled and never stored.
+// Workspace file download (inbound-file-attachments.md §5.1): byte slices from the owning daemon, assembled and never stored.
 import { createHash } from 'node:crypto'
-import {
-  MAX_WORKSPACE_DOWNLOAD_BYTES,
-  WORKSPACE_UPLOADS_DIR,
-  type WorkspaceReadContent
-} from '@agentconnect.md/protocol'
+import { MAX_WORKSPACE_DOWNLOAD_BYTES, type WorkspaceReadContent } from '@agentconnect.md/protocol'
 import { ProtocolError } from '../domain/errors.js'
 
 /** Raw bytes per slice: the read's own ceiling, whose base64 stays well inside one frame. */
@@ -20,13 +16,6 @@ export class WorkspaceDownloadRefusal extends Error {
     super(message)
     this.name = 'WorkspaceDownloadRefusal'
   }
-}
-
-/** A session file is an upload under `uploads/`, or a shared file named by the digest its marker recorded. */
-export function sessionFileDownloadable(path: string, sha256: string | undefined): boolean {
-  const segments = path.split('/')
-  if (path.includes('\\') || segments.some((s) => s === '' || s === '.' || s === '..')) return false
-  return sha256 !== undefined || (segments[0] === WORKSPACE_UPLOADS_DIR && segments.length > 1)
 }
 
 /** Pull a file slice by slice, proving the slices are one unchanged file within the download ceiling. */

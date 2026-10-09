@@ -4,6 +4,8 @@ import { isValidBranchRef } from '../workspace/git-command-policy.js'
 // The `bundle` capability's wire shapes (source-cache.md §9, §13); no field ever carries a filesystem path.
 
 export const SOURCE_CACHE_BUNDLE_FEATURE = 'source-cache-bundle-v1' as const
+/** The shim serves `transfer`: snapshot a workspace file into a `bundle` handle the daemon then uploads. */
+export const WORKSPACE_TRANSFER_FEATURE = 'workspace-transfer-v1' as const
 /** The only tag a presigned PUT may carry; the store enforces it because it is signed. */
 export const BUNDLE_PENDING_TAGGING = 'ac-cache=pending'
 /** The exact header set a write-back upload sends, besides host. */
@@ -52,6 +54,16 @@ export const BundleRequestSchema = z.discriminatedUnion('op', [
   BundleDiscardRequestSchema
 ])
 
+/** `transfer` stages one workspace file; `root` is a pod path the shim fences to its mount, `path` is workspace-relative. */
+export const TransferStageRequestSchema = z.strictObject({
+  op: z.literal('stage-file'),
+  root: z.string().min(1).max(4096),
+  path: z.string().min(1).max(4096),
+  maxBytes: z.number().int().positive().max(MAX_BUNDLE_BYTES),
+  /** The size and mtime the daemon keyed the object by; a file that no longer matches is refused as `stale`. */
+  revision: z.strictObject({ size: z.number().int().nonnegative(), mtime: z.string().min(1).max(64) }).optional()
+})
+
 export const BundleCreateResultSchema = z.strictObject({
   handle: Handle,
   bytes: z.number().int().positive().max(MAX_BUNDLE_BYTES),
@@ -64,6 +76,7 @@ export type BundleCreateRequest = z.infer<typeof BundleCreateRequestSchema>
 export type BundleUploadRequest = z.infer<typeof BundleUploadRequestSchema>
 export type BundleDiscardRequest = z.infer<typeof BundleDiscardRequestSchema>
 export type BundleRequest = z.infer<typeof BundleRequestSchema>
+export type TransferStageRequest = z.infer<typeof TransferStageRequestSchema>
 export type BundleCreateResult = z.infer<typeof BundleCreateResultSchema>
 export type BundleUploadResult = z.infer<typeof BundleUploadResultSchema>
 export type BundleDiscardResult = z.infer<typeof BundleDiscardResultSchema>

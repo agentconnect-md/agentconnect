@@ -267,6 +267,8 @@ export class SessionManager {
       downloadAttachment?: (agentId: string, att: Attachment, integrationId?: string) => Promise<Buffer | null>
       /** Inline cap (bytes) for attachments; files over it become resource_link. */
       attachmentMaxBytes?: number
+      /** Presign the agent's GET for a console upload held in the Source Cache bucket. */
+      transferUrl?: (agentId: string, att: Attachment) => Promise<{ url: string; expiresAt: number } | undefined>
       /**
        * Pull the real Slack thread history for a mid-thread @ (§8.4/§9.2). Used to
        * backfill the transcript on first activation in a thread the daemon never
@@ -916,6 +918,7 @@ export class SessionManager {
         () =>
           buildAttachmentBlocks(ingested.attachments!, {
             download: (att) => this.deps.downloadAttachment?.(agentId, att, integrationId) ?? Promise.resolve(null),
+            transferUrl: (att) => this.deps.transferUrl?.(agentId, att) ?? Promise.resolve(undefined),
             supports: (kind) => host.promptSupports?.(kind) ?? false,
             ...(this.deps.attachmentMaxBytes !== undefined ? { maxBytes: this.deps.attachmentMaxBytes } : {})
           }),

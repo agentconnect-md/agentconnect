@@ -134,6 +134,45 @@ describe('buildAttachmentBlocks', () => {
   })
 })
 
+describe('uploaded-file attachments', () => {
+  const upload: Attachment = {
+    id: 'webchat:t:file:u',
+    name: "it's.pdf",
+    mimeType: 'application/pdf',
+    size: 12,
+    transfer: { uploadId: 'u', sha256: 's' }
+  }
+
+  it('hands the agent a download command for the presigned link and never downloads the bytes itself', async () => {
+    const download = vi.fn(async () => Buffer.from('x'))
+    const [block] = await buildAttachmentBlocks([upload], {
+      download,
+      supports: () => true,
+      transferUrl: async () => ({
+        url: 'https://store.example.test/k?X-Amz-Signature=s',
+        expiresAt: Date.UTC(2026, 9, 9)
+      })
+    })
+    expect(download).not.toHaveBeenCalled()
+    expect(block).toMatchObject({ type: 'text' })
+    const text = (block as { text: string }).text
+    expect(text).toContain("[uploaded file: it's.pdf (application/pdf, 12 bytes)]")
+    expect(text).toContain(`curl -fsSL -o 'uploads/it'\\''s.pdf' 'https://store.example.test/k?X-Amz-Signature=s'`)
+    expect(text).toContain('2026-10-09T00:00:00.000Z')
+  })
+
+  it('says the upload is gone when no link can be issued', async () => {
+    const [block] = await buildAttachmentBlocks([upload], {
+      download: async () => null,
+      supports: () => true,
+      transferUrl: async () => {
+        throw new Error('store down')
+      }
+    })
+    expect((block as { text: string }).text).toContain('the upload is no longer available')
+  })
+})
+
 describe('hydrateTranscriptImage', () => {
   it('fetches a platform image once and memoizes it for the prompt blocks', async () => {
     const bytes = Buffer.from('IMG')

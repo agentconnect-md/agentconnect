@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, ninth revision (2026-10-09). Reviewed by three independent design reviews and
+**Status:** Design, tenth revision (2026-10-09). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -507,6 +507,26 @@ killed sub-sessions do not restart. Stopping never undoes completed effects.
 
 ### 5.9 Patrol (P1)
 
+**P1 ships a minimal patrol first**, ahead of the target below:
+
+- **Wake**: only an item's `nextCheck` wakes a patrol — a duty-gated sweep on the daemon, once per
+  `nextCheck` value; pause suspends it and an overdue item is checked once. `patrolSchedule`, hook
+  events and triage come later.
+- **Where it runs**: a read-only sub-session on the **agent's own host** — no credential-less host
+  yet. Read-only rests on layers (a) and (c) below: AgentConnect tools filtered to reads plus the
+  item tools it needs to record what it saw, and the runtime's read-only mode with a daemon policy
+  that refuses anything needing approval. Layer (b) is missing, so every runtime's patrol is
+  marked _degraded_ on the settings page and the residual is that of a degraded runtime plus the
+  agent's own credentials on the host.
+- **Outcomes**: a report or silence — no `propose` yet. The report goes to the item's **origin
+  place** through the existing parent-report path into that place's long session, which speaks;
+  other followers are not told in this version.
+- **Limits**: one patrol at a time per agent, outside the user's `maxConcurrentSubsessions`;
+  `dailyPatrolBudget`; after a failure the next attempt backs off by `min(60, 2ⁿ)` minutes and five
+  consecutive failures stop that item's patrols with one report.
+
+The rest of this section is the target.
+
 ```
 patrolSchedule fires / hook event (P2) / an item's nextCheck is due
         │
@@ -589,16 +609,17 @@ conversation only raises an unread badge.
 The first version (#2876) shows what exists today, for assistant-mode agents only, read and
 changed through the daemon without anything persisted on the Control Plane:
 
-| Section                                         | Who sees it                                                                                                                                                               | Who may change it              |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| Items (open, then done and dropped)             | anyone who can view the agent; the places an item is followed from, never who follows it or what was said; a next check reads as noted, since nothing wakes the agent yet | editors delete an item         |
-| Sub-sessions                                    | anyone who can view the agent sees state and start time; the title, the session link and the conversation that opened it only where the viewer may open that session      | —                              |
-| Pending drafts                                  | editors                                                                                                                                                                   | — (approval stays on the card) |
-| Post grants ("always allow from here to there") | editors                                                                                                                                                                   | editors revoke a grant         |
+| Section                                         | Who sees it                                                                                                                                                          | Who may change it                                                                                                                                       |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Items (open, then done and dropped)             | anyone who can view the agent; the places an item is followed from, never who follows it or what was said; the next check, which wakes a patrol (§5.9)               | editors delete an item                                                                                                                                  |
+| Sub-sessions                                    | anyone who can view the agent sees state and start time; the title, the session link and the conversation that opened it only where the viewer may open that session | —                                                                                                                                                       |
+| Pending drafts                                  | editors                                                                                                                                                              | editors approve, approve and always allow, or discard (#2880) — the same decision path as the card, so a card click and a console decision execute once |
+| Post grants ("always allow from here to there") | editors                                                                                                                                                              | editors revoke a grant                                                                                                                                  |
 
 Deleting an item drops it from the standing summary at the next reminder; its followers are not
-told. Approving drafts from the console, runtime permission requests awaiting approval, patrols,
-scheduled wakes and the unread badge are not in it yet.
+told. A console decision that cannot be confirmed keeps its row and tells the editor to check the
+destination (#2881). Runtime permission requests awaiting approval, patrol history and the unread
+badge are not in it yet.
 
 ---
 
@@ -625,14 +646,14 @@ scheduled wakes and the unread badge are not in it yet.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                         |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                   |
-| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap |
-| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours                                                                                                      |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                          |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                        |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                     |
+| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap   |
+| P1 — while nobody is around       | Minimal patrol first (§5.9: `nextCheck` wakes, own host, degraded, report or silence), then the target patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                            |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                          |
 
 ---
 
@@ -755,3 +776,8 @@ from the event envelope rather than a `channel_shared` subscription.
 **Ninth revision (2026-10-09)**: the first Activity view (#2876) — who sees and may change each
 section; deleting an item does not tell its followers; permission requests are not listed there
 while their routing is deferred.
+
+**Tenth revision (2026-10-09)**: P1 starts with a minimal patrol — `nextCheck` wakes a read-only
+sub-session on the agent's own host, marked degraded for lacking the credential-less host, which
+reports to the item's origin place or stays silent, with no `propose` yet; console approval of
+drafts (#2880, #2881) is recorded in §5.11.

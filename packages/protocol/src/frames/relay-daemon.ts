@@ -24,6 +24,7 @@ import {
   HookContext,
   OptionalHookConfigSnapshot
 } from './hook.js'
+import { WEBCHAT_FILES_MAX, WebchatFileAttachment } from './file-transfer.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
@@ -207,6 +208,8 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     // from an older relay; the daemon then mints locally (single-agent shape).
     post: z.object({ postId: z.string().uuid(), at: z.number().int() }).optional(),
     attachments: z.array(WebchatImageAttachment).max(1).optional(),
+    // Files the browser already PUT to the Source Cache bucket; the daemon hands the agent presigned GETs.
+    files: z.array(WebchatFileAttachment).max(WEBCHAT_FILES_MAX).optional(),
     // A fresh Playground has no daemon session to receive standalone `set_*`
     // operations yet. Carry only the settings the user changed with its first turn.
     runtime: WebchatRuntimeConfig.optional(),

@@ -10,6 +10,7 @@ import type {
   RdChatEvent,
   RdWebchatPost,
   WebchatAck,
+  WebchatFileAttachment,
   WebchatImageAttachment,
   WebchatPost,
   WebchatRemoteMcpEntitlement,
@@ -26,7 +27,7 @@ import { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
 import type { FeishuConnection } from '../feishu/connection.js'
-import type { NormalizedMessage } from '../messages/normalized.js'
+import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import { activationKey, ACTIVATION_PAIRING_TTL_MS } from '../daemon/helpers.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
 import { formatErr } from '../daemon/text.js'
@@ -177,7 +178,8 @@ export class WebchatTransport {
     post?: { postId: string; at: number },
     requestedWorktree?: boolean,
     steer?: boolean,
-    apiProtocol?: string
+    apiProtocol?: string,
+    uploadedFiles?: WebchatFileAttachment[]
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -241,18 +243,28 @@ export class WebchatTransport {
       // what lets co-hosted participants share one text row and cross-daemon
       // transcripts merge by (at, postId) (webchat-multi-agents.md §5.1).
       ...(post ? { transcriptTs: String(post.at), transcriptPostId: post.postId } : {}),
-      ...(inlineImages?.length
+      ...(inlineImages?.length || uploadedFiles?.length
         ? {
-            attachments: inlineImages.map((image, index) => {
-              const inlineData = Buffer.from(image.data, 'base64')
-              return {
-                id: `webchat:${turnId}:${index}`,
-                name: image.name,
-                mimeType: image.mimeType,
-                size: inlineData.byteLength,
-                inlineData
-              }
-            })
+            attachments: [
+              ...(inlineImages ?? []).map((image, index): Attachment => {
+                const inlineData = Buffer.from(image.data, 'base64')
+                return {
+                  id: `webchat:${turnId}:${index}`,
+                  name: image.name,
+                  mimeType: image.mimeType,
+                  size: inlineData.byteLength,
+                  inlineData
+                }
+              }),
+              // Bytes stay in the bucket; only the reference rides the turn.
+              ...(uploadedFiles ?? []).map((file): Attachment => ({
+                id: `webchat:${turnId}:file:${file.uploadId}`,
+                name: file.name,
+                mimeType: file.mimeType,
+                size: file.size,
+                transfer: { uploadId: file.uploadId, sha256: file.sha256 }
+              }))
+            ]
           }
         : {}),
       isDm: true,

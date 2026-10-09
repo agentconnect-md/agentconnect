@@ -658,7 +658,8 @@ abort("unexpected Source Cache document: #{source_cache_doc}") unless source_cac
   },
   'limits' => {
     'maxBundleBytes' => '2Gi', 'orgQuotaBytes' => '20Gi', 'pendingReservationSeconds' => '1h',
-    'unreadPointerDays' => 30, 'getUrlSeconds' => '5m', 'putUrlSeconds' => '15m'
+    'unreadPointerDays' => 30, 'getUrlSeconds' => '5m', 'putUrlSeconds' => '15m',
+    'transferMaxBytes' => '512Mi', 'transferUrlSeconds' => '30m'
   }
 }
 secret_volume = secret_pod.fetch('volumes').find { |v| v['name'] == 'source-cache-credentials' } ||
@@ -702,11 +703,34 @@ abort('the web identity token must be mounted read-only') unless identity_member
   m == { 'name' => 'source-cache-identity', 'mountPath' => '/var/run/ac-source-cache-identity', 'readOnly' => true }
 }
 abort('the web identity form must mount no Secret') if identity_pod.fetch('volumes').any? { |v| v['name'] == 'source-cache-credentials' }
+abort('an unset publicEndpoint must not reach the member') if identity_doc.key?('publicEndpoint')
+
+session_rendered, session_error, session_status = Open3.capture3(
+  *source_cache_base,
+  '--set', 'sourceCache.credentials.serviceAccount.sessionDurationSeconds=7200',
+  '--set', 'sourceCache.limits.transferUrlLifetime=90m'
+)
+abort("helm template (Source Cache session duration) failed:\n#{session_error}") unless session_status.success?
+_, session_member = pool_member.call(YAML.load_stream(session_rendered).compact)
+session_doc = JSON.parse(session_member.fetch('env').find { |item| item['name'] == 'AC_SOURCE_CACHE' }&.fetch('value') ||
+                         abort('the session duration form must reach the member'))
+abort("a pinned STS session must reach the member: #{session_doc['credentials']}") unless
+  session_doc.dig('credentials', 'durationSeconds') == 7200
+
+public_rendered, public_error, public_status = Open3.capture3(
+  *source_cache_base, '--set', 'sourceCache.publicEndpoint=https://store.example.test'
+)
+abort("helm template (Source Cache public endpoint) failed:\n#{public_error}") unless public_status.success?
+_, public_member = pool_member.call(YAML.load_stream(public_rendered).compact)
+public_doc = JSON.parse(public_member.fetch('env').find { |item| item['name'] == 'AC_SOURCE_CACHE' }&.fetch('value') ||
+                        abort('the public endpoint form must reach the member'))
+abort("unexpected publicEndpoint: #{public_doc['publicEndpoint']}") unless public_doc['publicEndpoint'] == 'https://store.example.test'
 
 [
   [['--set', 'sourceCache.enabled=true', '--set', 'sourceCache.region=us-east-1'], 'sourceCache.bucket is required'],
   [source_cache_base + ['--set', 'sourceCache.credentials.source=secret'], 'secret.name is required'],
   [source_cache_base + ['--set', 'sourceCache.endpoint=http://minio.example.test'], 'https://'],
+  [source_cache_base + ['--set', 'sourceCache.publicEndpoint=http://store.example.test'], 'publicEndpoint must be an https://'],
   [source_cache_base + ['--set', 'sourceCache.credentials.source=static'], 'serviceAccount or secret'],
   [source_cache_base + ['--set', 'daemonPool.extraEnv.AC_SOURCE_CACHE={}'], 'AC_SOURCE_CACHE collides']
 ].each do |extra, expected|
