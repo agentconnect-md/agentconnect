@@ -94,7 +94,7 @@ async function boot(root: string) {
         if (!JSON.stringify(blocks).includes(PATROL_OPENING)) return 'end_turn'
         if (behavior.patrol === 'throw') throw new Error('the runtime exited')
         if (behavior.patrol === 'hang') return await new Promise((resolve) => (cancelled = () => resolve('cancelled')))
-        const ctx = registered.findLast((c) => isPatrolCoordinate(c.thread))!
+        const ctx = [...registered].reverse().find((c) => isPatrolCoordinate(c.thread))!
         await behavior.patrol(ctx)
         return 'end_turn'
       }),
