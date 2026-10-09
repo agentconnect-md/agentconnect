@@ -52,6 +52,7 @@ import {
   workspaceRootReadState
 } from '@/components/console/workspace-tree'
 import { WorkspaceRepoPicker } from '@/components/console/WorkspaceRepoPicker'
+import { WorkspaceDownloadButton } from '@/components/console/WorkspaceDownloadButton'
 import { useSandboxWake } from '@/components/console/sandbox-wake'
 import {
   SANDBOX_ASLEEP_NOTICE,
@@ -149,6 +150,7 @@ export function WorkspaceFiles({
   canEdit: workspaceCanEdit,
   canCreateFolder = false,
   sandboxed = false,
+  transfer = false,
   renderWorkspacePicker,
   renderHeader
 }: {
@@ -170,6 +172,8 @@ export function WorkspaceFiles({
   canCreateFolder?: boolean
   /** The agent runs in a cluster sandbox: its files are readable only through a running pod, so opening the tab wakes it rather than waiting for the read to refuse. */
   sandboxed?: boolean
+  /** The daemon presigns object-store downloads (`file-transfer-v1`), so binary and large text download through it. */
+  transfer?: boolean
   /** Checkout control rendered opposite the breadcrumb. The branch comes from
    *  the primary checkout's live git status, even while browsing a worktree. */
   renderWorkspacePicker?: (primaryBranch: string | null) => ReactNode
@@ -933,6 +937,18 @@ export function WorkspaceFiles({
                       <FilePreview
                         key={viewer.path}
                         viewer={viewer}
+                        download={
+                          viewer.file?.exists && viewer.file.type !== 'dir' ? (
+                            <WorkspaceDownloadButton
+                              agentId={agentId}
+                              {...(sessionId ? { sessionId } : {})}
+                              {...(repo ? { repo } : {})}
+                              path={viewer.path}
+                              file={viewer.file}
+                              transfer={transfer}
+                            />
+                          ) : null
+                        }
                         onMore={onViewerMore}
                         resolveLink={resolveWorkspaceLink}
                         onBack={
@@ -970,12 +986,15 @@ function EmptyNote({ text }: { text: string }) {
 // else is syntax-highlighted code with bare URLs linkified.
 function FilePreview({
   viewer,
+  download,
   onMore,
   resolveLink,
   onBack,
   deletePrompt
 }: {
   viewer: Viewer
+  /** The Download action, beside the Markdown toggle; null while there is no file to download. */
+  download: ReactNode
   onMore: () => void
   resolveLink: (href: string) => MarkdownLinkResolution | undefined
   onBack?: () => void
@@ -1029,21 +1048,26 @@ function FilePreview({
         onBack={onBack}
         actions={
           isMd && isText ? (
-            <span className="pillbar flex-none">
-              <button
-                className={mode === 'preview' ? 'pill on py-[3px]' : 'pill py-[3px]'}
-                onClick={() => setMode('preview')}
-              >
-                {t('preview')}
-              </button>
-              <button
-                className={mode === 'code' ? 'pill on py-[3px]' : 'pill py-[3px]'}
-                onClick={() => setMode('code')}
-              >
-                {t('code')}
-              </button>
+            <span className="flex flex-none items-center gap-2">
+              {download}
+              <span className="pillbar flex-none">
+                <button
+                  className={mode === 'preview' ? 'pill on py-[3px]' : 'pill py-[3px]'}
+                  onClick={() => setMode('preview')}
+                >
+                  {t('preview')}
+                </button>
+                <button
+                  className={mode === 'code' ? 'pill on py-[3px]' : 'pill py-[3px]'}
+                  onClick={() => setMode('code')}
+                >
+                  {t('code')}
+                </button>
+              </span>
             </span>
-          ) : undefined
+          ) : (
+            (download ?? undefined)
+          )
         }
       />
 

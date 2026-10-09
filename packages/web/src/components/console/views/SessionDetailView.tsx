@@ -104,7 +104,8 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
-import { sessionFileDownload, sharedFileMarker, type SharedFile } from '@/lib/shared-file'
+import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
+import { FILE_TRANSFER_FEATURE, sessionFileDownload, sharedFileMarker, type SharedFile } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -2615,6 +2616,8 @@ export default function SessionDetailView() {
     getBusyLaneAgentIds,
     reconcileLiveSteps,
     getPgImage,
+    getPgFiles,
+    setPgFiles,
     getPgWorktree,
     isPgBusy,
     setPgImage,
@@ -3436,15 +3439,21 @@ export default function SessionDetailView() {
   // for one frame under session B's header before the loading effect clears it.
   const transcriptMatchesSession = !wantTranscript || transcriptSessionId === sid
   const visibleMsgs = transcriptMatchesSession ? msgs : null
-  // The viewer downloads only what the route can name: an upload, or a file the focused session shared, by that share's digest.
+  // Any workspace file downloads; a file the focused session shared is pinned to that share's digest.
   const viewerDownload = useMemo(() => {
-    if (!viewerPath || !headerFocusSessionId) return null
+    if (!viewerPath) return null
+    if (!headerFocusSessionId) return {}
     const target = headerFocusSessionId === sid ? toolSid : headerFocusSessionId
     const rows = (visibleMsgs ?? [])
       .filter((m) => (m.kind || 'text').toLowerCase() === 'text')
       .map((m) => ({ text: m.text, sessionId: conversationSourceSessionByMessageRef.current.get(m) ?? toolSid }))
     return sessionFileDownload(viewerPath, target, rows)
   }, [viewerPath, headerFocusSessionId, sid, toolSid, visibleMsgs, conversationSourceSessionByMessageRef])
+  // Binary and large text download through the object store when the viewed agent's daemon presigns transfers.
+  const viewerAgent = filesAgentId ? agents.find((a) => a.id === filesAgentId) : undefined
+  const viewerTransfer =
+    viewerAgent !== undefined &&
+    agentCapabilitySource(viewerAgent, daemons, memberSets)?.caps.features.includes(FILE_TRANSFER_FEATURE) === true
   const visibleMsgLoading = transcriptMatchesSession ? msgLoading : wantTranscript
   const visibleMsgPaging = wantTranscript && transcriptMatchesSession && msgPaging
   const visibleMsgErr = wantTranscript && transcriptMatchesSession ? msgErr : null
@@ -3609,8 +3618,10 @@ export default function SessionDetailView() {
       ? session.id
       : null
   useEffect(() => {
-    if (continuableSessionId) setPgImage(continuableSessionId)
-  }, [continuableSessionId, setPgImage])
+    if (!continuableSessionId) return
+    setPgImage(continuableSessionId)
+    setPgFiles(continuableSessionId, () => [])
+  }, [continuableSessionId, setPgImage, setPgFiles])
 
   // A multi-participant conversation is surfaced ONLY at /conversations/:key
   // (merged-conversation-view.md §5.3): a session deep link into one redirects,
@@ -3842,6 +3853,8 @@ export default function SessionDetailView() {
   // different live conversation streaming in the background can't disable or clear it.
   const pgBusy = sessionBusy
   const pgImage = getPgImage(session.id)
+  const pgFiles = getPgFiles(session.id)
+  const filesUploading = pgFiles.some((f) => f.status === 'uploading')
   const attachmentsEnabled = !isContinuable
   const pgQueue = getPgQueue(session.id)
   const hasSessionWorktree =
@@ -3922,7 +3935,7 @@ export default function SessionDetailView() {
   // Returns ACCEPTANCE: callers that arm follow-up state (the PR panel's Auto-fix wait) must know a
   // synchronous refusal — image preparing, mention joining, nothing to send — from an accepted send.
   const onPgSend = (text?: string): boolean => {
-    if (imagePreparing || mentionJoining || (isContinuable && pgImage !== undefined)) return false
+    if (imagePreparing || filesUploading || mentionJoining || (isContinuable && pgImage !== undefined)) return false
     setImageError(null)
     // The `/` pick's owner. Validation happens in pgSend against the OUTGOING draft (this parent
     // deliberately does not subscribe to it) — the pick narrows the turn only while its token
@@ -3962,6 +3975,28 @@ export default function SessionDetailView() {
     // history for a no-op would break the very guarantee this makes.
     if (sent) stickToBottom()
     return sent
+  }
+  // Non-image files upload straight to the object store when the composing agent's daemon presigns transfers.
+  const composerAgent = agents.find((a) => a.id === composerAgentId)
+  const composerTransfer =
+    composerAgent !== undefined &&
+    agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features.includes(FILE_TRANSFER_FEATURE) === true
+  const onAttachFile = (file: File | undefined): void => {
+    if (!attachmentsEnabled || !file) return
+    if (file.type.startsWith('image/')) return void onImageFile(file)
+    setAttachMenuOpen(false)
+    stageComposerFile(
+      {
+        sessionId: session.id,
+        agentId: composerAgentId,
+        transfer: composerTransfer,
+        getPgFiles,
+        setPgFiles,
+        onError: setImageError
+      },
+      file
+    )
+    if (imageInputRef.current) imageInputRef.current.value = ''
   }
   const onImageFile = async (file: File | undefined): Promise<void> => {
     if (!attachmentsEnabled || !file || imagePreparing) return
@@ -5232,7 +5267,8 @@ export default function SessionDetailView() {
                 diffRefreshTick={viewerDiffTick}
                 {...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})}
                 onOpenPath={(next) => setViewerFile(next, filesAgentId, 'file', viewerRepo)}
-                {...(viewerDownload && !viewerRepo ? { download: viewerDownload } : {})}
+                {...(viewerDownload ? { download: viewerDownload } : {})}
+                transfer={viewerTransfer}
                 onClose={() => {
                   // Keep the reader ON the workspace they were reading before dropping `agent=`. The
                   // param outranks the stored selection, so clearing it alone snaps focus back to the
@@ -5876,9 +5912,14 @@ export default function SessionDetailView() {
                           <input
                             ref={imageInputRef}
                             type="file"
-                            accept="image/*"
                             hidden
-                            onChange={(event) => void onImageFile(event.target.files?.[0])}
+                            onChange={(event) => onAttachFile(event.target.files?.[0])}
+                          />
+                        )}
+                        {attachmentsEnabled && (
+                          <ComposerFileChips
+                            files={pgFiles}
+                            onRemove={(key) => setPgFiles(session.id, (files) => files.filter((f) => f.key !== key))}
                           />
                         )}
                         {attachmentsEnabled && pgImage && (
@@ -5959,8 +6000,8 @@ export default function SessionDetailView() {
                                         imageInputRef.current?.click()
                                       }}
                                     >
-                                      <Icon name="image" size={16} color="var(--text-secondary)" />
-                                      {t('addPhotos')}
+                                      <Icon name="paperclip" size={16} color="var(--text-secondary)" />
+                                      {t('addFiles')}
                                     </button>
                                   </div>
                                 </>
@@ -6186,8 +6227,8 @@ export default function SessionDetailView() {
                           <ComposerSendButton
                             sessionId={session.id}
                             busy={pgBusy}
-                            imagePreparing={imagePreparing}
-                            hasImage={!!pgImage}
+                            imagePreparing={imagePreparing || filesUploading}
+                            hasImage={!!pgImage || pgFiles.some((f) => f.status === 'ready')}
                             mentionJoining={mentionJoining}
                             onSend={() => onPgSend()}
                             onStop={() => pgCancel(session.id, composerAgentId, webchatConversationId)}

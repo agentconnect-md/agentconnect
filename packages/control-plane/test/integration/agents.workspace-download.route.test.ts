@@ -1,8 +1,4 @@
-/**
- * `GET /agents/:id/workspace/file/download` — a session file's original bytes. The CP authorizes
- * the agent AND the session, admits only an upload or a digest-named share, assembles the daemon's
- * byte slices within the download ceiling, and stores nothing.
- */
+// `GET /agents/:id/workspace/file/download`: any workspace file's bytes, assembled from daemon slices and never stored.
 import { afterEach, describe, expect, it } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -141,7 +137,7 @@ describe('GET /agents/:id/workspace/file/download', () => {
     expect(control.calls[0]).toMatchObject({ sessionId: session, path: 'uploads/notes.txt' })
   })
 
-  it('serves a shared file only by the digest its marker recorded, and only while the bytes still match', async () => {
+  it('serves any workspace file, and a digest-named share only while the bytes still match', async () => {
     await seedDownloadAgent()
     const session = await seedSession()
     const control = new ByteReadSpy()
@@ -151,9 +147,8 @@ describe('GET /agents/:id/workspace/file/download', () => {
     const running = app(control)
 
     const unnamed = await running.app.inject({ method: 'GET', url: url(session, 'out/chart.png') })
-    expect(unnamed.statusCode).toBe(400)
-    expect(unnamed.json()).toMatchObject({ code: 'WORKSPACE_NOT_A_SESSION_FILE' })
-    expect(control.calls).toHaveLength(0)
+    expect(unnamed.statusCode).toBe(200)
+    expect(unnamed.rawPayload.equals(chart)).toBe(true)
 
     const shared = await running.app.inject({ method: 'GET', url: url(session, 'out/chart.png', digest) })
     expect(shared.statusCode).toBe(200)
@@ -166,17 +161,31 @@ describe('GET /agents/:id/workspace/file/download', () => {
     expect(changed.json()).toMatchObject({ code: 'WORKSPACE_FILE_CHANGED' })
   })
 
-  it('fences paths before any daemon I/O and keeps the daemon’s own containment refusals', async () => {
+  it('reads the agent’s primary workspace when no session is named', async () => {
+    await seedDownloadAgent()
+    const control = new ByteReadSpy()
+    control.files.set('src/main.ts', Buffer.from('export {}'))
+
+    const res = await app(control).app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/workspace/file/download?path=${encodeURIComponent('src/main.ts')}`
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toBe('export {}')
+    expect(control.calls[0]).toEqual({
+      agentId: AGENT,
+      path: 'src/main.ts',
+      offset: 0,
+      limit: 65_536,
+      encoding: 'base64'
+    })
+  })
+
+  it('keeps the daemon’s own containment refusals', async () => {
     await seedDownloadAgent()
     const session = await seedSession()
     const control = new ByteReadSpy()
     const running = app(control)
-
-    for (const path of ['uploads/../agent.json', '/uploads/x', 'uploads\\x', 'uploads']) {
-      const res = await running.app.inject({ method: 'GET', url: url(session, path) })
-      expect(res.statusCode, path).toBe(400)
-    }
-    expect(control.calls).toHaveLength(0)
 
     // A symlink out of the workspace is the daemon's refusal to make; it arrives as a reasoned error frame.
     control.failure = ProtocolError.fromFrame({

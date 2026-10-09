@@ -33,6 +33,9 @@ import {
 import { Icon } from '@/components/ui'
 import { AgentIconView, LoadingState, LogoMark, Spinner } from '@/components/marks'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
+import type { ComposerFile } from '@/lib/webchat-file'
+import { FILE_TRANSFER_FEATURE } from '@/lib/shared-file'
+import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
 import { useProfile } from '@/lib/profile'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
@@ -226,6 +229,10 @@ export default function HomeView() {
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
+  // Non-image files upload before the session exists: the presigned PUT needs only the agent.
+  const [files, setFiles] = useState<ComposerFile[]>([])
+  const filesUploading = files.some((f) => f.status === 'uploading')
+  const readyFiles = files.flatMap((f) => (f.status === 'ready' && f.attachment ? [f.attachment] : []))
   // Which selector menu is open (only one at a time), and the run-runtime overrides.
   const [menu, setMenu] = useState<'agent' | 'model' | 'add' | 'attach' | null>(null)
   const [runtime, setRuntime] = useState<{
@@ -252,6 +259,8 @@ export default function HomeView() {
   useEffect(() => {
     setRuntime({})
     setWorktreeOverride(undefined)
+    // Uploads were reserved through the previous agent's daemon, which the new one may not share.
+    setFiles([])
   }, [agent?.id])
 
   // What the selected agent RUNS ON supplies the model catalog + defaults — resolved through the
@@ -365,9 +374,28 @@ export default function HomeView() {
     }
   }
 
+  const onAttachFile = (file: File | undefined): void => {
+    if (!file || !agent) return
+    if (file.type.startsWith('image/')) return void onImageFile(file)
+    setMenu(null)
+    stageComposerFile(
+      {
+        sessionId: '',
+        agentId: agent.id,
+        transfer:
+          agentCapabilitySource(agent, daemons, memberSets)?.caps.features.includes(FILE_TRANSFER_FEATURE) === true,
+        getPgFiles: () => files,
+        setPgFiles: (_id, update) => setFiles(update),
+        onError: setImageError
+      },
+      file
+    )
+    if (imageInputRef.current) imageInputRef.current.value = ''
+  }
+
   const send = () => {
     const text = input.trim()
-    if ((!text && !image) || imagePreparing || mention.joining) return
+    if ((!text && !image && !readyFiles.length) || imagePreparing || filesUploading || mention.joining) return
     if (!agent || !canSend) return // offline / unsigned-in agents can't take a session
     const id = openPlayground(agent, members, !multi && gitWorkspace ? { worktree } : undefined)
     // Stage the EFFECTIVE (displayed) runtime before the turn — not just explicit
@@ -388,10 +416,11 @@ export default function HomeView() {
     }
     // The image rides as an explicit argument: the session id was just minted, so
     // a setPgImage(id) state write could not land before this same-tick send.
-    pgSend(id, agent.id, text, undefined, undefined, image)
+    pgSend(id, agent.id, text, undefined, undefined, image, undefined, readyFiles)
     setInput('')
     mention.close()
     setImage(undefined)
+    setFiles([])
     setImageError(null)
     router.push(orgPath(`/sessions/${id}`))
   }
@@ -517,13 +546,8 @@ export default function HomeView() {
           if (event.key === 'Escape') setMenu(null)
         }}
       >
-        <input
-          ref={imageInputRef}
-          type="file"
-          accept="image/*"
-          hidden
-          onChange={(event) => void onImageFile(event.target.files?.[0])}
-        />
+        <input ref={imageInputRef} type="file" hidden onChange={(event) => onAttachFile(event.target.files?.[0])} />
+        <ComposerFileChips files={files} onRemove={(key) => setFiles((cur) => cur.filter((f) => f.key !== key))} />
         {image && (
           <div className="relative mx-[15px] mt-3 w-fit">
             <img
@@ -624,8 +648,8 @@ export default function HomeView() {
                       imageInputRef.current?.click()
                     }}
                   >
-                    <Icon name="image" size={16} color="var(--text-secondary)" />
-                    {t('composer.addPhotos')}
+                    <Icon name="paperclip" size={16} color="var(--text-secondary)" />
+                    {t('composer.addFiles')}
                   </button>
                 </div>
               </>
@@ -768,7 +792,13 @@ export default function HomeView() {
           <button
             type="button"
             className="sendbtn h-7 w-7 flex-none rounded-[7px]"
-            disabled={(!input.trim() && !image) || !canSend || imagePreparing || mention.joining}
+            disabled={
+              (!input.trim() && !image && !readyFiles.length) ||
+              !canSend ||
+              imagePreparing ||
+              filesUploading ||
+              mention.joining
+            }
             onClick={send}
             title={
               blocked === 'offline'

@@ -54,7 +54,10 @@ import {
   normalizeGitHubSkillSource,
   normalizeGitCloneUrl,
   redactGitUrlSecrets,
-  normalizeRepoSubdir
+  normalizeRepoSubdir,
+  TransferFileName,
+  TransferMimeType,
+  TransferSha256
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
@@ -3564,13 +3567,46 @@ export const WorkspaceFileDto = z.object({
 })
 
 /** `GET /agents/:id/workspace/file/download` query — one session file's bytes. */
-export const WorkspaceDownloadQueryDto = z.object({
-  sessionId: z.string().min(1), // the session whose working root holds the file
+export const WorkspaceDownloadQueryDto = WorkspaceScopeQueryDto.extend({
   path: z.string().min(1).max(4096), // workspace-relative POSIX path
   sha256: z
     .string()
     .regex(/^[0-9a-fA-F]{16,64}$/)
-    .optional() // the digest prefix a share recorded; required outside uploads/
+    .optional() // the digest prefix a share recorded; the bytes must still match it
+})
+
+/** Which file to hand out through the Source Cache bucket: the same scope as a workspace read. */
+export const WorkspaceTransferBody = z
+  .object({
+    sessionId: z.string().min(1).optional(),
+    repo: z.string().min(1).optional(),
+    path: z.string().min(1).max(4096)
+  })
+  .strict()
+
+export const WorkspaceTransferDto = z.object({
+  path: z.string(),
+  size: z.number().int().nonnegative(),
+  url: z.string(), // presigned GET; downloads the file as an attachment until expiresAt
+  expiresAt: z.string(),
+  cached: z.boolean() // the bucket already held this revision
+})
+
+/** One file the console is about to upload for a webchat turn; the browser hashes it first. */
+export const FileUploadBody = z
+  .object({
+    name: TransferFileName,
+    mimeType: TransferMimeType,
+    size: z.number().int().positive(),
+    sha256: TransferSha256
+  })
+  .strict()
+
+export const FileUploadDto = z.object({
+  uploadId: z.string(), // name it in the webchat turn's `files` once the PUT succeeded
+  url: z.string(), // presigned PUT
+  headers: z.record(z.string(), z.string()), // send exactly these (a browser sets content-length itself)
+  expiresAt: z.string()
 })
 
 /** The download's 200 for the docs: the file's raw bytes, not JSON. */

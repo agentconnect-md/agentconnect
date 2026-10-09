@@ -230,7 +230,8 @@ describe('cluster spawn driver', () => {
           'skills-receipts',
           'skills-git',
           'skills-git-writeback',
-          'bundle'
+          'bundle',
+          'transfer'
         ],
         podName: 'sb-1',
         // The pool's peer is a pod, and its identity is the TokenReview's (session-executors.md §6).

@@ -47,7 +47,10 @@ export const WorkspaceErrorReason = z.enum([
   'exists', // a create target already exists (CONFLICT), so the caller picks another name rather than waiting
   'sandbox-unavailable', // no bound channel reaches the pod right now; the one TRANSIENT reason, so the CP answers 503 with a code
   'sandbox-removed', // a session's own sandbox claim and volume are gone, so no wake brings them back; its next message creates new ones
-  'sandbox-outdated' // the agent's sandbox predates the requested operation; a restarted sandbox serves it
+  'sandbox-outdated', // the agent's sandbox predates the requested operation; a restarted sandbox serves it
+  'transfer-unavailable', // no Source Cache bucket can carry this transfer (unconfigured, lifecycle rules missing, or over its cap)
+  'transfer-failed', // the bucket refused or lost the transfer; retrying may succeed
+  'not-found' // a transfer named no regular file (reads report absence as DATA instead)
 ])
 export type WorkspaceErrorReason = z.infer<typeof WorkspaceErrorReason>
 

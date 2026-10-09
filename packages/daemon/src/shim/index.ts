@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { Socket } from 'node:net'
 import { runSandboxRuntimeProvider } from '../acp/sandbox-runtime-provider.js'
 import { createBundleHandler } from './bundle-handler.js'
-import { SOURCE_CACHE_BUNDLE_FEATURE } from './bundle-protocol.js'
+import { SOURCE_CACHE_BUNDLE_FEATURE, WORKSPACE_TRANSFER_FEATURE } from './bundle-protocol.js'
 import { prepareBundleStaging } from './bundle-staging.js'
 import { ShimClient } from './client.js'
 import { createAutoMergeHandler } from './auto-merge-handler.js'
@@ -16,6 +16,7 @@ import { ShimServer } from './server.js'
 import { probeSkillGitInPod } from './skill-git-feature.js'
 import { SKILL_GIT_IN_POD_FEATURE, SKILL_GIT_WRITEBACK_FEATURE } from './skill-protocol.js'
 import { TunnelHost } from './tunnel-host.js'
+import { stageWorkspaceFile } from './fd-workspace-files.js'
 
 if (process.argv[2] === '__sandbox-runtime' || process.argv[2] === '__sandbox-runtime-offline') {
   process.exit(
@@ -82,7 +83,12 @@ async function main(): Promise<number> {
   const skillGit = await probeSkillGitInPod({ stagingDir: paths.skillStagingDir })
   if (!skillGit.ok)
     log.warn(`in-pod Git skill install unavailable (${skillGit.reason}); the daemon acquires Git skills`)
-  const bundles = createBundleHandler({ workspaceRoot, stagingDir: paths.bundleStagingDir, log })
+  const bundles = createBundleHandler({
+    workspaceRoot,
+    stagingDir: paths.bundleStagingDir,
+    log,
+    stageWorkspaceFile: (root, path, dest, maxBytes) => stageWorkspaceFile(workspaceRoot, root, path, dest, maxBytes)
+  })
   // Skill write-back stages into the bundle registry, so it needs both the bundle staging and the in-pod Git path.
   const skillWriteBack = bundleStaging && skillGit.ok
   const exec = createExecHandler({ workspaceRoot, paths, log, ...(skillWriteBack ? { skillWriteBack: bundles } : {}) })
@@ -116,14 +122,16 @@ async function main(): Promise<number> {
           ? automerge(payload)
           : capability === 'bundle'
             ? bundles(payload, abort)
-            : exec(capability, payload, abort, context),
+            : capability === 'transfer'
+              ? bundles.transfer(payload, abort)
+              : exec(capability, payload, abort, context),
     // Reported in the hello so daemon-built pod paths are anchored on this filesystem.
     workspaceRoot,
     features: [
       'cluster-skills-v1',
       'cluster-skills-v2',
       'cluster-skills-v3',
-      ...(bundleStaging ? [SOURCE_CACHE_BUNDLE_FEATURE] : []),
+      ...(bundleStaging ? [SOURCE_CACHE_BUNDLE_FEATURE, WORKSPACE_TRANSFER_FEATURE] : []),
       ...(skillGit.ok ? [SKILL_GIT_IN_POD_FEATURE] : []),
       ...(skillWriteBack ? [SKILL_GIT_WRITEBACK_FEATURE] : [])
     ],

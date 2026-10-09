@@ -1,9 +1,11 @@
 # Inbound File Attachments
 
 **Status:** Draft — not implemented as designed. Platform files reach `uploads/` only when
-the agent saves one through a read tool (#2104), not at prompt build (§8 phase 1); the
-web-console upload (phases 2–3) is not built. Console download-back (§5.1) is built: the
-console offers it on agent-shared files, and uploads gain it with phase 1's saved path.
+the agent saves one through a read tool (#2104), not at prompt build (§8 phase 1). The
+web-console upload shipped differently from phases 2–3: on a daemon with a Source Cache
+bucket, the browser uploads straight into the bucket and the agent receives a download
+link ([source-cache-file-transfer.md](source-cache-file-transfer.md)). Console
+download-back (§5.1) is built and now serves any workspace file.
 
 Users can already hand an agent an image: webchat uploads one (re-encoded to WebP,
 ≤ 160 KB), and every chat platform's inbound images reach the agent's prompt as ACP
@@ -237,19 +239,20 @@ persisting; nothing new touches it beyond the DTO carrying the metadata row.
 
 ### 5.1 Download-back
 
-A session file's original bytes come back through
-`GET /agents/:id/workspace/file/download?sessionId=…&path=…[&sha256=…]`, a byte mode of the
-same bounded workspace read the file viewer already uses:
+A workspace file's original bytes come back through
+`GET /agents/:id/workspace/file/download?path=…[&sessionId=…][&repo=…][&sha256=…]`, a byte
+mode of the same bounded workspace read the file viewer already uses:
 
-- **What it serves.** A file under `uploads/` at the session's working root, or a file the
-  agent shared (agent-authored-attachments.md §4) named together with the digest prefix
-  its `[shared: …]` marker recorded. The bytes must still match that digest: a file
-  rewritten since it was shared is refused (409) rather than passed off as the original.
-  The root is the one the daemon landed or shared the file in — the session's isolated
-  worktree, or the agent's checkout when the session shares it.
-- **Who may read it.** The workspace read's gate plus the session's own: the agent must be
-  visible to the caller and the session must pass its visibility rule, so a private
-  session's files are as absent as its transcript.
+- **What it serves.** Any file the workspace read can reach: the agent's checkout, a named
+  session's working root (its isolated worktree, or the checkout when the session shares
+  it), or an authorized additional repository. `sha256` is optional: a shared file's chip
+  (agent-authored-attachments.md §4) passes the digest prefix its `[shared: …]` marker
+  recorded, and a file rewritten since it was shared is then refused (409) rather than
+  passed off as the original. Binary files and large text use the bucket transfer instead
+  when the agent's daemon has one ([source-cache-file-transfer.md](source-cache-file-transfer.md)).
+- **Who may read it.** The workspace read's gate, plus the session's own when one is named:
+  the agent must be visible to the caller and the session must pass its visibility rule,
+  so a private session's files are as absent as its transcript.
 - **How the bytes travel.** `workspace/read` gains `encoding: 'base64'`, a raw slice of at
   most 64 KiB with no binary sniff and no UTF-8 cut, served by the same two
   implementations as the text read (the daemon's path-based one and the sandbox's
@@ -260,8 +263,8 @@ same bounded workspace read the file viewer already uses:
   an attachment `Content-Disposition`, `nosniff` and a sandboxing CSP. It holds one file
   in memory for the length of the request and stores nothing.
 - **Bound.** `MAX_WORKSPACE_DOWNLOAD_BYTES` (8 MiB, the default `maxAttachmentBytes`). A
-  larger file is refused with 413 after its first slice; a streamed download above the cap
-  stays deferred with the materialization cap it would serve (§7).
+  larger file is refused with 413 after its first slice; above the cap, a daemon with a
+  Source Cache bucket serves the file through a presigned transfer instead.
 - **Version skew.** A daemon without `workspace-file-download-v1` is refused with 409
   before any frame is sent. A sandbox whose shim predates byte reads drops the new field
   and answers text or nothing; the daemon refuses that as `sandbox-outdated` (409) instead
@@ -272,8 +275,8 @@ The console hangs the download on the agent's share marker: a transcript row end
 marker as a chip (name, size) that downloads by path and digest, and says why when the
 server refuses. An upload has no such marker yet. Until prompt-build materialization (§8
 phase 1) writes the saved path into the `[attached: …]` entry (§3), the only record of
-where an upload landed is the read tool's own result, so the route serves `uploads/` to
-API callers while the console has no marker to put a chip on.
+where an upload landed is the read tool's own result. The console's workspace viewer
+offers a download for any file it opens.
 
 `sendMessage`'s cross-conversation forwarding contract is **unchanged**: it resolves only
 the retained ≤ 160 KB transcript image copies. A file's marker names it, but forwarding

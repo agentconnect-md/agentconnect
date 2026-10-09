@@ -38,7 +38,9 @@ describe('Source Cache configuration', () => {
         pendingReservationSeconds: 3600,
         unreadPointerDays: 30,
         getUrlSeconds: 300,
-        putUrlSeconds: 900
+        putUrlSeconds: 900,
+        transferMaxBytes: 512 * 1024 ** 2,
+        transferUrlSeconds: 1800
       }
     })
     expect(sourceCacheEndpoint(config)).toBe('https://s3.us-east-1.amazonaws.com')
@@ -57,7 +59,9 @@ describe('Source Cache configuration', () => {
           pendingReservationSeconds: '2h',
           unreadPointerDays: 7,
           getUrlSeconds: '2m',
-          putUrlSeconds: 600
+          putUrlSeconds: 600,
+          transferMaxBytes: 512 * 1024 ** 2,
+          transferUrlSeconds: 1800
         }
       })
     )!
@@ -68,7 +72,9 @@ describe('Source Cache configuration', () => {
       pendingReservationSeconds: 7200,
       unreadPointerDays: 7,
       getUrlSeconds: 120,
-      putUrlSeconds: 600
+      putUrlSeconds: 600,
+      transferMaxBytes: 512 * 1024 ** 2,
+      transferUrlSeconds: 1800
     })
   })
 
@@ -102,7 +108,9 @@ describe('Source Cache configuration', () => {
       pendingReservationSeconds: 3600,
       unreadPointerDays: 30,
       getUrlSeconds: 300,
-      putUrlSeconds: 900
+      putUrlSeconds: 900,
+      transferMaxBytes: 512 * 1024 ** 2,
+      transferUrlSeconds: 1800
     })
     const identity = load({
       bucket: 'ac-cache',

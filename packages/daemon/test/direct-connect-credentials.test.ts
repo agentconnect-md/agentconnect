@@ -101,6 +101,7 @@ describe('provider credentials in the direct-connect stage', () => {
       'skills-git-writeback',
       'skills-receipts',
       'skills-wide',
+      'transfer',
       'tunnel'
     ])
   })

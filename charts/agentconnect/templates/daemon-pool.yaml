@@ -353,7 +353,13 @@ spec:
             {{- with $sourceCache.endpoint }}
             {{- $_ := set $document "endpoint" . }}
             {{- end }}
-            {{- $_ := set $document "limits" (dict "maxBundleBytes" $limits.maxBundleBytes "orgQuotaBytes" $limits.orgQuotaBytes "pendingReservationSeconds" $limits.pendingReservation "unreadPointerDays" $limits.unreadPointerDays "getUrlSeconds" $limits.getUrlLifetime "putUrlSeconds" $limits.putUrlLifetime) }}
+            {{- with $sourceCache.publicEndpoint }}
+            {{- if not (hasPrefix "https://" .) }}
+            {{- fail "sourceCache.publicEndpoint must be an https:// origin" }}
+            {{- end }}
+            {{- $_ := set $document "publicEndpoint" . }}
+            {{- end }}
+            {{- $_ := set $document "limits" (dict "maxBundleBytes" $limits.maxBundleBytes "orgQuotaBytes" $limits.orgQuotaBytes "pendingReservationSeconds" $limits.pendingReservation "unreadPointerDays" $limits.unreadPointerDays "getUrlSeconds" $limits.getUrlLifetime "putUrlSeconds" $limits.putUrlLifetime "transferMaxBytes" ($limits.transferMaxBytes | default "512Mi") "transferUrlSeconds" ($limits.transferUrlLifetime | default "30m")) }}
             {{- if eq $sourceCacheCredentials.source "secret" }}
             {{- $secret := $sourceCacheCredentials.secret | default dict }}
             {{- $_ := required "sourceCache.credentials.secret.name is required for the secret credential source" $secret.name }}

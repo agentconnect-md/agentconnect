@@ -1,16 +1,15 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, createReadStream, rmSync, statSync } from 'node:fs'
-import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
-import { request as httpRequest } from 'node:http'
-import { request as httpsRequest } from 'node:https'
 import { join } from 'node:path'
+import { PutObjectError, putStagedFile, type PutRequestFn } from '../source-cache/put-object.js'
 import { ExecRefusedError } from '../workspace/git-command-policy.js'
 import {
   BUNDLE_PENDING_TAGGING,
   BUNDLE_UPLOAD_HEADERS,
   BundleCreateRequestSchema,
   BundleRequestSchema,
+  TransferStageRequestSchema,
   type BundleCreateRequest,
   type BundleCreateResult,
   type BundleDiscardResult,
@@ -19,6 +18,8 @@ import {
 } from './bundle-protocol.js'
 import { assertBundleStagingPrivate } from './bundle-staging.js'
 import { resolveCwd } from './exec-handler.js'
+import { WorkspaceViolationError } from '../workspace/workspace-files.js'
+import { MissingPathError } from './safe-descent.js'
 
 // The shim-internal `bundle` operations (source-cache.md §6.1, §9): composed argv, shim-minted handles, upload from this process.
 
@@ -30,7 +31,6 @@ const DEFAULT_HANDLE_TTL_MS = 2 * 60 * 60_000
 export const SKILL_STAGED_HANDLE_TTL_MS = 30 * 60_000
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60_000
 const MAX_GIT_OUTPUT_BYTES = 64 * 1024
-const MAX_ERROR_BODY_BYTES = 4096
 const EMPTY_CONFIG = '/dev/null'
 const SIGNED_HEADER_NAMES = [...BUNDLE_UPLOAD_HEADERS].sort().join('\n')
 
@@ -44,8 +44,6 @@ export interface GitInvocation {
 
 export type RunBundleGit = (invocation: GitInvocation) => Promise<{ stdout: string }>
 
-type RequestFn = (url: URL, options: RequestOptions, callback: (res: IncomingMessage) => void) => ClientRequest
-
 export interface BundleHandlerDeps {
   workspaceRoot: string
   stagingDir: string
@@ -55,7 +53,7 @@ export interface BundleHandlerDeps {
   /** Test seam: how Git runs; default `execFile('git', …)`. */
   runGit?: RunBundleGit
   /** Test seam: the HTTP(S) request function. */
-  request?: RequestFn
+  request?: PutRequestFn
   /** Test only: admit a plain-http upload URL (a local fixture). */
   allowHttpUpload?: boolean
   maxHandles?: number
@@ -63,6 +61,13 @@ export interface BundleHandlerDeps {
   /** How often stale handles are reclaimed without waiting for the next request. */
   sweepIntervalMs?: number
   log?: { warn: (m: string) => void }
+  /** Snapshot a workspace file to a shim-private `dest`; absent, the shim serves no `transfer`. */
+  stageWorkspaceFile?: (
+    root: string,
+    path: string,
+    dest: string,
+    maxBytes: number
+  ) => Promise<{ bytes: number; sha256: string }>
 }
 
 /** A shim-internal repository to bundle into the handle registry; `repo` is a shim-owned path, never one the daemon sent. */
@@ -81,6 +86,8 @@ export type BundleStage = (input: BundleStageInput, abort?: AbortSignal) => Prom
 /** The `bundle` capability's request handler; `stop()` ends its stale-handle sweep, `stage` bundles a shim-owned clone. */
 export type BundleHandler = ((payload: unknown, abort?: AbortSignal) => Promise<unknown>) & {
   stop(): void
+  /** The `transfer` capability: stage one workspace file under a fresh handle `upload` and `discard` then take. */
+  transfer(payload: unknown, abort?: AbortSignal): Promise<BundleCreateResult>
   stage: BundleStage
   discard(handle: string): BundleDiscardResult
 }
@@ -274,72 +281,68 @@ export function createBundleHandler(deps: BundleHandlerDeps): BundleHandler {
       throw new BundleRefusedError('bad-headers', 'the signed headers do not describe this bundle')
     }
     const timeoutMs = Math.min(request.timeoutMs ?? DEFAULT_BUNDLE_UPLOAD_TIMEOUT_MS, DEFAULT_BUNDLE_UPLOAD_TIMEOUT_MS)
-    const send = deps.request ?? ((url.protocol === 'https:' ? httpsRequest : httpRequest) as RequestFn)
     staged.busy = true
     try {
-      return await new Promise<BundleUploadResult>((resolve, reject) => {
-        const stream = createReadStream(staged.file)
-        const hash = createHash('sha256')
-        let sent = 0
-        let settled = false
-        const finish = (error?: Error, result?: BundleUploadResult): void => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          abort?.removeEventListener('abort', onAbort)
-          stream.destroy()
-          if (error) {
-            req.destroy()
-            reject(error)
-          } else resolve(result!)
-        }
-        const fail = (detail: string): void => finish(new BundleRefusedError('upload-failed', detail))
-        const req = send(url, { method: 'PUT', headers }, (res) => {
-          const chunks: Buffer[] = []
-          let kept = 0
-          res.on('data', (chunk: Buffer) => {
-            if (kept < MAX_ERROR_BODY_BYTES) chunks.push(chunk)
-            kept += chunk.length
-          })
-          res.on('error', (err) => fail(err.message))
-          res.on('end', () => {
-            if (res.statusCode === 200) {
-              const sha256 = hash.digest('base64')
-              if (sent !== staged.bytes || sha256 !== staged.sha256) {
-                return finish(new BundleRefusedError('changed', 'the staged file changed during upload'))
-              }
-              return finish(undefined, { bytes: sent, sha256 })
-            }
-            const body = Buffer.concat(chunks).toString('utf8').slice(0, MAX_ERROR_BODY_BYTES)
-            const code = /<Code>([A-Za-z0-9.]{1,64})<\/Code>/.exec(body)?.[1]
-            finish(new BundleRefusedError('upload-refused', `HTTP ${res.statusCode ?? 0}${code ? ` ${code}` : ''}`))
-          })
-        })
-        // Errors never echo the URL: only the errno code is kept.
-        req.on('error', (err: NodeJS.ErrnoException) => fail(err.code ?? 'request error'))
-        const timer = setTimeout(() => fail(`timed out after ${timeoutMs}ms`), timeoutMs)
-        const onAbort = (): void => fail('cancelled')
-        if (abort?.aborted) return onAbort()
-        abort?.addEventListener('abort', onAbort, { once: true })
-        stream.on('data', (chunk) => {
-          const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
-          sent += buffer.length
-          hash.update(buffer)
-          // Never send more than was signed; a grown file is cut off and the store refuses the short body.
-          if (sent > staged.bytes) return fail('the staged file grew during upload')
-          if (!req.write(buffer)) {
-            stream.pause()
-            req.once('drain', () => stream.resume())
-          }
-        })
-        stream.on('error', (err) => fail(err.message))
-        stream.on('end', () => {
-          if (sent !== staged.bytes) return fail('the staged file shrank during upload')
-          req.end()
-        })
+      return await putStagedFile({
+        file: staged.file,
+        bytes: staged.bytes,
+        sha256: staged.sha256,
+        url,
+        headers,
+        timeoutMs,
+        ...(abort ? { abort } : {}),
+        ...(deps.request ? { request: deps.request } : {})
       })
+    } catch (err) {
+      if (err instanceof PutObjectError) throw new BundleRefusedError(err.reason, err.message)
+      throw err
     } finally {
       staged.busy = false
+    }
+  }
+
+  const transfer = async (payload: unknown, abort?: AbortSignal): Promise<BundleCreateResult> => {
+    sweep()
+    const parsed = TransferStageRequestSchema.safeParse(payload)
+    if (!parsed.success) {
+      deps.log?.warn('transfer request refused: invalid')
+      throw parsed.error
+    }
+    if (!deps.stageWorkspaceFile) throw new BundleRefusedError('unsupported', 'this shim stages no workspace files')
+    if (handles.size + creating >= maxHandles) throw new BundleRefusedError('busy', `${handles.size} files are staged`)
+    assertBundleStagingPrivate(deps.stagingDir)
+    const handle = randomUUID()
+    const file = join(deps.stagingDir, `${handle}.file`)
+    creating++
+    try {
+      const { bytes, sha256 } = await deps
+        .stageWorkspaceFile(parsed.data.root, parsed.data.path, file, parsed.data.maxBytes)
+        .catch((err: unknown) => {
+          // The reason crosses the channel in the message, where the daemon's transfer client reads it back.
+          if (err instanceof WorkspaceViolationError)
+            throw new BundleRefusedError(err.reason, 'the file cannot be staged')
+          if (err instanceof MissingPathError) throw new BundleRefusedError('not-found', 'no such file')
+          throw err
+        })
+      if (bytes < 1) throw new BundleRefusedError('empty', 'an empty file is not transferred')
+      if (abort?.aborted) throw new BundleRefusedError('aborted', 'the request was cancelled')
+      handles.set(handle, {
+        file,
+        bytes,
+        sha256,
+        createdAt: now(),
+        ttlMs: Math.min(ttlMs, SKILL_STAGED_HANDLE_TTL_MS),
+        busy: false
+      })
+      return { handle, bytes, sha256 }
+    } catch (err) {
+      unlinkStaged(file)
+      deps.log?.warn(
+        `transfer stage refused: ${err instanceof BundleRefusedError ? err.reason : err instanceof Error ? err.name : 'error'}`
+      )
+      throw err
+    } finally {
+      creating--
     }
   }
 
@@ -381,5 +384,5 @@ export function createBundleHandler(deps: BundleHandlerDeps): BundleHandler {
       throw err
     }
   }
-  return Object.assign(serve, { stop: () => clearInterval(timer), stage, discard })
+  return Object.assign(serve, { stop: () => clearInterval(timer), stage, discard, transfer })
 }

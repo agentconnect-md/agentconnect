@@ -810,6 +810,8 @@ sourceCache:
   enabled: false
   # S3 API origin; must be https:// (the shim admits only https bundle URLs). Empty => AWS regional S3.
   endpoint: ''
+  # Optional https:// origin browsers reach the bucket at for console file transfers; empty => endpoint. Needs a bucket CORS rule (chart README).
+  publicEndpoint: ''
   region: ''
   bucket: ''
   # Optional key prefix inside the bucket; must not start with snapshots/.
@@ -840,6 +842,9 @@ sourceCache:
     unreadPointerDays: 30
     getUrlLifetime: 5m
     putUrlLifetime: 15m
+    # Console file transfers: the per-file cap and how long a download link stays valid.
+    transferMaxBytes: 512Mi
+    transferUrlLifetime: 30m
 
 # Bootstrap/runtime roots are read from an existing Secret you create in the
 # namespace (the chart never holds their values). Provider credentials are not

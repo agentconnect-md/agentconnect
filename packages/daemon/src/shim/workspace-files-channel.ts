@@ -24,7 +24,17 @@ import type {
   WorkspaceWriteOk
 } from '@agentconnect.md/protocol'
 import { WorkspaceErrorReason } from '@agentconnect.md/protocol'
-import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceFiles } from '../workspace/workspace-files.js'
+import {
+  outdatedForTransfer,
+  WorkspaceConflictError,
+  WorkspaceViolationError,
+  type WorkspaceFiles,
+  type WorkspaceUploadReq,
+  type WorkspaceUploadSigner,
+  type WorkspaceUploaded
+} from '../workspace/workspace-files.js'
+import { ShimBundleClient } from './bundle-client.js'
+import { BundleCreateResultSchema, type TransferStageRequest } from './bundle-protocol.js'
 import { createFdWorkspaceFiles } from './fd-workspace-files.js'
 import type { ShimRequester } from './channels.js'
 
@@ -165,7 +175,9 @@ export class ShimWorkspaceFiles implements WorkspaceFiles {
     private readonly requester: ShimRequester,
     /** Bounds ONE file operation. Local work on a mounted volume, so the git channel's network
      *  allowance would only mean a wedged request outliving the reader who asked for it. */
-    private readonly timeoutMs = 30_000
+    private readonly timeoutMs = 30_000,
+    /** The binding holds the `transfer` grant (and so `bundle`); without it an upload is refused as outdated. */
+    private readonly canTransfer = false
   ) {}
 
   private async run<T>(payload: WorkspaceFilesPayload): Promise<T> {
@@ -208,4 +220,48 @@ export class ShimWorkspaceFiles implements WorkspaceFiles {
   mkdir(root: string, scratch: boolean, req: Parameters<WorkspaceFiles['mkdir']>[2]): Promise<WorkspaceMkdirOk> {
     return this.run({ op: 'mkdir', root, scratch, req })
   }
+
+  async upload(
+    root: string,
+    req: WorkspaceUploadReq,
+    sign: WorkspaceUploadSigner,
+    abort?: AbortSignal
+  ): Promise<WorkspaceUploaded> {
+    if (!this.canTransfer) throw outdatedForTransfer()
+    const stage: TransferStageRequest = { op: 'stage-file', root, path: req.path, maxBytes: req.maxBytes }
+    const staged = await this.requester
+      .request('transfer', stage, { timeoutMs: req.timeoutMs, ...(abort ? { abort } : {}) })
+      .then((reply) => BundleCreateResultSchema.parse(reply))
+      .catch((err: unknown) => {
+        throw transferRefusal(err)
+      })
+    const bundles = new ShimBundleClient(this.requester, req.timeoutMs)
+    try {
+      const put = await sign({ bytes: staged.bytes, sha256: staged.sha256 })
+      return await bundles.upload({ handle: staged.handle, url: put.url, headers: put.headers }, abort)
+    } catch (err) {
+      throw transferRefusal(err)
+    } finally {
+      await bundles.discard(staged.handle, abort).catch(() => undefined)
+    }
+  }
+}
+
+const STAGED_REFUSALS = new Set<WorkspaceErrorReason>([
+  'not-found',
+  'not-a-file',
+  'too-large',
+  'path-escape',
+  'git-internals'
+])
+
+/** The shim's refusal reasons cross the channel as `bundle <reason>: …`; a workspace one keeps its reason, anything else failed the transfer. */
+function transferRefusal(err: unknown): Error {
+  if (err instanceof WorkspaceViolationError) return err
+  const reason = /^bundle ([a-z-]+):/.exec(err instanceof Error ? err.message : '')?.[1]
+  const parsed = WorkspaceErrorReason.safeParse(reason)
+  if (parsed.success && STAGED_REFUSALS.has(parsed.data)) {
+    return new WorkspaceViolationError('the file cannot be transferred', parsed.data)
+  }
+  return new WorkspaceViolationError('the file transfer failed', 'transfer-failed')
 }

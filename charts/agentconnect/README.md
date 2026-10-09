@@ -164,14 +164,16 @@ an IP-address endpoint uses path-style addressing anyway. MinIO serves as a test
 not a recommended store: its community edition is archived. AWS S3 has not yet been
 verified against this signer (design §14).
 
-| Value                       | Default | Meaning                                                   |
-| --------------------------- | ------- | --------------------------------------------------------- |
-| `limits.maxBundleBytes`     | `2Gi`   | Largest bundle a pod may upload (at most `5Gi`)           |
-| `limits.orgQuotaBytes`      | `20Gi`  | Committed plus reserved bytes per organization            |
-| `limits.pendingReservation` | `1h`    | How long an upload reservation lives; at least PUT + `5m` |
-| `limits.unreadPointerDays`  | `30`    | Days before an unread pointer is swept                    |
-| `limits.getUrlLifetime`     | `5m`    | Presigned GET lifetime (`1m` to `1h`)                     |
-| `limits.putUrlLifetime`     | `15m`   | Presigned PUT lifetime (`1m` to `1h`)                     |
+| Value                        | Default | Meaning                                                   |
+| ---------------------------- | ------- | --------------------------------------------------------- |
+| `limits.maxBundleBytes`      | `2Gi`   | Largest bundle a pod may upload (at most `5Gi`)           |
+| `limits.orgQuotaBytes`       | `20Gi`  | Committed plus reserved bytes per organization            |
+| `limits.pendingReservation`  | `1h`    | How long an upload reservation lives; at least PUT + `5m` |
+| `limits.unreadPointerDays`   | `30`    | Days before an unread pointer is swept                    |
+| `limits.getUrlLifetime`      | `5m`    | Presigned GET lifetime (`1m` to `1h`)                     |
+| `limits.putUrlLifetime`      | `15m`   | Presigned PUT lifetime (`1m` to `1h`)                     |
+| `limits.transferMaxBytes`    | `512Mi` | Largest console file transfer (at most `5Gi`)             |
+| `limits.transferUrlLifetime` | `30m`   | Transfer download link lifetime (`1m` to `12h`)           |
 
 ### Bucket lifecycle rules
 
@@ -226,6 +228,45 @@ every 6 hours. When the bucket has no enabled rule for either tag, it logs a war
 with the document above and stops writing bundles, while reads keep working. It resumes
 on the first check that finds both. A member that cannot read the configuration warns
 and keeps writing.
+
+### Console file transfer
+
+With a Source Cache configured, members also carry console file transfers
+([design](../../docs/designs/source-cache-file-transfer.md)): a non-image file a user
+attaches in webchat is uploaded by the browser straight into the bucket, and the agent
+gets a presigned link to download it into its workspace; a large text or binary workspace
+file is uploaded from its pod into the bucket and downloaded by the browser from there.
+Transfer objects live under `<prefix>/src/<org>/transfer/` and are tagged
+`ac-cache=pending`, so the IAM policy and the 2-day `pending` lifecycle rule above already
+cover them. A member whose bucket lacks the lifecycle rules refuses transfers.
+
+Browsers reach the bucket directly, so two extra settings apply:
+
+- `sourceCache.publicEndpoint` — the `https://` origin browsers use, when it differs from
+  the in-cluster `endpoint`. Agents keep using `endpoint`. Empty means `endpoint`.
+- A bucket CORS rule admitting the console origin. Browsers send the signed checksum and
+  tagging headers on upload and read nothing but the body on download:
+
+```json
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["https://console.example.test"],
+      "AllowedMethods": ["GET", "PUT"],
+      "AllowedHeaders": ["x-amz-checksum-sha256", "x-amz-tagging", "content-type"],
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 3600
+    }
+  ]
+}
+```
+
+```bash
+aws s3api put-bucket-cors --bucket example-agentconnect-source-cache --cors-configuration file://source-cache-cors.json
+```
+
+A web-identity session must outlive `limits.transferUrlLifetime` plus 5 minutes, since a
+presigned link dies with the credentials that signed it.
 
 ## Node maintenance
 

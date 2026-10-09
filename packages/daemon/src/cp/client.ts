@@ -386,6 +386,7 @@ export class CpClient {
       pullRequestFeedback: deps.pullRequestFeedback && ((req) => deps.pullRequestFeedback!(req)),
       workspaceRead: deps.workspaceRead,
       workspaceGit: deps.workspaceGit,
+      ...(deps.fileTransfer ? { fileTransfer: deps.fileTransfer } : {}),
       taskReader: deps.taskReader,
       assistantActivity: deps.assistantActivity,
       autoMerge: deps.autoMerge,

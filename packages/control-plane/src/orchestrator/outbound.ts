@@ -75,6 +75,10 @@ import {
   WorkspaceListPage,
   WorkspaceReadReq,
   WorkspaceReadContent,
+  WorkspaceTransferReq,
+  WorkspaceTransferGrant,
+  TransferUploadReq,
+  TransferUploadGrant,
   WorkspaceWriteReq,
   WorkspaceWriteOk,
   WorkspaceDeleteReq,
@@ -164,6 +168,10 @@ import {
   SessionPullRequestFeedbackResult,
   CodeHostNoteDesired
 } from '@agentconnect.md/protocol'
+
+/** A workspace transfer may stage and upload up to the daemon's transfer cap before it answers. */
+const WORKSPACE_TRANSFER_BUDGET_MS = 16 * 60_000
+
 /**
  * `ControlSender` (design §4.7, the single fencing site) — the ONLY place that
  * stamps the `ControlExt` fencing block on outbound C→D control frames.
@@ -700,6 +708,23 @@ export class ControlSender {
   async workspaceRead(daemonId: string, req: WorkspaceReadReq): Promise<WorkspaceReadContent> {
     const c = this.must(daemonId)
     return c.conn.request<WorkspaceReadContent>('workspace/read', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Presign a bucket download of one workspace file (REQ → `workspace/transfer/grant`); single-shot, as the daemon may upload first. */
+  async workspaceTransfer(daemonId: string, req: WorkspaceTransferReq): Promise<WorkspaceTransferGrant> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceTransferGrant>(
+      'workspace/transfer',
+      req,
+      { epoch: c.sessionEpoch },
+      { ackTimeoutMs: WORKSPACE_TRANSFER_BUDGET_MS, maxTries: 1 }
+    )
+  }
+
+  /** Reserve a console upload in the Source Cache bucket and presign its PUT (REQ → `transfer/upload/grant`). */
+  async transferUpload(daemonId: string, req: TransferUploadReq): Promise<TransferUploadGrant> {
+    const c = this.must(daemonId)
+    return c.conn.request<TransferUploadGrant>('transfer/upload', req, { epoch: c.sessionEpoch })
   }
 
   /** Create or replace one scratch-workspace text file on the owning daemon. */

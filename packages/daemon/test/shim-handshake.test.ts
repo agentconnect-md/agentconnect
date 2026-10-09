@@ -412,7 +412,8 @@ describe('shim handshake', () => {
         'cluster-skills-v3',
         'source-cache-bundle-v1',
         'skill-git-in-pod-v1',
-        'skill-git-writeback-v1'
+        'skill-git-writeback-v1',
+        'workspace-transfer-v1'
       ]
     })
     // The audience is what makes handing over the pod's own token safe: a token minted

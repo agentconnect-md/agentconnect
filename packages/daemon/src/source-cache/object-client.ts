@@ -3,6 +3,7 @@ import { SOURCE_CACHE_GRACE_SECONDS, sourceCacheEndpoint, type SourceCacheConfig
 import type { CredentialsProvider } from './credentials.js'
 import { parseSourceCacheObjectKey, type SourceCacheObjectKey } from './keys.js'
 import { addressFor } from './presigner.js'
+import { isTransferObjectKey, type TransferObjectKey } from './transfer.js'
 import { amzDate, canonicalQuery, canonicalUri, sha256Hex, signHeaders } from './sigv4.js'
 
 // Header-signed requests the member makes itself (source-cache.md §9, §10): HEAD, retag, delete, and the lifecycle read.
@@ -10,10 +11,11 @@ import { amzDate, canonicalQuery, canonicalUri, sha256Hex, signHeaders } from '.
 export type SourceCacheLifecycleTag = 'ac-cache=live' | 'ac-cache=unreferenced'
 
 export type SourceCacheObjectHead =
-  { exists: false } | { exists: true; contentLength: number; checksumSha256?: string; etag?: string }
+  | { exists: false }
+  | { exists: true; contentLength: number; checksumSha256?: string; etag?: string; lastModified?: number }
 
 export interface SourceCacheObjectClient {
-  head(key: SourceCacheObjectKey): Promise<SourceCacheObjectHead>
+  head(key: SourceCacheObjectKey | TransferObjectKey): Promise<SourceCacheObjectHead>
   putTagging(key: SourceCacheObjectKey, tagging: SourceCacheLifecycleTag): Promise<void>
   /** Delete a bundle object; an object already gone resolves too. */
   delete(key: SourceCacheObjectKey): Promise<void>
@@ -87,15 +89,17 @@ export function createObjectClient(opts: ObjectClientOptions): SourceCacheObject
   const doFetch = opts.fetch ?? fetch
   const now = opts.now ?? Date.now
   const address = addressFor(opts.endpointOverride ?? sourceCacheEndpoint(config), config.bucket, config.forcePathStyle)
-  const objectPath = (key: SourceCacheObjectKey): string => {
-    if (parseSourceCacheObjectKey(key)?.kind !== 'bundle') throw new Error('Source Cache key must be a src/ bundle key')
+  const objectPath = (key: SourceCacheObjectKey | TransferObjectKey): string => {
+    if (parseSourceCacheObjectKey(key)?.kind !== 'bundle' && !isTransferObjectKey(key)) {
+      throw new Error('Source Cache key must be a src/ bundle key or a transfer key')
+    }
     return `${address.basePath}${config.prefix ? `${config.prefix}/` : ''}${key}`
   }
 
   const send = async (input: {
     method: 'HEAD' | 'PUT' | 'DELETE' | 'GET'
     /** A bundle key, or `bucket` for a bucket-level subresource such as `?lifecycle`. */
-    key: SourceCacheObjectKey | 'bucket'
+    key: SourceCacheObjectKey | TransferObjectKey | 'bucket'
     query?: Record<string, string>
     headers: Record<string, string>
     body?: string
@@ -139,11 +143,13 @@ export function createObjectClient(opts: ObjectClientOptions): SourceCacheObject
       if (!Number.isSafeInteger(length) || length < 0) throw new SourceCacheObjectError(res.status, 'NoLength', 'HEAD')
       const checksum = res.headers.get('x-amz-checksum-sha256') ?? undefined
       const etag = res.headers.get('etag') ?? undefined
+      const lastModified = Date.parse(res.headers.get('last-modified') ?? '')
       return {
         exists: true,
         contentLength: length,
         ...(checksum ? { checksumSha256: checksum } : {}),
-        ...(etag ? { etag } : {})
+        ...(etag ? { etag } : {}),
+        ...(Number.isFinite(lastModified) ? { lastModified } : {})
       }
     },
     async putTagging(key, tagging) {

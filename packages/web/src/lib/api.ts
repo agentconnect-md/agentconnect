@@ -2860,17 +2860,54 @@ export async function fetchWorkspaceFile(
   return apiGet<WorkspaceFileDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`)
 }
 
-/** A session file's original bytes (an upload, or a share named by its digest); the CP proxies and stores nothing. */
+/** A workspace file's original bytes (≤ 8 MiB); `sha256` pins a share's digest. The CP proxies and stores nothing. */
 export async function downloadSessionFile(
   agentId: string,
-  opts: { sessionId: string; path: string; sha256?: string }
+  opts: { path: string; sessionId?: string; repo?: string; sha256?: string }
 ): Promise<Blob> {
-  const q = new URLSearchParams({ sessionId: opts.sessionId, path: opts.path })
+  const q = new URLSearchParams({ path: opts.path })
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.repo) q.set('repo', opts.repo)
   if (opts.sha256) q.set('sha256', opts.sha256)
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file/download?${q.toString()}`
   const res = await authenticatedFetch(path, { cache: 'no-store' })
   if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
   return await res.blob()
+}
+
+/** A presigned object-store GET for one workspace file (binary or large text); the daemon uploads it first when needed. */
+export interface WorkspaceTransferDto {
+  path: string
+  size: number
+  url: string
+  expiresAt: string
+  cached: boolean
+}
+
+export function transferWorkspaceFile(
+  agentId: string,
+  opts: { path: string; sessionId?: string; repo?: string }
+): Promise<WorkspaceTransferDto> {
+  return apiPost<WorkspaceTransferDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file/transfer`, {
+    path: opts.path,
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+    ...(opts.repo ? { repo: opts.repo } : {})
+  })
+}
+
+/** A presigned object-store PUT for one chat upload: send exactly these headers and `size` bytes. */
+export interface FileUploadGrantDto {
+  uploadId: string
+  url: string
+  headers: Record<string, string>
+  expiresAt: string
+}
+
+export function reserveFileUpload(
+  agentId: string,
+  body: { name: string; mimeType: string; size: number; sha256: string }
+): Promise<FileUploadGrantDto> {
+  return apiPost<FileUploadGrantDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/uploads`, body)
 }
 
 /** Read one workspace text file whole before editing it. Every slice must describe

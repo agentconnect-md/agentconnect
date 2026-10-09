@@ -114,7 +114,10 @@ const Limits = z
     pendingReservationSeconds: DurationSeconds.default(3600),
     unreadPointerDays: z.number().int().min(1).max(365).default(30),
     getUrlSeconds: DurationSeconds.default(300),
-    putUrlSeconds: DurationSeconds.default(900)
+    putUrlSeconds: DurationSeconds.default(900),
+    // Console file transfers: the per-file cap, and how long a download link (the browser's or the agent's) stays valid.
+    transferMaxBytes: ByteQuantity.default(512 * KIB * KIB),
+    transferUrlSeconds: DurationSeconds.default(1800)
   })
   .prefault({})
 
@@ -122,6 +125,8 @@ export const SourceCacheConfigSchema = z
   .strictObject({
     version: z.literal(1),
     endpoint: Endpoint.optional(),
+    // The origin browsers reach the bucket at for file transfers, when it differs from the in-cluster `endpoint`.
+    publicEndpoint: Endpoint.optional(),
     region: Region,
     bucket: Bucket,
     prefix: Prefix,
@@ -135,6 +140,12 @@ export const SourceCacheConfigSchema = z
       if (limits[name] < 60 || limits[name] > 3600) {
         ctx.addIssue({ code: 'custom', path: ['limits', name], message: 'must be between 1m and 1h' })
       }
+    }
+    if (limits.transferUrlSeconds < 60 || limits.transferUrlSeconds > 12 * 3600) {
+      ctx.addIssue({ code: 'custom', path: ['limits', 'transferUrlSeconds'], message: 'must be between 1m and 12h' })
+    }
+    if (limits.transferMaxBytes > S3_SINGLE_PUT_MAX_BYTES) {
+      ctx.addIssue({ code: 'custom', path: ['limits', 'transferMaxBytes'], message: 'must not exceed 5Gi' })
     }
     if (limits.pendingReservationSeconds < limits.putUrlSeconds + SOURCE_CACHE_GRACE_SECONDS) {
       ctx.addIssue({
@@ -153,7 +164,8 @@ export const SourceCacheConfigSchema = z
     const credentials = config.credentials
     if (
       credentials.source === 'webIdentity' &&
-      credentials.durationSeconds <= Math.max(limits.getUrlSeconds, limits.putUrlSeconds) + SOURCE_CACHE_GRACE_SECONDS
+      credentials.durationSeconds <=
+        Math.max(limits.getUrlSeconds, limits.putUrlSeconds, limits.transferUrlSeconds) + SOURCE_CACHE_GRACE_SECONDS
     ) {
       ctx.addIssue({
         code: 'custom',

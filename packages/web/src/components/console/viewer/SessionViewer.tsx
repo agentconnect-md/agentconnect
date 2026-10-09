@@ -17,6 +17,7 @@ import { escapeHtml, highlight, languageLabel, linkifyHtml, loadHljs, splitHtmlL
 import {
   ApiError,
   downloadSessionFile,
+  transferWorkspaceFile,
   fetchWorkspaceFile,
   fetchWorkspaceGitDiff,
   stageWorkspacePaths,
@@ -25,7 +26,13 @@ import {
   type WorkspaceFileDto,
   type WorkspaceGitDiffDto
 } from '@/lib/api'
-import { MAX_WORKSPACE_DOWNLOAD_BYTES, saveBlob, type SessionFileDownload } from '@/lib/shared-file'
+import {
+  MAX_WORKSPACE_DOWNLOAD_BYTES,
+  openDownloadUrl,
+  saveBlob,
+  viaTransfer,
+  type SessionFileDownload
+} from '@/lib/shared-file'
 
 // react-markdown is heavy and only needed for a Markdown preview, so it stays out of the main console bundle.
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), { ssr: false })
@@ -153,6 +160,7 @@ export function SessionViewer({
   onIndexChanged,
   onOpenPath,
   download,
+  transfer = false,
   onClose
 }: {
   agentId: string
@@ -172,8 +180,10 @@ export function SessionViewer({
   onIndexChanged?: () => void
   /** A relative link in a Markdown preview was followed. Omitted ⇒ such links are drawn unavailable. */
   onOpenPath?: (path: string) => void
-  /** How the download route names this file — an upload, or a share by its digest. Omitted ⇒ no Download and no image preview. */
+  /** How the download route names this file — its session, and a share's digest. Omitted ⇒ no Download and no image preview. */
   download?: SessionFileDownload
+  /** The daemon presigns object-store downloads (`file-transfer-v1`), so binary and large text download through it. */
+  transfer?: boolean
   onClose: () => void
 }) {
   const t = useTranslations('Sessions.viewer')
@@ -321,7 +331,7 @@ export function SessionViewer({
   // The download route's refusals, worded as the shared-file chip words them.
   const downloadFailureText = (e: unknown) => {
     const code = codeOf(e)
-    if (code === 'WORKSPACE_FILE_TOO_LARGE') return td('fileTooLarge')
+    if (code === 'WORKSPACE_FILE_TOO_LARGE' || code === 'WORKSPACE_TOO_LARGE') return td('fileTooLarge')
     if (code === 'WORKSPACE_FILE_CHANGED') return td('fileChanged')
     if (code === 'WORKSPACE_FILE_NOT_FOUND') return td('fileGone')
     if (code === 'DAEMON_FEATURE_MISSING' || code === 'WORKSPACE_SANDBOX_OUTDATED') return td('downloadUnsupported')
@@ -331,7 +341,7 @@ export function SessionViewer({
   // An image's bytes are read raw once the text read has said what the path is; the key fences an answer to the revision it was asked for.
   const imageKey =
     isImage && download
-      ? [agentId, download.sessionId, download.sha256 ?? '', path, file?.mtime ?? ''].join('\n')
+      ? [agentId, download.sessionId ?? '', repo ?? '', download.sha256 ?? '', path, file?.mtime ?? ''].join('\n')
       : null
   const previewable = imageKey !== null && (file?.size ?? 0) <= MAX_WORKSPACE_DOWNLOAD_BYTES
   const [image, setImage] = useState<ImageRead | null>(null)
@@ -340,7 +350,7 @@ export function SessionViewer({
     let active = true
     let url: string | null = null
     setImage({ key: imageKey, blob: null, url: null, err: null })
-    downloadSessionFile(agentId, { ...download, path }).then(
+    downloadSessionFile(agentId, { ...download, path, ...(repo ? { repo } : {}) }).then(
       (bytes) => {
         if (!active) return
         // Retyped from the extension: the route answers octet-stream for formats it does not name, which an <img> may refuse.
@@ -366,6 +376,19 @@ export function SessionViewer({
   const saveFile = async () => {
     if (downloading || !download) return
     setDownloadErr(null)
+    const scope = { path, ...(download.sessionId ? { sessionId: download.sessionId } : {}), ...(repo ? { repo } : {}) }
+    // Binary and large text skip the CP proxy: the browser fetches a presigned object-store URL.
+    if (file && viaTransfer(file, transfer)) {
+      setDownloading(true)
+      try {
+        openDownloadUrl((await transferWorkspaceFile(agentId, scope)).url)
+      } catch (e) {
+        setDownloadErr(downloadFailureText(e))
+      } finally {
+        setDownloading(false)
+      }
+      return
+    }
     // The route refuses past its ceiling anyway; saying so here spares pulling every slice first.
     if ((file?.size ?? 0) > MAX_WORKSPACE_DOWNLOAD_BYTES) {
       setDownloadErr(td('fileTooLarge'))
@@ -373,7 +396,7 @@ export function SessionViewer({
     }
     setDownloading(true)
     try {
-      saveBlob(currentImage?.blob ?? (await downloadSessionFile(agentId, { ...download, path })), name)
+      saveBlob(currentImage?.blob ?? (await downloadSessionFile(agentId, { ...download, ...scope })), name)
     } catch (e) {
       setDownloadErr(downloadFailureText(e))
     } finally {
