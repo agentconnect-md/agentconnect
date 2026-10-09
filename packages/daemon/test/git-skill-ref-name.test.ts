@@ -14,7 +14,7 @@ import {
   type GitRefNameRunner
 } from '../src/skills/git-skill-ref-name.js'
 import { GitSkillRefTracker } from '../src/skills/git-skill-ref-tracker.js'
-import { createSkillRefPlanResolution } from '../src/skills/skill-ref-resolution.js'
+import { createSkillRefPlanResolution, createSkillRefResolution } from '../src/skills/skill-ref-resolution.js'
 import type { GitSkillCommitResolution } from '../src/skills/skill-git-source.js'
 
 const URL_ = 'https://github.com/acme/skills.git'
@@ -244,6 +244,21 @@ describe('GitSkillRefTracker names the full ref of an anonymous Source', () => {
     fail = false
     now += 6 * 60_000
     expect(await t.resolveTracked(entry())).toEqual({ commit: tips.trunk, ref: 'refs/heads/trunk' })
+  })
+
+  it('never lists for the commit-only resolution a daemon without a cache uses', async () => {
+    const namings: string[] = []
+    const { t } = tracker({ namings })
+    const commitOf = createSkillRefResolution({
+      anonymous: t,
+      credentialed: {
+        resolveRef: async () => {
+          throw new Error('never asked')
+        }
+      }
+    })
+    expect(await commitOf(entry({ ref: 'main' }), 'agent-a')).toBe(tips.trunk)
+    expect(namings).toEqual([])
   })
 
   it('never lists for resolve(), and keeps a named ref through a failed commit check', async () => {
