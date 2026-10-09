@@ -959,7 +959,9 @@ shows the most recent entries, up to a limit, and says when more exist.
   confirmation, and approve with "always allow from here to there" where its card offers that. The
   decision is the card's own: one post at most, whichever comes first, the same grant rules, the
   editor recorded as the decider, and the card rewritten to the outcome. The row then shows how it
-  ended: posted, discarded, failed, not sure it went through, expired, or already decided.
+  ended: posted, discarded, failed, not sure it went through, expired, or already decided. A
+  decision that got no answer keeps its row with a warning; once the draft is no longer waiting,
+  it says to check the destination, since it may have been posted.
 - **Always allowed** is shown to editors only: each "Always allow from here to there" route. An
   editor may revoke one after a confirmation; the next post along it waits for approval again.
 

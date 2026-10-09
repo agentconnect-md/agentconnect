@@ -3107,7 +3107,6 @@
           "approveAlwaysConfirm": "Post this to {target} now, and always allow from here to there?",
           "discardConfirm": "Discard this draft? Nothing is posted.",
           "decideFailed": "Couldn’t decide. Try again.",
-          "unconfirmed": "Couldn’t confirm the decision. The list was read again.",
           "upgradeDaemon": "Upgrade this agent’s daemon to decide drafts here.",
           "outcome": {
             "succeeded": "Posted.",
@@ -3118,7 +3117,9 @@
             "outcome_unknown": "Not sure this went through. Check the conversation; it won’t be posted again.",
             "expired": "Expired. Nothing was posted.",
             "decided": "Already decided.",
-            "gone": "No longer waiting for approval."
+            "gone": "No longer waiting for approval.",
+            "unconfirmedWaiting": "Couldn’t confirm the decision. It is still waiting for approval.",
+            "unconfirmedGone": "Couldn’t confirm the decision, and it is no longer waiting. Check the destination; it may have been posted."
           }
         },
         "grants": {

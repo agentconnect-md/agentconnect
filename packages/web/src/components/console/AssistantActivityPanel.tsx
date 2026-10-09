@@ -47,8 +47,9 @@ const SUBSESSION_STATE_CLASS: Record<AssistantSubsessionDto['state'], string> = 
 
 type Translate = ReturnType<typeof useTranslations<'Agents.detail.activity'>>
 
-/** How a decision on a draft ended: its outcome, or why the daemon refused it. */
-type DraftResult = { outcome: AssistantDraftOutcomeDto } | { refused: 'expired' | 'decided' | 'gone' }
+/** How a decision on a draft ended: its outcome, why the daemon refused it, or sent without an answer. */
+type DraftResult =
+  { outcome: AssistantDraftOutcomeDto } | { refused: 'expired' | 'decided' | 'gone' } | { unconfirmed: true }
 
 const DRAFT_REFUSALS: Record<string, 'expired' | 'decided'> = {
   DRAFT_EXPIRED: 'expired',
@@ -192,16 +193,21 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
     })
   }
 
-  // A decided draft keeps its row and shows how it ended, even after a refresh stops listing it.
+  // A decided or unconfirmed draft keeps its row and what happened, even after a refresh stops listing it.
   const [decided, setDecided] = useState<Record<string, { draft: AssistantDraftDto; result: DraftResult }>>({})
   const pendingDrafts = drafts.data?.drafts ?? []
+  const pendingIds = new Set(pendingDrafts.map((draft) => draft.id))
   const draftRows = [
     ...pendingDrafts,
     ...Object.values(decided)
       .map((entry) => entry.draft)
-      .filter((draft) => !pendingDrafts.some((pending) => pending.id === draft.id))
+      .filter((draft) => !pendingIds.has(draft.id))
   ]
-  const waiting = pendingDrafts.filter((draft) => !decided[draft.id]).length
+  const settledHere = (id: string) => {
+    const result = decided[id]?.result
+    return result !== undefined && !('unconfirmed' in result)
+  }
+  const waiting = pendingDrafts.filter((draft) => !settledHere(draft.id)).length
 
   const decideDraft = async (draft: AssistantDraftDto, decision: AssistantDraftDecision) => {
     const settle = (result: DraftResult) => setDecided((prev) => ({ ...prev, [draft.id]: { draft, result } }))
@@ -211,8 +217,12 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
       const refused = err instanceof ApiError ? DRAFT_REFUSALS[err.code ?? ''] : undefined
       if (refused) return settle({ refused })
       if (err instanceof ApiError && err.status === 404) return settle({ refused: 'gone' })
-      // It may have run without an answer: read the list again rather than guess.
-      if (err instanceof ApiError && err.code === 'DECISION_UNCONFIRMED') void drafts.mutate()
+      if (err instanceof ApiError && err.code === 'DECISION_UNCONFIRMED') {
+        // It may have posted without an answer: keep the row and its warning, and read the list again.
+        settle({ unconfirmed: true })
+        void drafts.mutate()
+        return
+      }
       throw err
     }
   }
@@ -285,6 +295,7 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
                 draft={draft}
                 first={i === 0}
                 result={decided[draft.id]?.result}
+                pending={pendingIds.has(draft.id)}
                 onDecide={decideDraft}
               />
             ))}
@@ -535,12 +546,15 @@ function DraftRow({
   draft,
   first,
   result,
+  pending,
   onDecide
 }: {
   agentId: string
   draft: AssistantDraftDto
   first: boolean
   result: DraftResult | undefined
+  /** The latest read still lists it as waiting for approval. */
+  pending: boolean
   onDecide: (draft: AssistantDraftDto, decision: AssistantDraftDecision) => Promise<void>
 }) {
   const t = useTranslations('Agents.detail.activity')
@@ -562,6 +576,8 @@ function DraftRow({
     : approver.kind === 'conversation'
       ? placeLabel(approver)
       : (approver.name ?? (member ? memberDisplayName(member) : (approver.userId ?? t('drafts.noApprover'))))
+  // An unconfirmed decision may be tried again only while the draft is still listed as waiting.
+  const canDecide = !result || ('unconfirmed' in result && pending)
 
   const decide = async (decision: AssistantDraftDecision) => {
     setBusy(true)
@@ -570,11 +586,9 @@ function DraftRow({
       await onDecide(draft, decision)
     } catch (err) {
       setFailure(
-        err instanceof ApiError && err.code === 'DECISION_UNCONFIRMED'
-          ? t('drafts.unconfirmed')
-          : err instanceof ApiError && err.code === 'DAEMON_FEATURE_MISSING'
-            ? t('drafts.upgradeDaemon')
-            : t('drafts.decideFailed')
+        err instanceof ApiError && err.code === 'DAEMON_FEATURE_MISSING'
+          ? t('drafts.upgradeDaemon')
+          : t('drafts.decideFailed')
       )
     } finally {
       setBusy(false)
@@ -608,9 +622,8 @@ function DraftRow({
           })}
         </span>
       </div>
-      {result ? (
-        <DraftOutcome result={result} />
-      ) : confirming ? (
+      {result ? <DraftOutcome result={result} pending={pending} /> : null}
+      {!canDecide ? null : confirming ? (
         <ConfirmStrip
           prompt={
             confirming === 'discard'
@@ -639,7 +652,7 @@ function DraftRow({
           ) : null}
         </div>
       )}
-      {failure && !result ? (
+      {failure && canDecide ? (
         <div role="alert" className="mt-1 font-sans text-[12px] text-(--status-error)">
           {failure}
         </div>
@@ -656,11 +669,14 @@ const OUTCOME_CLASS: Record<AssistantDraftOutcomeDto['status'], string> = {
 }
 
 /** What a decision did, in place of the draft's buttons. */
-function DraftOutcome({ result }: { result: DraftResult }) {
+function DraftOutcome({ result, pending }: { result: DraftResult; pending: boolean }) {
   const t = useTranslations('Agents.detail.activity')
   let text: string
   let tone = 'text-(--text-secondary)'
-  if ('refused' in result) {
+  if ('unconfirmed' in result) {
+    tone = 'text-(--status-paused)'
+    text = pending ? t('drafts.outcome.unconfirmedWaiting') : t('drafts.outcome.unconfirmedGone')
+  } else if ('refused' in result) {
     text = t(`drafts.outcome.${result.refused}`)
   } else {
     const { status, alwaysAllowed, failure } = result.outcome
