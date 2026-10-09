@@ -330,7 +330,8 @@ another place, under §5.5.
 > **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
 > act directly only on **the current place**; a post to another place is a draft the asker
 > approves (below). Item and report traffic across places goes through §5.7 as structured fields.
-> The agent-to-agent forms of `sendMessage` are unchanged.
+> The agent-to-agent forms of `sendMessage` are unchanged, except in a session marked by a
+> per-asker read (below).
 > **External**: an external place reads like an internal one; what it posts is a draft.
 
 | Current place                | Recallable sources                                                                                         | Memory / knowledge | Output                                                |
@@ -402,8 +403,10 @@ below), so opening it everywhere does not reopen what the read rule closes.
   from the first widened read until that session is retired (`!new`, or a rollover that starts a
   fresh context), every turn in it — P's own, a report round or a cron run alike — is refused
   ledger writes (taking, updating or following an item: item summaries and observations are
-  team-visible and feed every place's standing summary), self-delegation, and posts or drafts
-  aimed at any other place. The mark is stored with the session so it survives a restart or
+  team-visible and feed every place's standing summary), self-delegation, posts or drafts aimed
+  at any other place, and every agent-to-agent send — a direct `toAgent` call, a `toAgent` +
+  `channel` post at a channel root, and a reply into another session through `sessionId` — since
+  each carries the content into a session or place P does not alone see. The mark is stored with the session so it survives a restart or
   handover, and the refusal tells P that starting a new conversation lifts it. This is a refusal
   by tool, not an output filter.
 - **Memory**: DMs are already outside shared memory. When the per-person memory space lands,
@@ -849,6 +852,6 @@ audience — their own DM with the agent — with membership checked live on pla
 listing is authoritative; every shared place keeps the P0a private-place rule. Architecture review
 of that change: the Read box, the `P's DM` row and the target now state the same rule; the widening
 is bound to a turn P started, never a report, patrol, cron or sub-session turn; a session that
-made a widened read writes only to P's DM — no ledger writes, self-delegation or posts elsewhere —
-until it is retired, because the content stays in its context across turns; per-person memory
+made a widened read writes only to P's DM — no ledger writes, self-delegation, posts elsewhere or
+agent-to-agent sends — until it is retired, because the content stays in its context across turns; per-person memory
 captured from it stays in P's DM; revocation residue and the metric's inputs are stated.
