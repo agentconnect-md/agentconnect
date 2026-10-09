@@ -3683,8 +3683,10 @@ export class LocalStore {
       )
       .run(cursorTs, at, key, expectAcpSessionId ?? null)
     if (Number(res.changes) === 0) return false
-    // A cleared context no longer holds what a per-asker read brought in (assistant-mode.md §5.5).
-    await this.db.prepare('DELETE FROM assistant_widened_session WHERE sessionKey = ?').run(key)
+    // A cleared context no longer holds what a per-asker read brought in; its place keeps the lifted row (assistant-mode.md §5.5).
+    await this.db
+      .prepare('UPDATE assistant_widened_session SET liftedAt = ? WHERE sessionKey = ? AND liftedAt IS NULL')
+      .run(at, key)
     return true
   }
 
@@ -4529,10 +4531,12 @@ export class LocalStore {
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
-      // A purged session takes its widened-read mark with it (assistant-mode.md §5.5).
+      // A purged session's mark is lifted; its place keeps the row, since the platform keeps its history (assistant-mode.md §5.5).
       await tx
-        .prepare('DELETE FROM assistant_widened_session WHERE agentId = ? AND sessionKey = ?')
-        .run(rec.agentId, key)
+        .prepare(
+          'UPDATE assistant_widened_session SET liftedAt = ? WHERE agentId = ? AND sessionKey = ? AND liftedAt IS NULL'
+        )
+        .run(Date.now(), rec.agentId, key)
       // A purged sub-session leaves its parent's index (assistant-mode.md §5.6).
       if (isSubsessionCoordinate(rec.thread))
         await tx

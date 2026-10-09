@@ -13,7 +13,14 @@ import { transcriptChannelKey, type SessionRecord, type TranscriptRow } from '..
 import { optionalString, parseArgs } from './args.js'
 import type { SessionContext } from './context.js'
 import { knownIntegrations } from './gateway.js'
-import { askerMembership, describePlace, kindFromRows, type PlaceAccessDeps, type PlaceStore } from './place-gate.js'
+import {
+  askerMembership,
+  carryPlaceMark,
+  describePlace,
+  kindFromRows,
+  type PlaceAccessDeps,
+  type PlaceStore
+} from './place-gate.js'
 
 export const RECALL_ARGS = z.object({ place: optionalString('place'), query: optionalString('query') })
 
@@ -246,6 +253,9 @@ export async function recall(
     )
     if (refusal === 'direct') return { place: handle, refused: true, answer: placeRefusalMessage(refusal) }
     if (refusal) return notSharedHere(handle)
+  } else {
+    // Its earlier sessions may hold what a widened read answered there.
+    await carryPlaceMark(ctx, 'recall', deps)
   }
   const name = nameOf(place, names)
   return {

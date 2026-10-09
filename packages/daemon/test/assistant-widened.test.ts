@@ -34,23 +34,31 @@ const sessionRow = (agentId: string, key: string, thread: string) => ({
   updatedAt: 1_000
 })
 
+const dm = { platform: 'slack', channel: 'D0EXAMPLE' }
+
 describe('assistant widened-session marks', () => {
-  it('marks a session once, per agent, and keeps the first time', async () => {
+  it('marks a session once, per agent, and finds its place', async () => {
     const s = await open()
     const a = agent()
     const b = agent()
     expect(await s.assistantWidened.has(a, dmKey(a))).toBe(false)
-    await s.assistantWidened.mark(a, dmKey(a), 1_000)
-    await s.assistantWidened.mark(a, dmKey(a), 2_000)
+    expect(await s.assistantWidened.placeMarked(a, 'slack', 'D0EXAMPLE')).toBe(false)
+    await s.assistantWidened.mark(a, dmKey(a), dm, 1_000)
+    await s.assistantWidened.mark(a, dmKey(a), dm, 2_000)
     expect(await s.assistantWidened.has(a, dmKey(a))).toBe(true)
-    // A fresh coordinate is a new session, and another agent's session is its own.
+    expect(await s.assistantWidened.placeMarked(a, 'slack', 'D0EXAMPLE')).toBe(true)
+    // A fresh coordinate is a new session, another place is its own, and so is another agent.
     expect(await s.assistantWidened.has(a, dmKey(a, 'append:2'))).toBe(false)
+    expect(await s.assistantWidened.placeMarked(a, 'slack', 'D0OTHER')).toBe(false)
+    expect(await s.assistantWidened.placeMarked(a, 'telegram', 'D0EXAMPLE')).toBe(false)
     expect(await s.assistantWidened.has(b, dmKey(a))).toBe(false)
+    expect(await s.assistantWidened.placeMarked(b, 'slack', 'D0EXAMPLE')).toBe(false)
     expect(await s.assistantWidened.deleteForAgent(a)).toBe(1)
     expect(await s.assistantWidened.has(a, dmKey(a))).toBe(false)
+    expect(await s.assistantWidened.placeMarked(a, 'slack', 'D0EXAMPLE')).toBe(false)
   })
 
-  it('goes with a purged session and with a cleared context, and nothing else', async () => {
+  it('lifts the mark of a purged session and of a cleared context, and keeps their place marked', async () => {
     const s = await open()
     const a = agent()
     const purged = dmKey(a, 'append:1')
@@ -59,13 +67,26 @@ describe('assistant widened-session marks', () => {
     await s.upsertSession(sessionRow(a, purged, 'append:1'))
     await s.upsertSession(sessionRow(a, cleared, 'T1'))
     await s.upsertSession(sessionRow(a, kept, 'append:2'))
-    for (const key of [purged, cleared, kept]) await s.assistantWidened.mark(a, key, 1_000)
+    for (const key of [purged, cleared, kept]) await s.assistantWidened.mark(a, key, dm, 1_000)
     expect(await s.deleteSession(purged)).toBe(true)
-    // `!new` on a session that keeps its key clears its context, and the mark with it.
+    // `!new` on a session that keeps its key clears its context, and lifts the mark with it.
     expect(await s.clearSessionContext(cleared, '200.0', 2_000, 'acp-1')).toBe(true)
     expect(await s.assistantWidened.has(a, purged)).toBe(false)
     expect(await s.assistantWidened.has(a, cleared)).toBe(false)
     expect(await s.assistantWidened.has(a, kept)).toBe(true)
+  })
+
+  it('keeps a place marked by a lifted session only, and marks a lifted session again on a read back', async () => {
+    const s = await open()
+    const a = agent()
+    const key = dmKey(a, 'T1')
+    await s.upsertSession(sessionRow(a, key, 'T1'))
+    await s.assistantWidened.mark(a, key, dm, 1_000)
+    expect(await s.clearSessionContext(key, '200.0', 2_000, 'acp-1')).toBe(true)
+    expect(await s.assistantWidened.has(a, key)).toBe(false)
+    expect(await s.assistantWidened.placeMarked(a, 'slack', 'D0EXAMPLE')).toBe(true)
+    await s.assistantWidened.mark(a, key, dm, 3_000)
+    expect(await s.assistantWidened.has(a, key)).toBe(true)
   })
 
   it('keeps the mark when a clear does not happen', async () => {
@@ -73,7 +94,7 @@ describe('assistant widened-session marks', () => {
     const a = agent()
     const key = dmKey(a, 'T1')
     await s.upsertSession(sessionRow(a, key, 'T1'))
-    await s.assistantWidened.mark(a, key, 1_000)
+    await s.assistantWidened.mark(a, key, dm, 1_000)
     expect(await s.clearSessionContext(key, '200.0', 2_000, 'acp-other')).toBe(false)
     expect(await s.assistantWidened.has(a, key)).toBe(true)
   })
@@ -84,7 +105,7 @@ describe.skipIf(usingPostgresStore())('the widened-session marks across a restar
     const path = tempStorePath('ac-assistant-widened-')
     const a = agent()
     const first = await LocalStore.open(path)
-    await first.assistantWidened.mark(a, dmKey(a), 1_000)
+    await first.assistantWidened.mark(a, dmKey(a), dm, 1_000)
     await first.close()
     const reopened = await LocalStore.open(path)
     try {
@@ -105,7 +126,7 @@ describe.skipIf(usingPostgresStore())('the widened-session marks across a restar
     const upgraded = await LocalStore.open(path)
     const a = agent()
     try {
-      await upgraded.assistantWidened.mark(a, dmKey(a), 1_000)
+      await upgraded.assistantWidened.mark(a, dmKey(a), dm, 1_000)
       expect(await upgraded.assistantWidened.has(a, dmKey(a))).toBe(true)
     } finally {
       await upgraded.close()

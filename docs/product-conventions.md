@@ -856,7 +856,10 @@ every other conversation keep the ordinary rule. Another person's DM is never re
 Once a DM conversation has read a private place this way, it writes only to that DM: it changes
 no item, sends nothing to any agent, itself included, and posts or drafts nothing anywhere else.
 This holds for every later turn of that conversation and across restarts. When it refuses, the
-agent tells the person that starting a new conversation with `!new` lifts it.
+agent tells the person that starting a new conversation with `!new` lifts it. `!new` lifts it only
+for a conversation that does not read the DM's earlier history back: recalling the DM, or reading
+its history or a thread in it, while an earlier conversation there was restricted restricts the
+reader too.
 
 ## Assistant-mode drafts
 

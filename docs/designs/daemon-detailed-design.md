@@ -1313,7 +1313,10 @@ refused like any private place. Only such a read is let past the reach gate, and
 (`assistant_widened_session`). From then on every turn of that session, whoever started it, is
 refused ledger writes, every agent-to-agent `sendMessage` form, and platform posts or drafts aimed
 at another place, until the session is retired: `!new` (a fresh coordinate in `append`, a cleared
-context otherwise) or a purge deletes the mark.
+context otherwise) or a purge lifts the mark. The lifted row stays with its place, and a read of a
+session's own place (same-place `recall`, `getChannelHistory`, `getThreadHistory`, `getReactions`,
+`listBookmarks`) where any session was ever marked first marks the reader, sub-sessions and
+patrols included, or is refused when the mark cannot be checked or written.
 
 The join is an **operator switch**, per bot: `Bot.platformConfig.joinPublicChannels` (the
 generic bag, so no migration), flipped by `PATCH /bots/:id` and rendered by the Slack module's

@@ -3823,10 +3823,12 @@ export class Daemon {
       placeMember: (integrationId, channel, userId) => this.placeMembers.isMember(integrationId, channel, userId),
       widenedSession: {
         mark: async (ctx) => {
-          await this.store.assistantWidened.mark(ctx.agentId, this.sessionKeyOf(ctx), this.clock.now())
+          const place = { platform: ctx.platform, channel: ctx.channel }
+          await this.store.assistantWidened.mark(ctx.agentId, this.sessionKeyOf(ctx), place, this.clock.now())
           return true
         },
-        marked: (ctx) => this.store.assistantWidened.has(ctx.agentId, this.sessionKeyOf(ctx))
+        marked: (ctx) => this.store.assistantWidened.has(ctx.agentId, this.sessionKeyOf(ctx)),
+        placeMarked: (ctx) => this.store.assistantWidened.placeMarked(ctx.agentId, ctx.platform, ctx.channel)
       },
       attachmentReaderFor: (integrationId) =>
         this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),

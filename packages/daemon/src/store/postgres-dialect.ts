@@ -222,6 +222,7 @@ export const canonicalColumns = [
   'repoId',
   'refHash',
   'lastReadAt',
+  'liftedAt',
   'unpointedAt',
   'targetKey',
   'committedBytes',

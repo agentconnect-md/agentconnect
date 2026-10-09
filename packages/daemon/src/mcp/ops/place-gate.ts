@@ -50,12 +50,27 @@ export interface PlaceAccessDeps extends GatewayDeps {
   /** Whether a person is a current member of a conversation on that bot, confirmed live; false when it cannot be. */
   placeMember?: (integrationId: string, channel: string, userId: string) => Promise<boolean>
   /** The session's durable mark for a read the asker's membership opened (§5.5); it ends when the session is retired. */
-  widenedSession?: { mark(ctx: SessionContext): Promise<boolean>; marked(ctx: SessionContext): Promise<boolean> }
+  widenedSession?: {
+    mark(ctx: SessionContext): Promise<boolean>
+    marked(ctx: SessionContext): Promise<boolean>
+    /** Whether any session of the agent in this session's place was ever marked, retired ones included. */
+    placeMarked(ctx: SessionContext): Promise<boolean>
+  }
 }
 
 /** Whether this session carries the widened-read mark; a mark that cannot be read counts as set. */
 async function widenedHere(ctx: SessionContext, deps: PlaceAccessDeps): Promise<boolean> {
   return deps.widenedSession ? await deps.widenedSession.marked(ctx).catch(() => true) : false
+}
+
+/** A read of the session's own place takes on the place's mark first (§5.5), so earlier history cannot leave it unmarked; fails closed. */
+export async function carryPlaceMark(ctx: SessionContext, tool: string, deps: PlaceAccessDeps): Promise<void> {
+  const widened = deps.widenedSession
+  if (!widened) return
+  const marked = await widened.placeMarked(ctx).catch(() => undefined)
+  if (marked === false) return
+  if (marked === true && (await widened.mark(ctx).catch(() => false))) return
+  throw new Error(`${tool}: this conversation's history could not be read right now. Nothing was read; retry.`)
 }
 
 /** The gate's word on a call it lets through: `draft` sends the post through approval, `memberRead` is a private place the asker's membership opened (§5.5). */
@@ -231,7 +246,10 @@ async function assertReadableHere(
     platform: ctx.platform,
     channel: typeof args.channel === 'string' ? args.channel : ctx.channel
   }
-  if (samePlace(current, source)) return undefined
+  if (samePlace(current, source)) {
+    await carryPlaceMark(ctx, tool, deps)
+    return undefined
+  }
   const named = typeof args.integrationId === 'string' ? args.integrationId : ctx.integrationId
   const integrationId = knownIntegrations(ctx).some((i) => i.id === named && i.platform === ctx.platform)
     ? named
