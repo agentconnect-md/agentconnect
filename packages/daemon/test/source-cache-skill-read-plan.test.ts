@@ -1,5 +1,8 @@
 import { AgentSkillEntry } from '@agentconnect.md/protocol'
-import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createSkillReadPlanner, type SourceCacheReadOutcome } from '../src/source-cache/read-plan.js'
 import {
   anonRepoId,
@@ -9,7 +12,8 @@ import {
   skillPointerKey,
   type SourceCacheClass
 } from '../src/source-cache/keys.js'
-import type { SkillRefPlan } from '../src/skills/skill-ref-resolution.js'
+import { createSkillRefPlanResolution, type SkillRefPlan } from '../src/skills/skill-ref-resolution.js'
+import { GitSkillRefTracker } from '../src/skills/git-skill-ref-tracker.js'
 import { createSkillCachePlanner } from '../src/source-cache/skill-write-back.js'
 import type { SourceCacheStagedWriteRequest, SourceCacheWriter } from '../src/source-cache/write-back.js'
 import type { SourceCacheObjectRow } from '../src/store/local-store.js'
@@ -276,7 +280,7 @@ describe('skill write-back planning (source-cache.md §8, §9)', () => {
     })
   })
 
-  it('asks for nothing for a tag, a pinned SHA, a ref-less anonymous Source, without a writer, or when not allowed', async () => {
+  it('asks for nothing for a tag, a pinned SHA, an anonymous Source whose ref went unnamed, without a writer, or when not allowed', async () => {
     const p = planner()
     const ask = (request: Parameters<typeof p.plan>[0], writeBack = true) => p.plan(request, { writeBack })
     const tagged = await ask({
@@ -300,5 +304,79 @@ describe('skill write-back planning (source-cache.md §8, §9)', () => {
       { writeBack: true }
     )
     for (const plan of [tagged, pinned, refless, disallowed, noWriter]) expect(plan.writeBack).toBeUndefined()
+  })
+
+  describe('anonymous short and no-ref Sources key the cache on the ref the tracker named', () => {
+    // The REST check answers COMMIT; the listing names `refs/heads/trunk` as the default branch and `main` as a branch.
+    let stateRoot: string
+    beforeAll(async () => {
+      stateRoot = await mkdtemp(join(tmpdir(), 'ac-skill-read-plan-'))
+    })
+    afterAll(async () => {
+      await rm(stateRoot, { recursive: true, force: true })
+    })
+    const resolution = () =>
+      createSkillRefPlanResolution({
+        anonymous: new GitSkillRefTracker({
+          stateRoot,
+          resolve: async () => ({ status: 'resolved', commit: COMMIT }),
+          nameRef: async ({ name }) =>
+            name === 'both'
+              ? { kind: 'unnamed', reason: 'ambiguous' }
+              : { kind: 'named', ref: name === undefined ? 'refs/heads/trunk' : `refs/heads/${name}`, commit: COMMIT }
+        }),
+        credentialed: {
+          resolveRef: async () => {
+            throw new Error('an anonymous Source never asks resolveRef')
+          }
+        }
+      })
+
+    it('reads the anon pointer of `main` and of the default branch', async () => {
+      const resolve = resolution()
+      // One harness per ref: the seeded bundle id is fixed.
+      const h = harness()
+      const main = h.seed('anon', ANON, 'refs/heads/main')
+      const branch = entry({ ref: 'main' })
+      expect(await h.reader.getUrl({ agentId: 'a', entry: branch, resolution: await resolve(branch, 'a') })).toContain(
+        main
+      )
+      const d = harness()
+      const trunk = d.seed('anon', ANON, 'refs/heads/trunk')
+      expect(
+        await d.reader.getUrl({ agentId: 'b', entry: entry(), resolution: await resolve(entry(), 'b') })
+      ).toContain(trunk)
+      const ambiguous = entry({ ref: 'both' })
+      expect(
+        await h.reader.getUrl({ agentId: 'a', entry: ambiguous, resolution: await resolve(ambiguous, 'a') })
+      ).toBeUndefined()
+      expect(h.outcomes.at(-1)).toMatchObject({ kind: 'miss', reason: 'no-pointer', detail: 'ref_unknown' })
+    })
+
+    it('gives `main` and a no-ref Source an anon write target on the named branch', async () => {
+      const p = planner()
+      const resolve = resolution()
+      for (const [declared, ref] of [
+        [entry({ ref: 'main' }), 'refs/heads/main'],
+        [entry(), 'refs/heads/trunk']
+      ] as const) {
+        const plan = await p.plan(
+          { agentId: 'a', entry: declared, resolution: await resolve(declared, 'a') },
+          { writeBack: true }
+        )
+        expect(plan.getUrl).toBeUndefined()
+        await plan.writeBack!.write({ ...candidate, branch: ref }, stager)
+        expect(p.staged.at(-1)).toMatchObject({
+          target: {
+            repoClass: 'anon',
+            repoId: ANON,
+            ref,
+            shape: 'blobless',
+            pointerKey: skillPointerKey({ org: ORG, class: 'anon', repo: ANON, ref })
+          },
+          credentialed: false
+        })
+      }
+    })
   })
 })

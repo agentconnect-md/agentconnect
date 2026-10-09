@@ -1020,6 +1020,17 @@ export class CollabCoordinator {
     })
   }
 
+  /** A queued parent report dropped before it ran never reaches the parent, so its link stops promising it. */
+  async markDroppedParentReport(parentKey: string, callMeta: CallMeta | undefined): Promise<void> {
+    if (callMeta?.originSessionId === undefined) return
+    const child = await this.host.store().getSessionByOutwardId(callMeta.originSessionId, callMeta.callFrom)
+    const link = child ? this.childSessionLinks.get(child.key) : undefined
+    // No link (a restart cleared it) or one a newer delegation re-armed: nothing promised this report.
+    if (!child || link?.replyState !== 'queued-for-parent') return
+    if ((await this.host.store().getSessionByOutwardId(link.parentSessionId))?.key !== parentKey) return
+    this.childSessionLinks.set(child.key, { ...link, replyState: 'failed' })
+  }
+
   async replyToSession(
     req: ReplyToSessionReq,
     // assistant-mode.md §5.7, daemon-authored only: a sub-session's own report, authorized by its index row.

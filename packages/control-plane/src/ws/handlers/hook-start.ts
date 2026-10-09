@@ -68,7 +68,8 @@ export const handleHookStart: Handler = async (frame, conn, deps) => {
       ...(started?.amendment ? { amendment: started.amendment } : {})
     })
     // Counted once the barrier is acknowledged, so a refused start is not a reviewed checkout.
-    if (frame.payload.reviewCheckout) countReviewCheckout(frame.payload.reviewCheckout, conn.orgId ? 'org' : 'install')
+    const count = deps.reviewCheckoutMetric ?? countReviewCheckout
+    if (frame.payload.reviewCheckout) count(frame.payload.reviewCheckout, conn.orgId ? 'org' : 'install')
   } catch (error) {
     if (error instanceof GithubReviewBrokerError) {
       conn.sendError(frame.id, error.code, error.message, error.retryable)

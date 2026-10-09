@@ -23,7 +23,9 @@ import {
   type InPodSkillDeps,
   type SandboxSkillReconcileDeps
 } from '../src/skills/sandbox-skill-reconcile.js'
-import type { SkillRefPlan } from '../src/skills/skill-ref-resolution.js'
+import { createSkillRefPlanResolution, type SkillRefPlan } from '../src/skills/skill-ref-resolution.js'
+import { GitSkillRefTracker } from '../src/skills/git-skill-ref-tracker.js'
+import { nameGitSkillRef, runBoundedGit } from '../src/skills/git-skill-ref-name.js'
 import { bundleKey, parseSourceCacheObjectKey, skillPointerKey, anonRepoId } from '../src/source-cache/keys.js'
 import { createSkillReadPlanner } from '../src/source-cache/read-plan.js'
 import { createSkillCachePlanner } from '../src/source-cache/skill-write-back.js'
@@ -156,12 +158,18 @@ async function sandbox(
     ? createBundleHandler({ workspaceRoot: workspace, stagingDir: bundleStaging, allowHttpUpload: true })
     : undefined
   if (bundles) prepareBundleStaging(bundleStaging)
+  // Every Git invocation the pod runs that reaches an origin, by repository.
+  const originCalls: string[] = []
   const handler = new ClusterSkillHandler({
     stagingRoot: staging,
     workspaceRoot: workspace,
     stateRoot: join(dir, 'state'),
     git: {
-      git: runner(w),
+      git: async (invocation) => {
+        const origin = invocation.args.find((arg) => arg.startsWith(HOST))
+        if (origin) originCalls.push(origin.slice(HOST.length))
+        return await runner(w)(invocation)
+      },
       allowFileProtocol: true,
       shimEnv: { PATH: process.env.PATH },
       credentialHelper: '/nonexistent/gitcred-helper',
@@ -191,6 +199,7 @@ async function sandbox(
     workspace,
     staging,
     bundleStaging,
+    originCalls,
     stop: () => bundles?.stop(),
     requests,
     client,
@@ -790,7 +799,33 @@ describe('sandbox skill reconcile: cross-agent isolation', () => {
 
 describe('sandbox skill reconcile: in-pod write-back (source-cache.md §9)', () => {
   // A bucket behind fakes that accept a real upload: reserve, sign, PUT, HEAD, commit, retag and pointer, all recorded.
-  async function bucket() {
+  async function bucket(options: { rows?: Map<string, SourceCacheObjectRow> } = {}) {
+    const { rows } = options
+    // With `rows`, committed bundles and moved pointers are read back, so a later plan sees them.
+    const record = (key: string, extra: Partial<SourceCacheObjectRow>): void => {
+      const parsed = parseSourceCacheObjectKey(key)!
+      rows?.set(key, {
+        orgId: 'org-1',
+        key,
+        kind: parsed.kind,
+        state: 'committed',
+        bytes: 1,
+        repoClass: parsed.repoClass,
+        repoId: parsed.repoId,
+        refHash: parsed.kind === 'pointer' ? parsed.refHash : '',
+        shape: 'blobless',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        expiresAt: null,
+        lastReadAt: null,
+        targetKey: null,
+        unpointedAt: null,
+        claimedBy: null,
+        claimedAt: null,
+        ...rows?.get(key),
+        ...extra
+      })
+    }
     const uploads = new Map<string, Buffer>()
     const server = createServer((req, res) => {
       const chunks: Buffer[] = []
@@ -805,22 +840,25 @@ describe('sandbox skill reconcile: in-pod write-back (source-cache.md §9)', () 
     const calls: string[] = []
     const outcomes: SourceCacheWriteOutcome[] = []
     const store = {
-      async getSourceCacheObject() {
-        return undefined
+      async getSourceCacheObject(_orgId: string, key: string) {
+        return rows?.get(key)
       },
       async touchSourceCacheRead() {
         return true
       },
-      async reserveBundle(input: { key: string }) {
+      async reserveBundle(input: { key: string; refHash: string }) {
         calls.push(`reserve ${input.key}`)
+        record(input.key, { state: 'pending', refHash: input.refHash })
         return { admitted: true as const, committedBytes: 0, pendingBytes: 0 }
       },
       async commitBundle(input: { key: string }) {
         calls.push(`commit ${input.key}`)
+        record(input.key, { state: 'committed' })
         return { committed: true as const, alreadyCommitted: false, bytes: 0 }
       },
-      async setSourceCachePointer(input: { pointerKey: string; expectedTargetKey?: string | null }) {
+      async setSourceCachePointer(input: { pointerKey: string; bundleKey: string; expectedTargetKey?: string | null }) {
         calls.push(`pointer ${input.pointerKey} ${input.expectedTargetKey}`)
+        record(input.pointerKey, { targetKey: input.bundleKey })
         return { set: true as const, previousBundleKey: undefined }
       }
     }
@@ -912,6 +950,33 @@ describe('sandbox skill reconcile: in-pod write-back (source-cache.md §9)', () 
     })
   }, 180_000)
 
+  it('clones each Source once and writes it back at most once across back-to-back reconciles of one spec', async () => {
+    await withWorld(async (w) => {
+      const pod = await sandbox(w, 'pod', undefined, 'a', { writeBack: true })
+      const b = await bucket()
+      try {
+        await run(w, pod, 'pod', { inPod: { cachePlan: b.cachePlan } })
+        await vi.waitFor(() => expect(b.outcomes).toHaveLength(2), { timeout: 30_000 })
+        const once = { ledger: await pod.store.ledger(), files: await installed(pod.workspace) }
+        const clones = [...pod.originCalls]
+        expect(new Set(clones).size).toBe(2)
+        // The launch gate's re-verify: the same spec on the same pod again.
+        await run(w, pod, 'pod', { inPod: { cachePlan: b.cachePlan } })
+        expect(pod.originCalls).toEqual(clones)
+        expect(await pod.store.revision()).toBe(2)
+        expect(await pod.store.ledger()).toEqual(once.ledger)
+        expect(await installed(pod.workspace)).toEqual(once.files)
+        expect(b.reserved()).toHaveLength(2)
+        expect(b.outcomes).toHaveLength(2)
+        expect(await readdir(pod.bundleStaging)).toEqual([])
+        expect(await readdir(pod.staging)).toEqual([])
+      } finally {
+        pod.stop()
+        await b.close()
+      }
+    })
+  }, 180_000)
+
   it('never writes a private Source back when no window credentialed its clone, nor asks its pod to bundle it', async () => {
     await withWorld(async (w) => {
       const pod = await sandbox(w, 'pod', undefined, 'a', { writeBack: true })
@@ -929,6 +994,70 @@ describe('sandbox skill reconcile: in-pod write-back (source-cache.md §9)', () 
         expect(sent.filter((source) => source.writeBack)).toHaveLength(1)
       } finally {
         pod.stop()
+        await b.close()
+      }
+    })
+  }, 180_000)
+
+  it('writes a no-ref anonymous Source back under the default branch the tracker named, and the next pod reads it', async () => {
+    await withWorld(async (w) => {
+      // The REST check is faked to the origin's tip; the ref is named by a real ls-remote of the local origin.
+      const tracker = new GitSkillRefTracker({
+        stateRoot: join(w.root, 'tracker'),
+        resolve: async (entry) => ({ status: 'resolved', commit: w.tips[entry.source]! }),
+        nameRef: (input) =>
+          nameGitSkillRef({
+            ...input,
+            run: (invocation) =>
+              runBoundedGit({
+                ...invocation,
+                args: invocation.args.map((arg) =>
+                  arg.startsWith(HOST) ? `file://${join(w.root, arg.slice(HOST.length))}` : arg
+                ),
+                env: { ...invocation.env, GIT_ALLOW_PROTOCOL: 'https:ssh:file' }
+              })
+          })
+      })
+      const plans = createSkillRefPlanResolution({
+        anonymous: tracker,
+        credentialed: {
+          resolveRef: async () => {
+            throw new Error('the private Source is resolved by the harness')
+          }
+        }
+      })
+      const resolve = async (entry: AgentSkillEntry): Promise<SkillRefPlan> =>
+        entry.private
+          ? { ok: true, commit: w.tips[entry.source]!, ref: 'refs/heads/main', pinned: false, credentialed: true }
+          : await plans(entry, 'a')
+      expect(PUBLIC.ref).toBeUndefined()
+      const rows = new Map<string, SourceCacheObjectRow>()
+      const first = await sandbox(w, 'first', undefined, 'a', { writeBack: true })
+      const b = await bucket({ rows })
+      try {
+        await run(w, first, 'pod', { inPod: { cachePlan: b.cachePlan, resolve } })
+        const firstPlan = first.gitPlans()[0]!.find((plan) => plan.sourceId.startsWith('agent:0:'))!
+        expect(firstPlan).toMatchObject({ ref: 'refs/heads/main', plannedCommit: w.tips['acme/skills'] })
+        expect(firstPlan).not.toHaveProperty('getUrl')
+        await vi.waitFor(() => expect(b.outcomes).toHaveLength(2), { timeout: 30_000 })
+        const anon = anonRepoId('https://github.com/acme/skills.git')
+        const latest = skillPointerKey({ org: 'org-1', class: 'anon', repo: anon, ref: 'refs/heads/main' })
+        expect(b.calls).toContain(`pointer ${latest} null`)
+        const written = rows.get(latest)!.targetKey!
+        expect(parseSourceCacheObjectKey(written)).toMatchObject({ kind: 'bundle', repoClass: 'anon', repoId: anon })
+
+        // A second pod's plan carries the GET URL of the bundle the first one wrote.
+        const second = await sandbox(w, 'second')
+        await run(w, second, 'pod', { inPod: { cachePlan: b.cachePlan, resolve } })
+        const secondPlan = second.gitPlans()[0]!.find((plan) => plan.sourceId.startsWith('agent:0:'))!
+        expect(secondPlan).toMatchObject({
+          ref: 'refs/heads/main',
+          plannedCommit: w.tips['acme/skills'],
+          getUrl: `https://cache.example/${written}`
+        })
+        expect(await installed(second.workspace)).toEqual(await installed(first.workspace))
+      } finally {
+        first.stop()
         await b.close()
       }
     })

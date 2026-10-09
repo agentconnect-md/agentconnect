@@ -45,6 +45,7 @@ import type { LinearTokenService } from '../platforms/linear/token-service.js'
 import type { CodeHostReviewBrokerService } from '../codehost/review-lease.service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
 import type { GithubRunCoordinator } from '../github/run-reporter.js'
+import type { countReviewCheckout } from '../observability/review-checkout.js'
 import type { CodeHostNoteProjectionService } from '../codehost/note-projection.service.js'
 import type { GiteaStatusCoordinator } from '../gitea/status-projection.js'
 import type { ReconcileService } from '../orchestrator/placement.js'
@@ -206,6 +207,8 @@ export interface DaemonWsDeps {
   codeHostReviewBroker?: CodeHostReviewBrokerService
   /** R2a metadata-only lifecycle → informational Check projection. */
   githubRunCoordinator?: GithubRunCoordinator
+  /** Counts an acknowledged github review's checkout outcome; absent ⇒ the default OTel counter. */
+  reviewCheckoutMetric?: typeof countReviewCheckout
   /** §16 desired-generation ledger for the daemon-written run projection; absent ⇒ no GitLab bindings. */
   codeHostNoteProjection?: CodeHostNoteProjectionService
   /** gitea-integration.md §10.4: the Control-Plane-written commit-status projection's lifecycle edges. */

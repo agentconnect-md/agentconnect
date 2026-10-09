@@ -3,9 +3,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
 import { handleHookStart } from './hook-start.js'
-import { countReviewCheckout } from '../../observability/review-checkout.js'
-
-vi.mock('../../observability/review-checkout.js', () => ({ countReviewCheckout: vi.fn() }))
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const HOOK_ID = '11111111-1111-4111-8111-111111111111'
@@ -244,21 +241,24 @@ describe('hook/start provider one-of (gitlab-com-integration.md §17.2)', () => 
       reportSha: 'head'
     }
     const reviewCheckout = { outcome: 'degraded', reason: 'fetch_timeout' }
-    vi.mocked(countReviewCheckout).mockClear()
+    const reviewCheckoutMetric = vi.fn()
 
     await handleHookStart(
       startFrame({ event: 'pull_request:synchronize', github, reviewCheckout }),
       fakeConn(),
-      gitlabDeps()
+      gitlabDeps({ reviewCheckoutMetric })
     )
-    expect(countReviewCheckout).toHaveBeenCalledExactlyOnceWith(reviewCheckout, 'org')
+    expect(reviewCheckoutMetric).toHaveBeenCalledExactlyOnceWith(reviewCheckout, 'org')
 
-    const refused = gitlabDeps({ githubReviewBroker: { start: vi.fn(async () => Promise.reject(new Error('down'))) } })
+    const refused = gitlabDeps({
+      reviewCheckoutMetric,
+      githubReviewBroker: { start: vi.fn(async () => Promise.reject(new Error('down'))) }
+    })
     await handleHookStart(
       startFrame({ event: 'pull_request:synchronize', github, reviewCheckout }),
       fakeConn(),
       refused
     )
-    expect(countReviewCheckout).toHaveBeenCalledOnce()
+    expect(reviewCheckoutMetric).toHaveBeenCalledOnce()
   })
 })

@@ -464,7 +464,10 @@
       "diffTruncated": "This diff has more lines than the viewer draws — only its first part is shown.",
       "malformedDiff": "Part of this diff is shown raw — its hunks are not two-way (a merge conflict, usually). Counts cover only the readable parts.",
       "preview": "Preview",
-      "code": "Code"
+      "code": "Code",
+      "download": "Download",
+      "downloadTitle": "Download this file",
+      "imageTooLarge": "Image too large to preview or download here ({size})."
     },
     "list": {
       "allAgents": "All agents",

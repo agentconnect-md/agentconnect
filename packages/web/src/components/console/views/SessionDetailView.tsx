@@ -104,7 +104,7 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
-import { sharedFileMarker, type SharedFile } from '@/lib/shared-file'
+import { sessionFileDownload, sharedFileMarker, type SharedFile } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -3436,6 +3436,15 @@ export default function SessionDetailView() {
   // for one frame under session B's header before the loading effect clears it.
   const transcriptMatchesSession = !wantTranscript || transcriptSessionId === sid
   const visibleMsgs = transcriptMatchesSession ? msgs : null
+  // The viewer downloads only what the route can name: an upload, or a file the focused session shared, by that share's digest.
+  const viewerDownload = useMemo(() => {
+    if (!viewerPath || !headerFocusSessionId) return null
+    const target = headerFocusSessionId === sid ? toolSid : headerFocusSessionId
+    const rows = (visibleMsgs ?? [])
+      .filter((m) => (m.kind || 'text').toLowerCase() === 'text')
+      .map((m) => ({ text: m.text, sessionId: conversationSourceSessionByMessageRef.current.get(m) ?? toolSid }))
+    return sessionFileDownload(viewerPath, target, rows)
+  }, [viewerPath, headerFocusSessionId, sid, toolSid, visibleMsgs, conversationSourceSessionByMessageRef])
   const visibleMsgLoading = transcriptMatchesSession ? msgLoading : wantTranscript
   const visibleMsgPaging = wantTranscript && transcriptMatchesSession && msgPaging
   const visibleMsgErr = wantTranscript && transcriptMatchesSession ? msgErr : null
@@ -5223,6 +5232,7 @@ export default function SessionDetailView() {
                 diffRefreshTick={viewerDiffTick}
                 {...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})}
                 onOpenPath={(next) => setViewerFile(next, filesAgentId, 'file', viewerRepo)}
+                {...(viewerDownload && !viewerRepo ? { download: viewerDownload } : {})}
                 onClose={() => {
                   // Keep the reader ON the workspace they were reading before dropping `agent=`. The
                   // param outranks the stored selection, so clearing it alone snaps focus back to the

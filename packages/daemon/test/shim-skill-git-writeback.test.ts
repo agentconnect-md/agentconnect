@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, realpathSync, writeFileSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -108,7 +108,10 @@ function runner(w: World): SkillGitRunner {
     })
 }
 
-function shim(w: World, options: { writeBack?: boolean; stage?: BundleHandler['stage']; logs?: string[] } = {}) {
+function shim(
+  w: World,
+  options: { writeBack?: boolean; stage?: BundleHandler['stage']; logs?: string[]; gitCalls?: string[][] } = {}
+) {
   const bundles = createBundleHandler({
     workspaceRoot: w.workspace,
     stagingDir: w.bundleStaging,
@@ -121,7 +124,10 @@ function shim(w: World, options: { writeBack?: boolean; stage?: BundleHandler['s
     workspaceRoot: w.workspace,
     stateRoot: join(w.root, 'state'),
     git: {
-      git: runner(w),
+      git: async (invocation) => {
+        options.gitCalls?.push(invocation.args)
+        return await runner(w)(invocation)
+      },
       allowFileProtocol: true,
       shimEnv: { PATH: process.env.PATH },
       credentialHelper: '/nonexistent/helper',
@@ -359,6 +365,101 @@ describe.skipIf(process.platform === 'win32')('in-pod skill write-back staging (
     })
     expect(JSON.stringify(sent)).not.toContain('writeBack')
   })
+})
+
+describe.skipIf(process.platform === 'win32')('unchanged Git plan short-circuit (real Git)', () => {
+  // The coordinator's view: each reconcile is given the receipts the previous one returned.
+  async function twice(
+    w: World,
+    first: ClusterSkillReconcile['sources'],
+    second: ClusterSkillReconcile['sources'] = first,
+    between?: (roots: ClusterSkillReconcile['priorRoots']) => Promise<void>,
+    secondMayThrow = false
+  ) {
+    const gitCalls: string[][] = []
+    const s = shim(w, { gitCalls })
+    const one = await reconcile(s.handler, first, s.stager)
+    for (const candidate of one.writeBackCandidates ?? []) await s.stager.discard(candidate.handle)
+    const firstCalls = gitCalls.length
+    await between?.(one.roots)
+    // A tampered receipt fails publication after acquisition; only whether Git ran matters then.
+    const second$ = reconcile(s.handler, second, s.stager, one.roots)
+    const two = secondMayThrow ? await second$.catch(() => undefined) : await second$
+    for (const candidate of two?.writeBackCandidates ?? []) await s.stager.discard(candidate.handle)
+    return { one, two: two!, firstCalls, secondCalls: gitCalls.length - firstCalls }
+  }
+
+  it('answers a second identical plan from its receipts without running Git or offering write-back', async () => {
+    const w = await world()
+    const { one, two, firstCalls, secondCalls } = await twice(w, [plan(w)])
+    expect(firstCalls).toBeGreaterThan(0)
+    expect(one.writeBackCandidates).toHaveLength(1)
+    expect(secondCalls).toBe(0)
+    expect(two.roots).toEqual(one.roots)
+    expect(two.gitSources).toEqual(one.gitSources)
+    expect(two.conflicts).toEqual([])
+    expect(two).not.toHaveProperty('writeBackCandidates')
+    expect(two).not.toHaveProperty('skipped')
+    expect(await readdir(w.staging)).toEqual([])
+  }, 120_000)
+
+  it('ignores a new GET URL or write-back request, which change per run but not what installs', async () => {
+    const w = await world()
+    const { writeBack: _writeBack, ...bare } = plan(w)
+    const { secondCalls } = await twice(w, [plan(w)], [{ ...bare, getUrl: GOOD_BUNDLE }])
+    expect(secondCalls).toBe(0)
+  }, 120_000)
+
+  it('clones again for a changed planned commit or selection', async () => {
+    const w = await world()
+    const moved = plan(w, {
+      sourceId: `agent:0:${'d'.repeat(64)}:${w.first}`,
+      ref: 'refs/heads/dev',
+      plannedCommit: w.first
+    })
+    const commit = await twice(w, [plan(w)], [moved])
+    expect(commit.secondCalls).toBeGreaterThan(0)
+    expect(commit.two.gitSources).toEqual([{ sourceId: moved.sourceId, resolvedCommit: w.first, leaves: ['alpha'] }])
+    const w2 = await world()
+    const selection = await twice(w2, [plan(w2)], [plan(w2, { selections: [] })])
+    expect(selection.secondCalls).toBeGreaterThan(0)
+  }, 120_000)
+
+  it('clones again when an installed file was tampered with or a root was deleted', async () => {
+    const w = await world()
+    const tampered = await twice(
+      w,
+      [plan(w)],
+      undefined,
+      async (roots) => {
+        await writeFile(join(w.workspace, roots[0]!.path, 'SKILL.md'), 'edited\n')
+      },
+      true
+    )
+    expect(tampered.secondCalls).toBeGreaterThan(0)
+    const w2 = await world()
+    const deleted = await twice(w2, [plan(w2)], undefined, async (roots) => {
+      await rm(join(w2.workspace, roots[0]!.path), { recursive: true, force: true })
+    })
+    expect(deleted.secondCalls).toBeGreaterThan(0)
+    expect(deleted.two).toMatchObject({ roots: deleted.one.roots })
+  }, 120_000)
+
+  it('clones again after a run that skipped a Source, and when the receipts are not what it published', async () => {
+    const w = await world()
+    const absent = plan(w, { sourceId: 'agent:1', url: `${HOST}absent.git` })
+    const failed = await twice(w, [plan(w), absent])
+    expect(failed.one.skipped?.map((entry) => entry.sourceId)).toEqual(['agent:1'])
+    expect(failed.secondCalls).toBeGreaterThan(0)
+    const w2 = await world()
+    const gitCalls: string[][] = []
+    const s = shim(w2, { gitCalls })
+    await reconcile(s.handler, [plan(w2)])
+    const before = gitCalls.length
+    // A daemon whose ledger never committed the first reply sends no receipts at all.
+    await reconcile(s.handler, [plan(w2)], undefined, [])
+    expect(gitCalls.length).toBeGreaterThan(before)
+  }, 120_000)
 })
 
 describe('skill write-back candidate rules', () => {

@@ -13175,6 +13175,14 @@ export class Daemon {
     }
   }
 
+  /** A queued parent report dropped without a handoff never arrives, so the child's link must say it failed. */
+  private async noteDroppedParentReport(key: string, entry: QueueEntry): Promise<void> {
+    if (!entry.msg.parentReport || entry.inboxHandedOff) return
+    await this.collab
+      .markDroppedParentReport(key, entry.callMeta)
+      .catch((err) => this.log.warn(`parent report: could not mark a dropped report for ${key}: ${formatErr(err)}`))
+  }
+
   // Terminal lifecycle interrupts purge admitted work, optionally scoped to a removed integration.
   private async purgeAgentInbox(
     agentId: string,
@@ -14185,6 +14193,7 @@ export class Daemon {
             if (entry.hookContext)
               await this.emitHookCompletion(entry.hookContext, 'failed', { reason: 'dropped' }, entry)
             await this.removeInbox(entry)
+            await this.noteDroppedParentReport(key, entry)
           }
           entry.resolve(null)
           const rest = this.serialQueue.get(key) ?? []
@@ -14194,6 +14203,7 @@ export class Daemon {
             if (!this.draining) {
               if (e.hookContext) await this.emitHookCompletion(e.hookContext, 'failed', { reason: 'dropped' }, e)
               await this.removeInbox(e)
+              await this.noteDroppedParentReport(key, e)
             }
             e.resolve(null)
           }
@@ -14246,6 +14256,7 @@ export class Daemon {
             if (!this.draining) {
               if (e.hookContext) await this.emitHookCompletion(e.hookContext, 'failed', { reason: 'fail_stop' }, e)
               await this.removeInbox(e)
+              await this.noteDroppedParentReport(key, e)
             }
             e.reject(failStop)
           }
@@ -16870,6 +16881,7 @@ export class Daemon {
           )
         }
         await this.removeInbox(e, opts.handoffInbox)
+        await this.noteDroppedParentReport(key, e)
         if (opts.dropQueued) e.resolve(null)
         else e.reject(new FailStopError(key))
       }
