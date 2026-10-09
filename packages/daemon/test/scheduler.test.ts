@@ -177,7 +177,8 @@ describe('Scheduler (per-agent converge — §5.2 crons change → upsert/remove
     s.stop()
   })
 
-  it('fires at timezone-correct UTC instants across a DST offset change', async () => {
+  // Sync on purpose: timers are worker-wide (isolate: false); an await lets any live one re-arm on the fake clock.
+  it('fires at timezone-correct UTC instants across a DST offset change', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-07T13:59:59.000Z'))
     const firedAt: string[] = []
@@ -189,10 +190,10 @@ describe('Scheduler (per-agent converge — §5.2 crons change → upsert/remove
 
     try {
       s.sync('bot-a', [cron('new-york-morning', { timezone: 'America/New_York' })])
-      await vi.advanceTimersByTimeAsync(1_000)
+      vi.advanceTimersByTime(1_000)
       expect(firedAt).toEqual(['2026-03-07T14:00:00.000Z'])
 
-      await vi.advanceTimersByTimeAsync(23 * 60 * 60 * 1_000)
+      vi.advanceTimersByTime(23 * 60 * 60 * 1_000)
       expect(firedAt).toEqual(['2026-03-07T14:00:00.000Z', '2026-03-08T13:00:00.000Z'])
     } finally {
       s.stop()
