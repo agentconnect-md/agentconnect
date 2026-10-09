@@ -41,7 +41,7 @@ export async function resolveCredentialedSkillRef(
 }
 
 export interface SkillRefResolutionDeps {
-  anonymous: Pick<GitSkillRefTracker, 'resolve'>
+  anonymous: Pick<GitSkillRefTracker, 'resolveTracked'>
   credentialed: Pick<CodeHostRefResolver, 'resolveRef'>
 }
 
@@ -58,12 +58,6 @@ export type SkillRefPlan =
     }
   | { ok: false }
 
-/** A full branch or tag name spelled out in the entry itself, which an anonymous commit check cannot report. */
-function entryFullRef(entry: AgentSkillEntry): string | undefined {
-  const ref = resolveBoundedGitSkillSource(entry).ref
-  return ref !== undefined && /^refs\/(?:heads|tags)\/./.test(ref) ? ref : undefined
-}
-
 /** Resolve a Git skill Source for an in-pod plan: pinned as given, credentialed per agent, anonymous through the shared check. */
 export function createSkillRefPlanResolution(
   deps: SkillRefResolutionDeps
@@ -79,9 +73,9 @@ export function createSkillRefPlanResolution(
       return { ok: true, commit: resolveBoundedGitSkillSource(entry).ref!.toLowerCase(), pinned, credentialed: false }
     }
     if (!isCredentialedSkillSource(entry)) {
-      const commit = await deps.anonymous.resolve(entry)
-      if (commit === null) return { ok: false }
-      const ref = entryFullRef(entry)
+      const tracked = await deps.anonymous.resolveTracked(entry)
+      if (tracked === null) return { ok: false }
+      const { commit, ref } = tracked
       return { ok: true, commit, ...(ref ? { ref } : {}), pinned, credentialed: false }
     }
     const result = await resolveCredentialedSkillRef(deps.credentialed, entry, agentId)
