@@ -33,8 +33,8 @@ export interface AssistantItemDeps {
     patrol?: {
       /** The item the patrol in this session checks; undefined once it ended. */
       itemFor(ctx: SessionContext): Promise<string | undefined>
-      /** Keep the patrol's report; it reaches the conversation the item was taken in once the patrol ends. */
-      report(ctx: SessionContext, itemId: string, text: string): void
+      /** Keep the patrol's report; it reaches the conversation the item was taken in once the patrol ends. False once it ended. */
+      report(ctx: SessionContext, itemId: string, text: string): Promise<boolean>
       now(): number
     }
   }
@@ -464,7 +464,8 @@ async function patrolUpdateItem(ctx: SessionContext, args: Record<string, unknow
   }
   const appended = await ledger.appendObservation(ctx.agentId, itemId, { text: input.observation, author: 'patrol' })
   if (!appended) throw new Error(`no item ${itemId} in your ledger`)
-  if (input.report !== undefined) patrol.report(ctx, itemId, input.report)
+  if (input.report !== undefined && !(await patrol.report(ctx, itemId, input.report)))
+    throw new Error('this patrol has ended; the observation was written but the report was not kept')
   const item = await ledger.get(ctx.agentId, itemId)
   if (!item) throw new Error(`no item ${itemId} in your ledger`)
   return {

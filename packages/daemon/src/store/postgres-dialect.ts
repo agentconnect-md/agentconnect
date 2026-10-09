@@ -273,7 +273,9 @@ export const canonicalColumns = [
   'retryAt',
   'stoppedNextCheck',
   'runningKey',
-  'runningNextCheck'
+  'runningNextCheck',
+  'runningObservationVersion',
+  'runningReport'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

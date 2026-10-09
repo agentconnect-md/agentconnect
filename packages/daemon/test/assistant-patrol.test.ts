@@ -95,8 +95,11 @@ async function boot(root: string) {
         if (behavior.patrol === 'throw') throw new Error('the runtime exited')
         if (behavior.patrol === 'hang') return await new Promise((resolve) => (cancelled = () => resolve('cancelled')))
         const ctx = [...registered].reverse().find((c) => isPatrolCoordinate(c.thread))!
-        await behavior.patrol(ctx)
-        return 'end_turn'
+        // A behavior that never returns waits, like `hang`, until the turn is cancelled.
+        return await Promise.race([
+          behavior.patrol(ctx).then(() => 'end_turn'),
+          new Promise((resolve) => (cancelled = () => resolve('cancelled')))
+        ])
       }),
       cancel: vi.fn(async () => cancelled?.()),
       stop: vi.fn(async () => {})
@@ -612,6 +615,78 @@ describe('failures back off and stop', () => {
       'Scheduled check failed (nothing recorded); the next attempt is in 2 minutes.'
     ])
     expect(reports()).toHaveLength(0)
+    await daemon.stop()
+  })
+})
+
+describe('a patrol replayed after a handover', () => {
+  /** The patrol's turn is cut for a handover that keeps it, then a fresh patrol service replays it, as a successor daemon would. */
+  async function handOver(d: any, behavior: { patrol: unknown }, next: PatrolBehavior) {
+    await d.interruptAgentTurns('bot-a', 'handover', 'handoff')
+    d.assistantPatrolService = undefined
+    d.absorbedContextTs.clear()
+    behavior.patrol = next
+    await d.replayInbox(new Set(['bot-a']))
+  }
+  const nothing: PatrolBehavior = async () => {}
+
+  it('counts an empty completion on a fresh service as a failure, backs off and keeps the check due', async () => {
+    const { daemon, d, behavior, patrols, reports, settled } = await boot(
+      scaffold([{ id: 'bot-a', assistantMode: ON }])
+    )
+    await seedPlace(d)
+    const item = await takeItem(d)
+    behavior.patrol = 'hang'
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(async () => expect((await patrolState(d, item.id))?.runningKey).toBeTruthy(), WAIT)
+
+    await handOver(d, behavior, nothing)
+    await vi.waitFor(async () => expect((await patrolState(d, item.id))?.failures).toBe(1), WAIT)
+    await settled()
+
+    const state = await patrolState(d, item.id)
+    expect(state).toMatchObject({ failures: 1, stopped: false, patrolledNextCheck: null, runningKey: null })
+    expect(state.retryAt).toBeGreaterThanOrEqual(Date.now() + 2 * MINUTE - 5_000)
+    expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
+      'Scheduled check failed (nothing recorded); the next attempt is in 2 minutes.'
+    ])
+    expect(reports()).toHaveLength(0)
+    // The check stays due once the backoff is over.
+    expect(await d.store.assistantPatrols.due('bot-a', Date.now() + 3 * MINUTE, 10)).toEqual([
+      { itemId: item.id, nextCheck: item.nextCheck }
+    ])
+    await daemon.stop()
+  })
+
+  it('still delivers the report and counts the observation the cut turn recorded', async () => {
+    const { daemon, d, behavior, patrols, reports, settled, deps } = await boot(
+      scaffold([{ id: 'bot-a', assistantMode: ON }])
+    )
+    await seedPlace(d)
+    const item = await takeItem(d)
+    let recorded = false
+    behavior.patrol = async (ctx) => {
+      await executeTool(
+        ctx,
+        'updateItem',
+        { itemId: item.id, observation: 'The release is published.', report: 'The release is out.' },
+        deps
+      )
+      recorded = true
+      await new Promise(() => {})
+    }
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(recorded).toBe(true), WAIT)
+
+    await handOver(d, behavior, nothing)
+    await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
+    await settled()
+
+    expect(reports()[0]!.msg.text).toContain('The release is out.')
+    expect(await patrolState(d, item.id)).toMatchObject({ failures: 0, patrolledNextCheck: item.nextCheck })
+    // The replay ran the same patrol; no second one started.
+    expect(new Set(patrols().map((c) => c.msg.thread)).size).toBe(1)
     await daemon.stop()
   })
 })

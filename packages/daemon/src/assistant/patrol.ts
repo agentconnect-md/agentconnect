@@ -105,14 +105,6 @@ export interface AssistantPatrolsHost {
   reportToParent(agentId: string, msg: NormalizedMessage, parentSessionId: string, text: string): Promise<boolean>
 }
 
-interface PatrolRun {
-  agentId: string
-  itemId: string
-  /** The item's observation version at the start, to tell whether the patrol recorded anything. */
-  observationVersion?: number
-  report?: string
-}
-
 type Verdict = { kind: 'completed' } | { kind: 'failed'; why: string } | { kind: 'released' } | { kind: 'stopped' }
 
 // Ends that say nothing about the check: it stays due and runs once the agent is back.
@@ -169,9 +161,9 @@ export function patrolPrompt(item: AssistantItem, due: AssistantPatrolDue): stri
   ].join('\n')
 }
 
+/** Starts and settles patrols; what a run's end needs lives in the store, so a replay on a fresh daemon settles it the same way. */
 export class AssistantPatrols {
   private sweeping = false
-  private readonly runs = new Map<string, PatrolRun>()
 
   constructor(private readonly host: AssistantPatrolsHost) {}
 
@@ -198,10 +190,9 @@ export class AssistantPatrols {
     return (await this.host.patrols.byRunningKey(agentId, key))?.itemId
   }
 
-  /** Keep a patrol's report for its end; a later one replaces an earlier one. */
-  report(agentId: string, key: string, itemId: string, text: string): void {
-    const run = this.runs.get(key) ?? { agentId, itemId }
-    this.runs.set(key, { ...run, report: text })
+  /** Keep a patrol's report for its end; a later one replaces an earlier one. False once the run is over. */
+  async report(agentId: string, key: string, itemId: string, text: string): Promise<boolean> {
+    return await this.host.patrols.keepReport(agentId, itemId, key, text, this.host.now())
   }
 
   private async patrolAgent(agent: Pick<Agent, 'id' | 'assistantMode'>): Promise<void> {
@@ -239,8 +230,12 @@ export class AssistantPatrols {
     )
     // The agent's one patrol is still running.
     if (!opened) return
-    await this.host.patrols.begin(agentId, item.id, { key, nextCheck: due.nextCheck, now })
-    this.runs.set(key, { agentId, itemId: item.id, observationVersion: item.observationVersion })
+    await this.host.patrols.begin(agentId, item.id, {
+      key,
+      nextCheck: due.nextCheck,
+      observationVersion: item.observationVersion,
+      now
+    })
     const msg: NormalizedMessage = {
       msgId: `patrol:${parent.channel}:${deliveryId}`,
       traceId: deliveryId,
@@ -289,8 +284,6 @@ export class AssistantPatrols {
   async settle(end: PatrolTurnEnd): Promise<void> {
     const { agentId, key } = end
     if (end.replayed) return
-    const run = this.runs.get(key)
-    this.runs.delete(key)
     try {
       const now = this.host.now()
       const state = await this.host.patrols.byRunningKey(agentId, key)
@@ -300,12 +293,11 @@ export class AssistantPatrols {
         await this.host.subsessions.finish(agentId, key, 'failed')
         return
       }
-      const itemId = state.itemId
+      const { itemId, runningObservationVersion: baseline, runningReport: report } = state
       let verdict = verdictOf(end)
-      if (verdict.kind === 'completed' && run?.observationVersion !== undefined) {
+      if (verdict.kind === 'completed' && baseline !== null) {
         const item = await this.host.items.get(agentId, itemId)
-        if (item && item.observationVersion <= run.observationVersion)
-          verdict = { kind: 'failed', why: 'nothing recorded' }
+        if (item && item.observationVersion <= baseline) verdict = { kind: 'failed', why: 'nothing recorded' }
       }
       if (verdict.kind === 'completed' || verdict.kind === 'stopped') {
         await this.host.patrols.succeed(agentId, itemId, key, now)
@@ -339,7 +331,7 @@ export class AssistantPatrols {
             )
         }
       }
-      if (run?.report !== undefined && row) {
+      if (report !== null && row) {
         const item = await this.host.items.get(agentId, itemId)
         await this.deliver(
           agentId,
@@ -347,7 +339,7 @@ export class AssistantPatrols {
           end.msg,
           row.parentSessionId,
           `[patrol] The scheduled check of item ${itemId}${item ? ` ("${quote(item.title)}")` : ''} found a ` +
-            `change. Pass it on to the people here:\n\n${run.report}`
+            `change. Pass it on to the people here:\n\n${report}`
         )
       }
     } catch (err) {

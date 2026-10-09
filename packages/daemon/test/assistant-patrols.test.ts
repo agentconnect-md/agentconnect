@@ -71,7 +71,7 @@ describe('the patrol state', () => {
     const s = await open()
     const a = agent()
     const it1 = await item(s, a, 1_000)
-    await s.assistantPatrols.begin(a, it1.id, { key: key(a, '1'), nextCheck: 1_000, now: 2_000 })
+    await s.assistantPatrols.begin(a, it1.id, { key: key(a, '1'), nextCheck: 1_000, observationVersion: 0, now: 2_000 })
     expect(await s.assistantPatrols.byRunningKey(a, key(a, '1'))).toMatchObject({
       itemId: it1.id,
       runningNextCheck: 1_000
@@ -93,7 +93,12 @@ describe('the patrol state', () => {
     let now = 2_000
     for (let n = 1; n <= PATROL_MAX_FAILURES; n++) {
       expect(await s.assistantPatrols.due(a, now, 10)).toEqual([{ itemId: it1.id, nextCheck: 1_000 }])
-      await s.assistantPatrols.begin(a, it1.id, { key: key(a, String(n)), nextCheck: 1_000, now })
+      await s.assistantPatrols.begin(a, it1.id, {
+        key: key(a, String(n)),
+        nextCheck: 1_000,
+        observationVersion: 0,
+        now
+      })
       const failed = await s.assistantPatrols.fail(a, it1.id, key(a, String(n)), now, 1_000)
       expect(failed).toEqual({ failures: n, stopped: n === PATROL_MAX_FAILURES })
       expect(await s.assistantPatrols.due(a, now + patrolBackoffMs(n) - 1, 10)).toEqual([])
@@ -104,16 +109,51 @@ describe('the patrol state', () => {
     // A new next check resumes patrols, with a fresh streak.
     await s.assistantItems.transition(a, it1.id, 1, { nextCheck: 3_000 })
     expect(await s.assistantPatrols.due(a, now, 10)).toEqual([{ itemId: it1.id, nextCheck: 3_000 }])
-    await s.assistantPatrols.begin(a, it1.id, { key: key(a, 'resumed'), nextCheck: 3_000, now })
+    await s.assistantPatrols.begin(a, it1.id, { key: key(a, 'resumed'), nextCheck: 3_000, observationVersion: 0, now })
     expect(await s.assistantPatrols.get(a, it1.id)).toMatchObject({ stopped: false, failures: 0 })
+  })
+
+  it('keeps the run’s observation baseline and report in the store until the run ends', async () => {
+    const s = await open()
+    const a = agent()
+    const it1 = await item(s, a, 1_000)
+    await s.assistantPatrols.begin(a, it1.id, { key: key(a, '1'), nextCheck: 1_000, observationVersion: 3, now: 2_000 })
+    expect(await s.assistantPatrols.keepReport(a, it1.id, key(a, '1'), 'It shipped.', 2_500)).toBe(true)
+    expect(await s.assistantPatrols.keepReport(a, it1.id, key(a, 'other'), 'Not this run.', 2_500)).toBe(false)
+    expect(await s.assistantPatrols.byRunningKey(a, key(a, '1'))).toMatchObject({
+      runningObservationVersion: 3,
+      runningReport: 'It shipped.'
+    })
+    await s.assistantPatrols.fail(a, it1.id, key(a, '1'), 3_000, 1_000)
+    expect(await s.assistantPatrols.get(a, it1.id)).toMatchObject({
+      runningKey: null,
+      runningObservationVersion: null,
+      runningReport: null
+    })
+    // A new run starts with no report of the last one.
+    await s.assistantPatrols.begin(a, it1.id, { key: key(a, '2'), nextCheck: 1_000, observationVersion: 4, now: 4_000 })
+    expect(await s.assistantPatrols.byRunningKey(a, key(a, '2'))).toMatchObject({
+      runningObservationVersion: 4,
+      runningReport: null
+    })
   })
 
   it('lets only the run in flight settle the item, and a release leaves the check due', async () => {
     const s = await open()
     const a = agent()
     const it1 = await item(s, a, 1_000)
-    await s.assistantPatrols.begin(a, it1.id, { key: key(a, 'old'), nextCheck: 1_000, now: 2_000 })
-    await s.assistantPatrols.begin(a, it1.id, { key: key(a, 'new'), nextCheck: 1_000, now: 3_000 })
+    await s.assistantPatrols.begin(a, it1.id, {
+      key: key(a, 'old'),
+      nextCheck: 1_000,
+      observationVersion: 0,
+      now: 2_000
+    })
+    await s.assistantPatrols.begin(a, it1.id, {
+      key: key(a, 'new'),
+      nextCheck: 1_000,
+      observationVersion: 0,
+      now: 3_000
+    })
     expect(await s.assistantPatrols.succeed(a, it1.id, key(a, 'old'), 4_000)).toBe(false)
     expect(await s.assistantPatrols.fail(a, it1.id, key(a, 'old'), 4_000, 1_000)).toBeUndefined()
     await s.assistantPatrols.release(a, it1.id, key(a, 'new'), 4_000)
@@ -127,7 +167,7 @@ describe('the patrol state', () => {
     const s = await open()
     const a = agent()
     const it1 = await item(s, a, 1_000)
-    await s.assistantPatrols.begin(a, it1.id, { key: key(a, '1'), nextCheck: 1_000, now: 2_000 })
+    await s.assistantPatrols.begin(a, it1.id, { key: key(a, '1'), nextCheck: 1_000, observationVersion: 0, now: 2_000 })
     expect(await s.assistantItems.delete(a, it1.id)).toBe(true)
     expect(await s.assistantPatrols.get(a, it1.id)).toBeUndefined()
     const it2 = await item(s, a, 1_000)
@@ -274,6 +314,17 @@ describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite',
       ).toBe(true)
       const it1 = await item(upgraded, a, 500)
       expect(await upgraded.assistantPatrols.due(a, 1_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 500 }])
+      await upgraded.assistantPatrols.begin(a, it1.id, {
+        key: key(a, 'p'),
+        nextCheck: 500,
+        observationVersion: 0,
+        now: 1_000
+      })
+      expect(await upgraded.assistantPatrols.keepReport(a, it1.id, key(a, 'p'), 'It shipped.', 1_000)).toBe(true)
+      expect(await upgraded.assistantPatrols.byRunningKey(a, key(a, 'p'))).toMatchObject({
+        runningObservationVersion: 0,
+        runningReport: 'It shipped.'
+      })
     } finally {
       await upgraded.close()
     }
@@ -343,10 +394,18 @@ describe.skipIf(!usingPostgresStore())('the v38 → v39 patrol schema on Postgre
           await upgraded.assistantSubsessions.openPatrol(row(a, 'p', 1_000), { startedSince: 0, staleBefore: 0 })
         ).toBe(true)
         const it1 = await item(upgraded, a, 500)
-        await upgraded.assistantPatrols.begin(a, it1.id, { key: key(a, 'p'), nextCheck: 500, now: 1_000 })
+        await upgraded.assistantPatrols.begin(a, it1.id, {
+          key: key(a, 'p'),
+          nextCheck: 500,
+          observationVersion: 0,
+          now: 1_000
+        })
+        expect(await upgraded.assistantPatrols.keepReport(a, it1.id, key(a, 'p'), 'It shipped.', 1_000)).toBe(true)
         expect(await upgraded.assistantPatrols.byRunningKey(a, key(a, 'p'))).toMatchObject({
           itemId: it1.id,
-          runningNextCheck: 500
+          runningNextCheck: 500,
+          runningObservationVersion: 0,
+          runningReport: 'It shipped.'
         })
       } finally {
         await upgraded.close()

@@ -22,6 +22,10 @@ export interface AssistantPatrolState {
   /** The patrol sub-session in flight, and the `nextCheck` it was started for. */
   runningKey: string | null
   runningNextCheck: number | null
+  /** The item's observation version when that run started, so any daemon settling it can tell whether it recorded anything. */
+  runningObservationVersion: number | null
+  /** The report that run kept for its end, so a replay on another daemon still delivers it. */
+  runningReport: string | null
   updatedAt: number
 }
 
@@ -42,6 +46,8 @@ export const ASSISTANT_PATROL_SCHEMA = `
         stoppedNextCheck INTEGER,
         runningKey TEXT,
         runningNextCheck INTEGER,
+        runningObservationVersion INTEGER,
+        runningReport TEXT,
         updatedAt INTEGER NOT NULL,
         PRIMARY KEY (agentId, itemId)
       );
@@ -55,6 +61,7 @@ export interface AssistantPatrolDatabase {
 type Row = Record<string, unknown>
 
 const num = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value))
+const str = (value: unknown): string | null => (value === null || value === undefined ? null : String(value))
 
 function stateOf(row: Row): AssistantPatrolState {
   return {
@@ -65,8 +72,10 @@ function stateOf(row: Row): AssistantPatrolState {
     retryAt: num(row.retryAt),
     stopped: Number(row.stopped) === 1,
     stoppedNextCheck: num(row.stoppedNextCheck),
-    runningKey: row.runningKey === null || row.runningKey === undefined ? null : String(row.runningKey),
+    runningKey: str(row.runningKey),
     runningNextCheck: num(row.runningNextCheck),
+    runningObservationVersion: num(row.runningObservationVersion),
+    runningReport: str(row.runningReport),
     updatedAt: Number(row.updatedAt)
   }
 }
@@ -108,21 +117,35 @@ export class AssistantPatrolLedger {
   }
 
   /** A patrol starts; a stopped item that is due again had its next check moved, so its streak starts over. */
-  async begin(agentId: string, itemId: string, run: { key: string; nextCheck: number; now: number }): Promise<void> {
+  async begin(
+    agentId: string,
+    itemId: string,
+    run: { key: string; nextCheck: number; observationVersion: number; now: number }
+  ): Promise<void> {
     await this.ensure(agentId, itemId, run.now)
     await this.db.query(
-      `UPDATE assistant_patrol SET runningKey = ?, runningNextCheck = ?, updatedAt = ?,
+      `UPDATE assistant_patrol SET runningKey = ?, runningNextCheck = ?, runningObservationVersion = ?,
+         runningReport = NULL, updatedAt = ?,
          failures = CASE WHEN stopped = 1 THEN 0 ELSE failures END, stopped = 0, stoppedNextCheck = NULL
        WHERE agentId = ? AND itemId = ?`,
-      [run.key, run.nextCheck, run.now, agentId, itemId]
+      [run.key, run.nextCheck, run.observationVersion, run.now, agentId, itemId]
     )
+  }
+
+  /** Keep the running patrol's report for its end; false when that run is no longer the item's. */
+  async keepReport(agentId: string, itemId: string, key: string, text: string, now: number): Promise<boolean> {
+    const { changes } = await this.db.query(
+      'UPDATE assistant_patrol SET runningReport = ?, updatedAt = ? WHERE agentId = ? AND itemId = ? AND runningKey = ?',
+      [text, now, agentId, itemId, key]
+    )
+    return changes > 0
   }
 
   /** The patrol finished: its next check is done with and the streak is over. False when another run took the item since. */
   async succeed(agentId: string, itemId: string, key: string, now: number): Promise<boolean> {
     const { changes } = await this.db.query(
       `UPDATE assistant_patrol SET patrolledNextCheck = runningNextCheck, failures = 0, retryAt = NULL,
-         runningKey = NULL, runningNextCheck = NULL, updatedAt = ?
+         runningKey = NULL, runningNextCheck = NULL, runningObservationVersion = NULL, runningReport = NULL, updatedAt = ?
        WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
       [now, agentId, itemId, key]
     )
@@ -143,7 +166,7 @@ export class AssistantPatrolLedger {
     const stopped = failures >= PATROL_MAX_FAILURES
     const { changes } = await this.db.query(
       `UPDATE assistant_patrol SET failures = ?, retryAt = ?, stopped = ?, stoppedNextCheck = ?,
-         runningKey = NULL, runningNextCheck = NULL, updatedAt = ?
+         runningKey = NULL, runningNextCheck = NULL, runningObservationVersion = NULL, runningReport = NULL, updatedAt = ?
        WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
       [
         failures,
@@ -162,7 +185,7 @@ export class AssistantPatrolLedger {
   /** The run ended without counting either way (a pause, a shutdown): the same next check stays due. */
   async release(agentId: string, itemId: string, key: string, now: number): Promise<void> {
     await this.db.query(
-      `UPDATE assistant_patrol SET runningKey = NULL, runningNextCheck = NULL, updatedAt = ?
+      `UPDATE assistant_patrol SET runningKey = NULL, runningNextCheck = NULL, runningObservationVersion = NULL, runningReport = NULL, updatedAt = ?
        WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
       [now, agentId, itemId, key]
     )
