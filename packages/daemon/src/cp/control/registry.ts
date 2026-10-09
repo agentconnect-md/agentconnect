@@ -79,6 +79,7 @@ import {
 } from './session.js'
 import { runtimeCommands, skillsLocal, type SkillsControlDeps } from './skills.js'
 import { taskList, type TaskControlDeps } from './task.js'
+import { assistantActivityRead, assistantActivityWrite, type AssistantControlDeps } from './assistant.js'
 import { autoMergeSet, autoMergeState, type AutoMergeControlDeps } from './automerge.js'
 import { sandboxKeepAlive, type SandboxKeepAliveDeps } from './sandbox-keepalive.js'
 import { runtimeProbe, type RuntimeProbeDeps } from './runtime-probe.js'
@@ -120,6 +121,7 @@ export interface ControlDeps
     SessionControlDeps,
     SkillsControlDeps,
     TaskControlDeps,
+    AssistantControlDeps,
     AutoMergeControlDeps,
     SandboxKeepAliveDeps,
     RuntimeProbeDeps,
@@ -191,6 +193,8 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['workspace/gitpush', workspaceGitPush],
   ['workspace/gitmessage', workspaceGitMessage],
   ['task/list', taskList],
+  ['assistant/activity/read', assistantActivityRead],
+  ['assistant/activity/write', assistantActivityWrite],
   ['automerge/set', autoMergeSet],
   ['automerge/state', autoMergeState],
   ['sandbox/keepalive', sandboxKeepAlive],

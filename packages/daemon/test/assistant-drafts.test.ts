@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   ASSISTANT_DRAFT_TTL_MS,
   assistantDraftHash,
+  assistantGrantId,
   type AssistantDraftCreate,
   type AssistantGrantPlace
 } from '../src/store/assistant-drafts.js'
@@ -228,6 +229,53 @@ describe('assistant drafts: "always allow from here to there"', () => {
     expect(fresh.grantEpoch).toBe(1)
     expect(await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, fresh.grantEpoch, 3_000)).toBe(true)
     expect(await s.assistantDrafts.granted(AGENT, HERE, THERE)).toBe(true)
+  })
+})
+
+describe('assistant drafts: what the Activity view lists', () => {
+  it('lists only the agent’s drafts still awaiting review, the soonest to lapse first', async () => {
+    const s = await open()
+    const later = await create(s, { now: 5_000 })
+    const sooner = await create(s, { now: 1_000 })
+    const decided = await create(s, { now: 1_000 })
+    await s.assistantDrafts.deny(decided.id, BY, 2_000)
+    const lapsed = await create(s, { now: 2_000 - ASSISTANT_DRAFT_TTL_MS })
+    await create(s, { agentId: 'agent-b', now: 1_000 })
+    const pending = await s.assistantDrafts.listPending(AGENT, 10, 3_000)
+    expect(pending.map((d) => d.id)).toEqual([sooner.id, later.id])
+    expect(pending.map((d) => d.id)).not.toContain(lapsed.id)
+    expect((await s.assistantDrafts.listPending(AGENT, 1, 3_000)).map((d) => d.id)).toEqual([sooner.id])
+  })
+
+  it('lists the current generation’s grants by a stable id, and revokes exactly the one named', async () => {
+    const s = await open()
+    const elsewhere = { ...THERE, channel: 'C0RELEASES' }
+    await s.assistantDrafts.grant(AGENT, HERE, THERE, BY.id, 0, 1_000)
+    await s.assistantDrafts.grant(AGENT, HERE, elsewhere, null, 0, 2_000)
+    await s.assistantDrafts.grant('agent-b', HERE, THERE, BY.id, 0, 1_000)
+    const grants = await s.assistantDrafts.listGrants(AGENT, 10)
+    expect(grants).toEqual([
+      { id: assistantGrantId(HERE, elsewhere), source: HERE, target: elsewhere, grantedBy: null, grantedAt: 2_000 },
+      { id: assistantGrantId(HERE, THERE), source: HERE, target: THERE, grantedBy: BY.id, grantedAt: 1_000 }
+    ])
+    expect(grants[0]!.id).toMatch(/^[0-9a-f]{32}$/)
+    expect(assistantGrantId(HERE, THERE)).not.toBe(assistantGrantId(THERE, HERE))
+
+    // Another agent's id, or one that names nothing, revokes nothing.
+    expect(await s.assistantDrafts.revokeGrant('agent-b', grants[0]!.id)).toBe(false)
+    expect(await s.assistantDrafts.revokeGrant(AGENT, '0'.repeat(32))).toBe(false)
+    expect(await s.assistantDrafts.revokeGrant(AGENT, assistantGrantId(HERE, THERE))).toBe(true)
+    expect(await s.assistantDrafts.granted(AGENT, HERE, THERE)).toBe(false)
+    expect(await s.assistantDrafts.granted(AGENT, HERE, elsewhere)).toBe(true)
+    expect(await s.assistantDrafts.granted('agent-b', HERE, THERE)).toBe(true)
+    expect(await s.assistantDrafts.revokeGrant(AGENT, assistantGrantId(HERE, THERE))).toBe(false)
+
+    // A webchat source has no integration, and a reset hides what it ended.
+    const webchat = { platform: 'webchat', integrationId: null, channel: 'conv-1' }
+    await s.assistantDrafts.grant(AGENT, webchat, THERE, null, 0, 3_000)
+    expect((await s.assistantDrafts.listGrants(AGENT, 1))[0]).toMatchObject({ source: webchat, grantedAt: 3_000 })
+    await s.assistantDrafts.resetGrants(AGENT)
+    expect(await s.assistantDrafts.listGrants(AGENT, 10)).toEqual([])
   })
 })
 

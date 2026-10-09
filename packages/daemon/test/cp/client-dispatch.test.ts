@@ -18,6 +18,7 @@ import {
 } from '../../src/cp/memory-reader.js'
 import { TaskViolationError } from '../../src/cp/task-reader.js'
 import { AgentWakeViolationError } from '../../src/cp/agent-wake.js'
+import { AssistantActivityViolationError } from '../../src/cp/assistant-activity.js'
 import { createRuntimeCommandsReader } from '../../src/cp/runtime-commands-reader.js'
 import { RuntimeCommandsCache } from '../../src/runtimes/runtime-commands.js'
 import { FakeTransport } from './fake-transport.js'
@@ -1270,6 +1271,83 @@ describe('CpClient dispatch', () => {
     expect(err.corr).toBe(f.id)
     expect(err.payload.code).toBe('BAD_PAYLOAD')
     expect(err.payload.details).toEqual({ reason: 'unknown-agent' })
+  })
+
+  it('answers the Activity view’s reads and edits from its seam, only for the agent’s own organization', async () => {
+    const agentId = CRON_AGENT_ID
+    const assistantActivity = {
+      read: vi.fn(async () => ({ operation: 'grants' as const, grants: [], truncated: false })),
+      write: vi.fn(async () => ({ operation: 'delete-item' as const, found: true }))
+    }
+    const { client, t } = await readyClient({ assistantActivity, orgForAgent: () => 'example-org' }, [], 'frame')
+    try {
+      // A frame naming another organization never reaches the store.
+      t.pushInbound(
+        frame('assistant/activity/write', { agentId, operation: 'delete-item', itemId: 'i1' }, { orgId: 'other-org' })
+      )
+      await tick()
+      expect(t.lastSent()).toMatchObject({ type: 'error', payload: { code: 'SCOPE_DENIED' } })
+      expect(assistantActivity.write).not.toHaveBeenCalled()
+
+      const read = JSON.parse(
+        frame('assistant/activity/read', { agentId, operation: 'grants' }, { orgId: 'example-org' })
+      )
+      t.pushInbound(JSON.stringify(read))
+      await tick()
+      expect(assistantActivity.read).toHaveBeenCalledWith({ agentId, operation: 'grants' })
+      expect(t.lastSent()).toMatchObject({
+        type: 'assistant/activity/read/result',
+        corr: read.id,
+        orgId: 'example-org',
+        payload: { operation: 'grants', grants: [], truncated: false }
+      })
+
+      t.pushInbound(
+        frame('assistant/activity/write', { agentId, operation: 'delete-item', itemId: 'i1' }, { orgId: 'example-org' })
+      )
+      await tick()
+      expect(assistantActivity.write).toHaveBeenCalledWith({ agentId, operation: 'delete-item', itemId: 'i1' })
+      expect(t.lastSent()).toMatchObject({
+        type: 'assistant/activity/write/result',
+        payload: { operation: 'delete-item', found: true }
+      })
+    } finally {
+      await client.stop()
+    }
+  })
+
+  it('refuses an Activity request with its machine reason, and as an unknown agent where no seam is wired', async () => {
+    const agentId = CRON_AGENT_ID
+    const { t } = await readyClient({
+      assistantActivity: {
+        read: async () => {
+          throw new AssistantActivityViolationError('not in assistant mode', 'assistant-mode-off')
+        },
+        write: async () => {
+          throw new Error('disk on fire')
+        }
+      }
+    })
+    t.pushInbound(frame('assistant/activity/read', { agentId, operation: 'subsessions', limit: 5 }, { epoch: 5 }))
+    await tick()
+    expect(t.lastSent()).toMatchObject({
+      type: 'error',
+      payload: { code: 'BAD_PAYLOAD', details: { reason: 'assistant-mode-off' } }
+    })
+    t.pushInbound(frame('assistant/activity/write', { agentId, operation: 'revoke-grant', grantId: 'a'.repeat(32) }))
+    await tick()
+    expect(t.lastSent()).toMatchObject({
+      type: 'error',
+      payload: { code: 'INTERNAL', message: 'assistant/activity/write failed' }
+    })
+
+    const bare = await readyClient()
+    bare.t.pushInbound(frame('assistant/activity/read', { agentId, operation: 'grants' }))
+    await tick()
+    expect(bare.t.lastSent()).toMatchObject({
+      type: 'error',
+      payload: { code: 'BAD_PAYLOAD', details: { reason: 'unknown-agent' } }
+    })
   })
 
   it('replies agent/wake/ok from the waker seam, and unsupported when none is wired', async () => {

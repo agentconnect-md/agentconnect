@@ -143,6 +143,17 @@ export const consoleKeys = {
     consoleKey(orgId, 'gitlab-accounts', bindings),
   agentPermissionRequests: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-permission-requests', agentId) : null,
+  /** The assistant-mode Activity view's sections, each its own read so a collapsed one costs nothing. */
+  assistantItems: (orgId: string | null | undefined, agentId: string, section: 'open' | 'closed') =>
+    consoleKey(orgId, 'assistant-items', agentId, section),
+  assistantItem: (orgId: string | null | undefined, agentId: string, itemId: string) =>
+    consoleKey(orgId, 'assistant-item', agentId, itemId),
+  assistantSubsessions: (orgId: string | null | undefined, agentId: string) =>
+    consoleKey(orgId, 'assistant-subsessions', agentId),
+  assistantDrafts: (orgId: string | null | undefined, agentId: string) =>
+    consoleKey(orgId, 'assistant-drafts', agentId),
+  assistantGrants: (orgId: string | null | undefined, agentId: string) =>
+    consoleKey(orgId, 'assistant-grants', agentId),
   /** The org's sessions waiting on an approval — the bell's feed (slack-approval-dm.md §7). */
   pendingApprovals: (orgId: string | null | undefined) => consoleKey(orgId, 'session-approvals'),
   hookRuns: (orgId: string | null | undefined, hookId: string) => consoleKey(orgId, 'hook-runs', hookId)

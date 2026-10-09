@@ -116,6 +116,18 @@ export class AssistantSubsessionIndex {
     return row ? subsessionOf(row) : undefined
   }
 
+  /** The agent's sub-sessions: open ones first, then the newest. */
+  async list(agentId: string, limit: number): Promise<AssistantSubsession[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_subsession WHERE agentId = ?
+         ORDER BY CASE WHEN state = 'open' THEN 0 ELSE 1 END, createdAt DESC, childSessionKey LIMIT ?`,
+        [agentId, limit]
+      )
+    ).rows as Row[]
+    return rows.map(subsessionOf)
+  }
+
   async deleteForAgent(agentId: string): Promise<number> {
     return (await this.db.query('DELETE FROM assistant_subsession WHERE agentId = ?', [agentId])).changes
   }

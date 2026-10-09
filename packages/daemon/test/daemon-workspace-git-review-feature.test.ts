@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   TASK_LIST_FEATURE,
+  ASSISTANT_ACTIVITY_FEATURE,
   AGENT_WAKE_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -67,6 +68,8 @@ describe('registrationFeatures — the console dock reads (git review + write + 
     // `task/list` is likewise unconditional daemon code — whether the agent's runtime actually
     // emits the SDK lifecycle feed is data the REP reports (`tracked`), not a register-time promise.
     expect(features).toContain(TASK_LIST_FEATURE)
+    // The Activity view is store code too; the read itself refuses an agent outside assistant mode.
+    expect(features).toContain(ASSISTANT_ACTIVITY_FEATURE)
     // The console's repo scope is likewise unconditional daemon code: whether the agent HAS an
     // additional repository is its spec's business, not something the handshake can promise.
     expect(features).toContain(WORKSPACE_REPO_SCOPE_FEATURE)

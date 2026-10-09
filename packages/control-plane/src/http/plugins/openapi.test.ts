@@ -144,6 +144,39 @@ describe('openapi plane', () => {
     }
   })
 
+  it('names, tags and describes every assistant Activity route, and documents the editor-only ones as refusable', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const base = '/api/v1/orgs/{orgId}/agents/{id}/assistant'
+      const expected: Array<[string, 'get' | 'delete', string, boolean]> = [
+        ['/items', 'get', 'listAssistantItems', false],
+        ['/items/{itemId}', 'get', 'getAssistantItem', false],
+        ['/items/{itemId}', 'delete', 'deleteAssistantItem', true],
+        ['/subsessions', 'get', 'listAssistantSubsessions', false],
+        ['/drafts', 'get', 'listAssistantDrafts', true],
+        ['/grants', 'get', 'listAssistantPostGrants', true],
+        ['/grants/{grantId}', 'delete', 'revokeAssistantPostGrant', true]
+      ]
+      for (const [path, method, operationId, editorOnly] of expected) {
+        const op = doc.paths?.[`${base}${path}`]?.[method]
+        expect(op, `${method} ${path}`).toMatchObject({ tags: ['Agents'], operationId })
+        expect(op?.summary, path).toBeTruthy()
+        expect(op?.description, path).toBeTruthy()
+        const statuses = Object.keys(op?.responses ?? {})
+        expect(statuses, path).toEqual(expect.arrayContaining(['200', '404', '409', '503']))
+        if (editorOnly) {
+          expect(statuses, path).toContain('403')
+          expect(op?.description, path).toMatch(/edit the agent/)
+        } else {
+          expect(statuses, path).not.toContain('403')
+        }
+      }
+    } finally {
+      await app.close()
+    }
+  })
+
   it('documents the session file download as raw bytes, not JSON', async () => {
     const app = await buildReady()
     try {
