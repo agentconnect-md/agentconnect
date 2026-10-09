@@ -739,7 +739,7 @@ visibility.
   messages" opt-in. Observed direct conversations now have rows so an editor
   can explicitly turn those defaults Off.
 - **A bot may change those defaults.** `Bot.platformConfig.conversationDefaults`
-  (`PATCH /bots/:id`; the console's "Defaults for new conversations" on the expanded
+  (`PATCH /bots/:id`; the console's "Defaults for new conversations/direct messages" on the expanded
   bot row) sets what a channel and a 1:1 DM start as — trigger and session mode — for
   every org-visible install on the bot; a group DM takes the channel default. Rows a
   human already decided are untouched. With the channel default Off, a conversation
