@@ -3,6 +3,8 @@
 // visible channel post) and every ordering below — record-first, CAS, admission barrier — is
 // load-bearing against a fast worker replying before its record exists.
 import { isAppendCoordinate } from '../session/append-coordinate.js'
+import { isSubsessionCoordinate, subsessionCoordinate } from '../session/subsession-coordinate.js'
+import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import type { HostKey } from '../acp/host-key.js'
 import { randomUUID } from 'node:crypto'
 import type { Clock, TimerHandle } from '@agentconnect.md/connection'
@@ -51,6 +53,11 @@ import type {
   StartOrchestrationReq,
   StartOrchestrationResult
 } from '../mcp/ops.js'
+
+/** assistant-mode.md §5.6: the reason a sub-session's own delegation is refused, and the sentence the agent reads. */
+export const SUBSESSION_NESTING = 'subsession_nesting'
+const SUBSESSION_NESTING_MESSAGE =
+  'A sub-session cannot open another sub-session. Do this work here, or report back to the main conversation and let it delegate.'
 
 /** Process-wide daemon state the collaboration path reads. */
 export interface CollabCoreHost {
@@ -194,6 +201,15 @@ export class CollabCoordinator {
     return cached?.displayName?.trim() || cached?.name || agentId
   }
 
+  /** assistant-mode.md §5.6, the one gate of self-delegation: an assistant-mode caller, itself as target, the postless form. */
+  selfDelegation(req: MessageAgentReq): boolean {
+    return (
+      req.toAgentId === req.callerAgentId &&
+      req.postless === true &&
+      assistantModeOn(this.host.agents().get(req.callerAgentId))
+    )
+  }
+
   /**
    * Prepare an agent→agent delivery: the caller-framed text the target will see
    * plus a stable delivery id and thread. The message is delivered DIRECTLY to
@@ -263,12 +279,11 @@ export class CollabCoordinator {
    */
   localWakeDecision(req: MessageAgentReq): { rejection: string } | { rejection: null; channel: string } {
     const caller = this.host.agents().get(req.callerAgentId)
-    const channelRootSelfWake = req.toAgentId === req.callerAgentId && req.postless !== true
+    // A self-delegation (§5.6) is no inter-agent policy edge either; coordinate integrity below still applies.
+    const selfWake = (req.toAgentId === req.callerAgentId && req.postless !== true) || this.selfDelegation(req)
     if (
       !caller ||
-      (!channelRootSelfWake &&
-        caller.outboundPolicy === 'selected' &&
-        !caller.allowedTargetAgentIds.includes(req.toAgentId))
+      (!selfWake && caller.outboundPolicy === 'selected' && !caller.allowedTargetAgentIds.includes(req.toAgentId))
     ) {
       return { rejection: 'not_allowed' }
     }
@@ -282,9 +297,9 @@ export class CollabCoordinator {
     // 'offline'). Fails closed on an absent/stale snapshot, as before.
     // A visible channel-root self wake is not an inter-agent policy edge. The successful
     // platform post proves the caller can write the named conversation; coordinate integrity
-    // below still proves the resulting child may be keyed there. Postless self calls never
+    // below still proves the resulting child may be keyed there. Other postless self calls never
     // reach this branch — the explicit self guard rejects those before authorization.
-    if (!channelRootSelfWake && !this.host.cpCollab().admits(req.callerAgentId, req.toAgentId)) {
+    if (!selfWake && !this.host.cpCollab().admits(req.callerAgentId, req.toAgentId)) {
       return { rejection: 'not_allowed' }
     }
 
@@ -309,11 +324,7 @@ export class CollabCoordinator {
     if (coords.verdict === 'reject') return { rejection: 'not_allowed' }
 
     const target = this.host.agents().get(req.toAgentId)
-    if (
-      !channelRootSelfWake &&
-      target?.callPolicy === 'selected' &&
-      !target.allowedCallerAgentIds.includes(req.callerAgentId)
-    ) {
+    if (!selfWake && target?.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(req.callerAgentId)) {
       return { rejection: 'not_allowed' }
     }
     // Branch 3 substitutes the coordinate rather than refusing the wake; branch 1 hands back
@@ -330,7 +341,9 @@ export class CollabCoordinator {
     // `sendMessage(toAgent=self, channel=...)` preflights before the root post exists, so
     // absence of the postless marker is the trusted indication that this is the visible form.
     // messageAgent performs the stronger post-ts + pairing-id check before dispatch.
-    if (req.toAgentId === req.callerAgentId && req.postless === true) return 'self'
+    const selfDelegation = this.selfDelegation(req)
+    if (req.toAgentId === req.callerAgentId && req.postless === true && !selfDelegation) return 'self'
+    if (selfDelegation && isSubsessionCoordinate(req.callerThread)) return SUBSESSION_NESTING
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -402,12 +415,23 @@ export class CollabCoordinator {
       req.transcriptTs !== undefined &&
       !req.transcriptTs.startsWith('local-') &&
       req.agentCallDeliveryId !== undefined
-    if (req.toAgentId === req.callerAgentId && !pairedChannelRootSelfWake) {
+    const selfDelegation = this.selfDelegation(req)
+    if (req.toAgentId === req.callerAgentId && !pairedChannelRootSelfWake && !selfDelegation) {
       const fallbackThread = req.thread ?? `agentcall:${req.channel}:self`
       return observe('collaboration.delivery.rejected', {
         delivered: false,
         targetSession: sessionKey(platform, req.channel, fallbackThread, req.toAgentId),
         reason: 'self'
+      })
+    }
+    // §5.6: sub-sessions are one level deep.
+    if (selfDelegation && isSubsessionCoordinate(req.callerThread)) {
+      const fallbackThread = req.thread ?? `agentcall:${req.channel}:subsession`
+      return observe('collaboration.delivery.rejected', {
+        delivered: false,
+        targetSession: sessionKey(platform, req.channel, fallbackThread, req.toAgentId),
+        reason: SUBSESSION_NESTING,
+        message: SUBSESSION_NESTING_MESSAGE
       })
     }
 
@@ -443,7 +467,17 @@ export class CollabCoordinator {
         reason: 'hop_limit'
       })
     }
-    const isReply = inbound !== undefined && req.toAgentId === inbound.callFrom
+    // §5.6: a sub-session takes its parent's audience, so a caller with no session to inherit from opens none.
+    if (selfDelegation && originSessionId === undefined) {
+      const fallbackThread = req.thread ?? `agentcall:${req.channel}:subsession`
+      return observe('collaboration.delivery.rejected', {
+        delivered: false,
+        targetSession: sessionKey(platform, req.channel, fallbackThread, req.toAgentId),
+        reason: 'no_parent_session'
+      })
+    }
+    // A delegation is never a reply, though a parent woken by its sub-session's report has itself as `callFrom`.
+    const isReply = !selfDelegation && inbound !== undefined && req.toAgentId === inbound.callFrom
     const correlationId =
       req.correlationId !== undefined ? req.correlationId : isReply ? inbound.correlationId : undefined
 
@@ -465,18 +499,24 @@ export class CollabCoordinator {
     // A2A delivery is direct and postless (#854): the woken peer receives a caller-framed
     // message and nothing is left in any channel. session-concept case 2c (pure wake) is thus
     // the default — a `sendMessage` with `toAgent` never posts, regardless of `channel`.
-    const event = this.prepareAgentDelivery(req)
+    const prepared = this.prepareAgentDelivery(req)
+    // §5.6: a sub-session opens on a coordinate of its own, never the caller's thread, and is told what it is.
+    const event = selfDelegation
+      ? {
+          ...prepared,
+          thread: subsessionCoordinate(prepared.deliveryId),
+          text: `From your own main conversation, as a background sub-session: ${req.text}`
+        }
+      : prepared
     const { deliveryId } = event
     const msgId = `agentcall:${coordChannel}:${deliveryId}`
     // Keyed on the CALLEE's coordinate where its conversation appends: this path dispatches a
     // known target directly, so it never reaches the per-target ingress resolution, and
     // keying on the delivery thread would open the peer a second session per caller.
-    const targetCoordinate = await this.host.targetSessionCoordinate(
-      req.toAgentId,
-      integrationId,
-      coordChannel,
-      targetTransportScope
-    )
+    // A sub-session is never the conversation's append session.
+    const targetCoordinate = selfDelegation
+      ? undefined
+      : await this.host.targetSessionCoordinate(req.toAgentId, integrationId, coordChannel, targetTransportScope)
     const targetSession = sessionKey(
       platform,
       coordChannel,
@@ -558,6 +598,8 @@ export class CollabCoordinator {
     //     makes N-of-N orchestration close without the agent ever knowing the id. A message
     //     to a THIRD agent (not the caller) does NOT inherit correlation — it's a fresh call.
     const hopCount = inbound ? inbound.hopCount + 1 : 0
+    // §5.6: a sub-session always reports back to the conversation that opened it.
+    const needsReply = req.needsReply === true || selfDelegation
     const callMeta: CallMeta = {
       callFrom: req.callerAgentId,
       ...(correlationId !== undefined ? { correlationId } : {}),
@@ -570,7 +612,7 @@ export class CollabCoordinator {
       ...(externalOrigin ? { externalOrigin } : {}),
       // §5.3: `toAgent.needsReply` — tell the child to report its outcome back to that origin.
       // Meaningless without an origin to reply into, so it rides the same condition.
-      ...(req.needsReply === true && originSessionId !== undefined ? { needsReply: true } : {}),
+      ...(needsReply && originSessionId !== undefined ? { needsReply: true } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
       ...(originSessionId !== undefined && (await this.host.store().isCaptureExcluded(req.callerAgentId, callerKey))
@@ -623,9 +665,18 @@ export class CollabCoordinator {
         // Snapshot the child row as it stands BEFORE the wake runs (null when it has never run),
         // so a re-wake of a finished child can't be reported with its previous turn's outcome.
         rowUpdatedAtAtAdmission: (await this.host.store().getSession(targetSession))?.updatedAt ?? null,
-        replyRequested: req.needsReply === true,
+        replyRequested: needsReply,
         replyState: 'awaiting'
       })
+      if (selfDelegation) {
+        await this.host.store().assistantSubsessions.open({
+          agentId: req.callerAgentId,
+          childSessionKey: targetSession,
+          parentSessionId: originSessionId,
+          parentSessionKey: callerKey,
+          now: this.host.clock().now()
+        })
+      }
     }
     // send-message-routing-rework.md §3.2/§8.6 — the "internal wake first" arrival order
     // of a PAIRED `toAgent + channel` call. The wake is the SEMANTIC AUTHORITY (it alone
@@ -669,7 +720,8 @@ export class CollabCoordinator {
         req.toAgentId,
         normalized,
         integrationId,
-        this.host.webchatTransport().webchatWakeContext(platform, coordChannel),
+        // A sub-session never posts into the conversation that opened it.
+        selfDelegation ? undefined : this.host.webchatTransport().webchatWakeContext(platform, coordChannel),
         callMeta,
         { ...(pairingKey !== undefined ? { requireDurable: true } : {}) }
       )
@@ -680,7 +732,7 @@ export class CollabCoordinator {
     this.host
       .log()
       .info(`messageAgent: ${req.callerAgentId} → ${req.toAgentId} (${targetSession}) delivery=${deliveryId}`)
-    return record({ delivered: true, targetSession })
+    return record({ delivered: true, targetSession, ...(selfDelegation ? { subsession: true as const } : {}) })
   }
 
   /**

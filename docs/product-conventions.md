@@ -577,7 +577,9 @@ When the post instead carries `toAgent`, it is an explicit activation even when 
 target is the posting agent itself. The visible root and internal wake remain one paired
 delivery, so the new child runs exactly once; the platform's echo is only the second
 observation of that delivery. A postless self-call remains invalid because it has no new
-conversation boundary and can recurse without producing a user-visible hand-off.
+conversation boundary and can recurse without producing a user-visible hand-off. The one
+exception is an agent in assistant mode, whose postless self-call opens a background
+sub-session (see "Assistant-mode sub-sessions").
 
 ## A parent-session reply is injected, and the parent answers normally
 
@@ -921,6 +923,19 @@ never the wording of a direct message, and the agent says so when it takes an it
 DM. Every conversation of the agent is reminded of the same list of open items. An agent
 outside assistant mode is offered no item tools.
 
+## Assistant-mode sub-sessions
+
+An agent in assistant mode hands long work, such as "fix this bug and open a PR", to a
+background sub-session of its own: `sendMessage` with its own agent id and no `channel`.
+Ordinary conversation stays in the main conversation. The main conversation says the work
+has started; the sub-session runs in a session of its own, never the conversation's long
+session; none of its replies is posted anywhere, and it reports back into the conversation
+that opened it when it finishes or fails, which then speaks for it. It takes that
+conversation's visibility and owner, and its visibility cannot be changed on its own;
+making the main conversation private still makes it private. A sub-session cannot open
+sub-sessions of its own. Only the assistant-mode agent is told about this form; for every
+other agent, and for every other form, a postless self-call is refused as before.
+
 ## Directional agent visibility
 
 Agent-to-agent visibility is the intersection of two independently configured directions.
@@ -943,7 +958,8 @@ with no IM integration at all (webchat, webhook, dreaming, memory-only). A chann
 **narrow** a directory listing as an optional filter; it can never widen one. A caller
 always sees **itself** in a listing, even under a `selected` outbound policy that does not
 name it. That self entry may target the explicit `toAgent` channel-root form described
-above; a postless self-wake is still refused separately.
+above; a postless self-wake is still refused separately, except as an assistant-mode
+sub-session.
 
 The agent-directory tool must hide peers that fail any part of this check. Message
 delivery must repeat the same authorization instead of trusting discovery: a remembered,

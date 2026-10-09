@@ -6,12 +6,14 @@ import {
 import { randomUUID } from 'node:crypto'
 import { ASSISTANT_DRAFT_SCHEMA, AssistantDraftLedger } from './assistant-drafts.js'
 import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js'
+import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
 import {
   APPEND_COORDINATE_PREFIX,
   appendCoordinate,
   isAppendCoordinate,
   nextAppendCoordinate
 } from '../session/append-coordinate.js'
+import { isSubsessionCoordinate } from '../session/subsession-coordinate.js'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -1317,7 +1319,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 37
+export const SCHEMA_VERSION = 38
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1732,6 +1734,8 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     if (columns.some((c) => c.name === 'trust')) await db.exec('ALTER TABLE assistant_item DROP COLUMN trust')
   },
   // v37 adds the assistant draft and post-grant tables (assistant-mode.md §5.5), which the CREATE block emits; the bump fences out older members.
+  async () => {},
+  // v38 adds the assistant sub-session index (assistant-mode.md §5.6), which the CREATE block emits; the bump fences out older members.
   async () => {}
 ]
 
@@ -1876,6 +1880,8 @@ export class LocalStore {
   readonly assistantItems: AssistantItemLedger
   /** Assistant-mode drafts and "always allow" grants (assistant-mode.md §5.5). */
   readonly assistantDrafts: AssistantDraftLedger
+  /** The parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6). */
+  readonly assistantSubsessions: AssistantSubsessionIndex
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -1904,6 +1910,7 @@ export class LocalStore {
       transaction: (fn) => this.transaction(fn)
     })
     this.assistantDrafts = new AssistantDraftLedger({ query: (sql, params) => this.db.query(sql, params) })
+    this.assistantSubsessions = new AssistantSubsessionIndex({ query: (sql, params) => this.db.query(sql, params) })
   }
 
   /**
@@ -1960,6 +1967,7 @@ export class LocalStore {
       ${SOURCE_CACHE_SCHEMA}
       ${ASSISTANT_ITEM_SCHEMA}
       ${ASSISTANT_DRAFT_SCHEMA}
+      ${ASSISTANT_SUBSESSION_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
@@ -4348,6 +4356,11 @@ export class LocalStore {
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
+      // A purged sub-session leaves its parent's index (assistant-mode.md §5.6).
+      if (isSubsessionCoordinate(rec.thread))
+        await tx
+          .prepare('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?')
+          .run(rec.agentId, key)
       await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
         // Once the local session content is gone, creating a new CP metadata row

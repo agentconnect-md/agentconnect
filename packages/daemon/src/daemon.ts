@@ -756,6 +756,7 @@ import {
   sessionThreadOf
 } from './messages/normalized.js'
 import { isAppendCoordinate } from './session/append-coordinate.js'
+import { isSubsessionCoordinate } from './session/subsession-coordinate.js'
 import {
   ConnectionReconciler,
   type ConnectionReconcilerHost,
@@ -13417,6 +13418,8 @@ export class Daemon {
     if (integrationId !== undefined) {
       msg.transportScope ??= this.transportScopeForIntegrationIds([integrationId])
     }
+    // A sub-session never speaks on the platform, whichever turn wakes it (assistant-mode.md §5.7).
+    if (isSubsessionCoordinate(sessionThreadOf(msg))) msg.headless = true
     // An agent-initiated wake's INBOUND message posts live too (#807 only posted the woken
     // REPLY, so the sender's message appeared on refresh but never in the live view). Mint
     // its canonical post identity before the inbox row persists so a replay reuses it and
@@ -18829,8 +18832,9 @@ export class Daemon {
     if (!conn) return
     const release = this.holdReplyConnection(conn)
     try {
-      // Slack titles a THREAD; a session that belongs to none has nothing to title.
-      if (!isAppendCoordinate(rec.thread)) await conn.setTitle(rec.channel, rec.thread, title)
+      // Slack titles a THREAD; a session that belongs to none (append, or a sub-session) has nothing to title.
+      if (!isAppendCoordinate(rec.thread) && !isSubsessionCoordinate(rec.thread))
+        await conn.setTitle(rec.channel, rec.thread, title)
     } catch (err) {
       // SlackConnection.setTitle is already failure-degrading; keep this boundary
       // defensive for test doubles and future gateway implementations.
@@ -21048,7 +21052,9 @@ export class Daemon {
     const integrationId =
       this.sessionDeliveryBindings.get(rec.key)?.integrationId ??
       this.integrationIdForTransportScope(agentId, rec.platform, rec.transportScope)
-    const conn = integrationId ? this.connForIntegration(integrationId) : undefined
+    // A sub-session has no surface (assistant-mode.md §5.7): its completion reaches it through the headless wake.
+    const conn =
+      integrationId && !isSubsessionCoordinate(rec.thread) ? this.connForIntegration(integrationId) : undefined
     // No surface at all ⇒ keep today's drop, and do NOT claim delivery to the wake.
     if (mode !== 'none' && !conn) return
     if (mode !== 'none' && conn) {

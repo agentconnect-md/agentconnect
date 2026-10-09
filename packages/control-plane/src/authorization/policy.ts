@@ -1,5 +1,5 @@
 // Human authorization after authentication and organization selection; see docs/designs/authorization-policy.md.
-import { isAppendCoordinate } from '@agentconnect.md/protocol'
+import { isAppendCoordinate, isSubsessionCoordinate } from '@agentconnect.md/protocol'
 import type { SessionExternalAccessSnapshot, SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
 
 export type { Shareable, ViewCtx } from '../persistence/ports.js'
@@ -30,6 +30,18 @@ export interface SessionViewable {
   /** The session's thread coordinate; null when it has none. Omitted means unread, which
    *  `session.visibility.change` treats as an `append` coordinate (fail closed). */
   thread?: string | null
+  /** What recognises an assistant-mode agent's own sub-session; unread on a sub-session coordinate counts as one. */
+  subsession?: SubsessionFacts
+}
+
+/** The lineage of a session on a sub-session coordinate (assistant-mode.md §5.6). */
+export interface SubsessionFacts {
+  parentSessionId: string | null
+  /** The parent session's agent; null when there is no parent row. */
+  parentAgentId: string | null
+  agentId: string
+  /** The agent's assistant mode is on. */
+  assistantMode: boolean
 }
 
 export type AuthorizationRequest =
@@ -66,6 +78,16 @@ function resourceIsVisible(resource: Shareable, principal: ViewCtx): boolean {
 
 function resourceIsEditable(resource: Shareable, principal: ViewCtx): boolean {
   return principal.role !== 'viewer' && resourceIsVisible(resource, principal)
+}
+
+/** An assistant-mode agent's own sub-session takes its parent's audience, so none of its viewers may change it. */
+function isAssistantSubsession(resource: SessionViewable): boolean {
+  if (!isSubsessionCoordinate(resource.thread)) return false
+  const facts = resource.subsession
+  return (
+    facts === undefined ||
+    (facts.parentSessionId !== null && facts.parentAgentId === facts.agentId && facts.assistantMode)
+  )
 }
 
 function identityOwnsSession(resource: SessionViewable, identitySet: ReadonlySet<string>): boolean {
@@ -127,11 +149,13 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // An `append` session is the whole conversation's long-lived session: its
     // recorded owner is only the first poster, so its audience is no one's to
     // change (channel-session-mode.md §9). An unread coordinate counts as one.
+    // The same holds for an assistant-mode agent's own sub-session (assistant-mode.md §5.6).
     case AuthorizationAction.SessionChangeVisibility:
       return (
         !request.resource.externalProvider &&
         request.resource.thread !== undefined &&
         !isAppendCoordinate(request.resource.thread) &&
+        !isAssistantSubsession(request.resource) &&
         identityOwnsSession(request.resource, request.identitySet)
       )
     // Continuation is an organization WRITE riding on view (webchat-cross-

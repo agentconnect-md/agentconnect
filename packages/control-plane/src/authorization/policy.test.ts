@@ -431,3 +431,47 @@ describe('visibilityWhere', () => {
     })
   })
 })
+
+// assistant-mode.md §5.6: an assistant-mode agent's own sub-session takes its parent's audience.
+describe('canChangeSessionVisibility on assistant-mode sub-sessions', () => {
+  const AGENT = 'agent-a'
+  const facts = (over: Partial<NonNullable<SessionViewable['subsession']>> = {}) => ({
+    parentSessionId: 'sid-parent-1',
+    parentAgentId: AGENT,
+    agentId: AGENT,
+    assistantMode: true,
+    ...over
+  })
+  const session = (thread: string | null, subsession?: SessionViewable['subsession']): SessionViewable => ({
+    visibility: 'org',
+    ownerIdentity: `user:${CREATOR}`,
+    thread,
+    ...(subsession ? { subsession } : {})
+  })
+  const allowed = (resource: SessionViewable, role: OrgMemberRole = 'collaborator') =>
+    canChangeSessionVisibility(resource, ctx(CREATOR, role), identitySetOf(ctx(CREATOR, role)))
+
+  it('refuses an assistant-mode agent’s own sub-session even to its inherited owner, whatever the role', () => {
+    for (const role of ['owner', 'collaborator', 'viewer'] as const) {
+      expect(allowed(session('subsession:1700000000000', facts()), role)).toBe(false)
+    }
+  })
+
+  it('treats a sub-session coordinate whose lineage was not read as a sub-session — fail closed', () => {
+    expect(allowed(session('subsession:1700000000000'))).toBe(false)
+  })
+
+  it.each([
+    ['another agent’s parent', facts({ parentAgentId: 'agent-b' })],
+    ['no parent', facts({ parentSessionId: null, parentAgentId: null })],
+    ['assistant mode off', facts({ assistantMode: false })]
+  ])('leaves the owner’s choice in place with %s', (_label, lineage) => {
+    expect(allowed(session('subsession:1700000000000', lineage))).toBe(true)
+  })
+
+  it('changes nothing for a session on any other coordinate, whatever its lineage', () => {
+    expect(allowed(session('1700000000.000100', facts()))).toBe(true)
+    expect(allowed(session(null, facts()))).toBe(true)
+    expect(allowed(session('append:1700000000000', facts({ assistantMode: false })))).toBe(false)
+  })
+})
