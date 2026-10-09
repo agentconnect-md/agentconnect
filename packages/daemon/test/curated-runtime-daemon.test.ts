@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,6 +25,15 @@ function catalog(): ResolvedRuntimeCatalog {
       explicit: { runtime: explicit, source: 'user', name: 'explicit', version: '', skillsAgentId: null }
     },
     runtimes: { 'hermes-agent': hermes, explicit }
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -98,6 +107,42 @@ describe('daemon curated runtime admission', () => {
       })
     } finally {
       await daemon.stop()
+    }
+  })
+
+  it('stops an in-flight probe child with the daemon instead of orphaning it', async () => {
+    // Records its pid and never answers initialize, so the boot sweep is still probing it at stop().
+    const pidFile = join(mkdtempSync(join(tmpdir(), 'ac-curated-stop-')), 'pid')
+    const hang =
+      'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1 << 30)'
+    const runtime = { command: process.execPath, args: ['-e', hang, pidFile], env: [] }
+    const daemon = new Daemon({
+      root: root(),
+      sandboxMechanism: null,
+      resolveCatalog: async () => ({
+        entries: {
+          'hermes-agent': { runtime, source: 'curated', name: 'Hermes Agent', version: '', skillsAgentId: null }
+        },
+        runtimes: { 'hermes-agent': runtime }
+      }),
+      installed: (runtimes) => runtimes
+    })
+    let pid = 0
+    try {
+      try {
+        await daemon.start()
+        await vi.waitFor(() => {
+          pid = Number(readFileSync(pidFile, 'utf8'))
+          expect(pid).toBeGreaterThan(0)
+        }, WAIT)
+      } finally {
+        await daemon.stop()
+      }
+      await vi.waitFor(() => expect(alive(pid)).toBe(false), WAIT)
+      // A cancelled probe is no verdict, so the runtime is neither admitted nor refused.
+      expect((daemon as any).curatedRuntimeAdmission.status('hermes-agent', 'curated')).toBe('pending')
+    } finally {
+      if (pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL')
     }
   })
 

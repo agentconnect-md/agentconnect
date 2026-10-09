@@ -137,6 +137,7 @@ export class RuntimeFactsRegistry {
   private curatedProbePending = false // a local TTL sweep arrived behind another sweep
   private lastProbeAtMs = 0 // when ordinary runtimes were last swept; gates re-probe on reconnect
   private probeTimer?: TimerHandle
+  private readonly sweepAbort = new AbortController() // dispose() cancels the in-flight sweep and refuses new ones
 
   constructor(private readonly host: RuntimeFactsHost) {}
 
@@ -356,8 +357,9 @@ export class RuntimeFactsRegistry {
     }, PROBE_TTL_MS)
   }
 
-  /** Drop the recurring curated re-probe timer so it cannot hold the process open. */
+  /** Drop the re-probe timer and cancel an in-flight sweep, whose probes then stop their detached children. */
   dispose(): void {
+    this.sweepAbort.abort()
     if (this.probeTimer !== undefined) {
       this.host.clock().clearTimeout(this.probeTimer)
       this.probeTimer = undefined
@@ -377,6 +379,7 @@ export class RuntimeFactsRegistry {
    * must not affect the CP connection.
    */
   async probeAndEmit(includeOrdinary = true): Promise<void> {
+    if (this.sweepAbort.signal.aborted) return
     const launch = this.host.launch()
     // --k8s has no runtime to launch on this host: profiles come from the image's
     // declared table. Still emit them, because this is also the CP (re)connect path
@@ -397,6 +400,7 @@ export class RuntimeFactsRegistry {
     }
 
     const log = this.host.log()
+    const signal = this.sweepAbort.signal
     const catalog = this.host.localProbeCatalog()
     const fresh = this.lastProbeAtMs > 0 && this.host.clock().now() - this.lastProbeAtMs < PROBE_TTL_MS
     const curatedCandidates = this.host.curatedAdmission().probeCandidates(catalog)
@@ -437,7 +441,7 @@ export class RuntimeFactsRegistry {
       const applied = new Set<string>()
       let emitted = false
       const onResult = async (result: RuntimeProbeResult): Promise<void> => {
-        if (applied.has(result.runtime)) return
+        if (applied.has(result.runtime) || signal.aborted) return
         applied.add(result.runtime)
         await this.applyProbeResult(result)
         this.emitFacts()
@@ -450,6 +454,7 @@ export class RuntimeFactsRegistry {
             log,
             hostFactory: probeHostFactory,
             onResult,
+            signal,
             // A vendor-archive runtime is not launchable until the store extracts it, and this sweep
             // is exactly what needs its model list — so install it inside its own probe slot rather
             // than at start-up or ahead of the batch. `parseArchiveLaunch` answers only for an entry
@@ -495,6 +500,7 @@ export class RuntimeFactsRegistry {
             log,
             hostFactory: probeHostFactory,
             onResult,
+            signal,
             runInSandbox: launch.sandboxMechanism !== undefined,
             requireSandbox: launch.requireSandbox,
             daemonRoot: launch.daemonRoot,
@@ -506,6 +512,8 @@ export class RuntimeFactsRegistry {
         )
       }
       const results = (await Promise.all(batches)).flat()
+      // A cancelled sweep says nothing about its runtimes, so none of it is recorded.
+      if (signal.aborted) return
       // An injected prober (tests) may not drive the incremental callback.
       for (const result of results) await onResult(result)
       if (Object.keys(ordinaryRuntimes).length > 0) this.lastProbeAtMs = this.host.clock().now()
