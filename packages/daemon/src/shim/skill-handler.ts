@@ -7,6 +7,7 @@ import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell } from '../skills/skills-
 import {
   reconcileSkillBundles,
   hasSkillPublicationOperation,
+  publishedSkillSetUnchanged,
   skillBundleReceiptIntact,
   treeDigest,
   type CandidateSkillBundle
@@ -83,12 +84,22 @@ export interface ClusterSkillHandlerDeps {
   writeBack?: SkillWriteBackStaging
 }
 
+/** What this shim last published in full for its workspace; held in memory because the state dir is agent-writable. */
+interface PublishedPlan {
+  agentId: string
+  skillsAgentId: string
+  fingerprint: string
+  uploads: string
+  roots: ClusterSkillReconcile['priorRoots']
+}
+
 const sourceDirectory = (sourceId: string): string => createHash('sha256').update(sourceId).digest('hex')
 const fileKey = (sourceId: string, path: string): string => `${sourceId}\0${path}`
 
 export class ClusterSkillHandler {
   private readonly operations = new Map<string, Operation>()
   private readonly highestTerms = new Map<string, { term: string; daemonId: string }>()
+  private published?: PublishedPlan
   private readonly inactiveMs: number
   private readonly now: () => number
 
@@ -345,6 +356,10 @@ export class ClusterSkillHandler {
     // Handles staged for write-back; dropped again unless the reply that names them is built.
     let writeBackCandidates: SkillWriteBackCandidate[] = []
     let replied = false
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify(fingerprintSources(input.sources)))
+      .digest('hex')
+    const uploads = uploadsDigest(operation)
     try {
       const replayingPublication = await hasSkillPublicationOperation(
         this.deps.workspaceRoot,
@@ -352,6 +367,27 @@ export class ClusterSkillHandler {
         input.operationId,
         input.replayKey
       )
+      // An unchanged plan over an intact published set answers from its receipts: no clone, no CLI, no write-back.
+      // The ledger keeps naming the last full publication on purpose: a lost reply retried here short-circuits again.
+      if (gitPlan && !replayingPublication && (await this.unchanged(input, operation, fingerprint, uploads))) {
+        assertMutationAuthority()
+        const gitSources = input.sources
+          .filter((source): source is GitSkillPlan => source.sourceKind === 'git')
+          .map((plan) =>
+            gitResult(
+              plan,
+              input.priorRoots
+                .filter((root) => root.sourceId === plan.sourceId)
+                .map((root) => root.path.split('/').at(-1)!)
+            )
+          )
+        const reply = ClusterSkillReconcileResultSchema.parse(
+          skillReplyFor(input, { roots: input.priorRoots, conflicts: [], gitSources })
+        )
+        return await this.answer(input, operation, reply, context)
+      }
+      // Cleared until this run publishes its whole plan again.
+      this.published = undefined
       const git = gitPlan
         ? await this.acquireGitPlan(input, operation, mutationSignal)
         : new Map<string, GitPlanOutcome>()
@@ -476,12 +512,7 @@ export class ClusterSkillHandler {
         runtime: operation.skillsAgentId,
         cliVersion: PINNED_SKILLS_CLI_VERSION,
         // A run that skipped a source has not met its plan, so its fingerprint never short-circuits the retry.
-        fingerprint:
-          skipped.length > 0
-            ? `failed:${randomBytes(16).toString('hex')}`
-            : createHash('sha256')
-                .update(JSON.stringify(fingerprintSources(input.sources)))
-                .digest('hex'),
+        fingerprint: skipped.length > 0 ? `failed:${randomBytes(16).toString('hex')}` : fingerprint,
         ...(preserveOwned.length > 0 ? { preserveOwned } : {}),
         ...(replayingPublication
           ? {}
@@ -524,16 +555,18 @@ export class ClusterSkillHandler {
           ...(writeBackCandidates.length > 0 ? { writeBackCandidates: inSourceOrder(input, writeBackCandidates) } : {})
         })
       )
-      if (input.priorRootCount !== undefined) {
-        operation.result = reply
-        replied = true
-        return await this.receipt(
-          { op: 'receipt', handle: input.handle, operationId: input.operationId, offset: 0 },
-          context
-        )
+      if (skipped.length + budgetDropped.length + result.conflicts.length === 0) {
+        this.published = {
+          agentId: operation.authority.agentId,
+          skillsAgentId: operation.skillsAgentId,
+          fingerprint,
+          uploads,
+          roots: reply.roots
+        }
       }
-      await this.discard(operation.handle)
-      const sent = ClusterSkillReconcileReplySchema.parse(reply)
+      // The receipt path holds the reply, candidates included, until its last page is read.
+      if (input.priorRootCount !== undefined) replied = true
+      const sent = await this.answer(input, operation, reply, context)
       replied = true
       return sent
     } finally {
@@ -546,6 +579,56 @@ export class ClusterSkillHandler {
           .map((source) => rm(gitStaging(source.sourceId), { recursive: true, force: true }))
       )
     }
+  }
+
+  private async answer(
+    input: ClusterSkillReconcile,
+    operation: Operation,
+    reply: ClusterSkillReconcileReply,
+    context?: ClusterSkillRequestContext
+  ): Promise<ClusterSkillReceiptPage> {
+    if (input.priorRootCount !== undefined) {
+      operation.result = reply
+      return await this.receipt(
+        { op: 'receipt', handle: input.handle, operationId: input.operationId, offset: 0 },
+        context
+      )
+    }
+    await this.discard(operation.handle)
+    return ClusterSkillReconcileReplySchema.parse(reply)
+  }
+
+  // The daemon's prior receipts must be exactly what this shim last published for the same plan and uploads, and the ledger must agree.
+  private async unchanged(
+    input: ClusterSkillReconcile,
+    operation: Operation,
+    fingerprint: string,
+    uploads: string
+  ): Promise<boolean> {
+    const published = this.published
+    if (
+      !published ||
+      published.agentId !== operation.authority.agentId ||
+      published.skillsAgentId !== operation.skillsAgentId ||
+      published.fingerprint !== fingerprint ||
+      published.uploads !== uploads ||
+      canonicalRoots(published.roots) !== canonicalRoots(input.priorRoots)
+    )
+      return false
+    return await publishedSkillSetUnchanged({
+      cwd: this.deps.workspaceRoot!,
+      stateDir: this.deps.stateRoot!,
+      agentId: 'cluster-shim',
+      runtime: operation.skillsAgentId,
+      cliVersion: PINNED_SKILLS_CLI_VERSION,
+      fingerprint,
+      roots: input.priorRoots.map((root) => ({
+        relativeRoot: root.path,
+        sourceKey: root.sourceId,
+        treeDigest: root.digest,
+        files: root.files
+      }))
+    })
   }
 
   // The window capability lives only in this call's arguments and the Git child's env.
@@ -710,6 +793,27 @@ const fingerprintSources = (sources: ClusterSkillReconcile['sources']): unknown[
     const { getUrl: _getUrl, writeBack: _writeBack, ...rest } = source
     return rest
   })
+
+// The uploaded snapshot this run staged, so an unchanged plan over changed uploaded bytes still takes the full path.
+const uploadsDigest = (operation: Operation): string =>
+  createHash('sha256')
+    .update(
+      JSON.stringify(
+        [...operation.files.values()]
+          .map(({ sourceId, path, size, sha256, executable }) =>
+            JSON.stringify([sourceId, path, size, sha256, executable ?? null])
+          )
+          .sort()
+      )
+    )
+    .digest('hex')
+
+const canonicalRoots = (roots: ClusterSkillReconcile['priorRoots']): string =>
+  JSON.stringify(
+    [...roots]
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .map(({ path, sourceId, sourceKind, digest, files }) => [path, sourceId, sourceKind, digest, files])
+  )
 
 function compareDecimalTerms(left: string, right: string): number {
   if (left.length !== right.length) return left.length < right.length ? -1 : 1

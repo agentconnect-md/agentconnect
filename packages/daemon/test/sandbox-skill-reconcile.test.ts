@@ -156,12 +156,18 @@ async function sandbox(
     ? createBundleHandler({ workspaceRoot: workspace, stagingDir: bundleStaging, allowHttpUpload: true })
     : undefined
   if (bundles) prepareBundleStaging(bundleStaging)
+  // Every Git invocation the pod runs that reaches an origin, by repository.
+  const originCalls: string[] = []
   const handler = new ClusterSkillHandler({
     stagingRoot: staging,
     workspaceRoot: workspace,
     stateRoot: join(dir, 'state'),
     git: {
-      git: runner(w),
+      git: async (invocation) => {
+        const origin = invocation.args.find((arg) => arg.startsWith(HOST))
+        if (origin) originCalls.push(origin.slice(HOST.length))
+        return await runner(w)(invocation)
+      },
       allowFileProtocol: true,
       shimEnv: { PATH: process.env.PATH },
       credentialHelper: '/nonexistent/gitcred-helper',
@@ -191,6 +197,7 @@ async function sandbox(
     workspace,
     staging,
     bundleStaging,
+    originCalls,
     stop: () => bundles?.stop(),
     requests,
     client,
@@ -905,6 +912,33 @@ describe('sandbox skill reconcile: in-pod write-back (source-cache.md §9)', () 
         expect(await readdir(pod.bundleStaging)).toEqual([])
         expect(await pod.store.ledger()).toEqual(await plain.store.ledger())
         expect(await installed(pod.workspace)).toEqual(await installed(plain.workspace))
+      } finally {
+        pod.stop()
+        await b.close()
+      }
+    })
+  }, 180_000)
+
+  it('clones each Source once and writes it back at most once across back-to-back reconciles of one spec', async () => {
+    await withWorld(async (w) => {
+      const pod = await sandbox(w, 'pod', undefined, 'a', { writeBack: true })
+      const b = await bucket()
+      try {
+        await run(w, pod, 'pod', { inPod: { cachePlan: b.cachePlan } })
+        await vi.waitFor(() => expect(b.outcomes).toHaveLength(2), { timeout: 30_000 })
+        const once = { ledger: await pod.store.ledger(), files: await installed(pod.workspace) }
+        const clones = [...pod.originCalls]
+        expect(new Set(clones).size).toBe(2)
+        // The launch gate's re-verify: the same spec on the same pod again.
+        await run(w, pod, 'pod', { inPod: { cachePlan: b.cachePlan } })
+        expect(pod.originCalls).toEqual(clones)
+        expect(await pod.store.revision()).toBe(2)
+        expect(await pod.store.ledger()).toEqual(once.ledger)
+        expect(await installed(pod.workspace)).toEqual(once.files)
+        expect(b.reserved()).toHaveLength(2)
+        expect(b.outcomes).toHaveLength(2)
+        expect(await readdir(pod.bundleStaging)).toEqual([])
+        expect(await readdir(pod.staging)).toEqual([])
       } finally {
         pod.stop()
         await b.close()
