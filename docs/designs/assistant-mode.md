@@ -406,9 +406,10 @@ below), so opening it everywhere does not reopen what the read rule closes.
   team-visible and feed every place's standing summary), self-delegation, posts or drafts aimed
   at any other place, and every agent-to-agent send — a direct `toAgent` call, a `toAgent` +
   `channel` post at a channel root, and a reply into another session through `sessionId` — since
-  each carries the content into a session or place P does not alone see. The mark is stored with the session so it survives a restart or
-  handover, and the refusal tells P that starting a new conversation lifts it. This is a refusal
-  by tool, not an output filter.
+  each carries the content into a session or place P does not alone see. The mark is stored with
+  the session so it survives a restart or handover, and the refusal tells P that starting a new
+  conversation lifts it. This is a refusal by tool, not an output filter; writes that leave
+  through other tools are an open question (§9).
 - **Memory**: DMs are already outside shared memory. When the per-person memory space lands,
   anything it captures from such a session is injected only where P is the whole audience.
 - **Revocation**: after P leaves the place, excerpts already in P's DM context stay there; like
@@ -754,6 +755,10 @@ badge are not in it yet.
 7. **Wording of item summaries**: the restatement when an item is taken is the only review point
    for what becomes team-visible.
 8. Whether distillation on a normal OpenCode host runs under `plan` (live, unverified).
+9. **Other writes from a session marked by a per-asker read**: code-host comments and issues, MCP
+   tools and a shell with network access are not refused, so recalled content can still leave
+   P's DM through them, on P's request or in a later turn. Closing them means a restricted tool
+   set for marked sessions, which would leave the DM little more than read-only until `!new`.
 
 ---
 
@@ -853,5 +858,6 @@ listing is authoritative; every shared place keeps the P0a private-place rule. A
 of that change: the Read box, the `P's DM` row and the target now state the same rule; the widening
 is bound to a turn P started, never a report, patrol, cron or sub-session turn; a session that
 made a widened read writes only to P's DM — no ledger writes, self-delegation, posts elsewhere or
-agent-to-agent sends — until it is retired, because the content stays in its context across turns; per-person memory
-captured from it stays in P's DM; revocation residue and the metric's inputs are stated.
+agent-to-agent sends — until it is retired, because the content stays in its context across
+turns; per-person memory captured from it stays in P's DM; revocation residue and the metric's
+inputs are stated; writes through code-host, MCP and shell tools are left open (§9).
