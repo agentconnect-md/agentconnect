@@ -1,0 +1,18 @@
+# Context rules for .oss-scanner/Dockerfile only (BuildKit prefers <Dockerfile>.dockerignore over the root file).
+# Unlike the root .dockerignore it keeps docs/ in the image, so the scanner can read the design record at /src/docs.
+# The scanner adds .git back itself after the build.
+.git
+**/node_modules
+**/.pnpm-store
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/*.log
+**/.env
+**/.env.*
+!.env.example
+**/.DS_Store
+.claude/worktrees
+CLAUDE.local.md
+scratchpad
