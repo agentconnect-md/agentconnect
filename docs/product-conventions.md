@@ -937,6 +937,18 @@ making the main conversation private still makes it private. A sub-session canno
 sub-sessions of its own. Only the assistant-mode agent is told about this form; for every
 other agent, and for every other form, a postless self-call is refused as before.
 
+While the console's `assistant-mode` flag is on, the session page of a conversation that
+opened sub-sessions has a Sub-sessions tab in its side panel; no other conversation shows it.
+It lists the sub-sessions that conversation opened, newest first and a page at a time, each
+with its state and start. A title and a link to its own session appear only to someone who may
+view that session, as in the Activity view. Whoever may continue a running sub-session's
+session may stop it there: Stop interrupts its current turn as the composer's stop does,
+mutes nothing and undoes nothing it already did, and a process its runtime started in the
+background may keep running. The sub-session then reports to the conversation that it ended,
+its transcript names who stopped it, and the row says whether a turn was stopped or nothing
+was running. An agent whose daemon cannot list one conversation's sub-sessions says to upgrade
+it.
+
 ## Assistant-mode patrols
 
 When an active or waiting item's next check comes due, the daemon holding the agent's duty starts
@@ -953,7 +965,8 @@ A failed patrol is recorded on the item and the next attempt waits min(60, 2ⁿ)
 its failures in a row; a patrol that records nothing counts as failed. After five in a row the
 item is patrolled no more until its next check is set to a new time, and its conversation is told
 once. A failed patrol never sends the "ended without reporting" notice a delegated sub-session
-gets.
+gets. A patrol is listed among its conversation's sub-sessions; stopping it there ends it
+silently and counts its check as done.
 
 A patrol is offered only read tools and an item update limited to its own item: no platform
 write, no `sendMessage`, no new item and no draft, and any other tool it names is refused. Its

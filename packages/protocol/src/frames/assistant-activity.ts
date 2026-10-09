@@ -8,6 +8,9 @@ export const ASSISTANT_ACTIVITY_FEATURE = 'assistant-activity-v1'
 /** Daemon serves `decide-draft` on `assistant/activity/write`: an editor approves or discards a draft from the console. */
 export const ASSISTANT_DRAFT_DECISION_FEATURE = 'assistant-draft-decision-v1'
 
+/** Daemon serves a `subsessions` read narrowed to one conversation and `stop-subsession` writes; an older daemon would list every conversation's. */
+export const ASSISTANT_SUBSESSION_PANEL_FEATURE = 'assistant-subsession-panel-v1'
+
 /** JSON bytes one read result may take, leaving envelope headroom below the 256 KiB wire cap; a list stops short and says so. */
 export const ASSISTANT_ACTIVITY_RESULT_BYTES = 192 * 1024
 
@@ -20,8 +23,8 @@ export const ASSISTANT_ACTIVITY_PLACES_MAX = 20
 /** Newest observations carried by one item read. */
 export const ASSISTANT_ACTIVITY_OBSERVATIONS_MAX = 10
 
-/** Why the daemon refused a request, carried on a `BAD_PAYLOAD` error frame's `details.reason`. */
-export const AssistantActivityErrorReason = z.enum(['unknown-agent', 'assistant-mode-off'])
+/** Why the daemon refused a request, carried on a `BAD_PAYLOAD` error frame's `details.reason`; `bad-cursor` is a page cursor it did not mint. */
+export const AssistantActivityErrorReason = z.enum(['unknown-agent', 'assistant-mode-off', 'bad-cursor'])
 export type AssistantActivityErrorReason = z.infer<typeof AssistantActivityErrorReason>
 
 const agentId = z.string().uuid()
@@ -65,6 +68,9 @@ export type AssistantActivityItemDetail = z.infer<typeof AssistantActivityItemDe
 /** `open` until it reported back (`done`) or ended without reporting (`failed`). */
 export const AssistantActivitySubsessionState = z.enum(['open', 'done', 'failed'])
 export type AssistantActivitySubsessionState = z.infer<typeof AssistantActivitySubsessionState>
+
+/** Opaque to everyone but the daemon that minted it: where the next page of one conversation's sub-sessions starts. */
+export const AssistantSubsessionCursor = z.string().min(1).max(1_024)
 
 export const AssistantActivitySubsession = z.object({
   /** The sub-session's outward id; null until its session exists. */
@@ -139,7 +145,9 @@ export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
   z.object({
     agentId,
     operation: z.literal('subsessions'),
-    limit: z.number().int().min(1).max(ASSISTANT_ACTIVITY_SUBSESSIONS_MAX)
+    limit: z.number().int().min(1).max(ASSISTANT_ACTIVITY_SUBSESSIONS_MAX),
+    /** Only the sub-sessions this conversation opened, newest first and paged; absent lists the agent's, running first. */
+    parent: z.object({ sessionId: ref, cursor: AssistantSubsessionCursor.optional() }).optional()
   }),
   z.object({
     agentId,
@@ -161,7 +169,9 @@ export const AssistantActivityReadResult = z.discriminatedUnion('operation', [
   z.object({
     operation: z.literal('subsessions'),
     subsessions: z.array(AssistantActivitySubsession).max(ASSISTANT_ACTIVITY_SUBSESSIONS_MAX),
-    truncated: z.boolean()
+    truncated: z.boolean(),
+    /** Where the next page of a `parent` read starts; null on its last page and on every unnarrowed read. */
+    nextCursor: AssistantSubsessionCursor.nullable().optional()
   }),
   z.object({
     operation: z.literal('drafts'),
@@ -191,7 +201,7 @@ export const AssistantDraftStatus = z.enum([
 ])
 export type AssistantDraftStatus = z.infer<typeof AssistantDraftStatus>
 
-/** C→D REQ: an editor deleting an item, revoking a grant or deciding a draft; the Control Plane has already checked the caller. */
+/** C→D REQ: an editor deleting an item, revoking a grant or deciding a draft, or someone who may continue a sub-session stopping it; the Control Plane has already checked the caller. */
 export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
   z.object({ agentId, operation: z.literal('delete-item'), itemId: ref }),
   z.object({ agentId, operation: z.literal('revoke-grant'), grantId: z.string().regex(/^[0-9a-f]{32}$/) }),
@@ -202,6 +212,14 @@ export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
     choice: AssistantDraftChoice,
     /** The console user deciding, stamped by the Control Plane. */
     decider: z.object({ userId: ref, name })
+  }),
+  z.object({
+    agentId,
+    operation: z.literal('stop-subsession'),
+    /** The sub-session's outward id; the daemon interrupts it only if its index holds it for this agent. */
+    sessionId: ref,
+    /** The console user stopping it, stamped by the Control Plane and named in its transcript. */
+    actor: z.object({ userId: ref, name })
   })
 ])
 export type AssistantActivityWriteReq = z.infer<typeof AssistantActivityWriteReq>
@@ -209,6 +227,10 @@ export type AssistantActivityWriteReq = z.infer<typeof AssistantActivityWriteReq
 /** `decided` when this call settled the draft; otherwise why it could not, and this call posted nothing. */
 export const AssistantDraftDecisionResult = z.enum(['decided', 'not-found', 'expired', 'already-decided'])
 export type AssistantDraftDecisionResult = z.infer<typeof AssistantDraftDecisionResult>
+
+/** `stopped` interrupted its current turn; `not-running` found no turn to interrupt; `not-found` is no sub-session of this agent. */
+export const AssistantSubsessionStopResult = z.enum(['stopped', 'not-running', 'not-found'])
+export type AssistantSubsessionStopResult = z.infer<typeof AssistantSubsessionStopResult>
 
 /** D→C REP: `found` is false when there was nothing to delete or revoke; a decision reports the draft's status after it. */
 export const AssistantActivityWriteResult = z.discriminatedUnion('operation', [
@@ -221,7 +243,8 @@ export const AssistantActivityWriteResult = z.discriminatedUnion('operation', [
     /** This decision recorded "always allow from here to there". */
     granted: z.boolean(),
     failure: z.string().max(2_000).nullable()
-  })
+  }),
+  z.object({ operation: z.literal('stop-subsession'), result: AssistantSubsessionStopResult })
 ])
 export type AssistantActivityWriteResult = z.infer<typeof AssistantActivityWriteResult>
 

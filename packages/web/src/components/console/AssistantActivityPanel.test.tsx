@@ -116,9 +116,18 @@ const SUBSESSIONS: AssistantSubsessionDto[] = [
     state: 'open',
     startedAt: '2026-10-09T09:00:00.000Z',
     visible: true,
+    canStop: true,
     parent: { sessionId: 'sid-parent', title: 'support', platform: 'slack', channelName: 'support' }
   },
-  { sessionId: null, title: null, state: 'failed', startedAt: '2026-10-09T08:00:00.000Z', visible: false, parent: null }
+  {
+    sessionId: null,
+    title: null,
+    state: 'failed',
+    startedAt: '2026-10-09T08:00:00.000Z',
+    visible: false,
+    canStop: false,
+    parent: null
+  }
 ]
 const DRAFT: AssistantDraftDto = {
   id: 'draft-1',

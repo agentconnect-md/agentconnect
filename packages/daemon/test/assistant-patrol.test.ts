@@ -12,6 +12,7 @@ import {
   PATROL_UPDATE_ITEM_TOOL
 } from '../src/mcp/ops/assistant-items.js'
 import { DEFAULT_DAILY_PATROL_BUDGET, patrolTools } from '../src/assistant/patrol.js'
+import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
@@ -615,6 +616,57 @@ describe('failures back off and stop', () => {
       'Scheduled check failed (nothing recorded); the next attempt is in 2 minutes.'
     ])
     expect(reports()).toHaveLength(0)
+    await daemon.stop()
+  })
+})
+
+describe('a patrol in its conversation’s sub-session panel', () => {
+  it('is listed under the conversation, and the panel’s stop ends it silently with its check done', async () => {
+    const { daemon, d, behavior, patrols, reports, settled } = await boot(
+      scaffold([{ id: 'bot-a', assistantMode: ON }])
+    )
+    await seedPlace(d)
+    const item = await takeItem(d)
+    behavior.patrol = 'hang'
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    const key = sessionKey('slack', 'C1', patrols()[0]!.msg.thread!, 'bot-a', scopeOf(d))
+    await vi.waitFor(async () => expect((await d.store.getSession(key))?.sessionId).toBeTruthy(), WAIT)
+    const sessionId = (await d.store.getSession(key)).sessionId
+    // The same seam the control plane's frames reach, with the daemon's own cancel core behind its stop.
+    const activity = createAssistantActivity({
+      store: () => d.store,
+      agent: (agentId) => d.agents.get(agentId),
+      now: () => Date.now(),
+      decideDraft: async () => {
+        throw new Error('not used')
+      },
+      stopSession: (k, actor) => d.commands.cancelSessionByKey(k, actor)
+    })
+
+    const listed = (await activity.read({
+      agentId: 'bot-a',
+      operation: 'subsessions',
+      limit: 10,
+      parent: { sessionId: 'sid-parent-bot-a' }
+    })) as any
+    expect(listed.subsessions).toEqual([expect.objectContaining({ sessionId, state: 'open' })])
+
+    expect(
+      await activity.write({
+        agentId: 'bot-a',
+        operation: 'stop-subsession',
+        sessionId,
+        actor: { userId: 'usr-1', name: 'Grace' }
+      })
+    ).toEqual({ operation: 'stop-subsession', result: 'stopped' })
+    await vi.waitFor(async () => expect((await patrolState(d, item.id))?.runningKey).toBeNull(), WAIT)
+    await settled()
+
+    // Settled by the patrol path: no "ended without reporting" into the place, and the check is done.
+    expect(reports()).toHaveLength(0)
+    expect(await patrolState(d, item.id)).toMatchObject({ failures: 0, patrolledNextCheck: item.nextCheck })
+    expect(await d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ kind: 'patrol', state: 'failed' })
     await daemon.stop()
   })
 })

@@ -116,6 +116,41 @@ describe('assistant/activity frames', () => {
     expect(decodes('assistant/activity/write/result', { operation: 'revoke-grant', found: false })).toBe(true)
   })
 
+  it('round-trips one conversation’s sub-session page and a stop', () => {
+    const parent = { sessionId: 'sid-1' }
+    expect(decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'subsessions', limit: 20, parent })).toBe(
+      true
+    )
+    expect(
+      decodes('assistant/activity/read', {
+        agentId: AGENT_ID,
+        operation: 'subsessions',
+        limit: 20,
+        parent: { ...parent, cursor: 'opaque' }
+      })
+    ).toBe(true)
+    expect(
+      decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'subsessions', limit: 20, parent: {} })
+    ).toBe(false)
+    const page = { operation: 'subsessions', subsessions: [], truncated: true }
+    expect(decodes('assistant/activity/read/result', { ...page, nextCursor: 'opaque' })).toBe(true)
+    expect(decodes('assistant/activity/read/result', { ...page, nextCursor: null })).toBe(true)
+    expect(decodes('assistant/activity/read/result', { ...page, nextCursor: 'x'.repeat(1_025) })).toBe(false)
+
+    const stop = {
+      agentId: AGENT_ID,
+      operation: 'stop-subsession',
+      sessionId: 'sid-2',
+      actor: { userId: 'usr-1', name: 'Grace' }
+    }
+    expect(decodes('assistant/activity/write', stop)).toBe(true)
+    expect(decodes('assistant/activity/write', { ...stop, actor: undefined })).toBe(false)
+    for (const result of ['stopped', 'not-running', 'not-found']) {
+      expect(decodes('assistant/activity/write/result', { operation: 'stop-subsession', result })).toBe(true)
+    }
+    expect(decodes('assistant/activity/write/result', { operation: 'stop-subsession', result: 'killed' })).toBe(false)
+  })
+
   it('round-trips a draft decision and its outcome', () => {
     const decide = {
       agentId: AGENT_ID,

@@ -50,13 +50,15 @@ async function setup() {
       failure: null
     })
   )
+  const stopSession = vi.fn(async (_key: string, _actor: { userId: string; name?: string }) => true)
   const activity = createAssistantActivity({
     store: () => s,
     agent: (id) => agents.get(id),
     now: () => NOW,
-    decideDraft
+    decideDraft,
+    stopSession
   })
-  return { s, a, b, off, activity, decideDraft }
+  return { s, a, b, off, activity, decideDraft, stopSession }
 }
 
 async function read<O extends AssistantActivityReadReq['operation']>(
@@ -203,6 +205,137 @@ describe('the Activity view: sub-sessions', () => {
       truncated: false
     })
     expect((await read(activity, { agentId: a, operation: 'subsessions', limit: 2 })).truncated).toBe(true)
+  })
+
+  it('lists only the sub-sessions one conversation opened, newest first, a page at a time', async () => {
+    const { s, a, b, activity } = await setup()
+    const parentKey = sessionKey('slack', 'C0SUPPORT', 'append:1', a, 'T0EXAMPLE')
+    const child = (id: string) => sessionKey('slack', 'C0SUPPORT', subsessionCoordinate(id), a, 'T0EXAMPLE')
+    const open = { agentId: a, parentSessionId: 'sid-parent', parentSessionKey: parentKey }
+    for (const [id, now] of [
+      ['1', 1_000],
+      ['2', 2_000],
+      ['3', 3_000]
+    ] as const)
+      await s.assistantSubsessions.open({ ...open, childSessionKey: child(id), now })
+    await s.assistantSubsessions.open({
+      ...open,
+      parentSessionId: 'sid-other',
+      childSessionKey: child('x'),
+      now: 4_000
+    })
+    await s.assistantSubsessions.open({ ...open, agentId: b, childSessionKey: 'other-agent', now: 5_000 })
+    await s.assistantSubsessions.finish(a, child('3'), 'failed')
+
+    const first = await read(activity, {
+      agentId: a,
+      operation: 'subsessions',
+      limit: 2,
+      parent: { sessionId: 'sid-parent' }
+    })
+    expect(first.subsessions.map((r) => [r.state, r.createdAt])).toEqual([
+      ['failed', '1970-01-01T00:00:03.000Z'],
+      ['open', '1970-01-01T00:00:02.000Z']
+    ])
+    expect(first.truncated).toBe(true)
+    expect(first.nextCursor).toEqual(expect.any(String))
+    const rest = await read(activity, {
+      agentId: a,
+      operation: 'subsessions',
+      limit: 2,
+      parent: { sessionId: 'sid-parent', cursor: first.nextCursor! }
+    })
+    expect(rest).toMatchObject({
+      subsessions: [{ parentSessionId: 'sid-parent', state: 'open', createdAt: '1970-01-01T00:00:01.000Z' }],
+      truncated: false,
+      nextCursor: null
+    })
+    // Another agent's conversation of the same id holds nothing of this agent's.
+    const theirs = await read(activity, {
+      agentId: b,
+      operation: 'subsessions',
+      limit: 10,
+      parent: { sessionId: 'sid-parent' }
+    })
+    expect(theirs.subsessions).toHaveLength(1)
+    const forged = activity.read({
+      agentId: a,
+      operation: 'subsessions',
+      limit: 2,
+      parent: { sessionId: 'sid-parent', cursor: 'not-a-cursor' }
+    })
+    await expect(forged).rejects.toMatchObject({ reason: 'bad-cursor' })
+  })
+})
+
+describe('the Activity view: stopping a sub-session', () => {
+  async function withChild(s: LocalStore, agentId: string, id: string, sessionId: string) {
+    const key = sessionKey('webchat', 'conv-1', subsessionCoordinate(id), agentId)
+    await s.assistantSubsessions.open({
+      agentId,
+      childSessionKey: key,
+      parentSessionId: 'sid-parent',
+      parentSessionKey: sessionKey('webchat', 'conv-1', 'append:1', agentId),
+      now: 1_000
+    })
+    await s.upsertSession({
+      key,
+      agentId,
+      platform: 'webchat',
+      channel: 'conv-1',
+      thread: subsessionCoordinate(id),
+      transportScope: null,
+      acpSessionId: `acp-${id}`,
+      sessionId,
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    return key
+  }
+
+  const stop = (activity: AssistantActivity, agentId: string, sessionId: string) =>
+    activity.write({
+      agentId,
+      operation: 'stop-subsession',
+      sessionId,
+      actor: { userId: 'usr-1', name: 'Grace' }
+    })
+
+  it('interrupts an open sub-session’s turn through the cancel core, naming who stopped it', async () => {
+    const { s, a, activity, stopSession } = await setup()
+    const key = await withChild(s, a, '1', 'sid-child')
+    const result = await stop(activity, a, 'sid-child')
+    expect(AssistantActivityWriteResult.parse(result)).toEqual({ operation: 'stop-subsession', result: 'stopped' })
+    expect(stopSession).toHaveBeenCalledWith(key, { userId: 'usr-1', name: 'Grace' })
+    stopSession.mockResolvedValueOnce(false)
+    expect(await stop(activity, a, 'sid-child')).toEqual({ operation: 'stop-subsession', result: 'not-running' })
+  })
+
+  it('stops nothing that is settled, not indexed, or another agent’s', async () => {
+    const { s, a, b, activity, stopSession } = await setup()
+    const key = await withChild(s, a, '1', 'sid-child')
+    await s.assistantSubsessions.finish(a, key, 'done')
+    expect(await stop(activity, a, 'sid-child')).toEqual({ operation: 'stop-subsession', result: 'not-running' })
+    // An ordinary session of the agent is not a sub-session.
+    await s.upsertSession({
+      key: sessionKey('webchat', 'conv-1', 'append:1', a),
+      agentId: a,
+      platform: 'webchat',
+      channel: 'conv-1',
+      thread: 'append:1',
+      transportScope: null,
+      acpSessionId: 'acp-parent',
+      sessionId: 'sid-parent',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    expect(await stop(activity, a, 'sid-parent')).toEqual({ operation: 'stop-subsession', result: 'not-found' })
+    await withChild(s, b, '2', 'sid-theirs')
+    expect(await stop(activity, a, 'sid-theirs')).toEqual({ operation: 'stop-subsession', result: 'not-found' })
+    expect(await stop(activity, a, 'sid-unknown')).toEqual({ operation: 'stop-subsession', result: 'not-found' })
+    expect(stopSession).not.toHaveBeenCalled()
   })
 })
 
@@ -394,6 +527,13 @@ describe('the Activity view: who it answers', () => {
       'assistant-mode-off'
     )
     expect(await s.assistantItems.get(off, item.id)).toBeDefined()
+    const stopOff = activity.write({
+      agentId: off,
+      operation: 'stop-subsession',
+      sessionId: 'sid-child',
+      actor: { userId: 'usr-1', name: null }
+    })
+    expect(await refusal(() => stopOff)).toBe('assistant-mode-off')
   })
 })
 

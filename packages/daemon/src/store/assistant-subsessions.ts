@@ -168,6 +168,29 @@ export class AssistantSubsessionIndex {
     return rows.map(subsessionOf)
   }
 
+  /** The sub-sessions one conversation opened, newest first, from just past `after` when it names a row. */
+  async listForParent(
+    agentId: string,
+    parentSessionId: string,
+    page: { limit: number; after?: { createdAt: number; childSessionKey: string } }
+  ): Promise<AssistantSubsession[]> {
+    const after = page.after
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_subsession WHERE agentId = ? AND parentSessionId = ?${
+          after ? ' AND (createdAt < ? OR (createdAt = ? AND childSessionKey > ?))' : ''
+        } ORDER BY createdAt DESC, childSessionKey LIMIT ?`,
+        [
+          agentId,
+          parentSessionId,
+          ...(after ? [after.createdAt, after.createdAt, after.childSessionKey] : []),
+          page.limit
+        ]
+      )
+    ).rows as Row[]
+    return rows.map(subsessionOf)
+  }
+
   async deleteForAgent(agentId: string): Promise<number> {
     return (await this.db.query('DELETE FROM assistant_subsession WHERE agentId = ?', [agentId])).changes
   }

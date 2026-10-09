@@ -163,6 +163,34 @@ describe('the assistant sub-session index', () => {
     ])
     expect((await s.assistantSubsessions.list(a, 2)).map((r) => r.state)).toEqual(['open', 'open'])
   })
+
+  it('lists one conversation’s rows newest first and pages from a row, ties broken by key', async () => {
+    const s = await open()
+    const [a, b] = [agent(), agent()]
+    await s.assistantSubsessions.open({ ...row(a, '1'), now: 1_000 })
+    await s.assistantSubsessions.open({ ...row(a, '3'), now: 2_000 })
+    await s.assistantSubsessions.open({ ...row(a, '2'), now: 2_000 })
+    await s.assistantSubsessions.open({ ...row(a, '4'), now: 3_000 })
+    await s.assistantSubsessions.open({ ...row(a, 'elsewhere', 'sid-parent-2'), now: 4_000 })
+    await s.assistantSubsessions.open({ ...row(b, '9'), now: 5_000 })
+    await s.assistantSubsessions.finish(a, childKey(a, '4'), 'done')
+    const keys = (rows: { childSessionKey: string }[]) => rows.map((r) => r.childSessionKey)
+
+    const all = await s.assistantSubsessions.listForParent(a, 'sid-parent-1', { limit: 10 })
+    expect(keys(all)).toEqual([childKey(a, '4'), childKey(a, '2'), childKey(a, '3'), childKey(a, '1')])
+    const first = await s.assistantSubsessions.listForParent(a, 'sid-parent-1', { limit: 2 })
+    expect(keys(first)).toEqual([childKey(a, '4'), childKey(a, '2')])
+    const last = first.at(-1)!
+    const next = await s.assistantSubsessions.listForParent(a, 'sid-parent-1', {
+      limit: 2,
+      after: { createdAt: last.createdAt, childSessionKey: last.childSessionKey }
+    })
+    expect(keys(next)).toEqual([childKey(a, '3'), childKey(a, '1')])
+    expect(await s.assistantSubsessions.listForParent(b, 'sid-parent-1', { limit: 10 })).toEqual([
+      expect.objectContaining({ childSessionKey: childKey(b, '9') })
+    ])
+    expect(await s.assistantSubsessions.listForParent(a, 'sid-unknown', { limit: 10 })).toEqual([])
+  })
 })
 
 describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLite', () => {

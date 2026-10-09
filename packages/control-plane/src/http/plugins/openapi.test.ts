@@ -149,11 +149,13 @@ describe('openapi plane', () => {
     try {
       const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
       const base = '/api/v1/orgs/{orgId}/agents/{id}/assistant'
-      const expected: Array<[string, 'get' | 'post' | 'delete', string, boolean]> = [
+      // `refusal` names who else may be refused with 403: editors only, or those who may continue the session.
+      const expected: Array<[string, 'get' | 'post' | 'delete', string, boolean | RegExp]> = [
         ['/items', 'get', 'listAssistantItems', false],
         ['/items/{itemId}', 'get', 'getAssistantItem', false],
         ['/items/{itemId}', 'delete', 'deleteAssistantItem', true],
         ['/subsessions', 'get', 'listAssistantSubsessions', false],
+        ['/subsessions/{sessionId}/stop', 'post', 'stopAssistantSubsession', /continue that sub-session/],
         ['/drafts', 'get', 'listAssistantDrafts', true],
         ['/drafts/{draftId}/decision', 'post', 'decideAssistantDraft', true],
         ['/grants', 'get', 'listAssistantPostGrants', true],
@@ -168,7 +170,7 @@ describe('openapi plane', () => {
         expect(statuses, path).toEqual(expect.arrayContaining(['200', '404', '409', '503']))
         if (editorOnly) {
           expect(statuses, path).toContain('403')
-          expect(op?.description, path).toMatch(/edit the agent/)
+          expect(op?.description, path).toMatch(editorOnly === true ? /edit the agent/ : editorOnly)
         } else {
           expect(statuses, path).not.toContain('403')
         }

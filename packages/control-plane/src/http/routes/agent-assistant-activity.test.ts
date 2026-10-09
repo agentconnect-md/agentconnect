@@ -10,6 +10,7 @@ describe('assistant Activity failures', () => {
       assistantActivityFailure(new ProtocolError('BAD_PAYLOAD', 'refused', { details: { reason } }))
     expect(refused('assistant-mode-off')).toMatchObject({ status: 409, code: 'ASSISTANT_MODE_OFF' })
     expect(refused('unknown-agent')).toMatchObject({ status: 404, code: 'NOT_FOUND' })
+    expect(refused('bad-cursor')).toMatchObject({ status: 400, code: 'BAD_CURSOR' })
     expect(refused('something-new')).toMatchObject({ status: 503, code: 'DAEMON_REJECTED' })
     expect(assistantActivityFailure(new NoConnection('d1'))).toMatchObject({ status: 503, code: 'DAEMON_OFFLINE' })
     expect(assistantActivityFailure(new Error('connection closed'))).toMatchObject({ status: 503 })
