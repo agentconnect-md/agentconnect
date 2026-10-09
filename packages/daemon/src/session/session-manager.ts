@@ -1,6 +1,7 @@
 import { agentWithRuntime } from '../decisions/model-selection.js'
 import { isAppendCoordinate } from './append-coordinate.js'
 import { isSubsessionCoordinate } from './subsession-coordinate.js'
+import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
@@ -641,7 +642,8 @@ export class SessionManager {
           usesMeta,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
           // standing, so it never lands as a leading user block or a transcript row.
-          ...(platformStanding ? { platformStanding } : {})
+          ...(platformStanding ? { platformStanding } : {}),
+          ...(assistantModeOn(agent) ? { assistantMode: true } : {})
         }))())
 
     // Born titled: the ingress title when the platform minted one (GitHub/GitLab hooks), else

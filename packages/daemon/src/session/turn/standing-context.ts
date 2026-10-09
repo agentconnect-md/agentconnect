@@ -87,6 +87,8 @@ export type StandingContextInput = {
   usesMeta: boolean
   /** The platform module's own standing block (`NormalizedMessage.standingContext`), if any. */
   platformStanding?: string
+  /** The agent is in assistant mode, whose direct self-call opens a sub-session (assistant-mode.md §5.6). */
+  assistantMode?: boolean
 }
 
 /** The assembled standing-context strings for one turn. */
@@ -271,7 +273,7 @@ function onDemandCloneTarget(dir: string, repoFullName: string): string {
 // humans, post at a channel root, or reply into a parent session. It has no visible
 // in-thread form: speaking in the current conversation is an ordinary reply. `toAgent`
 // without a `channel` is the postless, channel-invisible wake.
-const COLLAB_APPEND =
+const COLLAB_BEFORE_SELF =
   `# Collaborating with other agents\n` +
   `- To reach a specific agent privately, call \`sendMessage\` with ` +
   `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
@@ -283,8 +285,15 @@ const COLLAB_APPEND =
   `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
   `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
   `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
-  `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. A direct ` +
-  `\`toAgent\` call without \`channel\` may not target yourself. ` +
+  `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. `
+const COLLAB_NO_DIRECT_SELF = `A direct \`toAgent\` call without \`channel\` may not target yourself. `
+// assistant-mode.md §5.6: an assistant-mode agent's direct self-call opens a background sub-session instead.
+const COLLAB_SELF_DELEGATION =
+  `A direct \`toAgent\` call to yourself without \`channel\` opens a background SUB-SESSION for long work ` +
+  `("fix this bug and open a PR"): it works on its own, posts nothing, and reports back into this conversation ` +
+  `when it finishes or fails, so say it has started and end your turn. Keep ordinary conversation here — ` +
+  `questions, lookups and short answers never need one. A sub-session cannot open sub-sessions of its own. `
+const COLLAB_AFTER_SELF =
   `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
   `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
   `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
@@ -306,6 +315,11 @@ const COLLAB_APPEND =
   `- When another agent introduces itself to you, record it in your memory (a peer roster — id, name, what it ` +
   `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
   `yourself back or broadcast to everyone.`
+
+/** The collaboration guidance; only an assistant-mode agent is told its direct self-call opens a sub-session. */
+export function buildCollabAppend(assistantMode: boolean): string {
+  return COLLAB_BEFORE_SELF + (assistantMode ? COLLAB_SELF_DELEGATION : COLLAB_NO_DIRECT_SELF) + COLLAB_AFTER_SELF
+}
 
 // The parent asked to be told how this session ends (`toAgent.needsReply`). Standing, not a
 // user turn — the obligation outlives the waking turn, so it belongs beside the collaboration
@@ -347,7 +361,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
-  const collabAppend = COLLAB_APPEND
+  const collabAppend = buildCollabAppend(input.assistantMode === true)
   const parentReplyAppend = buildParentReplyAppend(input.needsReplyToParent, input.parentSessionId)
   const resumeSystemContext = [
     agentMeta,

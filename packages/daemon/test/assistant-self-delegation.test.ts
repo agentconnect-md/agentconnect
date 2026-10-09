@@ -78,7 +78,13 @@ const fakeHost = () => ({
 })
 
 async function boot(root: string, opts: { spy?: boolean } = {}) {
-  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost() as any })
+  const hosts: { agentId: string; host: ReturnType<typeof fakeHost> }[] = []
+  const hostFactory = (agent: { id: string }) => {
+    const host = fakeHost()
+    hosts.push({ agentId: agent.id, host })
+    return host as any
+  }
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory })
   await daemon.start()
   const d = daemon as any
   const placements = [...d.agents.values()].map((agent: any) => ({
@@ -106,7 +112,7 @@ async function boot(root: string, opts: { spy?: boolean } = {}) {
     )
   }
   const call = (req: MessageAgentReq) => d.collab.messageAgent(req) as Promise<any>
-  return { daemon, d, calls, call }
+  return { daemon, d, calls, call, hosts }
 }
 
 const scopeOf = (d: any, integrationId: string): string => d.transportScopeForIntegrationIds([integrationId])
@@ -438,6 +444,32 @@ describe('self-delegation: through the turn engine', () => {
     expect(report.callMeta).toMatchObject({ callFrom: 'bot-a', originSessionId: child.sessionId })
     // Neither the sub-session nor the resumed parent, whose runtime said nothing, posted anywhere.
     expect(postMessage).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+})
+
+describe('self-delegation: what the runtime is told', () => {
+  it('gives an assistant-mode session the sub-session guidance, and every other agent the old rule', async () => {
+    const root = scaffold([{ id: 'bot-a', assistantMode: ON }, { id: 'bot-b' }])
+    const { daemon, d, hosts } = await boot(root, { spy: false })
+    const caller = await seedCaller(d)
+    // The sub-session of bot-a, and a peer wake of bot-b (not in assistant mode), each run a turn.
+    await d.collab.messageAgent(delegation(caller))
+    await d.collab.messageAgent(delegation(caller, { toAgentId: 'bot-b' }))
+    const prompted = (agentId: string) =>
+      hosts.some((entry) => entry.agentId === agentId && entry.host.prompt.mock.calls.length > 0)
+    await vi.waitFor(() => expect([prompted('bot-a'), prompted('bot-b')]).toEqual([true, true]), WAIT)
+    // Whatever the runtime was handed: the system-prompt metadata or the inline first block.
+    const told = (agentId: string): string =>
+      JSON.stringify(
+        hosts
+          .filter((entry) => entry.agentId === agentId)
+          .flatMap(({ host }) => [...host.newSession.mock.calls, ...host.prompt.mock.calls])
+      )
+    expect(told('bot-a')).toContain('opens a background SUB-SESSION for long work')
+    expect(told('bot-a')).not.toContain('may not target yourself')
+    expect(told('bot-b')).toContain('may not target yourself')
+    expect(told('bot-b')).not.toContain('SUB-SESSION')
     await daemon.stop()
   })
 })

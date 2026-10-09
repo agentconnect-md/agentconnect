@@ -1026,7 +1026,7 @@ const LIST_AGENTS_INPUT_SCHEMA = () =>
     }
   })
 
-const LIST_AGENTS_DESCRIPTION =
+const listAgentsDescription = (selfDelegation: boolean): string =>
   'List the AI agents you can work with — INCLUDING YOURSELF — with their id, name, displayName, description, and ' +
   'status, so you ' +
   'can discover peers to collaborate with. By DEFAULT this lists every agent in your organization that you are ' +
@@ -1037,20 +1037,23 @@ const LIST_AGENTS_DESCRIPTION =
   '`{"toAgent":"<agent id>","message":"..."}` (a direct, postless wake), rather than @mentioning member ids ' +
   'in a channel post. Pass `channel` only as a FILTER, to narrow the list to the agents present in that channel. ' +
   'Only agents you are allowed to reach are returned. Your own entry is included so you can use its agent id with ' +
-  '`toAgent` + `channel` to open and activate a new channel-root conversation with yourself; a postless self-call ' +
-  'is rejected.'
+  '`toAgent` + `channel` to open and activate a new channel-root conversation with yourself; ' +
+  // assistant-mode.md §5.6: only an assistant-mode agent may delegate to itself, so only it is told so.
+  (selfDelegation
+    ? 'without `channel`, your own id opens a background sub-session for long work instead (see `sendMessage`).'
+    : 'a postless self-call is rejected.')
 
-export const COLLABORATION_TOOLS: ToolDescriptor[] = [
+const collaborationTools = (selfDelegation: boolean): ToolDescriptor[] => [
   {
     name: 'listAgents',
-    description: LIST_AGENTS_DESCRIPTION,
+    description: listAgentsDescription(selfDelegation),
     inputSchema: LIST_AGENTS_INPUT_SCHEMA()
   },
   {
     // Kept so a session already warm with the old tool set (and prompts/skills that
     // learned the old name) keeps working; the daemon routes both names to one handler.
     name: 'listChannelAgents',
-    description: `Deprecated alias of \`listAgents\` — prefer that name. ${LIST_AGENTS_DESCRIPTION}`,
+    description: `Deprecated alias of \`listAgents\` — prefer that name. ${listAgentsDescription(selfDelegation)}`,
     inputSchema: LIST_AGENTS_INPUT_SCHEMA()
   },
   {
@@ -1070,6 +1073,9 @@ export const COLLABORATION_TOOLS: ToolDescriptor[] = [
     )
   }
 ]
+
+export const COLLABORATION_TOOLS: ToolDescriptor[] = collaborationTools(false)
+const ASSISTANT_COLLABORATION_TOOLS: ToolDescriptor[] = collaborationTools(true)
 
 /**
  * RETIRED from the advertised tool surface — kept here, and still dispatchable by
@@ -1459,7 +1465,7 @@ export function toolsForIntegrations(
   add(MEMORY_TOOLS)
   if (options.organizationKnowledge) add(KNOWLEDGE_TOOLS)
   if (options.decisions) add(DECISION_TOOLS)
-  add(COLLABORATION_TOOLS)
+  add(options.assistantMode ? ASSISTANT_COLLABORATION_TOOLS : COLLABORATION_TOOLS)
   // Assistant mode's cross-place recall (assistant-mode.md §5.4 ③).
   if (options.assistantMode) add([RECALL_TOOL])
   // The unified `sendMessage` tool is ALWAYS present (session-concept §3): even a

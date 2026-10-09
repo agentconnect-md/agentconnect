@@ -1,6 +1,6 @@
 // The sendMessage descriptor teaches self-delegation to assistant-mode agents only (assistant-mode.md §5.6).
 import { describe, it, expect } from 'vitest'
-import { toolsForIntegrations } from '../src/mcp/tools.js'
+import { COLLABORATION_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
 import type { Integration } from '../src/agents/agent-schema.js'
 
 const slackInt: Integration = {
@@ -30,6 +30,32 @@ const allText = (ints: Integration[], options: { assistantMode?: boolean } = {})
   const branch = agentBranch(ints, options)
   return [sendTool(ints, options).description, branch.description, branch.properties.toAgent!.description].join('\n')
 }
+
+const listTool = (ints: Integration[], name: string, options: { assistantMode?: boolean } = {}) =>
+  toolsForIntegrations(ints, options).find((t) => t.name === name)!
+
+describe('listAgents self-delegation wording', () => {
+  it.each(['listAgents', 'listChannelAgents'])('%s is the same descriptor for every other agent', (name) => {
+    expect(listTool([slackInt], name, { assistantMode: false })).toEqual(listTool([slackInt], name))
+    expect(listTool([], name)).toEqual(COLLABORATION_TOOLS.find((t) => t.name === name))
+    expect(listTool([slackInt], name).description).toMatch(
+      /conversation with yourself; a postless self-call is rejected\.$/
+    )
+    expect(listTool([slackInt], name).description).not.toMatch(/sub-session/i)
+  })
+
+  it.each(['listAgents', 'listChannelAgents'])(
+    '%s tells an assistant-mode agent its own id opens a sub-session',
+    (name) => {
+      const tool = listTool([slackInt], name, { assistantMode: true })
+      expect(tool.description).toMatch(
+        /without `channel`, your own id opens a background sub-session for long work instead \(see `sendMessage`\)\.$/
+      )
+      expect(tool.description).not.toContain('a postless self-call is rejected')
+      expect(tool.inputSchema).toEqual(listTool([slackInt], name).inputSchema)
+    }
+  )
+})
 
 describe('sendMessage self-delegation wording', () => {
   it.each([[[slackInt]], [[]]])('is the same descriptor for every other agent (%#)', (ints) => {
