@@ -13,7 +13,6 @@ import {
   type BundleUploadRequest
 } from '../src/shim/bundle-protocol.js'
 import { prepareBundleStaging } from '../src/shim/bundle-staging.js'
-import type { CredentialsProvider } from '../src/source-cache/credentials.js'
 import { systemClock } from '@agentconnect.md/connection'
 import {
   anonRepoId,
@@ -21,12 +20,18 @@ import {
   newBundleId,
   pointerKey,
   refHash,
+  parseSourceCacheObjectKey,
   type SourceCacheObjectKey
 } from '../src/source-cache/keys.js'
-import { evaluateSourceCacheLifecycle, sourceCacheLifecycleRules } from '../src/source-cache/lifecycle.js'
-import { createObjectClient } from '../src/source-cache/object-client.js'
+import {
+  amzDate,
+  createObjectClient,
+  evaluateSourceCacheLifecycle,
+  presign,
+  sourceCacheLifecycleRules,
+  type CredentialsProvider
+} from '@agentconnect.md/object-store'
 import { createPresigner, type SourceCachePresignerConfig } from '../src/source-cache/presigner.js'
-import { amzDate, presign } from '../src/source-cache/sigv4.js'
 import { createSourceCacheSweeper } from '../src/source-cache/sweep.js'
 import { createSourceCacheWriter, type SourceCacheBundleStager } from '../src/source-cache/write-back.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
@@ -34,6 +39,7 @@ import { openTestStore } from './store-support.js'
 
 // The P0 store-matrix facts (source-cache.md §14) re-proved through this presigner against MinIO.
 
+const isBundleKey = (key: string): key is SourceCacheObjectKey => parseSourceCacheObjectKey(key)?.kind === 'bundle'
 const minio = inject('sourceCacheMinio')
 const BUCKET = 'ac-source-cache'
 const PREFIX = 'agentconnect'
@@ -242,7 +248,7 @@ describe.skipIf(!minio)('Source Cache presigned URLs on MinIO', () => {
       const git = {
         raw: async (args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8' })
       } as unknown as GitRunner
-      const objects = createObjectClient({ config, credentials, endpointOverride: env.endpoint })
+      const objects = createObjectClient({ config, credentials, isKey: isBundleKey, endpointOverride: env.endpoint })
       const writer = createSourceCacheWriter({
         store: () => store,
         presigner: signer,
@@ -320,7 +326,7 @@ describe.skipIf(!minio)('Source Cache sweep and lifecycle on MinIO (§9, §10)',
     limits: { getUrlSeconds: 300, putUrlSeconds: 900, maxBundleBytes: 1024 * 1024 }
   }
   const signer = createPresigner({ config, credentials, endpointOverride: env.endpoint })
-  const objects = createObjectClient({ config, credentials, endpointOverride: env.endpoint })
+  const objects = createObjectClient({ config, credentials, isKey: isBundleKey, endpointOverride: env.endpoint })
   const host = new URL(env.endpoint).host
   const HOUR = 3_600_000
   const DAY = 24 * HOUR

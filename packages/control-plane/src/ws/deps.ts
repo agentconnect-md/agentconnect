@@ -1,3 +1,4 @@
+import type { FileTransferService } from '../file-transfer/service.js'
 import type { AgentMemoryTransactionService } from '../agent-memory/transaction.service.js'
 /**
  * `DaemonWsDeps` — the dependency bundle every connection actor and frame
@@ -200,6 +201,8 @@ export interface DaemonWsDeps {
   linearTokens?: Pick<LinearTokenService, 'accessToken'>
   providerKey?: Pick<ProviderKeyStore, 'get'>
   decision?: Pick<DecisionRepo, 'listForAgent' | 'getForAgent'>
+  /** Console file transfer signer; absent ⇒ `transfer/sign` and `transfer/get` answer SCOPE_DENIED. */
+  fileTransfer?: FileTransferService
   /** R1 action-time formal-review broker; absent ⇒ review/start REQs fail closed. */
   githubReviewBroker?: GithubReviewBrokerService
   /** Provider-neutral formal reviews: publication lease, operation ledger, outcome

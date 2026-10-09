@@ -45,12 +45,12 @@ esac
 # .npmrc), the build-context filter (.dockerignore), and the shared tsconfig
 # every package build extends.
 COMMON="docker/Dockerfile docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
-CP_PATHS="packages/control-plane packages/setup packages/protocol packages/observability packages/k8s-client packages/connection $COMMON"
+CP_PATHS="packages/control-plane packages/setup packages/protocol packages/observability packages/k8s-client packages/object-store packages/connection $COMMON"
 SETUP_PATHS="$CP_PATHS"
 WEB_PATHS="packages/web packages/protocol $COMMON"
 RELAY_PATHS="packages/relay packages/activation-policy packages/message packages/protocol packages/connection packages/observability $COMMON"
 MEM0_PATHS="packages/memory-plugin-mem0 packages/protocol $COMMON"
-DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/observability packages/k8s-client $COMMON"
+DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/observability packages/k8s-client packages/object-store $COMMON"
 # The backend's application source is the immutable external context declared in
 # docker-bake.hcl. Changes to that pin, its owned Dockerfile, or this resolver
 # rebuild the image; unrelated app/package changes leave it on its effective tag.

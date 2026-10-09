@@ -56,6 +56,9 @@ const KEYS = [
   // (lib/analytics never initializes). POSTHOG_HOST defaults to us.i.posthog.com.
   'POSTHOG_API_KEY',
   'POSTHOG_HOST',
+  // The per-file cap of console file transfer, set when the Control Plane signs them. Served by the CP's
+  // runtime-config below; this env key is the local-dev fallback.
+  'FILE_TRANSFER_MAX_BYTES',
   // Console feature flags this deployment turns on — a comma-separated list of ids
   // (lib/feature-flags.ts). Unset ⇒ none: a flagged surface ships in every build and appears
   // only where an environment asks for it, so one prebuilt image serves them all.
@@ -75,18 +78,29 @@ interface RuntimeConfigResponse {
     }
     gitlab?: null | { instanceUrl: string }
   }
+  fileTransfer?: null | { maxBytes: number }
 }
 
-let deploymentEnv: Promise<Record<string, string> | null> | undefined
+interface DeploymentEnv {
+  /** The DB-owned deployment config, which replaces the env auth keys; null for an env-only deployment. */
+  config: Record<string, string> | null
+  /** Process topology the CP serves either way. */
+  topology: Record<string, string>
+}
 
-async function loadDeploymentEnv(): Promise<Record<string, string> | null> {
+let deploymentEnv: Promise<DeploymentEnv | null> | undefined
+
+async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
   const base = process.env.CP_INTERNAL_URL
   if (!base) return null
   const url = new URL('runtime-config', base.endsWith('/') ? base : `${base}/`)
   const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(5_000) })
   if (!response.ok) throw new Error(`runtime config returned HTTP ${response.status}`)
   const body = (await response.json()) as RuntimeConfigResponse
-  if (body.schemaVersion !== '1' || body.config === null) return null
+  if (body.schemaVersion !== '1') return null
+  const topology: Record<string, string> = {}
+  if (body.fileTransfer) topology.FILE_TRANSFER_MAX_BYTES = String(body.fileTransfer.maxBytes)
+  if (body.config === null) return { config: null, topology }
 
   const env: Record<string, string> = {}
   if (body.config.auth) {
@@ -96,7 +110,7 @@ async function loadDeploymentEnv(): Promise<Record<string, string> | null> {
     env.SOCIAL_PROVIDERS = body.config.auth.socialProviders.join(',')
   }
   if (body.config.gitlab?.instanceUrl) env.GITLAB_URL = body.config.gitlab.instanceUrl
-  return env
+  return { config: env, topology }
 }
 
 async function resolve(): Promise<Record<string, string>> {
@@ -114,18 +128,19 @@ async function resolve(): Promise<Record<string, string>> {
   if (process.env.CP_INTERNAL_URL) {
     deploymentEnv ??= loadDeploymentEnv()
     const pending = deploymentEnv
-    let persisted: Record<string, string> | null = null
+    let persisted: DeploymentEnv | null = null
     try {
       persisted = await pending
     } catch {
       if (deploymentEnv === pending) deploymentEnv = undefined
     }
-    if (persisted) {
+    if (persisted?.config) {
       for (const key of ['LOGTO_ENDPOINT', 'LOGTO_APP_ID', 'LOGTO_API_RESOURCE', 'SOCIAL_PROVIDERS']) {
         delete env[key]
       }
-      Object.assign(env, persisted)
+      Object.assign(env, persisted.config)
     }
+    if (persisted) Object.assign(env, persisted.topology)
   }
   return env
 }

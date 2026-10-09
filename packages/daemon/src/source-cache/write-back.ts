@@ -4,7 +4,7 @@ import { WRITE_BACK_FALLBACK_REASONS } from './bundle-retry.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 import type { SourceCacheLimits } from './config.js'
 import { bundleKey, newBundleId, refHash, type SourceCacheClass, type SourceCacheShape } from './keys.js'
-import type { SourceCacheObjectClient } from './object-client.js'
+import type { SourceCacheObjectClient } from './index.js'
 import type { SourceCachePresigner } from './presigner.js'
 import type { SourceCacheWriteTarget } from './read-plan.js'
 

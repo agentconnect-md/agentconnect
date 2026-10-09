@@ -992,11 +992,11 @@ stays decodable during migration, as the workspace contract's `github` and
 The Source Cache is optional. The Helm chart gains `sourceCache.*` values (off by
 default): `endpoint`, `region`, `bucket`, `prefix`, `forcePathStyle` (e.g.
 MinIO, whose community edition is archived), a credential source
-(`serviceAccount` or a Secret reference), and the limits in section 10, plus the console
-file transfer fields `publicEndpoint`, `limits.transferMaxBytes` and
-`limits.transferUrlSeconds` ([source-cache-file-transfer.md](source-cache-file-transfer.md)
-§7). Only
-pool members receive them.
+(`serviceAccount` or a Secret reference), and the limits in section 10. Only pool members
+receive them as `AC_SOURCE_CACHE`. The same bucket and credential source also reach the
+Control Plane as `AC_FILE_TRANSFER`, with `publicEndpoint` and the transfer limits; the
+Control Plane signs console file transfers
+([source-cache-file-transfer.md](source-cache-file-transfer.md) §7).
 
 The chart renders them as one JSON variable, `AC_SOURCE_CACHE`, on the member
 container. The member reads it only under `--k8s` and refuses to start on an

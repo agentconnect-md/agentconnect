@@ -189,3 +189,38 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 {{- end }}
 {{- end -}}
+
+{{/*
+The Source Cache bucket's credential source as the daemon and the control plane read it: mounted static keys, or a web identity.
+*/}}
+{{- define "agentconnect.sourceCacheCredentials" -}}
+{{- $sourceCacheCredentials := .Values.sourceCache.credentials | default dict }}
+{{- if eq $sourceCacheCredentials.source "secret" }}
+{{- $secret := $sourceCacheCredentials.secret | default dict }}
+{{- $_ := required "sourceCache.credentials.secret.name is required for the secret credential source" $secret.name }}
+{{- $credentials := dict "source" "static" "dir" "/var/run/ac-source-cache" "accessKeyIdKey" $secret.accessKeyIdKey "secretAccessKeyKey" $secret.secretAccessKeyKey }}
+{{- with $secret.sessionTokenKey }}
+{{- $_ := set $credentials "sessionTokenKey" . }}
+{{- end }}
+{{- toJson $credentials }}
+{{- else if eq $sourceCacheCredentials.source "serviceAccount" }}
+{{- $identity := $sourceCacheCredentials.serviceAccount | default dict }}
+{{- $credentials := dict "source" "webIdentity" }}
+{{- if $identity.roleArn }}
+{{- $_ := set $credentials "roleArn" $identity.roleArn }}
+{{- $_ := set $credentials "tokenFile" "/var/run/ac-source-cache-identity/token" }}
+{{- end }}
+{{- with $identity.stsEndpoint }}
+{{- if not (hasPrefix "https://" .) }}
+{{- fail "sourceCache.credentials.serviceAccount.stsEndpoint must be an https:// origin" }}
+{{- end }}
+{{- $_ := set $credentials "stsEndpoint" . }}
+{{- end }}
+{{- with $identity.sessionDurationSeconds }}
+{{- $_ := set $credentials "durationSeconds" (int .) }}
+{{- end }}
+{{- toJson $credentials }}
+{{- else }}
+{{- fail "sourceCache.credentials.source must be serviceAccount or secret" }}
+{{- end }}
+{{- end }}

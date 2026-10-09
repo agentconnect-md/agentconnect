@@ -57,6 +57,7 @@ COPY packages/relay/package.json packages/relay/
 COPY packages/memory-plugin-mem0/package.json packages/memory-plugin-mem0/
 COPY packages/web/package.json packages/web/
 COPY packages/k8s-client/package.json packages/k8s-client/
+COPY packages/object-store/package.json packages/object-store/
 
 # ───────────────────────── control-plane: build ─────────────────────────────
 # Install the control-plane, the self-contained Setup Server package, and

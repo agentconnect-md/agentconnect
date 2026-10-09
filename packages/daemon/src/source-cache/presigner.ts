@@ -1,8 +1,6 @@
-import { isIP } from 'node:net'
+import { addressFor, amzDate, presign, type CredentialsProvider } from '@agentconnect.md/object-store'
 import { SOURCE_CACHE_GRACE_SECONDS, sourceCacheEndpoint, type SourceCacheConfig } from './config.js'
-import type { CredentialsProvider } from './credentials.js'
 import { parseSourceCacheObjectKey, type SourceCacheObjectKey } from './keys.js'
-import { amzDate, presign } from './sigv4.js'
 
 // Presigned Source Cache URLs (source-cache.md §6 item 4, §9): GET signs host only; PUT signs length, checksum and tag as headers.
 
@@ -41,25 +39,6 @@ export interface PresignerOptions {
   now?: () => number
   /** Test seam: an endpoint the config schema would refuse (a plain-http fixture). */
   endpointOverride?: string
-}
-
-export interface SourceCacheAddressing {
-  protocol: 'https:' | 'http:'
-  host: string
-  /** Raw path prefix before the object key: `/<bucket>/` (path style) or `/`. */
-  basePath: string
-  style: 'path' | 'virtual'
-}
-
-/** Path style when asked, for an IP-literal or localhost endpoint, or for a dotted bucket the TLS name would not cover. */
-export function addressFor(endpoint: string, bucket: string, forcePathStyle: boolean): SourceCacheAddressing {
-  const url = new URL(endpoint)
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Source Cache endpoint must be http(s)')
-  const hostname = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname
-  const pathStyle = forcePathStyle || isIP(hostname) !== 0 || hostname === 'localhost' || bucket.includes('.')
-  return pathStyle
-    ? { protocol: url.protocol, host: url.host, basePath: `/${bucket}/`, style: 'path' }
-    : { protocol: url.protocol, host: `${bucket}.${url.host}`, basePath: '/', style: 'virtual' }
 }
 
 const CHECKSUM_RE = /^[A-Za-z0-9+/]{43}=$/
@@ -122,4 +101,5 @@ export function createPresigner(opts: PresignerOptions): SourceCachePresigner {
   }
 }
 
+export { addressFor }
 export { redactPresignedUrl } from './bundle-retry.js'

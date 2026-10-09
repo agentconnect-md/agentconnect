@@ -3,13 +3,16 @@
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileSize } from '@/components/console/FileBrowser'
-import { WEBCHAT_FILES_MAX } from '@/lib/shared-file'
+import { deploymentFileTransfer, WEBCHAT_FILES_MAX } from '@/lib/shared-file'
 import { uploadWebchatFile, type ComposerFile } from '@/lib/webchat-file'
 
 /** Why a non-image file cannot be attached, or null when it can be. */
-export function composerFileRefusal(transfer: boolean, staged: number): string | null {
+export function composerFileRefusal(transfer: boolean, staged: number, size = 0): string | null {
   if (!transfer) return 'Only images can be attached here: file uploads need the deployment’s object store.'
   if (staged >= WEBCHAT_FILES_MAX) return `At most ${WEBCHAT_FILES_MAX} files can be attached to one message.`
+  const maxBytes = deploymentFileTransfer()?.maxBytes
+  if (maxBytes !== undefined && size > maxBytes)
+    return `That file is over this deployment’s ${formatFileSize(maxBytes)} upload limit.`
   return null
 }
 
@@ -26,7 +29,7 @@ export function stageComposerFile(
   file: File
 ): void {
   const { sessionId, agentId, transfer, getPgFiles, setPgFiles, onError } = opts
-  const refusal = composerFileRefusal(transfer, getPgFiles(sessionId).length)
+  const refusal = composerFileRefusal(transfer, getPgFiles(sessionId).length, file.size)
   onError(refusal)
   if (refusal) return
   const key = `${Date.now()}:${Math.random().toString(36).slice(2)}`

@@ -66,6 +66,7 @@ writeFileSync(output(name), '', { flag: 'wx' })
     '@agentconnect.md/daemon',
     '@agentconnect.md/k8s-client',
     '@agentconnect.md/message',
+    '@agentconnect.md/object-store',
     '@agentconnect.md/protocol'
   ])
 })

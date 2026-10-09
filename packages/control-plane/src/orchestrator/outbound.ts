@@ -75,10 +75,8 @@ import {
   WorkspaceListPage,
   WorkspaceReadReq,
   WorkspaceReadContent,
-  WorkspaceTransferReq,
-  WorkspaceTransferGrant,
-  TransferUploadReq,
-  TransferUploadGrant,
+  WorkspaceUploadReq,
+  WorkspaceUploadOk,
   WorkspaceWriteReq,
   WorkspaceWriteOk,
   WorkspaceDeleteReq,
@@ -710,21 +708,15 @@ export class ControlSender {
     return c.conn.request<WorkspaceReadContent>('workspace/read', req, { epoch: c.sessionEpoch })
   }
 
-  /** Presign a bucket download of one workspace file (REQ → `workspace/transfer/grant`); single-shot, as the daemon may upload first. */
-  async workspaceTransfer(daemonId: string, req: WorkspaceTransferReq): Promise<WorkspaceTransferGrant> {
+  /** Have the owning daemon snapshot one workspace file and PUT it on CP-signed URLs (REQ → `workspace/upload/ok`); single-shot, as the upload may run long. */
+  async workspaceUpload(daemonId: string, req: WorkspaceUploadReq): Promise<WorkspaceUploadOk> {
     const c = this.must(daemonId)
-    return c.conn.request<WorkspaceTransferGrant>(
-      'workspace/transfer',
+    return c.conn.request<WorkspaceUploadOk>(
+      'workspace/upload',
       req,
       { epoch: c.sessionEpoch },
       { ackTimeoutMs: WORKSPACE_TRANSFER_BUDGET_MS, maxTries: 1 }
     )
-  }
-
-  /** Reserve a console upload in the Source Cache bucket and presign its PUT (REQ → `transfer/upload/grant`). */
-  async transferUpload(daemonId: string, req: TransferUploadReq): Promise<TransferUploadGrant> {
-    const c = this.must(daemonId)
-    return c.conn.request<TransferUploadGrant>('transfer/upload', req, { epoch: c.sessionEpoch })
   }
 
   /** Create or replace one scratch-workspace text file on the owning daemon. */

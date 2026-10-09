@@ -224,6 +224,11 @@ import { DaemonReleaseResolver } from './registry/daemonRelease.js'
 import { InMemorySessionEventSink } from './events/sink.js'
 import { SessionUsageWriter } from './usage/writer.js'
 import { createIconStore } from './icons/icon-store.js'
+import { createCredentialsProvider, createObjectClient } from '@agentconnect.md/object-store'
+import { loadFileTransferConfig } from './file-transfer/config.js'
+import { createLifecycleGate } from './file-transfer/lifecycle-gate.js'
+import { createFileTransferService } from './file-transfer/service.js'
+import { createFileTransfer, isTransferObjectKey } from './file-transfer/transfer.js'
 import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
 
@@ -858,6 +863,32 @@ export function buildContainer(
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
   const sender = new ControlSender(connReg, repos.launch)
+
+  // Console file transfer (source-cache-file-transfer.md): this process signs every URL for the deployment's bucket.
+  const fileTransferConfig = loadFileTransferConfig({ AC_FILE_TRANSFER: config.AC_FILE_TRANSFER })
+  const fileTransferBucket = fileTransferConfig
+    ? (() => {
+        const credentials = createCredentialsProvider(fileTransferConfig.credentials, {
+          region: fileTransferConfig.region,
+          env: process.env
+        })
+        const objects = createObjectClient({ config: fileTransferConfig, credentials, isKey: isTransferObjectKey })
+        // Lazy over `http.log` (assigned below; only ever called once the gate starts).
+        const gate = createLifecycleGate({
+          objects,
+          prefix: fileTransferConfig.prefix,
+          log: { info: (m) => http.log.info(m), warn: (m) => http.log.warn(m) }
+        })
+        const transfer = createFileTransfer({
+          config: fileTransferConfig,
+          credentials,
+          objects,
+          enabled: () => gate.status() !== 'missing'
+        })
+        return { gate, service: createFileTransferService({ transfer, control: sender }) }
+      })()
+    : undefined
+  const fileTransfer = fileTransferBucket?.service
 
   // Per-session memory-capture gate convergence (session-visibility.md §5.1):
   // the CP is the authority on effective visibility; daemons only enforce it.
@@ -1830,9 +1861,12 @@ export function buildContainer(
                   : null,
               // The console derives workspace tiles from this host (§7).
               gitlab: gitlab ? { instanceUrl: gitlab.api.baseUrl } : null
-            }
+            },
+            ...(fileTransfer ? { fileTransfer: { maxBytes: fileTransfer.maxBytes } } : {})
           }
-        : {},
+        : fileTransfer
+          ? { fileTransfer: { maxBytes: fileTransfer.maxBytes } }
+          : {},
     maxOrgsPerNonAdminUser: opts.deploymentConfig?.values.features.maxOrgsPerNonAdminUser ?? 1,
     clock,
     // The same late-bound façade the orchestrators above hold (see its
@@ -1963,6 +1997,7 @@ export function buildContainer(
     ...(githubRepoIdentity ? { githubRepoIdentity } : {}),
     sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess, googleChatSessionAccess],
     ...(iconStore ? { iconStore } : {}),
+    ...(fileTransfer ? { fileTransfer } : {}),
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }
@@ -2563,6 +2598,7 @@ export function buildContainer(
     linearTokens: linearTokenService,
     providerKey: repos.providerKey,
     decision: repos.decision,
+    ...(fileTransfer ? { fileTransfer } : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     codeHostReviewBroker,
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
@@ -2962,6 +2998,7 @@ export function buildContainer(
     remoteGrantAuth,
     internalInvocationAuth,
     startBackground() {
+      fileTransferBucket?.gate.start()
       cronRunReaper.start()
       hookRunReaper.start()
       oauthReaper.start()
@@ -2989,6 +3026,7 @@ export function buildContainer(
       void setMemoryHome.run().catch((err) => http.log.error({ err }, 'set-memory-home: pass failed'))
     },
     async shutdown() {
+      fileTransferBucket?.gate.stop()
       cronRunReaper.stop()
       hookRunReaper.stop()
       oauthReaper.stop()

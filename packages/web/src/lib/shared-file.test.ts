@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   FILE_TRANSFER_FEATURE as PROTOCOL_TRANSFER_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES as PROTOCOL_MAX_DOWNLOAD,
@@ -7,10 +7,12 @@ import {
   WORKSPACE_UPLOADS_DIR as PROTOCOL_UPLOADS_DIR
 } from '@agentconnect.md/protocol'
 import {
+  deploymentFileTransfer,
   FILE_TRANSFER_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES,
   sessionFileDownload,
   sharedFileMarker,
+  transferCapable,
   viaTransfer,
   WEBCHAT_FILES_MAX,
   WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES,
@@ -87,5 +89,24 @@ describe('viaTransfer', () => {
     expect(viaTransfer({ size: WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES + 1, encoding: 'utf8' }, true)).toBe(true)
     expect(viaTransfer({ size: 10, encoding: 'utf8' }, true)).toBe(false)
     expect(viaTransfer({ size: 10, encoding: 'none' }, false)).toBe(false)
+  })
+})
+
+describe('transferCapable', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('needs both the deployment’s transfer bucket and a daemon that speaks control-plane-signed transfers', () => {
+    vi.stubEnv('FILE_TRANSFER_MAX_BYTES', '')
+    expect(deploymentFileTransfer()).toBeUndefined()
+    expect(transferCapable([FILE_TRANSFER_FEATURE])).toBe(false)
+
+    vi.stubEnv('FILE_TRANSFER_MAX_BYTES', String(512 * 1024 * 1024))
+    expect(deploymentFileTransfer()).toEqual({ maxBytes: 512 * 1024 * 1024 })
+    expect(transferCapable([FILE_TRANSFER_FEATURE])).toBe(true)
+    expect(transferCapable(['file-transfer-v1'])).toBe(false)
+    expect(transferCapable(undefined)).toBe(false)
+
+    vi.stubEnv('FILE_TRANSFER_MAX_BYTES', 'lots')
+    expect(deploymentFileTransfer()).toBeUndefined()
   })
 })

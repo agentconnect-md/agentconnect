@@ -658,10 +658,33 @@ abort("unexpected Source Cache document: #{source_cache_doc}") unless source_cac
   },
   'limits' => {
     'maxBundleBytes' => '2Gi', 'orgQuotaBytes' => '20Gi', 'pendingReservationSeconds' => '1h',
-    'unreadPointerDays' => 30, 'getUrlSeconds' => '5m', 'putUrlSeconds' => '15m',
-    'transferMaxBytes' => '512Mi', 'transferUrlSeconds' => '30m'
+    'unreadPointerDays' => 30, 'getUrlSeconds' => '5m', 'putUrlSeconds' => '15m'
   }
 }
+# Console file transfer: the Control Plane signs every URL for the same bucket, with the same credential source.
+control_plane_of = lambda do |docs|
+  deployment = docs.find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-control-plane' } ||
+               abort('missing control-plane Deployment')
+  pod_spec = deployment.dig('spec', 'template', 'spec')
+  [pod_spec, pod_spec.fetch('containers').find { |item| item['name'] == 'control-plane' }]
+end
+transfer_doc_of = lambda do |container|
+  value = container.fetch('env').find { |item| item['name'] == 'AC_FILE_TRANSFER' }&.fetch('value')
+  value && JSON.parse(value)
+end
+secret_cp_pod, secret_cp = control_plane_of.call(secret_documents)
+abort("unexpected file transfer document: #{transfer_doc_of.call(secret_cp)}") unless transfer_doc_of.call(secret_cp) == {
+  'version' => 1, 'endpoint' => 'https://minio.example.test', 'region' => 'us-east-1', 'bucket' => 'ac-cache',
+  'prefix' => 'agentconnect', 'forcePathStyle' => true,
+  'credentials' => {
+    'source' => 'static', 'dir' => '/var/run/ac-source-cache',
+    'accessKeyIdKey' => 'AWS_ACCESS_KEY_ID', 'secretAccessKeyKey' => 'AWS_SECRET_ACCESS_KEY'
+  },
+  'limits' => { 'maxBytes' => '512Mi', 'urlSeconds' => '30m', 'putUrlSeconds' => '15m' }
+}
+abort('the control plane must mount the bucket Secret read-only at 0400') unless
+  secret_cp_pod.fetch('volumes').include?({ 'name' => 'source-cache-credentials', 'secret' => { 'secretName' => 'example-source-cache', 'defaultMode' => 0o400 } }) &&
+  secret_cp.fetch('volumeMounts').include?({ 'name' => 'source-cache-credentials', 'mountPath' => '/var/run/ac-source-cache', 'readOnly' => true })
 secret_volume = secret_pod.fetch('volumes').find { |v| v['name'] == 'source-cache-credentials' } ||
                 abort('the secret source must mount its Secret')
 abort('the Source Cache Secret must be mounted whole at 0400') unless
@@ -703,7 +726,12 @@ abort('the web identity token must be mounted read-only') unless identity_member
   m == { 'name' => 'source-cache-identity', 'mountPath' => '/var/run/ac-source-cache-identity', 'readOnly' => true }
 }
 abort('the web identity form must mount no Secret') if identity_pod.fetch('volumes').any? { |v| v['name'] == 'source-cache-credentials' }
-abort('an unset publicEndpoint must not reach the member') if identity_doc.key?('publicEndpoint')
+identity_cp_pod, identity_cp = control_plane_of.call(YAML.load_stream(identity_rendered).compact)
+abort('the control plane signs transfers with the same web identity') unless
+  transfer_doc_of.call(identity_cp)['credentials'] == identity_doc['credentials'] &&
+  identity_cp_pod.fetch('volumes').any? { |v| v['name'] == 'source-cache-identity' } &&
+  identity_cp.fetch('volumeMounts').include?({ 'name' => 'source-cache-identity', 'mountPath' => '/var/run/ac-source-cache-identity', 'readOnly' => true })
+abort('an unset publicEndpoint must not reach the control plane') if transfer_doc_of.call(identity_cp).key?('publicEndpoint')
 
 session_rendered, session_error, session_status = Open3.capture3(
   *source_cache_base,
@@ -711,7 +739,12 @@ session_rendered, session_error, session_status = Open3.capture3(
   '--set', 'sourceCache.limits.transferUrlLifetime=90m'
 )
 abort("helm template (Source Cache session duration) failed:\n#{session_error}") unless session_status.success?
-_, session_member = pool_member.call(YAML.load_stream(session_rendered).compact)
+session_documents = YAML.load_stream(session_rendered).compact
+_, session_member = pool_member.call(session_documents)
+_, session_cp = control_plane_of.call(session_documents)
+abort('a pinned STS session and the transfer link lifetime must reach the control plane') unless
+  transfer_doc_of.call(session_cp).dig('credentials', 'durationSeconds') == 7200 &&
+  transfer_doc_of.call(session_cp).dig('limits', 'urlSeconds') == '90m'
 session_doc = JSON.parse(session_member.fetch('env').find { |item| item['name'] == 'AC_SOURCE_CACHE' }&.fetch('value') ||
                          abort('the session duration form must reach the member'))
 abort("a pinned STS session must reach the member: #{session_doc['credentials']}") unless
@@ -721,10 +754,15 @@ public_rendered, public_error, public_status = Open3.capture3(
   *source_cache_base, '--set', 'sourceCache.publicEndpoint=https://store.example.test'
 )
 abort("helm template (Source Cache public endpoint) failed:\n#{public_error}") unless public_status.success?
-_, public_member = pool_member.call(YAML.load_stream(public_rendered).compact)
-public_doc = JSON.parse(public_member.fetch('env').find { |item| item['name'] == 'AC_SOURCE_CACHE' }&.fetch('value') ||
-                        abort('the public endpoint form must reach the member'))
-abort("unexpected publicEndpoint: #{public_doc['publicEndpoint']}") unless public_doc['publicEndpoint'] == 'https://store.example.test'
+public_documents_sc = YAML.load_stream(public_rendered).compact
+_, public_member = pool_member.call(public_documents_sc)
+_, public_cp_container = control_plane_of.call(public_documents_sc)
+abort('the public endpoint is the signer’s, not the member’s') if
+  JSON.parse(public_member.fetch('env').find { |item| item['name'] == 'AC_SOURCE_CACHE' }.fetch('value')).key?('publicEndpoint')
+abort("unexpected publicEndpoint: #{transfer_doc_of.call(public_cp_container)}") unless
+  transfer_doc_of.call(public_cp_container)['publicEndpoint'] == 'https://store.example.test'
+_, plain_cp = control_plane_of.call(documents)
+abort('a disabled Source Cache must give the control plane no transfer bucket') if transfer_doc_of.call(plain_cp) || plain_cp.key?('volumeMounts')
 
 [
   [['--set', 'sourceCache.enabled=true', '--set', 'sourceCache.region=us-east-1'], 'sourceCache.bucket is required'],
@@ -732,7 +770,8 @@ abort("unexpected publicEndpoint: #{public_doc['publicEndpoint']}") unless publi
   [source_cache_base + ['--set', 'sourceCache.endpoint=http://minio.example.test'], 'https://'],
   [source_cache_base + ['--set', 'sourceCache.publicEndpoint=http://store.example.test'], 'publicEndpoint must be an https://'],
   [source_cache_base + ['--set', 'sourceCache.credentials.source=static'], 'serviceAccount or secret'],
-  [source_cache_base + ['--set', 'daemonPool.extraEnv.AC_SOURCE_CACHE={}'], 'AC_SOURCE_CACHE collides']
+  [source_cache_base + ['--set', 'daemonPool.extraEnv.AC_SOURCE_CACHE={}'], 'AC_SOURCE_CACHE collides'],
+  [source_cache_base + ['--set', 'controlPlane.extraEnv.AC_FILE_TRANSFER={}'], 'AC_FILE_TRANSFER collides']
 ].each do |extra, expected|
   args = extra.first == '--set' ? command + extra : extra
   _, refused, refused_status = Open3.capture3(*args)

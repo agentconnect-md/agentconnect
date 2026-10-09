@@ -165,10 +165,12 @@ import {
   WorkspaceGitMessageResult
 } from './frames/workspace.js'
 import {
-  TransferUploadReq,
-  TransferUploadGrant,
-  WorkspaceTransferReq,
-  WorkspaceTransferGrant
+  TransferGetOk,
+  TransferGetReq,
+  TransferSignOk,
+  TransferSignReq,
+  WorkspaceUploadOk,
+  WorkspaceUploadReq
 } from './frames/file-transfer.js'
 import { TaskListReq, TaskList } from './frames/task.js'
 import {
@@ -491,10 +493,12 @@ export const FRAME_SCHEMAS = {
   'workspace/mkdir': WorkspaceMkdirReq,
   'workspace/mkdir/ok': WorkspaceMkdirOk,
   // ── file transfer through the Source Cache bucket (presigned URLs only; bytes never ride this WS) ──
-  'workspace/transfer': WorkspaceTransferReq,
-  'workspace/transfer/grant': WorkspaceTransferGrant,
-  'transfer/upload': TransferUploadReq,
-  'transfer/upload/grant': TransferUploadGrant,
+  'workspace/upload': WorkspaceUploadReq,
+  'workspace/upload/ok': WorkspaceUploadOk,
+  'transfer/sign': TransferSignReq,
+  'transfer/sign/ok': TransferSignOk,
+  'transfer/get': TransferGetReq,
+  'transfer/get/ok': TransferGetOk,
   'workspace/gitstatus': WorkspaceGitStatusReq,
   'workspace/gitstatus/result': WorkspaceGitStatus,
   'workspace/gitdiff': WorkspaceGitDiffReq,
@@ -820,10 +824,12 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('workspace/delete/ok', FRAME_SCHEMAS['workspace/delete/ok']),
   frame('workspace/mkdir', FRAME_SCHEMAS['workspace/mkdir']),
   frame('workspace/mkdir/ok', FRAME_SCHEMAS['workspace/mkdir/ok']),
-  frame('workspace/transfer', FRAME_SCHEMAS['workspace/transfer']),
-  frame('workspace/transfer/grant', FRAME_SCHEMAS['workspace/transfer/grant']),
-  frame('transfer/upload', FRAME_SCHEMAS['transfer/upload']),
-  frame('transfer/upload/grant', FRAME_SCHEMAS['transfer/upload/grant']),
+  frame('workspace/upload', FRAME_SCHEMAS['workspace/upload']),
+  frame('workspace/upload/ok', FRAME_SCHEMAS['workspace/upload/ok']),
+  frame('transfer/sign', FRAME_SCHEMAS['transfer/sign']),
+  frame('transfer/sign/ok', FRAME_SCHEMAS['transfer/sign/ok']),
+  frame('transfer/get', FRAME_SCHEMAS['transfer/get']),
+  frame('transfer/get/ok', FRAME_SCHEMAS['transfer/get/ok']),
   frame('workspace/gitstatus', FRAME_SCHEMAS['workspace/gitstatus']),
   frame('workspace/gitstatus/result', FRAME_SCHEMAS['workspace/gitstatus/result']),
   frame('workspace/gitdiff', FRAME_SCHEMAS['workspace/gitdiff']),

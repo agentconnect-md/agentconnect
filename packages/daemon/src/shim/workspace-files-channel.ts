@@ -263,7 +263,7 @@ const STAGED_REFUSALS = new Set<WorkspaceErrorReason>([
 
 /** The shim's refusal reasons cross the channel as `bundle <reason>: …`; a workspace one keeps its reason, anything else failed the transfer. */
 function transferRefusal(err: unknown): Error {
-  if (err instanceof WorkspaceViolationError) return err
+  if (err instanceof WorkspaceViolationError || err instanceof WorkspaceConflictError) return err
   const reason = /^bundle ([a-z-]+):/.exec(err instanceof Error ? err.message : '')?.[1]
   if (reason === 'stale') return new WorkspaceConflictError('the file changed while it was copied; retry')
   const parsed = WorkspaceErrorReason.safeParse(reason)

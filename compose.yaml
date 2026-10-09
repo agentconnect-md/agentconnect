@@ -130,6 +130,8 @@ services:
       - RELAY_TOKEN=${AGENTCONNECT_RELAY_TOKEN:-local-only-relay-token-0000000000000000}
       # Opt-in batch usage ingress. Passed through unset, never defaulted: a stock default would expose an authenticated write endpoint on every stack.
       - USAGE_INGEST_TOKEN
+      # Opt-in console file transfer: a JSON bucket document the Control Plane signs URLs for (docs/designs/source-cache-file-transfer.md §7).
+      - AC_FILE_TRANSFER
       # Bootstrap root for DB-backed deployment secrets. These values cannot be
       # stored beside the ciphertext they unlock and therefore remain startup env.
       - SECRET_CIPHER

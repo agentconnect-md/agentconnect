@@ -34,7 +34,7 @@ import { Icon } from '@/components/ui'
 import { AgentIconView, LoadingState, LogoMark, Spinner } from '@/components/marks'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import type { ComposerFile } from '@/lib/webchat-file'
-import { FILE_TRANSFER_FEATURE } from '@/lib/shared-file'
+import { transferCapable } from '@/lib/shared-file'
 import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
 import { useProfile } from '@/lib/profile'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -382,8 +382,7 @@ export default function HomeView() {
       {
         sessionId: '',
         agentId: agent.id,
-        transfer:
-          agentCapabilitySource(agent, daemons, memberSets)?.caps.features.includes(FILE_TRANSFER_FEATURE) === true,
+        transfer: transferCapable(agentCapabilitySource(agent, daemons, memberSets)?.caps.features),
         getPgFiles: () => files,
         setPgFiles: (_id, update) => setFiles(update),
         onError: setImageError

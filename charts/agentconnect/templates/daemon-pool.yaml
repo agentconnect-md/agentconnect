@@ -353,41 +353,8 @@ spec:
             {{- with $sourceCache.endpoint }}
             {{- $_ := set $document "endpoint" . }}
             {{- end }}
-            {{- with $sourceCache.publicEndpoint }}
-            {{- if not (hasPrefix "https://" .) }}
-            {{- fail "sourceCache.publicEndpoint must be an https:// origin" }}
-            {{- end }}
-            {{- $_ := set $document "publicEndpoint" . }}
-            {{- end }}
-            {{- $_ := set $document "limits" (dict "maxBundleBytes" $limits.maxBundleBytes "orgQuotaBytes" $limits.orgQuotaBytes "pendingReservationSeconds" $limits.pendingReservation "unreadPointerDays" $limits.unreadPointerDays "getUrlSeconds" $limits.getUrlLifetime "putUrlSeconds" $limits.putUrlLifetime "transferMaxBytes" ($limits.transferMaxBytes | default "512Mi") "transferUrlSeconds" ($limits.transferUrlLifetime | default "30m")) }}
-            {{- if eq $sourceCacheCredentials.source "secret" }}
-            {{- $secret := $sourceCacheCredentials.secret | default dict }}
-            {{- $_ := required "sourceCache.credentials.secret.name is required for the secret credential source" $secret.name }}
-            {{- $credentials := dict "source" "static" "dir" "/var/run/ac-source-cache" "accessKeyIdKey" $secret.accessKeyIdKey "secretAccessKeyKey" $secret.secretAccessKeyKey }}
-            {{- with $secret.sessionTokenKey }}
-            {{- $_ := set $credentials "sessionTokenKey" . }}
-            {{- end }}
-            {{- $_ := set $document "credentials" $credentials }}
-            {{- else if eq $sourceCacheCredentials.source "serviceAccount" }}
-            {{- $identity := $sourceCacheCredentials.serviceAccount | default dict }}
-            {{- $credentials := dict "source" "webIdentity" }}
-            {{- if $identity.roleArn }}
-            {{- $_ := set $credentials "roleArn" $identity.roleArn }}
-            {{- $_ := set $credentials "tokenFile" "/var/run/ac-source-cache-identity/token" }}
-            {{- end }}
-            {{- with $identity.stsEndpoint }}
-            {{- if not (hasPrefix "https://" .) }}
-            {{- fail "sourceCache.credentials.serviceAccount.stsEndpoint must be an https:// origin" }}
-            {{- end }}
-            {{- $_ := set $credentials "stsEndpoint" . }}
-            {{- end }}
-            {{- with $identity.sessionDurationSeconds }}
-            {{- $_ := set $credentials "durationSeconds" (int .) }}
-            {{- end }}
-            {{- $_ := set $document "credentials" $credentials }}
-            {{- else }}
-            {{- fail "sourceCache.credentials.source must be serviceAccount or secret" }}
-            {{- end }}
+            {{- $_ := set $document "limits" (dict "maxBundleBytes" $limits.maxBundleBytes "orgQuotaBytes" $limits.orgQuotaBytes "pendingReservationSeconds" $limits.pendingReservation "unreadPointerDays" $limits.unreadPointerDays "getUrlSeconds" $limits.getUrlLifetime "putUrlSeconds" $limits.putUrlLifetime) }}
+            {{- $_ := set $document "credentials" (include "agentconnect.sourceCacheCredentials" . | fromJson) }}
             # Source Cache: bucket config only; credentials stay in mounted files or a projected token, and pods get presigned URLs alone.
             - name: AC_SOURCE_CACHE
               value: {{ toJson $document | quote }}

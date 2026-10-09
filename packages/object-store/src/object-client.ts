@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto'
-import { SOURCE_CACHE_GRACE_SECONDS, sourceCacheEndpoint, type SourceCacheConfig } from './config.js'
+import { addressFor } from './address.js'
+import { bucketEndpoint, SOURCE_CACHE_GRACE_SECONDS, type BucketLocation } from './config.js'
 import type { CredentialsProvider } from './credentials.js'
-import { parseSourceCacheObjectKey, type SourceCacheObjectKey } from './keys.js'
-import { addressFor } from './presigner.js'
-import { isTransferObjectKey, type TransferObjectKey } from './transfer.js'
 import { amzDate, canonicalQuery, canonicalUri, sha256Hex, signHeaders } from './sigv4.js'
 
-// Header-signed requests the member makes itself (source-cache.md §9, §10): HEAD, retag, delete, and the lifecycle read.
+// Header-signed requests made with the bucket's own credentials (source-cache.md §9, §10): HEAD, retag, delete, and the lifecycle read.
 
 export type SourceCacheLifecycleTag = 'ac-cache=live' | 'ac-cache=unreferenced'
 
@@ -14,11 +12,11 @@ export type SourceCacheObjectHead =
   | { exists: false }
   | { exists: true; contentLength: number; checksumSha256?: string; etag?: string; lastModified?: number }
 
-export interface SourceCacheObjectClient {
-  head(key: SourceCacheObjectKey | TransferObjectKey): Promise<SourceCacheObjectHead>
-  putTagging(key: SourceCacheObjectKey, tagging: SourceCacheLifecycleTag): Promise<void>
-  /** Delete a bundle object; an object already gone resolves too. */
-  delete(key: SourceCacheObjectKey): Promise<void>
+export interface SourceCacheObjectClient<K extends string = string> {
+  head(key: K): Promise<SourceCacheObjectHead>
+  putTagging(key: K, tagging: SourceCacheLifecycleTag): Promise<void>
+  /** Delete an object; an object already gone resolves too. */
+  delete(key: K): Promise<void>
   /** The bucket's lifecycle configuration XML, or `none` when the bucket has none. */
   getBucketLifecycle(): Promise<SourceCacheBucketLifecycle>
 }
@@ -36,9 +34,11 @@ export class SourceCacheObjectError extends Error {
   }
 }
 
-export interface ObjectClientOptions {
-  config: Pick<SourceCacheConfig, 'endpoint' | 'region' | 'bucket' | 'prefix' | 'forcePathStyle'>
+export interface ObjectClientOptions<K extends string> {
+  config: BucketLocation
   credentials: CredentialsProvider
+  /** The only keys this client may touch; anything else throws before a request is signed. */
+  isKey: (key: string) => key is K
   fetch?: typeof fetch
   now?: () => number
   /** Test seam: an endpoint the config schema would refuse (a plain-http fixture). */
@@ -84,22 +84,20 @@ async function errorCode(res: Response): Promise<string | undefined> {
   return /<Code>([A-Za-z0-9.]{1,64})<\/Code>/.exec(body.slice(0, 4096))?.[1]
 }
 
-export function createObjectClient(opts: ObjectClientOptions): SourceCacheObjectClient {
+export function createObjectClient<K extends string>(opts: ObjectClientOptions<K>): SourceCacheObjectClient<K> {
   const { config, credentials } = opts
   const doFetch = opts.fetch ?? fetch
   const now = opts.now ?? Date.now
-  const address = addressFor(opts.endpointOverride ?? sourceCacheEndpoint(config), config.bucket, config.forcePathStyle)
-  const objectPath = (key: SourceCacheObjectKey | TransferObjectKey): string => {
-    if (parseSourceCacheObjectKey(key)?.kind !== 'bundle' && !isTransferObjectKey(key)) {
-      throw new Error('Source Cache key must be a src/ bundle key or a transfer key')
-    }
+  const address = addressFor(opts.endpointOverride ?? bucketEndpoint(config), config.bucket, config.forcePathStyle)
+  const objectPath = (key: K): string => {
+    if (!opts.isKey(key)) throw new Error('object key is not one this client may touch')
     return `${address.basePath}${config.prefix ? `${config.prefix}/` : ''}${key}`
   }
 
   const send = async (input: {
     method: 'HEAD' | 'PUT' | 'DELETE' | 'GET'
-    /** A bundle key, or `bucket` for a bucket-level subresource such as `?lifecycle`. */
-    key: SourceCacheObjectKey | TransferObjectKey | 'bucket'
+    /** An object key, or `bucket` for a bucket-level subresource such as `?lifecycle`. */
+    key: K | 'bucket'
     query?: Record<string, string>
     headers: Record<string, string>
     body?: string

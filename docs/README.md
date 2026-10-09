@@ -84,7 +84,7 @@ the picture it draws.
 - [transcript-full-tool-body.md](designs/transcript-full-tool-body.md) — Complete tool-call bodies in transcripts.
 - [agent-authored-attachments.md](designs/agent-authored-attachments.md) — Outbound agent-authored files across platforms.
 - **(draft)** [inbound-file-attachments.md](designs/inbound-file-attachments.md) — Inbound user files: the workspace landing zone and the web-console upload.
-- [source-cache-file-transfer.md](designs/source-cache-file-transfer.md) — Console file uploads and large workspace downloads through the Source Cache bucket.
+- [source-cache-file-transfer.md](designs/source-cache-file-transfer.md) — Console file uploads and large workspace downloads through the Source Cache bucket, signed by the Control Plane for any daemon.
 
 ### Authorization, identity, and visibility
 

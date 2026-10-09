@@ -183,7 +183,8 @@ jobs:
             'cli=@agentconnect.md/cli' \
             'setup=@agentconnect.md/setup' \
             'web=@agentconnect.md/web' \
-            'k8s-client=@agentconnect.md/k8s-client'
+            'k8s-client=@agentconnect.md/k8s-client' \
+            'object-store=@agentconnect.md/object-store'
       - name: Publish unit test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
         env:

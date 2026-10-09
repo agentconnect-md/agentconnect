@@ -38,9 +38,7 @@ describe('Source Cache configuration', () => {
         pendingReservationSeconds: 3600,
         unreadPointerDays: 30,
         getUrlSeconds: 300,
-        putUrlSeconds: 900,
-        transferMaxBytes: 512 * 1024 ** 2,
-        transferUrlSeconds: 1800
+        putUrlSeconds: 900
       }
     })
     expect(sourceCacheEndpoint(config)).toBe('https://s3.us-east-1.amazonaws.com')
@@ -59,9 +57,7 @@ describe('Source Cache configuration', () => {
           pendingReservationSeconds: '2h',
           unreadPointerDays: 7,
           getUrlSeconds: '2m',
-          putUrlSeconds: 600,
-          transferMaxBytes: 512 * 1024 ** 2,
-          transferUrlSeconds: 1800
+          putUrlSeconds: 600
         }
       })
     )!
@@ -72,9 +68,7 @@ describe('Source Cache configuration', () => {
       pendingReservationSeconds: 7200,
       unreadPointerDays: 7,
       getUrlSeconds: 120,
-      putUrlSeconds: 600,
-      transferMaxBytes: 512 * 1024 ** 2,
-      transferUrlSeconds: 1800
+      putUrlSeconds: 600
     })
   })
 
@@ -108,9 +102,7 @@ describe('Source Cache configuration', () => {
       pendingReservationSeconds: 3600,
       unreadPointerDays: 30,
       getUrlSeconds: 300,
-      putUrlSeconds: 900,
-      transferMaxBytes: 512 * 1024 ** 2,
-      transferUrlSeconds: 1800
+      putUrlSeconds: 900
     })
     const identity = load({
       bucket: 'ac-cache',
@@ -131,9 +123,6 @@ describe('Source Cache configuration', () => {
   it('accepts the web identity form with its defaults', () => {
     const config = load(minimal({ credentials: { source: 'webIdentity' } }))!
     expect(config.credentials).toEqual({ source: 'webIdentity', durationSeconds: 3600 })
-    // A longer transfer link derives a session that outlives it instead of refusing to start.
-    const hour = load(minimal({ credentials: { source: 'webIdentity' }, limits: { transferUrlSeconds: '1h' } }))!
-    expect(hour.credentials).toEqual({ source: 'webIdentity', durationSeconds: 3600 + 360 })
     const explicit = load(
       minimal({
         credentials: {
@@ -182,11 +171,6 @@ describe('Source Cache configuration', () => {
       'a web identity session too short for the PUT lifetime',
       minimal({ credentials: { source: 'webIdentity', durationSeconds: 1000 } }),
       'durationSeconds'
-    ],
-    [
-      'a transfer link too long for any STS session',
-      minimal({ credentials: { source: 'webIdentity' }, limits: { transferUrlSeconds: '12h' } }),
-      'transferUrlSeconds'
     ],
     ['a static form without key names', minimal({ credentials: { source: 'static', dir: '/x' } }), 'credentials'],
     ['an unknown credential source', minimal({ credentials: { source: 'leak-me' } }), 'credentials'],

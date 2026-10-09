@@ -13,11 +13,12 @@ import type {
   WorkspaceListReq,
   WorkspaceMkdirReq,
   WorkspaceReadReq,
-  WorkspaceTransferReq,
+  WorkspaceUploadReq,
   WorkspaceWriteReq,
-  TransferUploadReq
+  TransferNetwork,
+  TransferSignOk,
+  TransferSignReq
 } from '@agentconnect.md/protocol'
-import type { FileTransferControl } from '../file-transfer.js'
 import type { WorkspaceGit } from '../workspace-git.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from '../workspace-reader.js'
 import type { ControlHandler, ControlWire } from './context.js'
@@ -28,8 +29,10 @@ export interface WorkspaceReadDeps {
   workspaceRead: WorkspaceReader
   /** Git status/pull seam over the agents' git-repo workspace dirs (§1/§12). */
   workspaceGit: WorkspaceGit
-  /** Console file transfer through the Source Cache bucket; absent on a daemon without one. */
-  fileTransfer?: FileTransferControl
+  /** `transfer/sign` to the control plane, which signs every transfer URL (source-cache-file-transfer.md §5). */
+  signTransfer?: (req: TransferSignReq, orgId?: string) => Promise<TransferSignOk>
+  /** Where this daemon's snapshots reach the bucket from: its sandbox pods in the cluster, or the public origin. */
+  transferNetwork?: TransferNetwork
 }
 
 export interface WorkspaceControlDeps extends WorkspaceReadDeps {
@@ -92,30 +95,46 @@ export const workspaceMkdir: ControlHandler<WorkspaceControlDeps> = (frame: AnyF
     .catch((err) => workspaceError(wire, frame.id, 'workspace/mkdir', err))
 }
 
-export const workspaceTransfer: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
-  // Presigned URLs only; the file's bytes go pod → bucket → browser and never ride this socket.
-  const transfer = deps.fileTransfer
-  if (!transfer) return workspaceError(wire, frame.id, 'workspace/transfer', transferUnavailable())
-  transfer
-    .workspace(frame.payload as WorkspaceTransferReq)
-    .then((grant) => wire.reply(frame, 'workspace/transfer/grant', grant))
-    .catch((err) => workspaceError(wire, frame.id, 'workspace/transfer', err))
-}
+/** One snapshot upload may stage and send up to the transfer cap, so it gets far longer than a file read. */
+const WORKSPACE_UPLOAD_TIMEOUT_MS = 15 * 60_000
 
-export const transferUpload: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
-  const transfer = deps.fileTransfer
-  if (!transfer) return workspaceError(wire, frame.id, 'transfer/upload', transferUnavailable())
-  transfer
-    .upload(frame.payload as TransferUploadReq)
-    .then((grant) => wire.reply(frame, 'transfer/upload/grant', grant))
-    .catch((err) => workspaceError(wire, frame.id, 'transfer/upload', err))
-}
-
-function transferUnavailable(): WorkspaceViolationError {
-  return new WorkspaceViolationError(
-    'this daemon has no Source Cache bucket for file transfers',
-    'transfer-unavailable'
-  )
+export const workspaceUpload: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
+  // The bytes go root → bucket on a URL the control plane signs for this ticket; they never ride this socket.
+  const req = frame.payload as WorkspaceUploadReq
+  const signTransfer = deps.signTransfer
+  if (!signTransfer) {
+    return workspaceError(
+      wire,
+      frame.id,
+      'workspace/upload',
+      new WorkspaceViolationError('this daemon cannot reach the control plane signer', 'transfer-unavailable')
+    )
+  }
+  const network = deps.transferNetwork ?? 'public'
+  deps.workspaceRead
+    .upload(
+      {
+        agentId: req.agentId,
+        ...(req.sessionId ? { sessionId: req.sessionId } : {}),
+        ...(req.repo ? { repo: req.repo } : {}),
+        path: req.path,
+        maxBytes: req.maxBytes,
+        timeoutMs: WORKSPACE_UPLOAD_TIMEOUT_MS,
+        revision: req.revision
+      },
+      async (file) => {
+        try {
+          return await signTransfer({ ticket: req.ticket, ...file, network }, frame.orgId)
+        } catch (err) {
+          // The control plane refuses a snapshot that is not the revision it asked for as a conflict.
+          if ((err as { code?: string } | null)?.code === 'CONFLICT')
+            throw new WorkspaceConflictError('the file changed while it was copied; retry')
+          throw new WorkspaceViolationError('the control plane did not sign the upload', 'transfer-failed')
+        }
+      }
+    )
+    .then((sent) => wire.reply(frame, 'workspace/upload/ok', sent))
+    .catch((err) => workspaceError(wire, frame.id, 'workspace/upload', err))
 }
 
 export const workspaceGitStatus: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
