@@ -3992,7 +3992,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Get a download link for a workspace file',
           description:
-            'Return a short-lived presigned URL that downloads one workspace file as an attachment directly from the deployment’s object store, for files too large or too binary for the proxied download. The scope rules are the download route’s (sessionId, repo, containment, .git). When the store does not already hold this revision of the file, the owning daemon uploads it first, so the call may take as long as that upload; the control plane sees only the URL. 409 DAEMON_FEATURE_MISSING when the agent’s daemon has no object store for transfers, 409 WORKSPACE_TRANSFER_UNAVAILABLE when the store cannot take one right now, 404 WORKSPACE_NOT_FOUND for a missing file, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
+            'Return a short-lived presigned URL that downloads one workspace file as an attachment directly from the deployment’s object store, for files too large or too binary for the proxied download. The scope rules are the download route’s (sessionId, repo, containment, .git). When the store does not already hold this revision of the file, the owning daemon uploads it first, so the call may take as long as that upload; the control plane sees only the URL. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). 409 DAEMON_FEATURE_MISSING when the agent’s daemon has no object store for transfers, 409 WORKSPACE_TRANSFER_UNAVAILABLE when the store cannot take one right now, 404 WORKSPACE_NOT_FOUND for a missing file, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
           operationId: 'transferAgentWorkspaceFile',
           params: IdParam,
           body: WorkspaceTransferBody,
@@ -4014,11 +4014,21 @@ export function agentRoutes(deps: HttpDeps) {
         )
         if (!transfers) return reply
         try {
-          const grant = await deps.control.workspaceTransfer(daemonId, {
+          const { sha256, ...grant } = await deps.control.workspaceTransfer(daemonId, {
             agentId: agent.id,
             ...target,
             path: req.body.path
           })
+          // The object's digest stands in for the bytes the proxied download would hash.
+          const hex = Buffer.from(sha256, 'base64').toString('hex')
+          if (req.body.sha256 && !hex.startsWith(req.body.sha256.toLowerCase())) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'the file changed since it was shared',
+              code: 'WORKSPACE_FILE_CHANGED'
+            })
+          }
           return { ...grant, expiresAt: new Date(grant.expiresAt).toISOString() }
         } catch (err) {
           if (sendWorkspaceFailure(reply, err)) return

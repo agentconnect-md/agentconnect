@@ -1,6 +1,6 @@
 // Console file transfer routes: the CP forwards the scope and proxies only presigned URLs, never file bytes.
 import { afterEach, describe, expect, it } from 'vitest'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { FILE_TRANSFER_FEATURE, WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
 import type {
   TransferUploadGrant,
@@ -21,6 +21,8 @@ const DAEMON = 'd6d6d6d6-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT = 'a6a6a6a6-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const SHA = Buffer.alloc(32, 7).toString('base64')
 const EXPIRES = Date.parse('2026-10-09T12:00:00.000Z')
+const OBJECT_HEX = createHash('sha256').update('report').digest('hex')
+const OBJECT_SHA = Buffer.from(OBJECT_HEX, 'hex').toString('base64')
 const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
 }
@@ -58,6 +60,7 @@ class TransferSpy {
       size: 42,
       url: 'https://store.example.test/bucket/dl?X-Amz-Signature=sig',
       expiresAt: EXPIRES,
+      sha256: OBJECT_SHA,
       cached: false
     }
   }
@@ -155,6 +158,23 @@ describe('POST /agents/:id/workspace/file/transfer', () => {
       { agentId: AGENT, path: 'dist/app.tar.gz' },
       { agentId: AGENT, sessionId: isolated, path: 'out.log' }
     ])
+  })
+
+  it('holds a shared file to the digest prefix its marker recorded', async () => {
+    await seedTransferAgent()
+    const running = app(new TransferSpy())
+    const transfer = (sha256: string) =>
+      running.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents/${AGENT}/workspace/file/transfer`,
+        payload: { path: 'uploads/report.pdf', sha256 }
+      })
+    const matching = await transfer(OBJECT_HEX.slice(0, 16).toUpperCase())
+    expect(matching.statusCode).toBe(200)
+    expect(matching.json()).not.toHaveProperty('sha256')
+    const rewritten = await transfer('0'.repeat(16))
+    expect(rewritten.statusCode).toBe(409)
+    expect(rewritten.json()).toMatchObject({ code: 'WORKSPACE_FILE_CHANGED' })
   })
 
   it('hides an unknown session and maps a missing file to 404', async () => {

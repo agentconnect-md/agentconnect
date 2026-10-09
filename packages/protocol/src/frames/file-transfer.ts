@@ -60,6 +60,8 @@ export const WorkspaceTransferGrant = z.object({
   size: z.number().int().nonnegative(),
   url: z.string().url(),
   expiresAt: z.number().int(),
+  /** The object's base64 SHA-256, so the CP can hold a shared file to the digest its marker recorded. */
+  sha256: TransferSha256,
   /** True when the bucket already held this revision and nothing was uploaded. */
   cached: z.boolean()
 })

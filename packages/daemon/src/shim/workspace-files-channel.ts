@@ -228,7 +228,13 @@ export class ShimWorkspaceFiles implements WorkspaceFiles {
     abort?: AbortSignal
   ): Promise<WorkspaceUploaded> {
     if (!this.canTransfer) throw outdatedForTransfer()
-    const stage: TransferStageRequest = { op: 'stage-file', root, path: req.path, maxBytes: req.maxBytes }
+    const stage: TransferStageRequest = {
+      op: 'stage-file',
+      root,
+      path: req.path,
+      maxBytes: req.maxBytes,
+      ...(req.revision ? { revision: req.revision } : {})
+    }
     const staged = await this.requester
       .request('transfer', stage, { timeoutMs: req.timeoutMs, ...(abort ? { abort } : {}) })
       .then((reply) => BundleCreateResultSchema.parse(reply))
@@ -259,6 +265,7 @@ const STAGED_REFUSALS = new Set<WorkspaceErrorReason>([
 function transferRefusal(err: unknown): Error {
   if (err instanceof WorkspaceViolationError) return err
   const reason = /^bundle ([a-z-]+):/.exec(err instanceof Error ? err.message : '')?.[1]
+  if (reason === 'stale') return new WorkspaceConflictError('the file changed while it was copied; retry')
   const parsed = WorkspaceErrorReason.safeParse(reason)
   if (parsed.success && STAGED_REFUSALS.has(parsed.data)) {
     return new WorkspaceViolationError('the file cannot be transferred', parsed.data)

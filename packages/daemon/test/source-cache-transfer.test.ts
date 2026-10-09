@@ -131,10 +131,15 @@ describe('file transfer', () => {
       put: (file: { bytes: number; sha256: string }) => Promise<{ url: string; headers: Record<string, string> }>
     ) => {
       signedPuts.push(await put({ bytes: 5, sha256: SHA }))
-      return { bytes: 5 }
+      return { bytes: 5, sha256: SHA }
     }
 
-    const cached = await transfer({ exists: true, contentLength: 5, lastModified: NOW - 60_000 }).workspaceFileUrl({
+    const cached = await transfer({
+      exists: true,
+      contentLength: 5,
+      checksumSha256: SHA,
+      lastModified: NOW - 60_000
+    }).workspaceFileUrl({
       org: ORG,
       identity,
       name: 'app.bin',
@@ -142,6 +147,7 @@ describe('file transfer', () => {
       upload
     })
     expect(cached.cached).toBe(true)
+    expect(cached.sha256).toBe(SHA)
     expect(signedPuts).toHaveLength(0)
     const get = new URL(cached.url)
     expect(get.host).toBe('store.example.test')
@@ -160,10 +166,28 @@ describe('file transfer', () => {
       upload
     })
     expect(stale.cached).toBe(false)
+    expect(stale.sha256).toBe(SHA)
     expect(signedPuts).toHaveLength(1)
     // The pod uploads in-cluster, so its PUT names the internal endpoint.
     expect(new URL(signedPuts[0]!.url).host).toBe('store.internal.example.test')
     expect(signedPuts[0]!.headers['content-length']).toBe('5')
+  })
+
+  it('replaces a recent copy whose checksum the store does not report, since its bytes are unproven', async () => {
+    let uploads = 0
+    const grant = await transfer({ exists: true, contentLength: 5, lastModified: NOW - 60_000 }).workspaceFileUrl({
+      org: ORG,
+      identity: ['a'],
+      name: 'a.bin',
+      size: 5,
+      upload: async (put) => {
+        uploads++
+        await put({ bytes: 5, sha256: SHA })
+        return { bytes: 5, sha256: SHA }
+      }
+    })
+    expect(uploads).toBe(1)
+    expect(grant).toMatchObject({ cached: false, sha256: SHA })
   })
 
   it('refuses a file that changed size during its upload', async () => {
@@ -174,7 +198,7 @@ describe('file transfer', () => {
       size: 5,
       upload: async (put) => {
         await put({ bytes: 6, sha256: SHA })
-        return { bytes: 6 }
+        return { bytes: 6, sha256: SHA }
       }
     })
     await expect(run).rejects.toMatchObject({ reason: 'stale' })

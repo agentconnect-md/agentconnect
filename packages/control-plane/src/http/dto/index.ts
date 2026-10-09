@@ -3580,7 +3580,11 @@ export const WorkspaceTransferBody = z
   .object({
     sessionId: z.string().min(1).optional(),
     repo: z.string().min(1).optional(),
-    path: z.string().min(1).max(4096)
+    path: z.string().min(1).max(4096),
+    sha256: z
+      .string()
+      .regex(/^[0-9a-fA-F]{16,64}$/)
+      .optional() // the digest prefix a share recorded; the bucket's bytes must still match it
   })
   .strict()
 

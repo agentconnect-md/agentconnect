@@ -114,6 +114,13 @@ export interface WorkspaceUploadReq {
   path: string
   maxBytes: number
   timeoutMs: number
+  /** The size and RFC 3339 mtime the caller stat'ed and keyed the object by; a file that no longer matches is refused. */
+  revision?: WorkspaceFileRevision
+}
+
+export interface WorkspaceFileRevision {
+  size: number
+  mtime: string
 }
 
 /** A presigned PUT for a snapshot of exactly `bytes` with base64 SHA-256 `sha256`. */
@@ -171,13 +178,16 @@ export function outdatedForTransfer(): WorkspaceViolationError {
 
 const COPY_CHUNK_BYTES = 1024 * 1024
 
-/** Copy an opened file's first `size` bytes to a new private `dest`, hashing as it goes; a file that shrank under the copy is refused. */
+/** Copy an opened file to a new private `dest`, hashing as it goes; a file that is not `revision`, or changes under the copy, is refused. */
 export async function copyWorkspaceFileTo(
-  file: Pick<FileHandle, 'read'>,
-  size: number,
+  file: Pick<FileHandle, 'read' | 'stat'>,
   dest: string,
-  maxBytes: number
+  maxBytes: number,
+  revision?: WorkspaceFileRevision
 ): Promise<WorkspaceUploaded> {
+  const before = await file.stat()
+  const size = before.size
+  if (revision && (revision.size !== size || revision.mtime !== before.mtime.toISOString())) throw copiedFileChanged()
   if (size > maxBytes)
     throw new WorkspaceViolationError(`the file is over the ${maxBytes}-byte transfer cap`, 'too-large')
   const out = await fs.open(dest, 'wx', 0o600)
@@ -187,7 +197,7 @@ export async function copyWorkspaceFileTo(
   try {
     while (copied < size) {
       const { bytesRead } = await file.read(buf, 0, Math.min(buf.length, size - copied), copied)
-      if (bytesRead === 0) throw new WorkspaceConflictError('the file changed while it was copied')
+      if (bytesRead === 0) throw copiedFileChanged()
       const chunk = buf.subarray(0, bytesRead)
       hash.update(chunk)
       await out.write(chunk)
@@ -196,7 +206,15 @@ export async function copyWorkspaceFileTo(
   } finally {
     await out.close()
   }
+  // An equal-length rewrite between chunks keeps the size, so the file's change times decide.
+  const after = await file.stat()
+  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs)
+    throw copiedFileChanged()
   return { bytes: copied, sha256: hash.digest('base64') }
+}
+
+function copiedFileChanged(): WorkspaceConflictError {
+  return new WorkspaceConflictError('the file changed while it was copied; retry')
 }
 
 /** Stage a snapshot in a private temp directory, sign it, PUT it, and remove it whatever happened. */
@@ -548,9 +566,9 @@ export const localWorkspaceFiles: WorkspaceFiles = {
     const found = await localReadTarget(root, req.path)
     if (found.kind !== 'file')
       throw new WorkspaceViolationError('no such file', found.kind === 'dir' ? 'not-a-file' : 'not-found')
-    const { handle: fh, stat: opened } = await openWorkspaceFile(found.target)
+    const { handle: fh } = await openWorkspaceFile(found.target)
     try {
-      return await uploadSnapshot((dest) => copyWorkspaceFileTo(fh, opened.size, dest, req.maxBytes), req, sign, abort)
+      return await uploadSnapshot((dest) => copyWorkspaceFileTo(fh, dest, req.maxBytes, req.revision), req, sign, abort)
     } finally {
       await fh.close()
     }

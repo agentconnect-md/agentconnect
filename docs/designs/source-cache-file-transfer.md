@@ -40,7 +40,9 @@ counts toward the org quota and the sweep never sees one.
 Transfers are gated on the same lifecycle check as write-back: while the bucket lacks its
 rules, nothing would collect a transfer, so the daemon refuses with
 `transfer-unavailable`. A cached download is reused only while its `Last-Modified` is
-under one day old, well inside the 2-day rule, and only when its length still matches.
+under one day old, well inside the 2-day rule, and only when its length still matches and
+the store reports its signed SHA-256 checksum. A copy without a checksum cannot prove its
+bytes, so it is uploaded again.
 
 ## 3. Trust model
 
@@ -68,7 +70,9 @@ under one day old, well inside the 2-day rule, and only when its length still ma
   - `transfer/upload` (`agentId`, `name`, `mimeType`, `size`, base64 `sha256`) →
     `transfer/upload/grant` (`uploadId`, `url`, `headers`, `expiresAt`).
   - `workspace/transfer` (`agentId`, `sessionId?`, `repo?`, `path`) →
-    `workspace/transfer/grant` (`path`, `size`, `url`, `expiresAt`, `cached`).
+    `workspace/transfer/grant` (`path`, `size`, `url`, `expiresAt`, base64 `sha256`,
+    `cached`). The `sha256` is the object's own digest, whether the file was uploaded
+    now or reused from the cache.
 - **Webchat turn:** `RelayWebchatOp.turn.files` holds up to `WEBCHAT_FILES_MAX` (4)
   `WebchatFileAttachment`s (`uploadId`, `name`, `mimeType`, `size`, `sha256`). The relay
   validates and forwards them.
@@ -94,11 +98,22 @@ under one day old, well inside the 2-day rule, and only when its length still ma
 `WorkspaceFiles.upload` snapshots the file, signs a PUT for the snapshot's exact length
 and digest, and streams it (`source-cache/put-object.ts`, shared with bundle upload).
 
+The snapshot is bound to the revision the object key names:
+
+- The stat's `size` and `mtime` travel as `revision`.
+- The copy refuses a file that no longer matches `revision`.
+- After the last chunk it stats the file again and refuses one whose size, mtime or
+  ctime moved while it was copied, such as an equal-length rewrite between chunks.
+
+Either refusal is a `stale` conflict (409), so a snapshot never mixes two revisions or
+lands under a key that names another one.
+
 - **Local root:** the daemon copies the file to a private temp directory and PUTs it.
 - **Sandbox root:** the shim does both:
   - The shim advertises `workspace-transfer-v1` beside `source-cache-bundle-v1`. The
     daemon then grants it `transfer` (beside `bundle`).
-  - The `transfer` capability's `stage-file` op (`root`, `path`, `maxBytes`) copies the
+  - The `transfer` capability's `stage-file` op (`root`, `path`, `maxBytes`, `revision?`)
+    copies the
     file into the shim's private bundle staging directory, opening it through the same
     fd-anchored descent as console reads. It returns a handle with `bytes` and `sha256`.
   - The daemon signs the PUT, then uploads and discards the handle over the existing
@@ -116,6 +131,12 @@ and digest, and streams it (`source-cache/put-object.ts`, shared with bundle upl
 `workspace/transfer` is single-shot with a 16-minute ack budget, because the daemon may
 stage and upload the file before it answers.
 
+The transfer route accepts a shared file's digest prefix (`sha256`), as the proxied
+download does. It compares that prefix with the grant's object digest and answers
+`409 WORKSPACE_FILE_CHANGED` on a mismatch. A shared file rewritten after its marker was
+recorded is therefore refused on this path too
+([inbound-file-attachments.md](inbound-file-attachments.md) §5.1).
+
 ## 7. Configuration
 
 `AC_SOURCE_CACHE` gains these fields (chart values in parentheses):
@@ -128,7 +149,9 @@ stage and upload the file before it answers.
   default `30m`, from `1m` to `12h`.
 
 A web-identity session must outlive the longest URL lifetime, this one included, plus
-5 minutes. The bucket needs a CORS rule admitting the console origin for `GET` and `PUT`
+6 minutes. When `credentials.durationSeconds` is omitted, the daemon derives it as the
+larger of 1 hour and that sum. The chart exposes it as
+`sourceCache.credentials.serviceAccount.sessionDurationSeconds`. The bucket needs a CORS rule admitting the console origin for `GET` and `PUT`
 with the `x-amz-checksum-sha256` and `x-amz-tagging` headers (chart README).
 
 ## 8. Limitations

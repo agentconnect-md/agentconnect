@@ -10,7 +10,8 @@ const SHA = Buffer.alloc(32, 3).toString('base64')
 
 function reader(
   stat: Partial<WorkspaceReadContent> & { exists: boolean },
-  reads: WorkspaceReadReq[] = []
+  reads: WorkspaceReadReq[] = [],
+  uploads: unknown[] = []
 ): WorkspaceReader {
   return {
     list: async () => {
@@ -29,7 +30,8 @@ function reader(
     mkdir: async () => {
       throw new Error('unused')
     },
-    upload: async (_req, sign) => {
+    upload: async (req, sign) => {
+      uploads.push(req)
       await sign({ bytes: 9, sha256: SHA })
       return { bytes: 9, sha256: SHA }
     }
@@ -55,7 +57,7 @@ function transfer(seen: unknown[] = [], fail?: Error): FileTransfer {
       seen.push(input)
       if (fail) throw fail
       await input.upload(async () => ({ url: 'https://s.example.test/p', headers: {}, expiresAt: 1 }))
-      return { url: 'https://s.example.test/g', headers: {}, expiresAt: 2, cached: false }
+      return { url: 'https://s.example.test/g', headers: {}, expiresAt: 2, cached: false, sha256: SHA }
     }
   }
 }
@@ -63,14 +65,24 @@ function transfer(seen: unknown[] = [], fail?: Error): FileTransfer {
 describe('file transfer control', () => {
   it('stats through the workspace read, keys the object by revision, and answers the grant', async () => {
     const reads: WorkspaceReadReq[] = []
+    const uploads: unknown[] = []
     const seen: unknown[] = []
     const control = createFileTransferControl({
       transfer: transfer(seen),
       orgForAgent: () => 'org_1',
-      workspaceRead: reader({ exists: true, type: 'file', size: 9, mtime: '2026-10-09T00:00:00.000Z' }, reads)
+      workspaceRead: reader({ exists: true, type: 'file', size: 9, mtime: '2026-10-09T00:00:00.000Z' }, reads, uploads)
     })
     const grant = await control.workspace({ agentId: AGENT, sessionId: 's1', path: 'out/a.bin' })
-    expect(grant).toEqual({ path: 'out/a.bin', size: 9, url: 'https://s.example.test/g', expiresAt: 2, cached: false })
+    expect(grant).toEqual({
+      path: 'out/a.bin',
+      size: 9,
+      url: 'https://s.example.test/g',
+      expiresAt: 2,
+      sha256: SHA,
+      cached: false
+    })
+    // The upload is bound to the revision the object key names.
+    expect(uploads[0]).toMatchObject({ revision: { size: 9, mtime: '2026-10-09T00:00:00.000Z' } })
     expect(reads).toEqual([{ agentId: AGENT, sessionId: 's1', path: 'out/a.bin', offset: 0, limit: 1 }])
     expect(seen[0]).toMatchObject({
       org: 'org_1',

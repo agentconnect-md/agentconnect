@@ -381,7 +381,9 @@ export function SessionViewer({
     if (file && viaTransfer(file, transfer)) {
       setDownloading(true)
       try {
-        openDownloadUrl((await transferWorkspaceFile(agentId, scope)).url)
+        // A shared file keeps its marker's digest check on this path too.
+        const pinned = download.sha256 ? { sha256: download.sha256 } : {}
+        openDownloadUrl((await transferWorkspaceFile(agentId, { ...scope, ...pinned })).url)
       } catch (e) {
         setDownloadErr(downloadFailureText(e))
       } finally {

@@ -80,8 +80,10 @@ export interface FileTransfer {
     identity: readonly unknown[]
     name: string
     size: number
-    upload: (put: (file: { bytes: number; sha256: string }) => Promise<TransferUrl>) => Promise<{ bytes: number }>
-  }): Promise<TransferUrl & { cached: boolean }>
+    upload: (
+      put: (file: { bytes: number; sha256: string }) => Promise<TransferUrl>
+    ) => Promise<{ bytes: number; sha256: string }>
+  }): Promise<TransferUrl & { cached: boolean; sha256: string }>
 }
 
 /** A refusal the console can act on; `reason` is the workspace error reason the daemon answers with. */
@@ -190,21 +192,26 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
       }
       const key = transferDownloadKey(org, identity)
       const head = await objects.head(key)
-      const fresh =
+      // A copy without its checksum cannot prove which bytes it holds, so it is replaced rather than reused.
+      const cached =
         head.exists &&
         head.contentLength === size &&
         (head.lastModified === undefined || head.lastModified > now() - CACHED_DOWNLOAD_MAX_AGE_MS)
-      if (!fresh) {
-        const sent = await upload(async ({ bytes, sha256 }) =>
+          ? head.checksumSha256
+          : undefined
+      let sha256 = cached
+      if (sha256 === undefined) {
+        const sent = await upload(async (file) =>
           sign({
             method: 'PUT',
             key,
             address: internal,
             lifetimeSeconds: putUrlSeconds,
-            headers: putHeaders(bytes, sha256)
+            headers: putHeaders(file.bytes, file.sha256)
           })
         )
         if (sent.bytes !== size) throw new FileTransferError('stale', 'the file changed while it was uploaded')
+        sha256 = sent.sha256
       }
       const get = await sign({
         method: 'GET',
@@ -216,7 +223,7 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
           'response-content-type': 'application/octet-stream'
         }
       })
-      return { ...get, cached: fresh }
+      return { ...get, cached: cached !== undefined, sha256 }
     }
   }
 }

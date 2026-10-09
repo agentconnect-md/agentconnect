@@ -59,7 +59,9 @@ export const TransferStageRequestSchema = z.strictObject({
   op: z.literal('stage-file'),
   root: z.string().min(1).max(4096),
   path: z.string().min(1).max(4096),
-  maxBytes: z.number().int().positive().max(MAX_BUNDLE_BYTES)
+  maxBytes: z.number().int().positive().max(MAX_BUNDLE_BYTES),
+  /** The size and mtime the daemon keyed the object by; a file that no longer matches is refused as `stale`. */
+  revision: z.strictObject({ size: z.number().int().nonnegative(), mtime: z.string().min(1).max(64) }).optional()
 })
 
 export const BundleCreateResultSchema = z.strictObject({

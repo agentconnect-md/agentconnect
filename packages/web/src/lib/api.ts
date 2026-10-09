@@ -2886,12 +2886,13 @@ export interface WorkspaceTransferDto {
 
 export function transferWorkspaceFile(
   agentId: string,
-  opts: { path: string; sessionId?: string; repo?: string }
+  opts: { path: string; sessionId?: string; repo?: string; sha256?: string }
 ): Promise<WorkspaceTransferDto> {
   return apiPost<WorkspaceTransferDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file/transfer`, {
     path: opts.path,
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
-    ...(opts.repo ? { repo: opts.repo } : {})
+    ...(opts.repo ? { repo: opts.repo } : {}),
+    ...(opts.sha256 ? { sha256: opts.sha256 } : {})
   })
 }
 

@@ -381,6 +381,9 @@ spec:
             {{- end }}
             {{- $_ := set $credentials "stsEndpoint" . }}
             {{- end }}
+            {{- with $identity.sessionDurationSeconds }}
+            {{- $_ := set $credentials "durationSeconds" (int .) }}
+            {{- end }}
             {{- $_ := set $document "credentials" $credentials }}
             {{- else }}
             {{- fail "sourceCache.credentials.source must be serviceAccount or secret" }}

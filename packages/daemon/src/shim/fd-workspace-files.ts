@@ -45,6 +45,7 @@ import {
   workspaceEntryOf,
   WorkspaceConflictError,
   WorkspaceViolationError,
+  type WorkspaceFileRevision,
   type WorkspaceFiles,
   type WorkspaceUploaded
 } from '../workspace/workspace-files.js'
@@ -136,7 +137,8 @@ export async function stageWorkspaceFile(
   root: string,
   relPath: string,
   dest: string,
-  maxBytes: number
+  maxBytes: number,
+  revision?: WorkspaceFileRevision
 ): Promise<WorkspaceUploaded> {
   return await withParent(anchor, root, relPath, async (parent, leaf) => {
     if (leaf === undefined) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
@@ -150,7 +152,7 @@ export async function stageWorkspaceFile(
     if (!stat.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
     const file = await parent.childFile(leaf)
     try {
-      return await copyWorkspaceFileTo(file, (await file.stat()).size, dest, maxBytes)
+      return await copyWorkspaceFileTo(file, dest, maxBytes, revision)
     } finally {
       await file.close()
     }

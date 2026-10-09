@@ -104,7 +104,8 @@ const WebIdentityCredentials = z.strictObject({
     .string()
     .regex(/^[\w+=,.@-]{2,64}$/, { message: 'must be 2-64 characters of [A-Za-z0-9_+=,.@-]' })
     .optional(),
-  durationSeconds: z.number().int().min(900).max(43_200).default(3600)
+  // Omitted ⇒ derived from the longest URL lifetime; the role's MaxSessionDuration must allow it.
+  durationSeconds: z.number().int().min(900).max(43_200).optional()
 })
 
 const Limits = z
@@ -162,18 +163,41 @@ export const SourceCacheConfigSchema = z
       })
     }
     const credentials = config.credentials
-    if (
+    if (credentials.source === 'webIdentity' && sessionSecondsFor(limits) > 43_200) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['limits', 'transferUrlSeconds'],
+        message: 'with STS credentials, every URL lifetime plus 6m must fit the 12h session maximum'
+      })
+    } else if (
       credentials.source === 'webIdentity' &&
-      credentials.durationSeconds <=
-        Math.max(limits.getUrlSeconds, limits.putUrlSeconds, limits.transferUrlSeconds) + SOURCE_CACHE_GRACE_SECONDS
+      credentials.durationSeconds !== undefined &&
+      credentials.durationSeconds < sessionSecondsFor(limits)
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['credentials', 'durationSeconds'],
-        message: 'must outlive the longest URL lifetime plus 5m'
+        message: 'must outlive the longest URL lifetime plus 6m'
       })
     }
   })
+  .transform((config) => {
+    const { credentials } = config
+    if (credentials.source !== 'webIdentity') return { ...config, credentials }
+    const durationSeconds = credentials.durationSeconds ?? Math.max(3600, sessionSecondsFor(config.limits))
+    return { ...config, credentials: { ...credentials, durationSeconds } }
+  })
+
+/** The shortest STS session that outlives every URL it signs by the grace, plus a minute of slack. */
+function sessionSecondsFor(limits: {
+  getUrlSeconds: number
+  putUrlSeconds: number
+  transferUrlSeconds: number
+}): number {
+  return (
+    Math.max(limits.getUrlSeconds, limits.putUrlSeconds, limits.transferUrlSeconds) + SOURCE_CACHE_GRACE_SECONDS + 60
+  )
+}
 
 export type SourceCacheConfig = z.output<typeof SourceCacheConfigSchema>
 export type SourceCacheCredentialsConfig = SourceCacheConfig['credentials']

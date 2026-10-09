@@ -18,7 +18,11 @@ import {
 } from './bundle-protocol.js'
 import { assertBundleStagingPrivate } from './bundle-staging.js'
 import { resolveCwd } from './exec-handler.js'
-import { WorkspaceViolationError } from '../workspace/workspace-files.js'
+import {
+  WorkspaceConflictError,
+  WorkspaceViolationError,
+  type WorkspaceFileRevision
+} from '../workspace/workspace-files.js'
 import { MissingPathError } from './safe-descent.js'
 
 // The shim-internal `bundle` operations (source-cache.md §6.1, §9): composed argv, shim-minted handles, upload from this process.
@@ -66,7 +70,8 @@ export interface BundleHandlerDeps {
     root: string,
     path: string,
     dest: string,
-    maxBytes: number
+    maxBytes: number,
+    revision?: WorkspaceFileRevision
   ) => Promise<{ bytes: number; sha256: string }>
 }
 
@@ -316,12 +321,13 @@ export function createBundleHandler(deps: BundleHandlerDeps): BundleHandler {
     creating++
     try {
       const { bytes, sha256 } = await deps
-        .stageWorkspaceFile(parsed.data.root, parsed.data.path, file, parsed.data.maxBytes)
+        .stageWorkspaceFile(parsed.data.root, parsed.data.path, file, parsed.data.maxBytes, parsed.data.revision)
         .catch((err: unknown) => {
           // The reason crosses the channel in the message, where the daemon's transfer client reads it back.
           if (err instanceof WorkspaceViolationError)
             throw new BundleRefusedError(err.reason, 'the file cannot be staged')
           if (err instanceof MissingPathError) throw new BundleRefusedError('not-found', 'no such file')
+          if (err instanceof WorkspaceConflictError) throw new BundleRefusedError('stale', err.message)
           throw err
         })
       if (bytes < 1) throw new BundleRefusedError('empty', 'an empty file is not transferred')

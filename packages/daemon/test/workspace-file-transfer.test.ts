@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { createServer, type IncomingHttpHeaders } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -10,7 +11,12 @@ import { prepareBundleStaging } from '../src/shim/bundle-staging.js'
 import { stageWorkspaceFile } from '../src/shim/fd-workspace-files.js'
 import { ShimWorkspaceFiles } from '../src/shim/workspace-files-channel.js'
 import type { ShimRequester } from '../src/shim/channels.js'
-import { localWorkspaceFiles, WorkspaceViolationError } from '../src/workspace/workspace-files.js'
+import {
+  copyWorkspaceFileTo,
+  localWorkspaceFiles,
+  WorkspaceConflictError,
+  WorkspaceViolationError
+} from '../src/workspace/workspace-files.js'
 
 // Console file transfer's snapshot-and-PUT half (source-cache-file-transfer.md): local, in the shim, and across the channel.
 
@@ -56,6 +62,30 @@ const signed = (url: string) => async (file: { bytes: number; sha256: string }) 
 })
 
 describe('local workspace upload', () => {
+  it('refuses a snapshot whose source is rewritten to the same length between chunks', async () => {
+    const root = workspace()
+    const src = join(root, 'big.bin')
+    const size = 2 * 1024 * 1024 + 7
+    writeFileSync(src, Buffer.alloc(size, 'A'))
+    const real = await open(src, 'r')
+    closers.push(() => void real.close())
+    let reads = 0
+    const racing = {
+      stat: real.stat.bind(real),
+      read: (async (...args: Parameters<typeof real.read>) => {
+        const result = await real.read(...args)
+        if (++reads === 1) {
+          writeFileSync(src, Buffer.alloc(size, 'B'))
+          // Pin a distinct mtime: a same-tick rewrite would otherwise share one with the original.
+          utimesSync(src, statSync(src).atime, new Date(Date.now() + 5000))
+        }
+        return result
+      }) as typeof real.read
+    }
+    const dest = join(mkdtempSync(join(tmpdir(), 'ac-transfer-copy-')), 'file')
+    await expect(copyWorkspaceFileTo(racing, dest, size)).rejects.toBeInstanceOf(WorkspaceConflictError)
+  })
+
   it('snapshots the file, signs for its exact length and digest, and PUTs those bytes', async () => {
     const root = workspace()
     const target = await store()
@@ -83,6 +113,17 @@ describe('local workspace upload', () => {
     await expect(upload('../outside')).rejects.toBeInstanceOf(WorkspaceViolationError)
     expect(target.received).toHaveLength(0)
 
+    // A file rewritten since the caller keyed its object is not sent under that key.
+    const revision = { size: 5, mtime: new Date(0).toISOString() }
+    await expect(
+      localWorkspaceFiles.upload!(
+        root,
+        { path: 'dist/app.bin', maxBytes: 1024, timeoutMs: 5000, revision },
+        signed(target.url)
+      )
+    ).rejects.toBeInstanceOf(WorkspaceConflictError)
+    expect(target.received).toHaveLength(0)
+
     const refusing = await store(403)
     await expect(
       localWorkspaceFiles.upload!(root, { path: 'dist/app.bin', maxBytes: 1024, timeoutMs: 5000 }, signed(refusing.url))
@@ -100,7 +141,8 @@ describe.skipIf(process.platform === 'win32')('shim transfer staging', () => {
       workspaceRoot: anchor,
       stagingDir: staging,
       allowHttpUpload: true,
-      stageWorkspaceFile: (root, path, dest, maxBytes) => stageWorkspaceFile(anchor, root, path, dest, maxBytes)
+      stageWorkspaceFile: (root, path, dest, maxBytes, revision) =>
+        stageWorkspaceFile(anchor, root, path, dest, maxBytes, revision)
     })
     closers.push(() => handler.stop())
     const staged = await handler.transfer({ op: 'stage-file', root: anchor, path: 'dist/app.bin', maxBytes: 1024 })
@@ -126,7 +168,8 @@ describe.skipIf(process.platform === 'win32')('shim transfer staging', () => {
     const handler = createBundleHandler({
       workspaceRoot: anchor,
       stagingDir: staging,
-      stageWorkspaceFile: (root, path, dest, maxBytes) => stageWorkspaceFile(anchor, root, path, dest, maxBytes)
+      stageWorkspaceFile: (root, path, dest, maxBytes, revision) =>
+        stageWorkspaceFile(anchor, root, path, dest, maxBytes, revision)
     })
     closers.push(() => handler.stop())
     await expect(handler.transfer({ op: 'stage-file', root: anchor, path: 'gone', maxBytes: 9 })).rejects.toThrow(
@@ -141,6 +184,15 @@ describe.skipIf(process.platform === 'win32')('shim transfer staging', () => {
     await expect(handler.transfer({ op: 'stage-file', root: '/elsewhere', path: 'x', maxBytes: 9 })).rejects.toThrow(
       /^bundle path-escape:/
     )
+    await expect(
+      handler.transfer({
+        op: 'stage-file',
+        root: anchor,
+        path: 'dist/app.bin',
+        maxBytes: 9,
+        revision: { size: 5, mtime: new Date(0).toISOString() }
+      })
+    ).rejects.toThrow(/^bundle stale:/)
     expect(readdirSync(staging)).toEqual([])
   })
 })
@@ -205,6 +257,12 @@ describe('ShimWorkspaceFiles upload', () => {
     ).rejects.toMatchObject({
       reason: 'transfer-failed'
     })
+    const changed = requester(() => {
+      throw new Error('bundle stale: the file changed while it was copied; retry')
+    })
+    await expect(
+      new ShimWorkspaceFiles(changed, undefined, true).upload('/w', req, signed('https://x.example.test'))
+    ).rejects.toBeInstanceOf(WorkspaceConflictError)
     expect(refused.calls.at(-1)).toBe('bundle:discard')
   })
 })

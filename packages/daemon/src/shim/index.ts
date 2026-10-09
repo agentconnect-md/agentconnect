@@ -87,7 +87,8 @@ async function main(): Promise<number> {
     workspaceRoot,
     stagingDir: paths.bundleStagingDir,
     log,
-    stageWorkspaceFile: (root, path, dest, maxBytes) => stageWorkspaceFile(workspaceRoot, root, path, dest, maxBytes)
+    stageWorkspaceFile: (root, path, dest, maxBytes, revision) =>
+      stageWorkspaceFile(workspaceRoot, root, path, dest, maxBytes, revision)
   })
   // Skill write-back stages into the bundle registry, so it needs both the bundle staging and the in-pod Git path.
   const skillWriteBack = bundleStaging && skillGit.ok

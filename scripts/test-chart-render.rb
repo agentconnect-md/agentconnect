@@ -705,6 +705,18 @@ abort('the web identity token must be mounted read-only') unless identity_member
 abort('the web identity form must mount no Secret') if identity_pod.fetch('volumes').any? { |v| v['name'] == 'source-cache-credentials' }
 abort('an unset publicEndpoint must not reach the member') if identity_doc.key?('publicEndpoint')
 
+session_rendered, session_error, session_status = Open3.capture3(
+  *source_cache_base,
+  '--set', 'sourceCache.credentials.serviceAccount.sessionDurationSeconds=7200',
+  '--set', 'sourceCache.limits.transferUrlLifetime=90m'
+)
+abort("helm template (Source Cache session duration) failed:\n#{session_error}") unless session_status.success?
+_, session_member = pool_member.call(YAML.load_stream(session_rendered).compact)
+session_doc = JSON.parse(session_member.fetch('env').find { |item| item['name'] == 'AC_SOURCE_CACHE' }&.fetch('value') ||
+                         abort('the session duration form must reach the member'))
+abort("a pinned STS session must reach the member: #{session_doc['credentials']}") unless
+  session_doc.dig('credentials', 'durationSeconds') == 7200
+
 public_rendered, public_error, public_status = Open3.capture3(
   *source_cache_base, '--set', 'sourceCache.publicEndpoint=https://store.example.test'
 )

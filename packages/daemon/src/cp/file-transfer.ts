@@ -70,6 +70,7 @@ export function createFileTransferControl(deps: FileTransferControlDeps): FileTr
         if (head.type === 'dir' || head.size === undefined)
           throw new WorkspaceViolationError('not a regular file', 'not-a-file')
         const size = head.size
+        const revision = head.mtime === undefined ? undefined : { size, mtime: head.mtime }
         const grant = await deps.transfer.workspaceFileUrl({
           org,
           // One object per revision: a rewritten file has a new size or mtime and so a new key.
@@ -78,11 +79,25 @@ export function createFileTransferControl(deps: FileTransferControlDeps): FileTr
           size,
           upload: (put) =>
             deps.workspaceRead.upload(
-              { ...scope, path: req.path, maxBytes: deps.transfer.maxBytes, timeoutMs: WORKSPACE_UPLOAD_TIMEOUT_MS },
+              {
+                ...scope,
+                path: req.path,
+                maxBytes: deps.transfer.maxBytes,
+                timeoutMs: WORKSPACE_UPLOAD_TIMEOUT_MS,
+                // The upload must send the revision the key names, not whatever the file holds by then.
+                ...(revision ? { revision } : {})
+              },
               put
             )
         })
-        return { path: req.path, size, url: grant.url, expiresAt: grant.expiresAt, cached: grant.cached }
+        return {
+          path: req.path,
+          size,
+          url: grant.url,
+          expiresAt: grant.expiresAt,
+          sha256: grant.sha256,
+          cached: grant.cached
+        }
       } catch (err) {
         throw asWorkspaceError(err)
       }

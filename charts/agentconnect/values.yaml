@@ -827,6 +827,8 @@ sourceCache:
       audience: sts.amazonaws.com
       # Empty => https://sts.<region>.amazonaws.com.
       stsEndpoint: ''
+      # STS session length in seconds (900-43200). 0 => derived: max(1h, longest URL lifetime + 6m); the role's MaxSessionDuration must allow it.
+      sessionDurationSeconds: 0
     secret:
       # Existing Secret in the release namespace, mounted read-only into members.
       name: ''

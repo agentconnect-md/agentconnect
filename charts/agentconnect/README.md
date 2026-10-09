@@ -265,8 +265,11 @@ Browsers reach the bucket directly, so two extra settings apply:
 aws s3api put-bucket-cors --bucket example-agentconnect-source-cache --cors-configuration file://source-cache-cors.json
 ```
 
-A web-identity session must outlive `limits.transferUrlLifetime` plus 5 minutes, since a
-presigned link dies with the credentials that signed it.
+A presigned link dies with the credentials that signed it, so a web-identity session must
+outlive the longest URL lifetime plus 6 minutes. By default the member derives that length:
+the larger of 1 hour and that sum. A `transferUrlLifetime` over 54 minutes therefore asks
+STS for more than an hour, and the role's `MaxSessionDuration` must allow it. Set
+`sourceCache.credentials.serviceAccount.sessionDurationSeconds` to pin the length instead.
 
 ## Node maintenance
 

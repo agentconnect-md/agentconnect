@@ -39,7 +39,7 @@ const wire = vi.hoisted(() => ({
   blobCalls: [] as Array<{ sessionId: string; path: string; sha256?: string }>,
   blobFailure: null as null | string,
   /** Object-store download links the pane asked for. */
-  transferCalls: [] as Array<{ path: string; sessionId?: string; repo?: string }>
+  transferCalls: [] as Array<{ path: string; sessionId?: string; repo?: string; sha256?: string }>
 }))
 
 vi.mock('@/lib/api', () => {
@@ -436,6 +436,23 @@ describe('SessionViewer images and downloads', () => {
     expect(wire.transferCalls).toEqual([{ path: 'dist/app.tar.gz', sessionId: 'session-1' }])
     expect(wire.blobCalls).toHaveLength(0)
     expect(clicks).toEqual(['https://store.example.test/dl?sig=1'])
+    spy.mockRestore()
+  })
+
+  it('keeps a shared file’s digest on the presigned path', async () => {
+    wire.transferCalls = []
+    wire.slices[0] = { encoding: 'none', content: null, size: 30 * 1024 * 1024 }
+    const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    await render({
+      path: 'uploads/build.zip',
+      download: { sessionId: 'session-1', sha256: '0123456789abcdef' },
+      transfer: true
+    })
+    await click('[data-viewer-download]')
+    await settle()
+    expect(wire.transferCalls).toEqual([
+      { path: 'uploads/build.zip', sessionId: 'session-1', sha256: '0123456789abcdef' }
+    ])
     spy.mockRestore()
   })
 
