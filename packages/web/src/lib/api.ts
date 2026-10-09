@@ -49,6 +49,7 @@ import type {
   SetProviderKeyInput
 } from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import { isSubsessionCoordinate } from '@agentconnect.md/protocol/subsession-coordinate'
 import {
   appendSessionLabel,
   appendSessionStartedAt,
@@ -2183,6 +2184,7 @@ export function sessionFromDto(d: SessionDto): Session {
     channel,
     ...((isWebchat || isHook || d.channelName || dmFallback) && rawChannel ? { channelId: rawChannel } : {}),
     ...(d.threadUrl ? { threadUrl: d.threadUrl } : {}),
+    ...(isSubsessionCoordinate(d.sessionKey.thread) ? { subsession: true as const } : {}),
     user,
     ...(d.triggeredBy ? { triggeredBy: d.triggeredBy } : {}),
     ...(d.hookKind ? { hookKind: d.hookKind } : {}),
