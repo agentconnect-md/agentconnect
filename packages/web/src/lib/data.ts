@@ -1357,6 +1357,8 @@ export interface Session {
   /** Platform-native deep link back to the source message/thread, captured or
    *  derived by the daemon. Absent when the platform exposes none. */
   threadUrl?: string
+  /** Runs on a reserved sub-session coordinate (a delegated sub-session or a patrol), so no one continues it from its own page. */
+  subsession?: true
   user: string
   /** Raw platform sender id behind `user` — e.g. `cron:<id>` for a scheduled
    *  fire. Lets the Sessions list link a run back to its schedule. */

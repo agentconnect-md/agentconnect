@@ -946,7 +946,9 @@ session may stop it there: Stop interrupts its current turn as the composer's st
 mutes nothing and undoes nothing it already did, and a process its runtime started in the
 background may keep running. The sub-session then reports to the conversation that it ended,
 its transcript names who stopped it, and the row says whether a turn was stopped or nothing
-was running. An agent whose daemon cannot list one conversation's sub-sessions says to upgrade
+was running. A sub-session's own session page, a patrol's included, is read-only: it shows the
+transcript with no composer and no composer stop, since nothing sent from there would reach the
+sub-session. An agent whose daemon cannot list one conversation's sub-sessions says to upgrade
 it.
 
 ## Assistant-mode patrols
