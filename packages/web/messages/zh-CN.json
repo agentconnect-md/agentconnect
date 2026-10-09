@@ -555,6 +555,8 @@
       "pullRequest": "PR",
       "openPullRequest": "在 GitHub 中打开拉取请求",
       "tasks": "任务",
+      "subsessions": "子会话",
+      "refreshSubsessions": "刷新子会话",
       "tryAgain": "重试",
       "backToSessions": "返回会话列表",
       "conversationNotFound": "未找到对话",
@@ -795,6 +797,27 @@
         "subagent": "子 Agent",
         "subagentTitle": "Runtime 内部子 Agent 调用",
         "olderTasksHidden": "更早的任务未显示，Daemon 只保留有限历史记录。"
+      },
+      "subsessionsPanel": {
+        "state": {
+          "open": "运行中",
+          "done": "已回报",
+          "failed": "失败"
+        },
+        "untitled": "未命名的子会话",
+        "starting": "启动中…",
+        "hidden": "你无权查看",
+        "started": "开始于 {time}",
+        "stop": "停止",
+        "stopped": "已停止。",
+        "notRunning": "没有正在运行的回合。",
+        "stopFailed": "停止失败，请重试。",
+        "upgradeDaemon": "升级此 Agent 的 Daemon 后才能在这里查看子会话。",
+        "notReadable": "无法读取此会话的子会话。",
+        "unavailable": "暂时无法读取子会话。",
+        "empty": "还没有子会话。",
+        "more": "显示更多",
+        "moreFailed": "加载失败，请重试。"
       },
       "addFiles": "添加文件"
     }

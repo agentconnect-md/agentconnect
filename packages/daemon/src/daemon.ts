@@ -75,6 +75,7 @@ import {
   TASK_LIST_FEATURE,
   ASSISTANT_ACTIVITY_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
+  ASSISTANT_SUBSESSION_PANEL_FEATURE,
   AUTO_MERGE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
   SANDBOX_KEEP_ALIVE_FEATURE,
@@ -7309,6 +7310,8 @@ export class Daemon {
       ASSISTANT_ACTIVITY_FEATURE,
       // Decides a draft from the console through the same path as its card; static.
       ASSISTANT_DRAFT_DECISION_FEATURE,
+      // Lists one conversation's sub-sessions and stops one through the `!cancel` core; static.
+      ASSISTANT_SUBSESSION_PANEL_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
       ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
@@ -23676,6 +23679,11 @@ export class Daemon {
       dispatchPullRequestFeedback: (req) => this.dispatchPullRequestFeedback(req),
       listBackgroundTasks: (req) => this.listBackgroundTasks(req),
       decideAssistantDraft: (input) => this.drafts.decideFromConsole(input),
+      cancelSessionByKey: async (key, actor) => {
+        const applied = await this.commands.cancelSessionByKey(key, actor)
+        if (applied) this.commands.logSessionAction('cancel', key, actor)
+        return applied
+      },
       autoMerge: () => this.autoMergeWatcher,
       sandboxHolds: () => this.sandboxHolds,
       withWorkspaceFileWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>

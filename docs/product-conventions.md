@@ -937,6 +937,18 @@ making the main conversation private still makes it private. A sub-session canno
 sub-sessions of its own. Only the assistant-mode agent is told about this form; for every
 other agent, and for every other form, a postless self-call is refused as before.
 
+While the console's `assistant-mode` flag is on, the session page of a conversation that
+opened sub-sessions has a Sub-sessions tab in its side panel; no other conversation shows it.
+It lists the sub-sessions that conversation opened, newest first and a page at a time, each
+with its state and start. A title and a link to its own session appear only to someone who may
+view that session, as in the Activity view. Whoever may continue a running sub-session's
+session may stop it there: Stop interrupts its current turn as the composer's stop does,
+mutes nothing and undoes nothing it already did, and a process its runtime started in the
+background may keep running. The sub-session then reports to the conversation that it ended,
+its transcript names who stopped it, and the row says whether a turn was stopped or nothing
+was running. An agent whose daemon cannot list one conversation's sub-sessions says to upgrade
+it.
+
 ## Assistant-mode Activity
 
 The page of an agent in assistant mode has an Activity tab, offered while the console's

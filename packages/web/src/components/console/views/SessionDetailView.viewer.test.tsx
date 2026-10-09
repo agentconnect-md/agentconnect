@@ -52,7 +52,14 @@ const wire = vi.hoisted(() => ({
   /** Overrides the session's steps: a playground session renders these instead of fetching a transcript. */
   steps: undefined as unknown[] | undefined,
   /** Every draft the composer wrote through `setPgInput`, newest last; the mocked `usePgDraft` reads the newest. */
-  drafts: [] as string[]
+  drafts: [] as string[],
+  /** The agent is in assistant mode; the Sub-sessions tab reads only for one. */
+  assistantMode: false,
+  subsessions: [] as unknown[],
+  subsessionCalls: [] as Array<{ agentId: string; opts: unknown }>,
+  stopCalls: [] as Array<{ agentId: string; sessionId: string }>,
+  /** The dock's app-bar action on a phone, as the shell would hold it. */
+  mobileAction: null as null | { label: string; onClick: () => void }
 }))
 
 // The reader's role in the org. `viewer` is what the CP 403s on every git-write route, so the console withholds those controls.
@@ -154,6 +161,14 @@ vi.mock('@/lib/api', async (importOriginal) => {
       if (wire.pr) return wire.pr
       throw new actual.ApiError('pull request not found', wire.prFailStatus)
     }),
+    fetchAssistantSubsessions: vi.fn((agentId: string, opts: unknown) => {
+      wire.subsessionCalls.push({ agentId, opts })
+      return Promise.resolve({ subsessions: wire.subsessions, truncated: false, nextCursor: null })
+    }),
+    stopAssistantSubsession: vi.fn((agentId: string, sessionId: string) => {
+      wire.stopCalls.push({ agentId, sessionId })
+      return Promise.resolve({ result: 'stopped' })
+    }),
     fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: [], nextCursor: null })),
     fetchSessionDetail: vi.fn(() => Promise.reject(new Error('no detail'))),
     fetchMySessionIdentity: vi.fn(() => Promise.reject(new Error('no identity'))),
@@ -210,6 +225,7 @@ vi.mock('@/lib/data-context', () => ({
         model: wire.agentModel,
         allowRuntimeChangesInChat: wire.runtimeChanges,
         modelSelection: wire.byDecision ? { decisionId: 'decision-1', rules: [] } : undefined,
+        assistantMode: wire.assistantMode ? { enabled: true } : undefined,
         workspace:
           wire.workspaceMode === 'scratch'
             ? { mode: 'scratch' }
@@ -267,7 +283,12 @@ vi.mock('@/lib/use-session-list', () => ({
 
 vi.mock('@/components/console/Shell', () => ({
   useCrumbSlot: () => ({ register: () => {} }),
-  useMobileActionSlot: () => ({ action: null, register: () => {} })
+  useMobileActionSlot: () => ({
+    action: null,
+    register: (action: { label: string; onClick: () => void } | null) => {
+      wire.mobileAction = action
+    }
+  })
 }))
 
 vi.mock('@/components/console/PlaygroundProvider', () => ({
@@ -382,6 +403,12 @@ beforeEach(() => {
   wire.prFailStatus = 404
   wire.prCalls = []
   wire.prGate = null
+  wire.assistantMode = false
+  wire.subsessions = []
+  wire.subsessionCalls = []
+  wire.stopCalls = []
+  wire.mobileAction = null
+  delete window.__AC_ENV
   window.localStorage.clear()
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -1318,5 +1345,116 @@ describe('a session with no agent behind it', () => {
     const active = Array.from(container?.querySelectorAll('[data-dock-panel][data-dock-panel-active]') ?? [])
     expect(active).toHaveLength(1)
     expect(container?.querySelector('[data-dock-tab="sessions"]')?.getAttribute('aria-selected')).toBe('true')
+  })
+})
+
+describe('the Sub-sessions tab', () => {
+  const openTab = async (key: string) => {
+    await act(async () => {
+      container?.querySelector<HTMLElement>(`[data-dock-tab="${key}"]`)?.click()
+      await Promise.resolve()
+    })
+    await render()
+  }
+  const child = {
+    sessionId: 'child-1',
+    title: 'Fix the flaky test',
+    state: 'open',
+    startedAt: '2026-08-10T10:59:00.000Z',
+    visible: true,
+    canStop: true,
+    parent: { sessionId: 'session-1', title: 'Deploy the thing', platform: 'slack', channelName: 'ops' }
+  }
+  const assistant = () => {
+    window.__AC_ENV = { FEATURE_FLAGS: 'assistant-mode' }
+    wire.assistantMode = true
+  }
+
+  it('lists the sub-sessions this conversation opened, badged with the running ones', async () => {
+    assistant()
+    wire.subsessions = [child, { ...child, sessionId: 'child-2', title: 'Old work', state: 'done', canStop: false }]
+    await render()
+    expect(wire.subsessionCalls[0]).toEqual({
+      agentId: 'agent-1',
+      opts: { parentSessionId: 'session-1', limit: 20 }
+    })
+    const tab = container?.querySelector('[data-dock-tab="subsessions"]')
+    expect(tab?.textContent).toContain('1')
+    await openTab('subsessions')
+    expect(container?.querySelector('[data-dock-action="subsessions"]')?.getAttribute('aria-label')).toBe(
+      'Refresh sub-sessions'
+    )
+    const panel = container?.querySelector('[data-subsessions-panel]')
+    expect(panel?.textContent).toContain('Fix the flaky test')
+    expect(panel?.querySelector('a[href="/acme/sessions/child-1"]')).not.toBeNull()
+  })
+
+  it('stops a running one through the console’s stop route', async () => {
+    assistant()
+    wire.subsessions = [child]
+    await render()
+    await openTab('subsessions')
+    const stop = Array.from(
+      container?.querySelectorAll<HTMLButtonElement>('[data-subsessions-panel] button') ?? []
+    ).find((button) => button.textContent?.includes('Stop'))
+    await act(async () => {
+      stop?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(wire.stopCalls).toEqual([{ agentId: 'agent-1', sessionId: 'child-1' }])
+    expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Stopped.')
+  })
+
+  it('offers no tab for a conversation that opened none', async () => {
+    assistant()
+    await render()
+    expect(wire.subsessionCalls).toHaveLength(1)
+    expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
+  })
+
+  it('reads nothing and offers no tab with the console flag off, or for an agent outside assistant mode', async () => {
+    wire.assistantMode = true
+    wire.subsessions = [child]
+    await render()
+    expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
+
+    window.__AC_ENV = { FEATURE_FLAGS: 'assistant-mode' }
+    wire.assistantMode = false
+    await render()
+    expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
+    expect(container?.querySelector('[data-subsessions-panel]')).toBeNull()
+    expect(wire.subsessionCalls).toEqual([])
+  })
+
+  it('reaches the tab from the phone’s app-bar action, in the bottom sheet', async () => {
+    const width = window.innerWidth
+    window.innerWidth = 375
+    window.matchMedia = ((query: string) => ({
+      matches: window.innerWidth <= Number(/max-width:\s*(\d+)px/.exec(query)?.[1] ?? Number.POSITIVE_INFINITY),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {}
+    })) as unknown as typeof window.matchMedia
+    try {
+      assistant()
+      wire.subsessions = [child]
+      await render()
+      expect(wire.mobileAction).not.toBeNull()
+      await act(async () => {
+        wire.mobileAction?.onClick()
+        await Promise.resolve()
+      })
+      await openTab('subsessions')
+      // The sheet labels only the active tab, so this one carries its name for screen readers alone while inactive.
+      expect(container?.querySelector('[data-dock-tab="subsessions"]')?.textContent).toContain('Sub-sessions')
+      expect(container?.querySelector('[role="dialog"]')?.querySelector('[data-subsessions-panel]')).not.toBeNull()
+      const panel = container?.querySelector('[data-subsessions-panel]')
+      expect(Array.from(panel?.querySelectorAll('button') ?? []).some((b) => b.textContent?.includes('Stop'))).toBe(
+        true
+      )
+    } finally {
+      window.innerWidth = width
+    }
   })
 })
