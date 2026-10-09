@@ -37,6 +37,7 @@ import { isAbsolute, relative, sep } from 'node:path'
 import {
   byteSliceWorkspaceRead,
   existingWorkspacePath,
+  copyWorkspaceFileTo,
   pageWorkspaceEntries,
   readWorkspaceSlice,
   sliceWorkspaceRead,
@@ -44,7 +45,9 @@ import {
   workspaceEntryOf,
   WorkspaceConflictError,
   WorkspaceViolationError,
-  type WorkspaceFiles
+  type WorkspaceFileRevision,
+  type WorkspaceFiles,
+  type WorkspaceUploaded
 } from '../workspace/workspace-files.js'
 import { DirHandle, MissingPathError, withDescent } from './safe-descent.js'
 
@@ -126,6 +129,34 @@ async function withParentMode<T>(
   } catch (err) {
     return asViolation(err)
   }
+}
+
+/** Snapshot one regular file under the read's descent into `dest`, a shim-private path; the transfer's staging step. */
+export async function stageWorkspaceFile(
+  anchor: string,
+  root: string,
+  relPath: string,
+  dest: string,
+  maxBytes: number,
+  revision?: WorkspaceFileRevision
+): Promise<WorkspaceUploaded> {
+  return await withParent(anchor, root, relPath, async (parent, leaf) => {
+    if (leaf === undefined) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
+    let stat
+    try {
+      stat = await parent.lstatChild(leaf)
+    } catch (err) {
+      if (err instanceof MissingPathError) throw new WorkspaceViolationError('no such file', 'not-found')
+      throw err
+    }
+    if (!stat.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
+    const file = await parent.childFile(leaf)
+    try {
+      return await copyWorkspaceFileTo(file, dest, maxBytes, revision)
+    } finally {
+      await file.close()
+    }
+  })
 }
 
 export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {

@@ -467,6 +467,8 @@ export class ShimDialer {
     // Skill write-back uploads through `bundle`, so it needs that grant beside Git plans.
     const supportsSkillWriteBack =
       supportsGitPlans && supportsBundles && identity.features?.includes('skill-git-writeback-v1') === true
+    // A transfer stages into the bundle registry and uploads over `bundle`, so it needs that grant too.
+    const supportsTransfer = supportsBundles && identity.features?.includes('workspace-transfer-v1') === true
     return {
       ...record,
       grants: record.grants.filter((grant) =>
@@ -482,7 +484,9 @@ export class ShimDialer {
                   ? supportsGitPlans
                   : grant === 'skills-git-writeback'
                     ? supportsSkillWriteBack
-                    : true
+                    : grant === 'transfer'
+                      ? supportsTransfer
+                      : true
       )
     }
   }

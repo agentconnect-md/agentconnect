@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
+  FILE_TRANSFER_FEATURE as PROTOCOL_TRANSFER_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES as PROTOCOL_MAX_DOWNLOAD,
+  WEBCHAT_FILES_MAX as PROTOCOL_FILES_MAX,
+  WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES as PROTOCOL_TEXT_THRESHOLD,
   WORKSPACE_UPLOADS_DIR as PROTOCOL_UPLOADS_DIR
 } from '@agentconnect.md/protocol'
 import {
+  FILE_TRANSFER_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES,
   sessionFileDownload,
   sharedFileMarker,
+  viaTransfer,
+  WEBCHAT_FILES_MAX,
+  WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES,
   WORKSPACE_UPLOADS_DIR
 } from './shared-file'
 
@@ -48,19 +55,23 @@ describe('sharedFileMarker', () => {
 })
 
 describe('sessionFileDownload', () => {
-  it('mirrors the download route’s own uploads directory and ceiling', () => {
+  it('mirrors the protocol’s download and transfer constants', () => {
     expect(WORKSPACE_UPLOADS_DIR).toBe(PROTOCOL_UPLOADS_DIR)
     expect(MAX_WORKSPACE_DOWNLOAD_BYTES).toBe(PROTOCOL_MAX_DOWNLOAD)
+    expect(WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES).toBe(PROTOCOL_TEXT_THRESHOLD)
+    expect(FILE_TRANSFER_FEATURE).toBe(PROTOCOL_TRANSFER_FEATURE)
+    expect(WEBCHAT_FILES_MAX).toBe(PROTOCOL_FILES_MAX)
   })
 
   const share = (path: string, sha = SHA) => `done\n[shared: ${path} (image/gif, 9 bytes, sha256:${sha})]`
 
-  it('names an upload by its path alone', () => {
+  it('names any workspace file by its path', () => {
     expect(sessionFileDownload('uploads/a.png', 's1', [])).toEqual({ sessionId: 's1' })
-    expect(sessionFileDownload('uploads/', 's1', [])).toBeNull()
+    expect(sessionFileDownload('src/index.ts', 's1', [])).toEqual({ sessionId: 's1' })
+    expect(sessionFileDownload('src/index.ts', undefined, [])).toEqual({})
   })
 
-  it('names a shared file by the digest of its latest share in that session', () => {
+  it('pins a shared file to the digest of its latest share in that session', () => {
     const rows = [
       { text: share('out/anim.gif', '0000000000000000'), sessionId: 's1' },
       { text: share('out/anim.gif'), sessionId: 's1' },
@@ -68,11 +79,13 @@ describe('sessionFileDownload', () => {
     ]
     expect(sessionFileDownload('out/anim.gif', 's1', rows)).toEqual({ sessionId: 's1', sha256: SHA })
   })
+})
 
-  it('refuses a file no share in that session names, or a session it cannot address', () => {
-    const rows = [{ text: share('out/anim.gif'), sessionId: 's2' }]
-    expect(sessionFileDownload('out/anim.gif', 's1', rows)).toBeNull()
-    expect(sessionFileDownload('src/index.ts', 's2', rows)).toBeNull()
-    expect(sessionFileDownload('uploads/a.png', undefined, [])).toBeNull()
+describe('viaTransfer', () => {
+  it('sends binary and large text through the object store only when the daemon has one', () => {
+    expect(viaTransfer({ size: 10, encoding: 'none' }, true)).toBe(true)
+    expect(viaTransfer({ size: WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES + 1, encoding: 'utf8' }, true)).toBe(true)
+    expect(viaTransfer({ size: 10, encoding: 'utf8' }, true)).toBe(false)
+    expect(viaTransfer({ size: 10, encoding: 'none' }, false)).toBe(false)
   })
 })

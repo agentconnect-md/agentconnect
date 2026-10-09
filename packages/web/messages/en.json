@@ -818,7 +818,8 @@
         "empty": "No sub-sessions yet.",
         "more": "Show more",
         "moreFailed": "Couldn’t load more. Try again."
-      }
+      },
+      "addFiles": "Add files"
     }
   },
   "Shell": {
@@ -1234,7 +1235,8 @@
       "authMemberSend": "{agent} has no AI runtime signed in — can’t start a session",
       "theDaemon": "the daemon",
       "send": "Send",
-      "byDecision": "By decision"
+      "byDecision": "By decision",
+      "addFiles": "Add files"
     },
     "blocked": {
       "offlineSuffix": " is offline — you can’t start a session until its daemon reconnects.",
@@ -2179,7 +2181,10 @@
       "showingFirst": "Showing first {loaded} of {total}",
       "loadMoreError": "Couldn't load more — the daemon may be offline.",
       "fileNameRequired": "Enter a file name or relative path.",
-      "saveConflict": "The agent is working or the file changed. Retry when it is idle."
+      "saveConflict": "The agent is working or the file changed. Retry when it is idle.",
+      "download": "Download",
+      "downloadFailed": "Couldn’t download this file",
+      "downloadTooLarge": "Too large to download here"
     },
     "repoModal": {
       "giteaLoadError": "Couldn’t load your Gitea repositories — {error}",

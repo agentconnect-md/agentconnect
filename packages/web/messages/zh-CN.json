@@ -818,7 +818,8 @@
         "empty": "还没有子会话。",
         "more": "显示更多",
         "moreFailed": "加载失败，请重试。"
-      }
+      },
+      "addFiles": "添加文件"
     }
   },
   "Shell": {
@@ -1234,7 +1235,8 @@
       "authMemberSend": "{agent} 尚未登录 AI Runtime，无法开始会话",
       "theDaemon": "Daemon",
       "send": "发送",
-      "byDecision": "由 Decision 选择"
+      "byDecision": "由 Decision 选择",
+      "addFiles": "添加文件"
     },
     "blocked": {
       "offlineSuffix": " 已离线；Daemon 重新连接前无法开始会话。",
@@ -2179,7 +2181,10 @@
       "showingFirst": "显示前 {loaded}（共 {total}）",
       "loadMoreError": "无法加载更多内容，daemon 可能已离线。",
       "fileNameRequired": "请输入文件名或相对路径。",
-      "saveConflict": "Agent 正在工作或文件已发生变化，请在空闲时重试。"
+      "saveConflict": "Agent 正在工作或文件已发生变化，请在空闲时重试。",
+      "download": "下载",
+      "downloadFailed": "无法下载此文件",
+      "downloadTooLarge": "文件过大，无法在此下载"
     },
     "repoModal": {
       "giteaLoadError": "无法加载你的 Gitea 仓库：{error}",

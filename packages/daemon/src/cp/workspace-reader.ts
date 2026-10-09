@@ -26,8 +26,12 @@ import {
   localWorkspaceFiles,
   workspaceEditBytes,
   WorkspaceViolationError,
+  outdatedForTransfer,
   type WorkspaceFiles,
-  type WorkspaceLocation
+  type WorkspaceLocation,
+  type WorkspaceUploadReq,
+  type WorkspaceUploadSigner,
+  type WorkspaceUploaded
 } from '../workspace/workspace-files.js'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import type { PlaneScope } from '../execution/plane.js'
@@ -49,6 +53,12 @@ export interface WorkspaceReader {
   write(req: WorkspaceWriteReq): Promise<WorkspaceWriteOk>
   delete(req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk>
   mkdir(req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk>
+  /** Snapshot one file where its root lives and PUT it to the URL `sign` presigns for the snapshot. */
+  upload(
+    req: WorkspaceUploadReq & { agentId: string; sessionId?: string; repo?: string },
+    sign: WorkspaceUploadSigner,
+    abort?: AbortSignal
+  ): Promise<WorkspaceUploaded>
 }
 
 export type WorkspaceWriteCoordinator = <T>(agentId: string, write: () => Promise<T>) => Promise<T>
@@ -95,6 +105,13 @@ export function createWorkspaceReader(
     async read(req) {
       const location = await locationFor(req.agentId, req.sessionId, req.repo)
       return filesOf(req.agentId, location).read(location.root, req)
+    },
+
+    async upload(req, sign, abort) {
+      const location = await locationFor(req.agentId, req.sessionId, req.repo)
+      const files = filesOf(req.agentId, location)
+      if (!files.upload) throw outdatedForTransfer()
+      return files.upload(location.root, req, sign, abort)
     },
 
     async write(req) {

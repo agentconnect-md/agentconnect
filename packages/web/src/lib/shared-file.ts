@@ -36,33 +36,48 @@ function downloadPath(raw: string): string | null {
   return segments.length && !segments.includes('..') ? segments.join('/') : null
 }
 
-// Mirrors of protocol's WORKSPACE_UPLOADS_DIR / MAX_WORKSPACE_DOWNLOAD_BYTES (its root entry is not bundler-safe); shared-file.test.ts pins them.
+// Mirrors of protocol constants (its root entry is not bundler-safe); shared-file.test.ts pins them.
 export const WORKSPACE_UPLOADS_DIR = 'uploads'
 export const MAX_WORKSPACE_DOWNLOAD_BYTES = 8 * 1024 * 1024
+export const WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES = 1024 * 1024
+export const FILE_TRANSFER_FEATURE = 'file-transfer-v1'
+export const WEBCHAT_FILES_MAX = 4
 
-/** What the download route needs to serve one session file, or null when the path is neither an upload nor a share. */
+/** How the download route names one workspace file: the session whose root holds it, and a share's digest when one names it. */
 export interface SessionFileDownload {
-  sessionId: string
+  sessionId?: string
   sha256?: string
 }
 
-/** An upload downloads by path; any other file only by the digest its latest share marker in that session recorded. */
+/** Any workspace file downloads by path; a file the session shared also carries the digest of its latest share marker. */
 export function sessionFileDownload(
   path: string,
   sessionId: string | undefined,
   rows: Iterable<{ text: string; sessionId: string | undefined }>
-): SessionFileDownload | null {
-  if (!sessionId) return null
-  if (path.startsWith(`${WORKSPACE_UPLOADS_DIR}/`) && path.length > WORKSPACE_UPLOADS_DIR.length + 1) {
-    return { sessionId }
-  }
+): SessionFileDownload {
+  if (!sessionId) return {}
   let sha256: string | undefined
   for (const row of rows) {
     if (row.sessionId !== sessionId) continue
     const shared = sharedFileMarker(row.text)
     if (shared?.file.path === path) sha256 = shared.file.sha256
   }
-  return sha256 ? { sessionId, sha256 } : null
+  return sha256 ? { sessionId, sha256 } : { sessionId }
+}
+
+/** Large text and any binary go through the object store when the daemon has one; small text keeps the proxied download. */
+export function viaTransfer(file: { size: number | null; encoding: string | null }, transfer: boolean): boolean {
+  return transfer && (file.encoding === 'none' || (file.size ?? 0) > WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES)
+}
+
+/** Start a browser download straight from a presigned URL; the store answers it as an attachment. */
+export function openDownloadUrl(url: string): void {
+  const link = document.createElement('a')
+  link.href = url
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
 }
 
 /** Hand the browser a blob as a named download. */

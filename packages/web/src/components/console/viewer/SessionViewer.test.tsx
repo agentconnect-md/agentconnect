@@ -37,7 +37,9 @@ const wire = vi.hoisted(() => ({
   stageFailure: null as null | { status: number; code?: string },
   /** Raw-bytes reads behind previews and downloads, and what they answer. */
   blobCalls: [] as Array<{ sessionId: string; path: string; sha256?: string }>,
-  blobFailure: null as null | string
+  blobFailure: null as null | string,
+  /** Object-store download links the pane asked for. */
+  transferCalls: [] as Array<{ path: string; sessionId?: string; repo?: string; sha256?: string }>
 }))
 
 vi.mock('@/lib/api', () => {
@@ -57,6 +59,12 @@ vi.mock('@/lib/api', () => {
       if (wire.blobFailure) throw new ApiError(409, 'nope', wire.blobFailure)
       return new Blob([new Uint8Array([0x47, 0x49, 0x46])], { type: 'application/octet-stream' })
     }),
+    transferWorkspaceFile: vi.fn(
+      async (_agentId: string, opts: { path: string; sessionId?: string; repo?: string }) => {
+        wire.transferCalls.push(opts)
+        return { path: opts.path, size: 1, url: 'https://store.example.test/dl?sig=1', expiresAt: '', cached: true }
+      }
+    ),
     fetchWorkspaceGitDiff: vi.fn(
       async (_agentId: string, opts: { path: string; scope?: string; sessionId?: string }) => {
         wire.diffCalls.push(opts)
@@ -412,6 +420,39 @@ describe('SessionViewer images and downloads', () => {
     await settle()
     expect(wire.blobCalls).toHaveLength(1)
     expect(spy).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
+  })
+
+  it('downloads a binary through a presigned link when the daemon presigns transfers', async () => {
+    wire.transferCalls = []
+    wire.slices[0] = { encoding: 'none', content: null, size: 30 * 1024 * 1024 }
+    const clicks: string[] = []
+    const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      clicks.push(this.href)
+    })
+    await render({ path: 'dist/app.tar.gz', download: { sessionId: 'session-1' }, transfer: true })
+    await click('[data-viewer-download]')
+    await settle()
+    expect(wire.transferCalls).toEqual([{ path: 'dist/app.tar.gz', sessionId: 'session-1' }])
+    expect(wire.blobCalls).toHaveLength(0)
+    expect(clicks).toEqual(['https://store.example.test/dl?sig=1'])
+    spy.mockRestore()
+  })
+
+  it('keeps a shared file’s digest on the presigned path', async () => {
+    wire.transferCalls = []
+    wire.slices[0] = { encoding: 'none', content: null, size: 30 * 1024 * 1024 }
+    const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    await render({
+      path: 'uploads/build.zip',
+      download: { sessionId: 'session-1', sha256: '0123456789abcdef' },
+      transfer: true
+    })
+    await click('[data-viewer-download]')
+    await settle()
+    expect(wire.transferCalls).toEqual([
+      { path: 'uploads/build.zip', sessionId: 'session-1', sha256: '0123456789abcdef' }
+    ])
     spy.mockRestore()
   })
 

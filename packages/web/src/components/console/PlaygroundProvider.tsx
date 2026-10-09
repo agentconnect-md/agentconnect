@@ -29,7 +29,13 @@ import {
   type SessionImage,
   type SessionStep
 } from '@/lib/data'
-import type { McpAppCard, McpAppOutcome, McpAppRpc, McpAppRpcResult } from '@agentconnect.md/protocol'
+import type {
+  McpAppCard,
+  McpAppOutcome,
+  McpAppRpc,
+  McpAppRpcResult,
+  WebchatFileAttachment
+} from '@agentconnect.md/protocol'
 import { useConsoleData } from '@/lib/data-context'
 import {
   webchatWsUrl,
@@ -62,6 +68,7 @@ import {
   lanesOf as lanesOfLanes
 } from '@/lib/webchat-lanes'
 import { createWebchatDeltaBuffer, type WebchatDeltaBuffer } from '@/lib/webchat-delta-buffer'
+import { filesMarker, type ComposerFile } from '@/lib/webchat-file'
 
 /** How long a view's forwarded request waits for its answer. A settled card's RPC may never be
  *  answered at all — the daemon has stopped serving that bridge — so the frame is told plainly
@@ -80,6 +87,9 @@ interface PlaygroundData {
   /** One prepared image waiting in this session's composer. */
   getPgImage: (id: string) => SessionImage | undefined
   setPgImage: (id: string, image?: SessionImage) => void
+  /** Non-image files staged in this session's composer, uploading or ready. */
+  getPgFiles: (id: string) => ComposerFile[]
+  setPgFiles: (id: string, update: (files: ComposerFile[]) => ComposerFile[]) => void
   /** Worktree choice staged for a synthetic session's first turn. */
   getPgWorktree: (id: string) => boolean | undefined
   pgSetWorktree: (id: string, worktree: boolean) => void
@@ -116,7 +126,9 @@ interface PlaygroundData {
     /** A `/` pick's owner. Honored only while the picked token still LEADS the outgoing text and
      *  the owner is a participant — then it joins `mentions[]`, narrowing the turn to the one
      *  agent whose runtime has the skill instead of waking the roster to decline. */
-    commandPick?: { agentId: string; name: string }
+    commandPick?: { agentId: string; name: string },
+    /** Overrides the staged composer files, as `image` does. */
+    files?: WebchatFileAttachment[]
   ) => boolean
   /** Send one line the CONVERSATION speaks rather than the person — today, an
    *  approval decision the agent has to hear about because its own request only
@@ -206,6 +218,8 @@ export interface QueuedTurn {
   queueId: string
   text: string
   image?: SessionImage
+  /** Uploaded-file references; their bytes are already in the object store. */
+  files?: WebchatFileAttachment[]
   agentId: string
   conversationId?: string
   participants?: Array<{ agentId: string; name: string; primary?: boolean }>
@@ -220,6 +234,7 @@ export interface QueuedTurn {
 const PG_PREFIX = 'pg_'
 const NO_STEPS: SessionStep[] = []
 const NO_QUEUE: QueuedTurn[] = []
+const NO_FILES: ComposerFile[] = []
 const WEBCHAT_RECONNECT_BASE_MS = 500
 const WEBCHAT_RECONNECT_MAX_MS = 4_000
 const WEBCHAT_RECONNECT_MAX_ATTEMPTS = 6
@@ -409,6 +424,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const pgDrafts = useRef<Record<string, string>>({})
   const pgDraftListeners = useRef(new Set<() => void>())
   const [pgImageBy, setPgImageBy] = useState<Record<string, SessionImage>>({})
+  const [pgFilesBy, setPgFilesBy] = useState<Record<string, ComposerFile[]>>({})
   const [pgBusyBy, setPgBusyBy] = useState<Record<string, boolean>>({})
   // Messages sent while a turn was still streaming, oldest first per session id.
   const [pgQueueBy, setPgQueueBy] = useState<Record<string, QueuedTurn[]>>({})
@@ -528,6 +544,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const next = { ...cur }
       delete next[id]
       return next
+    })
+  }, [])
+
+  const getPgFiles = useCallback((id: string) => pgFilesBy[id] ?? NO_FILES, [pgFilesBy])
+  const setPgFiles = useCallback((id: string, update: (files: ComposerFile[]) => ComposerFile[]): void => {
+    setPgFilesBy((cur) => {
+      const next = update(cur[id] ?? NO_FILES)
+      if (next.length) return { ...cur, [id]: next }
+      if (!(id in cur)) return cur
+      const rest = { ...cur }
+      delete rest[id]
+      return rest
     })
   }, [])
 
@@ -1876,10 +1904,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       image: SessionImage | undefined,
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
-      commandPick?: { agentId: string; name: string }
+      commandPick?: { agentId: string; name: string },
+      files?: WebchatFileAttachment[]
     ): void => {
       const requestedTurnId = randomUuid()
-      pushStep(id, { kind: 'msg', who: '@you', turnId: requestedTurnId, text, ...(image ? { image } : {}) })
+      // The files' marker is what the reloaded transcript row shows, so the optimistic step reads the same.
+      const marker = filesMarker(files ?? [])
+      const shown = marker ? (text ? `${text}\n${marker}` : marker) : text
+      pushStep(id, { kind: 'msg', who: '@you', turnId: requestedTurnId, text: shown, ...(image ? { image } : {}) })
       setBusy(id, true)
       // Targeting (webchat-multi-agents.md §4.2): conversation membership is a
       // STANDING mention — an unmentioned message goes to the WHOLE roster
@@ -1947,6 +1979,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           turnId: requestedTurnId,
           ...(roster.length > 1 ? { mentions: sentMentions, targets } : {}),
           ...(image ? { attachments: [image] } : {}),
+          ...(files?.length ? { files } : {}),
           // Runtime staging is a single-agent affordance — multi-agent conversations expose no runtime controls (§9.1/§9.3).
           ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {}),
           ...(roster.length <= 1 && stagedWorktree.current.has(id) ? { worktree: stagedWorktree.current.get(id) } : {})
@@ -2107,7 +2140,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       image: SessionImage | undefined,
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
-      commandPick?: { agentId: string; name: string }
+      commandPick?: { agentId: string; name: string },
+      files?: WebchatFileAttachment[]
     ) => {
       // Queue while a turn streams (Claude Code-style) — and also while older
       // queued messages are still waiting for the dispatcher, so a send landing
@@ -2121,6 +2155,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           steerableRef.current[id] &&
           (pgQueueRef.current[id]?.length ?? 0) === 0 &&
           !image &&
+          // A steer carries no file links either: the daemon's steer path names attachments without them.
+          !files?.length &&
           roster <= 1 &&
           !commandPick
         ) {
@@ -2132,6 +2168,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           seq: ++sendSeq.current,
           text,
           ...(image ? { image } : {}),
+          ...(files?.length ? { files } : {}),
           agentId: agentForId,
           ...(commandPick ? { commandPick } : {}),
           ...(conversationId ? { conversationId } : {}),
@@ -2141,7 +2178,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         setPgQueueBy((cur) => ({ ...cur, [id]: [...(cur[id] ?? NO_QUEUE), queued] }))
         return true
       }
-      sendTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick)
+      sendTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick, files)
       return true
     },
     [sendSteer, sendTurn]
@@ -2155,16 +2192,22 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
       imageArg?: SessionImage,
-      commandPick?: { agentId: string; name: string }
+      commandPick?: { agentId: string; name: string },
+      filesArg?: WebchatFileAttachment[]
     ) => {
       const text = String(textArg ?? pgDrafts.current[id] ?? '').trim()
       const image = imageArg ?? pgImageBy[id]
-      if (!text && !image) return false
+      const staged = pgFilesBy[id] ?? NO_FILES
+      // A file still uploading holds the send: the turn may only name bytes the store already has.
+      if (!filesArg && staged.some((f) => f.status === 'uploading')) return false
+      const files = filesArg ?? staged.flatMap((f) => (f.status === 'ready' && f.attachment ? [f.attachment] : []))
+      if (!text && !image && !files.length) return false
       setPgInput(id, '')
       setPgImage(id)
-      return submitTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick)
+      setPgFiles(id, () => NO_FILES)
+      return submitTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick, files)
     },
-    [pgImageBy, setPgImage, setPgInput, submitTurn]
+    [pgImageBy, pgFilesBy, setPgFiles, setPgImage, setPgInput, submitTurn]
   )
 
   /** A line the CONVERSATION speaks, not the person: an approval decision the agent
@@ -2199,7 +2242,16 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       dispatchedQueueIds.current.add(next.queueId)
       pgQueueRef.current[id] = (pgQueueRef.current[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId)
       setPgQueueBy((cur) => ({ ...cur, [id]: (cur[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId) }))
-      sendTurn(id, next.agentId, next.text, next.image, next.conversationId, next.participants, next.commandPick)
+      sendTurn(
+        id,
+        next.agentId,
+        next.text,
+        next.image,
+        next.conversationId,
+        next.participants,
+        next.commandPick,
+        next.files
+      )
     }
   }, [pgQueueBy, pgBusyBy, sendTurn])
 
@@ -2399,6 +2451,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       subscribePgDraft,
       getPgImage,
       setPgImage,
+      getPgFiles,
+      setPgFiles,
       getPgWorktree,
       pgSetWorktree,
       isPgBusy,
@@ -2431,6 +2485,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       subscribePgDraft,
       getPgImage,
       setPgImage,
+      getPgFiles,
+      setPgFiles,
       getPgWorktree,
       pgSetWorktree,
       isPgBusy,

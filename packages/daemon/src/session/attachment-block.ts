@@ -18,6 +18,8 @@ export interface AttachmentDeps {
   /** Inline cap (bytes); files whose known size exceeds it are never downloaded —
    *  they degrade to a resource_link pointer. Bounds RSS + the ACP prompt frame. */
   maxBytes?: number
+  /** A presigned GET for a console upload in the Source Cache bucket; undefined when it is gone or unverifiable. */
+  transferUrl?: (att: Attachment) => Promise<{ url: string; expiresAt: number } | undefined>
 }
 
 /**
@@ -81,12 +83,33 @@ export async function buildAttachmentBlocks(attachments: Attachment[], deps: Att
   const cap = deps.maxBytes ?? Infinity
   return Promise.all(
     attachments.map(async (att) => {
+      if (att.transfer) return transferBlock(att, await deps.transferUrl?.(att).catch(() => undefined))
       const overCap = typeof att.size === 'number' && att.size > cap
       const readThroughTool = !att.mimeType.startsWith('image/') && att.readerToolName
       const bytes = overCap || readThroughTool ? null : (att.inlineData ?? (await deps.download(att).catch(() => null)))
       return attachmentToBlock(att, bytes, deps.supports)
     })
   )
+}
+
+/** POSIX single-quote a value for the sample command; a sanitized upload name may still hold a quote. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/** A console upload reaches the agent as a download link it fetches into its own workspace. */
+export function transferBlock(att: Attachment, link: { url: string; expiresAt: number } | undefined): ContentBlock {
+  const label = `${att.name} (${att.mimeType}${typeof att.size === 'number' ? `, ${att.size} bytes` : ''})`
+  if (!link) return { type: 'text', text: `[uploaded file: ${label} — the upload is no longer available]` }
+  return {
+    type: 'text',
+    text: [
+      `[uploaded file: ${label}]`,
+      `The user uploaded this file. It is not in your workspace yet; download it when you need it, for example:`,
+      `mkdir -p uploads && curl -fsSL -o ${shellQuote(`uploads/${att.name}`)} ${shellQuote(link.url)}`,
+      `The link expires at ${new Date(link.expiresAt).toISOString()}; do not repeat it in replies.`
+    ].join('\n')
+  }
 }
 
 /** The transcript-renderable formats, identified from their magic bytes. A declared
