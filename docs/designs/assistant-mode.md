@@ -388,13 +388,14 @@ below), so opening it everywhere does not reopen what the read rule closes.
 - **Until then (P0a) a private place is read only from itself**: no other place, not even a
   member's DM, can recall it; the place itself still recalls every non-private channel.
   Per-asker scoping only widens this, so nothing that works in P0a stops working later.
-- **P1 widens it on the asker's own turns in their DM.** In a person P's 1:1 DM with the agent, on
-  a turn started by P's own message, a private place is listed and readable when P is a member of
-  it right now — checked live at read time (cached for at most about a minute), on the same
+- **P1 widens it on the asker's own turns in their DM.** In a person P's 1:1 DM with the agent, on a
+  turn started by P's own message, a private place is readable, when it is named, if P is a member
+  of it right now — checked live at read time (cached for at most about a minute), on the same
   platform and workspace, and only where the daemon's platform adapter declares its member listing
   authoritative. A membership that cannot be confirmed is refused as opaquely as any other private
-  place. Channels, group DMs, webchat and external places keep the P0a rule; webchat waits for
-  identity links.
+  place. Recall's listing never shows a private place, even to a member: the agent lists places on
+  its own, before it knows what it needs, so only an actual read widens. Channels, group DMs,
+  webchat and external places keep the P0a rule; webchat waits for identity links.
 - **The widening is bound to the turn, not the place.** Turns in P's DM session that P did not
   start — a report round, a patrol's or a sub-session's report, a cron run, a later `handoff` — and
   every sub-session or patrol get the P0a source set.
@@ -420,7 +421,7 @@ below), so opening it everywhere does not reopen what the read rule closes.
   mark still keeps anything from leaving P's DM.
 - **The error metric**: "outside the allowed set" now depends on the place, whether the turn is
   P's own, and live membership, and is evaluated with all three.
-- Other places do not see a private place in recall's listing, and a refused read answers as
+- No place sees a private place in recall's listing, and a refused read answers as
   opaquely as the DM rule: "I can't share that here", never where the content lives.
 
 - Webchat ↔ IM recognition depends on identity links (P1); in P0 webchat recalls only itself and
@@ -859,9 +860,10 @@ console.
 audience — their own DM with the agent — with membership checked live on platforms whose member
 listing is authoritative; every shared place keeps the P0a private-place rule. Architecture review
 of that change: the Read box, the `P's DM` row and the target now state the same rule; the widening
-is bound to a turn P started, never a report, patrol, cron or sub-session turn; a session that
-made a widened read writes only to P's DM — no ledger writes, self-delegation, posts elsewhere or
-agent-to-agent sends — until it is retired, because the content stays in its context across
-turns, and a later session that reads the DM's history back is marked too; per-person memory
-captured from it stays in P's DM; revocation residue and the metric's inputs are stated; writes
-through code-host, MCP and shell tools are left open (§9).
+is bound to a turn P started, never a report, patrol, cron or sub-session turn, and to a read of a
+named place, never to recall's listing; a session that made a widened read writes only to P's DM —
+no ledger writes, self-delegation, posts elsewhere or agent-to-agent sends — until it is retired,
+because the content stays in its context across turns, and a later session that reads the DM's
+history back is marked too; per-person memory captured from it stays in P's DM; revocation residue
+and the metric's inputs are stated; writes through code-host, MCP and shell tools are left open
+(§9).
