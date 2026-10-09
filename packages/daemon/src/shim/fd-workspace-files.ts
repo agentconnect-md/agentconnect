@@ -25,6 +25,8 @@ import type {
   WorkspaceEntry,
   WorkspaceListPage,
   WorkspaceListReq,
+  WorkspaceMkdirOk,
+  WorkspaceMkdirReq,
   WorkspaceReadContent,
   WorkspaceReadReq,
   WorkspaceWriteOk,
@@ -34,6 +36,7 @@ import { randomUUID } from 'node:crypto'
 import { isAbsolute, relative, sep } from 'node:path'
 import {
   byteSliceWorkspaceRead,
+  existingWorkspacePath,
   pageWorkspaceEntries,
   readWorkspaceSlice,
   sliceWorkspaceRead,
@@ -302,6 +305,29 @@ export function createFdWorkspaceFiles(anchor: string): WorkspaceFiles {
         const latest = await statForEdit(parent, leaf)
         if (!sameFileVersion(initial, latest)) throw changedFile()
         await fs.unlink(parent.childPath(leaf))
+        return { agentId: req.agentId, path: req.path }
+      }).catch((err: unknown) => {
+        if (err instanceof MissingPathError) throw changedFile()
+        throw err
+      })
+    },
+
+    async mkdir(root, scratch, req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk> {
+      assertScratch(scratch)
+      return await withCreatingParent(anchor, root, req.path, async (parent, leaf) => {
+        if (leaf === undefined) throw existingWorkspacePath()
+        try {
+          await parent.lstatChild(leaf)
+          throw existingWorkspacePath()
+        } catch (err) {
+          if (!(err instanceof MissingPathError)) throw err
+        }
+        try {
+          await fs.mkdir(parent.childPath(leaf))
+        } catch (err) {
+          if (isErrno(err, 'EEXIST')) throw existingWorkspacePath()
+          throw err
+        }
         return { agentId: req.agentId, path: req.path }
       }).catch((err: unknown) => {
         if (err instanceof MissingPathError) throw changedFile()

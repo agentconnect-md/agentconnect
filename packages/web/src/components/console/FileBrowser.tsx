@@ -111,11 +111,14 @@ export function FileBrowserBreadcrumb({
   draftName,
   onDraftNameChange,
   onBack,
+  onNavigate,
+  onSubmit,
   disabled,
   nested = true,
   rootControl = false,
   ariaLabel = 'File path',
-  inputAriaLabel = 'New file path'
+  inputAriaLabel = 'New file path',
+  placeholder
 }: {
   root: ReactNode
   path: string
@@ -123,12 +126,17 @@ export function FileBrowserBreadcrumb({
   draftName: string
   onDraftNameChange: (name: string) => void
   onBack?: () => void
+  /** Makes the root label and every ancestor segment jump to that directory ('' is the root). */
+  onNavigate?: (directory: string) => void
+  /** Enter in the name input submits, for drafts that have no body to type into. */
+  onSubmit?: () => void
   disabled?: boolean
   nested?: boolean
   /** The root slot holds a CONTROL, not a label: it sizes itself and stays visible inside a path. */
   rootControl?: boolean
   ariaLabel?: string
   inputAriaLabel?: string
+  placeholder?: string
 }) {
   const t = useTranslations('Sessions.fileBrowser')
   const baseSegments = path.split('/').filter(Boolean)
@@ -137,6 +145,14 @@ export function FileBrowserBreadcrumb({
   const draftLeaf = creating ? (draftParts.at(-1) ?? '') : ''
   const segments = [...baseSegments, ...draftDirectories]
   const updateDraftLeaf = (leaf: string) => onDraftNameChange([...draftDirectories, leaf].join('/'))
+  // The last segment is the current file or directory, so only its ancestors navigate.
+  const navigable = onNavigate && !creating && !disabled ? onNavigate : undefined
+  const segmentLink = 'cursor-pointer border-0 bg-transparent p-0 hover:text-(--text-primary) hover:underline'
+  const rootClassName = rootControl
+    ? 'flex min-w-0 flex-none items-center'
+    : `mono max-w-[120px] flex-none truncate text-[12px] font-semibold text-(--text-primary) ${
+        segments.length > 0 || creating ? 'max-desktop:hidden' : ''
+      }`
 
   return (
     <nav className="flex min-w-0 items-center gap-[6px] overflow-hidden" aria-label={ariaLabel}>
@@ -151,32 +167,45 @@ export function FileBrowserBreadcrumb({
           <Icon name="arrow-left" size={15} />
         </button>
       ) : null}
-      <span
-        className={
-          rootControl
-            ? 'flex min-w-0 flex-none items-center'
-            : `mono max-w-[120px] flex-none truncate text-[12px] font-semibold text-(--text-primary) ${
-                segments.length > 0 || creating ? 'max-desktop:hidden' : ''
-              }`
-        }
-      >
-        {root}
-      </span>
+      {navigable && !rootControl && segments.length > 0 ? (
+        <button
+          type="button"
+          className={`${rootClassName} ${segmentLink} leading-normal`}
+          onClick={() => navigable('')}
+          title={typeof root === 'string' ? root : undefined}
+        >
+          {root}
+        </button>
+      ) : (
+        <span className={rootClassName}>{root}</span>
+      )}
       {segments.map((segment, index) => {
         const current = !creating && index === segments.length - 1
         const mobileCurrent = index === segments.length - 1
+        // The current segment takes whatever room is left and ancestors give theirs up first.
+        const className = `mono min-w-[24px] truncate text-[12px] ${
+          current
+            ? 'shrink font-semibold text-(--text-primary)'
+            : 'max-w-[140px] shrink-[3] font-medium text-(--text-secondary)'
+        } ${mobileCurrent ? '' : 'max-desktop:hidden'}`
+        const directory = segments.slice(0, index + 1).join('/')
         return (
           <Fragment key={`${index}:${segment}`}>
             <span className="flex-none text-[12px] font-normal text-(--text-tertiary) max-desktop:hidden" aria-hidden>
               /
             </span>
-            <span
-              className={`mono min-w-[24px] max-w-[140px] shrink truncate text-[12px] ${
-                current ? 'font-semibold text-(--text-primary)' : 'font-medium text-(--text-secondary)'
-              } ${mobileCurrent ? '' : 'max-desktop:hidden'}`}
-            >
-              {segment}
-            </span>
+            {navigable && !current ? (
+              <button
+                type="button"
+                className={`${className} ${segmentLink} leading-normal`}
+                onClick={() => navigable(directory)}
+                title={directory}
+              >
+                {segment}
+              </button>
+            ) : (
+              <span className={className}>{segment}</span>
+            )}
           </Fragment>
         )
       })}
@@ -195,11 +224,16 @@ export function FileBrowserBreadcrumb({
             value={draftLeaf}
             onChange={(event) => updateDraftLeaf(event.target.value)}
             onKeyDown={(event) => {
+              if (event.key === 'Enter' && onSubmit) {
+                event.preventDefault()
+                onSubmit()
+                return
+              }
               if (!nested || event.key !== 'Backspace' || draftLeaf || draftDirectories.length === 0) return
               event.preventDefault()
               onDraftNameChange([...draftDirectories.slice(0, -1), draftDirectories.at(-1)!].join('/'))
             }}
-            placeholder={t('fileNamePlaceholder')}
+            placeholder={placeholder ?? t('fileNamePlaceholder')}
             aria-label={inputAriaLabel === 'New file path' ? t('newFilePath') : inputAriaLabel}
             spellCheck={false}
             disabled={disabled}
@@ -215,12 +249,14 @@ export function FileBrowserEditorActions({
   saving,
   disabled,
   onCancel,
-  onSave
+  onSave,
+  saveLabel
 }: {
   saving: boolean
   disabled?: boolean
   onCancel: () => void
   onSave: () => void
+  saveLabel?: string
 }) {
   const t = useTranslations('Sessions.fileBrowser')
   return (
@@ -229,7 +265,7 @@ export function FileBrowserEditorActions({
         {t('cancel')}
       </Button>
       <Button size="xs" onClick={onSave} disabled={saving || disabled}>
-        {saving ? t('saving') : t('saveChanges')}
+        {saving ? t('saving') : (saveLabel ?? t('saveChanges'))}
       </Button>
     </div>
   )
@@ -365,6 +401,7 @@ export function FileBrowserRow({
   chevron,
   title,
   trailing,
+  action,
   selected,
   onClick
 }: {
@@ -374,14 +411,15 @@ export function FileBrowserRow({
   chevron?: string
   title?: string
   trailing?: ReactNode
+  /** A second control beside the row, revealed on hover or focus (always shown at ≤768px). */
+  action?: ReactNode
   selected?: boolean
   onClick?: () => void
 }) {
+  const edge = selected ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'
   const className = `${
     onClick ? 'file-browser-item cursor-pointer' : 'cursor-default'
-  } flex w-full items-center gap-[6px] border-0 border-r-2 py-[6px] pr-[10px] text-left [font:inherit] ${
-    selected ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'
-  }`
+  } flex w-full items-center gap-[6px] border-0 border-r-2 py-[6px] pr-[10px] text-left [font:inherit] ${edge}`
   const contents = (
     <>
       {chevron ? (
@@ -400,6 +438,27 @@ export function FileBrowserRow({
       {trailing}
     </>
   )
+
+  // Two targets make the row a div holding two buttons, never a button inside a button.
+  if (action && onClick) {
+    return (
+      <div className={`file-browser-item group flex w-full items-center border-0 border-r-2 pr-[6px] ${edge}`}>
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-[6px] border-0 bg-transparent py-[6px] pr-1 text-left [font:inherit]"
+          onClick={onClick}
+          title={title || name}
+          aria-current={selected ? 'page' : undefined}
+          style={{ paddingLeft: 8 + depth * 14 }}
+        >
+          {contents}
+        </button>
+        <span className="flex flex-none opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 max-desktop:opacity-100">
+          {action}
+        </span>
+      </div>
+    )
+  }
 
   return onClick ? (
     <button

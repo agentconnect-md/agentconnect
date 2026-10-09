@@ -3606,6 +3606,14 @@ export const WorkspaceFileDeleteDto = z.object({
   path: z.string()
 })
 
+/** `POST /agents/:id/workspace/dir` query — one new, empty scratch-workspace directory. */
+export const CreateWorkspaceDirQueryDto = z.object({
+  path: z.string().min(1).max(4096)
+})
+export const WorkspaceDirCreateDto = z.object({
+  path: z.string()
+})
+
 // ── agent memory (a directory at the agent root: MEMORY.md index + topic files; proxied daemon-local) ──
 /** One file in the memory dir. */
 export const MemoryFileEntryDto = z.object({

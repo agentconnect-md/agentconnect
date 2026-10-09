@@ -19,6 +19,7 @@ import { z } from 'zod'
 import type {
   WorkspaceDeleteOk,
   WorkspaceListPage,
+  WorkspaceMkdirOk,
   WorkspaceReadContent,
   WorkspaceWriteOk
 } from '@agentconnect.md/protocol'
@@ -63,6 +64,11 @@ const DeleteReqSchema = z.object({
   ifMatchMtime: z.string()
 })
 
+const MkdirReqSchema = z.object({
+  agentId: z.string().min(1),
+  path: z.string()
+})
+
 /** Absolute because it is a path in the POD's coordinates, and the shim's fence compares absolutes. */
 const RootSchema = z.string().min(1).max(4096)
 
@@ -72,7 +78,8 @@ export const WorkspaceFilesPayloadSchema = z.discriminatedUnion('op', [
   // `scratch` is the daemon's answer (it reads agent configuration) and travels with the request, so
   // the half-trusted side never decides whether a workspace is writable — it only enforces it.
   z.object({ op: z.literal('write'), root: RootSchema, scratch: z.boolean(), req: WriteReqSchema }),
-  z.object({ op: z.literal('delete'), root: RootSchema, scratch: z.boolean(), req: DeleteReqSchema })
+  z.object({ op: z.literal('delete'), root: RootSchema, scratch: z.boolean(), req: DeleteReqSchema }),
+  z.object({ op: z.literal('mkdir'), root: RootSchema, scratch: z.boolean(), req: MkdirReqSchema })
 ])
 export type WorkspaceFilesPayload = z.infer<typeof WorkspaceFilesPayloadSchema>
 
@@ -91,7 +98,8 @@ export const WorkspaceFilesReplySchema = z.discriminatedUnion('ok', [
     ok: z.literal(false),
     refusal: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('violation'), reason: WorkspaceErrorReason, message: z.string().max(500) }),
-      z.object({ kind: z.literal('conflict'), message: z.string().max(500) })
+      // `reason` is absent from an older shim, which the daemon reads as the default `stale`.
+      z.object({ kind: z.literal('conflict'), message: z.string().max(500), reason: WorkspaceErrorReason.optional() })
     ])
   })
 ])
@@ -124,7 +132,7 @@ export async function applyWorkspaceFilesPayload(
       return { ok: false, refusal: { kind: 'violation', reason: err.reason, message: err.message.slice(0, 500) } }
     }
     if (err instanceof WorkspaceConflictError) {
-      return { ok: false, refusal: { kind: 'conflict', message: err.message.slice(0, 500) } }
+      return { ok: false, refusal: { kind: 'conflict', message: err.message.slice(0, 500), reason: err.reason } }
     }
     throw err
   }
@@ -140,6 +148,8 @@ function run(parsed: WorkspaceFilesPayload, files: WorkspaceFiles): Promise<unkn
       return files.write(parsed.root, parsed.scratch, parsed.req)
     case 'delete':
       return files.delete(parsed.root, parsed.scratch, parsed.req)
+    case 'mkdir':
+      return files.mkdir(parsed.root, parsed.scratch, parsed.req)
   }
 }
 
@@ -164,7 +174,8 @@ export class ShimWorkspaceFiles implements WorkspaceFiles {
     // Rebuilt as the SAME classes the local path throws, so the dispatcher above cannot tell the two
     // filesystems apart — which is the whole property this seam is for.
     if (!reply.ok) {
-      if (reply.refusal.kind === 'conflict') throw new WorkspaceConflictError(reply.refusal.message)
+      if (reply.refusal.kind === 'conflict')
+        throw new WorkspaceConflictError(reply.refusal.message, reply.refusal.reason)
       throw new WorkspaceViolationError(reply.refusal.message, reply.refusal.reason)
     }
     return reply.value as T
@@ -192,5 +203,9 @@ export class ShimWorkspaceFiles implements WorkspaceFiles {
 
   delete(root: string, scratch: boolean, req: Parameters<WorkspaceFiles['delete']>[2]): Promise<WorkspaceDeleteOk> {
     return this.run({ op: 'delete', root, scratch, req })
+  }
+
+  mkdir(root: string, scratch: boolean, req: Parameters<WorkspaceFiles['mkdir']>[2]): Promise<WorkspaceMkdirOk> {
+    return this.run({ op: 'mkdir', root, scratch, req })
   }
 }

@@ -7281,6 +7281,7 @@ export class Daemon {
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
+      'workspace-dir-create-v1',
       WORKSPACE_SESSION_READ_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
       WORKSPACE_FILE_DOWNLOAD_FEATURE,

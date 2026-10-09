@@ -1,5 +1,15 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, promises as fsp, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  promises as fsp,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+  rmSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, parse } from 'node:path'
 import type { WorkspaceListPage, WorkspaceReadContent, WorkspaceWriteOk } from '@agentconnect.md/protocol'
@@ -367,6 +377,34 @@ describe('the shim read capability', () => {
     // Not "resolved and then found to be outside" — the walk refuses to OPEN a symlinked component,
     // so the link's target is never reached at all.
     expect(reply).toMatchObject({ ok: false, refusal: { kind: 'violation', reason: 'path-escape' } })
+  })
+
+  it('creates an empty folder with nested parents, refuses an existing path, and never leaves through a symlink', async () => {
+    const { mount, checkout } = volume()
+    const handle = handlerFor(mount)
+    const mkdir = async (path: string, scratch = true) =>
+      WorkspaceFilesReplySchema.parse(
+        await handle('read', { op: 'mkdir', root: checkout, scratch, req: { agentId: AGENT, path } })
+      )
+
+    expect(await mkdir('guides/reference')).toMatchObject({ ok: true, value: { path: 'guides/reference' } })
+    expect(statSync(join(checkout, 'guides', 'reference')).isDirectory()).toBe(true)
+    expect(await mkdir('guides/reference')).toMatchObject({
+      ok: false,
+      refusal: { kind: 'conflict', reason: 'exists' }
+    })
+    expect(await mkdir('README.md')).toMatchObject({ ok: false, refusal: { kind: 'conflict' } })
+    expect(await mkdir('drafts', false)).toMatchObject({
+      ok: false,
+      refusal: { kind: 'violation', reason: 'read-only-workspace' }
+    })
+
+    symlinkSync(mount, join(checkout, 'sneaky'), 'dir')
+    expect(await mkdir('sneaky/setup')).toMatchObject({
+      ok: false,
+      refusal: { kind: 'violation', reason: 'path-escape' }
+    })
+    expect(existsSync(join(mount, 'setup'))).toBe(false)
   })
 
   it('refuses a payload that is not one of the four operations', async () => {

@@ -2788,6 +2788,7 @@ function AgentDetail() {
               onRepoChange={selectRepoScope}
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
+              canCreateFolder={capabilitySource?.caps.features.includes('workspace-dir-create-v1') === true}
               sandboxed={isPoolPlacementKind(da.placementKind)}
               renderWorkspacePicker={(primaryBranch) =>
                 isGitWorkspace(da.workspace) ? (

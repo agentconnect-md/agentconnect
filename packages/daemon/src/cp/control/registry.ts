@@ -85,6 +85,7 @@ import { sandboxKeepAlive, type SandboxKeepAliveDeps } from './sandbox-keepalive
 import { runtimeProbe, type RuntimeProbeDeps } from './runtime-probe.js'
 import {
   workspaceDelete,
+  workspaceMkdir,
   workspaceGitCommit,
   workspaceGitDiff,
   workspaceGitLog,
@@ -183,6 +184,7 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['workspace/read', workspaceRead],
   ['workspace/write', workspaceWrite],
   ['workspace/delete', workspaceDelete],
+  ['workspace/mkdir', workspaceMkdir],
   ['workspace/gitstatus', workspaceGitStatus],
   ['workspace/gitdiff', workspaceGitDiff],
   ['workspace/gitlog', workspaceGitLog],

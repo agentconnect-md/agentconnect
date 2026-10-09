@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createWorkspaceReader, WorkspaceViolationError } from '../src/cp/workspace-reader.js'
@@ -47,7 +47,8 @@ function filesAt(podSide: string): WorkspaceFiles {
     list: (_root, req) => localWorkspaceFiles.list(podSide, req),
     read: (_root, req) => localWorkspaceFiles.read(podSide, req),
     write: (_root, scratch, req) => localWorkspaceFiles.write(podSide, scratch, req),
-    delete: (_root, scratch, req) => localWorkspaceFiles.delete(podSide, scratch, req)
+    delete: (_root, scratch, req) => localWorkspaceFiles.delete(podSide, scratch, req),
+    mkdir: (_root, scratch, req) => localWorkspaceFiles.mkdir(podSide, scratch, req)
   }
 }
 
@@ -82,6 +83,10 @@ describe('createWorkspaceReader routing', () => {
     expect(readFileSync(join(podSide, 'notes.md'), 'utf8')).toBe('hi\n')
     // The silent-wrong-placement failure this replaces: the file used to land here instead.
     expect(() => readFileSync(join(daemonSide, 'notes.md'))).toThrow()
+
+    await reader.mkdir({ agentId: AGENT, path: 'drafts/empty' })
+    expect(statSync(join(podSide, 'drafts', 'empty')).isDirectory()).toBe(true)
+    expect(existsSync(join(daemonSide, 'drafts'))).toBe(false)
   })
 
   it('keeps the scratch gate on the daemon side, before anything is shipped', async () => {

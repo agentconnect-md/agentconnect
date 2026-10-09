@@ -441,6 +441,61 @@ describe('workspace delete', () => {
   })
 })
 
+describe('workspace mkdir', () => {
+  it('creates an empty folder with its missing parents, and refuses an existing path', async () => {
+    await expect(reader.mkdir({ agentId: AGENT, path: 'skills/reference' })).resolves.toEqual({
+      agentId: AGENT,
+      path: 'skills/reference'
+    })
+    expect(statSync(join(ws, 'skills', 'reference')).isDirectory()).toBe(true)
+    const page = await reader.list(listReq({ path: 'skills/reference' }))
+    expect(page).toMatchObject({ exists: true, entries: [] })
+
+    // A name collision carries its own reason, so the console can tell it apart from a busy agent.
+    await expect(reader.mkdir({ agentId: AGENT, path: 'skills/reference' })).rejects.toMatchObject({
+      name: 'WorkspaceConflictError',
+      reason: 'exists'
+    })
+    writeFileSync(join(ws, 'notes.md'), 'current')
+    await expect(reader.mkdir({ agentId: AGENT, path: 'notes.md' })).rejects.toBeInstanceOf(WorkspaceConflictError)
+    expect(readFileSync(join(ws, 'notes.md'), 'utf8')).toBe('current')
+  })
+
+  it('creates the workspace root when it does not exist yet', async () => {
+    rmSync(ws, { recursive: true, force: true })
+    await reader.mkdir({ agentId: AGENT, path: 'docs' })
+    expect(statSync(join(ws, 'docs')).isDirectory()).toBe(true)
+  })
+
+  it('refuses escapes, git internals and the root itself', async () => {
+    await expect(reader.mkdir({ agentId: AGENT, path: '../escape' })).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(reader.mkdir({ agentId: AGENT, path: '.git/hooks2' })).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(reader.mkdir({ agentId: AGENT, path: 'a/..' })).rejects.toBeInstanceOf(WorkspaceConflictError)
+    expect(existsSync(join(base, 'escape'))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'never creates a folder through a symlink that leaves the workspace',
+    async () => {
+      symlinkSync(outside, join(ws, 'sneaky-dir'))
+      await expect(reader.mkdir({ agentId: AGENT, path: 'sneaky-dir/inner' })).rejects.toBeInstanceOf(
+        WorkspaceViolationError
+      )
+      expect(existsSync(join(outside, 'inner'))).toBe(false)
+    }
+  )
+
+  it('keeps GitHub workspaces read-only', async () => {
+    const repoReader = createWorkspaceReader(
+      workspaces,
+      async (id) => (id === AGENT ? { root: ws, scratch: false } : undefined),
+      directWrite
+    )
+    await expect(repoReader.mkdir({ agentId: AGENT, path: 'docs' })).rejects.toBeInstanceOf(WorkspaceViolationError)
+    expect(existsSync(join(ws, 'docs'))).toBe(false)
+  })
+})
+
 describe('frame-size budget on listings', () => {
   // Pads its listing with names built from `"`, which Windows does not allow in a filename.
   it.skipIf(process.platform === 'win32')(

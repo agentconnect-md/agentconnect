@@ -2912,6 +2912,15 @@ export function writeWorkspaceFile(
   )
 }
 
+/** Create one empty folder (and missing parents) in a scratch workspace; an existing path is a 409. */
+export function createWorkspaceDir(agentId: string, path: string): Promise<{ path: string }> {
+  const q = new URLSearchParams({ path })
+  return apiPost<{ path: string }>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/dir?${q.toString()}`,
+    {}
+  )
+}
+
 export function deleteWorkspaceFile(agentId: string, path: string, ifMatchMtime: string): Promise<{ path: string }> {
   const q = new URLSearchParams({ path, ifMatchMtime })
   return apiDelete<{ path: string }>(
