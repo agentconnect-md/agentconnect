@@ -58,9 +58,13 @@ const REFUSED_CHECKOUT_ARGUMENT = [
 
 // These spellings reach execution only for the named subcommand.
 const REFUSED_SUBCOMMAND_ARGUMENT: Record<string, RegExp[]> = {
-  clone: [/^-u/],
-  config: [/^-e$/, /^--edit/]
+  clone: [/^-u/]
 }
+
+// Managed-credential key: credential.<scheme>://<host>[/path].(helper|useHttpPath).
+const CREDENTIAL_CONFIG_KEY = /^credential\.[a-z][a-z0-9+.-]*:\/\/[^/?#\s]+(?:\/[^?#\s]*)?\.(helper|useHttpPath)$/i
+// Helper value: `!<quoted path> <agentId>` (`sh ` for sandbox helpers); reset is ''.
+const CREDENTIAL_HELPER_VALUE = /^!(?:sh )?'(?:[^']|'\\'')*' \S+$/
 
 // Clone's short options: `u`/`c` execute anywhere in a group (`-qu<cmd>`), and a value-taking letter ends the group.
 const CLONE_REFUSED_SHORT = new Set(['u', 'c'])
@@ -162,6 +166,39 @@ export function validateGitArgs(args: string[]): void {
   }
 }
 
+// config is admitted only for the daemon's managed-credential writes and its read-only .gitmodules listing.
+function validateConfigArgs(rest: string[]): void {
+  const refuse = (): never => {
+    throw new ExecRefusedError(`git config ${rest.join(' ')} is not an admitted managed-credential write`)
+  }
+  const [a, b, c, d, e] = rest
+  // Read-only `.gitmodules` inspection: config --blob <oid> --no-includes --null --list.
+  if (
+    rest.length === 5 &&
+    a === '--blob' &&
+    b !== undefined &&
+    /^[0-9a-f]{40,64}$/i.test(b) &&
+    c === '--no-includes' &&
+    d === '--null' &&
+    e === '--list'
+  ) {
+    return
+  }
+  // Helper write: config --replace-all|--add credential.<base>.helper <''|helper value>.
+  if (rest.length === 3 && (a === '--replace-all' || a === '--add') && b !== undefined) {
+    const match = CREDENTIAL_CONFIG_KEY.exec(b)
+    if (match?.[1] === 'helper' && (c === '' || (c !== undefined && CREDENTIAL_HELPER_VALUE.test(c)))) {
+      return
+    }
+  }
+  // useHttpPath write: config credential.<base>.useHttpPath true.
+  if (rest.length === 2 && a !== undefined && b === 'true') {
+    const match = CREDENTIAL_CONFIG_KEY.exec(a)
+    if (match?.[1] === 'useHttpPath') return
+  }
+  refuse()
+}
+
 /** The execution-reaching refusals alone, without the exec inventory: what shim-internal Git argv is checked against. */
 export function assertNoRefusedArguments(args: string[]): void {
   const [subcommand, ...rest] = args
@@ -173,6 +210,10 @@ export function assertNoRefusedArguments(args: string[]): void {
       throw new ExecRefusedError(`argument ${argument} is refused`)
     }
   })
+  if (subcommand === 'config') {
+    validateConfigArgs(rest)
+    return
+  }
   const perSubcommand = REFUSED_SUBCOMMAND_ARGUMENT[subcommand] ?? []
   for (const argument of rest) {
     if (perSubcommand.some((pattern) => pattern.test(argument))) {
