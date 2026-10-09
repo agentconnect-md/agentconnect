@@ -513,7 +513,13 @@ export class AssistantItemLedger {
   }
 }
 
-const CHILD_TABLES = ['assistant_item_follower', 'assistant_item_observation', 'assistant_item_link'] as const
+// The patrol state (assistant-patrols.ts) is keyed the same way and goes with its item.
+const CHILD_TABLES = [
+  'assistant_item_follower',
+  'assistant_item_observation',
+  'assistant_item_link',
+  'assistant_patrol'
+] as const
 
 /** Takes the item's row lock for the rest of the transaction without changing it; false when the item is gone. */
 async function lockItem(tx: StoreTx, agentId: string, itemId: string): Promise<boolean> {

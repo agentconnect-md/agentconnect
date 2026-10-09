@@ -220,7 +220,7 @@ describe('the Activity view for anyone who can view the agent', () => {
     expect(row.textContent).toContain('Active')
     expect(row.textContent).toContain('Ship the release notes')
     expect(row.textContent).toContain('Done when: The notes are published')
-    expect(row.textContent).toContain('Next check noted for Oct 10, 2026')
+    expect(row.textContent).toContain('Next check Oct 10, 2026')
     expect(row.textContent).toContain('DM with Ada, #support, Webchat')
     expect(items.querySelector('[data-assistant-item="item-2"]')?.textContent).toContain('Waiting')
     expect(items.querySelector('[data-assistant-item="item-2"]')?.textContent).not.toContain('Next check')

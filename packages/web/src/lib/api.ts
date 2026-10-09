@@ -3794,7 +3794,7 @@ export interface AssistantItemDto {
   title: string
   status: AssistantItemStatus
   doneWhen: string | null
-  /** When the agent noted it should check next; nothing wakes it for this yet. */
+  /** When a patrol next checks the item (assistant-mode.md §5.9). */
   nextCheck: string | null
   origin: AssistantPlaceDto
   places: AssistantPlaceDto[]

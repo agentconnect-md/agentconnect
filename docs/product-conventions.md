@@ -916,13 +916,13 @@ assertion, and the original user text is not rewritten.
 
 An agent in assistant mode keeps a ledger of what people asked of it. It takes an item only
 after restating what it will do, what counts as done and when it should be checked next, and
-the person confirming. Until scheduled checks exist it records that time without promising to
-come back on its own. When an open item already covers a request, it asks whether to attach the
-request to that item instead, and the asker follows the existing item on a yes. The ledger is
-visible to the whole organization: an item records who asked for what and where it stands,
-never the wording of a direct message, and the agent says so when it takes an item asked in a
-DM. Every conversation of the agent is reminded of the same list of open items. An agent
-outside assistant mode is offered no item tools.
+the person confirming. At that time a patrol checks the item (see "Assistant-mode patrols"), so
+it promises a check then, never an action. When an open item already covers a request, it asks
+whether to attach the request to that item instead, and the asker follows the existing item on
+a yes. The ledger is visible to the whole organization: an item records who asked for what and
+where it stands, never the wording of a direct message, and the agent says so when it takes an
+item asked in a DM. Every conversation of the agent is reminded of the same list of open items.
+An agent outside assistant mode is offered no item tools.
 
 ## Assistant-mode sub-sessions
 
@@ -937,6 +937,32 @@ making the main conversation private still makes it private. A sub-session canno
 sub-sessions of its own. Only the assistant-mode agent is told about this form; for every
 other agent, and for every other form, a postless self-call is refused as before.
 
+## Assistant-mode patrols
+
+When an active or waiting item's next check comes due, the daemon holding the agent's duty starts
+one patrol of it: a background sub-session that looks at the item read-only, records what it saw
+as an observation, sets the next check or marks the item waiting or done, and ends. Only when
+something changed since the latest observation does it report, and only into the conversation the
+item was taken in, whose long session then speaks for it; other followers are not told yet. When
+that conversation has no long session the check is skipped, and the item records why. Only an
+item's own next check wakes a patrol: there is no cadence and no event trigger yet. A next check
+is patrolled once; one missed while the agent was paused is not replayed, and an overdue item is
+checked once. An agent runs one patrol at a time, patrols do not count toward its concurrent
+sub-sessions, and it starts at most `dailyPatrolBudget` of them in any 24 hours (50 when unset).
+A failed patrol is recorded on the item and the next attempt waits min(60, 2ⁿ) minutes, n being
+its failures in a row; a patrol that records nothing counts as failed. After five in a row the
+item is patrolled no more until its next check is set to a new time, and its conversation is told
+once. A failed patrol never sends the "ended without reporting" notice a delegated sub-session
+gets.
+
+A patrol is offered only read tools and an item update limited to its own item: no platform
+write, no `sendMessage`, no new item and no draft, and any other tool it names is refused. Its
+runtime runs in its own read-only mode (`read-only`, else `plan`) whatever the agent's permission
+mode, and anything that would ask for approval is refused, never asked. It still runs on the
+agent's own host, with the agent's credentials and workspace: the runtime's read-only mode is what
+keeps it from writing there, and reads over the network that need no approval stay possible. The
+assistant mode panel therefore marks patrols as degraded.
+
 ## Assistant-mode Activity
 
 The page of an agent in assistant mode has an Activity tab, offered while the console's
@@ -945,15 +971,14 @@ instead. It is read from the agent's daemon when it is shown and kept nowhere el
 shows the most recent entries, up to a limit, and says when more exist.
 
 - **Items** are visible to everyone who can view the agent: the active and waiting ones, most
-  recently updated first, each with what counts as done, the next check the agent noted, the
-  places its followers follow it from and when it last changed. The next check is
-  shown as noted, not scheduled: nothing wakes the agent for it yet. Expanding an item shows its
-  summary and newest observations. Done and dropped items sit in a collapsed section that is read
+  recently updated first, each with what counts as done, its next check (when a patrol looks at it
+  next), the places its followers follow it from and when it last changed. Expanding an item shows
+  its summary and newest observations. Done and dropped items sit in a collapsed section that is read
   only when opened. An item never shows who follows it or the wording of a conversation. An editor
   may delete an item after a confirmation; the agent stops following it.
 - **Sub-sessions** are listed for everyone who can view the agent, running ones first, each with
-  its state and start. Its title, a link to its session and the conversation that opened it appear
-  only to someone who may view that conversation.
+  its state and start; patrols are listed among them. Its title, a link to its session and the
+  conversation that opened it appear only to someone who may view that conversation.
 - **Waiting for approval** is shown to editors only: each pending draft's target, its exact text,
   who is asked to approve it and when it expires. An editor may approve or discard it here after a
   confirmation, and approve with "always allow from here to there" where its card offers that. The

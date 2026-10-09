@@ -15,6 +15,8 @@ export interface AssistantSubsession {
   parentSessionKey: string
   state: AssistantSubsessionState
   createdAt: number
+  /** A patrol the daemon started (assistant-mode.md §5.9); a delegation reads back without it. */
+  kind?: 'patrol'
 }
 
 export const ASSISTANT_SUBSESSION_SCHEMA = `
@@ -25,6 +27,7 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         parentSessionKey TEXT NOT NULL,
         state TEXT NOT NULL,
         createdAt INTEGER NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'delegation',
         PRIMARY KEY (agentId, childSessionKey)
       );
       CREATE INDEX IF NOT EXISTS assistant_subsession_by_parent
@@ -38,7 +41,7 @@ export interface AssistantSubsessionDatabase {
 
 type Row = Record<string, unknown>
 
-type OpenInput = Omit<AssistantSubsession, 'state' | 'createdAt'> & { now?: number }
+type OpenInput = Omit<AssistantSubsession, 'state' | 'createdAt' | 'kind'> & { now?: number }
 
 function subsessionOf(row: Row): AssistantSubsession {
   return {
@@ -47,7 +50,8 @@ function subsessionOf(row: Row): AssistantSubsession {
     parentSessionId: String(row.parentSessionId),
     parentSessionKey: String(row.parentSessionKey),
     state: String(row.state) as AssistantSubsessionState,
-    createdAt: Number(row.createdAt)
+    createdAt: Number(row.createdAt),
+    ...(row.kind === 'patrol' ? { kind: 'patrol' as const } : {})
   }
 }
 
@@ -76,7 +80,7 @@ export class AssistantSubsessionIndex {
            (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
          SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER)
           WHERE (SELECT COUNT(*) FROM assistant_subsession a
-                  WHERE a.agentId = ? AND a.state = 'open'
+                  WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'delegation'
                     AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey))) < ?`,
         [
           input.agentId,
@@ -91,6 +95,42 @@ export class AssistantSubsessionIndex {
       )
       return changes > 0
     })
+  }
+
+  /** Record a patrol only while none of the agent's is running; a patrol older than `staleBefore` no longer counts. */
+  async openPatrol(input: OpenInput, cap: { startedSince: number; staleBefore: number }): Promise<boolean> {
+    return await this.opening.run(async () => {
+      const { changes } = await this.db.query(
+        `INSERT OR IGNORE INTO assistant_subsession
+           (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, kind)
+         SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER), 'patrol'
+          WHERE NOT EXISTS (SELECT 1 FROM assistant_subsession a
+                  WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'patrol' AND a.createdAt >= ?
+                    AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey)))`,
+        [
+          input.agentId,
+          input.childSessionKey,
+          input.parentSessionId,
+          input.parentSessionKey,
+          input.now ?? Date.now(),
+          input.agentId,
+          cap.staleBefore,
+          cap.startedSince
+        ]
+      )
+      return changes > 0
+    })
+  }
+
+  /** How many patrols the agent started since `since`, for its daily budget. */
+  async countPatrolsSince(agentId: string, since: number): Promise<number> {
+    const row = (
+      await this.db.query(
+        `SELECT COUNT(*) AS n FROM assistant_subsession WHERE agentId = ? AND kind = 'patrol' AND createdAt >= ?`,
+        [agentId, since]
+      )
+    ).rows[0] as Row | undefined
+    return Number(row?.n ?? 0)
   }
 
   /** Settle an `open` row; false when it was already settled or is not indexed. */

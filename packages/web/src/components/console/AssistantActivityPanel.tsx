@@ -414,7 +414,7 @@ function ItemRow({
           <div className="mt-1 flex flex-col gap-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:flex-row desktop:flex-wrap desktop:gap-x-3">
             {item.nextCheck ? (
               <span>
-                {t('items.nextCheckNoted', {
+                {t('items.nextCheck', {
                   time: format.dateTime(new Date(item.nextCheck), { dateStyle: 'medium', timeStyle: 'short' })
                 })}
               </span>

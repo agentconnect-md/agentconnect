@@ -298,6 +298,8 @@ import {
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { askerIdentity, assistantItemToolsFor, assistantModeOn } from './mcp/ops/assistant-items.js'
 import { AssistantDrafts, type DraftAsker, type InterceptedPost, type PostInterception } from './assistant/drafts.js'
+import { AssistantPatrols, PATROL_SWEEP_INTERVAL_MS, patrolTools, type PatrolParent } from './assistant/patrol.js'
+import type { AssistantPlace } from './store/assistant-items.js'
 import type {
   AssistantDraft,
   AssistantDraftDestination,
@@ -675,7 +677,7 @@ import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
 import { isNoResponseBody } from './session/no-response.js'
-import { sessionReplyRoute } from './session/reply-route.js'
+import { codeHostReplySnapshot, sessionReplyRoute } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { sessionPodOf } from './cp/agent-wake.js'
@@ -758,7 +760,7 @@ import {
   sessionThreadOf
 } from './messages/normalized.js'
 import { isAppendCoordinate } from './session/append-coordinate.js'
-import { isSubsessionCoordinate } from './session/subsession-coordinate.js'
+import { isPatrolCoordinate, isSubsessionCoordinate } from './session/subsession-coordinate.js'
 import {
   ConnectionReconciler,
   type ConnectionReconcilerHost,
@@ -1830,6 +1832,7 @@ export class Daemon {
   // Recurring idle sweep (reap idle hosts + TTL-close idle sessions).
   private idleSweepTimer?: TimerHandle
   private storeRetentionTimer?: TimerHandle
+  private patrolSweepTimer?: TimerHandle
   // Last probe-temp-root reclaim, so it rides the idle sweep at its own slower
   // cadence — the OS temp dir can hold thousands of entries to scan.
   private lastProbeRootSweepAt = 0
@@ -3996,7 +3999,22 @@ export class Daemon {
       requestMemoryWriteApproval: (ctx, ask) => this.requestMemoryWriteApprovalFor(ctx, ask),
       assistantItems: {
         ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantItems : undefined),
-        askerFor: (ctx) => this.assistantAskerFor(ctx)
+        askerFor: (ctx) => this.assistantAskerFor(ctx),
+        patrol: {
+          itemFor: (ctx) =>
+            this.patrols.itemFor(
+              ctx.agentId,
+              sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+            ),
+          report: (ctx, itemId, text) =>
+            this.patrols.report(
+              ctx.agentId,
+              sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
+              itemId,
+              text
+            ),
+          now: () => this.clock.now()
+        }
       },
       memoryScope: (ctx) => ({
         ...this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
@@ -4341,11 +4359,14 @@ export class Daemon {
         if (this.evaluationProfile.memory === 'configured') {
           tools.push(...this.memory.toolsForAgent(agent.id))
         }
+        // assistant-mode.md §5.9: a patrol gets the reads and its own updateItem, nothing that writes or posts.
+        const patrol = isPatrolCoordinate(thread)
+        if (patrol) tools = patrolTools(tools)
         // Collaboration Arena §6: game-owned structured action tools, appended
         // AFTER the product tools (collision-checked at startup) and filtered
         // by per-agent visibility (e.g. only living players see `vote`).
         const evaluationTools = this.opts.evaluation?.environment?.tools
-        if (evaluationTools?.length) {
+        if (!patrol && evaluationTools?.length) {
           tools.push(...evaluationTools.filter((definition) => definition.visibleTo(agent.id)).map((d) => d.descriptor))
         }
         // MCP Apps (webchat-mcp-apps.md §4): a `ui: true` server's tools reach the runtime through
@@ -4355,7 +4376,7 @@ export class Daemon {
         // server still dialing contributes to the next session rather than delaying this one.
         // The admin catalog is a CP-delegated webchat descriptor, never an Apps-host server.
         const enabledApps = agent.mcpServers.filter((name) => name !== ADMIN_MCP_SERVER_NAME)
-        tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
+        if (!patrol) tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
         // Bind the bridge token to the exact integration that delivered this turn.
         // Falling back to agent.integrations[0] can send a title/message through the
         // wrong bot when one agent has multiple integrations. A memory-only session
@@ -4928,6 +4949,7 @@ export class Daemon {
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
     this.armStoreRetentionSweep()
+    this.armPatrolSweep()
     if (this.sourceCacheSweeper && this.k8sPlane)
       this.sourceCacheSweeper.start(`${this.k8sPlane.memberId}/${randomUUID().slice(0, 8)}`)
     this.startupComplete = true
@@ -7652,6 +7674,76 @@ export class Daemon {
     return this.assistantDraftService
   }
 
+  /** Assistant-mode patrols (assistant-mode.md §5.9), built on first use over the live store. */
+  private assistantPatrolService?: AssistantPatrols
+  private get patrols(): AssistantPatrols {
+    this.assistantPatrolService ??= new AssistantPatrols({
+      now: () => this.clock.now(),
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m), debug: (m) => this.log.debug(m) },
+      agents: () => this.agents.values(),
+      // Only the duty holder patrols, never for a paused or draining agent; a missed check is not replayed.
+      mayPatrol: (agentId) => this.servesAgent(agentId) && !this.paused(agentId) && !this.drainingAgents.has(agentId),
+      draining: () => this.draining,
+      items: this.store.assistantItems,
+      patrols: this.store.assistantPatrols,
+      subsessions: this.store.assistantSubsessions,
+      parentFor: (agentId, place) => this.patrolParent(agentId, place),
+      dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
+        this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
+      reportToParent: async (agentId, msg, parentSessionId, text) => {
+        // An interrupt refuses fresh deliveries until its turns have unwound, and this report is one.
+        await this.waitForSafetyDrain(agentId)
+        const result = await this.collab.replyToSession(
+          {
+            callerAgentId: agentId,
+            platform: msg.platform,
+            ...(msg.transportScope !== undefined ? { callerTransportScope: msg.transportScope } : {}),
+            callerChannel: msg.channel,
+            callerThread: sessionThreadOf(msg),
+            sessionId: parentSessionId,
+            text
+          },
+          { parentSessionId, hopCount: 0 }
+        )
+        if (!result.delivered) this.log.warn(`patrol report not delivered (${result.reason ?? 'unknown'})`)
+        return result.delivered
+      }
+    })
+    return this.assistantPatrolService
+  }
+
+  /** The long session of an item's place, which a patrol of the item takes as its parent and reports into. */
+  private async patrolParent(agentId: string, place: AssistantPlace): Promise<PatrolParent | undefined> {
+    const rec = await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)
+    if (!rec?.thread) return undefined
+    const sessionId = await this.store.ensureOutwardSessionId(rec.key, agentId, this.clock.now())
+    const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
+    const externalOrigin = await this.externalOriginForSession(agentId, rec.key)
+    return {
+      key: rec.key,
+      sessionId,
+      platform: rec.platform,
+      channel: rec.channel,
+      thread: rec.thread,
+      transportScope: rec.transportScope ?? null,
+      ...(integrationId !== undefined ? { integrationId } : {}),
+      inherited: {
+        originCodeHostReplyTarget: codeHostReplySnapshot(rec, undefined),
+        ...(externalOrigin ? { externalOrigin } : {}),
+        ...((await this.store.isCaptureExcluded(agentId, rec.key)) ? { parentPrivate: true } : {})
+      }
+    }
+  }
+
+  /** Once a minute, the duty holder's patrol sweep (assistant-mode.md §5.9). */
+  private armPatrolSweep(): void {
+    this.patrolSweepTimer = this.clock.setTimeout(async () => {
+      this.patrolSweepTimer = undefined
+      await this.patrols.sweep().catch((err) => this.log.warn(`patrol sweep failed: ${formatErr(err)}`))
+      if (!this.draining) this.armPatrolSweep()
+    }, PATROL_SWEEP_INTERVAL_MS)
+  }
+
   /** Record an agent-sent message into the posting session's transcript, in the thread it belongs to. */
   private async recordOutboundPost(
     origin: PostOrigin,
@@ -9838,6 +9930,8 @@ export class Daemon {
     for (const session of await this.store.listSessions(agent.id)) {
       const host = this.hostForOwner(this.sessionOwnerKey(agent.id, session.key))
       if (!session.acpSessionId || host?.hasSession?.(session.acpSessionId) !== true) continue
+      // A patrol keeps its read-only mode (assistant-mode.md §5.9).
+      if (isPatrolCoordinate(session.thread)) continue
       const sessionId = session.acpSessionId
       const target = pinnedDecisionTarget(session.decisionModel)
       void this.applyConfiguredRuntimeSettings(agentWithRuntime(agent, target), host, sessionId, target?.model)
@@ -15684,10 +15778,15 @@ export class Daemon {
     const permissionModeOverride = allowRuntimeChangesInChat
       ? await this.store.getPermissionModeOverride(key)
       : undefined
-    const effectivePermissionMode =
-      permissionModeOverride ??
-      runtimeAgent?.permissionMode ??
-      this.runtimeFacts.modelCatalog(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode
+    // assistant-mode.md §5.9: a patrol runs in the runtime's own read-only mode, never the agent's.
+    const patrol = isPatrolCoordinate(p.plan.sessionThread)
+    const patrolMode = patrol ? readOnlyExtractionMode(host.permissionModeOptions?.(sessionId)?.modes ?? []) : undefined
+    if (patrol && !patrolMode) this.log.warn(`patrol ${key}: the runtime offers no read-only mode; patrol degraded`)
+    const effectivePermissionMode = patrol
+      ? patrolMode
+      : (permissionModeOverride ??
+        runtimeAgent?.permissionMode ??
+        this.runtimeFacts.modelCatalog(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode)
     if (effectivePermissionMode) {
       try {
         await host.setSessionPermissionMode(sessionId, effectivePermissionMode)
@@ -18801,6 +18900,18 @@ export class Daemon {
     key: string,
     outcome: 'completed' | 'interrupted' | 'failed'
   ): Promise<void> {
+    // A patrol (§5.9) owes no report and gets no failure report; its end is counted on its item instead.
+    if (isPatrolCoordinate(sessionThreadOf(entry.msg))) {
+      void this.patrols.settle({
+        agentId: entry.agentId,
+        key,
+        msg: entry.msg,
+        outcome,
+        reason: entry.cancelledReason,
+        replayed: this.retainsInboxRow(entry, outcome === 'failed')
+      })
+      return
+    }
     await this.collab.settleSubsessionTurn({
       agentId: entry.agentId,
       key,
@@ -24636,6 +24747,10 @@ export class Daemon {
     if (this.storeRetentionTimer !== undefined) {
       this.clock.clearTimeout(this.storeRetentionTimer)
       this.storeRetentionTimer = undefined
+    }
+    if (this.patrolSweepTimer !== undefined) {
+      this.clock.clearTimeout(this.patrolSweepTimer)
+      this.patrolSweepTimer = undefined
     }
     this.runtimeFacts.dispose()
     this.k8sProbeSchedule?.stop()

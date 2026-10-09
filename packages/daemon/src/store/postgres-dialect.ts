@@ -268,7 +268,12 @@ export const canonicalColumns = [
   'grantEpoch',
   'childSessionKey',
   'parentSessionId',
-  'parentSessionKey'
+  'parentSessionKey',
+  'patrolledNextCheck',
+  'retryAt',
+  'stoppedNextCheck',
+  'runningKey',
+  'runningNextCheck'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */
