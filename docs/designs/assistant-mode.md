@@ -408,10 +408,11 @@ below), so opening it everywhere does not reopen what the read rule closes.
   `channel` post at a channel root, and a reply into another session through `sessionId` — since
   each carries the content into a session or place P does not alone see. The mark is stored with
   the session so it survives a restart or handover, and the refusal tells P that starting a new
-  conversation lifts it. The DM's own history still holds the earlier answers, so any session that
-  reads it back — through `recall` or a history read of the DM — while another session there
-  carries the mark is marked too, a sub-session or patrol included. This is a refusal by tool, not
-  an output filter; writes that leave through other tools are an open question (§9).
+  conversation lifts it. The restriction follows the content, not only the session: the DM's own
+  history still holds the earlier answers, so any session that reads it back — through `recall` or
+  a history read of the DM — once any session there was marked, a retired one included, is marked
+  too, a sub-session or patrol included. This is a refusal by tool, not an output filter; writes
+  that leave through other tools are an open question (§9).
 - **Memory**: DMs are already outside shared memory. When the per-person memory space lands,
   anything it captures from such a session is injected only where P is the whole audience.
 - **Revocation**: after P leaves the place, excerpts already in P's DM context stay there; like
