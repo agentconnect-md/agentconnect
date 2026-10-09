@@ -2655,7 +2655,8 @@
         "configuration": "Configuration",
         "workspace": "Workspace",
         "memory": "Memory",
-        "tools": "Tools & Skills"
+        "tools": "Tools & Skills",
+        "activity": "Activity"
       },
       "actions": {
         "playground": "Playground",
@@ -3035,6 +3036,70 @@
         "blockers": {
           "needsTarget": "Choose a responsible user or a fallback conversation.",
           "invalidLimit": "Each limit must be a whole number within its range."
+        }
+      },
+      "activity": {
+        "loading": "Loading…",
+        "unavailable": "Activity is unavailable right now.",
+        "upgradeDaemon": "Upgrade this agent’s daemon to see its activity.",
+        "more": "Only the most recent are shown.",
+        "keep": "Keep",
+        "webchat": "Webchat",
+        "dmWith": "DM with {name}",
+        "items": {
+          "title": "Items",
+          "empty": "No open items.",
+          "closed": "Done and dropped",
+          "closedEmpty": "None yet.",
+          "expand": "Show observations",
+          "collapse": "Hide observations",
+          "status": {
+            "active": "Active",
+            "waiting": "Waiting",
+            "done": "Done",
+            "dropped": "Dropped"
+          },
+          "doneWhen": "Done when: {text}",
+          "nextCheckNoted": "Next check noted for {time}",
+          "updated": "Updated {time}",
+          "noObservations": "No observations yet.",
+          "delete": "Delete",
+          "deleteConfirm": "Delete this item? The agent stops following it.",
+          "deleteFailed": "Couldn’t delete the item."
+        },
+        "subsessions": {
+          "title": "Sub-sessions",
+          "empty": "No sub-sessions yet.",
+          "state": {
+            "open": "Running",
+            "done": "Reported",
+            "failed": "Failed"
+          },
+          "untitled": "Untitled sub-session",
+          "starting": "Starting…",
+          "hidden": "Not visible to you",
+          "from": "From {name}",
+          "started": "Started {time}",
+          "conversation": "a conversation"
+        },
+        "drafts": {
+          "title": "Waiting for approval",
+          "empty": "No drafts waiting.",
+          "to": "To {target}",
+          "inThread": "in a thread",
+          "external": "External",
+          "approver": "Approver: {name}",
+          "expires": "Expires {time}",
+          "noApprover": "No one reachable"
+        },
+        "grants": {
+          "title": "Always allowed",
+          "empty": "No routes are always allowed.",
+          "grantedBy": "Allowed by {name} on {date}",
+          "granted": "Allowed on {date}",
+          "revoke": "Revoke",
+          "revokeConfirm": "Revoke? The next post on this route waits for approval again.",
+          "revokeFailed": "Couldn’t revoke the grant."
         }
       },
       "dreamSchedule": {

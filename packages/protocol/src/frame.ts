@@ -163,6 +163,12 @@ import {
   WorkspaceGitMessageResult
 } from './frames/workspace.js'
 import { TaskListReq, TaskList } from './frames/task.js'
+import {
+  AssistantActivityReadReq,
+  AssistantActivityReadResult,
+  AssistantActivityWriteReq,
+  AssistantActivityWriteResult
+} from './frames/assistant-activity.js'
 import { AutoMergeSetReq, AutoMergeStateReq, AutoMergeState } from './frames/automerge.js'
 import { SandboxKeepAliveReq, SandboxKeepAlive } from './frames/sandbox-keepalive.js'
 import {
@@ -498,6 +504,11 @@ export const FRAME_SCHEMAS = {
   // ── background tasks: a read of the daemon's in-memory lease. No cancel frame — see task.ts.
   'task/list': TaskListReq,
   'task/list/result': TaskList,
+  // ── assistant-mode Activity: the owning daemon's ledger, drafts, grants and sub-session index, proxied and never stored.
+  'assistant/activity/read': AssistantActivityReadReq,
+  'assistant/activity/read/result': AssistantActivityReadResult,
+  'assistant/activity/write': AssistantActivityWriteReq,
+  'assistant/activity/write/result': AssistantActivityWriteResult,
   // ── merge-when-ready: arm/read the EDGE's in-memory watcher. Nothing is stored on either side.
   'automerge/set': AutoMergeSetReq,
   'automerge/set/result': AutoMergeState,
@@ -812,6 +823,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('workspace/gitmessage/result', FRAME_SCHEMAS['workspace/gitmessage/result']),
   frame('task/list', FRAME_SCHEMAS['task/list']),
   frame('task/list/result', FRAME_SCHEMAS['task/list/result']),
+  frame('assistant/activity/read', FRAME_SCHEMAS['assistant/activity/read']),
+  frame('assistant/activity/read/result', FRAME_SCHEMAS['assistant/activity/read/result']),
+  frame('assistant/activity/write', FRAME_SCHEMAS['assistant/activity/write']),
+  frame('assistant/activity/write/result', FRAME_SCHEMAS['assistant/activity/write/result']),
   frame('automerge/set', FRAME_SCHEMAS['automerge/set']),
   frame('automerge/set/result', FRAME_SCHEMAS['automerge/set/result']),
   frame('automerge/state', FRAME_SCHEMAS['automerge/state']),

@@ -38,6 +38,7 @@ import { createMemoryReader, type AgentMemoryAdminResolver } from './memory-read
 import { createDreamReader } from './dream-reader.js'
 import { createLocalSkillsReader } from './local-skills-reader.js'
 import { createRuntimeCommandsReader } from './runtime-commands-reader.js'
+import { createAssistantActivity } from './assistant-activity.js'
 import type { RuntimeCommandsCache } from '../runtimes/runtime-commands.js'
 import type { CpAgentRegistry } from './cp-agent-registry.js'
 import type { CpIntegrationRegistry } from './cp-integration-registry.js'
@@ -431,6 +432,12 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
     // reclaim decision, so it needs neither of the workspace coordinators.
     taskReader: { list: async (req) => host.listBackgroundTasks(req) },
+    // The Activity view reads and edits this daemon's own ledger rows; the CP has already checked the caller.
+    assistantActivity: createAssistantActivity({
+      store: () => host.store(),
+      agent: (agentId) => host.agents().get(agentId),
+      now: () => systemClock.now()
+    }),
     // Merge-when-ready lives at the EDGE and nowhere else — the CP relays these two frames and
     // stores nothing, so an unarmed answer is the truth about this process, not a lost row.
     ...(host.autoMerge() ? { autoMerge: host.autoMerge()! } : {}),

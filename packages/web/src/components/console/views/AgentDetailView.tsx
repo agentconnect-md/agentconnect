@@ -90,6 +90,7 @@ import { WorkspaceScopePicker } from '@/components/console/WorkspaceScopePicker'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { AssistantModePanel } from '@/components/console/AssistantModePanel'
+import { AssistantActivityPanel } from '@/components/console/AssistantActivityPanel'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
@@ -185,7 +186,7 @@ import { CODE_HOST_PROJECTION, codeHostRecord } from '@/lib/code-hosts'
 import { githubHookScope, githubHookScopeKey } from '@/lib/github-hook-scope'
 import { EscapeLayer } from '@/components/console/Scrim'
 
-type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools'
+type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools' | 'activity'
 const HOOK_REFRESH_MS = 30_000
 
 // The tile SET is derived from the owning daemon's advertised adapters (below)
@@ -312,10 +313,11 @@ function AgentDetail() {
   const params = useSearchParams()
   const router = useRouter()
   const rawTab = params.get('tab')
-  // Integrations is the default landing tab (first, no `?tab=`); everything else
-  // is `?tab=<id>`.
-  const tab: DetailTab =
-    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'tools' ? rawTab : 'integrations'
+  // Integrations is the default landing tab (no `?tab=`); every other tab is `?tab=<id>`.
+  const requestedTab: DetailTab =
+    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'tools' || rawTab === 'activity'
+      ? rawTab
+      : 'integrations'
   const {
     agents,
     getAgent,
@@ -342,10 +344,14 @@ function AgentDetail() {
     loadingMore: workspaceSessionsLoadingMore,
     loadMore: loadMoreWorkspaceSessions,
     isLoading: workspaceSessionsLoading
-  } = useSessionList(MOCK_MODE || tab !== 'workspace' ? null : activeOrg?.id, { agentId: id }, { grouped: false })
+  } = useSessionList(
+    MOCK_MODE || requestedTab !== 'workspace' ? null : activeOrg?.id,
+    { agentId: id },
+    { grouped: false }
+  )
   const selectedWorktreeSessionId = params.get('worktree')?.trim() || null
   const { data: selectedWorktreeDetail } = useSWR(
-    tab === 'workspace' && selectedWorktreeSessionId
+    requestedTab === 'workspace' && selectedWorktreeSessionId
       ? consoleKeys.sessionDetail(activeOrg?.id, selectedWorktreeSessionId)
       : null,
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId, orgId)
@@ -933,6 +939,9 @@ function AgentDetail() {
       </div>
     )
   }
+  // Activity exists only for an assistant-mode agent, behind the flag; a link to it otherwise lands on Integrations.
+  const activityShown = featureFlagEnabled('assistant-mode') && da.assistantMode?.enabled === true
+  const tab: DetailTab = requestedTab === 'activity' && !activityShown ? 'integrations' : requestedTab
   // The owning daemon (if placed in the live fleet). Gates the agent's "online" —
   // an agent can't be online when its daemon is offline — and names the daemon.
   const owningDaemon = daemons.find((d) => d.daemonId === da.daemon)
@@ -1247,9 +1256,7 @@ function AgentDetail() {
         </button>
       </div>
 
-      {/* Tab strip — single-rendered: `.tab`/`.tab.on` style the desktop tabs,
-          `max-desktop:` utilities restore the mobile scrollable strip (incl. hiding
-          the .tab.on::after underline in favour of the mobile border-bottom). */}
+      {/* One tab strip: `.tab` styles desktop, `max-desktop:` utilities make it the phone's scrollable strip. */}
       <div className="flex gap-6 overflow-x-auto border-b border-(--border-default) bg-(--surface-card) px-4 [-webkit-overflow-scrolling:touch] desktop:mb-[18px] desktop:gap-0 desktop:overflow-x-visible desktop:bg-transparent desktop:px-0">
         {(
           [
@@ -1257,7 +1264,8 @@ function AgentDetail() {
             ['config', t('tabs.configuration')],
             ['workspace', t('tabs.workspace')],
             ['memory', t('tabs.memory')],
-            ['tools', t('tabs.tools')]
+            ['tools', t('tabs.tools')],
+            ...(activityShown ? [['activity', t('tabs.activity')]] : [])
           ] as [DetailTab, string][]
         ).map(([t, label]) => {
           const on = tab === t
@@ -2943,6 +2951,11 @@ function AgentDetail() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Activity tab — what an assistant-mode agent follows, runs and waits on, read from its daemon. */}
+      {tab === 'activity' && (
+        <AssistantActivityPanel agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
       )}
 
       {/* One review/check settings surface, rendered as a bottom sheet on mobile

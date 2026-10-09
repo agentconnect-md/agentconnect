@@ -143,6 +143,26 @@ describe('the assistant sub-session index', () => {
     // The new row, still within its grace, counts beside the running one.
     expect(await s.assistantSubsessions.openWithinLimit(row(a, 'after'), { limit: 2, startedSince: 1_001 })).toBe(false)
   })
+
+  it('lists the agent’s open rows first, then the newest, within the limit', async () => {
+    const s = await open()
+    const [a, b] = [agent(), agent()]
+    await s.assistantSubsessions.open({ ...row(a, 'old-open'), now: 1_000 })
+    await s.assistantSubsessions.open({ ...row(a, 'done'), now: 3_000 })
+    await s.assistantSubsessions.open({ ...row(a, 'new-open'), now: 2_000 })
+    await s.assistantSubsessions.open({ ...row(a, 'failed'), now: 4_000 })
+    await s.assistantSubsessions.open(row(b, 'other'))
+    await s.assistantSubsessions.finish(a, childKey(a, 'done'), 'done')
+    await s.assistantSubsessions.finish(a, childKey(a, 'failed'), 'failed')
+    const listed = await s.assistantSubsessions.list(a, 10)
+    expect(listed.map((r) => [r.childSessionKey, r.state])).toEqual([
+      [childKey(a, 'new-open'), 'open'],
+      [childKey(a, 'old-open'), 'open'],
+      [childKey(a, 'failed'), 'failed'],
+      [childKey(a, 'done'), 'done']
+    ])
+    expect((await s.assistantSubsessions.list(a, 2)).map((r) => r.state)).toEqual(['open', 'open'])
+  })
 })
 
 describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLite', () => {

@@ -95,6 +95,10 @@ import {
   WorkspaceGitMessageReq,
   WorkspaceGitMessageResult,
   TaskListReq,
+  AssistantActivityReadReq,
+  AssistantActivityReadResult,
+  AssistantActivityWriteReq,
+  AssistantActivityWriteResult,
   AgentWakeReq,
   AgentWakeOk,
   TaskList,
@@ -1327,6 +1331,27 @@ export class ControlSender {
   async taskList(daemonId: string, req: TaskListReq): Promise<TaskList> {
     const c = this.must(daemonId)
     return c.conn.request<TaskList>('task/list', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Read one section of an assistant-mode agent's Activity view from the daemon's store; proxied, never stored. */
+  async assistantActivityRead(daemonId: string, req: AssistantActivityReadReq): Promise<AssistantActivityReadResult> {
+    const c = this.must(daemonId)
+    return c.conn.request<AssistantActivityReadResult>('assistant/activity/read', req, {
+      epoch: c.sessionEpoch,
+      agentId: req.agentId
+    })
+  }
+
+  /** An editor's delete of a ledger item or revoke of a post grant, applied on the daemon that holds them. */
+  async assistantActivityWrite(
+    daemonId: string,
+    req: AssistantActivityWriteReq
+  ): Promise<AssistantActivityWriteResult> {
+    const c = this.must(daemonId)
+    return c.conn.request<AssistantActivityWriteResult>('assistant/activity/write', req, {
+      epoch: c.sessionEpoch,
+      agentId: req.agentId
+    })
   }
 
   // Bring an agent's cluster sandbox to Running WITHOUT a turn (REQ → `agent/wake/ok`). Addressed at the

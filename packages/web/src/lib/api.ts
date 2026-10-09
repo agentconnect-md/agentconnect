@@ -3771,6 +3771,122 @@ export async function decideAgentPermissionRequest(
   )
 }
 
+// ── Assistant-mode Activity (assistant-mode.md §1.7, §5.11): read from the agent's daemon, kept nowhere else ──
+
+export interface AssistantPlaceDto {
+  platform: string
+  channel: string
+}
+
+export type AssistantItemStatus = 'active' | 'waiting' | 'done' | 'dropped'
+
+export interface AssistantItemDto {
+  id: string
+  title: string
+  status: AssistantItemStatus
+  doneWhen: string | null
+  /** When the agent noted it should check next; nothing wakes it for this yet. */
+  nextCheck: string | null
+  origin: AssistantPlaceDto
+  places: AssistantPlaceDto[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AssistantItemDetailDto extends AssistantItemDto {
+  summary: string
+  /** Newest first. */
+  observations: { text: string; at: string }[]
+}
+
+export interface AssistantSubsessionDto {
+  /** Present only when the viewer may open it. */
+  sessionId: string | null
+  title: string | null
+  state: 'open' | 'done' | 'failed'
+  startedAt: string
+  visible: boolean
+  parent: { sessionId: string; title: string | null; platform: string | null; channelName: string | null } | null
+}
+
+export interface AssistantDraftDto {
+  id: string
+  kind: 'reply' | 'elsewhere'
+  target: {
+    platform: string
+    integrationId: string
+    channel: string
+    thread: string | null
+    name: string | null
+    dm: boolean
+    external: boolean
+  }
+  text: string
+  approver: {
+    kind: 'member' | 'conversation'
+    integrationId: string
+    channel: string
+    userId: string | null
+    consoleUserId: string | null
+    name: string | null
+  } | null
+  createdAt: string
+  expiresAt: string
+}
+
+export interface AssistantGrantPlaceDto {
+  platform: string
+  integrationId: string | null
+  channel: string
+}
+
+export interface AssistantGrantDto {
+  id: string
+  source: AssistantGrantPlaceDto
+  target: AssistantGrantPlaceDto
+  grantedByName: string | null
+  grantedAt: string
+}
+
+const assistantBase = (agentId: string) => `${orgBase()}/agents/${encodeURIComponent(agentId)}/assistant`
+
+export async function fetchAssistantItems(
+  agentId: string,
+  section: 'open' | 'closed'
+): Promise<{ items: AssistantItemDto[]; truncated: boolean }> {
+  return apiGet(`${assistantBase(agentId)}/items?section=${section}`)
+}
+
+export async function fetchAssistantItem(agentId: string, itemId: string): Promise<AssistantItemDetailDto> {
+  return apiGet(`${assistantBase(agentId)}/items/${encodeURIComponent(itemId)}`)
+}
+
+export async function deleteAssistantItem(agentId: string, itemId: string): Promise<void> {
+  await apiDelete(`${assistantBase(agentId)}/items/${encodeURIComponent(itemId)}`)
+}
+
+export async function fetchAssistantSubsessions(
+  agentId: string
+): Promise<{ subsessions: AssistantSubsessionDto[]; truncated: boolean }> {
+  return apiGet(`${assistantBase(agentId)}/subsessions`)
+}
+
+export async function fetchAssistantDrafts(
+  agentId: string
+): Promise<{ drafts: AssistantDraftDto[]; truncated: boolean }> {
+  return apiGet(`${assistantBase(agentId)}/drafts`)
+}
+
+export async function fetchAssistantGrants(
+  agentId: string
+): Promise<{ grants: AssistantGrantDto[]; truncated: boolean }> {
+  return apiGet(`${assistantBase(agentId)}/grants`)
+}
+
+export async function revokeAssistantGrant(agentId: string, grantId: string): Promise<void> {
+  await apiDelete(`${assistantBase(agentId)}/grants/${encodeURIComponent(grantId)}`)
+}
+
 /** The icon upload/delete result — the new descriptor + resolved display URL. */
 export interface IconResult {
   icon: AgentIcon | null

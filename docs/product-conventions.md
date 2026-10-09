@@ -936,6 +936,28 @@ making the main conversation private still makes it private. A sub-session canno
 sub-sessions of its own. Only the assistant-mode agent is told about this form; for every
 other agent, and for every other form, a postless self-call is refused as before.
 
+## Assistant-mode Activity
+
+The page of an agent in assistant mode has an Activity tab, offered while the console's
+`assistant-mode` flag is on. No other agent shows it, and a link to it opens Integrations
+instead. It is read from the agent's daemon when it is shown and kept nowhere else; each list
+shows the most recent entries, up to a limit, and says when more exist.
+
+- **Items** are visible to everyone who can view the agent: the active and waiting ones, most
+  recently updated first, each with what counts as done, the next check the agent noted, the
+  places its followers follow it from and when it last changed. The next check is
+  shown as noted, not scheduled: nothing wakes the agent for it yet. Expanding an item shows its
+  summary and newest observations. Done and dropped items sit in a collapsed section that is read
+  only when opened. An item never shows who follows it or the wording of a conversation. An editor
+  may delete an item after a confirmation; the agent stops following it.
+- **Sub-sessions** are listed for everyone who can view the agent, running ones first, each with
+  its state and start. Its title, a link to its session and the conversation that opened it appear
+  only to someone who may view that conversation.
+- **Waiting for approval** is shown to editors only: each pending draft's target, its exact text,
+  who is asked to approve it and when it expires. It is approved or discarded on its card, not here.
+- **Always allowed** is shown to editors only: each "Always allow from here to there" route. An
+  editor may revoke one after a confirmation; the next post along it waits for approval again.
+
 ## Directional agent visibility
 
 Agent-to-agent visibility is the intersection of two independently configured directions.

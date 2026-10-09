@@ -123,6 +123,21 @@ export interface AssistantGrantPlace {
   channel: string
 }
 
+/** One "always allow from here to there" grant as listed; `id` digests its pair of places. */
+export interface AssistantPostGrant {
+  id: string
+  source: AssistantGrantPlace
+  target: AssistantGrantPlace
+  grantedBy: string | null
+  grantedAt: number
+}
+
+/** A grant's stable name: a digest of its pair of places, the same key the table is unique on. */
+export function assistantGrantId(source: AssistantGrantPlace, target: AssistantGrantPlace): string {
+  const parts = [source, target].flatMap((place) => [place.platform, place.integrationId ?? '', place.channel])
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32)
+}
+
 export const ASSISTANT_DRAFT_SCHEMA = `
       CREATE TABLE IF NOT EXISTS assistant_draft (
         id TEXT PRIMARY KEY,
@@ -259,6 +274,26 @@ function draftOf(row: Row): AssistantDraft {
     settledAt: num(row.settledAt),
     messageId: str(row.messageId),
     failure: str(row.failure)
+  }
+}
+
+function grantOf(row: Row): AssistantPostGrant {
+  const source = {
+    platform: String(row.sourcePlatform),
+    integrationId: str(row.sourceIntegrationId) || null,
+    channel: String(row.sourceChannel)
+  }
+  const target = {
+    platform: String(row.targetPlatform),
+    integrationId: str(row.targetIntegrationId) || null,
+    channel: String(row.targetChannel)
+  }
+  return {
+    id: assistantGrantId(source, target),
+    source,
+    target,
+    grantedBy: str(row.grantedBy),
+    grantedAt: Number(row.grantedAt)
   }
 }
 
@@ -468,6 +503,60 @@ export class AssistantDraftLedger {
       )
     ).rows
     return rows.length > 0
+  }
+
+  /** Drafts still awaiting review and not yet due, the soonest to lapse first. */
+  async listPending(agentId: string, limit: number, now = Date.now()): Promise<AssistantDraft[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_draft WHERE agentId = ? AND status = 'awaiting_review' AND expiresAt > ?
+         ORDER BY expiresAt, id LIMIT ?`,
+        [agentId, now, limit]
+      )
+    ).rows as Row[]
+    return rows.map(draftOf)
+  }
+
+  /** The grants of the current generation, newest first; an older one is never honored, so it is not listed. */
+  async listGrants(agentId: string, limit: number): Promise<AssistantPostGrant[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT g.sourcePlatform, g.sourceIntegrationId, g.sourceChannel, g.targetPlatform, g.targetIntegrationId,
+           g.targetChannel, g.grantedBy, g.grantedAt
+         FROM assistant_post_grant g WHERE g.agentId = ?
+           AND g.grantEpoch = COALESCE((SELECT e.grantEpoch FROM assistant_grant_epoch e WHERE e.agentId = ?), 0)
+         ORDER BY g.grantedAt DESC, g.sourceChannel, g.targetChannel LIMIT ?`,
+        [agentId, agentId, limit]
+      )
+    ).rows as Row[]
+    return rows.map(grantOf)
+  }
+
+  /** Revoke the grant this digest names, whatever its generation; false when there is none. */
+  async revokeGrant(agentId: string, grantId: string): Promise<boolean> {
+    const rows = (
+      await this.db.query(
+        `SELECT sourcePlatform, sourceIntegrationId, sourceChannel, targetPlatform, targetIntegrationId, targetChannel,
+           grantedBy, grantedAt FROM assistant_post_grant WHERE agentId = ?`,
+        [agentId]
+      )
+    ).rows as Row[]
+    const grant = rows.map(grantOf).find((g) => g.id === grantId)
+    if (!grant) return false
+    const { changes } = await this.db.query(
+      `DELETE FROM assistant_post_grant WHERE agentId = ? AND sourcePlatform = ? AND sourceIntegrationId = ?
+         AND sourceChannel = ? AND targetPlatform = ? AND targetIntegrationId = ? AND targetChannel = ?`,
+      [
+        agentId,
+        grant.source.platform,
+        grant.source.integrationId ?? '',
+        grant.source.channel,
+        grant.target.platform,
+        grant.target.integrationId ?? '',
+        grant.target.channel
+      ]
+    )
+    return changes > 0
   }
 
   /** Grants end whenever assistant mode is switched off or on: the generation moves on, so no pending card can grant again. */

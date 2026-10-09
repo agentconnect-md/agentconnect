@@ -2655,7 +2655,8 @@
         "configuration": "配置",
         "workspace": "工作区",
         "memory": "记忆",
-        "tools": "工具与技能"
+        "tools": "工具与技能",
+        "activity": "动态"
       },
       "actions": {
         "playground": "试用",
@@ -3035,6 +3036,70 @@
         "blockers": {
           "needsTarget": "请选择负责人或备用会话。",
           "invalidLimit": "每项限制必须是其范围内的整数。"
+        }
+      },
+      "activity": {
+        "loading": "加载中…",
+        "unavailable": "暂时无法读取动态。",
+        "upgradeDaemon": "升级此 Agent 的 Daemon 后才能查看动态。",
+        "more": "只显示最近的部分。",
+        "keep": "保留",
+        "webchat": "Webchat",
+        "dmWith": "与 {name} 的私信",
+        "items": {
+          "title": "事项",
+          "empty": "没有进行中的事项。",
+          "closed": "已完成和已放弃",
+          "closedEmpty": "暂无。",
+          "expand": "显示观察记录",
+          "collapse": "隐藏观察记录",
+          "status": {
+            "active": "进行中",
+            "waiting": "等待中",
+            "done": "已完成",
+            "dropped": "已放弃"
+          },
+          "doneWhen": "完成标准：{text}",
+          "nextCheckNoted": "已记下下次检查：{time}",
+          "updated": "更新于 {time}",
+          "noObservations": "暂无观察记录。",
+          "delete": "删除",
+          "deleteConfirm": "删除此事项？Agent 将不再跟进它。",
+          "deleteFailed": "删除事项失败。"
+        },
+        "subsessions": {
+          "title": "子会话",
+          "empty": "还没有子会话。",
+          "state": {
+            "open": "运行中",
+            "done": "已回报",
+            "failed": "失败"
+          },
+          "untitled": "未命名的子会话",
+          "starting": "启动中…",
+          "hidden": "你无权查看",
+          "from": "来自 {name}",
+          "started": "开始于 {time}",
+          "conversation": "一个会话"
+        },
+        "drafts": {
+          "title": "等待批准",
+          "empty": "没有等待批准的草稿。",
+          "to": "发往 {target}",
+          "inThread": "在话题中",
+          "external": "外部",
+          "approver": "审批人：{name}",
+          "expires": "{time} 过期",
+          "noApprover": "无人可审批"
+        },
+        "grants": {
+          "title": "始终允许",
+          "empty": "没有始终允许的路线。",
+          "grantedBy": "{name} 于 {date} 允许",
+          "granted": "于 {date} 允许",
+          "revoke": "撤销",
+          "revokeConfirm": "撤销？这条路线的下一次发送会重新等待批准。",
+          "revokeFailed": "撤销失败。"
         }
       },
       "dreamSchedule": {

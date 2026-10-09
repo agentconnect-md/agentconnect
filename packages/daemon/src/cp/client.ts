@@ -141,6 +141,7 @@ import { CONTROL_HANDLERS, type ControlDeps } from './control/registry.js'
 import type { SessionControlDeps } from './control/session.js'
 import type { SkillsControlDeps } from './control/skills.js'
 import type { TaskControlDeps } from './control/task.js'
+import type { AssistantControlDeps } from './control/assistant.js'
 import type { AutoMergeControlDeps } from './control/automerge.js'
 import type { SandboxKeepAliveDeps } from './control/sandbox-keepalive.js'
 import type { RuntimeProbeDeps } from './control/runtime-probe.js'
@@ -210,6 +211,7 @@ export interface CpClientDeps
     SessionControlDeps,
     SkillsControlDeps,
     TaskControlDeps,
+    AssistantControlDeps,
     AutoMergeControlDeps,
     SandboxKeepAliveDeps,
     RuntimeProbeDeps,
@@ -385,6 +387,7 @@ export class CpClient {
       workspaceRead: deps.workspaceRead,
       workspaceGit: deps.workspaceGit,
       taskReader: deps.taskReader,
+      assistantActivity: deps.assistantActivity,
       autoMerge: deps.autoMerge,
       sandboxKeepAlive: deps.sandboxKeepAlive,
       runtimeProbe: deps.runtimeProbe,
