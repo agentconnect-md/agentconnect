@@ -3122,7 +3122,7 @@
         },
         "drafts": {
           "title": "等待批准",
-          "empty": "没有等待批准的草稿。",
+          "empty": "没有等待批准的内容。",
           "to": "发往 {target}",
           "inThread": "在话题中",
           "external": "外部",
@@ -3150,6 +3150,24 @@
             "gone": "已不在等待批准。",
             "unconfirmedWaiting": "无法确认是否已处理，它仍在等待批准。",
             "unconfirmedGone": "无法确认是否已处理，它已不在等待批准。请查看目标会话，可能已经发出。"
+          },
+          "proposal": {
+            "badge": "提议",
+            "why": "原因：{why}",
+            "item": "事项：{title}",
+            "runsIn": "在 {place} 中执行",
+            "deny": "拒绝",
+            "approveConfirm": "现在执行这项任务？结果会回报到 {place}。",
+            "denyConfirm": "拒绝这项提议？不会执行任何操作。",
+            "outcome": {
+              "executing": "已批准，正在后台执行，完成后回报到 {place}。",
+              "succeeded": "已批准，已执行并回报到 {place}。",
+              "denied": "已拒绝，没有执行任何操作。",
+              "failed": "无法执行：{reason}。没有执行任何操作。",
+              "outcome_unknown": "不确定是否已执行，请查看 {place}；不会再次执行。",
+              "expired": "已过期，没有执行任何操作。",
+              "unconfirmedGone": "无法确认是否已处理，它已不在等待批准。请查看 {place}，可能已经开始执行。"
+            }
           }
         },
         "grants": {

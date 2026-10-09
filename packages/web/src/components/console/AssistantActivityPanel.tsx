@@ -1,6 +1,6 @@
 'use client'
 
-// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): its items, sub-sessions, pending drafts and post grants.
+// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): its items, sub-sessions, pending drafts and proposals, and post grants.
 import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -47,9 +47,12 @@ const SUBSESSION_STATE_CLASS: Record<AssistantSubsessionDto['state'], string> = 
 
 type Translate = ReturnType<typeof useTranslations<'Agents.detail.activity'>>
 
-/** How a decision on a draft ended: its outcome, why the daemon refused it, or sent without an answer. */
+/** How a decision on a draft ended: its outcome, why the daemon refused it, sent without an answer, or a proposal left waiting at the sub-session limit. */
 type DraftResult =
-  { outcome: AssistantDraftOutcomeDto } | { refused: 'expired' | 'decided' | 'gone' } | { unconfirmed: true }
+  | { outcome: AssistantDraftOutcomeDto }
+  | { refused: 'expired' | 'decided' | 'gone' }
+  | { unconfirmed: true }
+  | { busy: string }
 
 const DRAFT_REFUSALS: Record<string, 'expired' | 'decided'> = {
   DRAFT_EXPIRED: 'expired',
@@ -205,7 +208,7 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
   ]
   const settledHere = (id: string) => {
     const result = decided[id]?.result
-    return result !== undefined && !('unconfirmed' in result)
+    return result !== undefined && !('unconfirmed' in result) && !('busy' in result)
   }
   const waiting = pendingDrafts.filter((draft) => !settledHere(draft.id)).length
 
@@ -216,6 +219,8 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
     } catch (err) {
       const refused = err instanceof ApiError ? DRAFT_REFUSALS[err.code ?? ''] : undefined
       if (refused) return settle({ refused })
+      // The agent runs as many sub-sessions as it may: the proposal keeps waiting, and says why.
+      if (err instanceof ApiError && err.code === 'SUBSESSION_LIMIT') return settle({ busy: err.message })
       if (err instanceof ApiError && err.status === 404) return settle({ refused: 'gone' })
       if (err instanceof ApiError && err.code === 'DECISION_UNCONFIRMED') {
         // It may have posted without an answer: keep the row and its warning, and read the list again.
@@ -569,6 +574,8 @@ function DraftRow({
       ? t('dmWith', { name: draft.target.name })
       : `${chatRoomSigil(draft.target.platform)}${draft.target.name}`
     : placeLabel(draft.target)
+  // A proposal runs its task in the item's conversation once approved; it offers no "always allow".
+  const proposal = draft.kind === 'task' ? draft.proposal : undefined
   const approver = draft.approver
   const member = approver?.consoleUserId ? members.find((m) => m.userId === approver.consoleUserId) : undefined
   const approverName = !approver
@@ -576,8 +583,8 @@ function DraftRow({
     : approver.kind === 'conversation'
       ? placeLabel(approver)
       : (approver.name ?? (member ? memberDisplayName(member) : (approver.userId ?? t('drafts.noApprover'))))
-  // An unconfirmed decision may be tried again only while the draft is still listed as waiting.
-  const canDecide = !result || ('unconfirmed' in result && pending)
+  // An unconfirmed decision may be tried again only while the draft is still listed as waiting; a proposal left waiting may be approved again.
+  const canDecide = !result || ('unconfirmed' in result && pending) || 'busy' in result
 
   const decide = async (decision: AssistantDraftDecision) => {
     setBusy(true)
@@ -598,23 +605,43 @@ function DraftRow({
 
   return (
     <div className={`px-4 py-3 ${first ? '' : 'border-t border-(--border-subtle)'}`} data-assistant-draft={draft.id}>
-      <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
-        <span className="min-w-0 break-words font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary) desktop:flex-1">
-          {t('drafts.to', { target })}
-          {draft.target.thread ? (
-            <span className="font-normal text-(--text-tertiary)"> · {t('drafts.inThread')}</span>
+      {proposal ? (
+        <>
+          <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
+            <span className="badge w-fit flex-none bg-(--status-info-soft) text-(--status-info)">
+              {t('drafts.proposal.badge')}
+            </span>
+            <span className="min-w-0 break-words font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary) desktop:flex-1">
+              {proposal.sentence}
+            </span>
+          </div>
+          {proposal.why ? (
+            <div className="mt-1 break-words font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
+              {t('drafts.proposal.why', { why: proposal.why })}
+            </div>
           ) : null}
-        </span>
-        {draft.target.external ? (
-          <span className="badge w-fit flex-none bg-(--status-paused-soft) text-(--status-paused)">
-            {t('drafts.external')}
+        </>
+      ) : (
+        <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
+          <span className="min-w-0 break-words font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary) desktop:flex-1">
+            {t('drafts.to', { target })}
+            {draft.target.thread ? (
+              <span className="font-normal text-(--text-tertiary)"> · {t('drafts.inThread')}</span>
+            ) : null}
           </span>
-        ) : null}
-      </div>
+          {draft.target.external ? (
+            <span className="badge w-fit flex-none bg-(--status-paused-soft) text-(--status-paused)">
+              {t('drafts.external')}
+            </span>
+          ) : null}
+        </div>
+      )}
       <div className="mt-2 max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-primary)">
         {draft.text}
       </div>
       <div className="mt-2 flex flex-col gap-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:flex-row desktop:gap-3">
+        {proposal ? <span>{t('drafts.proposal.runsIn', { place: target })}</span> : null}
+        {proposal?.itemTitle ? <span>{t('drafts.proposal.item', { title: proposal.itemTitle })}</span> : null}
         <span>{t('drafts.approver', { name: approverName })}</span>
         <span>
           {t('drafts.expires', {
@@ -622,15 +649,21 @@ function DraftRow({
           })}
         </span>
       </div>
-      {result ? <DraftOutcome result={result} pending={pending} /> : null}
+      {result ? <DraftOutcome result={result} pending={pending} proposalPlace={proposal ? target : undefined} /> : null}
       {!canDecide ? null : confirming ? (
         <ConfirmStrip
           prompt={
-            confirming === 'discard'
-              ? t('drafts.discardConfirm')
-              : t(confirming === 'approve' ? 'drafts.approveConfirm' : 'drafts.approveAlwaysConfirm', { target })
+            proposal
+              ? confirming === 'discard'
+                ? t('drafts.proposal.denyConfirm')
+                : t('drafts.proposal.approveConfirm', { place: target })
+              : confirming === 'discard'
+                ? t('drafts.discardConfirm')
+                : t(confirming === 'approve' ? 'drafts.approveConfirm' : 'drafts.approveAlwaysConfirm', { target })
           }
-          confirm={confirming === 'discard' ? t('drafts.discard') : t('drafts.approve')}
+          confirm={
+            confirming !== 'discard' ? t('drafts.approve') : proposal ? t('drafts.proposal.deny') : t('drafts.discard')
+          }
           keep={t('drafts.cancel')}
           busy={busy}
           tone={confirming === 'discard' ? 'danger' : 'primary'}
@@ -643,9 +676,9 @@ function DraftRow({
             {t('drafts.approve')}
           </Button>
           <Button variant="secondary" size="xs" onClick={() => setConfirming('discard')}>
-            {t('drafts.discard')}
+            {proposal ? t('drafts.proposal.deny') : t('drafts.discard')}
           </Button>
-          {draft.offerAlways ? (
+          {draft.offerAlways && !proposal ? (
             <Button variant="secondary" size="xs" onClick={() => setConfirming('approve_always')}>
               {t('drafts.approveAlways')}
             </Button>
@@ -662,22 +695,48 @@ function DraftRow({
 }
 
 const OUTCOME_CLASS: Record<AssistantDraftOutcomeDto['status'], string> = {
+  executing: 'text-(--status-info)',
   succeeded: 'text-(--status-online-text)',
   denied: 'text-(--text-secondary)',
   failed: 'text-(--status-error)',
   outcome_unknown: 'text-(--status-paused)'
 }
 
-/** What a decision did, in place of the draft's buttons. */
-function DraftOutcome({ result, pending }: { result: DraftResult; pending: boolean }) {
+/** What a decision did, in place of the draft's buttons; a proposal's names the conversation it runs in. */
+function DraftOutcome({
+  result,
+  pending,
+  proposalPlace
+}: {
+  result: DraftResult
+  pending: boolean
+  proposalPlace?: string | undefined
+}) {
   const t = useTranslations('Agents.detail.activity')
   let text: string
   let tone = 'text-(--text-secondary)'
-  if ('unconfirmed' in result) {
+  if ('busy' in result) {
     tone = 'text-(--status-paused)'
-    text = pending ? t('drafts.outcome.unconfirmedWaiting') : t('drafts.outcome.unconfirmedGone')
+    text = result.busy
+  } else if ('unconfirmed' in result) {
+    tone = 'text-(--status-paused)'
+    text = pending
+      ? t('drafts.outcome.unconfirmedWaiting')
+      : proposalPlace !== undefined
+        ? t('drafts.proposal.outcome.unconfirmedGone', { place: proposalPlace })
+        : t('drafts.outcome.unconfirmedGone')
   } else if ('refused' in result) {
-    text = t(`drafts.outcome.${result.refused}`)
+    text =
+      proposalPlace !== undefined && result.refused === 'expired'
+        ? t('drafts.proposal.outcome.expired')
+        : t(`drafts.outcome.${result.refused}`)
+  } else if (proposalPlace !== undefined) {
+    const { status, failure } = result.outcome
+    tone = OUTCOME_CLASS[status]
+    text =
+      status === 'failed'
+        ? t('drafts.proposal.outcome.failed', { reason: failure ?? t('drafts.outcome.unknownReason') })
+        : t(`drafts.proposal.outcome.${status}`, { place: proposalPlace })
   } else {
     const { status, alwaysAllowed, failure } = result.outcome
     tone = OUTCOME_CLASS[status]
@@ -686,7 +745,10 @@ function DraftOutcome({ result, pending }: { result: DraftResult; pending: boole
         ? t('drafts.outcome.succeededAlways')
         : status === 'failed'
           ? t('drafts.outcome.failed', { reason: failure ?? t('drafts.outcome.unknownReason') })
-          : t(`drafts.outcome.${status}`)
+          : // A post is never left running by its decision; read it as still settling.
+            status === 'executing'
+            ? t('drafts.outcome.unconfirmedWaiting')
+            : t(`drafts.outcome.${status}`)
   }
   return (
     <div

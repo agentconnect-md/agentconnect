@@ -140,12 +140,21 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           }
         }
         case 'drafts': {
-          const rows = await store.assistantDrafts.listPending(req.agentId, req.limit + 1, deps.now())
+          // Proposals only for a Control Plane that asked: an older one cannot read them.
+          const rows = await store.assistantDrafts.listPending(req.agentId, req.limit + 1, deps.now(), {
+            tasks: req.proposals === true
+          })
           const page = rows.slice(0, req.limit)
           const names = await store.getDisplayNames(
             page.flatMap((d) => (d.approver?.userId ? [d.approver.userId] : []))
           )
-          const { kept, trimmed } = withinBudget(page.map((draft) => draftOf(draft, names)))
+          const titles = new Map<string, string | null>()
+          for (const draft of page) {
+            const itemId = draft.proposal?.itemId
+            if (itemId && !titles.has(itemId))
+              titles.set(itemId, (await store.assistantItems.get(req.agentId, itemId))?.title ?? null)
+          }
+          const { kept, trimmed } = withinBudget(page.map((draft) => draftOf(draft, names, titles)))
           return { operation: 'drafts', drafts: kept, truncated: rows.length > req.limit || trimmed }
         }
         case 'grants': {
@@ -248,14 +257,19 @@ function itemOf(item: AssistantItemOverview): AssistantActivityItem {
   }
 }
 
-function draftOf(draft: AssistantDraft, names: Map<string, string>): AssistantActivityDraft {
+function draftOf(
+  draft: AssistantDraft,
+  names: Map<string, string>,
+  titles: Map<string, string | null>
+): AssistantActivityDraft {
   const approver = draft.approver
+  const proposal = draft.proposal
   return {
     id: draft.id,
     kind: draft.kind,
     target: {
       platform: draft.target.platform,
-      integrationId: draft.target.integrationId,
+      integrationId: draft.target.integrationId || null,
       channel: draft.target.channel,
       thread: draft.target.thread,
       name: clip(draft.destination.name),
@@ -274,6 +288,16 @@ function draftOf(draft: AssistantDraft, names: Map<string, string>): AssistantAc
           name: approver.userId ? clip(names.get(approver.userId) ?? null) : null
         }
       : null,
+    ...(proposal
+      ? {
+          proposal: {
+            sentence: proposal.sentence,
+            why: proposal.why,
+            itemId: proposal.itemId,
+            itemTitle: titles.get(proposal.itemId) ?? null
+          }
+        }
+      : {}),
     createdAt: iso(draft.createdAt),
     expiresAt: iso(draft.expiresAt)
   }

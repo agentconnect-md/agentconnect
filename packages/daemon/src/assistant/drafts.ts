@@ -1,4 +1,4 @@
-// Assistant-mode drafts (assistant-mode.md §5.5, §5.10): a post that needs approval is recorded, carded to an internal member, and posted by the daemon itself once approved.
+// Assistant-mode drafts (assistant-mode.md §5.5, §5.10): a post or a patrol's proposed task that needs approval is recorded, carded to an internal member, and run once approved.
 import { randomUUID } from 'node:crypto'
 import type {
   AgentApprovalRoute,
@@ -10,6 +10,7 @@ import type { MessageGateway, SendIdentity } from '../mcp/ops/context.js'
 import type { AssistantDraftCardView, AssistantDraftChoice } from '../slack/render.js'
 import {
   assistantDraftHash,
+  assistantTaskHash,
   type AssistantDraft,
   type AssistantDraftApprover,
   type AssistantDraftDestination,
@@ -30,6 +31,8 @@ export type DraftCard =
       sessionKey: string | null
       view: AssistantDraftCardView
       offerAlways: boolean
+      /** Why the last approval did not run, shown under the buttons it keeps. */
+      notice?: string
     }
   | { view: AssistantDraftCardView; outcome: string }
 
@@ -83,6 +86,28 @@ export interface AssistantDraftsHost {
   ): Promise<Partial<AssistantDraftDestination>>
   /** The post-success bookkeeping a sent message gets (outbound record, root thread, seeded session); no model turn, no retry. */
   afterPost?(draft: AssistantDraft, messageId: string): Promise<void>
+  /** Open the sub-session an approved task runs in; it claims the record itself (§5.10). */
+  startTask?(draft: AssistantDraft, by: { id: string | null; name: string | null }): Promise<TaskStart>
+  /** An observation on a proposal's item, so its next patrol knows how the proposal went. */
+  observe?(agentId: string, itemId: string, text: string): Promise<void>
+}
+
+/** How an approved task's start went: running, refused for the sub-session limit, lost to another decision, or failed for good. */
+export type TaskStart =
+  { kind: 'started' } | { kind: 'busy'; reason: string } | { kind: 'lost' } | { kind: 'failed'; reason: string }
+
+/** A patrol's proposal (§5.10), as the patrol hands it over. */
+export interface ProposalInput {
+  agentId: string
+  /** The item's place of origin, where the approved task runs and reports. */
+  target: AssistantDraftTarget
+  destination: Partial<AssistantDraftDestination>
+  task: string
+  sentence: string
+  why: string
+  itemId: string
+  itemVersion: number
+  source: AssistantDraftSource
 }
 
 /** A post `sendMessage` resolved and is about to make. */
@@ -99,7 +124,7 @@ export interface InterceptedPost {
 
 export type PostInterception = { handled: false } | { handled: true; result: unknown }
 
-/** What one decision did: `decided` settled the draft; any other result posted nothing. */
+/** What one decision did: `decided` settled the draft (a task: started it); any other result posted or ran nothing. */
 export interface DraftDecision {
   result: AssistantDraftDecisionResult
   status: AssistantDraftStatus | null
@@ -121,7 +146,12 @@ const APPROVER_LABEL: Record<ApproverRung, string> = {
 const isChoice = (optionId: string): optionId is AssistantDraftChoice =>
   optionId === 'approve' || optionId === 'discard' || optionId === 'always'
 
+const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
+
 export class AssistantDrafts {
+  /** Each proposal's card rewrites, one after another, so the last one shows the record as it ended. */
+  private readonly taskCards = new Map<string, Promise<void>>()
+
   constructor(private readonly host: AssistantDraftsHost) {}
 
   /** A post to another place (§5.5): refused outside an enabled place, sent under a grant, drafted otherwise. */
@@ -238,7 +268,10 @@ export class AssistantDrafts {
 
   /** Expire the due drafts of these agents; an expired draft is never posted. */
   async sweep(agentIds: readonly string[]): Promise<void> {
-    for (const draft of await this.host.ledger().expireDue(agentIds, this.host.now())) await this.rewriteDraft(draft)
+    for (const draft of await this.host.ledger().expireDue(agentIds, this.host.now())) {
+      await this.rewriteDraft(draft)
+      if (draft.action === 'task') await this.observeTask(draft)
+    }
   }
 
   /** A post cut short by a restart or handover is `outcome_unknown`, never retried (§5.10). */
@@ -246,6 +279,36 @@ export class AssistantDrafts {
     for (const draft of await this.host.ledger().recoverExecuting(agentIds, this.host.now())) {
       await this.rewriteDraft(draft)
     }
+  }
+
+  /** A patrol's proposal (§5.10): recorded and carded like a draft with no asker, so it goes to the responsible user or the fallback conversation. */
+  async propose(input: ProposalInput): Promise<{ draft: AssistantDraft; approver: string | null }> {
+    const id = randomUUID()
+    const routed = await this.route(input.agentId, id, undefined)
+    const draft = await this.host.ledger().createTask({
+      id,
+      agentId: input.agentId,
+      target: input.target,
+      destination: input.destination,
+      task: input.task,
+      sentence: input.sentence,
+      why: input.why,
+      itemId: input.itemId,
+      itemVersion: input.itemVersion,
+      source: input.source,
+      approver: routed?.approver ?? null,
+      now: this.host.now()
+    })
+    const carded = await this.card(draft, routed)
+    if (!carded.rung)
+      this.host.log.warn(`assistant proposal ${id}: no approver could be reached for agent "${input.agentId}"`)
+    return { draft: carded.draft, approver: carded.rung ? APPROVER_LABEL[carded.rung] : null }
+  }
+
+  /** A task's sub-session ended or was cut: the card shows the outcome and the item records it. */
+  async taskSettled(draft: AssistantDraft): Promise<void> {
+    await this.rewriteDraft(draft)
+    await this.observeTask(draft)
   }
 
   private async create(input: {
@@ -261,12 +324,8 @@ export class AssistantDrafts {
     offerAlways: boolean
   }): Promise<{ draft: AssistantDraft; rung: ApproverRung | undefined }> {
     const id = randomUUID()
-    const routed = await this.approverFor(input.agentId, id, input.asker).catch((err: unknown) => {
-      this.host.log.warn(`assistant draft ${id}: approver lookup failed: ${(err as Error).message}`)
-      return undefined
-    })
-    const ledger = this.host.ledger()
-    const draft = await ledger.create({
+    const routed = await this.route(input.agentId, id, input.asker)
+    const draft = await this.host.ledger().create({
       id,
       agentId: input.agentId,
       kind: input.kind,
@@ -280,26 +339,49 @@ export class AssistantDrafts {
       offerAlways: input.offerAlways,
       now: this.host.now()
     })
+    return await this.card(draft, routed)
+  }
+
+  private async route(
+    agentId: string,
+    id: string,
+    asker: DraftAsker | undefined
+  ): Promise<{ approver: AssistantDraftApprover; rung: ApproverRung } | undefined> {
+    return await this.approverFor(agentId, id, asker).catch((err: unknown) => {
+      this.host.log.warn(`assistant draft ${id}: approver lookup failed: ${(err as Error).message}`)
+      return undefined
+    })
+  }
+
+  /** Post the pending card to its approver and keep its handle; undefined rung when no card went out. */
+  private async card(
+    draft: AssistantDraft,
+    routed: { approver: AssistantDraftApprover; rung: ApproverRung } | undefined
+  ): Promise<{ draft: AssistantDraft; rung: ApproverRung | undefined }> {
     if (!routed) return { draft, rung: undefined }
+    const ledger = this.host.ledger()
     const port = this.host.cardPortFor(routed.approver.integrationId)
-    const ts = await port
-      ?.postCard(routed.approver.channel, {
-        draftId: id,
-        agentId: input.agentId,
-        sessionKey: input.source?.sessionKey ?? null,
-        view: this.viewOf(draft),
-        offerAlways: input.offerAlways
-      })
-      .catch((err: unknown) => {
-        this.host.log.warn(`assistant draft ${id}: card post failed: ${(err as Error).message}`)
-        return undefined
-      })
+    const ts = await port?.postCard(routed.approver.channel, this.pendingCard(draft)).catch((err: unknown) => {
+      this.host.log.warn(`assistant draft ${draft.id}: card post failed: ${(err as Error).message}`)
+      return undefined
+    })
     if (!ts) return { draft, rung: undefined }
-    await ledger.setCard(id, ts)
+    await ledger.setCard(draft.id, ts)
     // A click can land before the card handle is stored; settle the card here if it did.
-    const live = await ledger.get(id)
+    const live = await ledger.get(draft.id)
     if (live && live.status !== 'awaiting_review') await this.rewriteDraft(live)
     return { draft: live ?? draft, rung: routed.rung }
+  }
+
+  private pendingCard(draft: AssistantDraft, notice?: string): DraftCard {
+    return {
+      draftId: draft.id,
+      agentId: draft.agentId,
+      sessionKey: draft.source?.sessionKey ?? null,
+      view: this.viewOf(draft),
+      offerAlways: draft.offerAlways,
+      ...(notice ? { notice } : {})
+    }
   }
 
   /** The asker when an internal member, a console asker, the responsible user, then the fallback conversation. */
@@ -414,11 +496,110 @@ export class AssistantDrafts {
     choice: AssistantDraftChoice,
     by: { id: string | null; name: string | null }
   ): Promise<DraftDecision> {
-    if (choice !== 'discard') return await this.approve(draft, by, choice === 'always')
+    // A proposal offers no "always allow": either approval only starts it.
+    if (choice !== 'discard')
+      return draft.action === 'task'
+        ? await this.approveTask(draft, by)
+        : await this.approve(draft, by, choice === 'always')
     const now = this.host.now()
     if (!(await this.host.ledger().deny(draft.id, by, now))) return await this.refused(draft.id, now)
     await this.rewrite(draft.id)
+    if (draft.action === 'task') await this.observeTask({ ...draft, status: 'denied', decidedByName: by.name })
     return { result: 'decided', status: 'denied', granted: false, failure: null }
+  }
+
+  /** Start an approved task (§5.10); a full sub-session limit leaves it awaiting review, and a changed record never runs. */
+  private async approveTask(
+    draft: AssistantDraft,
+    by: { id: string | null; name: string | null }
+  ): Promise<DraftDecision> {
+    const ledger = this.host.ledger()
+    const now = this.host.now()
+    if (draft.status !== 'awaiting_review' || draft.expiresAt <= now) return await this.refused(draft.id, now)
+    const failure = this.taskRefusal(draft)
+    const started: TaskStart = failure
+      ? (await ledger.failTask(draft.id, by, failure, now))
+        ? { kind: 'failed', reason: failure }
+        : { kind: 'lost' }
+      : this.host.startTask
+        ? await this.host.startTask(draft, by)
+        : { kind: 'busy', reason: 'this daemon cannot run approved tasks' }
+    switch (started.kind) {
+      case 'lost':
+        return await this.refused(draft.id, now)
+      case 'busy': {
+        // Still awaiting review: the card keeps its buttons and says why nothing ran; one decided meanwhile says so.
+        const live = await ledger.get(draft.id)
+        if (live?.status !== 'awaiting_review') return await this.refused(draft.id, now)
+        if (live.approver && live.cardTs) {
+          await this.host
+            .cardPortFor(live.approver.integrationId)
+            ?.updateCard(live.approver.channel, live.cardTs, this.pendingCard(live, started.reason))
+            .catch((err: unknown) =>
+              this.host.log.warn(`assistant proposal ${draft.id}: card update failed: ${(err as Error).message}`)
+            )
+        }
+        return { result: 'busy', status: 'awaiting_review', granted: false, failure: started.reason }
+      }
+      case 'started':
+        await this.rewriteDraft(draft)
+        // The approval itself, even when the task already ended and recorded how.
+        await this.observeTask({ ...draft, status: 'executing', decidedByName: by.name })
+        return { result: 'decided', status: 'executing', granted: false, failure: null }
+      case 'failed': {
+        await this.rewriteDraft(draft)
+        await this.observeTask({ ...draft, status: 'failed', failure: started.reason, subsessionKey: null })
+        return { result: 'decided', status: 'failed', granted: false, failure: started.reason }
+      }
+    }
+  }
+
+  /** Why an approved task must not run at all: its record changed, or the agent left assistant mode. */
+  private taskRefusal(draft: AssistantDraft): string | undefined {
+    const proposal = draft.proposal
+    if (!proposal || assistantTaskHash(draft.agentId, proposal.itemId, proposal.itemVersion, draft.text) !== draft.hash)
+      return 'the proposal changed after it was written'
+    if (this.host.agent(draft.agentId)?.assistantMode?.enabled !== true)
+      return 'the agent is no longer in assistant mode'
+    return undefined
+  }
+
+  /** One line on the proposal's item for each step it takes, so its next patrol knows. */
+  private async observeTask(draft: AssistantDraft): Promise<void> {
+    const proposal = draft.proposal
+    if (!proposal || !this.host.observe) return
+    const what = `"${oneLine(proposal.sentence)}"`
+    const by = draft.decidedByName ? ` by ${draft.decidedByName}` : ''
+    let text: string
+    switch (draft.status) {
+      case 'executing':
+        text = `Proposal ${what} was approved${by}; it runs in a background session.`
+        break
+      case 'denied':
+        text = `Proposal ${what} was denied${by}; nothing was run.`
+        break
+      case 'expired':
+        text = `Proposal ${what} expired without a decision; nothing was run.`
+        break
+      case 'succeeded':
+        text = `The approved task ${what} reported back.`
+        break
+      case 'outcome_unknown':
+        text = `The approved task ${what} was cut short before it reported; it may have partly run and will not run again.`
+        break
+      case 'failed':
+        text = draft.subsessionKey
+          ? `The approved task ${what} ended without reporting back.`
+          : `Proposal ${what} could not run: ${draft.failure ?? 'unknown error'}.`
+        break
+      default:
+        return
+    }
+    await this.host
+      .observe(draft.agentId, proposal.itemId, text)
+      .catch((err: unknown) =>
+        this.host.log.warn(`assistant proposal ${draft.id}: observation failed: ${(err as Error).message}`)
+      )
   }
 
   /** A decision that lost the CAS: a due draft expires here, and the card shows whatever settled it. */
@@ -513,9 +694,11 @@ export class AssistantDrafts {
   }
 
   private async rewriteDraft(draft: AssistantDraft, granted = false): Promise<void> {
+    if (draft.action === 'task') return await this.rewriteTaskCard(draft.id)
     const approver = draft.approver
-    // A pending card keeps its buttons, and only the click that is posting writes the outcome.
-    if (!approver || !draft.cardTs || draft.status === 'awaiting_review' || draft.status === 'executing') return
+    // A pending card keeps its buttons, and only the click that is posting writes the outcome; a running task drops them.
+    const pending = draft.status === 'awaiting_review' || (draft.status === 'executing' && draft.action === 'post')
+    if (!approver || !draft.cardTs || pending) return
     const port = this.host.cardPortFor(approver.integrationId)
     await port
       ?.updateCard(approver.channel, draft.cardTs, { view: this.viewOf(draft), outcome: outcomeOf(draft, granted) })
@@ -524,11 +707,32 @@ export class AssistantDrafts {
       )
   }
 
+  /** A proposal's card from its record as it stands now, one rewrite at a time, so a late one never shows an older state. */
+  private async rewriteTaskCard(id: string): Promise<void> {
+    const write = async (): Promise<void> => {
+      const live = await this.host.ledger().get(id)
+      const approver = live?.approver
+      if (!live || !approver || !live.cardTs || live.status === 'awaiting_review') return
+      await this.host
+        .cardPortFor(approver.integrationId)
+        ?.updateCard(approver.channel, live.cardTs, { view: this.viewOf(live), outcome: outcomeOf(live, false) })
+    }
+    const next = (this.taskCards.get(id) ?? Promise.resolve())
+      .then(write)
+      .catch((err: unknown) =>
+        this.host.log.warn(`assistant proposal ${id}: card update failed: ${(err as Error).message}`)
+      )
+    this.taskCards.set(id, next)
+    await next
+    if (this.taskCards.get(id) === next) this.taskCards.delete(id)
+  }
+
   private viewOf(draft: AssistantDraft): AssistantDraftCardView {
     const sessionId = draft.source?.sessionId
     return {
       agentName: this.host.agent(draft.agentId)?.name ?? 'The agent',
       kind: draft.kind,
+      ...(draft.proposal ? { proposal: { sentence: draft.proposal.sentence, why: draft.proposal.why } } : {}),
       target: {
         platform: draft.target.platform,
         channel: draft.target.channel,
@@ -554,6 +758,7 @@ function grantPlace(place: { platform: string; integrationId: string | null; cha
 function outcomeOf(draft: AssistantDraft, granted: boolean): string {
   const where = draft.decidedBy?.startsWith(consoleDecider('')) ? ' in the console' : ''
   const by = draft.decidedByName ? ` by ${draft.decidedByName}${where}` : where
+  if (draft.action === 'task') return taskOutcomeOf(draft, by)
   switch (draft.status) {
     case 'succeeded':
       return granted
@@ -567,6 +772,28 @@ function outcomeOf(draft: AssistantDraft, granted: boolean): string {
       return '⚠️ Not sure this went through — please check the conversation. It will not be posted again.'
     case 'failed':
       return `⚠️ Could not post: ${draft.failure ?? 'unknown error'}. Nothing was sent.`
+    default:
+      return ''
+  }
+}
+
+/** A proposal's card once it left review: running, how it ended, or why it never ran. */
+function taskOutcomeOf(draft: AssistantDraft, by: string): string {
+  switch (draft.status) {
+    case 'executing':
+      return `▶️ Approved${by}. Running in the background; it reports back in the conversation the item was taken in.`
+    case 'succeeded':
+      return `✅ Approved${by}. It ran and reported back in the conversation the item was taken in.`
+    case 'denied':
+      return `🚫 Denied${by}. Nothing was run.`
+    case 'expired':
+      return '⌛ Expired. Nothing was run.'
+    case 'outcome_unknown':
+      return `⚠️ Approved${by}, but not sure this went through: it was cut short before it reported. Please check. It will not be run again.`
+    case 'failed':
+      return draft.subsessionKey
+        ? `⚠️ Approved${by}. It ended without reporting back; check the conversation the item was taken in.`
+        : `⚠️ Could not run: ${draft.failure ?? 'unknown error'}. Nothing was run.`
     default:
       return ''
   }

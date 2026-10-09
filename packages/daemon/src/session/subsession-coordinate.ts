@@ -20,3 +20,16 @@ export function patrolCoordinate(deliveryId: string): string {
 export function isPatrolCoordinate(thread: string | null | undefined): boolean {
   return typeof thread === 'string' && thread.startsWith(PATROL_COORDINATE_PREFIX)
 }
+
+// An approved proposal (assistant-mode.md §5.10) runs in a sub-session of its own kind, never replayed after a cut (§5.7 step 1).
+const TASK_COORDINATE_PREFIX = `${SUBSESSION_COORDINATE_PREFIX}task-`
+
+/** The coordinate of the sub-session an approved proposal runs in. */
+export function taskCoordinate(deliveryId: string): string {
+  return `${TASK_COORDINATE_PREFIX}${deliveryId}`
+}
+
+/** Whether a session's thread segment is an approved proposal's: run once, with the agent's own permissions. */
+export function isTaskCoordinate(thread: string | null | undefined): boolean {
+  return typeof thread === 'string' && thread.startsWith(TASK_COORDINATE_PREFIX)
+}

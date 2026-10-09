@@ -955,10 +955,12 @@ it.
 
 When an active or waiting item's next check comes due, the daemon holding the agent's duty starts
 one patrol of it: a background sub-session that looks at the item read-only, records what it saw
-as an observation, sets the next check or marks the item waiting or done, and ends. Only when
-something changed since the latest observation does it report, and only into the conversation the
-item was taken in, whose long session then speaks for it; other followers are not told yet. When
-that conversation has no long session the check is skipped, and the item records why. Only an
+as an observation, sets the next check or marks the item waiting or done, and ends. It has three
+outcomes. When something should be done, it asks for approval to do it (see "Assistant-mode
+proposals"). Otherwise, only when something changed since the latest observation does it report,
+and only into the conversation the item was taken in, whose long session then speaks for it; other
+followers are not told yet. Otherwise it stays silent. The item gets its observation either way.
+When that conversation has no long session the check is skipped, and the item records why. Only an
 item's own next check wakes a patrol: there is no cadence and no event trigger yet. A next check
 is patrolled once; one missed while the agent was paused is not replayed, and an overdue item is
 checked once. An agent runs one patrol at a time, patrols do not count toward its concurrent
@@ -970,13 +972,38 @@ once. A failed patrol never sends the "ended without reporting" notice a delegat
 gets. A patrol is listed among its conversation's sub-sessions; stopping it there ends it
 silently and counts its check as done.
 
-A patrol is offered only read tools and an item update limited to its own item: no platform
-write, no `sendMessage`, no new item and no draft, and any other tool it names is refused. Its
-runtime runs in its own read-only mode (`read-only`, else `plan`) whatever the agent's permission
+A patrol is offered only read tools, an item update limited to its own item and `propose`: no
+platform write, no `sendMessage`, no new item and no draft, and any other tool it names is refused.
+Its runtime runs in its own read-only mode (`read-only`, else `plan`) whatever the agent's permission
 mode, and anything that would ask for approval is refused, never asked. It still runs on the
 agent's own host, with the agent's credentials and workspace: the runtime's read-only mode is what
 keeps it from writing there, and reads over the network that need no approval stay possible. The
 assistant mode panel therefore marks patrols as degraded.
+
+## Assistant-mode proposals
+
+A patrol that finds something worth doing asks for approval with `propose`: one plain sentence
+("I want to do X because Y"), the reason, and the task a background session would carry out, such
+as "rebase PR #12 onto main and push". A patrol proposes at most once and runs nothing itself; no
+other session and no agent outside assistant mode is offered `propose`.
+
+The proposal is carded like a draft with no asker: to the agent's responsible user in a direct
+message, otherwise its fallback conversation, and an editor may decide it from the Activity view,
+including one no one could be reached for. The card leads with the sentence, shows the reason and
+the task, and offers Approve and Deny; there is no "always allow". A proposal expires after 24 hours
+and never runs afterwards, and a denied one never runs.
+
+Approval runs the task once, in a background sub-session of the conversation the item was taken in,
+under that conversation's long session, with the agent's own permissions rather than a patrol's
+read-only mode. It reports back like a delegated sub-session: its own report, or the daemon's
+"ended without reporting" when it ends without one. It counts toward the agent's concurrent
+sub-sessions; while they are full the approval is refused with the reason, nothing runs and the
+proposal keeps waiting. A proposal whose record changed after it was written, whose item was
+closed or deleted, whose conversation has no long session, or whose agent left assistant mode is
+refused and never runs. When a restart or handover cuts the task short before it reports, it is
+never run again: the conversation is told once that it is not sure this went through and should
+check, and the card says the same. Each step (approved, denied, expired, reported back, ended
+without reporting, uncertain) is recorded on the item.
 
 ## Assistant-mode Activity
 
@@ -1001,7 +1028,11 @@ shows the most recent entries, up to a limit, and says when more exist.
   editor recorded as the decider, and the card rewritten to the outcome. The row then shows how it
   ended: posted, discarded, failed, not sure it went through, expired, or already decided. A
   decision that got no answer keeps its row with a warning; once the draft is no longer waiting,
-  it says to check the destination, since it may have been posted.
+  it says to check the destination, since it may have been posted. Proposals are listed here too,
+  labelled as proposals: the sentence, the reason, the task, the conversation it runs in, its item,
+  who is asked and when it expires, with Approve and Deny. An approved one says it runs in the
+  background and reports back in that conversation; one refused at the sub-session limit keeps its
+  choices and says why.
 - **Always allowed** is shown to editors only: each "Always allow from here to there" route. An
   editor may revoke one after a confirmation; the next post along it waits for approval again.
 

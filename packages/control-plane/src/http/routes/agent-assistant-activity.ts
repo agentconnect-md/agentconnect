@@ -42,7 +42,7 @@ const DraftParam = IdParam.extend({ draftId: z.string().min(1).max(512) })
 const DraftDecisionBody = z.object({ decision: z.enum(['approve', 'approve_always', 'discard']) })
 const DRAFT_CHOICE = { approve: 'approve', approve_always: 'always', discard: 'discard' } as const
 const DraftDecisionDto = z.object({
-  /** `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted and is never retried. */
+  /** `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted and is never retried; an approved proposal answers `executing`. */
   status: AssistantDraftStatus,
   /** This decision recorded "always allow from here to there". */
   alwaysAllowed: z.boolean(),
@@ -155,7 +155,7 @@ export function assistantDraftDecisionFailure(err: unknown): Failure | null {
   return assistantActivityFailure(err)
 }
 
-const DRAFT_REFUSED: Record<'expired' | 'already-decided', Failure> = {
+const DRAFT_REFUSED: Record<'expired' | 'already-decided' | 'busy', Failure> = {
   expired: {
     status: 409,
     error: 'Conflict',
@@ -167,6 +167,12 @@ const DRAFT_REFUSED: Record<'expired' | 'already-decided', Failure> = {
     error: 'Conflict',
     message: 'the draft was already decided',
     code: 'DRAFT_ALREADY_DECIDED'
+  },
+  busy: {
+    status: 409,
+    error: 'Conflict',
+    message: 'the agent’s sub-sessions are at their limit; the proposal is still waiting',
+    code: 'SUBSESSION_LIMIT'
   }
 }
 
@@ -490,7 +496,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an assistant-mode agent’s pending drafts',
-          description: `Lists the posts waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it, whether its card offers "always allow from here to there" and when it expires. This read changes nothing. Only callers who can edit the agent may read it.`,
+          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it, whether its card offers "always allow from here to there" and when it expires. A proposal (\`kind: task\`) is what a scheduled check asks to do: its sentence, its reason and its item, with the task as its text; it runs in the conversation its item was taken in once approved. This read changes nothing. Only callers who can edit the agent may read it.`,
           operationId: 'listAssistantDrafts',
           params: IdParam,
           response: { 200: DraftsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -502,7 +508,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         const page = await readSection(reply, admitted.daemonId, {
           agentId: admitted.agent.id,
           operation: 'drafts',
-          limit: ASSISTANT_ACTIVITY_DRAFTS_MAX
+          limit: ASSISTANT_ACTIVITY_DRAFTS_MAX,
+          proposals: true
         })
         return page ? { drafts: page.drafts, truncated: page.truncated } : reply
       }
@@ -515,7 +522,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Decide an assistant-mode agent’s pending draft',
           description:
-            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `approve_always` also lets later posts from the same conversation to the same target go out without asking, where the card offers that; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. Only callers who can edit the agent may decide, and they are recorded as the decider.',
+            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `approve_always` also lets later posts from the same conversation to the same target go out without asking, where the card offers that; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). A proposal is approved or denied the same way: approval starts its task in a background session and answers `executing`, and while the agent already runs as many sub-sessions as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. Only callers who can edit the agent may decide, and they are recorded as the decider.',
           operationId: 'decideAssistantDraft',
           params: DraftParam,
           body: DraftDecisionBody,
@@ -546,6 +553,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         )
         if (!answer) return reply
         if (answer.result === 'not-found') return send(reply, notFound('draft not found'))
+        if (answer.result === 'busy')
+          return send(reply, { ...DRAFT_REFUSED.busy, ...(answer.failure ? { message: answer.failure } : {}) })
         if (answer.result !== 'decided' || !answer.status) {
           return send(reply, DRAFT_REFUSED[answer.result === 'expired' ? 'expired' : 'already-decided'])
         }

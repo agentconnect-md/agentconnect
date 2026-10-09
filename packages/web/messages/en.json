@@ -3122,7 +3122,7 @@
         },
         "drafts": {
           "title": "Waiting for approval",
-          "empty": "No drafts waiting.",
+          "empty": "Nothing waiting for approval.",
           "to": "To {target}",
           "inThread": "in a thread",
           "external": "External",
@@ -3150,6 +3150,24 @@
             "gone": "No longer waiting for approval.",
             "unconfirmedWaiting": "Couldn’t confirm the decision. It is still waiting for approval.",
             "unconfirmedGone": "Couldn’t confirm the decision, and it is no longer waiting. Check the destination; it may have been posted."
+          },
+          "proposal": {
+            "badge": "Proposal",
+            "why": "Why: {why}",
+            "item": "For {title}",
+            "runsIn": "Runs in {place}",
+            "deny": "Deny",
+            "approveConfirm": "Run this task now? It reports back in {place}.",
+            "denyConfirm": "Deny this proposal? Nothing is run.",
+            "outcome": {
+              "executing": "Approved. It runs in the background and reports back in {place}.",
+              "succeeded": "Approved. It ran and reported back in {place}.",
+              "denied": "Denied. Nothing was run.",
+              "failed": "Couldn’t run: {reason}. Nothing was run.",
+              "outcome_unknown": "Not sure this went through. Check {place}; it won’t be run again.",
+              "expired": "Expired. Nothing was run.",
+              "unconfirmedGone": "Couldn’t confirm the decision, and it is no longer waiting. Check {place}; it may have started."
+            }
           }
         },
         "grants": {

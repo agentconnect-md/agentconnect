@@ -302,7 +302,9 @@ import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOW
 import { askerIdentity, assistantItemToolsFor, assistantModeOn } from './mcp/ops/assistant-items.js'
 import { AssistantDrafts, type DraftAsker, type InterceptedPost, type PostInterception } from './assistant/drafts.js'
 import { AssistantPatrols, PATROL_SWEEP_INTERVAL_MS, patrolTools, type PatrolParent } from './assistant/patrol.js'
-import type { AssistantPlace } from './store/assistant-items.js'
+import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
+import type { ProposeInput } from './mcp/ops/assistant-items.js'
+import type { AssistantItem, AssistantPlace } from './store/assistant-items.js'
 import type {
   AssistantDraft,
   AssistantDraftDestination,
@@ -763,7 +765,7 @@ import {
   sessionThreadOf
 } from './messages/normalized.js'
 import { isAppendCoordinate } from './session/append-coordinate.js'
-import { isPatrolCoordinate, isSubsessionCoordinate } from './session/subsession-coordinate.js'
+import { isPatrolCoordinate, isSubsessionCoordinate, isTaskCoordinate } from './session/subsession-coordinate.js'
 import {
   ConnectionReconciler,
   type ConnectionReconcilerHost,
@@ -4016,6 +4018,12 @@ export class Daemon {
               sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
               itemId,
               text
+            ),
+          propose: (ctx, input) =>
+            this.patrols.propose(
+              ctx.agentId,
+              sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
+              input
             ),
           now: () => this.clock.now()
         }
@@ -7686,9 +7694,123 @@ export class Daemon {
       sessionLink: (sessionId) => this.sessionLink(sessionId),
       platformName: (platform) => platformLabel(platform),
       describeDestination: (target, opts) => this.describeDraftDestination(target, opts),
-      afterPost: (draft, messageId) => this.settleApprovedDraft(draft, messageId)
+      afterPost: (draft, messageId) => this.settleApprovedDraft(draft, messageId),
+      startTask: (draft, by) => this.tasks.start(draft, by),
+      observe: async (agentId, itemId, text) => {
+        await this.store.assistantItems.appendObservation(agentId, itemId, {
+          text,
+          author: 'proposal',
+          now: this.clock.now()
+        })
+      }
     })
     return this.assistantDraftService
+  }
+
+  /** Approved proposals (assistant-mode.md §5.10), built on first use over the live store. */
+  private assistantTaskService?: AssistantTasks
+  private get tasks(): AssistantTasks {
+    this.assistantTaskService ??= new AssistantTasks({
+      now: () => this.clock.now(),
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) },
+      ledger: () => this.store.assistantDrafts,
+      subsessions: this.store.assistantSubsessions,
+      items: this.store.assistantItems,
+      agent: (agentId) => {
+        const a = this.agents.get(agentId)
+        return a
+          ? { name: a.displayName?.trim() || a.name, ...(a.assistantMode ? { assistantMode: a.assistantMode } : {}) }
+          : undefined
+      },
+      servesAgent: (agentId) => this.servesAgent(agentId),
+      parentFor: (agentId, place) => this.patrolParent(agentId, place),
+      dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
+        this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
+      settleSubsession: (end) => this.collab.settleSubsessionTurn(end),
+      reportToParent: (agentId, caller, parentSessionId, text) =>
+        this.reportIntoParent(agentId, caller, parentSessionId, text),
+      settled: (draft) => this.drafts.taskSettled(draft),
+      draining: () => this.draining
+    })
+    return this.assistantTaskService
+  }
+
+  /** A patrol's proposal (assistant-mode.md §5.10): run in the item's place once approved, carded like a draft with no asker. */
+  private async proposeFromPatrol(
+    run: { agentId: string; key: string; item: AssistantItem },
+    input: ProposeInput
+  ): Promise<Record<string, unknown>> {
+    const { agentId, key, item } = run
+    const origin = item.origin
+    const rec = await this.store.getSession(key)
+    const integrationId = this.integrationIdForSessionTransport(agentId, origin.platform, origin.transportScope)
+    const target: AssistantDraftTarget = {
+      platform: origin.platform,
+      integrationId: integrationId ?? '',
+      channel: origin.channel,
+      thread: null
+    }
+    const destination = integrationId
+      ? await this.describeDraftDestination(target, { dm: false }).catch(() => ({}))
+      : {}
+    const source: AssistantDraftSource = {
+      platform: rec?.platform ?? origin.platform,
+      integrationId: integrationId ?? null,
+      channel: rec?.channel ?? origin.channel,
+      thread: rec?.thread ?? '',
+      transportScope: rec?.transportScope ?? origin.transportScope ?? null,
+      sessionKey: key,
+      sessionId: rec?.sessionId ?? null,
+      place: false
+    }
+    const { draft, approver } = await this.drafts.propose({
+      agentId,
+      target,
+      destination,
+      task: input.task,
+      sentence: input.sentence,
+      why: input.why,
+      itemId: item.id,
+      itemVersion: item.version,
+      source
+    })
+    const expiresAt = new Date(draft.expiresAt).toISOString()
+    return {
+      proposed: true,
+      proposalId: draft.id,
+      expiresAt,
+      approver,
+      note: approver
+        ? `Waiting for ${approver} to approve; nothing runs until then, and it expires at ${expiresAt}. Do not ` +
+          'report it as well. Record what you saw with updateItem, then end your turn.'
+        : 'No approver could be reached, so it waits for an editor in the console until it expires at ' +
+          `${expiresAt}; nothing runs until then. Record what you saw with updateItem, then end your turn.`
+    }
+  }
+
+  /** One daemon-authored report into a sub-session's parent, through the injection `replyToSession` makes. */
+  private async reportIntoParent(
+    agentId: string,
+    caller: TaskCaller,
+    parentSessionId: string,
+    text: string
+  ): Promise<boolean> {
+    // An interrupt refuses fresh deliveries until its turns have unwound, and this report is one.
+    await this.waitForSafetyDrain(agentId)
+    const result = await this.collab.replyToSession(
+      {
+        callerAgentId: agentId,
+        platform: caller.platform,
+        ...(caller.transportScope !== undefined ? { callerTransportScope: caller.transportScope } : {}),
+        callerChannel: caller.channel,
+        callerThread: caller.thread,
+        sessionId: parentSessionId,
+        text
+      },
+      { parentSessionId, hopCount: 0 }
+    )
+    if (!result.delivered) this.log.warn(`sub-session report not delivered (${result.reason ?? 'unknown'})`)
+    return result.delivered
   }
 
   /** Assistant-mode patrols (assistant-mode.md §5.9), built on first use over the live store. */
@@ -7707,23 +7829,11 @@ export class Daemon {
       parentFor: (agentId, place) => this.patrolParent(agentId, place),
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
-      reportToParent: async (agentId, msg, parentSessionId, text) => {
-        // An interrupt refuses fresh deliveries until its turns have unwound, and this report is one.
-        await this.waitForSafetyDrain(agentId)
-        const result = await this.collab.replyToSession(
-          {
-            callerAgentId: agentId,
-            platform: msg.platform,
-            ...(msg.transportScope !== undefined ? { callerTransportScope: msg.transportScope } : {}),
-            callerChannel: msg.channel,
-            callerThread: sessionThreadOf(msg),
-            sessionId: parentSessionId,
-            text
-          },
-          { parentSessionId, hopCount: 0 }
-        )
-        if (!result.delivered) this.log.warn(`patrol report not delivered (${result.reason ?? 'unknown'})`)
-        return result.delivered
+      reportToParent: (agentId, msg, parentSessionId, text) =>
+        this.reportIntoParent(agentId, callerOfMessage(msg), parentSessionId, text),
+      proposals: {
+        proposedFrom: (agentId, key) => this.store.assistantDrafts.proposedFrom(agentId, key),
+        propose: (run, input) => this.proposeFromPatrol(run, input)
       }
     })
     return this.assistantPatrolService
@@ -18930,6 +19040,19 @@ export class Daemon {
       })
       return
     }
+    // An approved task (§5.10) reports like a delegation, and its record takes the outcome.
+    if (isTaskCoordinate(sessionThreadOf(entry.msg))) {
+      await this.tasks.ended({
+        agentId: entry.agentId,
+        key,
+        msg: entry.msg,
+        outcome,
+        reason: entry.cancelledReason,
+        replayed: this.retainsInboxRow(entry, outcome === 'failed'),
+        hopCount: entry.callMeta?.hopCount
+      })
+      return
+    }
     await this.collab.settleSubsessionTurn({
       agentId: entry.agentId,
       key,
@@ -23362,6 +23485,14 @@ export class Daemon {
 
   /** Re-admit durable inbox rows through the serial gate — at startup, on install, or on a duty gain — preserving replay ownership and FIFO. */
   private async replayInbox(agentIds?: ReadonlySet<string>): Promise<void> {
+    await this.replayInboxRows(agentIds)
+    // After the rows, which drop a cut task's own: an executing task nothing here runs was cut before it reported (§5.7 step 1).
+    await this.tasks
+      .recover([...this.agents.keys()].filter((agentId) => !agentIds || agentIds.has(agentId)))
+      .catch((err) => this.log.warn(`assistant task recovery failed: ${formatErr(err)}`))
+  }
+
+  private async replayInboxRows(agentIds?: ReadonlySet<string>): Promise<void> {
     let rows: InboxRow[]
     try {
       rows = await this.store.listInboxBySessionKeyFifo()
@@ -23407,6 +23538,13 @@ export class Daemon {
         }
       } catch (err) {
         this.log.warn(`durable inbox: skipping corrupt row ${row.id}: ${(err as Error).message}`)
+        continue
+      }
+      // assistant-mode.md §5.7 step 1: an approved task is never re-run; it is reported as uncertain instead.
+      if (isTaskCoordinate(sessionThreadOf(msg))) {
+        await this.store.removeInbox(row.id)
+        const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), row.agentId, msg.transportScope)
+        await this.tasks.cut(row.agentId, key, callerOfMessage(msg))
         continue
       }
       if (msg.source === 'hook' && !hookContext) {

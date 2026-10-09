@@ -1,9 +1,14 @@
-// Assistant-mode patrols, the minimal form (assistant-mode.md §5.9): a due next check wakes one read-only sub-session that records what it saw and reports only a change.
+// Assistant-mode patrols, the minimal form (assistant-mode.md §5.9): a due next check wakes one read-only sub-session that records what it saw, and proposes an action or reports only a change.
 import type { Agent } from '../agents/agent-schema.js'
 import type { CallMeta } from '../daemon/turn-types.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
-import { assistantModeOn, PATROL_UPDATE_ITEM_TOOL } from '../mcp/ops/assistant-items.js'
+import {
+  assistantModeOn,
+  PATROL_UPDATE_ITEM_TOOL,
+  PROPOSE_TOOL,
+  type ProposeInput
+} from '../mcp/ops/assistant-items.js'
 import { isAttachmentReadTool } from '../platforms/read-ports.js'
 import { patrolCoordinate } from '../session/subsession-coordinate.js'
 import type { AssistantItem, AssistantItemLedger, AssistantPlace } from '../store/assistant-items.js'
@@ -48,7 +53,7 @@ const PATROL_READ_TOOLS = new Set([
   'inspectCodeHostPipelines'
 ])
 
-/** A patrol's tool set: the reads of what the session would get, and the patrol's own `updateItem`. */
+/** A patrol's tool set: the reads of what the session would get, the patrol's own `updateItem`, and `propose`. */
 export function patrolTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] {
   const reads = tools.filter(
     (tool) =>
@@ -56,7 +61,7 @@ export function patrolTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] 
       MEMORY_TOOL_ACCESS_MODES[tool.name] === 'read' ||
       isAttachmentReadTool(tool.name)
   )
-  return [...reads, PATROL_UPDATE_ITEM_TOOL]
+  return [...reads, PATROL_UPDATE_ITEM_TOOL, PROPOSE_TOOL]
 }
 
 /** How a patrol's turn, or its refused start, ended. */
@@ -103,6 +108,16 @@ export interface AssistantPatrolsHost {
   ): Promise<unknown>
   /** One report into the parent through the parent-report path; true once it was admitted there. */
   reportToParent(agentId: string, msg: NormalizedMessage, parentSessionId: string, text: string): Promise<boolean>
+  /** Approval records for what a patrol proposes (assistant-mode.md §5.10). */
+  proposals?: {
+    /** Whether the run in this session already proposed. */
+    proposedFrom(agentId: string, key: string): Promise<boolean>
+    /** Record and card the proposal; what the patrol reads back. */
+    propose(
+      run: { agentId: string; key: string; item: AssistantItem },
+      input: ProposeInput
+    ): Promise<Record<string, unknown>>
+  }
 }
 
 type Verdict = { kind: 'completed' } | { kind: 'failed'; why: string } | { kind: 'released' } | { kind: 'stopped' }
@@ -152,9 +167,12 @@ export function patrolPrompt(item: AssistantItem, due: AssistantPatrolDue): stri
     '2. Call updateItem once with an `observation` of what you checked and saw, written for the whole organization ' +
       'and quoting no one. With the item’s version, set `nextCheck` to when it should be checked again, or `status` ' +
       'to `waiting` or `done` when that is what you found.',
-    '3. Only when something changed since the latest observation that the people following the item should know, ' +
-      'add `report` with one short message; the conversation the item was taken in passes it on. Otherwise leave ' +
-      '`report` out: nothing is said.',
+    '3. Then one of three outcomes. When something should be done, not only known, call `propose` once: one plain ' +
+      'sentence for the approver ("I want to do X because Y"), why, and the exact task a background session with ' +
+      'your normal permissions carries out once a person approves it. You do not do it yourself, and you do not also ' +
+      'report it. Otherwise, only when something changed since the latest observation that the people following the ' +
+      'item should know, add `report` with one short message; the conversation the item was taken in passes it on. ' +
+      'Otherwise leave `report` out: nothing is said. The item gets its observation either way.',
     '4. This session runs under a read-only or plan permission mode, which restricts your native tools only. ' +
       'updateItem is how this check records its result, not an edit the mode forbids: call it directly, no one is ' +
       'here to approve a plan. Then end your turn.'
@@ -164,6 +182,8 @@ export function patrolPrompt(item: AssistantItem, due: AssistantPatrolDue): stri
 /** Starts and settles patrols; what a run's end needs lives in the store, so a replay on a fresh daemon settles it the same way. */
 export class AssistantPatrols {
   private sweeping = false
+  /** Patrol runs whose proposal is being recorded, so two calls at once still make one. */
+  private readonly proposing = new Set<string>()
 
   constructor(private readonly host: AssistantPatrolsHost) {}
 
@@ -193,6 +213,24 @@ export class AssistantPatrols {
   /** Keep a patrol's report for its end; a later one replaces an earlier one. False once the run is over. */
   async report(agentId: string, key: string, itemId: string, text: string): Promise<boolean> {
     return await this.host.patrols.keepReport(agentId, itemId, key, text, this.host.now())
+  }
+
+  /** A patrol asks for approval to act on its item (assistant-mode.md §5.10): at most once per run, and it runs nothing. */
+  async propose(agentId: string, key: string, input: ProposeInput): Promise<Record<string, unknown>> {
+    const proposals = this.host.proposals
+    const state = await this.host.patrols.byRunningKey(agentId, key)
+    if (!proposals || !state) throw new Error('this patrol has ended; nothing was proposed')
+    const once = 'this patrol already proposed, and a patrol proposes at most once; record what you saw with updateItem'
+    if (this.proposing.has(key)) throw new Error(once)
+    this.proposing.add(key)
+    try {
+      if (await proposals.proposedFrom(agentId, key)) throw new Error(once)
+      const item = await this.host.items.get(agentId, state.itemId)
+      if (!item) throw new Error(`no item ${state.itemId} in your ledger; nothing was proposed`)
+      return await proposals.propose({ agentId, key, item }, input)
+    } finally {
+      this.proposing.delete(key)
+    }
   }
 
   private async patrolAgent(agent: Pick<Agent, 'id' | 'assistantMode'>): Promise<void> {

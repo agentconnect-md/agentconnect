@@ -1320,7 +1320,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 39
+export const SCHEMA_VERSION = 40
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1749,7 +1749,130 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     const columns = (await db.query('PRAGMA table_info(assistant_subsession)', [])).rows as { name: string }[]
     if (columns.length > 0 && !columns.some((c) => c.name === 'kind'))
       await db.exec("ALTER TABLE assistant_subsession ADD COLUMN kind TEXT NOT NULL DEFAULT 'delegation'")
+  },
+  // v40 lets the approval record hold a patrol's proposed task (assistant-mode.md §5.10): its action and kind widen, and it gains the proposal and its sub-session.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec(`
+        ALTER TABLE IF EXISTS assistant_draft DROP CONSTRAINT IF EXISTS assistant_draft_action_check;
+        ALTER TABLE IF EXISTS assistant_draft DROP CONSTRAINT IF EXISTS assistant_draft_kind_check;
+        ALTER TABLE IF EXISTS assistant_draft ADD CONSTRAINT assistant_draft_action_check CHECK (action IN ('post', 'task'));
+        ALTER TABLE IF EXISTS assistant_draft ADD CONSTRAINT assistant_draft_kind_check
+          CHECK (kind IN ('reply', 'elsewhere', 'task'));
+        ALTER TABLE IF EXISTS assistant_draft ADD COLUMN IF NOT EXISTS sentence TEXT;
+        ALTER TABLE IF EXISTS assistant_draft ADD COLUMN IF NOT EXISTS why TEXT;
+        ALTER TABLE IF EXISTS assistant_draft ADD COLUMN IF NOT EXISTS itemId TEXT;
+        ALTER TABLE IF EXISTS assistant_draft ADD COLUMN IF NOT EXISTS itemVersion INTEGER;
+        ALTER TABLE IF EXISTS assistant_draft ADD COLUMN IF NOT EXISTS subsessionKey TEXT;
+      `)
+      return
+    }
+    // SQLite cannot widen a CHECK in place, so the table is rebuilt with every column it already has.
+    const columns = ((await db.query('PRAGMA table_info(assistant_draft)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    if (columns.length === 0 || columns.includes('subsessionKey')) return
+    const kept = columns.filter((c) => ASSISTANT_DRAFT_V40_COLUMNS.includes(c)).join(', ')
+    await db.exec(`
+      CREATE TABLE assistant_draft_v40 (
+        id TEXT PRIMARY KEY,
+        agentId TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('post', 'task')),
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'elsewhere', 'task')),
+        targetPlatform TEXT NOT NULL,
+        targetIntegrationId TEXT NOT NULL,
+        targetChannel TEXT NOT NULL,
+        targetThread TEXT,
+        targetExternal INTEGER NOT NULL DEFAULT 0,
+        targetDm INTEGER NOT NULL DEFAULT 0,
+        targetName TEXT,
+        targetUser TEXT,
+        targetLink TEXT,
+        text TEXT NOT NULL,
+        sourcePlatform TEXT,
+        sourceIntegrationId TEXT,
+        sourceChannel TEXT,
+        sourceThread TEXT,
+        sourceTransportScope TEXT,
+        sourceSessionKey TEXT,
+        sourceSessionId TEXT,
+        sourcePlace INTEGER NOT NULL DEFAULT 0,
+        approverKind TEXT,
+        approverIntegrationId TEXT,
+        approverChannel TEXT,
+        approverUserId TEXT,
+        approverTeamId TEXT,
+        approverConsoleUserId TEXT,
+        cardTs TEXT,
+        offerAlways INTEGER NOT NULL DEFAULT 0,
+        grantEpoch INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL CHECK (status IN ('awaiting_review', 'executing', 'succeeded', 'failed',
+          'outcome_unknown', 'denied', 'expired')),
+        hash TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        expiresAt INTEGER NOT NULL,
+        decidedAt INTEGER,
+        decidedBy TEXT,
+        decidedByName TEXT,
+        settledAt INTEGER,
+        messageId TEXT,
+        failure TEXT,
+        sentence TEXT,
+        why TEXT,
+        itemId TEXT,
+        itemVersion INTEGER,
+        subsessionKey TEXT
+      );
+      INSERT INTO assistant_draft_v40 (${kept}) SELECT ${kept} FROM assistant_draft;
+      DROP TABLE assistant_draft;
+      ALTER TABLE assistant_draft_v40 RENAME TO assistant_draft;
+    `)
   }
+]
+
+/** The approval record's columns as of v40, which the v40 rebuild copies across where the old table has them. */
+const ASSISTANT_DRAFT_V40_COLUMNS = [
+  'id',
+  'agentId',
+  'action',
+  'kind',
+  'targetPlatform',
+  'targetIntegrationId',
+  'targetChannel',
+  'targetThread',
+  'targetExternal',
+  'targetDm',
+  'targetName',
+  'targetUser',
+  'targetLink',
+  'text',
+  'sourcePlatform',
+  'sourceIntegrationId',
+  'sourceChannel',
+  'sourceThread',
+  'sourceTransportScope',
+  'sourceSessionKey',
+  'sourceSessionId',
+  'sourcePlace',
+  'approverKind',
+  'approverIntegrationId',
+  'approverChannel',
+  'approverUserId',
+  'approverTeamId',
+  'approverConsoleUserId',
+  'cardTs',
+  'offerAlways',
+  'grantEpoch',
+  'status',
+  'hash',
+  'createdAt',
+  'expiresAt',
+  'decidedAt',
+  'decidedBy',
+  'decidedByName',
+  'settledAt',
+  'messageId',
+  'failure'
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1925,7 +2048,10 @@ export class LocalStore {
       transaction: (fn) => this.transaction(fn)
     })
     this.assistantDrafts = new AssistantDraftLedger({ query: (sql, params) => this.db.query(sql, params) })
-    this.assistantSubsessions = new AssistantSubsessionIndex({ query: (sql, params) => this.db.query(sql, params) })
+    this.assistantSubsessions = new AssistantSubsessionIndex({
+      query: (sql, params) => this.db.query(sql, params),
+      transaction: (fn) => this.transaction(fn)
+    })
     this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
   }
 
