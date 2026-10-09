@@ -258,6 +258,29 @@ export const ConfigSchema = z.object({
       sessionSteering: z.boolean().default(true)
     })
     .default({ turnFinalContextRefresh: true, sessionSteering: true }),
+  // Semantic wake gate for implicit deliveries (thread peer fan-out, auto rules):
+  // a small judgment model decides per candidate whether the message needs it.
+  // Off by default; explicit @mentions and sole-owner thread continuity bypass it.
+  judge: z
+    .object({
+      enabled: z.boolean().default(false),
+      endpoint: z.string().default('https://api.typesafe.ai/v1/systemone'),
+      // Name of the env var holding the API key — the key itself never enters config.json.
+      apiKeyEnv: z.string().default('TYPESAFE_API_KEY'),
+      model: z.string().default('jev-latest'),
+      threshold: z.number().min(0).max(1).default(0.55),
+      contextMessages: z.number().int().min(1).max(50).default(12),
+      timeoutMs: z.number().int().min(500).default(5000)
+    })
+    .default({
+      enabled: false,
+      endpoint: 'https://api.typesafe.ai/v1/systemone',
+      apiKeyEnv: 'TYPESAFE_API_KEY',
+      model: 'jev-latest',
+      threshold: 0.55,
+      contextMessages: 12,
+      timeoutMs: 5000
+    }),
   sessions: z
     .object({
       // Local-DB retention for FINISHED sessions (issue #485): a session untouched

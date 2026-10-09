@@ -172,6 +172,7 @@ import {
   LocalStore,
   sessionKey,
   transcriptChannelKey,
+  transcriptPromptText,
   transcriptQuoted,
   type InboxRow,
   type SessionPurgeRow,
@@ -334,9 +335,11 @@ import {
   conversationPeers,
   hopTransition,
   isUsableSourceDepth,
+  mentionedAgents,
   routeRules
 } from './router/routing-table.js'
 import { isControlCommandText, parseCommand, requiresTrustedActor, type AgentCommand } from './commands/commands.js'
+import { judgeImplicitWake, type JevGateVerdict } from './router/jev-gate.js'
 import { CommandHandlers, type CommandHost } from './commands/handlers.js'
 import {
   rulesFromAgent,
@@ -9837,6 +9840,23 @@ export class Daemon {
       await this.commands.setSessionMuted(muteKey, false)
       this.log.info(`routing: agent "${agentId}" un-muted in ch=${targetMsg.channel} (explicit @mention)`)
     }
+    // Semantic wake gate (config `judge`): implicit deliveries on human messages
+    // consult the judgment model before dispatch; a held message stays
+    // transcript-only — step 1 already recorded every inbound. Mentions and DMs
+    // are explicit addressing and never consult it.
+    if (this.cfg.judge.enabled && primary && via === 'implicit' && !targetMsg.isDm && !targetMsg.sender.isBot) {
+      const verdicts = await this.jevGateVerdicts(targetMsg, this.mergedRules(), [agentId])
+      const p = verdicts?.get(agentId) ?? 0
+      if (p < this.cfg.judge.threshold) {
+        this.log.info(
+          `routing: jev gate held agent "${agentId}" in ch=${targetMsg.channel} via=${via} (p=${p.toFixed(3)})`
+        )
+        return { kind: 'rejected', reason: 'gated' }
+      }
+      this.log.info(
+        `routing: jev gate passed agent "${agentId}" in ch=${targetMsg.channel} via=${via} (p=${p.toFixed(3)})`
+      )
+    }
     if (primary) this.log.info(`routing: ch=${targetMsg.channel} → agent "${agentId}" (integration ${integrationId})`)
     const gateOpts = gate ? { requireDurable: true, receiptId: gate.receiptId, onAdmission: gate.onAdmission } : {}
     // Thread promotion (§7.4, Discord): open a thread off a top-level mention, then dispatch into it.
@@ -9931,6 +9951,17 @@ export class Daemon {
         ? { authorAgentId: agentCall.verified.authorAgentId, recipients: agentCall.verified.recipients }
         : undefined
     })
+    // Semantic wake gate (config `judge`): human messages consult the judgment model
+    // once per delivery batch, and each implicit peer below threshold stays
+    // transcript-only. Explicit joins and agent-authored edges never consult it.
+    const implicitPeerIds = agentCall
+      ? []
+      : peers.filter((id) => !explicitlyMentioned.has(id) && this.agents.has(id) && !this.drainingAgents.has(id))
+    let jevVerdicts: JevGateVerdict | undefined
+    if (this.cfg.judge.enabled && implicitPeerIds.length > 0) {
+      jevVerdicts = await this.jevGateVerdicts(msg, rules, implicitPeerIds)
+      if (jevVerdicts === null) this.log.info(`routing: jev gate unavailable in ch=${msg.channel}; implicit peers held`)
+    }
     const outcomes: Array<
       { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }
     > = []
@@ -9979,6 +10010,17 @@ export class Daemon {
         outcomes.push({ kind: 'dispatched', handle: decision.handle })
         continue
       }
+      if (via === 'implicit' && jevVerdicts !== undefined) {
+        const p = jevVerdicts?.get(agentId) ?? 0
+        if (p < this.cfg.judge.threshold) {
+          this.log.info(
+            `routing: jev gate held agent "${agentId}" in ch=${msg.channel} (p=${p.toFixed(3)} < ${this.cfg.judge.threshold})`
+          )
+          outcomes.push({ kind: 'rejected', reason: 'gated' })
+          continue
+        }
+        this.log.info(`routing: jev gate passed agent "${agentId}" in ch=${msg.channel} (p=${p.toFixed(3)})`)
+      }
       outcomes.push(
         await this.admitLadderTarget({
           agentId,
@@ -9990,6 +10032,65 @@ export class Daemon {
       )
     }
     return outcomes
+  }
+
+  /** Build the judgment call for one batch of implicit peer candidates: transcript
+   *  tail + resolved display names + per-candidate roles, one request for all. */
+  private async jevGateVerdicts(
+    msg: NormalizedMessage,
+    rules: RoutingRule[],
+    candidateIds: string[]
+  ): Promise<JevGateVerdict> {
+    const cfg = this.cfg.judge
+    const transcriptChannel = transcriptChannelKey(msg.channel, msg.transportScope)
+    // Transcript rows key on the PHYSICAL thread (physicalThreadOf), not the
+    // session coordinate transcriptCoords().thread resolves.
+    const thread = physicalThreadOf(msg)
+    const rows = (
+      await this.store.transcriptPage(transcriptChannel, thread, null, cfg.contextMessages, candidateIds[0]!)
+    ).rows.reverse()
+
+    // Transcript senders are platform ids / agent ids; resolve display names for both.
+    const agentIds = new Set([...this.agents.keys(), ...this.channelAgentNames.keys()])
+    const senderIds = [...new Set(rows.map((r) => r.sender))]
+    const humanNames = await this.store.getDisplayNames(senderIds.filter((id) => !agentIds.has(id)))
+    const nameFor = (id: string): string => {
+      const known = this.channelAgentNames.get(id)
+      const agent = this.agents.get(id)
+      return agent?.displayName ?? known?.displayName ?? known?.name ?? humanNames.get(id) ?? id
+    }
+    const nowUs = Date.now() * 1000
+    const recent = rows.map((r) => ({
+      author: nameFor(r.sender),
+      kind: (agentIds.has(r.sender) ? 'agent' : 'human') as 'agent' | 'human',
+      text: transcriptPromptText(r),
+      ago_s: r.eventTimeUs ? Math.max(0, Math.round((nowUs - r.eventTimeUs) / 1e6)) : 0
+    }))
+    const channelName = (await this.store.getDisplayNames([msg.channel])).get(msg.channel) ?? msg.channel
+
+    return await judgeImplicitWake(
+      cfg,
+      {
+        channelLabel: channelName,
+        isThread: msg.thread !== undefined,
+        recent,
+        newMessage: {
+          author: msg.sender.name ?? nameFor(msg.sender.id),
+          text: msg.text,
+          mentions: mentionedAgents(msg, rules).map(nameFor)
+        },
+        candidates: candidateIds.map((id) => {
+          const agent = this.agents.get(id)
+          const known = this.channelAgentNames.get(id)
+          return {
+            agentId: id,
+            name: agent?.displayName ?? known?.displayName ?? known?.name ?? id,
+            role: agent?.description
+          }
+        })
+      },
+      this.log
+    )
   }
 
   /**
@@ -10595,6 +10696,25 @@ export class Daemon {
     // `settled` ⇒ the platform answered it itself, no turn. `refused` ⇒ unrecorded, so the provider must send it again.
     if (prepared === 'settled') return imRejected(msg.msgId, true, undefined, false)
     if (prepared === 'refused') return imRejected(msg.msgId, false, 'durability', true)
+    // Semantic wake gate (config `judge`): the relay's implicit deliveries bypass
+    // onInbound() and with it the ladder gate — repeat it here for the one
+    // pre-addressed target. Mentions and DMs are explicit addressing and never
+    // consult it; a held delivery stays transcript-only (step 1 already recorded).
+    if (this.cfg.judge.enabled && normalized.trigger !== 'mention' && !normalized.isDm && !normalized.sender.isBot) {
+      trace.stage = 'jev-gate'
+      const verdicts = await this.jevGateVerdicts(normalized, this.mergedRules(), [msg.agentId])
+      const p = verdicts?.get(msg.agentId) ?? 0
+      if (p < this.cfg.judge.threshold) {
+        this.log.info(
+          `routing: jev gate held agent "${msg.agentId}" in ch=${normalized.channel} via=relay (p=${p.toFixed(3)})`
+        )
+        return imRejected(msg.msgId, true, undefined, false)
+      }
+      this.log.info(
+        `routing: jev gate passed agent "${msg.agentId}" in ch=${normalized.channel} via=relay (p=${p.toFixed(3)})`
+      )
+      trace.stage = 'dispatch'
+    }
     // Read BEFORE the dispatch that would claim it: whether the session is already working is
     // what an admission hook reports, and the entry this delivery creates is not that work.
     // Bound, so a class-based strategy keeps its `this` when the hook runs later inside dispatch.

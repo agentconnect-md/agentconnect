@@ -951,6 +951,99 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     })
   })
 
+  // config `judge` on the relay path: a human delivery the relay arbitrated as implicit
+  // (auto / keyword / thread affinity) bypasses onInbound() and its gate, so handleRelayIm
+  // repeats it for the one pre-addressed target. Mentions and DMs never consult it, and an
+  // unusable verdict fails closed — the message stays transcript-only.
+  describe('relay-forwarded human deliveries and the semantic wake gate (rd/msg im)', () => {
+    const humanFrame = (over: Record<string, unknown> = {}) => ({
+      source: 'im' as const,
+      agentId: 'bot-b',
+      sessionKey: 'C1/1720000000.000100',
+      msgId: 'slack:C1:1720000000.000300:final#bot-b',
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-bot-b',
+      chatId: 'C1',
+      payload: {
+        msgId: 'slack:C1:1720000000.000300:final',
+        traceId: 't',
+        source: 'user' as const,
+        platform: 'slack' as const,
+        channel: 'C1',
+        thread: '1720000000.000100',
+        sender: { id: 'U-HUMAN', isBot: false },
+        text: 'anyone around?',
+        mentionedBots: [] as string[],
+        isDm: false
+      },
+      trustedRouteVia: 'implicit' as const,
+      ...over
+    })
+
+    const judged = async (verdicts: Map<string, number> | null) => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      ;(daemon as any).cfg.judge.enabled = true
+      const gate = vi.fn(async () => verdicts)
+      ;(daemon as any).jevGateVerdicts = gate
+      return { daemon, calls, gate }
+    }
+
+    it('holds an implicit delivery below threshold — accepted, but nobody wakes', async () => {
+      const { daemon, calls, gate } = await judged(new Map([['bot-b', 0.1]]))
+      expect((await (daemon as any).handleRelayIm(humanFrame())).accepted).toBe(true)
+      expect(gate).toHaveBeenCalledOnce()
+      expect(calls).toHaveLength(0)
+      await daemon.stop()
+    })
+
+    it('dispatches an implicit delivery at or above threshold', async () => {
+      const { daemon, calls } = await judged(new Map([['bot-b', 0.9]]))
+      expect((await (daemon as any).handleRelayIm(humanFrame())).accepted).toBe(true)
+      expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+      await daemon.stop()
+    })
+
+    it('fails closed when the gate returns no verdict', async () => {
+      const { daemon, calls } = await judged(null)
+      expect((await (daemon as any).handleRelayIm(humanFrame())).accepted).toBe(true)
+      expect(calls).toHaveLength(0)
+      await daemon.stop()
+    })
+
+    it('never consults the gate for a mention or a DM delivery', async () => {
+      const { daemon, calls, gate } = await judged(new Map([['bot-b', 0.0]]))
+      expect((await (daemon as any).handleRelayIm(humanFrame({ trustedRouteVia: 'mention' }))).accepted).toBe(true)
+      expect(
+        (
+          await (daemon as any).handleRelayIm(
+            humanFrame({
+              msgId: 'slack:C1:1720000000.000400:final#bot-b',
+              payload: {
+                ...humanFrame().payload,
+                msgId: 'slack:C1:1720000000.000400:final',
+                isDm: true,
+                thread: undefined
+              }
+            })
+          )
+        ).accepted
+      ).toBe(true)
+      expect(gate).not.toHaveBeenCalled()
+      expect(calls).toHaveLength(2)
+      await daemon.stop()
+    })
+
+    it('leaves implicit deliveries alone while the gate is disabled', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      const gate = vi.fn()
+      ;(daemon as any).jevGateVerdicts = gate
+      expect((await (daemon as any).handleRelayIm(humanFrame())).accepted).toBe(true)
+      expect(gate).not.toHaveBeenCalled()
+      expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+      await daemon.stop()
+    })
+  })
+
   // §10 case 4 — the two halves of a paired `toAgent + channel` delivery may arrive in
   // either order, over different transports, separated by a restart. Both orders must
   // admit ONE child, built from the internal wake's complete envelope.
