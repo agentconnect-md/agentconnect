@@ -1,5 +1,10 @@
 // The assistant item tools (assistant-mode.md §1.2, §5.4): an assistant-mode agent's ledger, read and written over the bridge.
 import { z } from 'zod'
+import {
+  ASSISTANT_PROPOSAL_SENTENCE_MAX,
+  ASSISTANT_PROPOSAL_TASK_MAX,
+  ASSISTANT_PROPOSAL_WHY_MAX
+} from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import {
@@ -35,6 +40,8 @@ export interface AssistantItemDeps {
       itemFor(ctx: SessionContext): Promise<string | undefined>
       /** Keep the patrol's report; it reaches the conversation the item was taken in once the patrol ends. False once it ended. */
       report(ctx: SessionContext, itemId: string, text: string): Promise<boolean>
+      /** Ask for approval to act on the patrol's item (assistant-mode.md §5.10); once per patrol, nothing runs here. */
+      propose?(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>>
       now(): number
     }
   }
@@ -132,6 +139,14 @@ export const PATROL_UPDATE_ITEM_ARGS = z.object({
   observation: boundedString('observation', ASSISTANT_ITEM_LIMITS.observation),
   report: optionalBoundedString('report', ASSISTANT_ITEM_LIMITS.observation, 1)
 })
+
+/** A patrol's `propose` (assistant-mode.md §5.10): the card's sentence, the reason, and the task an approval runs. */
+export const PROPOSE_ARGS = z.object({
+  sentence: boundedString('sentence', ASSISTANT_PROPOSAL_SENTENCE_MAX),
+  why: boundedString('why', ASSISTANT_PROPOSAL_WHY_MAX),
+  task: boundedString('task', ASSISTANT_PROPOSAL_TASK_MAX)
+})
+export type ProposeInput = z.infer<typeof PROPOSE_ARGS>
 
 const TEAM_VISIBLE =
   'The ledger is visible to everyone in the organization: write it as a neutral record of who asked for what and ' +
@@ -266,7 +281,8 @@ export const PATROL_UPDATE_ITEM_TOOL: ToolDescriptor = {
     '`waiting` or `done` when that is what you found; `summary` replaces the summary. If the item changed since that ' +
     'version, nothing is written and the current item comes back. Add `report` only when something changed since the ' +
     'last observation that the people following the item should know: one short message, which the conversation ' +
-    `the item was taken in passes on. Leave it out to stay silent. ${TEAM_VISIBLE}`,
+    'the item was taken in passes on. Leave it out to stay silent. When something should be done, use `propose` ' +
+    `instead of a report. ${TEAM_VISIBLE}`,
   inputSchema: obj(
     {
       itemId: { ...itemIdProp, description: 'The item this patrol was started for.' },
@@ -299,6 +315,41 @@ export const PATROL_UPDATE_ITEM_TOOL: ToolDescriptor = {
       }
     },
     ['itemId', 'observation']
+  )
+}
+
+/** A patrol's third outcome (assistant-mode.md §5.10): ask for approval to act; offered to patrols only. */
+export const PROPOSE_TOOL: ToolDescriptor = {
+  name: 'propose',
+  description:
+    'Ask for approval to act on the item this patrol checks, when something should be done rather than only ' +
+    'reported. `sentence` is the one plain sentence the approver reads first ("I want to do X because Y"); `why` ' +
+    'is the reason; `task` is exactly what a background session with your normal permissions should do once ' +
+    'approved, e.g. "rebase PR #12 onto main and push". Nothing runs until a person approves it, within 24 hours; ' +
+    'the approved task then reports back in the conversation the item was taken in. Propose at most once per patrol ' +
+    'and do not also report it; still record what you saw with updateItem.',
+  inputSchema: obj(
+    {
+      sentence: {
+        type: 'string',
+        minLength: 1,
+        maxLength: ASSISTANT_PROPOSAL_SENTENCE_MAX,
+        description: 'One plain sentence: "I want to do X because Y".'
+      },
+      why: {
+        type: 'string',
+        minLength: 1,
+        maxLength: ASSISTANT_PROPOSAL_WHY_MAX,
+        description: 'Why it should be done, from what this check found.'
+      },
+      task: {
+        type: 'string',
+        minLength: 1,
+        maxLength: ASSISTANT_PROPOSAL_TASK_MAX,
+        description: 'What the approved background session does, specific enough to carry out without asking.'
+      }
+    },
+    ['sentence', 'why', 'task']
   )
 }
 
@@ -475,6 +526,16 @@ async function patrolUpdateItem(ctx: SessionContext, args: Record<string, unknow
   }
 }
 
+/** A patrol asks for approval to act (assistant-mode.md §5.10); no other session may, and it runs nothing itself. */
+export const propose: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
+  if (!isPatrolCoordinate(ctx.thread)) throw new Error('propose is available only in a patrol')
+  const input = parseArgs(PROPOSE_ARGS, args)
+  ledgerOf(ctx, deps)
+  const patrol = deps.assistantItems?.patrol
+  if (!patrol?.propose) throw new Error('this patrol has ended; nothing was proposed')
+  return await patrol.propose(ctx, input)
+}
+
 export const followItem: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
   const { itemId } = parseArgs(FOLLOW_ITEM_ARGS, args)
   const ledger = ledgerOf(ctx, deps)
@@ -492,12 +553,14 @@ export const ASSISTANT_ITEM_HANDLERS: [string, ToolHandler<AssistantItemDeps>][]
   ['takeItem', takeItem],
   ['listItems', listItems],
   ['updateItem', updateItem],
-  ['followItem', followItem]
+  ['followItem', followItem],
+  ['propose', propose]
 ]
 
 export const ASSISTANT_ITEM_ARG_SCHEMAS: [string, z.ZodType][] = [
   ['takeItem', TAKE_ITEM_ARGS],
   ['listItems', LIST_ITEMS_ARGS],
   ['updateItem', UPDATE_ITEM_ARGS],
-  ['followItem', FOLLOW_ITEM_ARGS]
+  ['followItem', FOLLOW_ITEM_ARGS],
+  ['propose', PROPOSE_ARGS]
 ]

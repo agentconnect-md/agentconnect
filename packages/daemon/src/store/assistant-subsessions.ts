@@ -1,6 +1,6 @@
 // The persistent parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6), partitioned by agent.
 import { AsyncMutex } from './async-mutex.js'
-import type { StoreQueryResult } from './store-database.js'
+import type { StoreQueryResult, StoreTx } from './store-database.js'
 
 /** `open` from the delegation on; `done` once it reported back, `failed` once it ended without reporting. */
 export type AssistantSubsessionState = 'open' | 'done' | 'failed'
@@ -34,10 +34,14 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         ON assistant_subsession (agentId, parentSessionId, createdAt);
 `
 
-/** What the index needs from the store. */
+/** What the index needs from the store; a capped open that claims something else at once needs its transaction. */
 export interface AssistantSubsessionDatabase {
   query(sql: string, params: unknown[]): Promise<StoreQueryResult>
+  transaction?<T>(fn: (tx: StoreTx) => Promise<T>): Promise<T>
 }
+
+/** Thrown inside the claim's transaction to roll its index row back. */
+class ClaimRefused extends Error {}
 
 type Row = Record<string, unknown>
 
@@ -74,27 +78,55 @@ export class AssistantSubsessionIndex {
 
   /** Record a delegation only below `limit` running ones; an `open` row whose session never appeared stops counting at `startedSince`. */
   async openWithinLimit(input: OpenInput, cap: { limit: number; startedSince: number }): Promise<boolean> {
+    return await this.opening.run(async () => await this.insertWithinLimit(this.db, input, cap))
+  }
+
+  /** {@link openWithinLimit} and `claim` in one transaction: both happen or neither does. */
+  async openWithinLimitClaiming(
+    input: OpenInput,
+    cap: { limit: number; startedSince: number },
+    claim: (tx: StoreTx) => Promise<boolean>
+  ): Promise<'opened' | 'limit' | 'refused'> {
+    const db = this.db
+    if (!db.transaction) throw new Error('the sub-session index has no transaction to claim in')
     return await this.opening.run(async () => {
-      const { changes } = await this.db.query(
-        `INSERT OR IGNORE INTO assistant_subsession
-           (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
-         SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER)
-          WHERE (SELECT COUNT(*) FROM assistant_subsession a
-                  WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'delegation'
-                    AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey))) < ?`,
-        [
-          input.agentId,
-          input.childSessionKey,
-          input.parentSessionId,
-          input.parentSessionKey,
-          input.now ?? Date.now(),
-          input.agentId,
-          cap.startedSince,
-          cap.limit
-        ]
-      )
-      return changes > 0
+      try {
+        return await db.transaction!<'opened' | 'limit'>(async (tx) => {
+          if (!(await this.insertWithinLimit(tx, input, cap))) return 'limit'
+          if (!(await claim(tx))) throw new ClaimRefused()
+          return 'opened'
+        })
+      } catch (err) {
+        if (err instanceof ClaimRefused) return 'refused'
+        throw err
+      }
     })
+  }
+
+  private async insertWithinLimit(
+    db: Pick<AssistantSubsessionDatabase, 'query'>,
+    input: OpenInput,
+    cap: { limit: number; startedSince: number }
+  ): Promise<boolean> {
+    const { changes } = await db.query(
+      `INSERT OR IGNORE INTO assistant_subsession
+         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
+       SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER)
+        WHERE (SELECT COUNT(*) FROM assistant_subsession a
+                WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'delegation'
+                  AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey))) < ?`,
+      [
+        input.agentId,
+        input.childSessionKey,
+        input.parentSessionId,
+        input.parentSessionKey,
+        input.now ?? Date.now(),
+        input.agentId,
+        cap.startedSince,
+        cap.limit
+      ]
+    )
+    return changes > 0
   }
 
   /** Record a patrol only while none of the agent's is running; a patrol older than `staleBefore` no longer counts. */

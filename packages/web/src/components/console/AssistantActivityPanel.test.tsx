@@ -163,6 +163,38 @@ const REPLY: AssistantDraftDto = {
   text: 'Thanks, we are on it.',
   offerAlways: false
 }
+/** A scheduled check's proposal: the task is its text, and approval runs it in the item's conversation. */
+const PROPOSAL: AssistantDraftDto = {
+  id: 'proposal-1',
+  kind: 'task',
+  target: {
+    platform: 'slack',
+    integrationId: INTEGRATION,
+    channel: 'C0SUPPORT',
+    thread: null,
+    name: 'support',
+    dm: false,
+    external: false
+  },
+  text: 'Rebase PR #12 onto main and push.',
+  offerAlways: false,
+  approver: {
+    kind: 'conversation',
+    integrationId: INTEGRATION,
+    channel: 'C0SUPPORT',
+    userId: null,
+    consoleUserId: null,
+    name: null
+  },
+  proposal: {
+    sentence: 'I want to rebase PR #12 because it conflicts with main.',
+    why: 'The check found a merge conflict.',
+    itemId: 'item-1',
+    itemTitle: 'Ship the release notes'
+  },
+  createdAt: '2026-10-09T09:00:00.000Z',
+  expiresAt: '2026-10-10T09:00:00.000Z'
+}
 const GRANT: AssistantGrantDto = {
   id: 'a'.repeat(32),
   source: { platform: 'webchat', integrationId: null, channel: 'conv-1' },
@@ -443,6 +475,68 @@ describe('the Activity view for an editor', () => {
     const row = host.querySelector('[data-assistant-draft="draft-1"]')
     expect(row?.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe('Posted.')
     expect(section(host, 'drafts')!.querySelector('.badge')?.textContent).toBe('1')
+  })
+
+  it('labels a proposal, leads with its sentence, and offers approve or deny only', async () => {
+    mocks.drafts = [DRAFT, PROPOSAL]
+    const host = await mount(true)
+    const row = section(host, 'drafts')!.querySelector('[data-assistant-draft="proposal-1"]')!
+    expect(row.textContent).toContain('Proposal')
+    expect(row.textContent).toContain('I want to rebase PR #12 because it conflicts with main.')
+    expect(row.textContent).toContain('Why: The check found a merge conflict.')
+    expect(row.textContent).toContain('Rebase PR #12 onto main and push.')
+    expect(row.textContent).toContain('Runs in #support')
+    expect(row.textContent).toContain('For Ship the release notes')
+    expect([...row.querySelectorAll('button')].map((b) => b.textContent?.trim())).toEqual(['Approve', 'Deny'])
+    expect(section(host, 'drafts')!.querySelector('.badge:not([class*="status-info"])')?.textContent).toBe('2')
+  })
+
+  it('approves a proposal after a confirmation, and says it runs in the background', async () => {
+    mocks.drafts = [PROPOSAL]
+    mocks.outcome = { status: 'executing', alwaysAllowed: false, failure: null }
+    const host = await mount(true)
+    const row = host.querySelector('[data-assistant-draft="proposal-1"]')!
+    await click(button(row, 'Approve'))
+    expect(row.querySelector('[role="group"]')?.textContent).toContain(
+      'Run this task now? It reports back in #support.'
+    )
+    await click(button(row.querySelector('[role="group"]')!, 'Approve'))
+    expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'proposal-1', 'approve')
+    expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
+      'Approved. It runs in the background and reports back in #support.'
+    )
+    expect(row.querySelector('button')).toBeNull()
+  })
+
+  it('denies a proposal after a confirmation, running nothing', async () => {
+    mocks.drafts = [PROPOSAL]
+    mocks.outcome = { status: 'denied', alwaysAllowed: false, failure: null }
+    const host = await mount(true)
+    const row = host.querySelector('[data-assistant-draft="proposal-1"]')!
+    await click(button(row, 'Deny'))
+    expect(row.querySelector('[role="group"]')?.textContent).toContain('Deny this proposal? Nothing is run.')
+    await click(button(row.querySelector('[role="group"]')!, 'Deny'))
+    expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'proposal-1', 'discard')
+    expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe('Denied. Nothing was run.')
+  })
+
+  it('keeps a proposal waiting, with its choices, while the agent’s sub-sessions are at their limit', async () => {
+    mocks.drafts = [PROPOSAL]
+    const limit = 'bot already has 3 sub-sessions running, the most it runs at once.'
+    mocks.decideFailure = new ApiError(limit, 409, 'SUBSESSION_LIMIT')
+    const host = await mount(true)
+    const row = host.querySelector('[data-assistant-draft="proposal-1"]')!
+    await click(button(row, 'Approve'))
+    await click(button(row.querySelector('[role="group"]')!, 'Approve'))
+    expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(limit)
+    expect(button(row, 'Approve')).toBeTruthy()
+    mocks.decideFailure = null
+    mocks.outcome = { status: 'executing', alwaysAllowed: false, failure: null }
+    await click(button(row, 'Approve'))
+    await click(button(row.querySelector('[role="group"]')!, 'Approve'))
+    expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
+      'Approved. It runs in the background and reports back in #support.'
+    )
   })
 
   it('deletes an item after a confirmation, and drops it from the list', async () => {

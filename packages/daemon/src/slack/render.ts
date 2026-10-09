@@ -592,10 +592,12 @@ export function buildApprovalDmIntro(info: {
   ]
 }
 
-/** What an assistant-mode draft card shows (assistant-mode.md §5.5). */
+/** What an assistant-mode draft card shows (assistant-mode.md §5.5); a `task` is a patrol's proposal (§5.10), whose text is the task. */
 export interface AssistantDraftCardView {
   agentName: string
-  kind: 'reply' | 'elsewhere'
+  kind: 'reply' | 'elsewhere' | 'task'
+  /** A proposal's own sentence, which the card leads with, and its reason. */
+  proposal?: { sentence: string; why: string }
   target: {
     platform: string
     channel: string
@@ -649,9 +651,10 @@ function draftDestinationNote(view: AssistantDraftCardView): string {
   return parts.join(' · ')
 }
 
-/** The one plain sentence a draft card leads with: where it goes, and that it posts on approval. */
+/** The one plain sentence a draft card leads with: where it goes, and that it posts on approval; a proposal's own sentence. */
 function draftSentence(view: AssistantDraftCardView): string {
   const agent = `*${escapeMrkdwnLabel(clampTo(view.agentName, 60))}*`
+  if (view.kind === 'task') return `${agent}: ${escapeSlackMrkdwn(clampTo(view.proposal?.sentence ?? '', 300))}`
   const place = draftPlace(view)
   if (view.kind === 'reply') {
     return `${agent} drafted a reply in ${place}, which is shared with another organization. It posts in the same thread once you approve.`
@@ -660,8 +663,9 @@ function draftSentence(view: AssistantDraftCardView): string {
   return `${agent} will post this to ${place}${external} once you approve.`
 }
 
-/** The exact text, quoted; a text longer than the card holds says how much is shown. */
+/** The exact text, quoted; a text longer than the card holds says how much is shown. A proposal shows its reason and its task. */
 function draftBody(view: AssistantDraftCardView): unknown[] {
+  if (view.kind === 'task') return proposalBody(view)
   const shown = view.text.length > DRAFT_CARD_TEXT_CAP ? view.text.slice(0, DRAFT_CARD_TEXT_CAP) : view.text
   const quoted = shown
     .split('\n')
@@ -678,11 +682,34 @@ function draftBody(view: AssistantDraftCardView): unknown[] {
   return blocks
 }
 
-/** A pending draft: the sentence, the exact text, and approve / discard (plus "always allow" for another place). */
+/** A proposal's reason and the task an approval runs, then where it runs and reports. */
+function proposalBody(view: AssistantDraftCardView): unknown[] {
+  const quote = (text: string) =>
+    text
+      .split('\n')
+      .map((line) => `> ${line}`)
+      .join('\n')
+  const task = view.text.length > DRAFT_CARD_TEXT_CAP ? view.text.slice(0, DRAFT_CARD_TEXT_CAP) : view.text
+  const why = view.proposal?.why.trim() ?? ''
+  const blocks: unknown[] = [
+    ...(why ? [{ type: 'markdown', text: `**Why**\n${quote(clampTo(why, 2_000))}` }] : []),
+    { type: 'markdown', text: `**Task**\n${quote(task)}` }
+  ]
+  const notes = [
+    `Runs with ${escapeMrkdwnLabel(clampTo(view.agentName, 60))}’s own permissions, then reports in ${draftPlace(view)}`
+  ]
+  if (task.length < view.text.length) notes.push(`Showing the first ${task.length} of ${view.text.length} characters.`)
+  const session = safeSlackLinkUrl(view.sessionUrl)
+  if (session) notes.push(`<${session}|Open the check>`)
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: notes.join(' · ') }] })
+  return blocks
+}
+
+/** A pending draft: the sentence, the exact text, and approve / discard (plus "always allow" for another place); a proposal offers approve / deny. */
 export function buildAssistantDraftCard(
   draftId: string,
   view: AssistantDraftCardView,
-  options: { offerAlways: boolean; routingTarget?: string }
+  options: { offerAlways: boolean; routingTarget?: string; notice?: string }
 ): unknown[] {
   const button = (choice: AssistantDraftChoice, index: number, text: string, style?: 'primary' | 'danger') => ({
     type: 'button',
@@ -691,14 +718,18 @@ export function buildAssistantDraftCard(
     value: encodePermValue(draftId, ASSISTANT_DRAFT_CHOICES[choice]),
     ...(style ? { style } : {})
   })
+  const task = view.kind === 'task'
   const elements = [
     button('approve', 0, 'Approve', 'primary'),
-    button('discard', 1, 'Discard', 'danger'),
-    ...(options.offerAlways ? [button('always', 2, 'Always allow from here to there')] : [])
+    button('discard', 1, task ? 'Deny' : 'Discard', 'danger'),
+    ...(options.offerAlways && !task ? [button('always', 2, 'Always allow from here to there')] : [])
   ]
   return [
     { type: 'section', text: { type: 'mrkdwn', text: draftSentence(view) } },
     ...draftBody(view),
+    ...(options.notice
+      ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: escapeSlackMrkdwn(clampTo(options.notice, 500)) }] }]
+      : []),
     { type: 'actions', ...(options.routingTarget ? { block_id: options.routingTarget } : {}), elements }
   ]
 }

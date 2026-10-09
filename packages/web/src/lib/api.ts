@@ -3865,12 +3865,22 @@ export interface AssistantSubsessionsPageDto {
   nextCursor: string | null
 }
 
+/** What a scheduled check proposes to do: the sentence its card leads with, why, and the item it serves. */
+export interface AssistantProposalDto {
+  sentence: string
+  why: string
+  itemId: string
+  itemTitle: string | null
+}
+
 export interface AssistantDraftDto {
   id: string
-  kind: 'reply' | 'elsewhere'
+  /** `task` is a proposal: its text is the task, run in the conversation its item was taken in once approved. */
+  kind: 'reply' | 'elsewhere' | 'task'
   target: {
     platform: string
-    integrationId: string
+    /** Null only for a proposal in a webchat conversation. */
+    integrationId: string | null
     channel: string
     thread: string | null
     name: string | null
@@ -3888,15 +3898,16 @@ export interface AssistantDraftDto {
     consoleUserId: string | null
     name: string | null
   } | null
+  proposal?: AssistantProposalDto
   createdAt: string
   expiresAt: string
 }
 
 export type AssistantDraftDecision = 'approve' | 'approve_always' | 'discard'
 
-/** What a decision did: `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted. */
+/** What a decision did: `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted; an approved proposal is `executing`. */
 export interface AssistantDraftOutcomeDto {
-  status: 'succeeded' | 'failed' | 'outcome_unknown' | 'denied'
+  status: 'succeeded' | 'failed' | 'outcome_unknown' | 'denied' | 'executing'
   alwaysAllowed: boolean
   failure: string | null
 }

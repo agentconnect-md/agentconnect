@@ -220,7 +220,7 @@ describe('the assistant Activity routes', () => {
       { agentId: AGENT, operation: 'items', section: 'closed', limit: 20 },
       { agentId: AGENT, operation: 'item', itemId: 'item-1' },
       { agentId: AGENT, operation: 'item', itemId: 'item-2' },
-      { agentId: AGENT, operation: 'drafts', limit: 50 },
+      { agentId: AGENT, operation: 'drafts', limit: 50, proposals: true },
       { agentId: AGENT, operation: 'grants' }
     ])
 
@@ -602,6 +602,23 @@ describe('deciding a draft from the console', () => {
     expect((await decide(running, 'approve')).json()).toMatchObject({ statusCode: 404, code: 'NOT_FOUND' })
     expect((await decide(running, 'allow_once')).statusCode).toBe(400)
     expect(control.writes).toHaveLength(3)
+  })
+
+  it('starts an approved proposal, and keeps one waiting while the agent’s sub-sessions are at their limit', async () => {
+    await seedAssistant()
+    const control = new ActivitySpy()
+    const running = app(control)
+    control.decision = { result: 'decided', status: 'executing', granted: false, failure: null }
+    expect((await decide(running, 'approve', 'proposal-1')).json()).toEqual({
+      status: 'executing',
+      alwaysAllowed: false,
+      failure: null
+    })
+    const limit = 'bot already has 3 sub-sessions running, the most it runs at once.'
+    control.decision = { result: 'busy', status: 'awaiting_review', granted: false, failure: limit }
+    const busy = await decide(running, 'approve', 'proposal-2')
+    expect(busy.statusCode).toBe(409)
+    expect(busy.json()).toMatchObject({ code: 'SUBSESSION_LIMIT', message: limit })
   })
 
   it('lets no viewer decide', async () => {

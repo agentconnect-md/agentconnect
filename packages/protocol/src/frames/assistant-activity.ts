@@ -82,13 +82,31 @@ export const AssistantActivitySubsession = z.object({
 })
 export type AssistantActivitySubsession = z.infer<typeof AssistantActivitySubsession>
 
-/** A draft awaiting approval: where it would post, the exact text, who approves, and when it lapses. */
+/** The longest sentence a proposal's card leads with. */
+export const ASSISTANT_PROPOSAL_SENTENCE_MAX = 300
+/** The longest reason a proposal gives. */
+export const ASSISTANT_PROPOSAL_WHY_MAX = 2_000
+/** The longest task a proposal asks to run. */
+export const ASSISTANT_PROPOSAL_TASK_MAX = 8_000
+
+/** What a patrol proposes to do (assistant-mode.md §5.10): the card's sentence, its reason and the item it came from; the task is the draft's `text`. */
+export const AssistantActivityProposal = z.object({
+  sentence: z.string().min(1).max(ASSISTANT_PROPOSAL_SENTENCE_MAX),
+  why: z.string().max(ASSISTANT_PROPOSAL_WHY_MAX),
+  itemId: ref,
+  /** The item's title as the daemon last saw it; null once the item is gone. */
+  itemTitle: z.string().max(300).nullable()
+})
+export type AssistantActivityProposal = z.infer<typeof AssistantActivityProposal>
+
+/** A draft awaiting approval: where it would post, the exact text, who approves, and when it lapses; a `task` is a proposal, run in the item's place once approved. */
 export const AssistantActivityDraft = z.object({
   id: ref,
-  kind: z.enum(['reply', 'elsewhere']),
+  kind: z.enum(['reply', 'elsewhere', 'task']),
   target: z.object({
     platform: z.string().min(1).max(64),
-    integrationId: ref,
+    /** Null only for a proposal in a place with no integration (webchat). */
+    integrationId: ref.nullable(),
     channel: ref,
     thread: ref.nullable(),
     /** The conversation's name, or the direct message recipient's, as resolved when the draft was written. */
@@ -110,6 +128,8 @@ export const AssistantActivityDraft = z.object({
       name
     })
     .nullable(),
+  /** Present on a `task`: what it would do and why. */
+  proposal: AssistantActivityProposal.optional(),
   createdAt: time,
   expiresAt: time
 })
@@ -152,7 +172,9 @@ export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
   z.object({
     agentId,
     operation: z.literal('drafts'),
-    limit: z.number().int().min(1).max(ASSISTANT_ACTIVITY_DRAFTS_MAX)
+    limit: z.number().int().min(1).max(ASSISTANT_ACTIVITY_DRAFTS_MAX),
+    /** Also list proposals (`kind: 'task'`); an older daemon ignores it and has none. */
+    proposals: z.boolean().optional()
   }),
   z.object({ agentId, operation: z.literal('grants') })
 ])
@@ -224,8 +246,8 @@ export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
 ])
 export type AssistantActivityWriteReq = z.infer<typeof AssistantActivityWriteReq>
 
-/** `decided` when this call settled the draft; otherwise why it could not, and this call posted nothing. */
-export const AssistantDraftDecisionResult = z.enum(['decided', 'not-found', 'expired', 'already-decided'])
+/** `decided` when this call settled the draft; otherwise why it could not, and this call posted nothing; `busy` leaves a proposal waiting while the agent's sub-sessions are at their limit. */
+export const AssistantDraftDecisionResult = z.enum(['decided', 'not-found', 'expired', 'already-decided', 'busy'])
 export type AssistantDraftDecisionResult = z.infer<typeof AssistantDraftDecisionResult>
 
 /** `stopped` interrupted its current turn; `not-running` found no turn to interrupt; `not-found` is no sub-session of this agent. */

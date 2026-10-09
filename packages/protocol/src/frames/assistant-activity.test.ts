@@ -193,6 +193,50 @@ describe('assistant/activity frames', () => {
     expect(AssistantActivityDraft.parse({ ...draft, offerAlways: true }).offerAlways).toBe(true)
   })
 
+  it('round-trips a proposal beside the drafts, and a decision that leaves it waiting', () => {
+    expect(
+      decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'drafts', limit: 50, proposals: true })
+    ).toBe(true)
+    const proposal = {
+      id: 'proposal-1',
+      kind: 'task',
+      target: {
+        platform: 'slack',
+        integrationId: 'int-1',
+        channel: 'C0',
+        thread: null,
+        name: 'general',
+        dm: false,
+        external: false
+      },
+      text: 'Rebase PR #12 onto main and push.',
+      approver: null,
+      proposal: {
+        sentence: 'I want to rebase PR #12 because it conflicts with main.',
+        why: 'The check found a merge conflict.',
+        itemId: 'item-1',
+        itemTitle: 'Land PR #12'
+      },
+      createdAt: '2026-10-09T09:00:00.000Z',
+      expiresAt: '2026-10-10T09:00:00.000Z'
+    }
+    expect(
+      decodes('assistant/activity/read/result', { operation: 'drafts', drafts: [proposal], truncated: false })
+    ).toBe(true)
+    expect(
+      AssistantActivityDraft.safeParse({ ...proposal, proposal: { ...proposal.proposal, sentence: '' } }).success
+    ).toBe(false)
+    expect(
+      decodes('assistant/activity/write/result', {
+        operation: 'decide-draft',
+        result: 'busy',
+        status: 'awaiting_review',
+        granted: false,
+        failure: 'The agent already has 3 sub-sessions running.'
+      })
+    ).toBe(true)
+  })
+
   it('refuses unbounded or malformed requests and answers', () => {
     const tooMany = ASSISTANT_ACTIVITY_ITEMS_MAX + 1
     expect(
