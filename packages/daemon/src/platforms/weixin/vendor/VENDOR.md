@@ -28,3 +28,8 @@ when iLink protocol bumps land, then resync this directory.
 - `sdk/internal/config.ts`: `match.map(Number)` destructure given defaults (`= 0`).
 - `sdk/internal/mime-table.ts`: `split(";")[0]` given `?? ""` fallback.
 - `onebots/package-metadata.ts`: catch variable narrowed to `Error` for `cause`.
+- `sdk/internal/config.ts`: `ADAPTER_SEMVER` pinned to '3.0.18' (the upstream
+  reads `../../../package.json`, which does not exist in the vendored layout;
+  `onebots/package-metadata.ts` stays vendored but is now unreferenced).
+- `sdk/inbound-runtime.ts`: empty-string `group_id` no longer rejected (real
+  iLink DM events carry `group_id: ""`; presence-but-empty means "not a group").

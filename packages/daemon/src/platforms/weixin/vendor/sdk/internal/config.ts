@@ -1,5 +1,3 @@
-import { readPackageVersionFile } from '../../onebots/index.js'
-
 /** 默认端点与超时 */
 export const ILINK_HTTP_ORIGIN_DEFAULT = 'https://ilinkai.weixin.qq.com'
 export const ILINK_CDN_ROOT_DEFAULT = 'https://novac2c.cdn.weixin.qq.com/c2c'
@@ -11,8 +9,10 @@ export const ILINK_RETRY_INITIAL_MS = 1_000
 export const ILINK_RETRY_MAX_MS = 30_000
 /** iLink 在服务端登记的应用标识，不是 npm 包名。 */
 export const ILINK_APP_ID = 'bot'
-/** 始终从发布包元数据读取，避免 Changesets 升版后请求头仍携带旧版本。 */
-export const ADAPTER_SEMVER = await readPackageVersionFile(new URL('../../../package.json', import.meta.url))
+/** Vendored: the upstream reads the adapter package.json for the UA version; the
+ *  file does not exist inside AgentConnect, so the version is pinned here. Sync
+ *  with the upstream adapter's published version on resync (see vendor/VENDOR.md). */
+export const ADAPTER_SEMVER = '3.0.18'
 export const ILINK_APP_CLIENT_VERSION = encodeIlinkClientVersion(ADAPTER_SEMVER)
 /** outbound client_id 前缀，仅作日志/排障区分 */
 export const OUTBOUND_TRACE_SCOPE = 'ob-wxcb'

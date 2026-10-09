@@ -42,8 +42,8 @@ export function assertInboundWirePacket(value: unknown): asserts value is Inboun
   ) {
     throw new GatewayFault('INVALID_EVENT', 'iLink 事件 item_list 只能包含对象')
   }
-  if (event.group_id !== undefined && (typeof event.group_id !== 'string' || !event.group_id.trim())) {
-    throw new GatewayFault('INVALID_EVENT', 'iLink 事件 group_id 必须是非空字符串')
+  if (event.group_id !== undefined && typeof event.group_id !== 'string') {
+    throw new GatewayFault('INVALID_EVENT', 'iLink 事件 group_id 必须是字符串')
   }
   if (event.context_token !== undefined && typeof event.context_token !== 'string') {
     throw new GatewayFault('INVALID_EVENT', 'iLink 事件 context_token 必须是字符串')
