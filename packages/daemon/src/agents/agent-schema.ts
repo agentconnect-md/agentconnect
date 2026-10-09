@@ -32,6 +32,7 @@ export type BindMatch = z.infer<typeof BindMatchSchema>
 export const BindRuleConfigSchema = z.object({
   channel: z.string().optional(), // absent = any channel
   thread: z.string().optional(),
+  kind: z.enum(['dm', 'room']).optional(), // the conversation kind an unscoped rule serves; absent = any
   match: BindMatchSchema
 })
 export type BindRuleConfig = z.infer<typeof BindRuleConfigSchema>

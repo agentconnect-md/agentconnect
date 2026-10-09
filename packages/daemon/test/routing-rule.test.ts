@@ -297,6 +297,13 @@ describe('rulesFromAgent', () => {
     expect(rules[0]!.botUserId).toBe('')
     expect(rules[0]!.platform).toBe('slack')
   })
+
+  // §14.2: the kind a surviving default rule is bound to rides into the ladder's scope.
+  it('carries a bind rule’s kind into the rule scope', () => {
+    const a = agent()
+    a.integrations[0]!.core = { bindRules: [{ kind: 'room', match: { kind: 'mention' } }] } as never
+    expect(rulesFromAgent(a, {})[0]!.scope).toEqual({ kind: 'room' })
+  })
 })
 
 describe('resolveCpRule', () => {
@@ -435,6 +442,29 @@ describe('conversationAdmitted', () => {
       bindRules: [{ channel: 'C1', match: { kind: 'mention' } }]
     })
     expect(conversationAdmitted(r, 'C1')).toBe(false)
+  })
+
+  // §14.2: the bot's conversation defaults fence by kind, classifying a bare id by the manifest.
+  it('admits a room only through a scoped rule when channels default to Off; DMs stay open', () => {
+    const r = routing({
+      platform: 'slack',
+      offByDefault: { channel: true, dm: false },
+      bindRules: [{ channel: 'C1', match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
+    })
+    expect(conversationAdmitted(r, 'C1')).toBe(true)
+    expect(conversationAdmitted(r, 'C2')).toBe(false)
+    expect(conversationAdmitted(r, 'D9')).toBe(true)
+  })
+
+  it('closes DMs when they default to Off, leaving rooms open', () => {
+    const r = routing({ platform: 'slack', offByDefault: { channel: false, dm: true }, bindRules: [] })
+    expect(conversationAdmitted(r, 'C2')).toBe(true)
+    expect(conversationAdmitted(r, 'D9')).toBe(false)
+  })
+
+  it('reads an id without a DM signal as a room', () => {
+    const r = routing({ platform: 'telegram', offByDefault: { channel: true, dm: false }, bindRules: [] })
+    expect(conversationAdmitted(r, '-100')).toBe(false)
   })
 })
 

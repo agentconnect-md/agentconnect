@@ -128,6 +128,7 @@ import {
   type CreateGiteaHookInput,
   type CreateGitlabHookInput,
   type BotDto,
+  type BotConversationDefaults,
   type UpsertCronInput,
   type CronDto,
   type DaemonConnectDto,
@@ -280,6 +281,8 @@ interface ConsoleData {
   setBotShareable: (botId: string, shareable: boolean) => Promise<void>
   /** Flip a Slack bot's "join public channels on demand" switch (`PATCH /bots/:id`). */
   setBotJoinPublicChannels: (botId: string, enabled: boolean) => Promise<void>
+  /** Set what a bot's new conversations start as (`PATCH /bots/:id` `conversationDefaults`). */
+  setBotConversationDefaults: (botId: string, defaults: BotConversationDefaults) => Promise<void>
   /** Create-or-update a cron (PUT upsert; null id ⇒ mint a fresh UUID), then re-pull. */
   saveCron: (id: string | null, body: UpsertCronInput) => Promise<void>
   /** Delete a cron, then re-pull. */
@@ -1648,6 +1651,15 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateBots]
   )
 
+  // The bot's conversation defaults: the same bot-level PATCH, and only the bot row shows them.
+  const setBotConversationDefaults = useCallback(
+    async (botId: string, defaults: BotConversationDefaults) => {
+      await apiUpdateBot(botId, { conversationDefaults: defaults })
+      settleInBackground(mutateBots())
+    },
+    [mutateBots]
+  )
+
   // Create-or-update a cron. PUT /crons/:id is an idempotent upsert, so a create
   // just mints a fresh client-side UUID (the CP keys the row on it).
   const saveCron = useCallback(
@@ -1821,6 +1833,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       setChannelAgent,
       setBotShareable,
       setBotJoinPublicChannels,
+      setBotConversationDefaults,
       saveCron,
       deleteCron,
       provisionDaemon,
@@ -1908,6 +1921,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       setChannelAgent,
       setBotShareable,
       setBotJoinPublicChannels,
+      setBotConversationDefaults,
       saveCron,
       deleteCron,
       provisionDaemon,

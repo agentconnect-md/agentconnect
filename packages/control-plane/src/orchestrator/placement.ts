@@ -86,6 +86,7 @@ import type { ControlSender } from './outbound.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import type { EpochService } from './epoch.js'
 import type { Clock } from '../domain/clock.js'
+import { botConversationDefaults, offByDefaultOf } from '../domain/conversation-defaults.js'
 
 /** The narrow service the register handler depends on (design §2.3 `Orchestrator.reconcile`). */
 export interface ReconcileService {
@@ -264,6 +265,36 @@ function gatedBindRules(channels: IntegrationChannelRecord[]): IntegrationBindRu
 }
 
 /**
+ * Bind rules for an UNGATED integration whose bot sets a conversation default to Off
+ * (resource-visibility.md §14.2). The kind that is Off loses its unscoped default and takes
+ * the gated shape instead — one scoped rule per enabled row — so a conversation no row has
+ * reached yet matches nothing, exactly as it would for a restricted agent. A kind left open
+ * keeps its unscoped default and the ordinary channel rules — bound to its own kind, so the
+ * surviving default cannot reach the Off kind through a rung that ignores the match (thread
+ * affinity, explicit targets) or one that does not look at the kind (a mention inside a DM).
+ */
+function defaultBindRules(
+  channels: IntegrationChannelRecord[],
+  offByDefault: { channel: boolean; dm: boolean }
+): IntegrationBindRule[] {
+  const rooms = channels.filter((c) => c.kind !== 'im')
+  const dms = channels.filter((c) => c.kind === 'im')
+  // A 1:1 DM's On state is already covered by the unscoped dm default. A group DM
+  // set to Any needs its own auto rule; Mention is covered by the default mention rule.
+  const roomRules: IntegrationBindRule[] = offByDefault.channel
+    ? gatedBindRules(rooms)
+    : [
+        { kind: 'room', match: { kind: 'mention' } },
+        ...rooms
+          .filter((c) => c.trigger === 'any')
+          .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } })),
+        ...enabledDecisionGates(rooms).map((g) => ({ channel: g.channel, match: { kind: 'decision' as const } }))
+      ]
+  const dmRules: IntegrationBindRule[] = offByDefault.dm ? gatedBindRules(dms) : [{ kind: 'dm', match: { kind: 'dm' } }]
+  return [...roomRules, ...dmRules]
+}
+
+/**
  * The Off conversations of an UNGATED integration — its `mutedChannels` fence.
  *
  * An ungated integration reaches every conversation through unscoped defaults
@@ -324,7 +355,13 @@ export async function integrationToSpec(
       .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } })),
     ...enabledDecisionGates(channels).map((g) => ({ channel: g.channel, match: { kind: 'decision' as const } }))
   ]
-  const bindRules = gated ? gatedBindRules(channels) : [...DEFAULT_BIND_RULES, ...channelRules]
+  // The bot's conversation defaults: a kind that is Off takes the gated shape (§14.2).
+  const offByDefault = offByDefaultOf(botConversationDefaults(bot))
+  const bindRules = gated
+    ? gatedBindRules(channels)
+    : offByDefault.channel || offByDefault.dm
+      ? defaultBindRules(channels, offByDefault)
+      : [...DEFAULT_BIND_RULES, ...channelRules]
   // A held By decision conversation is muted so the unscoped mention default can never answer it as Any.
   const mutedChannels = [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))]
   // §6.4 final shape: envelope + opaque config. The daemon takes the routing
@@ -341,6 +378,7 @@ export async function integrationToSpec(
     bindRules,
     mutedChannels,
     gated,
+    ...(offByDefault.channel || offByDefault.dm ? { offByDefault } : {}),
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels)

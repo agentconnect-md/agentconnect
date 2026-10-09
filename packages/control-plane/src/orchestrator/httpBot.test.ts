@@ -41,6 +41,7 @@ import { createTelegramCpProvider } from '../platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../platforms/discord/provider.js'
 import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
 import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
+import { conversationSeed } from '../domain/conversation-defaults.js'
 
 // §9: both `rc/bot-assign` bags and every send-only spec payload come from the
 // platform provider. Offline stubs — the projectors reach no provider API.
@@ -274,16 +275,26 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         channels = channels.filter(
           (row) => row.integrationId !== integrationId || reported.some((candidate) => candidate.id === row.channelId)
         )
+        let seeded = 0
         for (const candidate of reported) {
           let row = channels.find((item) => item.integrationId === integrationId && item.channelId === candidate.id)
           if (!row) {
-            row = channel({ integrationId, channelId: candidate.id, trigger: opts?.defaultTrigger ?? 'mention' })
+            seeded += 1
+            // The repo's seed order: the install-wide default, then the bot's conversation defaults.
+            const seed = opts?.seed ? conversationSeed(opts.seed, candidate.kind) : undefined
+            row = channel({
+              integrationId,
+              channelId: candidate.id,
+              kind: candidate.kind ?? 'channel',
+              trigger: opts?.defaultTrigger ?? seed?.trigger ?? 'mention',
+              sessionMode: seed?.sessionMode ?? 'createNew'
+            })
             channels.push(row)
           }
           row.name = candidate.name ?? null
           row.isPrivate = candidate.isPrivate ?? false
         }
-        return { externalChanged: false }
+        return { externalChanged: false, seeded }
       },
       setAgent: async (integrationId, channelId, agentId) => {
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
@@ -315,13 +326,15 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       upsertConversation: async (integrationId, conversation, opts) => {
         let row = channels.find((c) => c.integrationId === integrationId && c.channelId === conversation.id)
         if (!row) {
+          const seed = opts?.seed ? conversationSeed(opts.seed, conversation.kind) : undefined
           row = channel({
             integrationId,
             channelId: conversation.id,
             name: conversation.name ?? null,
             kind: conversation.kind ?? 'channel',
             dmUserId: conversation.dmUserId ?? null,
-            trigger: opts?.defaultTrigger ?? 'mention'
+            trigger: opts?.defaultTrigger ?? seed?.trigger ?? 'mention',
+            sessionMode: seed?.sessionMode ?? 'createNew'
           })
           channels.push(row)
         } else {
@@ -333,7 +346,15 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       upsertAgent: async (integrationId, channelId, agentId, opts) => {
         let row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) {
-          row = channel({ integrationId, channelId, agentId, trigger: opts?.defaultTrigger ?? 'mention' })
+          const seed = opts?.seed ? conversationSeed(opts.seed, opts.kind) : undefined
+          row = channel({
+            integrationId,
+            channelId,
+            agentId,
+            ...(opts?.kind ? { kind: opts.kind } : {}),
+            trigger: opts?.defaultTrigger ?? seed?.trigger ?? 'mention',
+            sessionMode: seed?.sessionMode ?? 'createNew'
+          })
           channels.push(row)
         } else row.agentId = agentId
         return row
@@ -1297,6 +1318,52 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       const g42 = assign.routes.filter((r) => r.scope?.channel === 'G42')
       // ALICE is the earliest install (INT_A) — one route, hers, regardless of row order.
       expect(g42).toEqual([expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })])
+    })
+
+    // The bot's conversation defaults: what an org-visible install's fresh row is seeded with,
+    // and the relay's fence for the conversations no row has reached yet.
+    it('seeds a fresh channel from the bot’s conversation defaults, on every membership row', async () => {
+      botRow = bot({
+        platformConfig: { conversationDefaults: { channel: { trigger: 'off', sessionMode: 'append' } } }
+      } as Partial<BotRecord>)
+      channels = []
+      await makeOrch().replaceChannels(BOT, [{ id: 'C7', name: 'deploys' }])
+      for (const integrationId of [INT_A, INT_B]) {
+        expect(channels.find((c) => c.integrationId === integrationId && c.channelId === 'C7')).toMatchObject({
+          trigger: 'off',
+          sessionMode: 'append'
+        })
+      }
+      const routes = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcRoutes
+      expect(routes.mutedChannels).toContain('C7')
+      expect(routes.offByDefault).toEqual({ channel: true, dm: false })
+    })
+
+    it('seeds a fresh DM from the DM default; a gated install stays on its own Off', async () => {
+      botRow = bot({
+        platformConfig: { conversationDefaults: { dm: { trigger: 'off' } } }
+      } as Partial<BotRecord>)
+      gatedAgents = new Set([BOB])
+      channels = []
+      await makeOrch().reportConversation(BOT, { id: 'D42', name: '@Alice' })
+      expect(channels.find((c) => c.integrationId === INT_A && c.channelId === 'D42')).toMatchObject({
+        kind: 'im',
+        trigger: 'off'
+      })
+      expect(channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')).toMatchObject({
+        kind: 'im',
+        trigger: 'off'
+      })
+      const routes = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcRoutes
+      expect(routes.offByDefault).toEqual({ channel: false, dm: true })
+    })
+
+    it('without a setting the platform defaults hold and the fence is open', async () => {
+      channels = []
+      await makeOrch().replaceChannels(BOT, [{ id: 'C7', name: 'deploys' }])
+      expect(channels.find((c) => c.channelId === 'C7')).toMatchObject({ trigger: 'mention', sessionMode: 'createNew' })
+      const routes = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcRoutes
+      expect(routes.offByDefault).toEqual({ channel: false, dm: false })
     })
 
     it('lets an enabled org-visible agent own a group DM', async () => {

@@ -31,7 +31,8 @@ import type {
   RcThreadParticipant,
   RcThreadLookup,
   RcThreadLookupOk,
-  DecisionReadiness
+  DecisionReadiness,
+  BotConversationDefaults
 } from '@agentconnect.md/protocol'
 import { decisionRoutingAgentIds, manifestFor, DECISION_CHAIN_V1_FEATURE } from '@agentconnect.md/protocol'
 import type {
@@ -63,6 +64,7 @@ import type {
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } from './placement.js'
+import { botConversationDefaults, conversationSeed, offByDefaultOf } from '../domain/conversation-defaults.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
@@ -137,6 +139,8 @@ interface Compiled {
   /** The muted conversations whose owner is GATED: Off because §14 has not enabled them,
    *  so they keep the one-time notice. Every other muted channel is silent. */
   gatedOffChannels: string[]
+  /** The bot's fence for conversations no row has reached yet, by kind (`rc/bot-assign.offByDefault`). */
+  offByDefault: { channel: boolean; dm: boolean }
   /** Every membership row of the bot, read once for the compile and reused by the
    *  spec push (both need the per-install trigger state). */
   botChannels: IntegrationChannelRecord[]
@@ -400,6 +404,7 @@ export class HttpBotOrchestrator {
             gatedAgentIds: compiled.gatedAgentIds,
             mutedChannels: compiled.mutedChannels,
             gatedOffChannels: compiled.gatedOffChannels,
+            offByDefault: compiled.offByDefault,
             noticedDmConversations: compiled.noticedDmConversations,
             // An owner edit converges here without a re-assign, so the defaults must ride the hot
             // update too — otherwise a connected relay keeps the old default, and the old grant.
@@ -825,12 +830,17 @@ export class HttpBotOrchestrator {
       return
     }
     const installs = await this.integrations.listForBot(bot.id)
+    const seed = botConversationDefaults(bot)
     for (const integration of installs) {
       // Conversation gating (§14): a gated install's fresh channels start Off — an
       // editor must enable them in the console before the compiler emits a route.
+      // Everyone else's start as the bot's conversation defaults say.
       const owner = await this.agents.getUnscoped(integration.agentId)
       const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
-      await this.channels.replaceSnapshot(integration.id, channels, defaultTrigger ? { defaultTrigger } : undefined)
+      await this.channels.replaceSnapshot(integration.id, channels, {
+        ...(defaultTrigger ? { defaultTrigger } : {}),
+        seed
+      })
     }
     await this.syncRoutes(botId)
   }
@@ -906,6 +916,7 @@ export class HttpBotOrchestrator {
       return
     }
     const installs = await this.integrations.listForBot(bot.id)
+    const seed = botConversationDefaults(bot)
     for (const install of installs) {
       const agent = await this.agents.getUnscoped(install.agentId)
       if (!agent) continue
@@ -915,10 +926,8 @@ export class HttpBotOrchestrator {
       // different audiences — the same DM may be open for one and Off for the next.
       const defaultTrigger = isGatedAgent(agent)
         ? await this.gatedConversationTrigger(agent, bot, reported)
-        : kind === 'im'
-          ? ('any' as const)
-          : ('mention' as const)
-      await this.channels.upsertConversation(install.id, reported, { defaultTrigger })
+        : conversationSeed(seed, kind).trigger
+      await this.channels.upsertConversation(install.id, reported, { defaultTrigger, seed })
     }
     await this.syncRoutes(botId)
   }
@@ -967,7 +976,13 @@ export class HttpBotOrchestrator {
 
       const currentRow = conversationOwnerRow(currentOwner, rows)
       const targetAgent = options.source === 'slack' ? await this.agents.getUnscoped(owner.agentId) : null
-      let updated = await this.persistConversationOwner(installs, channelId, owner, rows[0])
+      let updated = await this.persistConversationOwner(
+        installs,
+        channelId,
+        owner,
+        botConversationDefaults(bot),
+        rows[0]
+      )
       // The trigger and its Decision binding replicate together, exactly like the session mode below.
       let activation: ChannelActivation
       if (targetAgent && isGatedAgent(targetAgent)) activation = { trigger: 'off' }
@@ -1011,7 +1026,7 @@ export class HttpBotOrchestrator {
     const bot = await this.bots.getUnscoped(BotId(botId))
     if (bot?.transport !== 'http') return
     const installs = await this.integrations.listForBot(bot.id)
-    await this.ensureConversationOwners(bot.id, installs)
+    await this.ensureConversationOwners(bot, installs)
   }
 
   /** Save the router and its scope under every affected conversation's lock (§6.2); null when an owner changed. */
@@ -1186,13 +1201,15 @@ export class HttpBotOrchestrator {
     installs: IntegrationRecord[],
     channelId: string,
     owner: IntegrationRecord,
+    seed: BotConversationDefaults,
     template?: IntegrationChannelRecord
   ): Promise<IntegrationChannelRecord> {
     const ownerAgent = await this.agents.getUnscoped(owner.agentId)
     const defaultTrigger = ownerAgent && isGatedAgent(ownerAgent) ? ('off' as const) : undefined
     const updated = await this.channels.upsertAgent(owner.id, channelId, owner.agentId, {
       ...(defaultTrigger ? { defaultTrigger } : {}),
-      ...(template ? { kind: template.kind } : {})
+      ...(template ? { kind: template.kind } : {}),
+      seed
     })
     // Establish the replacement before clearing stale markers: even if a later
     // cleanup write fails, the conversation never regresses to having no owner.
@@ -1291,13 +1308,11 @@ export class HttpBotOrchestrator {
   }
 
   /** Converge every observed conversation to one canonical owner. */
-  private async ensureConversationOwners(botId: BotId, installs: IntegrationRecord[]): Promise<void> {
+  private async ensureConversationOwners(bot: BotRecord, installs: IntegrationRecord[]): Promise<void> {
     if (installs.length === 0) return
-    const rows = await this.channels.listForBot(botId)
+    const rows = await this.channels.listForBot(bot.id)
     const conversationIds = [...new Set(rows.map((row) => row.channelId))]
-    // Only the gated arm below reads it, and only for a conversation whose owner is
-    // not yet persisted — so it is fetched once and lazily rather than per row.
-    let bot: BotRecord | null | undefined
+    const seed = botConversationDefaults(bot)
     for (const channelId of conversationIds) {
       const conversationRows = rows.filter((row) => row.channelId === channelId)
       const owner = pickConversationOwner(installs, conversationRows)
@@ -1321,16 +1336,13 @@ export class HttpBotOrchestrator {
         // audience may have changed since the row was seeded, and this is the write
         // that would otherwise freeze a stale answer in as the owner's trigger.
         if (ownerAgent && isGatedAgent(ownerAgent)) {
-          if (bot === undefined) bot = await this.bots.getUnscoped(botId)
           const direct = conversationRows.find((row) => row.kind === 'im' && row.dmUserId)
           trigger = {
-            trigger: bot
-              ? await this.gatedConversationTrigger(ownerAgent, bot, {
-                  id: channelId,
-                  kind: direct?.kind,
-                  dmUserId: direct?.dmUserId
-                })
-              : 'off'
+            trigger: await this.gatedConversationTrigger(ownerAgent, bot, {
+              id: channelId,
+              kind: direct?.kind,
+              dmUserId: direct?.dmUserId
+            })
           }
         }
       }
@@ -1339,7 +1351,7 @@ export class HttpBotOrchestrator {
         (row) => row.agentId !== null && (row.integrationId !== owner.id || row.agentId !== owner.agentId)
       )
       if (!canonical || conflicting)
-        await this.persistConversationOwner(installs, channelId, owner, conversationRows[0])
+        await this.persistConversationOwner(installs, channelId, owner, seed, conversationRows[0])
       // Replicating, not introducing: `chosen` came from the rows themselves, so a
       // sibling backfilled here — including one added long after the decision — carries
       // the same provenance as the value it is given.
@@ -1372,7 +1384,7 @@ export class HttpBotOrchestrator {
   private async compile(bot: BotRecord): Promise<Compiled | null> {
     const integrations = await this.integrations.listForBot(bot.id)
     if (integrations.length === 0 && !this.platforms.get(bot.platform)?.retainUnboundIngress) return null
-    await this.ensureConversationOwners(bot.id, integrations)
+    await this.ensureConversationOwners(bot, integrations)
     const compiled = await this.plan(bot, integrations)
     this.recordDecisionHolds(bot.id, compiled?.heldFor ?? new Set())
     HttpBotOrchestrator.recordIndex(this.routingDependents, bot.id, compiled?.routingDependents ?? new Set())
@@ -1665,6 +1677,7 @@ export class HttpBotOrchestrator {
       gatedAgentIds: placed.filter((p) => p.gated).map((p) => p.integration.agentId),
       mutedChannels,
       gatedOffChannels,
+      offByDefault: offByDefaultOf(botConversationDefaults(bot)),
       noticedDmConversations,
       conversationDefaults,
       ownerAsDefault,
@@ -1832,6 +1845,7 @@ export class HttpBotOrchestrator {
       gatedAgentIds: compiled.gatedAgentIds,
       mutedChannels: compiled.mutedChannels,
       gatedOffChannels: compiled.gatedOffChannels,
+      offByDefault: compiled.offByDefault,
       noticedDmConversations: compiled.noticedDmConversations,
       conversationDefaults: compiled.conversationDefaults,
       ownerAsDefault: compiled.ownerAsDefault,

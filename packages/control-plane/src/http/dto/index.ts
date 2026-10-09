@@ -54,7 +54,8 @@ import {
   normalizeGitHubSkillSource,
   normalizeGitCloneUrl,
   redactGitUrlSecrets,
-  normalizeRepoSubdir
+  normalizeRepoSubdir,
+  BotConversationDefaults
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
@@ -1917,18 +1918,23 @@ export const LeaveIntegrationConversationBody = z.object({
   ])
 })
 
-/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1) and/or the
- *  join-public-channels switch; at least one of the two. */
+/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1), the
+ *  join-public-channels switch and/or the conversation defaults; at least one of them. */
 export const UpdateBotBody = z
   .object({
     shareable: z.boolean().optional(),
     /** May the bot enter a PUBLIC channel on first use (Slack `conversations.join`)? Refused
      *  on a platform whose manifest declares no `publicChannelJoin`. */
-    joinPublicChannels: z.boolean().optional()
+    joinPublicChannels: z.boolean().optional(),
+    /** What a conversation nobody has configured starts as, by kind. Stored whole: a half-set
+     *  default would read as the platform's for the half left out. */
+    conversationDefaults: BotConversationDefaults.optional()
   })
-  .refine((body) => body.shareable !== undefined || body.joinPublicChannels !== undefined, {
-    message: 'nothing to update: pass `shareable` and/or `joinPublicChannels`'
-  })
+  .refine(
+    (body) =>
+      body.shareable !== undefined || body.joinPublicChannels !== undefined || body.conversationDefaults !== undefined,
+    { message: 'nothing to update: pass `shareable`, `joinPublicChannels` and/or `conversationDefaults`' }
+  )
 
 /** Console view of a bot identity — metadata only, NEVER the tokens. */
 export const BotDto = z.object({
@@ -1952,6 +1958,9 @@ export const BotDto = z.object({
    *  waiting to be invited? Only editable on a platform whose manifest declares
    *  `publicChannelJoin`; true everywhere else, where nothing reads it. */
   joinPublicChannels: z.boolean(),
+  /** What a conversation nobody has configured starts as, by kind — the bot's own setting
+   *  resolved over the platform's defaults (@-mention in a room, On in a DM). */
+  conversationDefaults: BotConversationDefaults,
   /** Slack inbound transport (slack-http-mode): 'http' ⇒ relay-pool Events API
    *  ingress; 'socket' ⇒ classic daemon Socket Mode. Immutable post-create. */
   transport: z.enum(['socket', 'http']),

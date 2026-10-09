@@ -18,7 +18,13 @@ const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
 const conn = { daemonId: DAEMON } as unknown as DaemonConnection
 
-function fakeDeps(platform = 'slack', known = true, externalChanged = false) {
+function fakeDeps(
+  platform = 'slack',
+  known = true,
+  externalChanged = false,
+  /** The bot row the handler reads the conversation defaults from, and how many rows the write created. */
+  seeding?: { conversationDefaults?: unknown; seeded: number }
+) {
   const dropPublicAudiences = vi.fn()
   const integrationConverge = vi.fn(async () => {})
   const integration = known ? [{ id: INTEGRATION, agentId: AGENT, botId: BOT, orgId: 'org-1', platform }] : []
@@ -33,7 +39,20 @@ function fakeDeps(platform = 'slack', known = true, externalChanged = false) {
       listByIds: vi.fn(async () => [])
     },
     clock: { now: () => Date.now() },
-    integrationChannel: { replaceSnapshot: vi.fn(async () => ({ externalChanged })) },
+    integrationChannel: { replaceSnapshot: vi.fn(async () => ({ externalChanged, seeded: seeding?.seeded ?? 0 })) },
+    ...(seeding
+      ? {
+          bot: {
+            get: vi.fn(async () => ({
+              id: BOT,
+              platform,
+              platformConfig: seeding.conversationDefaults
+                ? { conversationDefaults: seeding.conversationDefaults }
+                : null
+            }))
+          }
+        }
+      : {}),
     integrationConverge,
     collabRoutes: { broadcast: vi.fn(async () => {}) }
   } as unknown as DaemonWsDeps
@@ -133,5 +152,33 @@ describe('handleIntegrationChannels — detected external places', () => {
     const { deps, integrationConverge } = fakeDeps('slack', true, false)
     await handleIntegrationChannels(frame([shared]), conn, deps)
     expect(integrationConverge).not.toHaveBeenCalled()
+  })
+
+  // resource-visibility.md §14.2: a row the bot's conversation defaults seeded to anything but the
+  // platform's own needs a spec the reporting daemon does not hold yet — its scoped auto rule, its
+  // session-mode entry — so the report pushes. A platform-default seed changes no spec, so it does not.
+  it('re-pushes when the report created a row from non-default conversation defaults', async () => {
+    const defaults = { channel: { trigger: 'any', sessionMode: 'append' } }
+    const { deps, replaceSnapshot, integrationConverge } = fakeDeps('slack', true, false, {
+      conversationDefaults: defaults,
+      seeded: 1
+    })
+    await handleIntegrationChannels(frame([{ id: 'C_NEW' }]), conn, deps)
+    expect(replaceSnapshot.mock.calls[0]![2]).toMatchObject({
+      seed: { channel: { trigger: 'any', sessionMode: 'append' } }
+    })
+    expect(integrationConverge).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not re-push a row seeded with the platform defaults, nor a re-reported row', async () => {
+    const platformOnly = fakeDeps('slack', true, false, { seeded: 1 })
+    await handleIntegrationChannels(frame([{ id: 'C_NEW' }]), conn, platformOnly.deps)
+    expect(platformOnly.integrationConverge).not.toHaveBeenCalled()
+    const reReported = fakeDeps('slack', true, false, {
+      conversationDefaults: { channel: { trigger: 'any' } },
+      seeded: 0
+    })
+    await handleIntegrationChannels(frame([{ id: 'C_OLD' }]), conn, reReported.deps)
+    expect(reReported.integrationConverge).not.toHaveBeenCalled()
   })
 })

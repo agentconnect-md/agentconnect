@@ -36,6 +36,12 @@ export type BindMatch = z.infer<typeof BindMatch>
 export const IntegrationBindRule = z.object({
   channel: z.string().optional(), // absent = any channel
   thread: z.string().optional(),
+  // The conversation kind an UNSCOPED rule serves: `dm` = 1:1 DMs only, `room` = everything else.
+  // Set on the default rule that survives a bot's Off conversation default (§14.2), so the open
+  // kind's default cannot reach the Off kind through a rung that ignores the match (thread
+  // affinity, explicit agent targets) or one that does not look at the kind (a mention in a DM).
+  // Absent = any kind, today's behaviour.
+  kind: z.enum(['dm', 'room']).optional(),
   match: BindMatch
 })
 export type IntegrationBindRule = z.infer<typeof IntegrationBindRule>
@@ -179,6 +185,42 @@ export const IntegrationSessionMode = z.object({
 })
 export type IntegrationSessionMode = z.infer<typeof IntegrationSessionMode>
 
+/**
+ * What a conversation nobody has configured yet starts as on one bot, by kind. Stored in
+ * `Bot.platformConfig.conversationDefaults` (an operator setting, `PATCH /bots/:id`), read
+ * wherever a conversation row is seeded and, for a shared bot, compiled into the relay's
+ * fence for conversations no row has reached yet. A restricted agent's conversations keep
+ * their own fail-closed seeding (resource-visibility.md §14) whatever the bot says here.
+ */
+export const BotConversationDefaults = z.object({
+  channel: z.object({ trigger: z.enum(['off', 'mention', 'any']), sessionMode: ChannelSessionMode }),
+  // A 1:1 DM needs no mention distinction: it is On or Off.
+  dm: z.object({ trigger: z.enum(['off', 'any']), sessionMode: ChannelSessionMode })
+})
+export type BotConversationDefaults = z.infer<typeof BotConversationDefaults>
+
+/** The defaults every bot had before the setting existed: @-mention in a room, On in a DM. */
+export const PLATFORM_CONVERSATION_DEFAULTS: BotConversationDefaults = {
+  channel: { trigger: 'mention', sessionMode: 'createNew' },
+  dm: { trigger: 'any', sessionMode: 'createNew' }
+}
+
+/** The stored shape: every leaf optional, so a bot written by an older console still resolves. */
+const StoredConversationDefaults = z.object({
+  channel: BotConversationDefaults.shape.channel.partial().optional(),
+  dm: BotConversationDefaults.shape.dm.partial().optional()
+})
+
+/** A bot's stored defaults over the platform's; an absent or unreadable bag means the platform's. */
+export function resolveConversationDefaults(stored: unknown): BotConversationDefaults {
+  const parsed = StoredConversationDefaults.safeParse(stored)
+  const partial = parsed.success ? parsed.data : {}
+  return {
+    channel: { ...PLATFORM_CONVERSATION_DEFAULTS.channel, ...partial.channel },
+    dm: { ...PLATFORM_CONVERSATION_DEFAULTS.dm, ...partial.dm }
+  }
+}
+
 /** Who is in a place (assistant-mode.md §5.3): only organization members, or possibly anyone else. */
 export const PlaceTrustLevel = z.enum(['internal', 'external'])
 export type PlaceTrustLevel = z.infer<typeof PlaceTrustLevel>
@@ -215,6 +257,11 @@ export const IntegrationCoreEnvelope = z.object({
   mutedChannels: z.array(z.string()).default([]),
   gated: z.boolean().default(false),
   sessionModes: z.array(IntegrationSessionMode).default([]),
+  // The bot's conversation defaults where a kind is Off (`BotConversationDefaults`): that kind's
+  // unscoped default rule is withheld and its enabled rows ride as scoped rules, so a conversation
+  // no row has reached yet matches nothing. Read by the daemon's out-of-ladder admission; a
+  // relay-managed spec carries none, the relay fences those. Absent ⇒ open, today's behaviour.
+  offByDefault: z.object({ channel: z.boolean(), dm: z.boolean() }).optional(),
   // Conversations the platform detected as external (assistant-mode.md §5.3); every other enabled one is internal.
   externalChannels: z.array(z.string()).optional(),
   // Emitted unconditionally and stripped by readers that predate it; an empty bundle clears every binding.

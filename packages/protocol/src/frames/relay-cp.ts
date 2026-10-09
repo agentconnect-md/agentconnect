@@ -998,6 +998,12 @@ export const RcBotAssign = z.object({
   // second list rather than a flag the relay could derive. Subset of
   // `mutedChannels`. Defaults empty.
   gatedOffChannels: z.array(z.string()).default([]),
+  // Conversations NO ROW has reached yet, by kind. `true` fences them like a mute: the
+  // bot's default for that kind is Off, so a channel the bot was just added to (or joined
+  // by itself) resolves to nothing until an editor enables it — the unscoped rungs
+  // (keyword slug, `defaultAgentId`) would otherwise answer a bare @bot there before the
+  // membership report seeds the row. Absent (an older CP) ⇒ open, today's behaviour.
+  offByDefault: z.object({ channel: z.boolean(), dm: z.boolean() }).optional(),
   // §14.3 one-time gating notice, CHANNEL conversations: the relayId
   // DETERMINISTICALLY responsible for posting it for this bot. A channel mention
   // arrives as two event copies that may land on different pods — only the
@@ -1053,6 +1059,7 @@ export const RcRoutes = z.object({
   gatedAgentIds: z.array(z.string().uuid()).default([]), // §14 — see RcBotAssign.gatedAgentIds
   mutedChannels: z.array(z.string()).default([]), // Off channels — see RcBotAssign.mutedChannels
   gatedOffChannels: z.array(z.string()).default([]), // notice-keeping subset — see RcBotAssign.gatedOffChannels
+  offByDefault: z.object({ channel: z.boolean(), dm: z.boolean() }).optional(), // see RcBotAssign.offByDefault
   noticeAuthority: z.string().uuid().optional(), // §14.3 — see RcBotAssign.noticeAuthority
   noticedDmConversations: z.array(z.string()).default([]), // §14.3 — see RcBotAssign.noticedDmConversations
   // Rides the hot update too: an owner edit converges through `syncRoutes` without a

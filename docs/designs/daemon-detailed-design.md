@@ -952,6 +952,7 @@ interface RoutingRule {
 An event arrives on one platform connection with connectionId, event type, channelId, thread_ts, user, text with `<@BOT>` markers, and attachments. The connection already narrows candidates to agents whose integrations use it.
 
 - **scope-candidates:** Rules whose channel/thread scope matches. Ignore kind. Unique agentIds are **reachable agents** for thread gating.
+- **Which rules an integration ships** is the control plane's projection (`integrationToSpec`): an ungated integration carries the unscoped mention and dm defaults plus a scoped `auto` rule per "All messages" room; a gated one carries only scoped rules. The bot's conversation defaults (resource-visibility.md §14.2) move one kind to the gated shape: where the channel or DM default is Off, that kind's unscoped default is withheld and its enabled rows ride as scoped rules, so a conversation no row has reached yet matches nothing; the default rule that survives is bound to its own kind (`IntegrationBindRule.kind`, enforced in the ladder's one scope filter ahead of the match, and again in `conversationAdmitsAgent`, the verified-agent recipient's admission that bypasses the ladder), so it cannot reach the Off kind through thread affinity, an explicit target, an agent-authored recipient, or a mention inside a DM. `core.offByDefault` names the kinds so `conversationAdmitted` — the fence on the paths that resolve a target outside this ladder (control commands, message shortcuts) — refuses them the same way, classifying a bare id by the platform manifest's `dmChannelPattern`.
 - **kind-candidates:** Scope candidates whose kind matches: mention when `msg.mentionedBots` includes that rule's agent botUserId; dm when `msg.isDm`; case-insensitive keyword in text; auto always.
 - Human senders use the complete ladder. For Slack bot senders, compare sender app ID to managed app identity in the collaboration snapshot, with resolved bot user/bot ID fallback on the same daemon. Drop any AgentConnect-managed bot before command/model admission. An unmanaged third-party Slack bot can match only an explicit mention, never DM/thread/keyword/auto. Bot senders on other platforms do not route.
 
@@ -1311,6 +1312,13 @@ keys a Slack connection by its tokens, so it applies a flipped flag to the LIVE 
 rather than opening another. Off, `joiningOnRefusal` rethrows the platform's own
 `not_in_channel` and the bot reaches only what it was invited to; the reach gate above is
 unchanged, and workspace search (`searchPublicMessages`) never depended on membership.
+
+The same row carries a second per-bot setting, the **conversation defaults**
+(`Bot.platformConfig.conversationDefaults`, `PATCH /bots/:id`, resource-visibility.md §14.2): what
+a channel and a 1:1 DM start as — trigger and session mode — until an editor decides the row. A
+join therefore enters a channel at whatever the bot's channel default says; with Off, the bot is a
+silent member there (outbound posting and reads are unaffected) until the row is enabled. The
+control plane re-projects the specs on a change exactly as it does for the join switch.
 
 The orchestration triple `startOrchestration` / `getOrchestration` /
 `cancelOrchestration` is **retired from the injected tool surface**: its send half

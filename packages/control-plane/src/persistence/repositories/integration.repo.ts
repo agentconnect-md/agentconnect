@@ -17,6 +17,7 @@ import {
   mergePlaceExternalReason,
   PlaceExternalReason,
   placeExternalReasonSticky,
+  type BotConversationDefaults,
   type Platform,
   type FeishuRegion
 } from '@agentconnect.md/protocol'
@@ -68,6 +69,7 @@ import { toDbPlatform } from '../platform.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../../domain/ids.js'
+import { conversationSeed } from '../../domain/conversation-defaults.js'
 
 // The bot row plus its joined creator and current installs (for `agentIds` /
 // `inUseByAgentId`). A shareable bot fans out to many active integrations, so we
@@ -348,8 +350,12 @@ export class PgBotRepo implements BotRepo {
       // blind write would drop the platform's own identity metadata stored beside it.
       const bag = (locked[0]!.platformConfig as Record<string, unknown> | null) ?? {}
       const platformConfig =
-        patch.joinPublicChannels !== undefined
-          ? ({ ...bag, joinPublicChannels: patch.joinPublicChannels } as Prisma.InputJsonObject)
+        patch.joinPublicChannels !== undefined || patch.conversationDefaults !== undefined
+          ? ({
+              ...bag,
+              ...(patch.joinPublicChannels !== undefined ? { joinPublicChannels: patch.joinPublicChannels } : {}),
+              ...(patch.conversationDefaults !== undefined ? { conversationDefaults: patch.conversationDefaults } : {})
+            } as Prisma.InputJsonObject)
           : undefined
       await tx.bot.update({
         where: { id, orgId },
@@ -962,10 +968,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     opts?: {
       defaultTrigger?: SeedTrigger
       defaultTriggerByChannel?: ReadonlyMap<string, SeedTrigger>
+      seed?: BotConversationDefaults
       authoritative?: boolean
       removed?: string[]
     }
-  ): Promise<{ externalChanged: boolean }> {
+  ): Promise<{ externalChanged: boolean; seeded: number }> {
     // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
     const before = new Map(
       (
@@ -989,6 +996,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     // retraction wins over a stale entry the reporter also happened to list.
     const removed = new Set(opts?.removed ?? [])
     const authoritative = opts?.authoritative !== false
+    let seeded = 0
     for (const c of channels) {
       if (removed.has(c.id)) continue
       // Which columns a re-report is allowed to overwrite. An absent name/isPrivate is
@@ -1001,19 +1009,27 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       // pass `defaultTrigger:'off'`; Everyone installs default a 1:1 DM On and a group
       // DM to Mention. An authoritative channel snapshot cannot delete either kind.
       const direct = c.kind === 'im' || c.kind === 'mpim'
-      // A per-conversation seed (§14.8) outranks the install-wide default; both seed a
-      // NEW row only, and a late channel→direct conversion re-applies whichever won.
+      // A per-conversation seed (§14.8) outranks the install-wide default, which outranks
+      // the bot's conversation defaults; all seed a NEW row only, and a late channel→direct
+      // conversion re-applies whichever won.
+      const seed = opts?.seed ? conversationSeed(opts.seed, c.kind) : undefined
       const createTrigger: SeedTrigger =
-        opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? (c.kind === 'im' ? 'any' : 'mention')
-      await this.db.$executeRaw`
+        opts?.defaultTriggerByChannel?.get(c.id) ??
+        opts?.defaultTrigger ??
+        seed?.trigger ??
+        (c.kind === 'im' ? 'any' : 'mention')
+      const createSessionMode = seed?.sessionMode ?? 'createNew'
+      // `xmax = 0` is true for a row this statement INSERTED, false for one it updated.
+      const written = await this.db.$queryRaw<{ inserted: boolean }[]>`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "key", "url",
-           "isPrivate", "kind", "trigger", "dmUserId", "externalReason", "firstSeenAt", "updatedAt")
+           "isPrivate", "kind", "trigger", "sessionMode", "dmUserId", "externalReason", "firstSeenAt", "updatedAt")
         VALUES (
           ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
           ${c.icon ?? null}, ${c.color ?? null}, ${c.key ?? null}, ${c.url ?? null},
           ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
-          ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, ${c.externalReason ?? null}, NOW(), NOW()
+          ${createTrigger}::"ChannelTrigger", ${createSessionMode}::"ChannelSessionMode",
+          ${c.dmUserId ?? null}, ${c.externalReason ?? null}, NOW(), NOW()
         )
         ON CONFLICT ("integrationId", "channelId") DO UPDATE SET
           -- Tri-state like the glyph, merged as mergePlaceExternalReason does: a sticky reason is never lifted or replaced.
@@ -1082,7 +1098,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
             ELSE "integration_channel"."decisionNeedsReview"
           END,
           "updatedAt" = NOW()
+        RETURNING (xmax = 0) AS inserted
       `
+      if (written[0]?.inserted) seeded += 1
     }
     // Retractions last: a conversation the reporter says it left is gone whatever
     // its kind, including a DM row that no authoritative snapshot could ever delete.
@@ -1091,7 +1109,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, channelId: { in: [...removed] } }
       })
     }
-    return { externalChanged }
+    return { externalChanged, seeded }
   }
 
   async deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean> {
@@ -1102,8 +1120,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: SeedTrigger }
+    opts?: { defaultTrigger?: SeedTrigger; seed?: BotConversationDefaults }
   ): Promise<IntegrationChannelRecord> {
+    const seed = opts?.seed ? conversationSeed(opts.seed, conversation.kind) : undefined
     const row = await this.db.integrationChannel.upsert({
       include: CHANNEL_INCLUDE,
       where: { integrationId_channelId: { integrationId, channelId: conversation.id } },
@@ -1120,9 +1139,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         isPrivate: conversation.isPrivate ?? false,
         kind: conversation.kind ?? 'channel',
         dmUserId: conversation.dmUserId ?? null,
-        // Restricted installs supply Off. Otherwise 1:1 DMs start On and rooms use
-        // Mention, matching replaceSnapshot and the controls shown in the Console.
-        trigger: opts?.defaultTrigger ?? (conversation.kind === 'im' ? 'any' : 'mention')
+        // Restricted installs supply Off. Otherwise the bot's conversation defaults apply,
+        // and without them 1:1 DMs start On and rooms use Mention, matching replaceSnapshot.
+        trigger: opts?.defaultTrigger ?? seed?.trigger ?? (conversation.kind === 'im' ? 'any' : 'mention'),
+        ...(seed ? { sessionMode: seed.sessionMode } : {})
       },
       // Refresh only known metadata; trigger/agentId stay operator-owned.
       update: {
@@ -1181,8 +1201,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     integrationId: IntegrationId,
     channelId: string,
     agentId: AgentId,
-    opts?: { defaultTrigger?: SeedTrigger; kind?: ConversationKind }
+    opts?: { defaultTrigger?: SeedTrigger; kind?: ConversationKind; seed?: BotConversationDefaults }
   ): Promise<IntegrationChannelRecord> {
+    const seed = opts?.seed ? conversationSeed(opts.seed, opts.kind) : undefined
     const row = await this.db.integrationChannel.upsert({
       include: CHANNEL_INCLUDE,
       where: { integrationId_channelId: { integrationId, channelId } },
@@ -1191,7 +1212,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         channelId,
         agentId,
         ...(opts?.kind ? { kind: opts.kind } : {}),
-        ...(opts?.defaultTrigger ? { trigger: opts.defaultTrigger } : {})
+        ...((opts?.defaultTrigger ?? seed?.trigger) ? { trigger: opts?.defaultTrigger ?? seed?.trigger } : {}),
+        ...(seed ? { sessionMode: seed.sessionMode } : {})
       },
       update: { agentId }
     })

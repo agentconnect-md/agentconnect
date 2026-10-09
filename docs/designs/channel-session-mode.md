@@ -262,6 +262,11 @@ with `ChannelSessionMode = z.enum(['createNew', 'append'])`.
   field populated unconditionally — like `mutedChannels`, which ships for the same reason.
 - **Sparse.** Only departures from the default are listed, so a large conversation list
   adds nothing to the common spec.
+- **Seeded per bot.** `createNew` is the platform default, but a bot's conversation defaults
+  (resource-visibility.md §14.2, `Bot.platformConfig.conversationDefaults`) can seed a NEW
+  row's session mode per kind — `append` for every fresh channel, say — alongside its trigger.
+  The seed writes the row; the wire stays sparse and reads the rows as before, and a row a
+  human already set is never rewritten by a later change of the default.
 - **Old daemons ignore it, by design.** `IntegrationCoreEnvelope` is a non-strict
   `z.object`, so a daemon that predates the field strips it and keeps today's behavior,
   which is exactly `createNew`. No capability advertisement and no daemon-side feature

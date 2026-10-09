@@ -30,6 +30,7 @@ import type {
   RcRoutes,
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
+import { manifestFor } from '@agentconnect.md/protocol'
 import { isThreadRootMessage } from '@agentconnect.md/message'
 
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
@@ -95,6 +96,9 @@ export interface BotAssignment {
    *  nothing like any mute, but unlike an operator's mute they keep the one-time notice:
    *  someone who could not know the agent is private must not meet a dead bot. */
   gatedOffChannels?: string[]
+  /** Conversations NO ROW has reached yet, by kind: `true` fences them like a mute, because
+   *  the bot's default for that kind is Off. Absent (an older CP) ⇒ open. */
+  offByDefault?: { channel: boolean; dm: boolean }
   /** §14.3: the relayId deterministically responsible for this bot's one-time
    *  CHANNEL gating notices (stamped by the CP from the connected roster). */
   noticeAuthority?: string
@@ -126,6 +130,7 @@ export type RoutesPatch = Pick<
   | 'gatedAgentIds'
   | 'mutedChannels'
   | 'gatedOffChannels'
+  | 'offByDefault'
   | 'noticeAuthority'
   | 'noticedDmConversations'
   | 'conversationDefaults'
@@ -146,6 +151,7 @@ export function toRoutesPatch(r: RcRoutes): RoutesPatch {
     gatedAgentIds: r.gatedAgentIds,
     mutedChannels: r.mutedChannels,
     gatedOffChannels: r.gatedOffChannels,
+    ...(r.offByDefault ? { offByDefault: r.offByDefault } : {}),
     ...(r.noticeAuthority ? { noticeAuthority: r.noticeAuthority } : {}),
     noticedDmConversations: r.noticedDmConversations,
     conversationDefaults: r.conversationDefaults
@@ -241,7 +247,32 @@ export function arbitrate(
    *  Unverified bots — including third-party ones — still stop at the explicit mention. */
   verifiedAgentAuthor?: string
 ): RouteTarget | null {
+  if (conversationOff(a, msg.channel, msg.isDm)) return null
   return arbitrateSharedBot(a, msg, affinity, verifiedAgentAuthor)
+}
+
+/**
+ * Off for this bot: an operator's mute, or a conversation NO ROW has reached yet on a bot whose
+ * default for its kind is Off (`offByDefault`). A conversation is reached once the CP compiled
+ * anything about it — a scoped route, a conversation default, a routed conversation or a mute —
+ * so the fence closes exactly the window between "the bot was added" and "the membership report
+ * seeded the row", and every channel the bot joined by itself. The ladder's unscoped rungs (the
+ * keyword slug, `defaultAgentId`) would otherwise answer a bare @bot there.
+ *
+ * `isDm` comes from the message where there is one; a bare id is classified by the platform's
+ * manifest, and reads as a room where the id syntax carries no DM signal.
+ */
+export function conversationOff(a: BotAssignment, channelId: string, isDm?: boolean): boolean {
+  if (a.mutedChannels?.includes(channelId)) return true
+  if (!a.offByDefault) return false
+  const dm = isDm ?? manifestFor(a.platform).dmChannelPattern?.test(channelId) ?? false
+  if (!(dm ? a.offByDefault.dm : a.offByDefault.channel)) return false
+  const reached =
+    a.gatedOffChannels?.includes(channelId) ||
+    a.routes.some((r) => r.scope?.channel === channelId) ||
+    a.conversationDefaults?.some((c) => c.channel === channelId) ||
+    a.routedConversations?.some((c) => c.channel === channelId)
+  return !reached
 }
 
 /** Cap on a bot's negative-affinity set before it is flushed (bounds CP lookups). */
@@ -280,6 +311,7 @@ export class BotArbitrationRouter {
     a.gatedAgentIds = patch.gatedAgentIds
     a.mutedChannels = patch.mutedChannels
     a.gatedOffChannels = patch.gatedOffChannels
+    a.offByDefault = patch.offByDefault
     a.noticeAuthority = patch.noticeAuthority
     a.noticedDmConversations = patch.noticedDmConversations
     // An owner edit converges through here, so the defaults are replaced with the routes:
@@ -401,7 +433,8 @@ export class BotArbitrationRouter {
   /** True iff `channelId` is Off. `arbitrate()` already refuses it; the caller needs
    *  this to tell a mute apart from the other reasons arbitration returns null. */
   channelMuted(botId: string, channelId: string): boolean {
-    return this.bots.get(botId)?.mutedChannels?.includes(channelId) ?? false
+    const a = this.bots.get(botId)
+    return a ? conversationOff(a, channelId) : false
   }
 
   /** True iff `channelId` is Off because §14 never enabled its gated owner — the one
@@ -443,7 +476,7 @@ export class BotArbitrationRouter {
     const a = this.bots.get(botId)
     if (!a || msg.sender.isBot) return undefined
     if (a.botUserId !== undefined && msg.sender.id === a.botUserId) return undefined
-    if (a.mutedChannels?.includes(msg.channel)) return undefined
+    if (conversationOff(a, msg.channel, msg.isDm)) return undefined
     const routed = a.routedConversations?.find((c) => c.channel === msg.channel)
     if (!routed || this.decisionIdFor(botId, msg.channel) !== routed.decisionId) return undefined
     return { decisionId: routed.decisionId, evaluationDaemonId: routed.evaluationDaemonId }
@@ -665,6 +698,7 @@ export class BotArbitrationRouter {
   routeResult(botId: string, msg: WireNormalizedMessage): RelayArbitration {
     const a = this.bots.get(botId)
     if (!a) return { kind: 'none' }
+    if (conversationOff(a, msg.channel, msg.isDm)) return { kind: 'none' }
     const aff = this.affinity.get(botId) ?? this.affinity.set(botId, new Map()).get(botId)!
     const result = arbitrateSharedBotResult(a, msg, aff)
     if (result.kind !== 'target') return result
@@ -713,7 +747,7 @@ export class BotArbitrationRouter {
     // applies ahead of every rung. Bypassing the ladder must not mean bypassing this:
     // Off means the agent does not respond there, explicitly including an @-mention, so
     // an agent mention must not become the one way into a silenced channel.
-    if (a.mutedChannels?.includes(channelId)) return null
+    if (conversationOff(a, channelId)) return null
     const member = a.members.find((m) => m.agentIds.includes(agentId))
     const route = a.routes.find((r) => r.agentId === agentId)
     const daemonId = member?.daemonId ?? route?.daemonId ?? a.agents.find((x) => x.agentId === agentId)?.daemonId
@@ -766,7 +800,7 @@ export class BotArbitrationRouter {
     admitsNewJoin?: (target: RouteTarget) => boolean
   ): ConversationTarget[] {
     const a = this.bots.get(botId)
-    if (!a || a.mutedChannels?.includes(msg.channel)) return []
+    if (!a || conversationOff(a, msg.channel, msg.isDm)) return []
     const key = sessionKeyOf(msg)
     const byConversation = this.participants.get(botId) ?? new Map<string, Map<string, RouteTarget>>()
     const remembered = byConversation.get(key) ?? new Map<string, RouteTarget>()
@@ -944,6 +978,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     gatedAgentIds: a.gatedAgentIds,
     mutedChannels: a.mutedChannels,
     gatedOffChannels: a.gatedOffChannels,
+    ...(a.offByDefault ? { offByDefault: a.offByDefault } : {}),
     noticedDmConversations: a.noticedDmConversations,
     conversationDefaults: a.conversationDefaults,
     ownerAsDefault: a.ownerAsDefault,

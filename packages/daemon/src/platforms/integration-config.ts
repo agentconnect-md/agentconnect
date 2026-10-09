@@ -83,6 +83,9 @@ export interface IntegrationCore {
    *  partial spec) still reads as "nothing muted" when the field is absent. */
   mutedChannels: string[]
   gated: boolean
+  /** The bot's conversation defaults where a kind is Off: that kind admits only conversations
+   *  with a scoped rule, like a gated integration. Absent ⇒ open. */
+  offByDefault?: { channel: boolean; dm: boolean }
   /** Conversations whose session mode departs from `createNew` (channel-session-mode.md).
    *  Sparse, and normalized to [] here so a hand-assembled integration reads as all-default. */
   sessionModes: IntegrationSessionMode[]
@@ -163,6 +166,7 @@ export function integrationCore(int: Integration): IntegrationCore {
     bindRules: core?.bindRules ?? [],
     mutedChannels: core?.mutedChannels ?? [],
     gated: core?.gated ?? false,
+    ...(core?.offByDefault ? { offByDefault: core.offByDefault } : {}),
     sessionModes: core?.sessionModes ?? [],
     externalChannels: core?.externalChannels ?? [],
     decisions: core?.decisions ?? EMPTY_DECISION_BUNDLE

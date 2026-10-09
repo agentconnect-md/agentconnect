@@ -361,6 +361,76 @@ describe('integrationToSpec conversation gating (§14)', () => {
   })
 })
 
+// resource-visibility.md §14.2: the bot's conversation defaults on a socket (daemon-routed) spec.
+describe('integrationToSpec conversation defaults', () => {
+  const withDefaults = (conversationDefaults: unknown) =>
+    bot({ platform: 'slack', platformConfig: { conversationDefaults } } as Partial<BotRecord>)
+  const rows = () => [channel('C1', 'mention'), channel('C2', 'any'), channel('C3', 'off'), channel('D1', 'any', 'im')]
+
+  it('channels Off: rooms take the gated shape, DMs keep their unscoped default', async () => {
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      withDefaults({ channel: { trigger: 'off' } }),
+      SECRET,
+      rows()
+    )
+    // The surviving dm default is bound to DMs, so it cannot make an unconfigured room reachable.
+    expect(spec?.core.bindRules).toEqual([
+      { channel: 'C1', match: { kind: 'mention' } },
+      { channel: 'C2', match: { kind: 'auto' } },
+      { kind: 'dm', match: { kind: 'dm' } }
+    ])
+    expect(spec?.core.offByDefault).toEqual({ channel: true, dm: false })
+    expect(spec?.core.gated).toBe(false)
+    expect(spec?.core.mutedChannels).toEqual(['C3'])
+  })
+
+  it('DMs Off: rooms keep their defaults, an On DM rides as a scoped dm rule', async () => {
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      withDefaults({ dm: { trigger: 'off' } }),
+      SECRET,
+      rows()
+    )
+    // The surviving mention default is bound to rooms, so a mention inside an unconfigured DM misses it.
+    expect(spec?.core.bindRules).toEqual([
+      { kind: 'room', match: { kind: 'mention' } },
+      { channel: 'C2', match: { kind: 'auto' } },
+      { channel: 'D1', match: { kind: 'dm' } }
+    ])
+    expect(spec?.core.offByDefault).toEqual({ channel: false, dm: true })
+  })
+
+  it('nothing Off: the spec is exactly what it was, with no fence on the wire', async () => {
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      withDefaults({ channel: { trigger: 'any', sessionMode: 'append' } }),
+      SECRET,
+      rows()
+    )
+    expect(spec?.core.bindRules).toEqual([
+      { match: { kind: 'mention' } },
+      { match: { kind: 'dm' } },
+      { channel: 'C2', match: { kind: 'auto' } }
+    ])
+    expect(spec?.core).not.toHaveProperty('offByDefault')
+  })
+
+  it('a relay-managed spec carries no fence: the relay holds it', async () => {
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      { ...withDefaults({ channel: { trigger: 'off' } }), transport: 'http' },
+      SECRET,
+      rows()
+    )
+    expect(spec?.core).not.toHaveProperty('offByDefault')
+  })
+})
+
 describe('integrationToSpec mutedChannels', () => {
   it('mutes every Off channel and nothing else', async () => {
     const spec = await specOf(INTEGRATION, SECRET, [
