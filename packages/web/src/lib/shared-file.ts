@@ -36,6 +36,35 @@ function downloadPath(raw: string): string | null {
   return segments.length && !segments.includes('..') ? segments.join('/') : null
 }
 
+// Mirrors of protocol's WORKSPACE_UPLOADS_DIR / MAX_WORKSPACE_DOWNLOAD_BYTES (its root entry is not bundler-safe); shared-file.test.ts pins them.
+export const WORKSPACE_UPLOADS_DIR = 'uploads'
+export const MAX_WORKSPACE_DOWNLOAD_BYTES = 8 * 1024 * 1024
+
+/** What the download route needs to serve one session file, or null when the path is neither an upload nor a share. */
+export interface SessionFileDownload {
+  sessionId: string
+  sha256?: string
+}
+
+/** An upload downloads by path; any other file only by the digest its latest share marker in that session recorded. */
+export function sessionFileDownload(
+  path: string,
+  sessionId: string | undefined,
+  rows: Iterable<{ text: string; sessionId: string | undefined }>
+): SessionFileDownload | null {
+  if (!sessionId) return null
+  if (path.startsWith(`${WORKSPACE_UPLOADS_DIR}/`) && path.length > WORKSPACE_UPLOADS_DIR.length + 1) {
+    return { sessionId }
+  }
+  let sha256: string | undefined
+  for (const row of rows) {
+    if (row.sessionId !== sessionId) continue
+    const shared = sharedFileMarker(row.text)
+    if (shared?.file.path === path) sha256 = shared.file.sha256
+  }
+  return sha256 ? { sessionId, sha256 } : null
+}
+
 /** Hand the browser a blob as a named download. */
 export function saveBlob(blob: Blob, name: string): void {
   const url = URL.createObjectURL(blob)
