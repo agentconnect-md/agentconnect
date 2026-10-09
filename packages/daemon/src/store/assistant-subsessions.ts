@@ -165,6 +165,39 @@ export class AssistantSubsessionIndex {
     return Number(row?.n ?? 0)
   }
 
+  /** Settle an `open` row `failed` (`cut`) or read how it already ended, and run `claim` with that in one transaction; a refused claim changes nothing. */
+  async finishClaiming(
+    agentId: string,
+    childSessionKey: string,
+    claim: (tx: StoreTx, ended: 'cut' | 'done' | 'failed' | 'missing') => Promise<boolean>
+  ): Promise<'cut' | 'done' | 'failed' | 'missing' | undefined> {
+    const db = this.db
+    if (!db.transaction) throw new Error('the sub-session index has no transaction to claim in')
+    try {
+      return await db.transaction!<'cut' | 'done' | 'failed' | 'missing'>(async (tx) => {
+        const { changes } = await tx.query(
+          `UPDATE assistant_subsession SET state = 'failed' WHERE agentId = ? AND childSessionKey = ? AND state = 'open'`,
+          [agentId, childSessionKey]
+        )
+        const row =
+          changes > 0
+            ? undefined
+            : ((
+                await tx.query('SELECT state FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?', [
+                  agentId,
+                  childSessionKey
+                ])
+              ).rows[0] as Row | undefined)
+        const ended = changes > 0 ? 'cut' : row === undefined ? 'missing' : row.state === 'done' ? 'done' : 'failed'
+        if (!(await claim(tx, ended))) throw new ClaimRefused()
+        return ended
+      })
+    } catch (err) {
+      if (err instanceof ClaimRefused) return undefined
+      throw err
+    }
+  }
+
   /** Settle an `open` row; false when it was already settled or is not indexed. */
   async finish(
     agentId: string,

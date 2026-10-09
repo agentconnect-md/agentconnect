@@ -546,12 +546,25 @@ export class AssistantDraftLedger {
     failure: string | null,
     now = Date.now()
   ): Promise<AssistantDraft | undefined> {
-    const { changes } = await this.db.query(
+    const settled = await this.settleTaskIn(this.db, agentId, subsessionKey, status, failure, now)
+    return settled ? await this.taskBySubsession(agentId, subsessionKey) : undefined
+  }
+
+  /** {@link settleTask}'s compare-and-set alone, inside the caller's transaction. */
+  async settleTaskIn(
+    db: AssistantDraftDatabase,
+    agentId: string,
+    subsessionKey: string,
+    status: AssistantTaskOutcome,
+    failure: string | null,
+    now: number
+  ): Promise<boolean> {
+    const { changes } = await db.query(
       `UPDATE assistant_draft SET status = ?, settledAt = ?, failure = ?
        WHERE agentId = ? AND subsessionKey = ? AND action = 'task' AND status = 'executing'`,
       [status, now, failure, agentId, subsessionKey]
     )
-    return changes > 0 ? await this.taskBySubsession(agentId, subsessionKey) : undefined
+    return changes > 0
   }
 
   /** The task that runs in this sub-session, if one does. */

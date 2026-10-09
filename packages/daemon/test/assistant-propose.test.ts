@@ -642,6 +642,40 @@ describe('a task cut short by a restart or handover', () => {
     await h.daemon.stop()
   })
 
+  it.each([
+    ['done', 'succeeded', null, 'reported back'],
+    ['failed', 'failed', 'it ended without reporting back', 'ended without reporting back']
+  ] as const)(
+    'settles a task whose sub-session already ended %s from that end, with no second report',
+    async (rowState, status, failure, card) => {
+      const h = await boot(scaffold())
+      const { place, item, record } = await proposed(h)
+      // Its report (or the daemon's failure report) reached the parent, then the daemon stopped before the record settled.
+      const key = sessionKey('slack', 'C1', 'subsession:task-reported', 'bot-a', place.scope)
+      await h.d.store.assistantSubsessions.openWithinLimitClaiming(
+        { agentId: 'bot-a', childSessionKey: key, parentSessionId: 'sid-parent-bot-a', parentSessionKey: place.key },
+        { limit: 3, startedSince: 0 },
+        (tx: any) =>
+          h.d.store.assistantDrafts.beginTask(record.id, { id: 'user:usr-editor', name: 'Grace' }, key, Date.now(), tx)
+      )
+      expect(await h.d.store.assistantSubsessions.finish('bot-a', key, rowState)).toBe(true)
+      h.d.assistantTaskService = undefined
+      await h.d.replayInbox(new Set(['bot-a']))
+      await h.settled()
+      await h.d.replayInbox(new Set(['bot-a']))
+      await h.settled()
+
+      expect(h.reports()).toHaveLength(0)
+      expect(h.tasks()).toHaveLength(0)
+      expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status, failure })
+      expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: rowState })
+      expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain(card)
+      const observations = (await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)
+      expect(observations.some((text: string) => text.includes('cut short'))).toBe(false)
+      await h.daemon.stop()
+    }
+  )
+
   it('leaves a task this daemon is running alone when its inbox is replayed for another reason', async () => {
     const h = await boot(scaffold())
     const { record } = await proposed(h)

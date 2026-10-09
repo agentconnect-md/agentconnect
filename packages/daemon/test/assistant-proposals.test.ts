@@ -214,6 +214,61 @@ describe('starting a task claims its sub-session in the same transaction', () =>
   })
 })
 
+describe('recovering a task settles it from its sub-session’s end, in one transaction', () => {
+  /** An executing task whose sub-session row stands in `state`, or has none. */
+  async function executing(s: LocalStore, a: string, state?: 'open' | 'done' | 'failed') {
+    const proposal = await propose(s, a)
+    if (state) {
+      expect(await s.assistantSubsessions.open(subsessionRow(a, taskKey(a)))).toBe(true)
+      if (state !== 'open') await s.assistantSubsessions.finish(a, taskKey(a), state)
+    }
+    expect(await s.assistantDrafts.beginTask(proposal.id, BY, taskKey(a), 2_000)).toBe(true)
+    return proposal
+  }
+  const settle = (s: LocalStore, a: string) =>
+    s.assistantSubsessions.finishClaiming(a, taskKey(a), (tx, how) =>
+      s.assistantDrafts.settleTaskIn(
+        tx,
+        a,
+        taskKey(a),
+        how === 'done' ? 'succeeded' : how === 'failed' ? 'failed' : 'outcome_unknown',
+        null,
+        3_000
+      )
+    )
+
+  it.each([
+    ['open', 'cut', 'failed', 'outcome_unknown'],
+    ['done', 'done', 'done', 'succeeded'],
+    ['failed', 'failed', 'failed', 'failed']
+  ] as const)('reads an %s row as %s', async (state, ended, rowAfter, status) => {
+    const s = await open()
+    const a = agent()
+    const proposal = await executing(s, a, state)
+    expect(await settle(s, a)).toBe(ended)
+    expect((await s.assistantSubsessions.get(a, taskKey(a)))?.state).toBe(rowAfter)
+    expect((await s.assistantDrafts.get(proposal.id))?.status).toBe(status)
+  })
+
+  it('reads a missing row as missing', async () => {
+    const s = await open()
+    const a = agent()
+    const proposal = await executing(s, a)
+    expect(await settle(s, a)).toBe('missing')
+    expect((await s.assistantDrafts.get(proposal.id))?.status).toBe('outcome_unknown')
+  })
+
+  it('changes nothing when the task already settled, so only one of a racing end and a recovery reports', async () => {
+    const s = await open()
+    const a = agent()
+    const proposal = await executing(s, a, 'open')
+    expect(await s.assistantDrafts.settleTask(a, taskKey(a), 'succeeded', null, 2_500)).toBeTruthy()
+    expect(await settle(s, a)).toBeUndefined()
+    expect((await s.assistantSubsessions.get(a, taskKey(a)))?.state).toBe('open')
+    expect((await s.assistantDrafts.get(proposal.id))?.status).toBe('succeeded')
+  })
+})
+
 /** The approval record as v37–v39 wrote it: a post was its only action. */
 const V39_DRAFT_TABLE = `
   CREATE TABLE assistant_draft (

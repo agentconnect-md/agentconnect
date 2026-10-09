@@ -35,8 +35,11 @@ export const callerOfMessage = (msg: NormalizedMessage): TaskCaller => ({
 export interface AssistantTasksHost {
   now(): number
   log: { info(message: string): void; warn(message: string): void }
-  ledger(): Pick<AssistantDraftLedger, 'beginTask' | 'failTask' | 'settleTask' | 'executingTasks'>
-  subsessions: Pick<AssistantSubsessionIndex, 'openWithinLimitClaiming' | 'get' | 'finish'>
+  ledger(): Pick<
+    AssistantDraftLedger,
+    'beginTask' | 'failTask' | 'settleTask' | 'settleTaskIn' | 'taskBySubsession' | 'executingTasks'
+  >
+  subsessions: Pick<AssistantSubsessionIndex, 'openWithinLimitClaiming' | 'finishClaiming' | 'get'>
   items: Pick<AssistantItemLedger, 'get'>
   agent(agentId: string): Pick<Agent, 'name' | 'assistantMode'> | undefined
   /** This daemon holds the agent's duty. */
@@ -215,17 +218,33 @@ export class AssistantTasks {
     }
   }
 
-  /** A task the inbox kept for replay is never re-run: it may or may not have gone through, and its place is told once. */
+  /** A task the inbox kept for replay is never re-run: one that already reported or was reported ended settles as such, else it may or may not have gone through and its place is told once. */
   async cut(agentId: string, key: string, caller: TaskCaller | undefined): Promise<void> {
     try {
-      const settled = await this.host
-        .ledger()
-        .settleTask(agentId, key, 'outcome_unknown', 'cut short by a restart or handover', this.host.now())
+      const ledger = this.host.ledger()
+      const now = this.host.now()
+      // The sub-session's durable end and the record's settlement in one transaction, so a racing end never reports twice.
+      const ended = await this.host.subsessions.finishClaiming(agentId, key, (tx, how) =>
+        ledger.settleTaskIn(
+          tx,
+          agentId,
+          key,
+          how === 'done' ? 'succeeded' : how === 'failed' ? 'failed' : 'outcome_unknown',
+          how === 'done'
+            ? null
+            : how === 'failed'
+              ? 'it ended without reporting back'
+              : 'cut short by a restart or handover',
+          now
+        )
+      )
       this.running.delete(key)
+      const settled = ended ? await ledger.taskBySubsession(agentId, key) : undefined
       if (!settled) return
-      const row = await this.host.subsessions.get(agentId, key)
-      await this.host.subsessions.finish(agentId, key, 'failed')
       await this.host.settled(settled)
+      // Its own report, or the daemon's failure report, already reached the parent.
+      if (ended !== 'cut') return
+      const row = await this.host.subsessions.get(agentId, key)
       const proposal = settled.proposal
       const at = caller ?? callerOf(settled, key)
       if (!row || !at || !proposal) return
