@@ -35,6 +35,12 @@
       "import": "./dist/decision-api.js",
       "default": "./dist/decision-api.js"
     },
+    "./subsession-coordinate": {
+      "development": "./src/subsession-coordinate.ts",
+      "types": "./dist/subsession-coordinate.d.ts",
+      "import": "./dist/subsession-coordinate.js",
+      "default": "./dist/subsession-coordinate.js"
+    },
     "./slack-app-manifest": {
       "development": "./src/slack-app-manifest.ts",
       "types": "./dist/slack-app-manifest.d.ts",

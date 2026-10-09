@@ -3587,14 +3587,12 @@ export default function SessionDetailView() {
     void refreshTail()
   }, [visibleTailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTail])
 
-  // A reload mid-turn wipes the provider's live state (busy flag, stream lanes,
-  // streamed reply). Probe the conversation's daemons for a still-streaming turn
-  // and reattach, restoring the typing indicator and the live reply stream.
+  // A reload mid-turn wipes the provider's live state, so probe the conversation's daemons for a still-streaming turn and reattach.
   useEffect(() => {
-    if (!sid || !session || session.platform !== 'webchat') return
+    if (!sid || !session || session.platform !== 'webchat' || session.subsession) return
     if (!session.channelId || !session.agentId) return
     pgAttach(sid, session.agentId, session.channelId)
-  }, [sid, session?.platform, session?.channelId, session?.agentId, pgAttach])
+  }, [sid, session?.platform, session?.subsession, session?.channelId, session?.agentId, pgAttach])
 
   // Everything above only APPENDS rows; nothing ever moved the viewport, so a
   // live session's newest output landed below the fold. Follow it — but only for
@@ -3839,20 +3837,20 @@ export default function SessionDetailView() {
   // Header channel chip — resolves a headless `cron:<id>` channel to its schedule.
   const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
-  // Session-targeted continuation (webchat-cross-integration-continuation.md
-  // §6.5): server-computed — the client never re-derives authorization. A
-  // transient blocker renders the disabled composer with product-language copy;
-  // unauthorized/unsupported keep today's read-only view.
-  const isContinuable = !isPg && !isWebchat && composerDetail?.canContinue === true
+  // A sub-session's channel is synthetic and its thread no platform thread, so its page is read-only; it is stopped from its parent's Sub-sessions panel.
+  const readOnlySubsession = session.subsession === true
+  // Continuation is server-computed (webchat-cross-integration-continuation.md §6.5): a transient blocker disables the composer, unauthorized/unsupported stay read-only.
+  const isContinuable = !readOnlySubsession && !isPg && !isWebchat && composerDetail?.canContinue === true
   const continuationReason = composerDetail?.continuationUnavailableReason ?? null
   const continuationBlocked =
+    !readOnlySubsession &&
     !isPg &&
     !isWebchat &&
     !isContinuable &&
     (continuationReason === 'agent_moved' ||
       continuationReason === 'daemon_offline' ||
       continuationReason === 'unavailable')
-  const isLive = isPg || isWebchat || isContinuable || continuationBlocked
+  const isLive = !readOnlySubsession && (isPg || isWebchat || isContinuable || continuationBlocked)
   // Where each agent runs NOW: a machine for a `daemon` placement, the set otherwise (a pool matched by `contentSetId`, a group by its holder).
   const placementByAgent = new Map(
     agents.map((agent) => [
