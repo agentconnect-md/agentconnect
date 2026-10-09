@@ -555,6 +555,8 @@
       "pullRequest": "PR",
       "openPullRequest": "Open the pull request on GitHub",
       "tasks": "Tasks",
+      "subsessions": "Sub-sessions",
+      "refreshSubsessions": "Refresh sub-sessions",
       "tryAgain": "Try again",
       "backToSessions": "Back to sessions",
       "conversationNotFound": "Conversation not found",
@@ -795,6 +797,27 @@
         "subagent": "subagent",
         "subagentTitle": "The runtime’s own internal subagent invocation",
         "olderTasksHidden": "Older tasks are not shown — the daemon keeps a bounded history."
+      },
+      "subsessionsPanel": {
+        "state": {
+          "open": "Running",
+          "done": "Reported",
+          "failed": "Failed"
+        },
+        "untitled": "Untitled sub-session",
+        "starting": "Starting…",
+        "hidden": "Not visible to you",
+        "started": "Started {time}",
+        "stop": "Stop",
+        "stopped": "Stopped.",
+        "notRunning": "Nothing was running.",
+        "stopFailed": "Couldn’t stop it. Try again.",
+        "upgradeDaemon": "Upgrade this agent’s daemon to see its sub-sessions here.",
+        "notReadable": "This conversation’s sub-sessions can’t be read.",
+        "unavailable": "Sub-sessions are unavailable right now.",
+        "empty": "No sub-sessions yet.",
+        "more": "Show more",
+        "moreFailed": "Couldn’t load more. Try again."
       }
     }
   },

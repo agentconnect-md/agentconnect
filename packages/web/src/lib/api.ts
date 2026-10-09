@@ -3815,7 +3815,16 @@ export interface AssistantSubsessionDto {
   state: 'open' | 'done' | 'failed'
   startedAt: string
   visible: boolean
+  /** The viewer may stop its current turn. */
+  canStop: boolean
   parent: { sessionId: string; title: string | null; platform: string | null; channelName: string | null } | null
+}
+
+export interface AssistantSubsessionsPageDto {
+  subsessions: AssistantSubsessionDto[]
+  truncated: boolean
+  /** The next page of one conversation's sub-sessions; null on its last page and for the agent-wide list. */
+  nextCursor: string | null
 }
 
 export interface AssistantDraftDto {
@@ -3885,10 +3894,25 @@ export async function deleteAssistantItem(agentId: string, itemId: string): Prom
   await apiDelete(`${assistantBase(agentId)}/items/${encodeURIComponent(itemId)}`)
 }
 
+/** The agent's sub-sessions, or with `parentSessionId` only those that conversation opened, newest first, a page at a time. */
 export async function fetchAssistantSubsessions(
-  agentId: string
-): Promise<{ subsessions: AssistantSubsessionDto[]; truncated: boolean }> {
-  return apiGet(`${assistantBase(agentId)}/subsessions`)
+  agentId: string,
+  opts: { parentSessionId?: string; cursor?: string; limit?: number } = {}
+): Promise<AssistantSubsessionsPageDto> {
+  const q = new URLSearchParams()
+  if (opts.parentSessionId) q.set('parentSessionId', opts.parentSessionId)
+  if (opts.cursor) q.set('cursor', opts.cursor)
+  if (opts.limit) q.set('limit', String(opts.limit))
+  const query = q.toString()
+  return apiGet(`${assistantBase(agentId)}/subsessions${query ? `?${query}` : ''}`)
+}
+
+/** Interrupt a sub-session's current turn; `not_running` when it had none. */
+export async function stopAssistantSubsession(
+  agentId: string,
+  sessionId: string
+): Promise<{ result: 'stopped' | 'not_running' }> {
+  return apiPost(`${assistantBase(agentId)}/subsessions/${encodeURIComponent(sessionId)}/stop`, {})
 }
 
 export async function fetchAssistantDrafts(

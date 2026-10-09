@@ -52,6 +52,7 @@ import { DAEMON_VERSION } from '../version.js'
 import type { Logger } from '../log.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { LocalStore, SessionRecord } from '../store/local-store.js'
+import type { InteractionActor } from '../platforms/contract.js'
 import type { ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 import type { SessionMetadataOutbox } from '../store/session-metadata-outbox.js'
 import type { CronReportOutbox } from '../store/cron-report-outbox.js'
@@ -194,6 +195,8 @@ export interface CpClientSeamHost {
   listBackgroundTasks(req: TaskListReq): Promise<TaskList>
   /** An editor's approve or discard of an assistant-mode draft, run exactly as its card click would. */
   decideAssistantDraft: AssistantActivityDeps['decideDraft']
+  /** The `!cancel` core shared by every stop surface: interrupt a session's turn, no mute; true when one was interrupted. */
+  cancelSessionByKey(key: string, actor?: InteractionActor): Promise<boolean>
   /** The edge's in-memory merge-when-ready registry, or undefined before agents are loaded. */
   autoMerge(): AutoMergeWatcher | undefined
   /** The console keep-alive leases over this daemon's sandboxes (`k8s/sandbox-hold.ts`). */
@@ -439,7 +442,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       store: () => host.store(),
       agent: (agentId) => host.agents().get(agentId),
       now: () => systemClock.now(),
-      decideDraft: (input) => host.decideAssistantDraft(input)
+      decideDraft: (input) => host.decideAssistantDraft(input),
+      stopSession: (key, actor) => host.cancelSessionByKey(key, actor)
     }),
     // Merge-when-ready lives at the EDGE and nowhere else — the CP relays these two frames and
     // stores nothing, so an unarmed answer is the truth about this process, not a lost row.

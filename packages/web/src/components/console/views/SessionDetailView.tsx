@@ -154,6 +154,14 @@ import { useSandboxKeepAlive } from '@/components/console/dock/sandbox-keep-aliv
 import { GitPanel, gitTabStatus, type GitPanelVerdict } from '@/components/console/dock/GitPanel'
 import { TasksPanel, tasksTabStatus, type TasksPanelVerdict } from '@/components/console/dock/TasksPanel'
 import {
+  SUBSESSIONS_UNSETTLED,
+  SubsessionsPanel,
+  subsessionsTabShown,
+  subsessionsTabStatus,
+  type SubsessionsPanelVerdict
+} from '@/components/console/dock/SubsessionsPanel'
+import { featureFlagEnabled } from '@/lib/feature-flags'
+import {
   PullRequestPanel,
   pullRequestTabStatus,
   type PullRequestPanelVerdict
@@ -2413,6 +2421,14 @@ const DOCK_TABS: DockTab[] = [
     icon: 'list-checks',
     actionIcon: 'refresh-cw',
     actionLabel: 'Refresh background tasks'
+  },
+  // An assistant-mode conversation's background sub-sessions, offered only once it has opened one.
+  {
+    key: 'subsessions',
+    label: 'Sub-sessions',
+    icon: 'split',
+    actionIcon: 'refresh-cw',
+    actionLabel: 'Refresh sub-sessions'
   }
 ]
 
@@ -3129,6 +3145,12 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
+  // The conversation whose sub-sessions the dock lists: the focused participant's session, while that agent is in assistant mode and the console offers it.
+  const subsessionsAgent = filesAgentId ? agentById.get(filesAgentId) : undefined
+  const subsessionsSessionId =
+    !MOCK_MODE && featureFlagEnabled('assistant-mode') && subsessionsAgent?.assistantMode?.enabled === true
+      ? tasksSessionId
+      : null
   // An isolated session's own wake, with its own agent; the panel presses it only when the read says this session's arm places the watcher.
   const prSessionIsolation =
     currentSessionDetail && currentSessionDetail.id === prSessionId
@@ -3217,6 +3239,9 @@ export default function SessionDetailView() {
   // The Tasks tab's own `refresh-cw` and verdict. Its settle state feeds the tab status, its running count the badge.
   const [tasksRefreshTick, setTasksRefreshTick] = useState(0)
   const [tasksVerdict, setTasksVerdict] = useState<TasksPanelVerdict>({ settled: false, running: null })
+  // The Sub-sessions tab's own refresh and verdict: whether the conversation opened any, and how many run.
+  const [subsessionsRefreshTick, setSubsessionsRefreshTick] = useState(0)
+  const [subsessionsVerdict, setSubsessionsVerdict] = useState<SubsessionsPanelVerdict>(SUBSESSIONS_UNSETTLED)
   // The PR tab's verdict, reported by its panel: whether this session HAS a linked run at all (`none` drops the tab), the unresolved-thread badge, and the URL its `external-link` action opens.
   const [prVerdict, setPrVerdict] = useState<PullRequestPanelVerdict>({
     answer: 'pending',
@@ -3265,14 +3290,18 @@ export default function SessionDetailView() {
                 ? t('git')
                 : tab.key === 'pr'
                   ? t('pullRequest')
-                  : t('tasks'),
+                  : tab.key === 'subsessions'
+                    ? t('subsessions')
+                    : t('tasks'),
         ...(tab.key === 'files'
           ? { actionLabel: t('refreshFiles') }
           : tab.key === 'git'
             ? { actionLabel: t('refreshGit') }
             : tab.key === 'tasks'
               ? { actionLabel: t('refreshTasks') }
-              : {})
+              : tab.key === 'subsessions'
+                ? { actionLabel: t('refreshSubsessions') }
+                : {})
       })),
     [t]
   )
@@ -3286,10 +3315,12 @@ export default function SessionDetailView() {
             : tab.key === 'tasks'
               ? // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
                 filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE
-              : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
-                tab.key !== 'pr' ||
-                (prSessionId !== null &&
-                  (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
+              : tab.key === 'subsessions'
+                ? subsessionsSessionId !== null && subsessionsTabShown(subsessionsVerdict)
+                : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
+                  tab.key !== 'pr' ||
+                  (prSessionId !== null &&
+                    (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
         )
         .map((tab) =>
           tab.key === 'sessions'
@@ -3319,7 +3350,13 @@ export default function SessionDetailView() {
                         // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
                         ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
                       }
-                    : tab
+                    : tab.key === 'subsessions'
+                      ? {
+                          ...tab,
+                          status: subsessionsTabStatus(subsessionsVerdict.settled),
+                          ...(subsessionsVerdict.running ? { badge: subsessionsVerdict.running } : {})
+                        }
+                      : tab
         ),
     [
       filesAgentId,
@@ -3334,6 +3371,8 @@ export default function SessionDetailView() {
       prVerdict.url,
       sessionsStatus,
       localizedDockTabs,
+      subsessionsSessionId,
+      subsessionsVerdict,
       tasksSessionId,
       tasksStatus,
       tasksVerdict.running
@@ -6213,6 +6252,7 @@ export default function SessionDetailView() {
           // PR's action is the design's `external-link`, not a refresh: it opens the PR's own page (the panel body carries its own refresh).
           if (key === 'pr' && prVerdict.url) window.open(prVerdict.url, '_blank', 'noopener,noreferrer')
           if (key === 'tasks') setTasksRefreshTick((tick) => tick + 1)
+          if (key === 'subsessions') setSubsessionsRefreshTick((tick) => tick + 1)
         }}
         overlayKey={`${session.id}:${viewerPath ?? ''}`}
         label={t('panels')}
@@ -6319,6 +6359,19 @@ export default function SessionDetailView() {
               turnActive={focusBusy}
               refreshTick={tasksRefreshTick}
               onVerdictChange={setTasksVerdict}
+            />
+          ) : null}
+        </DockPanel>
+        {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once the conversation opens a sub-session. */}
+        <DockPanel active={dockTabKey === 'subsessions'}>
+          {filesAgentId && subsessionsSessionId ? (
+            <SubsessionsPanel
+              agentId={filesAgentId}
+              sessionId={subsessionsSessionId}
+              active={dockTabKey === 'subsessions'}
+              turnActive={focusBusy}
+              refreshTick={subsessionsRefreshTick}
+              onVerdictChange={setSubsessionsVerdict}
             />
           ) : null}
         </DockPanel>

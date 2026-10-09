@@ -4,7 +4,10 @@ import { randomUUID } from 'node:crypto'
 import {
   ASSISTANT_ACTIVITY_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
+  ASSISTANT_SUBSESSION_PANEL_FEATURE,
+  SUBSESSION_COORDINATE_PREFIX,
   TASK_LIST_FEATURE,
+  type AssistantSubsessionStopResult,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
   type AssistantActivityWriteReq,
@@ -29,7 +32,7 @@ const CAPABILITIES = {
   platforms: ['slack'],
   runtimes: ['claude'],
   acp: true,
-  features: [ASSISTANT_ACTIVITY_FEATURE, ASSISTANT_DRAFT_DECISION_FEATURE]
+  features: [ASSISTANT_ACTIVITY_FEATURE, ASSISTANT_DRAFT_DECISION_FEATURE, ASSISTANT_SUBSESSION_PANEL_FEATURE]
 }
 const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
@@ -56,6 +59,8 @@ class ActivitySpy {
   reads: AssistantActivityReadReq[] = []
   writes: AssistantActivityWriteReq[] = []
   subsessions: Extract<AssistantActivityReadResult, { operation: 'subsessions' }>['subsessions'] = []
+  nextCursor: string | null = null
+  stopResult: AssistantSubsessionStopResult = 'stopped'
   found = true
   decision: Omit<Extract<AssistantActivityWriteResult, { operation: 'decide-draft' }>, 'operation'> = {
     result: 'decided',
@@ -85,7 +90,14 @@ class ActivitySpy {
               : null
         }
       case 'subsessions':
-        return { operation: 'subsessions', subsessions: this.subsessions, truncated: false }
+        return req.parent
+          ? {
+              operation: 'subsessions',
+              subsessions: this.subsessions,
+              truncated: this.nextCursor !== null,
+              nextCursor: this.nextCursor
+            }
+          : { operation: 'subsessions', subsessions: this.subsessions, truncated: false }
       case 'drafts':
         return {
           operation: 'drafts',
@@ -136,6 +148,7 @@ class ActivitySpy {
     this.writes.push(req)
     if (this.failure) throw this.failure
     if (req.operation === 'decide-draft') return { operation: 'decide-draft', ...this.decision }
+    if (req.operation === 'stop-subsession') return { operation: 'stop-subsession', result: this.stopResult }
     return { operation: req.operation, found: this.found }
   }
 }
@@ -351,15 +364,25 @@ describe('the assistant Activity routes', () => {
           state: 'open',
           startedAt: '2026-10-09T09:00:00.000Z',
           visible: true,
+          canStop: true,
           parent
         },
-        { sessionId: null, title: null, state: 'open', startedAt: '2026-10-09T08:30:00.000Z', visible: true, parent },
+        {
+          sessionId: null,
+          title: null,
+          state: 'open',
+          startedAt: '2026-10-09T08:30:00.000Z',
+          visible: true,
+          canStop: false,
+          parent
+        },
         {
           sessionId: null,
           title: null,
           state: 'done',
           startedAt: '2026-10-09T08:00:00.000Z',
           visible: false,
+          canStop: false,
           parent: null
         },
         {
@@ -368,10 +391,12 @@ describe('the assistant Activity routes', () => {
           state: 'failed',
           startedAt: '2026-10-09T07:00:00.000Z',
           visible: false,
+          canStop: false,
           parent: null
         }
       ],
-      truncated: false
+      truncated: false,
+      nextCursor: null
     })
 
     // The DM's owner sees their own sub-session and where it came from.
@@ -380,6 +405,151 @@ describe('the assistant Activity routes', () => {
     expect(asOwner.subsessions[3]).toMatchObject({ sessionId: null, visible: false, parent: null })
   })
 })
+
+const subsessionThread = (id: string) => `${SUBSESSION_COORDINATE_PREFIX}${id}`
+
+/** A team conversation and an owner's DM, each with one running sub-session, and another agent's session. */
+async function seedConversations() {
+  const [team, teamChild, dm, dmChild, plain, foreign] = [
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+    randomUUID()
+  ]
+  await seedSessionMeta(prisma, team, AGENT, { daemonId: DAEMON, channel: 'C0SUPPORT', thread: 'append:1' })
+  await seedSessionMeta(prisma, teamChild, AGENT, {
+    daemonId: DAEMON,
+    channel: 'C0SUPPORT',
+    thread: subsessionThread('1'),
+    parentSessionId: team
+  })
+  await prisma.sessionMeta.update({ where: { id: teamChild }, data: { title: 'Fix the flaky test' } })
+  const owner = { visibility: 'private' as const, ownerIdentity: `user:${DEFAULT_OWNER_ID}` }
+  await seedSessionMeta(prisma, dm, AGENT, { ...owner, daemonId: DAEMON, channel: 'D0OWNER' })
+  await seedSessionMeta(prisma, dmChild, AGENT, {
+    ...owner,
+    daemonId: DAEMON,
+    channel: 'D0OWNER',
+    thread: subsessionThread('2'),
+    parentSessionId: dm
+  })
+  // An ordinary thread of the agent is not a sub-session, whoever asks.
+  await seedSessionMeta(prisma, plain, AGENT, { daemonId: DAEMON, channel: 'C0SUPPORT', thread: '1700000000.000100' })
+  const otherAgent = randomUUID()
+  await seedAgent(prisma, otherAgent, { daemonId: DAEMON })
+  await seedSessionMeta(prisma, foreign, otherAgent, { daemonId: DAEMON, thread: subsessionThread('3') })
+  return { team, teamChild, dm, dmChild, plain, foreign }
+}
+
+describe('one conversation’s sub-sessions', () => {
+  it('lists only what the conversation opened, a page at a time, with who may stop each', async () => {
+    await seedAssistant()
+    const { team, teamChild, dm, foreign } = await seedConversations()
+    const member = await makeUser(`panel-member-${randomUUID()}`, 'collaborator')
+    const viewer = await makeUser(`panel-viewer-${randomUUID()}`, 'viewer')
+    const control = new ActivitySpy()
+    control.subsessions = [
+      { sessionId: teamChild, parentSessionId: team, state: 'open', createdAt: '2026-10-09T09:00:00.000Z' },
+      { sessionId: null, parentSessionId: team, state: 'done', createdAt: '2026-10-09T08:00:00.000Z' },
+      // A daemon that answers for another conversation is not believed.
+      { sessionId: null, parentSessionId: dm, state: 'open', createdAt: '2026-10-09T07:00:00.000Z' }
+    ]
+    control.nextCursor = 'next-page'
+
+    const first = await get(app(control, member), `/subsessions?parentSessionId=${team}&limit=2`)
+    expect(first.statusCode, first.body).toBe(200)
+    expect(first.json()).toEqual({
+      subsessions: [
+        expect.objectContaining({ sessionId: teamChild, state: 'open', visible: true, canStop: true }),
+        expect.objectContaining({ sessionId: null, state: 'done', visible: true, canStop: false })
+      ],
+      truncated: true,
+      nextCursor: 'next-page'
+    })
+    await get(app(control, member), `/subsessions?parentSessionId=${team}&cursor=next-page`)
+    expect(control.reads).toEqual([
+      { agentId: AGENT, operation: 'subsessions', limit: 2, parent: { sessionId: team } },
+      { agentId: AGENT, operation: 'subsessions', limit: 50, parent: { sessionId: team, cursor: 'next-page' } }
+    ])
+
+    // A viewer sees the same rows and may stop none.
+    const asViewer = (await get(app(control, viewer), `/subsessions?parentSessionId=${team}`)).json()
+    expect(asViewer.subsessions[0]).toMatchObject({ sessionId: teamChild, canStop: false })
+
+    // A conversation the caller may not view, another agent's, or none at all is never read.
+    control.reads = []
+    for (const parent of [dm, foreign, randomUUID()]) {
+      expect((await get(app(control, member), `/subsessions?parentSessionId=${parent}`)).statusCode).toBe(404)
+    }
+    expect((await get(app(control, member), '/subsessions?cursor=next-page')).statusCode).toBe(400)
+    expect(control.reads).toEqual([])
+
+    control.failure = new ProtocolError('BAD_PAYLOAD', 'bad cursor', { details: { reason: 'bad-cursor' } })
+    const forged = await get(app(control, member), `/subsessions?parentSessionId=${team}&cursor=forged`)
+    expect(forged.json()).toMatchObject({ statusCode: 400, code: 'BAD_CURSOR' })
+  })
+
+  it('refuses a daemon that cannot narrow the list or stop one, and keeps the agent-wide list', async () => {
+    await seedAssistant({ features: [ASSISTANT_ACTIVITY_FEATURE] })
+    const { team, teamChild } = await seedConversations()
+    const control = new ActivitySpy()
+    const narrowed = await get(app(control), `/subsessions?parentSessionId=${team}`)
+    expect(narrowed.statusCode).toBe(409)
+    expect(narrowed.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
+    const stopped = await stop(app(control), teamChild)
+    expect(stopped.json()).toMatchObject({ statusCode: 409, code: 'DAEMON_FEATURE_MISSING' })
+    expect(control.reads).toEqual([])
+    expect(control.writes).toEqual([])
+    expect((await get(app(control), '/subsessions')).statusCode).toBe(200)
+  })
+
+  it('stops a sub-session for whoever may continue it, naming them, and nothing else', async () => {
+    await seedAssistant()
+    const { teamChild, dmChild, plain, foreign } = await seedConversations()
+    const member = await makeUser(`panel-stopper-${randomUUID()}`, 'collaborator')
+    await new PgUserRepo(prisma).updateProfile(member, { displayName: 'Grace' })
+    const control = new ActivitySpy()
+
+    const res = await stop(app(control, member), teamChild)
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toEqual({ result: 'stopped' })
+    control.stopResult = 'not-running'
+    expect((await stop(app(control, member), teamChild)).json()).toEqual({ result: 'not_running' })
+    control.stopResult = 'not-found'
+    expect((await stop(app(control, member), teamChild)).statusCode).toBe(404)
+    const actor = { userId: member, name: 'Grace' }
+    expect(control.writes).toEqual(
+      Array.from({ length: 3 }, () => ({ agentId: AGENT, operation: 'stop-subsession', sessionId: teamChild, actor }))
+    )
+
+    control.writes = []
+    // The owner's DM sub-session is not the member's to see, an ordinary thread is no sub-session, and neither is another agent's.
+    for (const id of [dmChild, plain, foreign, randomUUID()]) {
+      expect((await stop(app(control, member), id)).statusCode).toBe(404)
+    }
+    // A viewer may watch but not stop.
+    const viewer = await makeUser(`panel-watcher-${randomUUID()}`, 'viewer')
+    expect((await stop(app(control, viewer), teamChild)).statusCode).toBe(403)
+    expect(control.writes).toEqual([])
+    // The DM's owner may stop their own.
+    control.stopResult = 'stopped'
+    expect((await stop(app(control), dmChild)).json()).toEqual({ result: 'stopped' })
+
+    await prisma.agent.update({ where: { id: AGENT }, data: { assistantMode: { enabled: false } } })
+    expect((await stop(app(control, member), teamChild)).json()).toMatchObject({ code: 'ASSISTANT_MODE_OFF' })
+    control.failure = new NoConnection(DAEMON)
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { assistantMode: { enabled: true, responsibleUserId: DEFAULT_OWNER_ID } }
+    })
+    expect((await stop(app(control, member), teamChild)).json()).toMatchObject({ code: 'DAEMON_OFFLINE' })
+  })
+})
+
+const stop = (running: HttpApp, sessionId: string) =>
+  running.app.inject({ method: 'POST', url: `${ORG}/agents/${AGENT}/assistant/subsessions/${sessionId}/stop` })
 
 const decide = (running: HttpApp, decision: string, draftId = 'draft-1') =>
   running.app.inject({

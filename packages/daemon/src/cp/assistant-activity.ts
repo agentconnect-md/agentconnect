@@ -11,6 +11,7 @@ import {
   type AssistantActivityPlace,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
+  type AssistantActivitySubsession,
   type AssistantActivityWriteReq,
   type AssistantActivityWriteResult,
   type AssistantDraftChoice
@@ -25,7 +26,7 @@ import type {
   AssistantItemStatus,
   AssistantPlace
 } from '../store/assistant-items.js'
-import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
+import type { AssistantSubsession, AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
 import type { SessionRecord } from '../store/local-store.js'
 
 /** A refused request → `BAD_PAYLOAD` with `reason` in the error frame's details. */
@@ -43,8 +44,9 @@ export class AssistantActivityViolationError extends Error {
 export interface AssistantActivityStore {
   assistantItems: Pick<AssistantItemLedger, 'list' | 'get' | 'delete'>
   assistantDrafts: Pick<AssistantDraftLedger, 'listPending' | 'listGrants' | 'revokeGrant'>
-  assistantSubsessions: Pick<AssistantSubsessionIndex, 'list'>
+  assistantSubsessions: Pick<AssistantSubsessionIndex, 'list' | 'listForParent' | 'get'>
   getSession(key: string): Promise<SessionRecord | undefined>
+  getSessionByOutwardId(sessionId: string, agentId?: string): Promise<SessionRecord | undefined>
   getDisplayNames(ids: string[]): Promise<Map<string, string>>
   setDisplayName(id: string, name: string, updatedAt: number): Promise<void>
 }
@@ -60,6 +62,8 @@ export interface AssistantActivityDeps {
     choice: AssistantDraftChoice
     decider: { userId: string; name: string | null }
   }): Promise<DraftDecision>
+  /** The `!cancel` core every stop surface shares; true when it interrupted a turn. */
+  stopSession(key: string, actor: { userId: string; name?: string }): Promise<boolean>
 }
 
 /** The seam the CP client dispatches `assistant/activity/*` to. */
@@ -105,19 +109,35 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           return { operation: 'item', item: { ...itemOf(item), summary: item.summary, observations } }
         }
         case 'subsessions': {
-          const rows = await store.assistantSubsessions.list(req.agentId, req.limit + 1)
-          const subsessions = await Promise.all(
-            rows.slice(0, req.limit).map(async (row) => {
-              const child = await store.getSession(row.childSessionKey)
-              return {
-                sessionId: child?.agentId === req.agentId ? (child.sessionId ?? null) : null,
-                parentSessionId: row.parentSessionId,
-                state: row.state,
-                createdAt: iso(row.createdAt)
-              }
-            })
-          )
-          return { operation: 'subsessions', subsessions, truncated: rows.length > req.limit }
+          const subsessionOf = async (row: AssistantSubsession): Promise<AssistantActivitySubsession> => {
+            const child = await store.getSession(row.childSessionKey)
+            return {
+              sessionId: child?.agentId === req.agentId ? (child.sessionId ?? null) : null,
+              parentSessionId: row.parentSessionId,
+              state: row.state,
+              createdAt: iso(row.createdAt)
+            }
+          }
+          if (!req.parent) {
+            const rows = await store.assistantSubsessions.list(req.agentId, req.limit + 1)
+            const subsessions = await Promise.all(rows.slice(0, req.limit).map(subsessionOf))
+            return { operation: 'subsessions', subsessions, truncated: rows.length > req.limit }
+          }
+          const after = req.parent.cursor === undefined ? undefined : cursorPosition(req.parent.cursor)
+          const rows = await store.assistantSubsessions.listForParent(req.agentId, req.parent.sessionId, {
+            limit: req.limit + 1,
+            ...(after ? { after } : {})
+          })
+          const page = rows.slice(0, req.limit)
+          const subsessions = await Promise.all(page.map(subsessionOf))
+          const last = page.at(-1)
+          const more = rows.length > req.limit && last !== undefined
+          return {
+            operation: 'subsessions',
+            subsessions,
+            truncated: more,
+            nextCursor: more ? cursorOf(last) : null
+          }
         }
         case 'drafts': {
           const rows = await store.assistantDrafts.listPending(req.agentId, req.limit + 1, deps.now())
@@ -162,12 +182,37 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           const decision = await deps.decideDraft(req)
           return { operation: 'decide-draft', ...decision, failure: clipText(decision.failure, 1_000) }
         }
+        case 'stop-subsession': {
+          // Only a sub-session this agent's index holds, so the console's stop reaches no other session.
+          const child = await store.getSessionByOutwardId(req.sessionId, req.agentId)
+          const row = child ? await store.assistantSubsessions.get(req.agentId, child.key) : undefined
+          if (!child || !row) return { operation: 'stop-subsession', result: 'not-found' }
+          if (row.state !== 'open') return { operation: 'stop-subsession', result: 'not-running' }
+          const { userId, name } = req.actor
+          const stopped = await deps.stopSession(child.key, { userId, ...(name ? { name } : {}) })
+          return { operation: 'stop-subsession', result: stopped ? 'stopped' : 'not-running' }
+        }
       }
     }
   }
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString()
+
+/** Where a page of one conversation's sub-sessions ends, in a form only this module reads back. */
+const cursorOf = (row: AssistantSubsession): string =>
+  Buffer.from(JSON.stringify([row.createdAt, row.childSessionKey]), 'utf8').toString('base64url')
+
+function cursorPosition(cursor: string): { createdAt: number; childSessionKey: string } {
+  try {
+    const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+    if (Array.isArray(value) && Number.isSafeInteger(value[0]) && typeof value[1] === 'string' && value.length === 2)
+      return { createdAt: value[0] as number, childSessionKey: value[1] }
+  } catch {
+    // Falls through to the refusal below.
+  }
+  throw new AssistantActivityViolationError('the sub-session page cursor is not one this daemon issued', 'bad-cursor')
+}
 
 const clipText = (text: string | null, max: number): string | null =>
   text === null ? null : [...text].slice(0, max).join('')
