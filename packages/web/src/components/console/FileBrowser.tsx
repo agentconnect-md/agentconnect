@@ -182,8 +182,11 @@ export function FileBrowserBreadcrumb({
       {segments.map((segment, index) => {
         const current = !creating && index === segments.length - 1
         const mobileCurrent = index === segments.length - 1
-        const className = `mono min-w-[24px] max-w-[140px] shrink truncate text-[12px] ${
-          current ? 'font-semibold text-(--text-primary)' : 'font-medium text-(--text-secondary)'
+        // The current segment takes whatever room is left and ancestors give theirs up first.
+        const className = `mono min-w-[24px] truncate text-[12px] ${
+          current
+            ? 'shrink font-semibold text-(--text-primary)'
+            : 'max-w-[140px] shrink-[3] font-medium text-(--text-secondary)'
         } ${mobileCurrent ? '' : 'max-desktop:hidden'}`
         const directory = segments.slice(0, index + 1).join('/')
         return (
