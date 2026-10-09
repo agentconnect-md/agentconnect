@@ -89,6 +89,60 @@ describe('the assistant sub-session index', () => {
     expect(await s.assistantSubsessions.get(a, childKey(a, '1'))).toBeUndefined()
     expect(await s.assistantSubsessions.get(a, childKey(a, '2'))).toBeDefined()
   })
+
+  it('settles an open row once, to done or failed', async () => {
+    const s = await open()
+    const a = agent()
+    await s.assistantSubsessions.open(row(a, '1'))
+    await s.assistantSubsessions.open(row(a, '2'))
+    expect(await s.assistantSubsessions.finish(a, childKey(a, '1'), 'done')).toBe(true)
+    expect(await s.assistantSubsessions.finish(a, childKey(a, '1'), 'failed')).toBe(false)
+    expect(await s.assistantSubsessions.finish(a, childKey(a, '2'), 'failed')).toBe(true)
+    expect(await s.assistantSubsessions.finish(a, childKey(a, '3'), 'done')).toBe(false)
+    expect((await s.assistantSubsessions.get(a, childKey(a, '1')))?.state).toBe('done')
+    expect((await s.assistantSubsessions.get(a, childKey(a, '2')))?.state).toBe('failed')
+  })
+
+  it('opens below the limit only, counting the agent’s own open rows', async () => {
+    const s = await open()
+    const [a, b] = [agent(), agent()]
+    const cap = { limit: 2, startedSince: 0 }
+    expect(await s.assistantSubsessions.openWithinLimit(row(a, '1'), cap)).toBe(true)
+    expect(await s.assistantSubsessions.openWithinLimit(row(a, '2'), cap)).toBe(true)
+    expect(await s.assistantSubsessions.openWithinLimit(row(a, '3'), cap)).toBe(false)
+    expect(await s.assistantSubsessions.get(a, childKey(a, '3'))).toBeUndefined()
+    // Another agent's sub-sessions are its own.
+    expect(await s.assistantSubsessions.openWithinLimit(row(b, '1'), cap)).toBe(true)
+    // A settled row frees its place.
+    await s.assistantSubsessions.finish(a, childKey(a, '1'), 'failed')
+    expect(await s.assistantSubsessions.openWithinLimit(row(a, '3'), cap)).toBe(true)
+    expect(await s.assistantSubsessions.get(a, childKey(a, '3'))).toMatchObject({ state: 'open', createdAt: 1_000 })
+  })
+
+  it('stops counting an open row whose session never appeared, once it is past the start grace', async () => {
+    const s = await open()
+    const a = agent()
+    await s.assistantSubsessions.open(row(a, 'lost'))
+    await s.assistantSubsessions.open(row(a, 'running'))
+    await s.upsertSession({
+      key: childKey(a, 'running'),
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0GENERAL',
+      thread: subsessionCoordinate('running'),
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: 'acp-running',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    // Both rows were opened at 1_000: within the grace both count, past it only the one with a session does.
+    const next = { ...row(a, 'next'), now: 2_000 }
+    expect(await s.assistantSubsessions.openWithinLimit(next, { limit: 2, startedSince: 1_000 })).toBe(false)
+    expect(await s.assistantSubsessions.openWithinLimit(next, { limit: 2, startedSince: 1_001 })).toBe(true)
+    // The new row, still within its grace, counts beside the running one.
+    expect(await s.assistantSubsessions.openWithinLimit(row(a, 'after'), { limit: 2, startedSince: 1_001 })).toBe(false)
+  })
 })
 
 describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLite', () => {

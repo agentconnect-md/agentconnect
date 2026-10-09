@@ -1,8 +1,9 @@
 // The persistent parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6), partitioned by agent.
+import { AsyncMutex } from './async-mutex.js'
 import type { StoreQueryResult } from './store-database.js'
 
-/** A sub-session is `open` from its delegation on; stopping and finishing are recorded by later items. */
-export type AssistantSubsessionState = 'open'
+/** `open` from the delegation on; `done` once it reported back, `failed` once it ended without reporting. */
+export type AssistantSubsessionState = 'open' | 'done' | 'failed'
 
 export interface AssistantSubsession {
   agentId: string
@@ -37,6 +38,8 @@ export interface AssistantSubsessionDatabase {
 
 type Row = Record<string, unknown>
 
+type OpenInput = Omit<AssistantSubsession, 'state' | 'createdAt'> & { now?: number }
+
 function subsessionOf(row: Row): AssistantSubsession {
   return {
     agentId: String(row.agentId),
@@ -49,15 +52,56 @@ function subsessionOf(row: Row): AssistantSubsession {
 }
 
 export class AssistantSubsessionIndex {
+  // An agent delegates only on its duty holder, so serializing this process's capped opens makes each a check-and-claim.
+  private readonly opening = new AsyncMutex()
+
   constructor(private readonly db: AssistantSubsessionDatabase) {}
 
   /** Record a delegation; true when the row is new, false when the child was already indexed. */
-  async open(input: Omit<AssistantSubsession, 'state' | 'createdAt'> & { now?: number }): Promise<boolean> {
+  async open(input: OpenInput): Promise<boolean> {
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_subsession
          (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
        VALUES (?, ?, ?, ?, 'open', ?)`,
       [input.agentId, input.childSessionKey, input.parentSessionId, input.parentSessionKey, input.now ?? Date.now()]
+    )
+    return changes > 0
+  }
+
+  /** Record a delegation only below `limit` running ones; an `open` row whose session never appeared stops counting at `startedSince`. */
+  async openWithinLimit(input: OpenInput, cap: { limit: number; startedSince: number }): Promise<boolean> {
+    return await this.opening.run(async () => {
+      const { changes } = await this.db.query(
+        `INSERT OR IGNORE INTO assistant_subsession
+           (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
+         SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER)
+          WHERE (SELECT COUNT(*) FROM assistant_subsession a
+                  WHERE a.agentId = ? AND a.state = 'open'
+                    AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey))) < ?`,
+        [
+          input.agentId,
+          input.childSessionKey,
+          input.parentSessionId,
+          input.parentSessionKey,
+          input.now ?? Date.now(),
+          input.agentId,
+          cap.startedSince,
+          cap.limit
+        ]
+      )
+      return changes > 0
+    })
+  }
+
+  /** Settle an `open` row; false when it was already settled or is not indexed. */
+  async finish(
+    agentId: string,
+    childSessionKey: string,
+    state: Exclude<AssistantSubsessionState, 'open'>
+  ): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET state = ? WHERE agentId = ? AND childSessionKey = ? AND state = 'open'`,
+      [state, agentId, childSessionKey]
     )
     return changes > 0
   }
