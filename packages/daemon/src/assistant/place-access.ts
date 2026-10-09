@@ -17,6 +17,12 @@ export interface SourcePlace extends PlaceRef {
   private?: boolean
 }
 
+/** The person asking in their own 1:1 DM, on the bot that DM belongs to (per-asker scoping, §5.5). */
+export interface PlaceAsker {
+  integrationId: string
+  userId: string
+}
+
 /** Why a read was refused: a direct conversation, a private place, or a place that could not be described. */
 export type PlaceRefusal = 'direct' | 'private' | 'undetermined'
 
@@ -27,7 +33,7 @@ export function samePlace(a: PlaceRef, b: PlaceRef): boolean {
   return a.platform === b.platform && a.channel === b.channel
 }
 
-/** May `current` read `source`? Undefined when it may; a DM, webchat or private place is read only from itself. */
+/** May `current` read `source`? Undefined when it may; a DM, webchat or private place is read only from itself (before per-asker scoping). */
 export function placeReadRefusal(current: PlaceRef, source: SourcePlace): PlaceRefusal | undefined {
   if (samePlace(current, source)) return undefined
   switch (source.kind) {
@@ -71,14 +77,17 @@ export const placeReadMetrics: PlaceReadMetrics = {
   refused: (tool, reason) => refusedReads.add(1, { tool, reason })
 }
 
-/** The one choke point every assistant-mode cross-place read passes; a refusal is counted. */
-export function checkPlaceRead(
+/** The one choke point every assistant-mode cross-place read passes; `askerMember` may open a private place, and a refusal is counted. */
+export async function checkPlaceRead(
   tool: PlaceReadTool,
   current: PlaceRef,
   source: SourcePlace,
+  askerMember?: () => Promise<boolean>,
   recorder: PlaceReadMetrics = placeReadMetrics
-): PlaceRefusal | undefined {
+): Promise<PlaceRefusal | undefined> {
   const refusal = placeReadRefusal(current, source)
+  // Per-asker scoping only widens a private place; a DM or an undescribed place stays refused.
+  if (refusal === 'private' && askerMember && (await askerMember().catch(() => false))) return undefined
   if (refusal) recorder.refused(tool, refusal)
   return refusal
 }

@@ -634,7 +634,7 @@ export type AppLike = {
           user?: string
         }
       }>
-      members: (a: unknown) => Promise<{ members?: string[] }>
+      members: (a: unknown) => Promise<{ members?: string[]; response_metadata?: { next_cursor?: string } }>
       // The two WRITE calls this adapter makes against a conversation — see leaveChannel and
       // joiningOnRefusal (`conversations.join`, `channels:join`, public channels only).
       leave: (a: unknown) => Promise<unknown>
@@ -777,6 +777,9 @@ function isRoutableMessageEvent(ev: SlackMessageEvent): boolean {
 
 /** Cap on members enriched per `listChannelMembers` call (bounds users.info fan-out). */
 const MEMBER_ENRICH_CAP = 50
+/** One `conversations.members` page, and how many pages a membership listing follows before it fails closed. */
+const MEMBER_PAGE_SIZE = 1000
+const MEMBER_PAGE_CAP = 20
 const SLACK_CHANNEL_HISTORY_DEFAULT_LIMIT = 100
 const SLACK_CHANNEL_HISTORY_MAX_LIMIT = 200
 const SLACK_FILE_ORIGIN = 'https://files.slack.com'
@@ -2572,6 +2575,23 @@ export class SlackConnection implements PlatformConnection {
           .catch(() => ({ id }))
       )
     )
+  }
+
+  /** Every member id of a conversation, following the cursor; past the page cap it throws rather than answer partially. */
+  async listMemberIds(channel: string): Promise<string[]> {
+    const ids: string[] = []
+    let cursor: string | undefined
+    for (let page = 0; page < MEMBER_PAGE_CAP; page += 1) {
+      const res = await this.app.client.conversations.members({
+        channel,
+        limit: MEMBER_PAGE_SIZE,
+        ...(cursor ? { cursor } : {})
+      })
+      ids.push(...(res.members ?? []))
+      cursor = res.response_metadata?.next_cursor || undefined
+      if (!cursor) return ids
+    }
+    throw new Error(`conversations.members: more than ${MEMBER_PAGE_CAP} pages of members`)
   }
 
   /**

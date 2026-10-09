@@ -1298,7 +1298,26 @@ reactions, message deletion and bookmarks name only the session's own conversati
 `createCanvas` only into it, and `createConversation`, `updateCanvas` and the list writes are
 refused because their conversation is new or cannot be confirmed. The agent-to-agent forms of
 `sendMessage` and the parent-session reply are not platform writes and pass. The gate is an
-intersection: it never widens the reach above.
+intersection: it never widens the reach above, with one exception.
+
+The exception is per-asker scoping. In a person's own 1:1 DM, on a turn that person's own message
+started, a private channel or group DM is read, by name or id, when the person is a member of it
+now; `recall`'s listing never shows one, so only a read widens and marks. The source must be on the
+same platform and bot as the DM, and the platform must declare `authoritativeMembers` in
+`read-ports.ts` (Slack, whose `listMemberIds` follows every `conversations.members` page). The asker
+is the DM's counterpart (`getChannelInfo(...).user`), and the live turn's sender must be that
+person: report rounds, scheduled runs, console continuations, sub-sessions and patrols get the rule
+above. Membership and the counterpart are looked up live and cached for 60 seconds
+(`assistant/place-members.ts`); a lookup that fails is refused like any private place. Only such a
+read is let past the reach gate, and only for that call (`memberRead`). Before it returns anything,
+the read durably marks the session (`assistant_widened_session`). From then on every turn of that
+session, whoever started it, is refused ledger writes, every agent-to-agent `sendMessage` form, and
+platform posts or drafts aimed at another place, until the session is retired: `!new` (a fresh
+coordinate in `append`, a cleared context otherwise) or a purge lifts the mark. The lifted row stays
+with its place, and a read of a session's own place (same-place `recall`, `getChannelHistory`,
+`getThreadHistory`, `getReactions`, `listBookmarks`) where any session was ever marked first marks
+the reader, sub-sessions and patrols included, or is refused when the mark cannot be checked or
+written.
 
 The join is an **operator switch**, per bot: `Bot.platformConfig.joinPublicChannels` (the
 generic bag, so no migration), flipped by `PATCH /bots/:id` and rendered by the Slack module's

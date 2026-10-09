@@ -5,6 +5,7 @@ import {
   directMessagePlatformFor,
   directMessagePlatformList,
   isAttachmentReadTool,
+  membersAuthoritative,
   offersDirectMessages,
   offersReadPort,
   platformLabel,
@@ -69,9 +70,25 @@ describe('the read-port registry', () => {
     expect(offersDirectMessages('feishu')).toBe(has(FeishuConnection, 'openDirectMessage'))
   })
 
+  // assistant-mode.md §5.5: membership is decided only where the listing names every member — Slack alone.
+  it('declares an authoritative member listing exactly where the adapter offers one', () => {
+    expect(membersAuthoritative('slack')).toBe(true)
+    expect(membersAuthoritative('slack')).toBe(has(SlackConnection, 'listMemberIds'))
+    for (const [platform, ctor] of [
+      ['telegram', TelegramConnection],
+      ['discord', DiscordConnection],
+      ['feishu', FeishuConnection]
+    ] as const) {
+      expect(membersAuthoritative(platform), platform).toBe(false)
+      expect(has(ctor, 'listMemberIds'), platform).toBe(false)
+    }
+    for (const platform of ['qq', 'linear', 'googlechat']) expect(membersAuthoritative(platform)).toBe(false)
+  })
+
   it('is fail-closed for an unregistered platform', () => {
     for (const unknownPlatform of ['webchat', 'hook', 'dream', 'github', 'constructor', 'toString', '']) {
       expect(readPortsFor(unknownPlatform)).toBeUndefined()
+      expect(membersAuthoritative(unknownPlatform)).toBe(false)
       expect(offersDirectMessages(unknownPlatform)).toBe(false)
       expect(attachmentReadToolsFor([unknownPlatform])).toEqual([])
       // A `Map`, not an object literal: `constructor` must not spread a function.

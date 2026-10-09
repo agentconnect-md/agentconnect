@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { WORKSPACE_UPLOADS_DIR } from '@agentconnect.md/protocol'
+import type { PlaceRef } from '../../assistant/place-access.js'
 import type { PlatformThreadMessage } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
 import type { McpContentResult, MessageGateway, SessionContext } from './context.js'
@@ -85,6 +86,8 @@ export interface PlatformReadDeps extends GatewayDeps, AskDeps {
     platform: string,
     integrationId?: string
   ) => Promise<{ id: string; name?: string }[]>
+  /** A private place the assistant-mode place gate opened for this call through the asker's membership (§5.5). */
+  memberRead?: PlaceRef
   /** Byte cap for `read*File` downloads (defaults to 8 MiB). */
   maxAttachmentBytes?: number
   /** Land a downloaded attachment in the session's workspace under `uploads/`
@@ -349,7 +352,7 @@ export async function getChannelHistory(
   const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
   if (!channel) throw new Error(`channel is required to read history on ${platform} (another bot than this session's)`)
   if (!gw.getChannelHistory) throw new Error('channel history is unavailable on this connection')
-  await assertChannelReachable(ctx, gw, platform, channel, 'getChannelHistory')
+  await assertChannelReachable(ctx, gw, platform, channel, 'getChannelHistory', deps.memberRead)
   const page = await gw.getChannelHistory(channel, {
     ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
     ...(parsed.limit !== undefined ? { limit: parsed.limit } : {}),
@@ -409,7 +412,7 @@ export async function getThreadHistory(
   if (!channel) throw new Error(`channel is required to read a thread on ${platform} (another bot than this session's)`)
   if (!gw.getThreadReplies)
     throw new Error(`thread history is unavailable on this ${platformLabel(platform)} connection`)
-  await assertChannelReachable(ctx, gw, platform, channel, 'getThreadHistory')
+  await assertChannelReachable(ctx, gw, platform, channel, 'getThreadHistory', deps.memberRead)
   const readState = { truncated: false }
   const messages = await gw.getThreadReplies(channel, parsed.thread, parsed.limit ?? DEFAULT_THREAD_HISTORY_LIMIT, {
     ...(parsed.oldest ? { oldest: parsed.oldest } : {}),

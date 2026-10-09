@@ -123,6 +123,8 @@ export interface PlatformReadPorts {
    *  a private channel, DM or group DM is reachable only as the session's own conversation
    *  (`mcp/ops/channel-reach.ts`). */
   readonly publicChannelReach?: boolean
+  /** `listMemberIds` names every current member of a conversation, so a person's membership may be decided from it. */
+  readonly authoritativeMembers?: boolean
   /** `createCanvas` / `readCanvas` / `updateCanvas`: a platform-hosted rich-text page. */
   readonly canvas?: boolean
   /** `listBookmarks` / `addBookmark` / `removeBookmark`: the platform pins links in a channel. */
@@ -164,6 +166,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       conversationCreate: true,
       publicMessageSearch: true,
       publicChannelReach: true,
+      authoritativeMembers: true,
       scheduledMessages: true,
       canvas: true,
       bookmarks: true,
@@ -261,6 +264,11 @@ export function directMessagePlatformFor(sessionPlatform: string): string {
  *  PUBLIC channels? Undeclared ⇒ no gate: the bot reaches whatever it is already in. */
 export function reachesPublicChannelsOnly(platform: string): boolean {
   return READ_PORTS.get(platform)?.publicChannelReach === true
+}
+
+/** Does `platform`'s member listing name every current member? Undeclared ⇒ no, so membership is never decided from it. */
+export function membersAuthoritative(platform: string): boolean {
+  return READ_PORTS.get(platform)?.authoritativeMembers === true
 }
 
 /** The DM-capable platforms, rendered for an error message ("Slack",

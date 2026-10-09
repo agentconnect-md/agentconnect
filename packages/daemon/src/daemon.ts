@@ -301,6 +301,7 @@ import {
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { askerIdentity, assistantItemToolsFor, assistantModeOn } from './mcp/ops/assistant-items.js'
 import { AssistantDrafts, type DraftAsker, type InterceptedPost, type PostInterception } from './assistant/drafts.js'
+import { PlaceMembers } from './assistant/place-members.js'
 import { AssistantPatrols, PATROL_SWEEP_INTERVAL_MS, patrolTools, type PatrolParent } from './assistant/patrol.js'
 import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
 import type { ProposeInput } from './mcp/ops/assistant-items.js'
@@ -1729,6 +1730,11 @@ export class Daemon {
   private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
   // A conversation's privacy as its platform reported it on a channel lookup (`PlatformChannelInfo.isPrivate`), by id.
   private readonly conversationPrivacy = new Map<string, boolean>()
+  /** Live membership behind assistant mode's per-asker reads (assistant-mode.md §5.5). */
+  private readonly placeMembers = new PlaceMembers({
+    now: () => this.clock.now(),
+    gatewayFor: (integrationId) => this.connForIntegration(integrationId)
+  })
   /** Places of assistant-mode agents turning external, and the transition that follows (assistant-mode.md §5.3). */
   private readonly placeTrust = new PlaceTrust({
     integration: (integrationId) => this.integrationConfigById(integrationId),
@@ -3812,6 +3818,18 @@ export class Daemon {
       // Assistant mode's drafts (assistant-mode.md §5.5): an external place refuses other writes, a post elsewhere is drafted.
       placeExternal: (ctx) => this.assistantPlaceExternal(ctx.agentId, ctx.integrationId, ctx.channel),
       assistantDraftPost: (ctx, post) => this.assistantDraftPost(ctx, post),
+      // Per-asker scoping (assistant-mode.md §5.5): the DM's own counterpart asking, and their live membership elsewhere.
+      placeAsker: (ctx) => this.placeMembers.askerIn(ctx, this.liveTurn(ctx)?.msg),
+      placeMember: (integrationId, channel, userId) => this.placeMembers.isMember(integrationId, channel, userId),
+      widenedSession: {
+        mark: async (ctx) => {
+          const place = { platform: ctx.platform, channel: ctx.channel }
+          await this.store.assistantWidened.mark(ctx.agentId, this.sessionKeyOf(ctx), place, this.clock.now())
+          return true
+        },
+        marked: (ctx) => this.store.assistantWidened.has(ctx.agentId, this.sessionKeyOf(ctx)),
+        placeMarked: (ctx) => this.store.assistantWidened.placeMarked(ctx.agentId, ctx.platform, ctx.channel)
+      },
       attachmentReaderFor: (integrationId) =>
         this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
@@ -8041,6 +8059,15 @@ export class Daemon {
   }): Promise<void> {
     if (await this.drafts.handleChoice(a).catch(() => false)) return
     await this.permissions.handlePermissionChoice(a)
+  }
+
+  private sessionKeyOf(ctx: SessionContext): string {
+    return sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+  }
+
+  /** The session's live turn, the same entry the bridge's turn gate admits tools against; it ends with the turn. */
+  private liveTurn(ctx: SessionContext): QueueEntry | undefined {
+    return this.activeGateEntries.get(this.sessionKeyOf(ctx))
   }
 
   /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */

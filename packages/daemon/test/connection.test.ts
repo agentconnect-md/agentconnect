@@ -158,6 +158,40 @@ describe('SlackConnection.openDirectMessage', () => {
   })
 })
 
+// assistant-mode.md §5.5: membership is decided from every member, so the listing follows the cursor.
+describe('SlackConnection.listMemberIds', () => {
+  const fakeAppWithMembers = (members: (a: any) => Promise<unknown>) => ({
+    message() {},
+    event() {},
+    action() {},
+    shortcut() {},
+    view() {},
+    client: { auth: { test: async () => ({ user_id: 'U1' }) }, conversations: { members } },
+    start: async () => {},
+    stop: async () => {}
+  })
+
+  it('follows conversations.members to the last page', async () => {
+    const members = vi
+      .fn()
+      .mockResolvedValueOnce({ members: ['U1', 'U2'], response_metadata: { next_cursor: 'page2' } })
+      .mockResolvedValueOnce({ members: ['U3'], response_metadata: { next_cursor: '' } })
+    const conn = new SlackConnection(deps() as any, () => fakeAppWithMembers(members) as any)
+    expect(await conn.listMemberIds('C_PRIV')).toEqual(['U1', 'U2', 'U3'])
+    expect(members.mock.calls.map(([args]) => args)).toEqual([
+      { channel: 'C_PRIV', limit: 1000 },
+      { channel: 'C_PRIV', limit: 1000, cursor: 'page2' }
+    ])
+  })
+
+  it('fails rather than answer from part of a conversation too large to list', async () => {
+    const members = vi.fn(async () => ({ members: ['U1'], response_metadata: { next_cursor: 'more' } }))
+    const conn = new SlackConnection(deps() as any, () => fakeAppWithMembers(members) as any)
+    await expect(conn.listMemberIds('C_HUGE')).rejects.toThrow(/pages of members/)
+    expect(members).toHaveBeenCalledTimes(20)
+  })
+})
+
 describe('SlackConnection.listBotChannels', () => {
   const fakeAppWithConversations = (pages: any[], fail = false) => {
     let call = 0

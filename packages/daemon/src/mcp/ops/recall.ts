@@ -13,7 +13,14 @@ import { transcriptChannelKey, type SessionRecord, type TranscriptRow } from '..
 import { optionalString, parseArgs } from './args.js'
 import type { SessionContext } from './context.js'
 import { knownIntegrations } from './gateway.js'
-import { describePlace, kindFromRows, type PlaceAccessDeps, type PlaceStore } from './place-gate.js'
+import {
+  askerMembership,
+  carryPlaceMark,
+  describePlace,
+  kindFromRows,
+  type PlaceAccessDeps,
+  type PlaceStore
+} from './place-gate.js'
 
 export const RECALL_ARGS = z.object({ place: optionalString('place'), query: optionalString('query') })
 
@@ -54,9 +61,18 @@ async function placesOf(ctx: SessionContext, store: PlaceStore): Promise<Place[]
   return [...byId.values()]
 }
 
+const integrationOf = (ctx: SessionContext, place: Place, deps: PlaceAccessDeps) =>
+  deps.placeIntegrationFor?.(ctx.agentId, place.platform, place.sessions[0]?.transportScope)
+
 function describe(ctx: SessionContext, place: Place, deps: PlaceAccessDeps) {
-  const integrationId = deps.placeIntegrationFor?.(ctx.agentId, place.platform, place.sessions[0]?.transportScope)
-  return describePlace(place, rowKindOf(place), integrationId, deps)
+  return describePlace(place, rowKindOf(place), integrationOf(ctx, place, deps), deps)
+}
+
+/** The bot a private place opens through for the asker: the DM's own, and only when every session there came through it. */
+function askerBotOf(ctx: SessionContext, place: Place, deps: PlaceAccessDeps): string | undefined {
+  const scope = ctx.transportScope ?? null
+  if (place.sessions.some((s) => (s.transportScope ?? null) !== scope)) return undefined
+  return integrationOf(ctx, place, deps)
 }
 
 /** What every refusal but a DM's returns, and an unknown place too, so no answer tells a private place from none. */
@@ -89,6 +105,7 @@ async function listing(ctx: SessionContext, places: Place[], deps: PlaceAccessDe
       if (kind === 'dm' || kind === 'webchat' || described >= DESCRIBED_PLACES) continue
       described += 1
       const source = await describe(ctx, place, deps)
+      // A private place is never listed, even to a member: only a read of it by name widens, and marks (§5.5).
       if (placeReadRefusal(current, source)) continue
       kind = source.kind
     }
@@ -228,9 +245,15 @@ export async function recall(
   if (!place) return notSharedHere(handle)
   const current: PlaceRef = { platform: ctx.platform, channel: ctx.channel }
   if (!samePlace(current, place)) {
-    const refusal = checkPlaceRead('recall', current, await describe(ctx, place, deps))
+    const member = askerMembership(ctx, deps)
+    const refusal = await checkPlaceRead('recall', current, await describe(ctx, place, deps), () =>
+      member(place, askerBotOf(ctx, place, deps))
+    )
     if (refusal === 'direct') return { place: handle, refused: true, answer: placeRefusalMessage(refusal) }
     if (refusal) return notSharedHere(handle)
+  } else {
+    // Its earlier sessions may hold what a widened read answered there.
+    await carryPlaceMark(ctx, 'recall', deps)
   }
   const name = nameOf(place, names)
   return {
