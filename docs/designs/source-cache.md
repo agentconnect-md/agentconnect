@@ -635,6 +635,29 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
 5. The daemon closes the credential window, records the ledger with the resolved
    commits, and later handles write-back candidates (section 9).
 
+**Unchanged-plan short-circuit.** A pod's skills are reconciled twice per
+isolated session: once at preparation and again at the launch gate's re-verify.
+So a Git plan reconcile first checks whether anything changed. It answers from
+the prior receipts, with no clone, GET, CLI cell or write-back candidate, only
+when all of these hold and the publication is not a replay:
+
+- the plan fingerprint and the uploaded manifest equal those of the last run
+  this shim process published in full (no skip, budget drop or conflict). The
+  fingerprint is the one publication records: it omits GET URLs and write-back
+  requests and includes each planned commit. The record is held in shim memory,
+  because the state directory is agent-writable;
+- the daemon's prior receipts equal that run's roots;
+- the workspace ledger is ready under the same fingerprint, runtime and CLI
+  version, and owns exactly those roots;
+- every root verifies byte-for-byte and by identity on disk.
+
+The reply is the prior roots with no conflicts, plus each plan's `gitSources`
+at its planned commit with the leaves of its prior roots. It goes through the
+same receipt paging, so the coordinator commits the same ledger content. Any
+mismatch takes the full path. A restarted shim starts with no record, so the
+launch gate's re-verify still re-installs after a pod restart. The daemon still
+plans each reconcile, so the `reads` counters still count both passes.
+
 A shim without `skill-git-in-pod-v1` keeps today's path: the daemon acquires and
 uploads. This decision does not depend on whether a bucket is configured.
 

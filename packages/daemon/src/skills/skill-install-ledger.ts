@@ -865,6 +865,43 @@ export async function skillBundleReceiptIntact(
   return (await bundleIdentity(join(cwd, ...bundle.relativeRoot.split('/')), bundle)) !== null
 }
 
+/** Whether the workspace's ready ledger published exactly `roots` under this plan fingerprint, all still intact on disk. */
+export async function publishedSkillSetUnchanged(options: {
+  cwd: string
+  stateDir: string
+  agentId: string
+  runtime: string
+  cliVersion: string
+  fingerprint: string
+  roots: SkillBundleReceipt[]
+}): Promise<boolean> {
+  const receipt = (bundle: SkillBundleReceipt): string =>
+    JSON.stringify([bundle.relativeRoot, bundle.sourceKey, bundle.treeDigest, bundle.files])
+  const set = (bundles: SkillBundleReceipt[]): string => JSON.stringify(bundles.map(receipt).sort())
+  try {
+    return await withSkillWorkspaceLock(
+      options.cwd,
+      async () => {
+        const location = await skillLedgerLocation(options.cwd, options.stateDir)
+        const ledger = await readSkillLedger(location)
+        return (
+          ledger?.phase === 'ready' &&
+          !ledger.cleanup &&
+          ledger.agentId === options.agentId &&
+          ledger.runtime === options.runtime &&
+          ledger.cliVersion === options.cliVersion &&
+          ledger.fingerprint === options.fingerprint &&
+          set(ledger.owned) === set(options.roots) &&
+          (await installedBundlesIntact(options.cwd, ledger.owned, location.workspaceIdentity))
+        )
+      },
+      options.stateDir
+    )
+  } catch {
+    return false
+  }
+}
+
 export function treeDigest(files: SkillFileReceipt[]): string {
   return createHash('sha256').update(JSON.stringify(files)).digest('hex')
 }
