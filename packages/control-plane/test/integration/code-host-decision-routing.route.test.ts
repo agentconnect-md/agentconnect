@@ -97,7 +97,7 @@ const detail: DecisionEvaluationRecordDetail = {
   evidence: { snapshotSeq: 3, suppliedBackground: 0 }
 }
 
-type Spec = { agentId: string; hookRoutings?: HookRoutingProjection[] }
+type Spec = { agentId: string; configRevision: string; hookRoutings?: HookRoutingProjection[] }
 
 class SpyControl {
   readonly previews: Array<{ daemonId: string; req: DecisionPreviewRequest }> = []
@@ -123,8 +123,13 @@ class SpyControl {
   daemonFeatures(): readonly string[] {
     return []
   }
+  /** The last spec the daemon applied: like its revision fence, a push whose configRevision is not newer is ignored. */
   lastSpec(agentId: string): Spec | undefined {
-    return this.specs.filter((s) => s.agentId === agentId).at(-1)
+    let applied: Spec | undefined
+    for (const s of this.specs) {
+      if (s.agentId === agentId && (!applied || BigInt(s.configRevision) > BigInt(applied.configRevision))) applied = s
+    }
+    return applied
   }
 }
 
