@@ -375,10 +375,11 @@ describe('integrationToSpec conversation defaults', () => {
       SECRET,
       rows()
     )
+    // The surviving dm default is bound to DMs, so it cannot make an unconfigured room reachable.
     expect(spec?.core.bindRules).toEqual([
       { channel: 'C1', match: { kind: 'mention' } },
       { channel: 'C2', match: { kind: 'auto' } },
-      { match: { kind: 'dm' } }
+      { kind: 'dm', match: { kind: 'dm' } }
     ])
     expect(spec?.core.offByDefault).toEqual({ channel: true, dm: false })
     expect(spec?.core.gated).toBe(false)
@@ -393,8 +394,9 @@ describe('integrationToSpec conversation defaults', () => {
       SECRET,
       rows()
     )
+    // The surviving mention default is bound to rooms, so a mention inside an unconfigured DM misses it.
     expect(spec?.core.bindRules).toEqual([
-      { match: { kind: 'mention' } },
+      { kind: 'room', match: { kind: 'mention' } },
       { channel: 'C2', match: { kind: 'auto' } },
       { channel: 'D1', match: { kind: 'dm' } }
     ])

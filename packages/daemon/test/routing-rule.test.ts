@@ -297,6 +297,13 @@ describe('rulesFromAgent', () => {
     expect(rules[0]!.botUserId).toBe('')
     expect(rules[0]!.platform).toBe('slack')
   })
+
+  // §14.2: the kind a surviving default rule is bound to rides into the ladder's scope.
+  it('carries a bind rule’s kind into the rule scope', () => {
+    const a = agent()
+    a.integrations[0]!.core = { bindRules: [{ kind: 'room', match: { kind: 'mention' } }] } as never
+    expect(rulesFromAgent(a, {})[0]!.scope).toEqual({ kind: 'room' })
+  })
 })
 
 describe('resolveCpRule', () => {

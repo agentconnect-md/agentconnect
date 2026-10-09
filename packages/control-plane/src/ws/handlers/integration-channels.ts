@@ -21,7 +21,7 @@
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { isGatedAgent } from '../../orchestrator/placement.js'
-import { botConversationDefaults } from '../../domain/conversation-defaults.js'
+import { botConversationDefaults, seedChangesSpec } from '../../domain/conversation-defaults.js'
 import { servedAgents } from '../../orchestrator/servedAgents.js'
 import type { DaemonWsDeps } from '../deps.js'
 import type { AgentRecord, SeedTrigger, IntegrationRecord } from '../../persistence/ports.js'
@@ -58,6 +58,9 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   let owner: AgentRecord | null = null
   let seeded: ReadonlyMap<string, SeedTrigger> | undefined
   let externalChanged = false
+  // A row this report created from the bot's non-default conversation defaults: its scoped
+  // rule or session-mode entry exists only in a spec assembled after this write.
+  let defaultsSeeded = false
   try {
     // Ownership may have changed while the first repository read was in flight.
     // Re-check under the shared mutation lease before accepting this daemon's
@@ -96,6 +99,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
         : undefined
     )
     externalChanged = written?.externalChanged === true
+    defaultsSeeded = (written?.seeded ?? 0) > 0 && seed !== undefined && seedChangesSpec(seed)
   } finally {
     release()
   }
@@ -105,8 +109,9 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   // before this write, and it has already cached the conversation, so no later message
   // re-reports and repairs it. Outside the mutation lease and best-effort — the
   // register snapshot remains the durable backstop.
-  // A detected external place (assistant-mode.md §5.3) rides the spec too, so a change to the set pushes as well.
-  if ((seeded?.size || externalChanged) && owner && deps.integrationConverge) {
+  // A detected external place (assistant-mode.md §5.3) rides the spec too, so a change to the set pushes as well,
+  // and so does a row the bot's conversation defaults seeded to anything but the platform's own.
+  if ((seeded?.size || externalChanged || defaultsSeeded) && owner && deps.integrationConverge) {
     try {
       await deps.integrationConverge(owner)
     } catch {

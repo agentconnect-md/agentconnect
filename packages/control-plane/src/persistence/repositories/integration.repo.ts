@@ -972,7 +972,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       authoritative?: boolean
       removed?: string[]
     }
-  ): Promise<{ externalChanged: boolean }> {
+  ): Promise<{ externalChanged: boolean; seeded: number }> {
     // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
     const before = new Map(
       (
@@ -996,6 +996,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     // retraction wins over a stale entry the reporter also happened to list.
     const removed = new Set(opts?.removed ?? [])
     const authoritative = opts?.authoritative !== false
+    let seeded = 0
     for (const c of channels) {
       if (removed.has(c.id)) continue
       // Which columns a re-report is allowed to overwrite. An absent name/isPrivate is
@@ -1018,7 +1019,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         seed?.trigger ??
         (c.kind === 'im' ? 'any' : 'mention')
       const createSessionMode = seed?.sessionMode ?? 'createNew'
-      await this.db.$executeRaw`
+      // `xmax = 0` is true for a row this statement INSERTED, false for one it updated.
+      const written = await this.db.$queryRaw<{ inserted: boolean }[]>`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "key", "url",
            "isPrivate", "kind", "trigger", "sessionMode", "dmUserId", "externalReason", "firstSeenAt", "updatedAt")
@@ -1096,7 +1098,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
             ELSE "integration_channel"."decisionNeedsReview"
           END,
           "updatedAt" = NOW()
+        RETURNING (xmax = 0) AS inserted
       `
+      if (written[0]?.inserted) seeded += 1
     }
     // Retractions last: a conversation the reporter says it left is gone whatever
     // its kind, including a DM row that no authoritative snapshot could ever delete.
@@ -1105,7 +1109,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, channelId: { in: [...removed] } }
       })
     }
-    return { externalChanged }
+    return { externalChanged, seeded }
   }
 
   async deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean> {

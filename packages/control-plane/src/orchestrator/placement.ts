@@ -269,7 +269,9 @@ function gatedBindRules(channels: IntegrationChannelRecord[]): IntegrationBindRu
  * (resource-visibility.md §14.2). The kind that is Off loses its unscoped default and takes
  * the gated shape instead — one scoped rule per enabled row — so a conversation no row has
  * reached yet matches nothing, exactly as it would for a restricted agent. A kind left open
- * keeps its unscoped default and the ordinary channel rules.
+ * keeps its unscoped default and the ordinary channel rules — bound to its own kind, so the
+ * surviving default cannot reach the Off kind through a rung that ignores the match (thread
+ * affinity, explicit targets) or one that does not look at the kind (a mention inside a DM).
  */
 function defaultBindRules(
   channels: IntegrationChannelRecord[],
@@ -282,13 +284,13 @@ function defaultBindRules(
   const roomRules: IntegrationBindRule[] = offByDefault.channel
     ? gatedBindRules(rooms)
     : [
-        { match: { kind: 'mention' } },
+        { kind: 'room', match: { kind: 'mention' } },
         ...rooms
           .filter((c) => c.trigger === 'any')
           .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } })),
         ...enabledDecisionGates(rooms).map((g) => ({ channel: g.channel, match: { kind: 'decision' as const } }))
       ]
-  const dmRules: IntegrationBindRule[] = offByDefault.dm ? gatedBindRules(dms) : [{ match: { kind: 'dm' } }]
+  const dmRules: IntegrationBindRule[] = offByDefault.dm ? gatedBindRules(dms) : [{ kind: 'dm', match: { kind: 'dm' } }]
   return [...roomRules, ...dmRules]
 }
 

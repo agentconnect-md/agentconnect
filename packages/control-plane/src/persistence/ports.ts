@@ -5534,7 +5534,11 @@ export interface IntegrationChannelRepo {
       authoritative?: boolean
       removed?: string[]
     }
-  ): Promise<{ externalChanged: boolean }>
+  ): Promise<{
+    externalChanged: boolean
+    /** Rows this report CREATED (and so seeded); a re-reported conversation counts for nothing. */
+    seeded: number
+  }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */

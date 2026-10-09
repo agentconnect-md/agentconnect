@@ -172,7 +172,11 @@ export function rulesFromAgent(agent: Agent, botUserIds: Record<string, string>)
         agentId: agent.id,
         integrationId: int.id,
         botUserId,
-        scope: { ...(br.channel ? { channel: br.channel } : {}), ...(br.thread ? { thread: br.thread } : {}) },
+        scope: {
+          ...(br.channel ? { channel: br.channel } : {}),
+          ...(br.thread ? { thread: br.thread } : {}),
+          ...(br.kind ? { kind: br.kind } : {})
+        },
         match: br.match,
         mutedChannels,
         source: 'config',

@@ -275,9 +275,11 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         channels = channels.filter(
           (row) => row.integrationId !== integrationId || reported.some((candidate) => candidate.id === row.channelId)
         )
+        let seeded = 0
         for (const candidate of reported) {
           let row = channels.find((item) => item.integrationId === integrationId && item.channelId === candidate.id)
           if (!row) {
+            seeded += 1
             // The repo's seed order: the install-wide default, then the bot's conversation defaults.
             const seed = opts?.seed ? conversationSeed(opts.seed, candidate.kind) : undefined
             row = channel({
@@ -292,7 +294,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
           row.name = candidate.name ?? null
           row.isPrivate = candidate.isPrivate ?? false
         }
-        return { externalChanged: false }
+        return { externalChanged: false, seeded }
       },
       setAgent: async (integrationId, channelId, agentId) => {
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)

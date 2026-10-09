@@ -71,6 +71,18 @@ describe('routeRules (ladder smoke — deep coverage lives in the daemon suites)
     const rules = [rule({ agentId: 'a1', match: { kind: 'auto' } })]
     expect(routeRules(msg({ sender: { isBot: true } }), rules, () => null)).toBeNull()
   })
+
+  // resource-visibility.md §14.2: the default rule that survives a bot's Off conversation
+  // default is bound to its kind, so it cannot reach the Off kind through any rung.
+  it('a kind-bound unscoped rule serves only its kind, whatever the match', () => {
+    const roomMention = [rule({ scope: { kind: 'room' }, match: { kind: 'mention' } })]
+    expect(routeRules(msg({ mentionedBots: ['U1'] }), roomMention, () => null)).toMatchObject({ via: 'mention' })
+    expect(routeRules(msg({ channel: 'D1', isDm: true, mentionedBots: ['U1'] }), roomMention, () => null)).toBeNull()
+    const dmOnly = [rule({ scope: { kind: 'dm' }, match: { kind: 'dm' } })]
+    expect(routeRules(msg({ channel: 'D1', isDm: true }), dmOnly, () => null)).toMatchObject({ via: 'dm' })
+    // Thread affinity reads the same scope filter: a DM-bound rule makes no room reachable.
+    expect(routeRules(msg({ thread: 't1' }), dmOnly, () => 'a1')).toBeNull()
+  })
 })
 
 describe('conversationAdmitsAgent (the Off/gated fence predicate)', () => {

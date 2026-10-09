@@ -36,6 +36,12 @@ export type BindMatch = z.infer<typeof BindMatch>
 export const IntegrationBindRule = z.object({
   channel: z.string().optional(), // absent = any channel
   thread: z.string().optional(),
+  // The conversation kind an UNSCOPED rule serves: `dm` = 1:1 DMs only, `room` = everything else.
+  // Set on the default rule that survives a bot's Off conversation default (§14.2), so the open
+  // kind's default cannot reach the Off kind through a rung that ignores the match (thread
+  // affinity, explicit agent targets) or one that does not look at the kind (a mention in a DM).
+  // Absent = any kind, today's behaviour.
+  kind: z.enum(['dm', 'room']).optional(),
   match: BindMatch
 })
 export type IntegrationBindRule = z.infer<typeof IntegrationBindRule>

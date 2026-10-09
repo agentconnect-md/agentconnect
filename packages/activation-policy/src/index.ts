@@ -30,7 +30,9 @@ export interface ActivationRule {
   agentId: string
   integrationId: string
   botUserId: string // for `mention` matching ("" when unknown)
-  scope: { channel?: string; thread?: string }
+  /** `kind` narrows an UNSCOPED rule to 1:1 DMs or to rooms: the default rule that survives a
+   *  bot's Off conversation default must not reach the Off kind through any rung. */
+  scope: { channel?: string; thread?: string; kind?: 'dm' | 'room' }
   match: RuleMatch
   /** Channels its integration is switched OFF in — the subtractive fence a
    *  purely additive rule set cannot express. Carried per rule so the ladder
@@ -75,6 +77,10 @@ function scopeMatches(r: ActivationRule, msg: ActivationMessageFacts): boolean {
   // a CP session placement. Threads inherit the enclosing channel's Off through the
   // same predicate the positive scope uses.
   if (r.mutedChannels?.some((muted) => channelInScope(muted, msg))) return false
+  // A kind-bound rule serves only its kind, before the match is even looked at: an unscoped
+  // mention rule bound to rooms does not fire on a mention inside an unconfigured DM, and an
+  // unscoped dm rule bound to DMs does not make an unconfigured room reachable for affinity.
+  if (r.scope.kind !== undefined && (r.scope.kind === 'dm') !== msg.isDm) return false
   if (!channelInScope(r.scope.channel, msg)) return false
   if (r.scope.thread !== undefined && r.scope.thread !== msg.thread) return false
   return true

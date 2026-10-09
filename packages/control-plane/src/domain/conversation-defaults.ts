@@ -1,5 +1,6 @@
 // A bot's conversation defaults: what a conversation nobody has configured starts as, by kind.
 import {
+  PLATFORM_CONVERSATION_DEFAULTS,
   resolveConversationDefaults,
   type BotConversationDefaults,
   type ChannelSessionMode
@@ -18,6 +19,11 @@ export function conversationSeed(
   kind: ConversationKind | undefined
 ): { trigger: SeedTrigger; sessionMode: ChannelSessionMode } {
   return kind === 'im' ? defaults.dm : defaults.channel
+}
+
+/** Whether a row seeded from these defaults changes what a daemon routes or keys — anything but the platform's own. */
+export function seedChangesSpec(defaults: BotConversationDefaults): boolean {
+  return JSON.stringify(defaults) !== JSON.stringify(PLATFORM_CONVERSATION_DEFAULTS)
 }
 
 /** The relay's fence for conversations no row has reached yet (`rc/bot-assign.offByDefault`). */
