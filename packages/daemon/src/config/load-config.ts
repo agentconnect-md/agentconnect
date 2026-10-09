@@ -18,7 +18,6 @@ export interface FlatOverrides {
   logLevel?: Config['logging']['level']
   agentsDir?: string
   maxAgents?: number
-  requireSandbox?: boolean
 }
 
 function protectConfigFile(file: string, writable = false): void {
@@ -44,22 +43,20 @@ function writeConfigFile(file: string, raw: unknown): void {
   protectConfigFile(file, true)
 }
 
-/** Map the retiring single-backend keys onto the strategy table once (session-executors.md §5), returning what to warn about. */
-export function mapLegacySandbox(cfg: Config): string[] {
-  const warnings: string[] = []
-  if (cfg.sandbox.backend !== undefined) {
-    warnings.push(
-      `sandbox.backend is retired and read as the default strategy table: every strategy is offered and each agent names the one its sessions run in; remove "backend: ${cfg.sandbox.backend}"`
-    )
+/** The keys the strategy table replaced (session-executors.md §5, #2463): a file that still sets one is refused at startup, naming the replacement, ahead of the strict schema's bare error. */
+export function retiredKeyError(raw: unknown): string | undefined {
+  const doc = raw as { sandbox?: { backend?: unknown }; security?: { requireSandbox?: unknown } } | null
+  const backend = doc?.sandbox?.backend
+  if (backend !== undefined) {
+    return `sandbox.backend is no longer supported: remove "backend: ${JSON.stringify(backend)}" — the sandbox table offers every strategy by default (sandbox.host, sandbox.srt, sandbox.microsandbox), and each agent's execution strategy names the one its sessions run in`
   }
-  if (cfg.security.requireSandbox !== undefined) {
-    if (cfg.security.requireSandbox) cfg.sandbox.host = false
-    warnings.push(
-      `security.requireSandbox is retired and read as sandbox.host: ${cfg.security.requireSandbox ? 'false' : 'true'}; set sandbox.host instead`
-    )
-    delete cfg.security.requireSandbox
+  const requireSandbox = doc?.security?.requireSandbox
+  if (requireSandbox !== undefined) {
+    return requireSandbox === true
+      ? 'security.requireSandbox is no longer supported: set "sandbox": { "host": false } instead to refuse unsandboxed sessions'
+      : 'security.requireSandbox is no longer supported: remove it (sandbox.host is on by default)'
   }
-  return warnings
+  return undefined
 }
 
 export function loadConfig(
@@ -69,8 +66,6 @@ export function loadConfig(
     overrides?: FlatOverrides
     optional?: boolean
     autoCreate?: boolean
-    /** Where the retiring keys' one-time mapping is reported; unset ⇒ silent. */
-    warn?: (message: string) => void
   } = {}
 ): Config {
   const root = resolveRoot(opts.root)
@@ -92,15 +87,14 @@ export function loadConfig(
   } else {
     throw new Error(`config not found: ${file} (create it, pass --config, or run \`agentconnect login\`)`)
   }
+  const retired = retiredKeyError(raw)
+  if (retired) throw new Error(`config ${file}: ${retired}`)
   const cfg = ConfigSchema.parse(raw) // throws on invalid
-  for (const warning of mapLegacySandbox(cfg)) opts.warn?.(warning)
 
   const o = opts.overrides ?? {}
   if (o.daemonId) cfg.daemonId = o.daemonId
   if (o.logLevel) cfg.logging.level = o.logLevel
   if (o.maxAgents !== undefined) cfg.limits.maxAgents = o.maxAgents
-  // `--require-sandbox`: this machine refuses unsandboxed sessions.
-  if (o.requireSandbox) cfg.sandbox.host = false
   if (o.apiUrl) cfg.controlPlane.url = o.apiUrl
   if (o.apiKey) cfg.controlPlane.key = o.apiKey
   // Passing --api-url/--api-key implies "connect to the CP" (it defaults off),

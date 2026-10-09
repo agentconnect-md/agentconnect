@@ -1,21 +1,18 @@
 // How the console NAMES `workspaceIsolation: 'session'` — git-workspace-model.md §11.
 import { isPoolPlacementKind, type Agent } from '@/lib/data'
+import { isSandboxStrategy } from '@/lib/execution-strategy'
 
 /** What decides whether an OS boundary encloses the runtime a session will use. */
 export interface RuntimeBoundary {
-  /** A managed-pool runtime: its own pod is the boundary, so the daemon offers no `sandbox` capability and `runInSandbox` is not a knob there at all. */
+  /** A managed-pool runtime: its own pod is the boundary, whatever strategy the agent names. */
   pool: boolean
-  /** The agent's stored Run in sandbox preference — never the label's input on its own. */
-  runInSandbox: boolean
-  /** Whether the daemon this will run on can provide the sandbox. */
-  sandboxSupported: boolean
-  /** Whether that daemon's policy forces the sandbox on. */
-  sandboxRequired: boolean
+  /** The strategy the agent's sessions run in (session-executors.md §5); every one but `host` is a boundary. */
+  execution: string
 }
 
-/** Is an OS boundary in effect? The same `sandboxRequired || (sandboxSupported && runInSandbox)` the agent modals gate their toggle on, with a pool runtime always confined by its own pod. */
+/** Is an OS boundary in effect? A pool runtime is always confined by its pod; elsewhere any strategy but `host` confines. */
 export function hasRuntimeBoundary(boundary: RuntimeBoundary): boolean {
-  return boundary.pool || boundary.sandboxRequired || (boundary.sandboxSupported && boundary.runInSandbox)
+  return boundary.pool || isSandboxStrategy(boundary.execution)
 }
 
 /** The nouns one effective boundary earns: `mode` names the setting, `checkout`/`checkouts` the per-session directory it produces. */
@@ -40,16 +37,14 @@ export function sessionIsolationLabel(boundary: RuntimeBoundary): SessionIsolati
   return hasRuntimeBoundary(boundary) ? CONFINED_LABEL : WORKTREE_LABEL
 }
 
-/** The same label for an agent the console already holds, whose sandbox triple the CP projected against the daemon it is placed on. */
-// `orgSetIds` is REQUIRED, like `agentDaemonLabel`'s `groups` and for the same reason: the pool is the set that is NOT the org's, so a caller that omits the list reads every group placement as Cloud and labels an unsandboxed group agent — which gets a plain worktree — "Session isolation".
+/** The same label for an agent the console already holds, by its placement and the strategy it names. */
+// `orgSetIds` is REQUIRED, like `agentDaemonLabel`'s `groups` and for the same reason: the pool is the set that is NOT the org's, so a caller that omits the list reads every group placement as Cloud and labels a `host` group agent — which gets a plain worktree — "Session isolation".
 export function agentSessionIsolationLabel(
-  agent: Pick<Agent, 'placementKind' | 'setId' | 'runInSandbox' | 'sandboxSupported' | 'sandboxRequired'>,
+  agent: Pick<Agent, 'placementKind' | 'setId' | 'execution'>,
   orgSetIds: ReadonlySet<string>
 ): SessionIsolationLabel {
   return sessionIsolationLabel({
     pool: isPoolPlacementKind(agent.placementKind, agent.setId, orgSetIds),
-    runInSandbox: agent.runInSandbox,
-    sandboxSupported: agent.sandboxSupported,
-    sandboxRequired: agent.sandboxRequired
+    execution: agent.execution
   })
 }

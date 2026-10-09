@@ -795,9 +795,7 @@ export function applySpecFields(
   if (spec.allowedTargetAgentIds !== undefined) raw.allowedTargetAgentIds = spec.allowedTargetAgentIds
   // Self-introduce-on-join (#536): absent ⇒ leave the on-disk value alone (like pause/fastMode).
   if (spec.introduceOnJoin !== undefined) raw.introduceOnJoin = spec.introduceOnJoin
-  // Sandbox toggle (#312): the CP always ships it (definite column); absent ⇒ leave alone.
-  if (spec.runInSandbox !== undefined) raw.runInSandbox = spec.runInSandbox
-  // Strategy (session-executors.md §5): absent ⇒ not migrated yet, so the on-disk value is left alone.
+  // Strategy (session-executors.md §5): the CP always ships it; absent ⇒ leave the on-disk value alone.
   if (spec.execution !== undefined) raw.execution = spec.execution
   // Preset marker (preset-agents.md §3.1): the CP always ships it (definite record
   // field), so a flip replicates; absent (older CP) ⇒ leave the on-disk value alone.

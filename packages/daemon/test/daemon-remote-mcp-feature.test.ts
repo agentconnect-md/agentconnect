@@ -27,7 +27,7 @@ function scaffold(): string {
       status: 'active',
       runtime: 'arbitrary-acp',
       builtin: true,
-      runInSandbox: true,
+      execution: 'srt',
       workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
       integrations: [],
       output: { mode: 'medium' }

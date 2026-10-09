@@ -15,7 +15,6 @@ import { basename, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { AcpHost, turnFailureCode } from '../acp/acp-host.js'
 import { detectSandbox } from '../acp/sandbox.js'
-import { effectiveRunInSandbox } from '../launch/prepare.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { selectAgent } from '../agents/load-agents.js'
 import { memoryProviderFor } from '../memory/provider.js'
@@ -474,7 +473,7 @@ function prepareSubject(options: EvaluationRunnerOptions, agentIds: readonly str
           ...(typeof agent.permissionMode === 'string' ? { permissionMode: agent.permissionMode } : {}),
           ...(typeof agent.reasoningEffort === 'string' ? { reasoningEffort: agent.reasoningEffort } : {}),
           ...(typeof agent.fastMode === 'boolean' ? { fastMode: agent.fastMode } : {}),
-          ...(typeof agent.runInSandbox === 'boolean' ? { runInSandbox: agent.runInSandbox } : {}),
+          ...(typeof agent.execution === 'string' ? { execution: agent.execution } : {}),
           ...(typeof agent.output?.mode === 'string' ? { outputMode: agent.output.mode } : {})
         }
       }
@@ -779,7 +778,6 @@ export class RawAcpEvaluationRunner {
       const mechanism = detectSandbox()
       await persistSkillSandboxRequirement(prepared.root)
       if (!mechanism) throw new Error('raw ACP evaluation requires a supported Linux SRT/bwrap sandbox')
-      const runInSandbox = effectiveRunInSandbox(true, agent.runInSandbox, mechanism)
       const baseEnv = agentChildEnv(agent)
       const runtimeEnv = {
         ...cfg.sandbox.env,
@@ -797,7 +795,8 @@ export class RawAcpEvaluationRunner {
         provider: 'none',
         scopeDir: agent.dir,
         cwd: agent.workspace.path,
-        runInSandbox,
+        // A raw ACP subject always runs inside the SRT boundary, whatever strategy its agent names.
+        runInSandbox: true,
         daemonRoot: prepared.root,
         agentsRoot: cfg.agentsDir,
         explicitEnv: { ...runtimeEnv, ...baseEnv, ...memoryOffEnv },

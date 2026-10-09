@@ -222,8 +222,8 @@ describe('AgentDetailView, execution strategy row by placement', () => {
     expect(host!.querySelector('[title^="microsandbox"]')?.textContent).toBe('VM')
   })
 
-  it('names a group agent’s strategy, and the legacy sandbox while its backend is unreported', async () => {
-    mocks.agent = agentOn({ daemon: 'set:g1', placementKind: 'set', setId: 'g1', execution: null, runInSandbox: true })
+  it('names a group agent’s strategy', async () => {
+    mocks.agent = agentOn({ daemon: 'set:g1', placementKind: 'set', setId: 'g1', execution: 'srt' })
     mocks.memberSets = [{ setId: 'g1', name: 'lab', memberDaemonIds: ['lab-1'], agentCount: 1 }]
     mocks.daemons = [daemon({ daemonId: 'lab-1', memberSetId: 'g1' })]
     const text = await render()

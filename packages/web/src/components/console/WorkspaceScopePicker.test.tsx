@@ -18,18 +18,8 @@ import type { Session } from '@/lib/data'
 import { sessionIsolationLabel } from '@/lib/session-isolation'
 
 // Built by the helper, never spelled out here, so the picker's copy cannot drift from the labels the helper decides.
-const UNCONFINED = sessionIsolationLabel({
-  pool: false,
-  runInSandbox: false,
-  sandboxSupported: false,
-  sandboxRequired: false
-})
-const CONFINED = sessionIsolationLabel({
-  pool: false,
-  runInSandbox: true,
-  sandboxSupported: true,
-  sandboxRequired: false
-})
+const UNCONFINED = sessionIsolationLabel({ pool: false, execution: 'host' })
+const CONFINED = sessionIsolationLabel({ pool: false, execution: 'srt' })
 
 let root: Root | undefined
 let container: HTMLDivElement | undefined

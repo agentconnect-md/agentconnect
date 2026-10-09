@@ -938,9 +938,8 @@ model Agent {
   outboundPolicy        AgentCallPolicy    @default(all) // 'all' = this agent may discover/call any otherwise-callable org peer
   allowedTargetAgentIds String[]           @default([]) // agent.id set used when outboundPolicy='selected'
   introduceOnJoin       Boolean            @default(false) // #536: self-introduce to peers on a genuine channel join
-  runInSandbox          Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on
-  // The strategy slug sessions run in (session-executors.md §5), kept in step with runInSandbox; null ⇒ a sandboxed agent whose daemon has not yet reported its backend.
-  execution             String?
+  // The strategy slug sessions run in (session-executors.md §5).
+  execution             String             @default("host")
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); both set or both null.
   repositorySelectorProviderId String?
   repositorySelectorModel      String?

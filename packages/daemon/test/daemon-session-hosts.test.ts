@@ -38,7 +38,7 @@ function scaffold(agent: Record<string, unknown> = {}, isolation: 'shared' | 'se
       name: 'bot-a',
       status: 'active',
       runtime: 'claude',
-      runInSandbox: true,
+      execution: 'srt',
       workspace: {
         mode: 'git-repo',
         path: join(adir, 'workspace'),
@@ -123,8 +123,8 @@ function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
     discard: vi.fn(async () => {}),
     collectImages: vi.fn(async () => {})
   }
-  ;(daemon as any).cfg.sandbox.backend = 'microsandbox'
-  // A probed, prepared microsandbox, whatever this test host could run itself.
+  // A probed, prepared microsandbox, whatever this test host could run itself, and every agent's sessions run in it.
+  for (const agent of (daemon as any).agents.values()) agent.execution = 'microsandbox'
   ;(daemon as any).microsandboxFailure = undefined
   ;(daemon as any).microsandbox = manager
   ;(daemon as any).microsandboxCatalog = (daemon as any).runtimeCatalog
@@ -806,7 +806,7 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
   })
 
   it('keeps one host per agent when the launch is not confined', async () => {
-    const { daemon, hosts, factory } = await startDaemon(scaffold({ runInSandbox: false }))
+    const { daemon, hosts, factory } = await startDaemon(scaffold({ execution: 'host' }))
     await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
     await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
     expect(factory).toHaveBeenCalledTimes(1)
@@ -992,7 +992,7 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     mkdirSync(join(root, 'agents', 'bot-a', 'sessions', hostKeyDirName(sessionHostKey('bot-a', key)), 'workspace'), {
       recursive: true
     })
-    agent.runInSandbox = false
+    agent.execution = 'host'
     agent.workspace.isolation = 'shared'
 
     expect((daemon as any).hostKeyForRequest('bot-a', request)).toBe(sessionHostKey('bot-a', key))
@@ -1004,7 +1004,7 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
   // The other half of the same rule, and the one that was failing in the field: a session born on the
   // worktree tier stays there when its agent later gains isolation or a boundary.
   it('keeps a session born on the worktree tier on the agent host after the agent gains a boundary', async () => {
-    const root = scaffold({ runInSandbox: false })
+    const root = scaffold({ execution: 'host' })
     const { daemon } = await startDaemon(root)
     const agent = (daemon as any).agents.get('bot-a')
     const key = KEY('T1')
@@ -1015,7 +1015,7 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     const worktree = join(root, 'agents', 'bot-a', 'worktrees', (daemon as any).workspaces.sessionWorktreeId(key))
     mkdirSync(worktree, { recursive: true })
     writeFileSync(join(worktree, '.git'), 'gitdir: /nowhere\n')
-    agent.runInSandbox = true
+    agent.execution = 'srt'
 
     expect((daemon as any).hostKeyForRequest('bot-a', request)).toBe(agentHostKey('bot-a'))
     // An EMPTY stub is not that record: it is what a degraded preparation leaves, and a session whose
@@ -1158,7 +1158,7 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await confined.daemon.stop()
 
     // Without a boundary the same isolated session goes to the funnel unchanged: no `confined` is added.
-    const open = await startDaemon(scaffold({ runInSandbox: false }))
+    const open = await startDaemon(scaffold({ execution: 'host' }))
     const openPrepare = vi.spyOn((open.daemon as any).workspaces, 'prepareSessionWorkspace')
     const request = { sessionKey: KEY('T1'), isolation: 'session' as const }
     await (open.daemon as any).runAgentWorkspacePreparation((open.daemon as any).agents.get('bot-a'), request)
@@ -1614,7 +1614,7 @@ describe('one ACP host per session for a runtime whose session MCP servers are p
 
   it('gives each session its own host in the shared workspace, holding only that session’s bridge token', async () => {
     const opencode = { command: 'node', args: ['unused'] }
-    const root = withRuntimes(scaffold({ runtime: 'opencode', runInSandbox: false }, 'shared'), { opencode })
+    const root = withRuntimes(scaffold({ runtime: 'opencode', execution: 'host' }, 'shared'), { opencode })
     const { daemon, hosts, factory } = await startDaemon(root)
     await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
     await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
@@ -1641,7 +1641,7 @@ describe('one ACP host per session for a runtime whose session MCP servers are p
 
   it('follows what a RuntimeDef declares over the audited scope of its id', async () => {
     const opencode = { command: 'node', args: ['unused'], sessionMcpServers: 'per-session' }
-    const root = withRuntimes(scaffold({ runtime: 'opencode', runInSandbox: false }, 'shared'), { opencode })
+    const root = withRuntimes(scaffold({ runtime: 'opencode', execution: 'host' }, 'shared'), { opencode })
     const { daemon } = await startDaemon(root)
     expect((daemon as any).hostKeyFor('bot-a', KEY('T1'))).toBe(agentHostKey('bot-a'))
     // Undeclared, the audited scope of the id applies.

@@ -80,10 +80,10 @@ settings.
 | `sandbox.host`                 | Implemented: default `true`. The unconfined direct child for this machine's own sessions, available on every platform. `false` refuses every unsandboxed session.                                                                                                                                                                                                             |
 | `sandbox.srt`                  | Implemented: default `true`. Available when the live SRT/bwrap probe passes and `sandbox.mounts` suits it. `false` withdraws it, and no probe or session uses SRT.                                                                                                                                                                                                            |
 | `sandbox.microsandbox`         | Implemented: default `true`, or an object of the VM parameters below. Available on Linux with a usable `/dev/kvm`, an image reference, and an intact msb and libkrunfw once installed. `false` withdraws it.                                                                                                                                                                  |
-| `sandbox.backend`              | Retired: read once at startup with a warning as the default table. Reported only while present, so the Control Plane can migrate `runInSandbox`. `none` stays rejected.                                                                                                                                                                                                       |
-| `security.requireSandbox`      | Retired: read once at startup with a warning; `true` is `sandbox.host: false`, as is `--require-sandbox`.                                                                                                                                                                                                                                                                     |
+| `sandbox.backend`              | Removed (#2463): a file that still sets it refuses startup, naming the table above as the replacement (either value was the default table).                                                                                                                                                                                                                                   |
+| `security.requireSandbox`      | Removed (#2463), with `--require-sandbox`: a file that still sets it refuses startup, naming `sandbox.host: false` as the replacement of `true`.                                                                                                                                                                                                                              |
 | `sandbox.env`                  | Environment defaults for sandboxed session runtimes, default `{}`; shared by SRT and microsandbox. Runtime and agent variables override them; daemon-enforced private paths and security settings remain authoritative.                                                                                                                                                       |
-| Agent `execution`              | Implemented: the strategy an agent's sessions run in. An agent the Control Plane has not migrated yet is read from `runInSandbox`: `false` is `host`, `true` the retired backend or `srt`. The console's **Execution strategy** picker offers the placement's strategies.                                                                                                     |
+| Agent `execution`              | Implemented: the strategy an agent's sessions run in, `host` when a hand-authored `agent.json` names none; the retired `runInSandbox` boolean is ignored. The console's **Execution strategy** picker offers the placement's strategies.                                                                                                                                      |
 | `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                                                                                                              |
 | `cpus`, `memoryMiB`, `diskGiB` | Per-VM CPU allocation, memory limit, and capacity of each writable disk; defaults are `2`, `2048`, and `10`. New VMs have a root upper disk and a Docker data disk, plus one disk when overlay mounts are configured, each capped by `diskGiB`. All are sparse; host capacity planning remains the operator's responsibility.                                                 |
 | `sandbox.mounts`               | Operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `mode` (`readonly` by default, or `writable` / `overlay`). SRT requires equal normalized host paths and mounts an `overlay` read-only; microsandbox accepts absolute guest targets and `~/` relative to the session HOME. Workspace, HOME, and runtime state remain automatically provisioned. |
@@ -141,12 +141,11 @@ machine runs in its session directory's SRT-wrapped shim
 machine in an agent-scoped one (R1b-2b).
 
 The Control Plane half landed first. An agent stores `execution`, a strategy slug,
-beside `runInSandbox`, and the two are written together. The Control Plane checks a
-new value against the strategies where the agent is placed, the daemon's table or
-for a group those at least one ready member offers, and refuses one it cannot run
-with 409 and the reason. The migration runs once: an unsandboxed agent became
-`host`, a sandboxed agent with no placement became `srt`, and a placed, sandboxed
-agent takes its daemon's reported backend at that daemon's next registration.
+and nothing else about its boundary since the retirement (#2463). The Control Plane
+checks a new value against the strategies where the agent is placed, the daemon's
+table or for a group those at least one ready member offers, and refuses one it
+cannot run with 409 and the reason; a daemon that reports no table offers `host`
+alone.
 A session keeps the strategy it was born with: its holder records it with the birth
 verdict, and an executor refuses a `prepare` in another strategy for an environment
 it already holds (S2b).
@@ -453,9 +452,8 @@ the paged skill receipt protocol and require duty admission before serving
 activation or explicit launch prepares a sandbox workspace.
 
 Kubernetes mode retains `K8sDriver`, its resource configuration, and image rollout.
-A retired `sandbox.backend: "microsandbox"` or a `sandbox.host: false` with `--k8s` is
-rejected as conflicting configuration; the default table has no effect on pool
-execution, which probes no local strategy. Sharing an image does not mean nesting
+`sandbox.host: false` with `--k8s` is rejected as conflicting configuration; the
+default table has no effect on pool execution, which probes no local strategy. Sharing an image does not mean nesting
 microsandbox inside every pool pod.
 
 ### Runtime discovery
@@ -1463,10 +1461,11 @@ on disk until its session retires.
 
 Delivery is split into independently reviewable steps:
 
-1. **Implemented — SRT configuration and mounts:** add `sandbox.backend: "srt"`
-   and `sandbox.mounts`, remove legacy security roots, and apply mount permissions
-   to SRT and native tools. Existing configuration is converted manually. Preserve
-   the pool and unsandboxed-agent paths.
+1. **Implemented — SRT configuration and mounts:** add the SRT backend (then
+   selected by the since-removed `sandbox.backend`) and `sandbox.mounts`, remove
+   legacy security roots, and apply mount permissions to SRT and native tools.
+   Existing configuration is converted manually. Preserve the pool and
+   unsandboxed-agent paths.
 2. **Implemented, workload validation pending — minimal microsandbox execution:**
    explicit image and resources, Linux VM boot/runtime-table/stop-start checks,
    shim-backed ACP streams, helper tunnels and guest Git, shared host

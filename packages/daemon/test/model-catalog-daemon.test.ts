@@ -398,7 +398,6 @@ describe('microsandbox runtime facts', () => {
       const missing = { command: join(dir, 'missing-binary'), args: [], env: [] }
       catalog = catalogOf({ 'grok-build': available, opencode: available, 'pi-acp': missing, gemini: missing })
       const d = daemon as any
-      d.cfg.sandbox.backend = backend
       if (backend === 'microsandbox') {
         d.microsandboxTable = {
           runtimes: ['grok-build', 'opencode'].map((id) => ({ id, command: `/image/bin/${id}`, args: ['acp'] }))
@@ -419,10 +418,11 @@ describe('microsandbox runtime facts', () => {
         authRequired: true,
         models: ['enumerated-without-login']
       })
+      // The runtime-level reading is the host install's whatever the strategy; the image's is on the per-strategy entry.
       expect(d.runtimeFacts.profileFor('pi-acp')).toMatchObject({
         hostAvailable: false,
         credentialsConfigured: true,
-        unavailableReason: backend === 'microsandbox' ? 'image-binary-missing' : 'host-binary-missing'
+        unavailableReason: 'host-binary-missing'
       })
       writeFileSync(
         join(hostHome, '.local/share/opencode/auth.json'),
@@ -493,8 +493,6 @@ describe('microsandbox runtime facts', () => {
         catalog.entries['codex-acp']!.source = 'curated'
         catalog.entries['pi-acp']!.source = 'curated'
         const d = daemon as any
-        d.cfg.sandbox.backend = 'microsandbox'
-        d.cfg.security.requireSandbox = true
         d.microsandboxTable = {
           runtimes: ['codex-acp', ...(expiredInImage ? ['pi-acp'] : []), 'opencode'].map((id) => ({
             id,
@@ -537,17 +535,15 @@ describe('microsandbox runtime facts', () => {
         expect(d.runtimeFacts.profileFor('codex-acp').unavailableReason).toBeUndefined()
         expect(d.runtimeFacts.profileFor('grok-build')).toMatchObject({
           hostVersion: 'host-version',
-          models: ['host-model'],
-          unavailableReason: 'image-binary-missing'
+          models: ['host-model']
         })
+        expect(d.runtimeFacts.profileFor('grok-build').unavailableReason).toBeUndefined()
         expect(d.runtimeFacts.profileFor('pi-acp')).toMatchObject({ authRequired: true })
         expect(d.runtimeFacts.profileFor('opencode')).toMatchObject({
           authRequired: true,
           credentialsConfigured: false
         })
-        expect(d.runtimeFacts.profileFor('pi-acp').unavailableReason).toBe(
-          expiredInImage ? undefined : 'image-binary-missing'
-        )
+        expect(d.runtimeFacts.profileFor('pi-acp').unavailableReason).toBeUndefined()
         expect(d.curatedRuntimeAdmission.status('codex-acp', 'curated')).toBe('verified')
         expect(d.curatedRuntimeAdmission.status('pi-acp', 'curated')).toBe('failed')
         expect(d.reportedRuntimeIds().sort()).toEqual(['codex-acp', 'grok-build', 'opencode', 'pi-acp'])
@@ -656,7 +652,6 @@ describe('daemon auth-required probe fold', () => {
         catalog.entries.native!.source = 'curated'
         catalog.entries.legacy = { ...catalog.entries.native!, aliasOf: 'native' }
         const d = daemon as any
-        d.cfg.sandbox.backend = backend
         if (backend === 'microsandbox')
           d.microsandboxTable = {
             runtimes: [{ id: 'legacy', command: '/image/bin/native', version: 'image-v2', acp: { protocolVersion: 1 } }]

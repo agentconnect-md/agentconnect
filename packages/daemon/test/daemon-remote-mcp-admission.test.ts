@@ -42,7 +42,7 @@ it('does not revive a conversation-granted admin card through the organization p
   expect(daemon.orgForAgent).not.toHaveBeenCalled()
 })
 
-function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
+function scaffold(opts: { builtin: boolean; execution: string }): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-rmcp-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -64,7 +64,7 @@ function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
       status: 'active',
       runtime: 'arbitrary-acp',
       builtin: opts.builtin,
-      runInSandbox: opts.runInSandbox,
+      execution: opts.execution,
       workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
       integrations: [],
       output: { mode: 'medium' }
@@ -75,7 +75,7 @@ function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
 
 function fakeHost(rejectAdminDescriptor = false, toolUpdates: unknown[] = []) {
   let onUpdate!: (sid: string, update: unknown) => void
-  const selectedAgents: Array<{ builtin: boolean; runInSandbox: boolean; runtime: string }> = []
+  const selectedAgents: Array<{ builtin: boolean; execution: string; runtime: string }> = []
   const host = {
     start: vi.fn(async () => {}),
     newSession: vi.fn(async (_cwd: string, mcpServers: Array<{ name?: string }>) => {
@@ -96,7 +96,7 @@ function fakeHost(rejectAdminDescriptor = false, toolUpdates: unknown[] = []) {
     stop: vi.fn(async () => {})
   }
   const factory = (
-    agent: { builtin: boolean; runInSandbox: boolean; runtime: string },
+    agent: { builtin: boolean; execution: string; runtime: string },
     callback: (sid: string, update: unknown) => void
   ) => {
     selectedAgents.push(agent)
@@ -123,7 +123,7 @@ function fakeGrantClient() {
 
 async function runTurn(opts: {
   builtin: boolean
-  runInSandbox: boolean
+  execution: string
   rejectAdminDescriptor?: boolean
   toolUpdates?: unknown[]
 }) {
@@ -190,22 +190,22 @@ describe('admin MCP through the webchat dispatch path', () => {
       rawInput: { server: 'agentconnect-admin', tool: 'configureIntegration', arguments: nativeUi.intent },
       rawOutput: { result: { structuredContent: nativeUi }, error: null }
     }
-    const { host, outputs } = await runTurn({ builtin: true, runInSandbox: true, toolUpdates: [update, update] })
+    const { host, outputs } = await runTurn({ builtin: true, execution: 'srt', toolUpdates: [update, update] })
     expect(adminDescriptor(host)).toMatchObject({ type: 'http', url: 'https://cp.example/api/v1/mcp' })
     const cards = outputs.filter((output) => output.event?.kind === 'app')
     expect(cards).toHaveLength(1)
     expect(cards[0]?.event).toMatchObject({ nativeUi })
   })
   it.each([
-    ['without an OS sandbox', false],
-    ['with an OS sandbox', true]
-  ] as const)('attaches to an arbitrary runtime %s', async (_label, runInSandbox) => {
-    const { client, host, selectedAgents, dones } = await runTurn({ builtin: true, runInSandbox })
+    ['without an OS sandbox', 'host'],
+    ['with an OS sandbox', 'srt']
+  ] as const)('attaches to an arbitrary runtime %s', async (_label, execution) => {
+    const { client, host, selectedAgents, dones } = await runTurn({ builtin: true, execution })
 
     expect(dones).toHaveLength(1)
     expect(selectedAgents[0]).toMatchObject({
       builtin: true,
-      runInSandbox,
+      execution,
       runtime: 'arbitrary-acp'
     })
     expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
@@ -217,7 +217,7 @@ describe('admin MCP through the webchat dispatch path', () => {
 
   // The catalog belongs to the webchat surface, not to the preset: an ordinary agent gets it too.
   it('attaches for an ordinary agent that carries no preset marker', async () => {
-    const { client, host, dones } = await runTurn({ builtin: false, runInSandbox: false })
+    const { client, host, dones } = await runTurn({ builtin: false, execution: 'host' })
 
     expect(dones).toHaveLength(1)
     expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
@@ -227,7 +227,7 @@ describe('admin MCP through the webchat dispatch path', () => {
   it('keeps ordinary webchat running when the runtime rejects the admin descriptor', async () => {
     const { client, host, dones } = await runTurn({
       builtin: true,
-      runInSandbox: true,
+      execution: 'srt',
       rejectAdminDescriptor: true
     })
 

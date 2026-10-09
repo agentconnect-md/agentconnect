@@ -119,8 +119,6 @@ export const DaemonCapabilitiesDto = z.object({
   runtimes: z.array(z.string()),
   acp: z.boolean(),
   features: z.array(z.string()),
-  /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, because it refuses launches rather than running them unconfined. */
-  sandboxUnavailable: z.string().optional(),
   /** What this daemon offers the group's sessions (session-executors.md §10); absent while its executor facet is off. */
   executor: DaemonExecutorDto.optional(),
   /** Where this daemon's own sessions can run (§5), which the agent's `execution` is checked against; absent for a daemon that predates it. */
@@ -701,8 +699,7 @@ export const CreateAgentBody = z.object({
   allowRuntimeChangesInChat: z.boolean().optional(), // explicit opt-in; absent ⇒ false
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-  runInSandbox: z.boolean().optional(), // #642: request an OS sandbox (absent ⇒ default false)
-  // The strategy sessions run in (session-executors.md §5), checked against the placement's tables; runInSandbox follows it, and a request naming both must agree.
+  // The strategy sessions run in (session-executors.md §5), checked against the placement's table; absent ⇒ host where it runs, else the first available sandbox.
   execution: ExecutorStrategyName.optional(),
   env: AgentEnvBody.optional(),
   secrets: AgentSecretsCreateBody.optional(), // write-only secret env vars (values never returned)
@@ -759,8 +756,7 @@ export const UpdateAgentBody = z
     allowRuntimeChangesInChat: z.boolean().optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-    runInSandbox: z.boolean().optional(), // #642: request an OS sandbox for this agent
-    execution: ExecutorStrategyName.optional(), // the strategy sessions run in; runInSandbox follows it
+    execution: ExecutorStrategyName.optional(), // the strategy sessions run in, checked against the placement's table
     // Same-repository capability widening only. Workspace identity/conversion
     // stays on the dedicated cold action, and downgrades are deliberately not
     // exposed here because enabled review hooks may depend on write access.
@@ -920,17 +916,10 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
-  runInSandbox: z.boolean(), // #642: persisted per-agent sandbox preference (default false)
-  // The strategy sessions run in; null ⇒ sandboxed on a daemon that has not yet reported which sandbox it runs.
-  execution: ExecutorStrategyName.nullable(),
-  // What the placement offers `execution`: its daemon's table, or for a group what one ready member offers; null ⇒ none reported, the sandbox fields below apply.
-  strategies: StrategyTableDto.nullable(),
-  // #642: whether the placed daemon can provide a sandbox; the console reads it only where `strategies` is null.
-  sandboxSupported: z.boolean(),
-  // #642: daemon policy forces the effective value true and makes it immutable.
-  sandboxRequired: z.boolean(),
-  // Why the placed daemon cannot provide the sandbox it HAS; supported stays true, because such a session is refused, not run unconfined.
-  sandboxUnavailable: z.string().nullable(),
+  // The strategy sessions run in (session-executors.md §5).
+  execution: ExecutorStrategyName,
+  // What the placement offers `execution`: its daemon's table, or for a group what one ready member offers; only `host` for an unplaced agent.
+  strategies: StrategyTableDto,
   // Distinct kinds of ENABLED inbound triggers on this agent — one mark per kind in the
   // list's integrations cell, without an org-wide hook list existing anywhere.
   hookKinds: z.array(z.enum(HOOK_KINDS))

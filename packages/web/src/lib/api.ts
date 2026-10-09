@@ -38,6 +38,7 @@ import type {
   StrategyTable
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
+import { HOST_ONLY_TABLE, HOST_STRATEGY } from '@/lib/execution-strategy'
 import type {
   AgentApiProtocol,
   AssistantModeAdmission,
@@ -371,12 +372,8 @@ export interface AgentDto {
   outboundPolicy: AgentCallPolicy // which peer agents this agent may discover/call
   allowedTargetAgentIds: string[] // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join
-  runInSandbox: boolean // #642: kept in step with `execution` (false only for `host`)
-  execution?: string | null // the strategy sessions run in; null ⇒ sandboxed where the backend is not yet reported; absent on an older CP
-  strategies?: StrategyTable | null // what the placement offers `execution`; null ⇒ it reports none and the sandbox fields apply
-  sandboxSupported: boolean // #642: whether the placed daemon can provide an OS sandbox
-  sandboxRequired: boolean // #642: whether daemon policy forces the effective value on
-  sandboxUnavailable: string | null // why a sandbox the daemon HAS cannot be provided right now
+  execution?: string // the strategy slug sessions run in (session-executors.md §5); absent only on an older CP
+  strategies?: StrategyTable // what the placement offers `execution`, host alone for an unplaced agent; absent only on an older CP
   hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
 }
 
@@ -1038,8 +1035,6 @@ export interface UpdateAgentInput {
   pause?: boolean | null
   /** #536: self-introduce to peers on a genuine channel join (default off). */
   introduceOnJoin?: boolean
-  /** The legacy boolean, sent only where the placement reports no strategy table. */
-  runInSandbox?: boolean
   /** The strategy new sessions run in, checked against the placement's table (409 with the reason when it cannot run there). */
   execution?: string
   /** Widen an existing App-backed GitHub workspace from read to write. */
@@ -1272,8 +1267,6 @@ export interface CreateAgentInput {
   modelSelection?: AgentModelSelection
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
-  /** The legacy boolean, sent only where the placement reports no strategy table. */
-  runInSandbox?: boolean
   /** The strategy sessions run in; absent ⇒ the Control Plane's default for the placement. */
   execution?: string
   /** Initial visibility (absent ⇒ 'org'); sharedWith is intersected with org members. */
@@ -2075,13 +2068,9 @@ export function agentFromDto(d: AgentDto): Agent {
     allowedTargetAgentIds: d.allowedTargetAgentIds ?? [],
     // Unset (older CP) reads as off — the product default.
     introduceOnJoin: d.introduceOnJoin ?? false,
-    // Missing policy fields fail closed; the removed legacy field is not read.
-    runInSandbox: d.runInSandbox ?? false,
-    execution: d.execution ?? null,
-    strategies: d.strategies ?? null,
-    sandboxSupported: d.sandboxSupported ?? false,
-    sandboxRequired: d.sandboxRequired ?? false,
-    sandboxUnavailable: d.sandboxUnavailable ?? null,
+    // An older CP that names no strategy is read as the unplaced agent's host-only table.
+    execution: d.execution ?? HOST_STRATEGY,
+    strategies: d.strategies ?? HOST_ONLY_TABLE,
     hookKinds: d.hookKinds ?? [],
     integrations: [],
     workspace: ws

@@ -172,7 +172,7 @@ import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
 import { approvalNotice, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
-import { agentStrategyValue, strategyModelSource } from '@/lib/execution-strategy'
+import { agentStrategyValue, HOST_STRATEGY, strategyModelSource, strategyUsesImage } from '@/lib/execution-strategy'
 import {
   CodeHostDecisionResult,
   DecisionResultMarker,
@@ -3858,10 +3858,7 @@ export default function SessionDetailView() {
   const workspaceIcon = focusedAgent && isGitWorkspace(focusedAgent.workspace) ? 'git-branch' : 'folder'
   const focusedAgentLabel = focusedAgent ? agentLabel(focusedAgent) : (headerFocusOption?.label ?? 'agent')
   // Named by the focused agent's effective boundary, so a confined session is not offered a "worktree" it does not get (git-workspace-model.md §11).
-  const focusedIsolation = agentSessionIsolationLabel(
-    focusedAgent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false },
-    orgSetIds
-  )
+  const focusedIsolation = agentSessionIsolationLabel(focusedAgent ?? { execution: HOST_STRATEGY }, orgSetIds)
   const workspaceTitle = hasSessionWorktree
     ? `Open ${focusedAgentLabel}’s ${focusedIsolation.checkout}`
     : `Open ${focusedAgentLabel}’s workspace`
@@ -4039,10 +4036,7 @@ export default function SessionDetailView() {
     getPgWorktree(session.id) ??
     (!!owner?.workspace && isGitWorkspace(owner.workspace) && owner.workspace.worktree === true)
   // The chip names the isolation by the owner's EFFECTIVE boundary (git-workspace-model.md §11), never by its stored sandbox flag.
-  const isolationLabel = agentSessionIsolationLabel(
-    owner ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false },
-    orgSetIds
-  )
+  const isolationLabel = agentSessionIsolationLabel(owner ?? { execution: HOST_STRATEGY }, orgSetIds)
   const canChooseWorktree =
     isPg &&
     !multiLive &&
@@ -6057,7 +6051,7 @@ export default function SessionDetailView() {
                                 value={{ runtime: agentRuntime, model: pgShownModel }}
                                 source={pickerSource}
                                 runtimes={beforeFirstTurn ? undefined : [agentRuntime]}
-                                runInSandbox={owner?.runInSandbox}
+                                readsImage={!!owner && strategyUsesImage(owner.execution)}
                                 readOnly={!runtimeChangesEnabled}
                                 decision={
                                   beforeFirstTurn && owner?.modelSelection

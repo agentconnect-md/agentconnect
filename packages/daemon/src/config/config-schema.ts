@@ -139,8 +139,8 @@ const SandboxMountSchema = z
   .strict()
 export type SandboxMount = z.infer<typeof SandboxMountSchema>
 
-const SandboxBackendSchema = z.enum(['srt', 'microsandbox'])
-export type SandboxBackend = z.infer<typeof SandboxBackendSchema>
+/** The two sandboxing strategies of the `sandbox` table (session-executors.md §5). */
+export type SandboxBackend = 'srt' | 'microsandbox'
 
 export const MicrosandboxConfigSchema = z
   .object({
@@ -214,8 +214,6 @@ export const ConfigSchema = z.object({
       host: StrategyOffer.default(true),
       srt: StrategyOffer.default(true),
       microsandbox: MicrosandboxOffer.prefault(true),
-      // Retiring: read once at startup with a warning, and kept only as the backend the CP migrates `runInSandbox` from.
-      backend: SandboxBackendSchema.optional(),
       env: z.record(EnvironmentName, ProcessValue).default({}),
       mounts: z.array(SandboxMountSchema).default([]),
       // The executor facet switch (session-executors.md §10): this machine hosts isolated sessions of its group's other members, under ITS runtime sign-in. The owner's consent, so `config/push` never sets it.
@@ -229,8 +227,6 @@ export const ConfigSchema = z.object({
       // to the signed-in cloud account. Explicit local and daemon-injected MCP
       // servers remain available. Set false only to opt this daemon out.
       isolateAccountApps: z.boolean().default(true),
-      // Retiring (session-executors.md §5): read once at startup with a warning, `true` as `sandbox.host: false`.
-      requireSandbox: z.boolean().optional(),
       // Operator-owned remote-origin policy for daemon-managed workspace clone/pull. Default
       // ['*'] admits any https/ssh origin; exact scheme+host+port entries tighten it, and []
       // disables remote Git workspaces entirely.
