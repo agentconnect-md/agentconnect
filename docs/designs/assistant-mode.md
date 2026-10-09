@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, eleventh revision (2026-10-10). Reviewed by three independent design reviews and
+**Status:** Design, twelfth revision (2026-10-10). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -387,6 +387,14 @@ below), so opening it everywhere does not reopen what the read rule closes.
 - **Until then (P0a) a private place is read only from itself**: no other place, not even a
   member's DM, can recall it; the place itself still recalls every non-private channel.
   Per-asker scoping only widens this, so nothing that works in P0a stops working later.
+- **P1 widens it in the asker's own DM only.** Per-asker scoping is safe only where the asker is
+  the whole audience: an answer in a channel or group DM is read by everyone present, so a source
+  the asker may see but the room may not would leak. In a person's 1:1 DM with the agent, a private
+  place is listed and readable when that person is a member of it right now — checked live at read
+  time (cached for at most about a minute), on the same platform and workspace, and only where the
+  platform declares its member listing authoritative. Channels, group DMs, webchat and external
+  places keep the P0a rule; webchat waits for identity links; a membership that cannot be
+  confirmed is refused as opaquely as any other private place.
 - Other places do not see a private place in recall's listing, and a refused read answers as
   opaquely as the DM rule: "I can't share that here", never where the content lives.
 
@@ -677,14 +685,14 @@ badge are not in it yet.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                                                        |
-| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap                                                                      |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893). Next: the target patrol (after per-runtime tests) on the credential-less host; `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                               |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                             |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                            |
+| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap                          |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893). Next: per-asker recall in the asker's DM (§5.5); the target patrol (after per-runtime tests) on the credential-less host; `remind`; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                   |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                 |
 
 ---
 
@@ -817,3 +825,7 @@ drafts (#2880, #2881) is recorded in §5.11.
 replay recovery, `propose` for patrols with its four departures from the approval record, the
 webchat Sub-sessions panel, read-only sub-session pages, and who may stop a sub-session from the
 console.
+
+**Twelfth revision (2026-10-10)**: per-asker recall applies only where the asker is the whole
+audience — their own DM with the agent — with membership checked live on platforms whose member
+listing is authoritative; every shared place keeps the P0a private-place rule.
