@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -966,6 +966,17 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
  * (nothing else will ever remove the row).
  */
 describe('Daemon.leaveConversation', () => {
+  const daemons: Daemon[] = []
+  afterEach(async () => {
+    for (const daemon of daemons.splice(0)) await daemon.stop()
+  })
+  // Every case's daemon goes through here, so afterEach stops it even when the case fails.
+  const boot = async (root: string) => {
+    const { daemon } = makeStubDaemon(root)
+    daemons.push(daemon)
+    await daemon.start()
+    return daemon
+  }
   const telegramAgent = (daemon: unknown) => {
     const integration = { id: 'tg-int', platform: 'telegram', config: { botToken: 'tg' } }
     ;(daemon as any).agents = new Map([['bot-tg', { id: 'bot-tg', integrations: [integration] }]])
@@ -973,8 +984,7 @@ describe('Daemon.leaveConversation', () => {
   }
 
   it('leaves a Telegram chat and RETRACTS the row — nothing else ever would', async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     telegramAgent(daemon)
@@ -1000,12 +1010,10 @@ describe('Daemon.leaveConversation', () => {
       authoritative: false,
       removed: ['-100123']
     })
-    await daemon.stop()
   })
 
   it("reports the platform's refusal instead of throwing, and leaves the row alone", async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     telegramAgent(daemon)
@@ -1021,15 +1029,13 @@ describe('Daemon.leaveConversation', () => {
 
     expect(verdict).toEqual({ ok: false, error: 'CHAT_ADMIN_REQUIRED' })
     expect(emit).not.toHaveBeenCalled() // still a member, so the row must stay
-    await daemon.stop()
   })
 
   // The bug this suppression exists for: sessions outlive the departure, and the
   // observed set is rebuilt FROM them, so without a durable marker the next refresh
   // silently puts the conversation back and undoes the leave.
   it('survives the next observed refresh — session history must not resurrect it', async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     telegramAgent(daemon)
@@ -1054,8 +1060,7 @@ describe('Daemon.leaveConversation', () => {
   })
 
   it('lets a re-invited conversation come back once it actually talks to us again', async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     ;(daemon as any).cpClient = { emitIntegrationChannels: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) }
     telegramAgent(daemon)
     ;(daemon as any).connForIntegration = () =>
@@ -1080,8 +1085,7 @@ describe('Daemon.leaveConversation', () => {
   // the tombstone names. Filtering the raw ids matches nothing and the thread folds
   // straight back onto the channel that was just left.
   it('a Discord thread observation cannot fold back onto the server channel that was left', async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     ;(daemon as any).agents = new Map([
@@ -1108,8 +1112,7 @@ describe('Daemon.leaveConversation', () => {
   })
 
   it('replays the tombstones on reconnect, so a retraction lost while the CP was down still lands', async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     telegramAgent(daemon)
     // Retract while the CP link is DOWN: the EVT is fire-and-forget and simply lost.
     ;(daemon as any).cpClient = undefined
@@ -1125,8 +1128,7 @@ describe('Daemon.leaveConversation', () => {
 
   it('replays the other integrations when one cannot be scoped, and the reconnect replay goes on after it', async () => {
     const root = root1()
-    const { daemon } = makeStubDaemon(root)
-    await daemon.start()
+    const daemon = await boot(root)
     ;(daemon as any).channelSnapshots.set('gone-int', { channels: [{ id: 'C-gone' }], authoritative: true })
     ;(daemon as any).channelSnapshots.set('tg-int', { channels: [{ id: '-100123' }], authoritative: false })
     const emit = vi.fn((snapshot: { integrationId: string }) => {
@@ -1143,7 +1145,6 @@ describe('Daemon.leaveConversation', () => {
     const deps = buildCpClientDeps((daemon as any).cpClientDepsHost(root, 'wss://cp.example.test', () => {}))
     await deps.onReady!()
     expect(purges).toHaveBeenCalled()
-    await daemon.stop()
   })
 
   // The snapshots are in memory, the tombstones on disk. A restart before the first
@@ -1152,32 +1153,29 @@ describe('Daemon.leaveConversation', () => {
   // fire-and-forget retraction was the thing that got lost.
   it('replays a tombstone that outlived the snapshot it was recorded next to', async () => {
     const root = root1()
-    const first = makeStubDaemon(root).daemon
-    await first.start()
+    const first = await boot(root)
     ;(first as any).cpClient = undefined // CP unreachable: the retraction EVT is lost
     telegramAgent(first)
     ;(first as any).channelSnapshots.set('tg-int', { channels: [{ id: '-100123' }], authoritative: false })
     ;(first as any).observedChannelsSync.retractChannels('tg-int', ['-100123'])
     await first.stop()
+    daemons.splice(daemons.indexOf(first), 1)
 
     // A fresh process over the SAME root: the tombstone survived, the snapshot did not.
-    const second = makeStubDaemon(root).daemon
-    await second.start()
+    const second = await boot(root)
     expect((second as any).channelSnapshots.get('tg-int')).toBeUndefined()
     const emit = vi.fn()
     ;(second as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     await (second as any).replayChannelSnapshots()
 
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'tg-int', removed: ['-100123'] }))
-    await second.stop()
   })
 
   // Leaving is the ONLY action a Telegram row offers, so it has to finish the job even
   // when the bot is already out — that stale row is the whole reason this exists, and
   // refusing would leave the operator with a row they can see and cannot clear.
   it('clears the row when Telegram says the bot is already out of the chat', async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     telegramAgent(daemon)
@@ -1197,8 +1195,7 @@ describe('Daemon.leaveConversation', () => {
   })
 
   it('still reports a refusal that does NOT mean the bot is out', async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     telegramAgent(daemon)
@@ -1217,8 +1214,7 @@ describe('Daemon.leaveConversation', () => {
   })
 
   it('refuses a conversation-scoped leave on Discord, where a bot can only leave a server', async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     ;(daemon as any).agents = new Map([
       ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', config: { botToken: 'dc' } }] }]
     ])
@@ -1233,12 +1229,10 @@ describe('Daemon.leaveConversation', () => {
 
     expect(verdict.ok).toBe(false)
     expect(leaveSpace).not.toHaveBeenCalled() // never silently escalates to the server
-    await daemon.stop()
   })
 
   it('leaving a Discord server retracts every row of that server, and no others', async () => {
-    const { daemon } = makeStubDaemon(root1())
-    await daemon.start()
+    const daemon = await boot(root1())
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     ;(daemon as any).agents = new Map([
@@ -1267,6 +1261,5 @@ describe('Daemon.leaveConversation', () => {
       authoritative: false,
       removed: ['C1', 'C2']
     })
-    await daemon.stop()
   })
 })
