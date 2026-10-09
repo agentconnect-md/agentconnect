@@ -13,8 +13,11 @@ import type {
   WorkspaceListReq,
   WorkspaceMkdirReq,
   WorkspaceReadReq,
-  WorkspaceWriteReq
+  WorkspaceTransferReq,
+  WorkspaceWriteReq,
+  TransferUploadReq
 } from '@agentconnect.md/protocol'
+import type { FileTransferControl } from '../file-transfer.js'
 import type { WorkspaceGit } from '../workspace-git.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from '../workspace-reader.js'
 import type { ControlHandler, ControlWire } from './context.js'
@@ -25,6 +28,8 @@ export interface WorkspaceReadDeps {
   workspaceRead: WorkspaceReader
   /** Git status/pull seam over the agents' git-repo workspace dirs (§1/§12). */
   workspaceGit: WorkspaceGit
+  /** Console file transfer through the Source Cache bucket; absent on a daemon without one. */
+  fileTransfer?: FileTransferControl
 }
 
 export interface WorkspaceControlDeps extends WorkspaceReadDeps {
@@ -85,6 +90,32 @@ export const workspaceMkdir: ControlHandler<WorkspaceControlDeps> = (frame: AnyF
     .mkdir(frame.payload as WorkspaceMkdirReq)
     .then((ok) => wire.reply(frame, 'workspace/mkdir/ok', ok))
     .catch((err) => workspaceError(wire, frame.id, 'workspace/mkdir', err))
+}
+
+export const workspaceTransfer: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
+  // Presigned URLs only; the file's bytes go pod → bucket → browser and never ride this socket.
+  const transfer = deps.fileTransfer
+  if (!transfer) return workspaceError(wire, frame.id, 'workspace/transfer', transferUnavailable())
+  transfer
+    .workspace(frame.payload as WorkspaceTransferReq)
+    .then((grant) => wire.reply(frame, 'workspace/transfer/grant', grant))
+    .catch((err) => workspaceError(wire, frame.id, 'workspace/transfer', err))
+}
+
+export const transferUpload: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
+  const transfer = deps.fileTransfer
+  if (!transfer) return workspaceError(wire, frame.id, 'transfer/upload', transferUnavailable())
+  transfer
+    .upload(frame.payload as TransferUploadReq)
+    .then((grant) => wire.reply(frame, 'transfer/upload/grant', grant))
+    .catch((err) => workspaceError(wire, frame.id, 'transfer/upload', err))
+}
+
+function transferUnavailable(): WorkspaceViolationError {
+  return new WorkspaceViolationError(
+    'this daemon has no Source Cache bucket for file transfers',
+    'transfer-unavailable'
+  )
 }
 
 export const workspaceGitStatus: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {

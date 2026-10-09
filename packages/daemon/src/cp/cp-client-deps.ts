@@ -1,3 +1,5 @@
+import { createFileTransferControl } from './file-transfer.js'
+import type { FileTransfer } from '../source-cache/transfer.js'
 import type { DecisionEvaluationReader } from '../decisions/evaluations.js'
 import type { DecisionModelEvaluationReader } from '../decisions/model-evaluations.js'
 import type { DecisionApiGateEvaluationReader } from '../decisions/api-gate-evaluations.js'
@@ -177,6 +179,9 @@ export interface CpClientSeamHost {
   /** A cluster member's requested re-probe, or undefined where the deployment takes no requests. */
   runtimeProbeRequest(): (() => void) | undefined
   workspaceFilesFor: WorkspaceFilesResolver
+  /** Console file transfer through the Source Cache bucket, or undefined without one. */
+  fileTransfer(): FileTransfer | undefined
+  orgForAgent(agentId: string): string | undefined
   workspaceSkillLedger: NonNullable<Parameters<typeof createLocalSkillsReader>[4]>
   verifyWorkspaceSkills: (id: string, roots: ClusterSkillLedger['roots'], cwd: string) => Promise<boolean[] | undefined>
   memory(): AgentMemoryAdminResolver & MemoryProvider
@@ -239,6 +244,15 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // The model pass runs HERE, on the agent's own runtime: the CP is never on the inference path.
     (id, systemPrompt, prompt, signal) => host.runCommitMessagePass(id, systemPrompt, prompt, signal)
   )
+
+  // The last argument is what makes a sandboxed root reachable at all: the operations run where the root's agent or session runs.
+  const workspaceRead = createWorkspaceReader(
+    host.workspaces(),
+    workspaceScope.location,
+    (id, write) => host.withWorkspaceFileWrite(id, write),
+    (id, scope) => host.workspaceFilesFor(id, scope)
+  )
+  const transfer = host.fileTransfer()
 
   return {
     url,
@@ -406,13 +420,16 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       }
       return host.dispatchPullRequestFeedback(req)
     },
-    // The last argument is what makes a sandboxed root reachable at all: the operations run where the root's agent or session runs.
-    workspaceRead: createWorkspaceReader(
-      host.workspaces(),
-      workspaceScope.location,
-      (id, write) => host.withWorkspaceFileWrite(id, write),
-      (id, scope) => host.workspaceFilesFor(id, scope)
-    ),
+    workspaceRead,
+    ...(transfer
+      ? {
+          fileTransfer: createFileTransferControl({
+            transfer,
+            orgForAgent: (id) => host.orgForAgent(id),
+            workspaceRead
+          })
+        }
+      : {}),
     workspaceGit: {
       status: (id, sessionId, repo) => workspaceGit.status(id, sessionId, repo),
       // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.

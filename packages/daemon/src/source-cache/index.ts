@@ -1,5 +1,5 @@
 import { loadSourceCacheConfig, SOURCE_CACHE_ENV, sourceCacheEndpoint, type SourceCacheConfig } from './config.js'
-import { createCredentialsProvider, type ReadTextFile } from './credentials.js'
+import { createCredentialsProvider, type CredentialsProvider, type ReadTextFile } from './credentials.js'
 import { createObjectClient, type SourceCacheObjectClient } from './object-client.js'
 import { addressFor, createPresigner, type SourceCachePresigner } from './presigner.js'
 
@@ -10,6 +10,7 @@ export interface SourceCache {
   presigner: SourceCachePresigner
   /** Header-signed HEAD, retag, delete and lifecycle read the member runs itself (§9, §10). */
   objects: SourceCacheObjectClient
+  credentials: CredentialsProvider
 }
 
 export interface CreateSourceCacheOptions {
@@ -48,10 +49,11 @@ export function createSourceCache(opts: CreateSourceCacheOptions): SourceCache |
   opts.log?.info(
     `source cache enabled (bucket=${config.bucket} prefix=${config.prefix || '(none)'} endpoint=${new URL(endpoint).host} credentials=${credentials.source} addressing=${style})`
   )
-  return { config, presigner, objects }
+  return { config, presigner, objects, credentials }
 }
 
 export type { SourceCacheConfig } from './config.js'
+export { createFileTransfer, FileTransferError, type FileTransfer, type TransferUrl } from './transfer.js'
 export type { PresignedRequest, SourceCachePresigner } from './presigner.js'
 export {
   createCredentialedCacheReadAuthorizer,

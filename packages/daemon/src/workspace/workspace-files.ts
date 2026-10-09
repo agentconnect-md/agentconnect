@@ -28,8 +28,9 @@
  * size (not the raw byte `limit`) and `list` stops a page early when the encoded entries would
  * overflow — both leave headroom for the envelope.
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
+import { tmpdir } from 'node:os'
 import type { FileHandle } from 'node:fs/promises'
 import * as path from 'node:path'
 import type {
@@ -49,6 +50,7 @@ import type {
 import { MAX_WORKSPACE_EDIT_BYTES } from '@agentconnect.md/protocol'
 import { REPLY_BUDGET, encodedBytes, utf8Boundary, fitToBudget } from '../wire-slice.js'
 import { openRegularFile, RegularFileError } from '../fs/regular-file.js'
+import { PutObjectError, putStagedFile } from '../source-cache/put-object.js'
 
 /** Bytes sniffed from the head of a file for binary (NUL byte) detection. */
 const SNIFF_BYTES = 8192
@@ -99,6 +101,36 @@ export interface WorkspaceFiles {
   write(root: string, scratch: boolean, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk>
   delete(root: string, scratch: boolean, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk>
   mkdir(root: string, scratch: boolean, req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk>
+  /** Snapshot one regular file under the read's containment and PUT it to the URL `sign` returns for its length and digest; absent where the filesystem cannot (an older sandbox). */
+  upload?(
+    root: string,
+    req: WorkspaceUploadReq,
+    sign: WorkspaceUploadSigner,
+    abort?: AbortSignal
+  ): Promise<WorkspaceUploaded>
+}
+
+export interface WorkspaceUploadReq {
+  path: string
+  maxBytes: number
+  timeoutMs: number
+  /** The size and RFC 3339 mtime the caller stat'ed and keyed the object by; a file that no longer matches is refused. */
+  revision?: WorkspaceFileRevision
+}
+
+export interface WorkspaceFileRevision {
+  size: number
+  mtime: string
+}
+
+/** A presigned PUT for a snapshot of exactly `bytes` with base64 SHA-256 `sha256`. */
+export type WorkspaceUploadSigner = (
+  file: WorkspaceUploaded
+) => Promise<{ url: string; headers: Record<string, string> }>
+
+export interface WorkspaceUploaded {
+  bytes: number
+  sha256: string
 }
 
 /** The file operations over several filesystems: each call names its root, and the route picks the filesystem, or refuses, per call. */
@@ -123,6 +155,94 @@ export class RoutedWorkspaceFiles implements WorkspaceFiles {
 
   async mkdir(root: string, scratch: boolean, req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk> {
     return await (await this.route(root)).mkdir(root, scratch, req)
+  }
+
+  async upload(
+    root: string,
+    req: WorkspaceUploadReq,
+    sign: WorkspaceUploadSigner,
+    abort?: AbortSignal
+  ): Promise<WorkspaceUploaded> {
+    const files = await this.route(root)
+    if (!files.upload) throw outdatedForTransfer()
+    return await files.upload(root, req, sign, abort)
+  }
+}
+
+export function outdatedForTransfer(): WorkspaceViolationError {
+  return new WorkspaceViolationError(
+    'this agent’s sandbox predates file transfers; it serves them once the sandbox restarts',
+    'sandbox-outdated'
+  )
+}
+
+const COPY_CHUNK_BYTES = 1024 * 1024
+
+/** Copy an opened file to a new private `dest`, hashing as it goes; a file that is not `revision`, or changes under the copy, is refused. */
+export async function copyWorkspaceFileTo(
+  file: Pick<FileHandle, 'read' | 'stat'>,
+  dest: string,
+  maxBytes: number,
+  revision?: WorkspaceFileRevision
+): Promise<WorkspaceUploaded> {
+  const before = await file.stat()
+  const size = before.size
+  if (revision && (revision.size !== size || revision.mtime !== before.mtime.toISOString())) throw copiedFileChanged()
+  if (size > maxBytes)
+    throw new WorkspaceViolationError(`the file is over the ${maxBytes}-byte transfer cap`, 'too-large')
+  const out = await fs.open(dest, 'wx', 0o600)
+  const hash = createHash('sha256')
+  const buf = Buffer.alloc(Math.min(COPY_CHUNK_BYTES, Math.max(size, 1)))
+  let copied = 0
+  try {
+    while (copied < size) {
+      const { bytesRead } = await file.read(buf, 0, Math.min(buf.length, size - copied), copied)
+      if (bytesRead === 0) throw copiedFileChanged()
+      const chunk = buf.subarray(0, bytesRead)
+      hash.update(chunk)
+      await out.write(chunk)
+      copied += bytesRead
+    }
+  } finally {
+    await out.close()
+  }
+  // An equal-length rewrite between chunks keeps the size, so the file's change times decide.
+  const after = await file.stat()
+  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs)
+    throw copiedFileChanged()
+  return { bytes: copied, sha256: hash.digest('base64') }
+}
+
+function copiedFileChanged(): WorkspaceConflictError {
+  return new WorkspaceConflictError('the file changed while it was copied; retry')
+}
+
+/** Stage a snapshot in a private temp directory, sign it, PUT it, and remove it whatever happened. */
+async function uploadSnapshot(
+  snapshot: (dest: string) => Promise<WorkspaceUploaded>,
+  req: WorkspaceUploadReq,
+  sign: WorkspaceUploadSigner,
+  abort?: AbortSignal
+): Promise<WorkspaceUploaded> {
+  const dir = await fs.mkdtemp(path.join(tmpdir(), 'ac-transfer-'))
+  try {
+    const file = path.join(dir, 'file')
+    const staged = await snapshot(file)
+    const put = await sign(staged)
+    return await putStagedFile({
+      file,
+      ...staged,
+      url: new URL(put.url),
+      headers: put.headers,
+      timeoutMs: req.timeoutMs,
+      ...(abort ? { abort } : {})
+    })
+  } catch (err) {
+    if (err instanceof PutObjectError)
+      throw new WorkspaceViolationError('the bucket refused the upload', 'transfer-failed')
+    throw err
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
   }
 }
 
@@ -300,6 +420,37 @@ export function workspaceEditBytes(req: WorkspaceWriteReq): Buffer {
   return bytes
 }
 
+/** What a local read finds at `relPath`: nothing, a directory, or a regular file's canonical path; anything else is a violation. */
+async function localReadTarget(
+  root: string,
+  relPath: string
+): Promise<{ kind: 'missing' } | { kind: 'dir'; mtime: string } | { kind: 'file'; target: string }> {
+  const { resolved, realRoot } = await resolveContained(root, relPath)
+  if (realRoot === null) return { kind: 'missing' }
+
+  // lstat the lexical target first: this rejects a FINAL-component symlink (isFile() is false) before we canonicalise.
+  let st
+  try {
+    st = await fs.lstat(resolved)
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return { kind: 'missing' }
+    throw err
+  }
+  // A directory is data; every other non-regular target (a final-component symlink, a device) stays a violation.
+  if (!st.isDirectory() && !st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
+
+  // Canonicalise for both answers and re-verify, so a symlinked component cannot report a host directory outside the root.
+  let target: string
+  try {
+    target = await canonicalUnder(realRoot, resolved)
+  } catch (err) {
+    if (vanished(err)) return { kind: 'missing' }
+    throw err
+  }
+  if (st.isDirectory()) return { kind: 'dir', mtime: (await fs.lstat(target)).mtime.toISOString() }
+  return { kind: 'file', target }
+}
+
 /**
  * Operations against the DAEMON's own filesystem.
  *
@@ -359,48 +510,13 @@ export const localWorkspaceFiles: WorkspaceFiles = {
   },
 
   async read(root, req) {
-    const { resolved, realRoot } = await resolveContained(root, req.path)
     const notFound = { agentId: req.agentId, path: req.path, exists: false }
-    if (realRoot === null) return notFound
-
-    // lstat the lexical target first: this rejects a FINAL-component symlink
-    // (isFile() is false) before we canonicalise.
-    let st
-    try {
-      st = await fs.lstat(resolved)
-    } catch (err) {
-      if (isErrno(err, 'ENOENT')) return notFound
-      throw err
+    const found = await localReadTarget(root, req.path)
+    if (found.kind === 'missing') return notFound
+    if (found.kind === 'dir') {
+      return { agentId: req.agentId, path: req.path, exists: true, type: 'dir' as const, mtime: found.mtime }
     }
-    // A DIRECTORY is DATA (`type:'dir'`, no content): reporting it as a violation
-    // made a `?file=` naming a directory indistinguishable from an offline daemon.
-    // Every OTHER non-regular target keeps the violation — a final-component
-    // symlink is a containment matter and must not read as an ordinary answer.
-    if (!st.isDirectory() && !st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
-
-    // Canonicalise FIRST, for BOTH answers, and re-verify (this catches an intermediate component
-    // swapped to a symlink after resolveContained). `lstat` follows intermediate components, so a
-    // symlinked directory inside the workspace would otherwise let the dir branch report the
-    // existence and mtime of a host directory outside it — the same oracle the git-diff seam had,
-    // reopened by making directories an ordinary answer. A target dropped under us here is absence.
-    let target: string
-    try {
-      target = await canonicalUnder(realRoot, resolved)
-    } catch (err) {
-      if (vanished(err)) return notFound
-      throw err
-    }
-
-    if (st.isDirectory()) {
-      const canonSt = await fs.lstat(target)
-      return {
-        agentId: req.agentId,
-        path: req.path,
-        exists: true,
-        type: 'dir' as const,
-        mtime: canonSt.mtime.toISOString()
-      }
-    }
+    const target = found.target
 
     const { handle: fh, stat: opened } = await openWorkspaceFile(target)
     const size = opened.size
@@ -441,6 +557,18 @@ export const localWorkspaceFiles: WorkspaceFiles = {
         encoding: 'utf8' as const,
         ...sliceWorkspaceRead(slice, req, size)
       }
+    } finally {
+      await fh.close()
+    }
+  },
+
+  async upload(root, req, sign, abort) {
+    const found = await localReadTarget(root, req.path)
+    if (found.kind !== 'file')
+      throw new WorkspaceViolationError('no such file', found.kind === 'dir' ? 'not-a-file' : 'not-found')
+    const { handle: fh } = await openWorkspaceFile(found.target)
+    try {
+      return await uploadSnapshot((dest) => copyWorkspaceFileTo(fh, dest, req.maxBytes, req.revision), req, sign, abort)
     } finally {
       await fh.close()
     }

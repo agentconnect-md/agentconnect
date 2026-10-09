@@ -164,6 +164,12 @@ import {
   WorkspaceGitMessageReq,
   WorkspaceGitMessageResult
 } from './frames/workspace.js'
+import {
+  TransferUploadReq,
+  TransferUploadGrant,
+  WorkspaceTransferReq,
+  WorkspaceTransferGrant
+} from './frames/file-transfer.js'
 import { TaskListReq, TaskList } from './frames/task.js'
 import {
   AssistantActivityReadReq,
@@ -484,6 +490,11 @@ export const FRAME_SCHEMAS = {
   'workspace/delete/ok': WorkspaceDeleteOk,
   'workspace/mkdir': WorkspaceMkdirReq,
   'workspace/mkdir/ok': WorkspaceMkdirOk,
+  // ── file transfer through the Source Cache bucket (presigned URLs only; bytes never ride this WS) ──
+  'workspace/transfer': WorkspaceTransferReq,
+  'workspace/transfer/grant': WorkspaceTransferGrant,
+  'transfer/upload': TransferUploadReq,
+  'transfer/upload/grant': TransferUploadGrant,
   'workspace/gitstatus': WorkspaceGitStatusReq,
   'workspace/gitstatus/result': WorkspaceGitStatus,
   'workspace/gitdiff': WorkspaceGitDiffReq,
@@ -809,6 +820,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('workspace/delete/ok', FRAME_SCHEMAS['workspace/delete/ok']),
   frame('workspace/mkdir', FRAME_SCHEMAS['workspace/mkdir']),
   frame('workspace/mkdir/ok', FRAME_SCHEMAS['workspace/mkdir/ok']),
+  frame('workspace/transfer', FRAME_SCHEMAS['workspace/transfer']),
+  frame('workspace/transfer/grant', FRAME_SCHEMAS['workspace/transfer/grant']),
+  frame('transfer/upload', FRAME_SCHEMAS['transfer/upload']),
+  frame('transfer/upload/grant', FRAME_SCHEMAS['transfer/upload/grant']),
   frame('workspace/gitstatus', FRAME_SCHEMAS['workspace/gitstatus']),
   frame('workspace/gitstatus/result', FRAME_SCHEMAS['workspace/gitstatus/result']),
   frame('workspace/gitdiff', FRAME_SCHEMAS['workspace/gitdiff']),

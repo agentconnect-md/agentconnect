@@ -86,6 +86,21 @@ function build(
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 describe('parseBrowserFrame', () => {
+  it('forwards uploaded-file references and drops a turn whose references are malformed', () => {
+    const file = {
+      uploadId: '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c',
+      name: 'spec.pdf',
+      mimeType: 'application/pdf',
+      size: 12,
+      sha256: Buffer.alloc(32, 1).toString('base64')
+    }
+    expect(parseBrowserFrame({ text: '', files: [file] }, USER)).toEqual({
+      op: { op: 'turn', text: '', user: USER, files: [file] }
+    })
+    expect(parseBrowserFrame({ text: 'hi', files: [{ ...file, name: '../x' }] }, USER)).toBeNull()
+    expect(parseBrowserFrame({ text: 'hi', files: [{ ...file, uploadId: 'nope' }] }, USER)).toBeNull()
+  })
+
   it('carries the steer-or-refuse flag (#547) only when the browser set it to true', () => {
     expect(parseBrowserFrame({ text: 'hi', steer: true }, USER)).toEqual({
       op: { op: 'turn', text: 'hi', user: USER, steer: true }

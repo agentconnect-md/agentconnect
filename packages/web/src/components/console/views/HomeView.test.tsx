@@ -384,7 +384,9 @@ describe('HomeView attach', () => {
       '',
       undefined,
       undefined,
-      expect.objectContaining({ data: 'QUJD', mimeType: 'image/webp' })
+      expect.objectContaining({ data: 'QUJD', mimeType: 'image/webp' }),
+      undefined,
+      []
     )
     expect(host.querySelector('img')).toBeNull() // composer cleared after send
   })

@@ -34,6 +34,8 @@ export interface Attachment extends Omit<PlatformAttachment, 'sourceUrl'> {
    *  full download (`inlineData`) doesn't fit the console history budget. Kept
    *  apart from `inlineData` so the ACP prompt block never receives it. */
   transcriptThumbnail?: { data: Buffer; mimeType: SessionImageAttachment['mimeType'] }
+  /** A console upload held in the Source Cache bucket; the prompt hands the agent a presigned GET for it. */
+  transfer?: { uploadId: string; sha256: string }
 }
 
 export interface NormalizedMessage extends Omit<

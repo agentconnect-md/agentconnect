@@ -103,7 +103,10 @@ export function parseBrowserFrame(
   if (typeof msg !== 'object' || msg === null) return null
   const m = msg as Record<string, unknown>
   // A bare message envelope (no type) or {type:'message', ...} is a turn.
-  if ((m.type === undefined || m.type === 'message') && (typeof m.text === 'string' || Array.isArray(m.attachments))) {
+  if (
+    (m.type === undefined || m.type === 'message') &&
+    (typeof m.text === 'string' || Array.isArray(m.attachments) || Array.isArray(m.files))
+  ) {
     const mentions = m.mentions !== undefined ? uuidArray(m.mentions, 16) : undefined
     const parsed = RelayWebchatOp.safeParse({
       op: 'turn',
@@ -114,6 +117,8 @@ export function parseBrowserFrame(
       ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
       ...(mentions ? { mentions } : {}),
       ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
+      // Uploaded-file references only; the bytes went browser → bucket and never cross this socket.
+      ...(m.files !== undefined ? { files: m.files } : {}),
       ...(m.runtime !== undefined ? { runtime: m.runtime } : {}),
       ...(m.worktree !== undefined ? { worktree: m.worktree } : {}),
       ...(m.steer === true ? { steer: true } : {})

@@ -60,6 +60,7 @@ import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
+  FILE_TRANSFER_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -185,6 +186,10 @@ import {
   WorkspaceFileQueryDto,
   WorkspaceFileDto,
   WorkspaceDownloadQueryDto,
+  WorkspaceTransferBody,
+  WorkspaceTransferDto,
+  FileUploadBody,
+  FileUploadDto,
   WorkspaceDownloadBody,
   PutWorkspaceFileQueryDto,
   PutWorkspaceFileBody,
@@ -272,7 +277,6 @@ import {
   attachmentDisposition,
   downloadContentType,
   DOWNLOAD_SLICE_BYTES,
-  sessionFileDownloadable,
   sha256Matches,
   WorkspaceDownloadRefusal
 } from '../workspace-download.js'
@@ -861,7 +865,15 @@ export function workspaceFailure(
       if (code === 'WORKSPACE_UNKNOWN_AGENT') {
         return { status: 404, error: 'Not Found', message: 'workspace not found', code }
       }
-      if (code === SANDBOX_REMOVED_CODE) return { status: 404, error: 'Not Found', message: err.message, code }
+      if (code === SANDBOX_REMOVED_CODE || code === 'WORKSPACE_NOT_FOUND') {
+        return { status: 404, error: 'Not Found', message: err.message, code }
+      }
+      // The store cannot take a transfer now (no lifecycle rules): the request was fine, the deployment is not.
+      if (code === 'WORKSPACE_TRANSFER_UNAVAILABLE')
+        return { status: 409, error: 'Conflict', message: err.message, code }
+      if (code === 'WORKSPACE_TRANSFER_FAILED') {
+        return { status: 503, error: 'Service Unavailable', message: err.message, code }
+      }
       // Version skew in the sandbox, like a daemon missing a feature: nothing about the request was wrong.
       if (code === 'WORKSPACE_SANDBOX_OUTDATED') return { status: 409, error: 'Conflict', message: err.message, code }
       // Ahead of the 400: the daemon reports it as a refused request (it carries a reason), but
@@ -3871,15 +3883,46 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Session file download: an upload or a shared file's bytes, assembled from daemon byte slices and never stored.
+    // A workspace file's scope as a read resolves it: an isolated session's worktree, a repo root, or the checkout.
+    // null ⇒ the route already answered; a shared session addresses the checkout, as the daemon lands its files there.
+    const workspaceFileScope = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agent: AgentRecord,
+      query: { sessionId?: string | undefined; repo?: string | undefined }
+    ): Promise<{ daemonId: DaemonId; sessionId?: string; repo?: string } | null> => {
+      let sessionId: string | undefined
+      if (query.sessionId) {
+        const session = await visibleAgentSession(req, agent.id, query.sessionId)
+        if (!session) {
+          reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+          return null
+        }
+        if (session.workspaceIsolation === 'session') sessionId = query.sessionId
+      }
+      if (!(await canReadWorkspaceRepoScope(agent, query.repo))) {
+        reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
+        return null
+      }
+      if (!agent.daemonId) {
+        reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        return null
+      }
+      const daemonId = agent.daemonId
+      if (!(await requireSessionWorkspaceRead(reply, agent.orgId, daemonId, sessionId))) return null
+      if (!(await requireRepoScope(reply, agent.orgId, daemonId, query.repo))) return null
+      return { daemonId, ...(sessionId ? { sessionId } : {}), ...(query.repo ? { repo: query.repo } : {}) }
+    }
+
+    // Workspace file download: any file in the workspace, assembled from daemon byte slices and never stored.
     r.get(
       '/agents/:id/workspace/file/download',
       {
         schema: {
           tags: [Tag.Workspace],
-          summary: 'Download a session file',
+          summary: 'Download a workspace file',
           description:
-            'Return the original bytes of one file from a session’s working root — its isolated worktree, or the agent’s checkout when the session shares it — as an attachment. The file must sit under uploads/ (where inbound attachments land), or be named together with sha256, the digest prefix a shared file’s transcript marker records; the bytes must still match that digest (409 WORKSPACE_FILE_CHANGED otherwise). The agent and the session must both be visible to the caller (404 otherwise). The control plane assembles the file from bounded byte slices it proxies live from the owning daemon and stores none of it; a file over the download ceiling is refused with 413 WORKSPACE_FILE_TOO_LARGE. 409 when the daemon or the agent’s sandbox is too old to serve bytes, 503 when the agent is unplaced or its daemon is offline.',
+            'Return the original bytes of one workspace file as an attachment. Pass sessionId to read a visible session’s working root — its isolated worktree, or the agent’s checkout when the session shares it — and repo (owner/repo) for one of the agent’s authorized additional repositories; omit both for the agent’s primary workspace. Containment, the .git rule and symlink refusal are the workspace read’s. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). The control plane assembles the file from bounded byte slices it proxies live from the owning daemon and stores none of it; a file over the download ceiling is refused with 413 WORKSPACE_FILE_TOO_LARGE — use the transfer route for those. 409 when the daemon or the agent’s sandbox is too old to serve bytes, 503 when the agent is unplaced or its daemon is offline.',
           operationId: 'downloadAgentSessionFile',
           params: IdParam,
           querystring: WorkspaceDownloadQueryDto,
@@ -3896,22 +3939,9 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        const session = await visibleAgentSession(req, agent.id, req.query.sessionId)
-        if (!session) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
-        if (!sessionFileDownloadable(req.query.path, req.query.sha256)) {
-          return reply.code(400).send({
-            error: 'Bad Request',
-            statusCode: 400,
-            message: 'only a file under uploads/, or a shared file named by its sha256, can be downloaded',
-            code: 'WORKSPACE_NOT_A_SESSION_FILE'
-          })
-        }
-        if (!agent.daemonId) {
-          return reply
-            .code(503)
-            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
-        }
-        const daemonId = agent.daemonId
+        const scope = await workspaceFileScope(req, reply, agent, req.query)
+        if (!scope) return reply
+        const { daemonId, ...target } = scope
         const downloads = await requireDaemonFeature(
           reply,
           agent.orgId,
@@ -3920,15 +3950,12 @@ export function agentRoutes(deps: HttpDeps) {
           'this agent version does not support file downloads; upgrade its daemon'
         )
         if (!downloads) return reply
-        // The daemon lands and shares a session's files in its worktree when isolated, else in the checkout.
-        const sessionId = session.workspaceIsolation === 'session' ? req.query.sessionId : undefined
-        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, daemonId, sessionId))) return
 
         try {
           const bytes = await assembleWorkspaceFile((offset) =>
             deps.control.workspaceRead(daemonId, {
               agentId: agent.id,
-              ...(sessionId ? { sessionId } : {}),
+              ...target,
               path: req.query.path,
               offset,
               limit: DOWNLOAD_SLICE_BYTES,
@@ -3951,6 +3978,101 @@ export function agentRoutes(deps: HttpDeps) {
             const error = err.status === 404 ? 'Not Found' : err.status === 409 ? 'Conflict' : 'Payload Too Large'
             return reply.code(err.status).send({ error, statusCode: err.status, message: err.message, code: err.code })
           }
+          if (sendWorkspaceFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Large or binary workspace file: the daemon puts it in the Source Cache bucket and the browser fetches a presigned GET.
+    r.post(
+      '/agents/:id/workspace/file/transfer',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Get a download link for a workspace file',
+          description:
+            'Return a short-lived presigned URL that downloads one workspace file as an attachment directly from the deployment’s object store, for files too large or too binary for the proxied download. The scope rules are the download route’s (sessionId, repo, containment, .git). When the store does not already hold this revision of the file, the owning daemon uploads it first, so the call may take as long as that upload; the control plane sees only the URL. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). 409 DAEMON_FEATURE_MISSING when the agent’s daemon has no object store for transfers, 409 WORKSPACE_TRANSFER_UNAVAILABLE when the store cannot take one right now, 404 WORKSPACE_NOT_FOUND for a missing file, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
+          operationId: 'transferAgentWorkspaceFile',
+          params: IdParam,
+          body: WorkspaceTransferBody,
+          response: { 200: WorkspaceTransferDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getServingAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const scope = await workspaceFileScope(req, reply, agent, req.body)
+        if (!scope) return reply
+        const { daemonId, ...target } = scope
+        const transfers = await requireDaemonFeature(
+          reply,
+          agent.orgId,
+          daemonId,
+          FILE_TRANSFER_FEATURE,
+          'this agent’s daemon has no object store for file transfers'
+        )
+        if (!transfers) return reply
+        try {
+          const { sha256, ...grant } = await deps.control.workspaceTransfer(daemonId, {
+            agentId: agent.id,
+            ...target,
+            path: req.body.path
+          })
+          // The object's digest stands in for the bytes the proxied download would hash.
+          const hex = Buffer.from(sha256, 'base64').toString('hex')
+          if (req.body.sha256 && !hex.startsWith(req.body.sha256.toLowerCase())) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'the file changed since it was shared',
+              code: 'WORKSPACE_FILE_CHANGED'
+            })
+          }
+          return { ...grant, expiresAt: new Date(grant.expiresAt).toISOString() }
+        } catch (err) {
+          if (sendWorkspaceFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // A file the console sends with a webchat turn: the daemon presigns a PUT into the Source Cache bucket.
+    r.post(
+      '/agents/:id/uploads',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Reserve a file upload',
+          description:
+            'Reserve one file upload for a chat turn with this agent and return a short-lived presigned PUT into the deployment’s object store. The browser hashes the file first (sha256, base64) and must send exactly the returned headers and the declared number of bytes; it then names uploadId in the turn’s files. The agent receives a download link, never the bytes through the control plane. Uploaded objects expire with the store’s lifecycle rule. 409 DAEMON_FEATURE_MISSING when the agent’s daemon has no object store for transfers, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
+          operationId: 'reserveAgentFileUpload',
+          params: IdParam,
+          body: FileUploadBody,
+          response: { 200: FileUploadDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getServingAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        const daemonId = agent.daemonId
+        const transfers = await requireDaemonFeature(
+          reply,
+          agent.orgId,
+          daemonId,
+          FILE_TRANSFER_FEATURE,
+          'this agent’s daemon has no object store for file uploads'
+        )
+        if (!transfers) return reply
+        try {
+          const grant = await deps.control.transferUpload(daemonId, { agentId: agent.id, ...req.body })
+          return { ...grant, expiresAt: new Date(grant.expiresAt).toISOString() }
+        } catch (err) {
           if (sendWorkspaceFailure(reply, err)) return
           throw err
         }

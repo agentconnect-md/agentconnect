@@ -104,7 +104,8 @@ const WebIdentityCredentials = z.strictObject({
     .string()
     .regex(/^[\w+=,.@-]{2,64}$/, { message: 'must be 2-64 characters of [A-Za-z0-9_+=,.@-]' })
     .optional(),
-  durationSeconds: z.number().int().min(900).max(43_200).default(3600)
+  // Omitted ⇒ derived from the longest URL lifetime; the role's MaxSessionDuration must allow it.
+  durationSeconds: z.number().int().min(900).max(43_200).optional()
 })
 
 const Limits = z
@@ -114,7 +115,10 @@ const Limits = z
     pendingReservationSeconds: DurationSeconds.default(3600),
     unreadPointerDays: z.number().int().min(1).max(365).default(30),
     getUrlSeconds: DurationSeconds.default(300),
-    putUrlSeconds: DurationSeconds.default(900)
+    putUrlSeconds: DurationSeconds.default(900),
+    // Console file transfers: the per-file cap, and how long a download link (the browser's or the agent's) stays valid.
+    transferMaxBytes: ByteQuantity.default(512 * KIB * KIB),
+    transferUrlSeconds: DurationSeconds.default(1800)
   })
   .prefault({})
 
@@ -122,6 +126,8 @@ export const SourceCacheConfigSchema = z
   .strictObject({
     version: z.literal(1),
     endpoint: Endpoint.optional(),
+    // The origin browsers reach the bucket at for file transfers, when it differs from the in-cluster `endpoint`.
+    publicEndpoint: Endpoint.optional(),
     region: Region,
     bucket: Bucket,
     prefix: Prefix,
@@ -135,6 +141,12 @@ export const SourceCacheConfigSchema = z
       if (limits[name] < 60 || limits[name] > 3600) {
         ctx.addIssue({ code: 'custom', path: ['limits', name], message: 'must be between 1m and 1h' })
       }
+    }
+    if (limits.transferUrlSeconds < 60 || limits.transferUrlSeconds > 12 * 3600) {
+      ctx.addIssue({ code: 'custom', path: ['limits', 'transferUrlSeconds'], message: 'must be between 1m and 12h' })
+    }
+    if (limits.transferMaxBytes > S3_SINGLE_PUT_MAX_BYTES) {
+      ctx.addIssue({ code: 'custom', path: ['limits', 'transferMaxBytes'], message: 'must not exceed 5Gi' })
     }
     if (limits.pendingReservationSeconds < limits.putUrlSeconds + SOURCE_CACHE_GRACE_SECONDS) {
       ctx.addIssue({
@@ -151,17 +163,41 @@ export const SourceCacheConfigSchema = z
       })
     }
     const credentials = config.credentials
-    if (
+    if (credentials.source === 'webIdentity' && sessionSecondsFor(limits) > 43_200) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['limits', 'transferUrlSeconds'],
+        message: 'with STS credentials, every URL lifetime plus 6m must fit the 12h session maximum'
+      })
+    } else if (
       credentials.source === 'webIdentity' &&
-      credentials.durationSeconds <= Math.max(limits.getUrlSeconds, limits.putUrlSeconds) + SOURCE_CACHE_GRACE_SECONDS
+      credentials.durationSeconds !== undefined &&
+      credentials.durationSeconds < sessionSecondsFor(limits)
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['credentials', 'durationSeconds'],
-        message: 'must outlive the longest URL lifetime plus 5m'
+        message: 'must outlive the longest URL lifetime plus 6m'
       })
     }
   })
+  .transform((config) => {
+    const { credentials } = config
+    if (credentials.source !== 'webIdentity') return { ...config, credentials }
+    const durationSeconds = credentials.durationSeconds ?? Math.max(3600, sessionSecondsFor(config.limits))
+    return { ...config, credentials: { ...credentials, durationSeconds } }
+  })
+
+/** The shortest STS session that outlives every URL it signs by the grace, plus a minute of slack. */
+function sessionSecondsFor(limits: {
+  getUrlSeconds: number
+  putUrlSeconds: number
+  transferUrlSeconds: number
+}): number {
+  return (
+    Math.max(limits.getUrlSeconds, limits.putUrlSeconds, limits.transferUrlSeconds) + SOURCE_CACHE_GRACE_SECONDS + 60
+  )
+}
 
 export type SourceCacheConfig = z.output<typeof SourceCacheConfigSchema>
 export type SourceCacheCredentialsConfig = SourceCacheConfig['credentials']

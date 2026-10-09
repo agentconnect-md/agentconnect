@@ -57,7 +57,8 @@ export const ShimFeatureSchema = z.enum([
   'cluster-skills-v3',
   'source-cache-bundle-v1',
   'skill-git-in-pod-v1',
-  'skill-git-writeback-v1'
+  'skill-git-writeback-v1',
+  'workspace-transfer-v1'
 ])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>
 
@@ -93,6 +94,8 @@ export const ShimCapabilitySchema = z.enum([
   'skills-git-writeback',
   // Create, upload and discard a shim-minted Source Cache bundle handle (source-cache.md §9, §13).
   'bundle',
+  // Snapshot one workspace file into a `bundle` handle for a console file transfer (source-cache-file-transfer.md).
+  'transfer',
   /** Report which runtimes this image actually provides, by asking them. The daemon cannot learn
    *  this any other way: `--k8s` runs no local runtime, and anything it states from its own
    *  configuration is a claim about an image it never opened. */

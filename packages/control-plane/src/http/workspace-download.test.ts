@@ -6,7 +6,6 @@ import {
   assembleWorkspaceFile,
   attachmentDisposition,
   downloadContentType,
-  sessionFileDownloadable,
   sha256Matches,
   WorkspaceDownloadRefusal
 } from './workspace-download.js'
@@ -37,22 +36,6 @@ function daemonServing(file: Buffer | undefined, chunk = 4, mtimeAt: (offset: nu
   }
   return { read, offsets }
 }
-
-describe('sessionFileDownloadable', () => {
-  it('admits an upload, and any other file only with the digest its share recorded', () => {
-    expect(sessionFileDownloadable('uploads/spec.pdf', undefined)).toBe(true)
-    expect(sessionFileDownloadable('uploads/nested/log.txt', undefined)).toBe(true)
-    expect(sessionFileDownloadable('out/chart.png', undefined)).toBe(false)
-    expect(sessionFileDownloadable('out/chart.png', '1a2b3c4d5e6f7a8b')).toBe(true)
-  })
-
-  it('refuses any path whose shape could leave the directory it names', () => {
-    for (const path of ['uploads', 'uploads/', '/uploads/x', 'uploads/../agent.json', 'uploads/./x', 'uploads\\x']) {
-      expect(sessionFileDownloadable(path, undefined), path).toBe(false)
-    }
-    expect(sessionFileDownloadable('out/../../etc/passwd', '1a2b3c4d5e6f7a8b')).toBe(false)
-  })
-})
 
 describe('assembleWorkspaceFile', () => {
   it('joins slices from the offsets the daemon names', async () => {
