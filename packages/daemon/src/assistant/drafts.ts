@@ -1,6 +1,11 @@
 // Assistant-mode drafts (assistant-mode.md §5.5, §5.10): a post that needs approval is recorded, carded to an internal member, and posted by the daemon itself once approved.
 import { randomUUID } from 'node:crypto'
-import type { AgentApprovalRoute, AgentApprovalRouted, AssistantModePolicy } from '@agentconnect.md/protocol'
+import type {
+  AgentApprovalRoute,
+  AgentApprovalRouted,
+  AssistantDraftDecisionResult,
+  AssistantModePolicy
+} from '@agentconnect.md/protocol'
 import type { MessageGateway, SendIdentity } from '../mcp/ops/context.js'
 import type { AssistantDraftCardView, AssistantDraftChoice } from '../slack/render.js'
 import {
@@ -11,6 +16,7 @@ import {
   type AssistantDraftKind,
   type AssistantDraftLedger,
   type AssistantDraftSource,
+  type AssistantDraftStatus,
   type AssistantDraftTarget,
   type AssistantGrantPlace
 } from '../store/assistant-drafts.js'
@@ -92,6 +98,17 @@ export interface InterceptedPost {
 }
 
 export type PostInterception = { handled: false } | { handled: true; result: unknown }
+
+/** What one decision did: `decided` settled the draft; any other result posted nothing. */
+export interface DraftDecision {
+  result: AssistantDraftDecisionResult
+  status: AssistantDraftStatus | null
+  granted: boolean
+  failure: string | null
+}
+
+/** The console user an editor's decision is recorded under, beside a card's `<workspace>:<member>`. */
+export const consoleDecider = (userId: string): string => `user:${userId}`
 
 type ApproverRung = 'asker' | 'responsible' | 'fallback'
 
@@ -198,13 +215,25 @@ export class AssistantDrafts {
       id: input.actor ? (scope ? `${scope}:${input.actor.userId}` : input.actor.userId) : null,
       name: input.actor?.name ?? null
     }
-    if (input.optionId === 'discard') {
-      await this.host.ledger().deny(draft.id, by, this.host.now())
-      await this.rewrite(draft.id)
-      return true
-    }
-    await this.approve(draft, by, input.optionId === 'always')
+    await this.decide(draft, input.optionId, by)
     return true
+  }
+
+  /** An editor's decision from the console; the control plane checked the editor, so only the agent must match. */
+  async decideFromConsole(input: {
+    agentId: string
+    draftId: string
+    choice: AssistantDraftChoice
+    decider: { userId: string; name: string | null }
+  }): Promise<DraftDecision> {
+    const draft = await this.host.ledger().get(input.draftId)
+    if (!draft || draft.agentId !== input.agentId) {
+      return { result: 'not-found', status: null, granted: false, failure: null }
+    }
+    return await this.decide(draft, input.choice, {
+      id: consoleDecider(input.decider.userId),
+      name: input.decider.name
+    })
   }
 
   /** Expire the due drafts of these agents; an expired draft is never posted. */
@@ -379,18 +408,37 @@ export class AssistantDrafts {
     return verified?.allowed === true
   }
 
+  /** Approve or discard: the one path a card click and the console share, so one CAS admits one execution. */
+  private async decide(
+    draft: AssistantDraft,
+    choice: AssistantDraftChoice,
+    by: { id: string | null; name: string | null }
+  ): Promise<DraftDecision> {
+    if (choice !== 'discard') return await this.approve(draft, by, choice === 'always')
+    const now = this.host.now()
+    if (!(await this.host.ledger().deny(draft.id, by, now))) return await this.refused(draft.id, now)
+    await this.rewrite(draft.id)
+    return { result: 'decided', status: 'denied', granted: false, failure: null }
+  }
+
+  /** A decision that lost the CAS: a due draft expires here, and the card shows whatever settled it. */
+  private async refused(id: string, now: number): Promise<DraftDecision> {
+    const ledger = this.host.ledger()
+    await ledger.expire(id, now)
+    await this.rewrite(id)
+    const live = await ledger.get(id)
+    const result = !live ? 'not-found' : live.status === 'expired' ? 'expired' : 'already-decided'
+    return { result, status: live?.status ?? null, granted: false, failure: null }
+  }
+
   private async approve(
     draft: AssistantDraft,
     by: { id: string | null; name: string | null },
     always: boolean
-  ): Promise<void> {
+  ): Promise<DraftDecision> {
     const ledger = this.host.ledger()
     const now = this.host.now()
-    if (!(await ledger.begin(draft.id, by, now))) {
-      await ledger.expire(draft.id, now)
-      await this.rewrite(draft.id)
-      return
-    }
+    if (!(await ledger.begin(draft.id, by, now))) return await this.refused(draft.id, now)
     // Never while assistant mode is off; the store refuses a card from an earlier generation (§5.5).
     const granted =
       always &&
@@ -419,6 +467,7 @@ export class AssistantDrafts {
         )
     }
     await this.rewrite(draft.id, granted)
+    return { result: 'decided', status: outcome.status, granted, failure: outcome.detail.failure ?? null }
   }
 
   /** Post the text unchanged. Only a returned message id is success; anything uncertain is never retried. */
@@ -503,7 +552,8 @@ function grantPlace(place: { platform: string; integrationId: string | null; cha
 }
 
 function outcomeOf(draft: AssistantDraft, granted: boolean): string {
-  const by = draft.decidedByName ? ` by ${draft.decidedByName}` : ''
+  const where = draft.decidedBy?.startsWith(consoleDecider('')) ? ' in the console' : ''
+  const by = draft.decidedByName ? ` by ${draft.decidedByName}${where}` : where
   switch (draft.status) {
     case 'succeeded':
       return granted

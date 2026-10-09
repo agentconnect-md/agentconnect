@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
   ASSISTANT_ACTIVITY_FEATURE,
+  ASSISTANT_DRAFT_DECISION_FEATURE,
   TASK_LIST_FEATURE,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
@@ -24,7 +25,12 @@ const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd5d5d5d5-dddd-4ddd-8ddd-ddddddddd0a1'
 const AGENT = 'a5a5a5a5-aaaa-4aaa-8aaa-aaaaaaaaa0a1'
 const GRANT = 'c'.repeat(32)
-const CAPABILITIES = { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [ASSISTANT_ACTIVITY_FEATURE] }
+const CAPABILITIES = {
+  platforms: ['slack'],
+  runtimes: ['claude'],
+  acp: true,
+  features: [ASSISTANT_ACTIVITY_FEATURE, ASSISTANT_DRAFT_DECISION_FEATURE]
+}
 const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
 }
@@ -51,6 +57,12 @@ class ActivitySpy {
   writes: AssistantActivityWriteReq[] = []
   subsessions: Extract<AssistantActivityReadResult, { operation: 'subsessions' }>['subsessions'] = []
   found = true
+  decision: Omit<Extract<AssistantActivityWriteResult, { operation: 'decide-draft' }>, 'operation'> = {
+    result: 'decided',
+    status: 'succeeded',
+    granted: false,
+    failure: null
+  }
   failure: Error | null = null
 
   async assistantActivityRead(daemonId: string, req: AssistantActivityReadReq): Promise<AssistantActivityReadResult> {
@@ -91,6 +103,7 @@ class ActivitySpy {
                 external: false
               },
               text: 'The release is out.',
+              offerAlways: true,
               approver: null,
               createdAt: '2026-10-09T09:00:00.000Z',
               expiresAt: '2026-10-10T09:00:00.000Z'
@@ -122,6 +135,7 @@ class ActivitySpy {
     expect(daemonId).toBe(DAEMON)
     this.writes.push(req)
     if (this.failure) throw this.failure
+    if (req.operation === 'decide-draft') return { operation: 'decide-draft', ...this.decision }
     return { operation: req.operation, found: this.found }
   }
 }
@@ -183,7 +197,7 @@ describe('the assistant Activity routes', () => {
     expect(item.json()).toMatchObject({ id: 'item-1', summary: 'In review.', observations: [{ text: 'PR opened' }] })
     expect((await get(running, '/items/item-2')).statusCode).toBe(404)
     expect((await get(running, '/drafts')).json()).toMatchObject({
-      drafts: [{ id: 'draft-1', text: 'The release is out.', target: { name: 'support' } }],
+      drafts: [{ id: 'draft-1', text: 'The release is out.', offerAlways: true, target: { name: 'support' } }],
       truncated: false
     })
     expect((await get(running, '/grants')).json()).toMatchObject({ grants: [{ id: GRANT, grantedByName: 'Alice' }] })
@@ -364,5 +378,99 @@ describe('the assistant Activity routes', () => {
     const asOwner = (await get(app(control), '/subsessions')).json()
     expect(asOwner.subsessions[2]).toMatchObject({ sessionId: dmChild, visible: true, parent: { sessionId: dm } })
     expect(asOwner.subsessions[3]).toMatchObject({ sessionId: null, visible: false, parent: null })
+  })
+})
+
+const decide = (running: HttpApp, decision: string, draftId = 'draft-1') =>
+  running.app.inject({
+    method: 'POST',
+    url: `${ORG}/agents/${AGENT}/assistant/drafts/${draftId}/decision`,
+    payload: { decision }
+  })
+
+describe('deciding a draft from the console', () => {
+  it('forwards an editor’s decision under the editor’s own identity and answers its outcome', async () => {
+    await seedAssistant()
+    const editor = await makeUser(`activity-decider-${randomUUID()}`, 'collaborator')
+    await new PgUserRepo(prisma).updateProfile(editor, { displayName: 'Grace' })
+    const control = new ActivitySpy()
+    const running = app(control, editor)
+
+    control.decision = { result: 'decided', status: 'succeeded', granted: true, failure: null }
+    const approved = await decide(running, 'approve_always')
+    expect(approved.statusCode, approved.body).toBe(200)
+    expect(approved.json()).toEqual({ status: 'succeeded', alwaysAllowed: true, failure: null })
+
+    control.decision = { result: 'decided', status: 'outcome_unknown', granted: false, failure: 'socket hang up' }
+    expect((await decide(running, 'approve', 'draft-2')).json()).toEqual({
+      status: 'outcome_unknown',
+      alwaysAllowed: false,
+      failure: 'socket hang up'
+    })
+    control.decision = { result: 'decided', status: 'denied', granted: false, failure: null }
+    expect((await decide(running, 'discard', 'draft-3')).json()).toMatchObject({ status: 'denied' })
+
+    const decider = { userId: editor, name: 'Grace' }
+    expect(control.writes).toEqual([
+      { agentId: AGENT, operation: 'decide-draft', draftId: 'draft-1', choice: 'always', decider },
+      { agentId: AGENT, operation: 'decide-draft', draftId: 'draft-2', choice: 'approve', decider },
+      { agentId: AGENT, operation: 'decide-draft', draftId: 'draft-3', choice: 'discard', decider }
+    ])
+  })
+
+  it('refuses an expired, an already decided and an unknown draft with their reasons', async () => {
+    await seedAssistant()
+    const control = new ActivitySpy()
+    const running = app(control)
+    control.decision = { result: 'expired', status: 'expired', granted: false, failure: null }
+    const expired = await decide(running, 'approve')
+    expect(expired.statusCode).toBe(409)
+    expect(expired.json()).toMatchObject({ code: 'DRAFT_EXPIRED', message: 'the draft expired; nothing was posted' })
+    control.decision = { result: 'already-decided', status: 'executing', granted: false, failure: null }
+    expect((await decide(running, 'discard')).json()).toMatchObject({ statusCode: 409, code: 'DRAFT_ALREADY_DECIDED' })
+    control.decision = { result: 'not-found', status: null, granted: false, failure: null }
+    expect((await decide(running, 'approve')).json()).toMatchObject({ statusCode: 404, code: 'NOT_FOUND' })
+    expect((await decide(running, 'allow_once')).statusCode).toBe(400)
+    expect(control.writes).toHaveLength(3)
+  })
+
+  it('lets no viewer decide', async () => {
+    await seedAssistant()
+    const control = new ActivitySpy()
+    const viewer = await makeUser(`activity-decide-viewer-${randomUUID()}`, 'viewer')
+    expect((await decide(app(control, viewer), 'approve')).statusCode).toBe(403)
+    expect(control.writes).toEqual([])
+  })
+
+  it('reads a restricted agent as absent to a member it is not shared with', async () => {
+    await seedAssistant({ visibility: 'restricted' })
+    const control = new ActivitySpy()
+    const other = await makeUser(`activity-decide-other-${randomUUID()}`, 'collaborator')
+    expect((await decide(app(control, other), 'approve')).statusCode).toBe(404)
+    expect(control.writes).toEqual([])
+  })
+
+  it('refuses a daemon that cannot decide, and reports a decision it sent but could not confirm', async () => {
+    await seedAssistant({ features: [ASSISTANT_ACTIVITY_FEATURE] })
+    const control = new ActivitySpy()
+    const old = await decide(app(control), 'approve')
+    expect(old.statusCode).toBe(409)
+    expect(old.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
+    // Reading still works on that daemon.
+    expect((await get(app(control), '/drafts')).statusCode).toBe(200)
+    expect(control.writes).toEqual([])
+
+    await prisma.daemon.update({ where: { id: DAEMON }, data: { capabilities: CAPABILITIES } })
+    control.failure = new ProtocolError('INTERNAL', 'no ack after 1 tries')
+    expect((await decide(app(control), 'approve')).json()).toMatchObject({
+      statusCode: 503,
+      code: 'DECISION_UNCONFIRMED'
+    })
+    control.failure = new NoConnection(DAEMON)
+    expect((await decide(app(control), 'approve')).json()).toMatchObject({ statusCode: 503, code: 'DAEMON_OFFLINE' })
+    control.failure = new ProtocolError('BAD_PAYLOAD', 'not in assistant mode', {
+      details: { reason: 'assistant-mode-off' }
+    })
+    expect((await decide(app(control), 'approve')).json()).toMatchObject({ code: 'ASSISTANT_MODE_OFF' })
   })
 })

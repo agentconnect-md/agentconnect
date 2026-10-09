@@ -1,4 +1,4 @@
-// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): bounded reads and two edits proxied to the owning daemon, nothing kept here.
+// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): bounded reads and editors' edits proxied to the owning daemon, nothing kept here.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
@@ -12,9 +12,12 @@ import {
   AssistantActivityItem,
   AssistantActivityItemDetail,
   AssistantActivitySubsessionState,
+  ASSISTANT_DRAFT_DECISION_FEATURE,
+  AssistantDraftStatus,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
-  type AssistantActivityWriteReq
+  type AssistantActivityWriteReq,
+  type AssistantActivityWriteResult
 } from '@agentconnect.md/protocol'
 import { canEdit, canView, canViewSession } from '../../authorization/policy.js'
 import { ProtocolError } from '../../domain/errors.js'
@@ -32,6 +35,17 @@ import { makeSessionAccessResolver } from '../session-access.js'
 const IdParam = z.object({ id: z.string().uuid() })
 const ItemParam = IdParam.extend({ itemId: z.string().min(1).max(512) })
 const GrantParam = IdParam.extend({ grantId: z.string().regex(/^[0-9a-f]{32}$/) })
+const DraftParam = IdParam.extend({ draftId: z.string().min(1).max(512) })
+const DraftDecisionBody = z.object({ decision: z.enum(['approve', 'approve_always', 'discard']) })
+const DRAFT_CHOICE = { approve: 'approve', approve_always: 'always', discard: 'discard' } as const
+const DraftDecisionDto = z.object({
+  /** `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted and is never retried. */
+  status: AssistantDraftStatus,
+  /** This decision recorded "always allow from here to there". */
+  alwaysAllowed: z.boolean(),
+  /** Why the post failed or is uncertain. */
+  failure: z.string().nullable()
+})
 
 const ItemsPageDto = z.object({ items: z.array(AssistantActivityItem), truncated: z.boolean() })
 const DraftsPageDto = z.object({ drafts: z.array(AssistantActivityDraft), truncated: z.boolean() })
@@ -92,6 +106,37 @@ export function assistantActivityFailure(err: unknown): Failure | null {
   return null
 }
 
+/** A decision that reached the daemon but went unanswered may have posted; anything else maps as any Activity request. */
+export function assistantDraftDecisionFailure(err: unknown): Failure | null {
+  const lost =
+    err instanceof ConnectionClosed ||
+    (err instanceof Error && err.message === 'connection closed') ||
+    (err instanceof ProtocolError && err.code === 'INTERNAL')
+  if (lost)
+    return {
+      status: 503,
+      error: 'Service Unavailable',
+      message: 'the decision was sent but not confirmed; read the drafts again to see where it stands',
+      code: 'DECISION_UNCONFIRMED'
+    }
+  return assistantActivityFailure(err)
+}
+
+const DRAFT_REFUSED: Record<'expired' | 'already-decided', Failure> = {
+  expired: {
+    status: 409,
+    error: 'Conflict',
+    message: 'the draft expired; nothing was posted',
+    code: 'DRAFT_EXPIRED'
+  },
+  'already-decided': {
+    status: 409,
+    error: 'Conflict',
+    message: 'the draft was already decided',
+    code: 'DRAFT_ALREADY_DECIDED'
+  }
+}
+
 export function agentAssistantActivityRoutes(deps: HttpDeps) {
   return async function agentAssistantActivityRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
@@ -101,7 +146,11 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
     const admit = async (
       req: FastifyRequest,
       reply: FastifyReply,
-      editorOnly: boolean
+      editorOnly: boolean,
+      need: { feature: string; refusal: string } = {
+        feature: ASSISTANT_ACTIVITY_FEATURE,
+        refusal: 'this agent version cannot show its activity; upgrade its daemon'
+      }
     ): Promise<{ agent: AgentRecord; daemonId: DaemonId } | null> => {
       const agent = await deps.repos.agent.get(orgOf(req), AgentId((req.params as { id: string }).id))
       if (!agent || !canView(agent, ctxOf(req))) {
@@ -130,11 +179,11 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         return null
       }
       const daemon = await deps.registry.getAvailable(orgOf(req), daemonId)
-      if (!daemon?.capabilities.features.includes(ASSISTANT_ACTIVITY_FEATURE)) {
+      if (!daemon?.capabilities.features.includes(need.feature)) {
         await reply.code(409).send({
           error: 'Conflict',
           statusCode: 409,
-          message: 'this agent version cannot show its activity; upgrade its daemon',
+          message: need.refusal,
           code: 'DAEMON_FEATURE_MISSING'
         })
         return null
@@ -160,11 +209,19 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       }
     }
 
-    const writeEdit = async (reply: FastifyReply, daemonId: string, req: AssistantActivityWriteReq) => {
+    const writeEdit = async <O extends AssistantActivityWriteReq['operation']>(
+      reply: FastifyReply,
+      daemonId: string,
+      req: Extract<AssistantActivityWriteReq, { operation: O }>,
+      failureOf: (err: unknown) => Failure | null = assistantActivityFailure
+    ): Promise<Extract<AssistantActivityWriteResult, { operation: O }> | null> => {
       try {
-        return await deps.control.assistantActivityWrite(daemonId, req)
+        return (await deps.control.assistantActivityWrite(daemonId, req)) as Extract<
+          AssistantActivityWriteResult,
+          { operation: O }
+        >
       } catch (err) {
-        const failure = assistantActivityFailure(err)
+        const failure = failureOf(err)
         if (!failure) throw err
         await send(reply, failure)
         return null
@@ -324,7 +381,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an assistant-mode agent’s pending drafts',
-          description: `Lists the posts waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. Approval stays on the card; this read changes nothing. Only callers who can edit the agent may read it.`,
+          description: `Lists the posts waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it, whether its card offers "always allow from here to there" and when it expires. This read changes nothing. Only callers who can edit the agent may read it.`,
           operationId: 'listAssistantDrafts',
           params: IdParam,
           response: { 200: DraftsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -339,6 +396,51 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           limit: ASSISTANT_ACTIVITY_DRAFTS_MAX
         })
         return page ? { drafts: page.drafts, truncated: page.truncated } : reply
+      }
+    )
+
+    r.post(
+      '/agents/:id/assistant/drafts/:draftId/decision',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Decide an assistant-mode agent’s pending draft',
+          description:
+            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `approve_always` also lets later posts from the same conversation to the same target go out without asking, where the card offers that; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. Only callers who can edit the agent may decide, and they are recorded as the decider.',
+          operationId: 'decideAssistantDraft',
+          params: DraftParam,
+          body: DraftDecisionBody,
+          response: { 200: DraftDecisionDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const admitted = await admit(req, reply, true, {
+          feature: ASSISTANT_DRAFT_DECISION_FEATURE,
+          refusal: 'this agent version cannot decide drafts from the console; upgrade its daemon'
+        })
+        if (!admitted) return reply
+        // The decider is stamped here from the session, never taken from the request.
+        const me = ctxOf(req)
+        const profile = await deps.repos.user.getProfile(me.userId).catch(() => null)
+        const name = profile?.displayName ?? profile?.email ?? null
+        const answer = await writeEdit(
+          reply,
+          admitted.daemonId,
+          {
+            agentId: admitted.agent.id,
+            operation: 'decide-draft',
+            draftId: req.params.draftId,
+            choice: DRAFT_CHOICE[req.body.decision],
+            decider: { userId: me.userId, name: name === null ? null : [...name].slice(0, 256).join('') }
+          },
+          assistantDraftDecisionFailure
+        )
+        if (!answer) return reply
+        if (answer.result === 'not-found') return send(reply, notFound('draft not found'))
+        if (answer.result !== 'decided' || !answer.status) {
+          return send(reply, DRAFT_REFUSED[answer.result === 'expired' ? 'expired' : 'already-decided'])
+        }
+        return { status: answer.status, alwaysAllowed: answer.granted, failure: answer.failure }
       }
     )
 

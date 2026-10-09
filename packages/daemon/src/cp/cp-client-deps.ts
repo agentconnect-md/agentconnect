@@ -38,7 +38,7 @@ import { createMemoryReader, type AgentMemoryAdminResolver } from './memory-read
 import { createDreamReader } from './dream-reader.js'
 import { createLocalSkillsReader } from './local-skills-reader.js'
 import { createRuntimeCommandsReader } from './runtime-commands-reader.js'
-import { createAssistantActivity } from './assistant-activity.js'
+import { createAssistantActivity, type AssistantActivityDeps } from './assistant-activity.js'
 import type { RuntimeCommandsCache } from '../runtimes/runtime-commands.js'
 import type { CpAgentRegistry } from './cp-agent-registry.js'
 import type { CpIntegrationRegistry } from './cp-integration-registry.js'
@@ -192,6 +192,8 @@ export interface CpClientSeamHost {
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
   dispatchPullRequestFeedback(req: SessionPullRequestFeedback): Promise<SessionPullRequestFeedbackResult>
   listBackgroundTasks(req: TaskListReq): Promise<TaskList>
+  /** An editor's approve or discard of an assistant-mode draft, run exactly as its card click would. */
+  decideAssistantDraft: AssistantActivityDeps['decideDraft']
   /** The edge's in-memory merge-when-ready registry, or undefined before agents are loaded. */
   autoMerge(): AutoMergeWatcher | undefined
   /** The console keep-alive leases over this daemon's sandboxes (`k8s/sandbox-hold.ts`). */
@@ -436,7 +438,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     assistantActivity: createAssistantActivity({
       store: () => host.store(),
       agent: (agentId) => host.agents().get(agentId),
-      now: () => systemClock.now()
+      now: () => systemClock.now(),
+      decideDraft: (input) => host.decideAssistantDraft(input)
     }),
     // Merge-when-ready lives at the EDGE and nowhere else — the CP relays these two frames and
     // stores nothing, so an unarmed answer is the truth about this process, not a lost row.

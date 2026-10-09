@@ -74,6 +74,7 @@ import {
   MAX_TASK_LIST_TASKS,
   TASK_LIST_FEATURE,
   ASSISTANT_ACTIVITY_FEATURE,
+  ASSISTANT_DRAFT_DECISION_FEATURE,
   AUTO_MERGE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
   SANDBOX_KEEP_ALIVE_FEATURE,
@@ -7286,6 +7287,8 @@ export class Daemon {
       TASK_LIST_FEATURE,
       // Serves the console's assistant-mode Activity view from the store; static.
       ASSISTANT_ACTIVITY_FEATURE,
+      // Decides a draft from the console through the same path as its card; static.
+      ASSISTANT_DRAFT_DECISION_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
       ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
@@ -23649,6 +23652,7 @@ export class Daemon {
       childSessionStatusProbe: (probe) => this.collab.childSessionStatusProbe(probe),
       dispatchPullRequestFeedback: (req) => this.dispatchPullRequestFeedback(req),
       listBackgroundTasks: (req) => this.listBackgroundTasks(req),
+      decideAssistantDraft: (input) => this.drafts.decideFromConsole(input),
       autoMerge: () => this.autoMergeWatcher,
       sandboxHolds: () => this.sandboxHolds,
       withWorkspaceFileWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>

@@ -3090,7 +3090,28 @@
           "external": "外部",
           "approver": "审批人：{name}",
           "expires": "{time} 过期",
-          "noApprover": "无人可审批"
+          "noApprover": "无人可审批",
+          "approve": "批准",
+          "approveAlways": "批准，并始终允许从这里发到那里",
+          "discard": "丢弃",
+          "cancel": "取消",
+          "approveConfirm": "现在发到 {target}？",
+          "approveAlwaysConfirm": "现在发到 {target}，并始终允许从这里发到那里？",
+          "discardConfirm": "丢弃这份草稿？不会发送任何内容。",
+          "decideFailed": "操作失败，请重试。",
+          "unconfirmed": "无法确认是否已处理，已重新读取列表。",
+          "upgradeDaemon": "升级此 Agent 的 Daemon 后才能在这里处理草稿。",
+          "outcome": {
+            "succeeded": "已发送。",
+            "succeededAlways": "已发送。之后从这里发到那里不再需要批准。",
+            "denied": "已丢弃，没有发送任何内容。",
+            "failed": "发送失败：{reason}。没有发送任何内容。",
+            "unknownReason": "未知错误",
+            "outcome_unknown": "不确定是否已发送，请查看该会话；不会再次发送。",
+            "expired": "已过期，没有发送任何内容。",
+            "decided": "已有人处理。",
+            "gone": "已不在等待批准。"
+          }
         },
         "grants": {
           "title": "始终允许",

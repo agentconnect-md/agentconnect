@@ -5,6 +5,9 @@ import { z } from 'zod'
 /** Daemon serves `assistant/activity/read` and `assistant/activity/write`; an older daemon ignores both, so the Control Plane checks first. */
 export const ASSISTANT_ACTIVITY_FEATURE = 'assistant-activity-v1'
 
+/** Daemon serves `decide-draft` on `assistant/activity/write`: an editor approves or discards a draft from the console. */
+export const ASSISTANT_DRAFT_DECISION_FEATURE = 'assistant-draft-decision-v1'
+
 /** JSON bytes one read result may take, leaving envelope headroom below the 256 KiB wire cap; a list stops short and says so. */
 export const ASSISTANT_ACTIVITY_RESULT_BYTES = 192 * 1024
 
@@ -88,6 +91,8 @@ export const AssistantActivityDraft = z.object({
     external: z.boolean()
   }),
   text: z.string().min(1).max(40_000),
+  /** The card offers "always allow from here to there". */
+  offerAlways: z.boolean().default(false),
   approver: z
     .object({
       kind: z.enum(['member', 'conversation']),
@@ -171,18 +176,53 @@ export const AssistantActivityReadResult = z.discriminatedUnion('operation', [
 ])
 export type AssistantActivityReadResult = z.infer<typeof AssistantActivityReadResult>
 
-/** C→D REQ: an editor deleting an item or revoking a grant; the Control Plane has already checked the caller. */
+/** How an editor decides a draft; `always` also allows later posts from here to there, where the card offers it. */
+export const AssistantDraftChoice = z.enum(['approve', 'always', 'discard'])
+export type AssistantDraftChoice = z.infer<typeof AssistantDraftChoice>
+
+export const AssistantDraftStatus = z.enum([
+  'awaiting_review',
+  'executing',
+  'succeeded',
+  'failed',
+  'outcome_unknown',
+  'denied',
+  'expired'
+])
+export type AssistantDraftStatus = z.infer<typeof AssistantDraftStatus>
+
+/** C→D REQ: an editor deleting an item, revoking a grant or deciding a draft; the Control Plane has already checked the caller. */
 export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
   z.object({ agentId, operation: z.literal('delete-item'), itemId: ref }),
-  z.object({ agentId, operation: z.literal('revoke-grant'), grantId: z.string().regex(/^[0-9a-f]{32}$/) })
+  z.object({ agentId, operation: z.literal('revoke-grant'), grantId: z.string().regex(/^[0-9a-f]{32}$/) }),
+  z.object({
+    agentId,
+    operation: z.literal('decide-draft'),
+    draftId: ref,
+    choice: AssistantDraftChoice,
+    /** The console user deciding, stamped by the Control Plane. */
+    decider: z.object({ userId: ref, name })
+  })
 ])
 export type AssistantActivityWriteReq = z.infer<typeof AssistantActivityWriteReq>
 
-/** D→C REP: `found` is false when there was nothing to delete or revoke. */
-export const AssistantActivityWriteResult = z.object({
-  operation: z.enum(['delete-item', 'revoke-grant']),
-  found: z.boolean()
-})
+/** `decided` when this call settled the draft; otherwise why it could not, and this call posted nothing. */
+export const AssistantDraftDecisionResult = z.enum(['decided', 'not-found', 'expired', 'already-decided'])
+export type AssistantDraftDecisionResult = z.infer<typeof AssistantDraftDecisionResult>
+
+/** D→C REP: `found` is false when there was nothing to delete or revoke; a decision reports the draft's status after it. */
+export const AssistantActivityWriteResult = z.discriminatedUnion('operation', [
+  z.object({ operation: z.literal('delete-item'), found: z.boolean() }),
+  z.object({ operation: z.literal('revoke-grant'), found: z.boolean() }),
+  z.object({
+    operation: z.literal('decide-draft'),
+    result: AssistantDraftDecisionResult,
+    status: AssistantDraftStatus.nullable(),
+    /** This decision recorded "always allow from here to there". */
+    granted: z.boolean(),
+    failure: z.string().max(2_000).nullable()
+  })
+])
 export type AssistantActivityWriteResult = z.infer<typeof AssistantActivityWriteResult>
 
 /** Whether a read result fits the byte budget the daemon trims to. */

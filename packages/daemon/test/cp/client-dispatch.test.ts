@@ -1316,6 +1316,41 @@ describe('CpClient dispatch', () => {
     }
   })
 
+  it('hands a console draft decision to the seam, only for the agent’s own organization, and replies with its outcome', async () => {
+    const agentId = CRON_AGENT_ID
+    const decision = { operation: 'decide-draft' as const, result: 'decided' as const, status: 'succeeded' as const }
+    const assistantActivity = {
+      read: vi.fn(async () => ({ operation: 'grants' as const, grants: [], truncated: false })),
+      write: vi.fn(async () => ({ ...decision, granted: true, failure: null }))
+    }
+    const { client, t } = await readyClient({ assistantActivity, orgForAgent: () => 'example-org' }, [], 'frame')
+    const req = {
+      agentId,
+      operation: 'decide-draft',
+      draftId: 'draft-1',
+      choice: 'always',
+      decider: { userId: 'usr-editor', name: 'Grace' }
+    }
+    try {
+      t.pushInbound(frame('assistant/activity/write', req, { orgId: 'other-org' }))
+      await tick()
+      expect(t.lastSent()).toMatchObject({ type: 'error', payload: { code: 'SCOPE_DENIED' } })
+      expect(assistantActivity.write).not.toHaveBeenCalled()
+
+      const write = JSON.parse(frame('assistant/activity/write', req, { orgId: 'example-org' }))
+      t.pushInbound(JSON.stringify(write))
+      await tick()
+      expect(assistantActivity.write).toHaveBeenCalledWith(req)
+      expect(t.lastSent()).toMatchObject({
+        type: 'assistant/activity/write/result',
+        corr: write.id,
+        payload: { ...decision, granted: true, failure: null }
+      })
+    } finally {
+      await client.stop()
+    }
+  })
+
   it('refuses an Activity request with its machine reason, and as an unknown agent where no seam is wired', async () => {
     const agentId = CRON_AGENT_ID
     const { t } = await readyClient({

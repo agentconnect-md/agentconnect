@@ -1,17 +1,20 @@
 // The console's Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11), answered from the daemon's own store.
 import { randomUUID } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ASSISTANT_ACTIVITY_OBSERVATIONS_MAX,
   ASSISTANT_ACTIVITY_RESULT_BYTES,
   AssistantActivityReadResult,
+  AssistantActivityWriteResult,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult as ReadResult
 } from '@agentconnect.md/protocol'
+import type { DraftDecision } from '../src/assistant/drafts.js'
 import {
   AssistantActivityViolationError,
   createAssistantActivity,
-  type AssistantActivity
+  type AssistantActivity,
+  type AssistantActivityDeps
 } from '../src/cp/assistant-activity.js'
 import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { ASSISTANT_DRAFT_TTL_MS, assistantGrantId } from '../src/store/assistant-drafts.js'
@@ -39,8 +42,21 @@ async function setup() {
     [b, { assistantMode: { enabled: true, responsibleUserId: 'usr-1' } }],
     [off, { assistantMode: { enabled: false } }]
   ])
-  const activity = createAssistantActivity({ store: () => s, agent: (id) => agents.get(id), now: () => NOW })
-  return { s, a, b, off, activity }
+  const decideDraft = vi.fn(
+    async (_input: Parameters<AssistantActivityDeps['decideDraft']>[0]): Promise<DraftDecision> => ({
+      result: 'decided',
+      status: 'succeeded',
+      granted: false,
+      failure: null
+    })
+  )
+  const activity = createAssistantActivity({
+    store: () => s,
+    agent: (id) => agents.get(id),
+    now: () => NOW,
+    decideDraft
+  })
+  return { s, a, b, off, activity, decideDraft }
 }
 
 async function read<O extends AssistantActivityReadReq['operation']>(
@@ -140,7 +156,9 @@ describe('the Activity view: items', () => {
       found: true
     })
     expect(await s.assistantItems.get(a, item.id)).toBeUndefined()
-    expect((await activity.write({ agentId: a, operation: 'delete-item', itemId: item.id })).found).toBe(false)
+    expect(await activity.write({ agentId: a, operation: 'delete-item', itemId: item.id })).toMatchObject({
+      found: false
+    })
   })
 })
 
@@ -231,6 +249,7 @@ describe('the Activity view: drafts and grants', () => {
             external: false
           },
           text,
+          offerAlways: false,
           approver: {
             kind: 'member',
             integrationId: 'int-a',
@@ -292,6 +311,55 @@ describe('the Activity view: drafts and grants', () => {
     expect((await read(activity, { agentId: a, operation: 'grants' })).grants.map((g) => g.id)).toEqual([
       assistantGrantId(webchat, there)
     ])
+  })
+})
+
+describe('the Activity view: deciding a draft', () => {
+  it('hands the decision to the draft path, names the console decider for grant listings, and bounds the failure', async () => {
+    const { s, a, activity, decideDraft } = await setup()
+    decideDraft.mockResolvedValueOnce({
+      result: 'decided',
+      status: 'failed',
+      granted: false,
+      failure: '😀'.repeat(3_000)
+    })
+    const req = {
+      agentId: a,
+      operation: 'decide-draft' as const,
+      draftId: 'draft-1',
+      choice: 'always' as const,
+      decider: { userId: 'usr-2', name: 'Grace' }
+    }
+    const answer = await activity.write(req)
+    expect(decideDraft).toHaveBeenCalledWith(req)
+    expect(answer).toMatchObject({ operation: 'decide-draft', result: 'decided', status: 'failed', granted: false })
+    expect(AssistantActivityWriteResult.safeParse(answer).success).toBe(true)
+    expect((await s.getDisplayNames(['usr-2'])).get('usr-2')).toBe('Grace')
+
+    decideDraft.mockResolvedValueOnce({ result: 'expired', status: 'expired', granted: false, failure: null })
+    expect(await activity.write({ ...req, choice: 'discard', decider: { userId: 'usr-3', name: null } })).toEqual({
+      operation: 'decide-draft',
+      result: 'expired',
+      status: 'expired',
+      granted: false,
+      failure: null
+    })
+    expect((await s.getDisplayNames(['usr-3'])).size).toBe(0)
+  })
+
+  it('never reaches the draft path for an agent it does not hold or one outside assistant mode', async () => {
+    const { off, activity, decideDraft } = await setup()
+    for (const agentId of [randomUUID(), off]) {
+      const write = activity.write({
+        agentId,
+        operation: 'decide-draft',
+        draftId: 'draft-1',
+        choice: 'approve',
+        decider: { userId: 'usr-2', name: 'Grace' }
+      })
+      await expect(write).rejects.toBeInstanceOf(AssistantActivityViolationError)
+    }
+    expect(decideDraft).not.toHaveBeenCalled()
   })
 })
 

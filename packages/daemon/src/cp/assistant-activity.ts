@@ -12,9 +12,11 @@ import {
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
   type AssistantActivityWriteReq,
-  type AssistantActivityWriteResult
+  type AssistantActivityWriteResult,
+  type AssistantDraftChoice
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
+import type { DraftDecision } from '../assistant/drafts.js'
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import type { AssistantDraft, AssistantDraftLedger } from '../store/assistant-drafts.js'
 import type {
@@ -44,12 +46,20 @@ export interface AssistantActivityStore {
   assistantSubsessions: Pick<AssistantSubsessionIndex, 'list'>
   getSession(key: string): Promise<SessionRecord | undefined>
   getDisplayNames(ids: string[]): Promise<Map<string, string>>
+  setDisplayName(id: string, name: string, updatedAt: number): Promise<void>
 }
 
 export interface AssistantActivityDeps {
   store(): AssistantActivityStore
   agent(agentId: string): Pick<Agent, 'assistantMode'> | undefined
   now(): number
+  /** The draft decision a card click runs, entered from the console. */
+  decideDraft(input: {
+    agentId: string
+    draftId: string
+    choice: AssistantDraftChoice
+    decider: { userId: string; name: string | null }
+  }): Promise<DraftDecision>
 }
 
 /** The seam the CP client dispatches `assistant/activity/*` to. */
@@ -137,18 +147,33 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
     async write(req) {
       admit(req.agentId)
       const store = deps.store()
-      if (req.operation === 'delete-item') {
-        return { operation: 'delete-item', found: await store.assistantItems.delete(req.agentId, req.itemId) }
+      switch (req.operation) {
+        case 'delete-item':
+          return { operation: 'delete-item', found: await store.assistantItems.delete(req.agentId, req.itemId) }
+        case 'revoke-grant':
+          return {
+            operation: 'revoke-grant',
+            found: await store.assistantDrafts.revokeGrant(req.agentId, req.grantId)
+          }
+        case 'decide-draft': {
+          const { userId, name } = req.decider
+          // Names the decider wherever a grant they made is listed; best effort, like every name-cache write.
+          if (name) await store.setDisplayName(userId, name, deps.now()).catch(() => undefined)
+          const decision = await deps.decideDraft(req)
+          return { operation: 'decide-draft', ...decision, failure: clipText(decision.failure, 1_000) }
+        }
       }
-      return { operation: 'revoke-grant', found: await store.assistantDrafts.revokeGrant(req.agentId, req.grantId) }
     }
   }
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString()
 
+const clipText = (text: string | null, max: number): string | null =>
+  text === null ? null : [...text].slice(0, max).join('')
+
 // A display name is a platform's to choose; the wire bounds it.
-const clip = (name: string | null): string | null => (name === null ? null : [...name].slice(0, 256).join(''))
+const clip = (name: string | null): string | null => clipText(name, 256)
 
 const placeOf = (place: AssistantPlace): AssistantActivityPlace => ({
   platform: place.platform,
@@ -193,6 +218,7 @@ function draftOf(draft: AssistantDraft, names: Map<string, string>): AssistantAc
       external: draft.targetExternal
     },
     text: draft.text,
+    offerAlways: draft.offerAlways,
     approver: approver
       ? {
           kind: approver.kind,
@@ -208,7 +234,7 @@ function draftOf(draft: AssistantDraft, names: Map<string, string>): AssistantAc
   }
 }
 
-/** A decider is recorded as `<workspace>:<user>` where the platform has workspaces; names are cached by the user id. */
+/** A decider is `<workspace>:<user>` where the platform has workspaces, or `user:<id>` from the console; names are cached by the id. */
 const deciderId = (by: string): string => by.slice(by.lastIndexOf(':') + 1)
 
 /** Keeps entries in order while the answer stays inside the wire budget. */

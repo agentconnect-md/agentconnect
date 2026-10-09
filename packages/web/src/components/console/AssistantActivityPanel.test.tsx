@@ -24,7 +24,9 @@ const mocks = vi.hoisted(() => ({
   subsessions: [] as unknown[],
   drafts: [] as unknown[],
   grants: [] as unknown[],
-  failure: null as Error | null
+  failure: null as Error | null,
+  outcome: { status: 'succeeded', alwaysAllowed: false, failure: null } as unknown,
+  decideFailure: null as Error | null
 }))
 
 const api = vi.hoisted(() => ({
@@ -37,7 +39,11 @@ const api = vi.hoisted(() => ({
   fetchAssistantSubsessions: vi.fn(async () => ({ subsessions: mocks.subsessions, truncated: false })),
   fetchAssistantDrafts: vi.fn(async () => ({ drafts: mocks.drafts, truncated: false })),
   fetchAssistantGrants: vi.fn(async () => ({ grants: mocks.grants, truncated: false })),
-  revokeAssistantGrant: vi.fn(async () => undefined)
+  revokeAssistantGrant: vi.fn(async () => undefined),
+  decideAssistantDraft: vi.fn(async (_agentId: string, _draftId: string, _decision: string) => {
+    if (mocks.decideFailure) throw mocks.decideFailure
+    return mocks.outcome
+  })
 }))
 
 vi.mock('@/lib/api', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/api')>()), ...api }))
@@ -127,6 +133,7 @@ const DRAFT: AssistantDraftDto = {
     external: false
   },
   text: 'The release is out.\n\nNotes are in the docs.',
+  offerAlways: true,
   approver: {
     kind: 'member',
     integrationId: INTEGRATION,
@@ -137,6 +144,15 @@ const DRAFT: AssistantDraftDto = {
   },
   createdAt: '2026-10-09T09:00:00.000Z',
   expiresAt: '2026-10-10T09:00:00.000Z'
+}
+/** A reply drafted in an external place: its card never offers "always allow". */
+const REPLY: AssistantDraftDto = {
+  ...DRAFT,
+  id: 'draft-2',
+  kind: 'reply',
+  target: { ...DRAFT.target, channel: 'C0SHARED', name: 'shared', external: true },
+  text: 'Thanks, we are on it.',
+  offerAlways: false
 }
 const GRANT: AssistantGrantDto = {
   id: 'a'.repeat(32),
@@ -158,6 +174,8 @@ beforeEach(() => {
   mocks.drafts = [DRAFT]
   mocks.grants = [GRANT]
   mocks.failure = null
+  mocks.outcome = { status: 'succeeded', alwaysAllowed: false, failure: null }
+  mocks.decideFailure = null
 })
 
 afterEach(async () => {
@@ -209,6 +227,7 @@ describe('the Activity view for anyone who can view the agent', () => {
 
     // Read-only: no delete, no drafts, no grants, and neither editor read is made.
     expect(button(host, 'Delete')).toBeUndefined()
+    expect(button(host, 'Approve')).toBeUndefined()
     expect(section(host, 'drafts')).toBeNull()
     expect(section(host, 'grants')).toBeNull()
     expect(api.fetchAssistantDrafts).not.toHaveBeenCalled()
@@ -258,14 +277,135 @@ describe('the Activity view for anyone who can view the agent', () => {
 })
 
 describe('the Activity view for an editor', () => {
-  it('shows each pending draft’s target, exact text, approver and expiry, with no way to approve here', async () => {
+  it('shows each pending draft’s target, exact text, approver and expiry, with the choices its card offers', async () => {
+    mocks.drafts = [DRAFT, REPLY]
     const host = await mount(true)
     const draft = section(host, 'drafts')!.querySelector('[data-assistant-draft="draft-1"]')!
     expect(draft.textContent).toContain('To #support · in a thread')
     expect(draft.textContent).toContain('The release is out.\n\nNotes are in the docs.')
     expect(draft.textContent).toContain('Approver: Ada')
     expect(draft.textContent).toContain('Expires Oct 10, 2026')
+    const labels = (row: Element) => [...row.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    expect(labels(draft)).toEqual(['Approve', 'Discard', 'Approve and always allow from here to there'])
+    expect(labels(host.querySelector('[data-assistant-draft="draft-2"]')!)).toEqual(['Approve', 'Discard'])
+  })
+
+  it('approves a draft after a confirmation, then shows the outcome in place of the choices', async () => {
+    const host = await mount(true)
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(draft, 'Approve'))
+    expect(api.decideAssistantDraft).not.toHaveBeenCalled()
+    const confirm = draft.querySelector('[role="group"]')!
+    expect(confirm.textContent).toContain('Post this to #support now?')
+    await click(button(confirm, 'Approve'))
+    expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'draft-1', 'approve')
+    expect(draft.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe('Posted.')
     expect(draft.querySelector('button')).toBeNull()
+    // The section counts what still waits; the decided row stays, showing how it ended.
+    expect(section(host, 'drafts')!.querySelector('.badge')).toBeNull()
+  })
+
+  it('approves and always allows the route, or discards, each as the card would', async () => {
+    mocks.outcome = { status: 'succeeded', alwaysAllowed: true, failure: null }
+    const host = await mount(true)
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(draft, 'Approve and always allow from here to there'))
+    const confirm = draft.querySelector('[role="group"]')!
+    expect(confirm.textContent).toContain('Post this to #support now, and always allow from here to there?')
+    await click(button(confirm, 'Approve'))
+    expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'draft-1', 'approve_always')
+    expect(draft.textContent).toContain('Posted. Posts from here to there now go out without asking.')
+
+    await act(async () => root?.unmount())
+    container?.remove()
+    mocks.outcome = { status: 'denied', alwaysAllowed: false, failure: null }
+    const again = await mount(true)
+    const row = again.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(row, 'Discard'))
+    expect(row.querySelector('[role="group"]')?.textContent).toContain('Discard this draft? Nothing is posted.')
+    await click(button(row.querySelector('[role="group"]')!, 'Discard'))
+    expect(api.decideAssistantDraft).toHaveBeenLastCalledWith(AGENT, 'draft-1', 'discard')
+    expect(row.textContent).toContain('Discarded. Nothing was posted.')
+  })
+
+  it('decides nothing when the confirmation is cancelled', async () => {
+    const host = await mount(true)
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(draft, 'Discard'))
+    await click(button(draft, 'Cancel'))
+    expect(draft.querySelector('[role="group"]')).toBeNull()
+    expect(button(draft, 'Approve')).toBeTruthy()
+    expect(api.decideAssistantDraft).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      { status: 'failed', alwaysAllowed: false, failure: 'the agent is no longer enabled in that conversation' },
+      'Couldn’t post: the agent is no longer enabled in that conversation. Nothing was sent.'
+    ],
+    [
+      { status: 'outcome_unknown', alwaysAllowed: false, failure: 'socket hang up' },
+      'Not sure this went through. Check the conversation; it won’t be posted again.'
+    ]
+  ])('says when a post failed or may not have gone through', async (outcome, text) => {
+    mocks.outcome = outcome
+    const host = await mount(true)
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(draft, 'Approve'))
+    await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
+    expect(draft.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(text)
+  })
+
+  it.each([
+    ['DRAFT_EXPIRED', 409, 'Expired. Nothing was posted.'],
+    ['DRAFT_ALREADY_DECIDED', 409, 'Already decided.'],
+    ['NOT_FOUND', 404, 'No longer waiting for approval.']
+  ])('shows a refused decision (%s) in place of the choices', async (code, status, text) => {
+    mocks.decideFailure = new ApiError('refused', status, code)
+    const host = await mount(true)
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(draft, 'Approve'))
+    await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
+    expect(draft.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(text)
+    expect(draft.querySelector('button')).toBeNull()
+  })
+
+  it('keeps the choices after a decision that did not go through, and reads the list again when unconfirmed', async () => {
+    mocks.decideFailure = new ApiError('offline', 503, 'DAEMON_OFFLINE')
+    const host = await mount(true)
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(draft, 'Approve'))
+    await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
+    expect(draft.querySelector('[role="alert"]')?.textContent).toBe('Couldn’t decide. Try again.')
+    expect(button(draft, 'Approve')).toBeTruthy()
+
+    mocks.decideFailure = new ApiError('unconfirmed', 503, 'DECISION_UNCONFIRMED')
+    const reads = api.fetchAssistantDrafts.mock.calls.length
+    await click(button(draft, 'Approve'))
+    await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
+    expect(draft.querySelector('[role="alert"]')?.textContent).toBe(
+      'Couldn’t confirm the decision. The list was read again.'
+    )
+    expect(api.fetchAssistantDrafts.mock.calls.length).toBeGreaterThan(reads)
+  })
+
+  it('keeps a decided row when a later read no longer lists it', async () => {
+    mocks.drafts = [DRAFT, REPLY]
+    const host = await mount(true)
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(draft, 'Approve'))
+    await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
+    // An unconfirmed decision on the other draft reads the list again, which no longer holds the first.
+    mocks.drafts = [REPLY]
+    mocks.decideFailure = new ApiError('unconfirmed', 503, 'DECISION_UNCONFIRMED')
+    const reply = host.querySelector('[data-assistant-draft="draft-2"]')!
+    const reads = api.fetchAssistantDrafts.mock.calls.length
+    await click(button(reply, 'Approve'))
+    await click(button(reply.querySelector('[role="group"]')!, 'Approve'))
+    expect(api.fetchAssistantDrafts.mock.calls.length).toBeGreaterThan(reads)
+    const row = host.querySelector('[data-assistant-draft="draft-1"]')
+    expect(row?.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe('Posted.')
+    expect(section(host, 'drafts')!.querySelector('.badge')?.textContent).toBe('1')
   })
 
   it('deletes an item after a confirmation, and drops it from the list', async () => {
@@ -319,5 +459,10 @@ describe('the Activity view on a phone', () => {
     const subsession = host.querySelector('[data-assistant-subsession="sid-child"]')!
     expect(subsession.className).toContain('flex-col')
     expect(subsession.className).toContain('desktop:flex-row')
+    // A draft's choices wrap under its text, and so does the confirmation that replaces them.
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    expect(draft.querySelector('[data-assistant-draft-actions]')?.className).toContain('flex-wrap')
+    await click(button(draft, 'Approve and always allow from here to there'))
+    expect(draft.querySelector('[role="group"]')?.className).toContain('flex-wrap')
   })
 })

@@ -3822,6 +3822,8 @@ export interface AssistantDraftDto {
     external: boolean
   }
   text: string
+  /** The card offers "always allow from here to there". */
+  offerAlways: boolean
   approver: {
     kind: 'member' | 'conversation'
     integrationId: string
@@ -3832,6 +3834,15 @@ export interface AssistantDraftDto {
   } | null
   createdAt: string
   expiresAt: string
+}
+
+export type AssistantDraftDecision = 'approve' | 'approve_always' | 'discard'
+
+/** What a decision did: `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted. */
+export interface AssistantDraftOutcomeDto {
+  status: 'succeeded' | 'failed' | 'outcome_unknown' | 'denied'
+  alwaysAllowed: boolean
+  failure: string | null
 }
 
 export interface AssistantGrantPlaceDto {
@@ -3875,6 +3886,14 @@ export async function fetchAssistantDrafts(
   agentId: string
 ): Promise<{ drafts: AssistantDraftDto[]; truncated: boolean }> {
   return apiGet(`${assistantBase(agentId)}/drafts`)
+}
+
+export async function decideAssistantDraft(
+  agentId: string,
+  draftId: string,
+  decision: AssistantDraftDecision
+): Promise<AssistantDraftOutcomeDto> {
+  return apiPost(`${assistantBase(agentId)}/drafts/${encodeURIComponent(draftId)}/decision`, { decision })
 }
 
 export async function fetchAssistantGrants(

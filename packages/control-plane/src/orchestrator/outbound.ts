@@ -191,6 +191,8 @@ import { ProtocolError } from '../domain/errors.js'
 // Keep the ordinary control timeout short while giving this destructive,
 // idempotent operation enough time to return its acknowledgement.
 const COLD_ACTIVATE_ACK_TIMEOUT_MS = 60_000
+// A console draft decision posts, records the post and rewrites the card before it answers.
+const ASSISTANT_DRAFT_DECISION_ACK_TIMEOUT_MS = 30_000
 const COLD_ACTIVATE_MAX_TRIES = 5
 const COLD_ACTIVATE_MAX_CONNECTIONS = 5
 
@@ -1342,16 +1344,21 @@ export class ControlSender {
     })
   }
 
-  /** An editor's delete of a ledger item or revoke of a post grant, applied on the daemon that holds them. */
+  /** An editor's delete of a ledger item, revoke of a post grant or decision on a draft, applied on the daemon that holds them. */
   async assistantActivityWrite(
     daemonId: string,
     req: AssistantActivityWriteReq
   ): Promise<AssistantActivityWriteResult> {
     const c = this.must(daemonId)
-    return c.conn.request<AssistantActivityWriteResult>('assistant/activity/write', req, {
-      epoch: c.sessionEpoch,
-      agentId: req.agentId
-    })
+    // A decision waits on the post itself and is sent once, so no retransmit can answer "already decided" to it.
+    const opts =
+      req.operation === 'decide-draft' ? { maxTries: 1, ackTimeoutMs: ASSISTANT_DRAFT_DECISION_ACK_TIMEOUT_MS } : {}
+    return c.conn.request<AssistantActivityWriteResult>(
+      'assistant/activity/write',
+      req,
+      { epoch: c.sessionEpoch, agentId: req.agentId },
+      opts
+    )
   }
 
   // Bring an agent's cluster sandbox to Running WITHOUT a turn (REQ → `agent/wake/ok`). Addressed at the

@@ -149,12 +149,13 @@ describe('openapi plane', () => {
     try {
       const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
       const base = '/api/v1/orgs/{orgId}/agents/{id}/assistant'
-      const expected: Array<[string, 'get' | 'delete', string, boolean]> = [
+      const expected: Array<[string, 'get' | 'post' | 'delete', string, boolean]> = [
         ['/items', 'get', 'listAssistantItems', false],
         ['/items/{itemId}', 'get', 'getAssistantItem', false],
         ['/items/{itemId}', 'delete', 'deleteAssistantItem', true],
         ['/subsessions', 'get', 'listAssistantSubsessions', false],
         ['/drafts', 'get', 'listAssistantDrafts', true],
+        ['/drafts/{draftId}/decision', 'post', 'decideAssistantDraft', true],
         ['/grants', 'get', 'listAssistantPostGrants', true],
         ['/grants/{grantId}', 'delete', 'revokeAssistantPostGrant', true]
       ]

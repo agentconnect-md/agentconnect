@@ -868,7 +868,8 @@ platform when it is not the card's own) and saying it will post, identifies the 
 any thread, shows the exact text, and offers Approve and Discard; a post to another place also
 offers "Always allow from here to there". Only the addressed member's click
 counts, re-verified like an approval DM's when the responsible user was chosen for it; anyone in
-the fallback conversation may decide.
+the fallback conversation may decide. An agent editor may also decide it from the agent's
+Activity view (see "Assistant-mode Activity"), including a draft no one could be reached for.
 
 Approve posts the text unchanged, once, a reply in its original thread. The approved post is
 recorded and threaded like any message the agent sends, so a reply to it reaches the agent; no
@@ -954,7 +955,11 @@ shows the most recent entries, up to a limit, and says when more exist.
   its state and start. Its title, a link to its session and the conversation that opened it appear
   only to someone who may view that conversation.
 - **Waiting for approval** is shown to editors only: each pending draft's target, its exact text,
-  who is asked to approve it and when it expires. It is approved or discarded on its card, not here.
+  who is asked to approve it and when it expires. An editor may approve or discard it here after a
+  confirmation, and approve with "always allow from here to there" where its card offers that. The
+  decision is the card's own: one post at most, whichever comes first, the same grant rules, the
+  editor recorded as the decider, and the card rewritten to the outcome. The row then shows how it
+  ended: posted, discarded, failed, not sure it went through, expired, or already decided.
 - **Always allowed** is shown to editors only: each "Always allow from here to there" route. An
   editor may revoke one after a confirmation; the next post along it waits for approval again.
 

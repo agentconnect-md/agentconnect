@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ASSISTANT_ACTIVITY_ITEMS_MAX,
   ASSISTANT_ACTIVITY_RESULT_BYTES,
+  AssistantActivityDraft,
   assistantActivityResultFits,
   buildEnvelope,
   decodeEnvelope,
@@ -113,6 +114,48 @@ describe('assistant/activity frames', () => {
       decodes('assistant/activity/write', { agentId: AGENT_ID, operation: 'revoke-grant', grantId: 'b'.repeat(32) })
     ).toBe(true)
     expect(decodes('assistant/activity/write/result', { operation: 'revoke-grant', found: false })).toBe(true)
+  })
+
+  it('round-trips a draft decision and its outcome', () => {
+    const decide = {
+      agentId: AGENT_ID,
+      operation: 'decide-draft',
+      draftId: 'draft-1',
+      choice: 'always',
+      decider: { userId: 'usr-1', name: 'Grace' }
+    }
+    expect(decodes('assistant/activity/write', decide)).toBe(true)
+    expect(decodes('assistant/activity/write', { ...decide, decider: { userId: 'usr-1', name: null } })).toBe(true)
+    expect(decodes('assistant/activity/write', { ...decide, choice: 'allow_once' })).toBe(false)
+    expect(decodes('assistant/activity/write', { ...decide, decider: undefined })).toBe(false)
+    const outcome = { operation: 'decide-draft', result: 'decided', status: 'succeeded', granted: true, failure: null }
+    expect(decodes('assistant/activity/write/result', outcome)).toBe(true)
+    expect(
+      decodes('assistant/activity/write/result', { ...outcome, result: 'not-found', status: null, granted: false })
+    ).toBe(true)
+    expect(decodes('assistant/activity/write/result', { ...outcome, result: 'maybe' })).toBe(false)
+    expect(decodes('assistant/activity/write/result', { ...outcome, failure: 'x'.repeat(2_001) })).toBe(false)
+
+    const draft = {
+      id: 'draft-1',
+      kind: 'elsewhere',
+      target: {
+        platform: 'slack',
+        integrationId: 'int-1',
+        channel: 'C0',
+        thread: null,
+        name: null,
+        dm: false,
+        external: false
+      },
+      text: 'Hi.',
+      approver: null,
+      createdAt: '2026-10-09T09:00:00.000Z',
+      expiresAt: '2026-10-10T09:00:00.000Z'
+    }
+    const parsed = AssistantActivityDraft.parse(draft)
+    expect(parsed.offerAlways).toBe(false)
+    expect(AssistantActivityDraft.parse({ ...draft, offerAlways: true }).offerAlways).toBe(true)
   })
 
   it('refuses unbounded or malformed requests and answers', () => {

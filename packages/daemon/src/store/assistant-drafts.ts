@@ -379,12 +379,12 @@ export class AssistantDraftLedger {
     return changes > 0
   }
 
-  /** Discard: awaiting review → denied. */
+  /** Discard: awaiting review and unexpired → denied. */
   async deny(id: string, by: { id: string | null; name: string | null }, now = Date.now()): Promise<boolean> {
     const { changes } = await this.db.query(
       `UPDATE assistant_draft SET status = 'denied', decidedAt = ?, decidedBy = ?, decidedByName = ?, settledAt = ?
-       WHERE id = ? AND status = 'awaiting_review'`,
-      [now, by.id, by.name, now, id]
+       WHERE id = ? AND status = 'awaiting_review' AND expiresAt > ?`,
+      [now, by.id, by.name, now, id, now]
     )
     return changes > 0
   }
