@@ -41,6 +41,8 @@ import type {
   WorkspaceWriteOk,
   WorkspaceDeleteReq,
   WorkspaceDeleteOk,
+  WorkspaceMkdirReq,
+  WorkspaceMkdirOk,
   WorkspaceEntry,
   WorkspaceErrorReason
 } from '@agentconnect.md/protocol'
@@ -81,7 +83,7 @@ export interface WorkspaceLocation {
 }
 
 /**
- * The four operations, as one seam.
+ * The file operations, as one seam.
  *
  * A `root` rather than an agent id: which agent owns which workspace is the daemon's business and
  * means nothing on the shim side, where the answer is "the volume this pod has mounted".
@@ -94,6 +96,7 @@ export interface WorkspaceFiles {
    *  would be deciding policy from the half-trusted side. */
   write(root: string, scratch: boolean, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk>
   delete(root: string, scratch: boolean, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk>
+  mkdir(root: string, scratch: boolean, req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk>
 }
 
 /** The file operations over several filesystems: each call names its root, and the route picks the filesystem, or refuses, per call. */
@@ -114,6 +117,10 @@ export class RoutedWorkspaceFiles implements WorkspaceFiles {
 
   async delete(root: string, scratch: boolean, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk> {
     return await (await this.route(root)).delete(root, scratch, req)
+  }
+
+  async mkdir(root: string, scratch: boolean, req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk> {
+    return await (await this.route(root)).mkdir(root, scratch, req)
   }
 }
 
@@ -576,6 +583,26 @@ export const localWorkspaceFiles: WorkspaceFiles = {
     if (!sameFileVersion(initial, latest)) throw changedFile()
     await fs.unlink(target)
     return { agentId: req.agentId, path: req.path }
+  },
+
+  async mkdir(root, scratch, req) {
+    assertScratch(scratch)
+    let { resolved, realRoot } = await resolveContained(root, req.path)
+    if (realRoot === null) {
+      await fs.mkdir(root, { recursive: true })
+      ;({ resolved, realRoot } = await resolveContained(root, req.path))
+    }
+    if (realRoot === null) throw changedFile()
+    if (path.relative(path.resolve(root), resolved) === '') throw existingWorkspacePath()
+
+    const parent = await createParentUnder(root, realRoot, resolved)
+    try {
+      await fs.mkdir(path.join(parent, path.basename(resolved)))
+    } catch (err) {
+      if (isErrno(err, 'EEXIST')) throw existingWorkspacePath()
+      throw err
+    }
+    return { agentId: req.agentId, path: req.path }
   }
 }
 
@@ -589,6 +616,11 @@ function changedFile(): WorkspaceConflictError {
 
 function existingFile(): WorkspaceConflictError {
   return new WorkspaceConflictError('the workspace file already exists; open it to edit')
+}
+
+/** Shared with the fd implementation, so both filesystems refuse an existing path in the same words. */
+export function existingWorkspacePath(): WorkspaceConflictError {
+  return new WorkspaceConflictError('a file or folder already exists at that path')
 }
 
 /**

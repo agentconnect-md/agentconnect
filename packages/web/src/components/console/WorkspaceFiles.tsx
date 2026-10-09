@@ -9,6 +9,7 @@ import dynamic from 'next/dynamic'
 import { useTranslations } from 'next-intl'
 import {
   ApiError,
+  createWorkspaceDir,
   deleteWorkspaceFile,
   fetchWorkspaceFile,
   fetchWorkspaceFileFull,
@@ -123,6 +124,13 @@ type Viewer = {
   loadingMore: boolean
 }
 
+type FolderDraft = {
+  directory: string
+  name: string
+  saving: boolean
+  error: string | null
+}
+
 type DeleteDraft = {
   path: string
   mtime: string
@@ -176,6 +184,7 @@ export function WorkspaceFiles({
   const [viewer, setViewer] = useState<Viewer | null>(null)
   const [editor, setEditor] = useState<FileBrowserEditorDraft | null>(null)
   const [deleteDraft, setDeleteDraft] = useState<DeleteDraft | null>(null)
+  const [folderDraft, setFolderDraft] = useState<FolderDraft | null>(null)
   const [mobileListSignal, setMobileListSignal] = useState(0)
   // The directory the breadcrumb was navigated to; an open file's own directory wins over it.
   const [directory, setDirectory] = useState('')
@@ -248,6 +257,7 @@ export function WorkspaceFiles({
     setViewer(null)
     setEditor(null)
     setDeleteDraft(null)
+    setFolderDraft(null)
     setMobileListSignal(0)
     setDirectory('')
     autoOpenedRef.current = false
@@ -295,6 +305,16 @@ export function WorkspaceFiles({
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [deleteDraft])
+
+  const folderSaving = folderDraft?.saving ?? null
+  useEffect(() => {
+    if (folderSaving === null) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !folderSaving) setFolderDraft(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [folderSaving])
 
   // On first entry, preload the project guide so the desktop preview isn't empty.
   // Mobile starts unselected on the shared browser's file list.
@@ -402,7 +422,7 @@ export function WorkspaceFiles({
 
   // Breadcrumb or tree navigation: close the preview and make `dirPath` the directory a new file lands in.
   const navigateTo = (dirPath: string, expand = true) => {
-    if (editor) return
+    if (editor || folderDraft) return
     autoOpenedRef.current = true
     viewerRequestRef.current += 1
     setViewer(null)
@@ -430,6 +450,50 @@ export function WorkspaceFiles({
       saving: false,
       error: null
     })
+  }
+
+  const startCreateFolder = (dirPath = selectedDirectory) => {
+    setDeleteDraft(null)
+    expandTo(dirPath)
+    setFolderDraft({ directory: dirPath, name: '', saving: false, error: null })
+  }
+
+  const updateFolderName = (name: string) => {
+    setFolderDraft((current) => (current ? { ...current, name, error: null } : current))
+    if (!folderDraft) return
+    expandTo([folderDraft.directory, ...name.replace(/^\/+/, '').split('/').slice(0, -1)].filter(Boolean).join('/'))
+  }
+
+  // An empty folder is created on the daemon, then becomes the breadcrumb's location so the next file lands in it.
+  const saveFolder = async () => {
+    if (!folderDraft || folderDraft.saving) return
+    const name = folderDraft.name.trim().replace(/^\/+/, '').replace(/\/+$/, '').replace(/\/+/g, '/')
+    if (!name) {
+      setFolderDraft({ ...folderDraft, error: t('folderNameRequired') })
+      return
+    }
+    const dirPath = [folderDraft.directory, name].filter(Boolean).join('/')
+    setFolderDraft({ ...folderDraft, saving: true, error: null })
+    try {
+      await createWorkspaceDir(agentId, dirPath)
+      setFolderDraft(null)
+      setRefreshTick((tick) => tick + 1)
+      autoOpenedRef.current = true
+      viewerRequestRef.current += 1
+      setViewer(null)
+      setDirectory(dirPath)
+      expandTo(dirPath)
+    } catch (e) {
+      setFolderDraft((current) =>
+        current
+          ? {
+              ...current,
+              saving: false,
+              error: e instanceof ApiError && e.status === 409 ? t('folderExists') : msg(e)
+            }
+          : current
+      )
+    }
   }
 
   const startEdit = (path: string) => {
@@ -527,10 +591,14 @@ export function WorkspaceFiles({
     openPath(parts.map((_, index) => parts.slice(0, index + 1).join('/')))
   }
 
-  const breadcrumbPath = editor ? editor.target || editor.directory : (viewer?.path ?? directory)
+  const breadcrumbPath = editor
+    ? editor.target || editor.directory
+    : folderDraft
+      ? folderDraft.directory
+      : (viewer?.path ?? directory)
+  const draftName = editor?.target === '' ? editor.name : (folderDraft?.name ?? '')
   // The tree highlights the breadcrumb's location, including directories typed into a new-file draft.
-  const typedDirectories =
-    editor?.target === '' ? editor.name.replace(/^\/+/, '').split('/').slice(0, -1).filter(Boolean) : []
+  const typedDirectories = draftName.replace(/^\/+/, '').split('/').slice(0, -1).filter(Boolean)
   const highlightedPath = [breadcrumbPath, ...typedDirectories].filter(Boolean).join('/')
   const viewerCanEdit =
     canEdit && !!viewer?.file?.exists && viewer.file.encoding === 'utf8' && !!viewer.file.mtime && !viewer.loading
@@ -572,16 +640,27 @@ export function WorkspaceFiles({
                   selected={highlightedPath === full}
                   onClick={() => openFolder(full)}
                   action={
-                    canEdit && !editor ? (
-                      <button
-                        type="button"
-                        className="iconbtn h-[22px] w-[22px] flex-none rounded-xs"
-                        aria-label={t('addFileIn', { path: full })}
-                        title={t('addFileIn', { path: full })}
-                        onClick={() => startCreate(full)}
-                      >
-                        <Icon name="plus" size={13} />
-                      </button>
+                    canEdit && !editor && !folderDraft ? (
+                      <>
+                        <button
+                          type="button"
+                          className="iconbtn h-[22px] w-[22px] flex-none rounded-xs"
+                          aria-label={t('addFileIn', { path: full })}
+                          title={t('addFileIn', { path: full })}
+                          onClick={() => startCreate(full)}
+                        >
+                          <Icon name="plus" size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          className="iconbtn h-[22px] w-[22px] flex-none rounded-xs"
+                          aria-label={t('addFolderIn', { path: full })}
+                          title={t('addFolderIn', { path: full })}
+                          onClick={() => startCreateFolder(full)}
+                        >
+                          <Icon name="folder-plus" size={13} />
+                        </button>
+                      </>
                     ) : undefined
                   }
                 />
@@ -668,12 +747,19 @@ export function WorkspaceFiles({
             root={repoPicker ?? workspaceRoot}
             rootControl={repoPicker !== null}
             path={breadcrumbPath}
-            creating={editor?.target === ''}
-            draftName={editor?.name ?? ''}
-            onDraftNameChange={updateCreateName}
+            creating={editor?.target === '' || folderDraft !== null}
+            draftName={draftName}
+            onDraftNameChange={folderDraft ? updateFolderName : updateCreateName}
+            {...(folderDraft
+              ? {
+                  onSubmit: () => void saveFolder(),
+                  placeholder: t('folderNamePlaceholder'),
+                  inputAriaLabel: t('newFolderPath')
+                }
+              : {})}
             onBack={isMobile && editor ? backFromEditor : undefined}
-            onNavigate={editor ? undefined : navigateTo}
-            disabled={editor?.saving}
+            onNavigate={editor || folderDraft ? undefined : navigateTo}
+            disabled={editor?.saving || folderDraft?.saving}
             ariaLabel={t('workspacePath')}
           />
         }
@@ -688,6 +774,14 @@ export function WorkspaceFiles({
                 (!!editor.target && !editor.mtime) ||
                 (!editor.target && !editor.name.trim().split('/').at(-1))
               }
+            />
+          ) : folderDraft ? (
+            <FileBrowserEditorActions
+              saving={folderDraft.saving}
+              onCancel={() => setFolderDraft(null)}
+              onSave={() => void saveFolder()}
+              saveLabel={t('createFolder')}
+              disabled={!folderDraft.name.trim().replace(/\/+/g, '')}
             />
           ) : (
             <div
@@ -724,6 +818,10 @@ export function WorkspaceFiles({
                     <Icon name="file-plus" size={13} />
                     {t('addFile')}
                   </Button>
+                  <Button variant="secondary" size="xs" className="flex-none" onClick={() => startCreateFolder()}>
+                    <Icon name="folder-plus" size={13} />
+                    {t('newFolder')}
+                  </Button>
                   {viewerCanEdit ? (
                     <Button variant="secondary" size="xs" className="flex-none" onClick={() => startEdit(viewer!.path)}>
                       <Icon name="pencil" size={13} />
@@ -742,6 +840,15 @@ export function WorkspaceFiles({
           )
         }
       >
+        {folderDraft?.error ? (
+          <div
+            className="border-b border-(--border-subtle) px-4 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--status-error)"
+            role="alert"
+          >
+            {folderDraft.error}
+          </div>
+        ) : null}
+
         {!editor && root?.loading && !root.entries && (
           <div className="flex justify-center py-8">
             <Spinner size={30} />

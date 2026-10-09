@@ -1,5 +1,5 @@
 /**
- * `WorkspaceReader` — the seam answering the CP's workspace file list/read/write/delete
+ * `WorkspaceReader` — the seam answering the CP's workspace file list/read/write/delete/mkdir
  * REQs. File bytes live only at the edge (§1/§12); the CP proxies single pages/slices or
  * one bounded scratch-file mutation and never persists them.
  *
@@ -18,7 +18,9 @@ import type {
   WorkspaceWriteReq,
   WorkspaceWriteOk,
   WorkspaceDeleteReq,
-  WorkspaceDeleteOk
+  WorkspaceDeleteOk,
+  WorkspaceMkdirReq,
+  WorkspaceMkdirOk
 } from '@agentconnect.md/protocol'
 import {
   localWorkspaceFiles,
@@ -46,6 +48,7 @@ export interface WorkspaceReader {
   read(req: WorkspaceReadReq): Promise<WorkspaceReadContent>
   write(req: WorkspaceWriteReq): Promise<WorkspaceWriteOk>
   delete(req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk>
+  mkdir(req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk>
 }
 
 export type WorkspaceWriteCoordinator = <T>(agentId: string, write: () => Promise<T>) => Promise<T>
@@ -124,6 +127,20 @@ export function createWorkspaceReader(
       return coordinateWrite(req.agentId, async () => {
         const location = await locationFor(req.agentId)
         return filesOf(req.agentId, location).delete(location.root, location.scratch, req)
+      })
+    },
+
+    async mkdir(req) {
+      if (!(await locationFor(req.agentId)).scratch) {
+        throw new WorkspaceViolationError(
+          'workspace files are editable only in scratch workspaces',
+          'read-only-workspace'
+        )
+      }
+
+      return coordinateWrite(req.agentId, async () => {
+        const location = await locationFor(req.agentId)
+        return filesOf(req.agentId, location).mkdir(location.root, location.scratch, req)
       })
     }
   }

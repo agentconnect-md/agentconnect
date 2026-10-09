@@ -24,6 +24,8 @@ import { z } from 'zod'
  *   UTF-8 text has a predictable wire size.
  * - `workspace/delete`: delete one regular file when its mtime still matches the
  *   last read, so a console action never removes a newer agent revision.
+ * - `workspace/mkdir`: create one empty scratch-workspace directory (and any
+ *   missing parents); an existing path is a conflict, never reused.
  */
 
 /** Machine-readable `reason` on a workspace `BAD_PAYLOAD` / `CONFLICT` error
@@ -160,6 +162,20 @@ export const WorkspaceDeleteOk = z.object({
   path: z.string()
 })
 export type WorkspaceDeleteOk = z.infer<typeof WorkspaceDeleteOk>
+
+/** C→D REQ: create one empty scratch-workspace directory, creating missing parents. */
+export const WorkspaceMkdirReq = z.object({
+  agentId: z.string().min(1),
+  path: z.string().min(1).max(4096)
+})
+export type WorkspaceMkdirReq = z.infer<typeof WorkspaceMkdirReq>
+
+/** D→C REP (corr = the req id): the created directory. */
+export const WorkspaceMkdirOk = z.object({
+  agentId: z.string(),
+  path: z.string()
+})
+export type WorkspaceMkdirOk = z.infer<typeof WorkspaceMkdirOk>
 
 /**
  * Agent workspace git ops (C→D REQ → REP) — the console's on-demand controls for

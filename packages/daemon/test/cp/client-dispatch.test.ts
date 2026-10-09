@@ -829,6 +829,19 @@ describe('CpClient dispatch', () => {
     expect(rep.corr).toBe(f.id)
   })
 
+  it('replies workspace/mkdir/ok from the scratch workspace file seam', async () => {
+    const mkdir = vi.fn(async () => ({ agentId: 'a1', path: 'skills/reference' }))
+    const { t, workspaceRead } = await readyClient({ workspaceRead: { mkdir } as any })
+    const payload = { agentId: 'a1', path: 'skills/reference' }
+    const f = JSON.parse(frame('workspace/mkdir', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(workspaceRead.mkdir).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/mkdir/ok')
+    expect(rep.corr).toBe(f.id)
+  })
+
   it('replies workspace/gitstatus/result from the workspaceGit seam', async () => {
     const status = vi.fn(async () => ({
       agentId: 'a1',

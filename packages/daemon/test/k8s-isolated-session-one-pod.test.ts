@@ -234,6 +234,9 @@ function filesOn(pod: PodWorkspaceFs): WorkspaceFiles {
     },
     delete: async () => {
       throw new Error('not in this test')
+    },
+    mkdir: async () => {
+      throw new Error('not in this test')
     }
   }
 }

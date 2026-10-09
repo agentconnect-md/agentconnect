@@ -191,6 +191,8 @@ import {
   WorkspaceFileWriteDto,
   DeleteWorkspaceFileQueryDto,
   WorkspaceFileDeleteDto,
+  CreateWorkspaceDirQueryDto,
+  WorkspaceDirCreateDto,
   WorkspaceGitStatusDto,
   WorkspaceGitDiffQueryDto,
   WorkspaceGitDiffDto,
@@ -4089,6 +4091,67 @@ export function agentRoutes(deps: HttpDeps) {
             path: req.query.path,
             ifMatchMtime: req.query.ifMatchMtime
           })
+          return { path: ok.path }
+        } catch (err) {
+          if (sendWorkspaceMutationFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Create one empty scratch-workspace directory: authorized like a write, executed only on the owning daemon.
+    r.post(
+      '/agents/:id/workspace/dir',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Create a scratch workspace folder',
+          description:
+            'Create one empty directory, and any missing parent directories, in a scratch workspace on the owning daemon. Requires edit access. A path that already exists, as a file or a folder, returns 409. GitHub workspaces remain read-only, and a daemon too old to create folders returns 409.',
+          operationId: 'createAgentWorkspaceDir',
+          params: IdParam,
+          querystring: CreateWorkspaceDirQueryDto,
+          response: {
+            200: WorkspaceDirCreateDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const agent = await getServingAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!canEdit(agent, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
+        if (agent.workspace.mode !== 'scratch') {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'workspace files are editable only in scratch workspaces'
+          })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+
+        const daemon = await deps.registry.getAvailable(orgOf(req), agent.daemonId)
+        if (!daemon?.capabilities.features.includes('workspace-dir-create-v1')) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this agent version does not support creating workspace folders'
+          })
+        }
+
+        try {
+          const ok = await deps.control.workspaceMkdir(agent.daemonId, { agentId: agent.id, path: req.query.path })
           return { path: ok.path }
         } catch (err) {
           if (sendWorkspaceMutationFailure(reply, err)) return

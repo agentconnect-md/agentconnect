@@ -10,6 +10,8 @@ import type {
   WorkspaceDeleteReq,
   WorkspaceListPage,
   WorkspaceListReq,
+  WorkspaceMkdirOk,
+  WorkspaceMkdirReq,
   WorkspaceWriteOk,
   WorkspaceWriteReq
 } from '@agentconnect.md/protocol'
@@ -30,7 +32,12 @@ const CAPABILITIES = {
   platforms: ['slack'],
   runtimes: ['claude'],
   acp: true,
-  features: ['workspace-file-edit-v1', 'workspace-file-delete-v1', WORKSPACE_SESSION_READ_FEATURE]
+  features: [
+    'workspace-file-edit-v1',
+    'workspace-file-delete-v1',
+    'workspace-dir-create-v1',
+    WORKSPACE_SESSION_READ_FEATURE
+  ]
 }
 const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
@@ -45,6 +52,12 @@ class WorkspaceWriteSpy {
   listCalls: Array<{ daemonId: string; req: WorkspaceListReq }> = []
   calls: Array<{ daemonId: string; req: WorkspaceWriteReq }> = []
   deleteCalls: Array<{ daemonId: string; req: WorkspaceDeleteReq }> = []
+  mkdirCalls: Array<{ daemonId: string; req: WorkspaceMkdirReq }> = []
+
+  async workspaceMkdir(daemonId: string, req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk> {
+    this.mkdirCalls.push({ daemonId, req })
+    return { agentId: req.agentId, path: req.path }
+  }
 
   async workspaceList(daemonId: string, req: WorkspaceListReq): Promise<WorkspaceListPage> {
     this.listCalls.push({ daemonId, req })
@@ -255,5 +268,79 @@ describe('DELETE /agents/:id/workspace/file', () => {
     })
     expect(viewer.statusCode).toBe(403)
     expect(control.deleteCalls).toHaveLength(0)
+  })
+})
+
+describe('POST /agents/:id/workspace/dir', () => {
+  it('proxies a folder create to the owning daemon', async () => {
+    await seedScratch()
+    const control = new WorkspaceWriteSpy()
+
+    const response = await app(control).app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/workspace/dir?path=skills%2Freference`
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ path: 'skills/reference' })
+    expect(control.mkdirCalls).toEqual([{ daemonId: DAEMON, req: { agentId: AGENT, path: 'skills/reference' } }])
+  })
+
+  it('maps an existing path to HTTP 409', async () => {
+    await seedScratch()
+    const control = new WorkspaceWriteSpy()
+    control.workspaceMkdir = async () => {
+      throw new ProtocolError('CONFLICT', 'a file or folder already exists at that path')
+    }
+
+    const response = await app(control).app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/workspace/dir?path=skills`
+    })
+    expect(response.statusCode).toBe(409)
+  })
+
+  it('refuses a daemon that predates folder creation before any daemon I/O', async () => {
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { ...CAPABILITIES, features: ['workspace-file-edit-v1', 'workspace-file-delete-v1'] }
+    })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const control = new WorkspaceWriteSpy()
+
+    const response = await app(control).app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/workspace/dir?path=skills`
+    })
+    expect(response.statusCode).toBe(409)
+    expect(control.mkdirCalls).toHaveLength(0)
+  })
+
+  it('keeps folder creation behind scratch edit access', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: CAPABILITIES })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, gitRepo: 'https://github.com/acme/repo' })
+    const control = new WorkspaceWriteSpy()
+
+    const github = await app(control).app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/workspace/dir?path=skills`
+    })
+    expect(github.statusCode).toBe(400)
+
+    const users = new PgUserRepo(prisma)
+    const email = `workspace-mkdir-viewer-${randomUUID()}@acme.dev`
+    const { userId } = await users.provisionOidcUser({
+      oidcSubject: `workspace-mkdir-viewer-${randomUUID()}`,
+      email,
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'viewer')
+    await prisma.agent.update({ where: { id: AGENT }, data: { workspaceMode: 'scratch', gitRepo: null } })
+
+    const viewer = await app(control, userId).app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/workspace/dir?path=skills`
+    })
+    expect(viewer.statusCode).toBe(403)
+    expect(control.mkdirCalls).toHaveLength(0)
   })
 })

@@ -39,6 +39,7 @@ const workspace = vi.hoisted(() => ({
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 vi.mock('@/lib/api', () => ({
   ApiError: class ApiError extends Error {},
+  createWorkspaceDir: vi.fn((_agentId: string, path: string) => Promise.resolve({ path })),
   deleteWorkspaceFile: vi.fn(),
   fetchWorkspaceFile: vi.fn(() => Promise.resolve(workspace.file)),
   fetchWorkspaceFileFull: vi.fn(() => Promise.resolve(workspace.file)),
@@ -60,6 +61,7 @@ vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => mobile.value }))
 import { WorkspaceFiles, workspaceReadModelKey } from './WorkspaceFiles'
 import {
   ApiError,
+  createWorkspaceDir,
   deleteWorkspaceFile,
   fetchWorkspaceFiles,
   fetchWorkspaceGitStatus,
@@ -116,6 +118,7 @@ afterEach(async () => {
   workspace.entries = []
   workspace.listings = {}
   vi.mocked(deleteWorkspaceFile).mockClear()
+  vi.mocked(createWorkspaceDir).mockClear()
   vi.mocked(fetchWorkspaceFiles).mockClear()
   vi.mocked(fetchWorkspaceGitStatus).mockClear()
   vi.mocked(wakeAgent).mockClear()
@@ -740,6 +743,72 @@ it('moves the breadcrumb to a clicked folder and keeps the tree highlight in syn
   const path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
   await changeValue(path!, 'guides/')
   expect(highlighted()).toEqual(['guides'])
+})
+
+it('creates an empty folder from the header and lands in it, ready for its first file', async () => {
+  workspace.entries = [{ name: 'README.md', type: 'file', size: workspace.file.size, mtime: workspace.file.mtime }]
+  workspace.listings = { drafts: [] }
+  await renderWorkspace()
+  await clickButton('New folder')
+
+  const name = container?.querySelector<HTMLInputElement>('input[aria-label="New folder path"]')
+  expect(name?.placeholder).toBe('Name your folder…')
+  await changeValue(name!, 'drafts')
+  await act(async () => {
+    name!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  })
+  await act(async () => Promise.resolve())
+
+  expect(createWorkspaceDir).toHaveBeenCalledWith('agent-a', 'drafts')
+  const nav = container!.querySelector<HTMLElement>('nav[aria-label="Workspace path"]')!
+  expect(nav.textContent).toContain('drafts')
+  expect(container?.querySelector('input[aria-label="New folder path"]')).toBeNull()
+
+  await clickButton('Add file')
+  const path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
+  await changeValue(path!, 'notes.md')
+  await clickButton('Save changes')
+  expect(writeWorkspaceFile).toHaveBeenCalledWith('agent-a', 'drafts/notes.md', { content: '' })
+})
+
+it('creates a nested folder from a tree row and keeps the draft when the name is taken', async () => {
+  workspace.entries = [{ name: 'skills', type: 'dir', size: null, mtime: null }]
+  workspace.listings = { skills: [] }
+  vi.mocked(createWorkspaceDir).mockImplementationOnce(() =>
+    Promise.reject(Object.assign(new ApiError('exists'), { status: 409 }))
+  )
+  await renderWorkspace()
+
+  const add = container?.querySelector<HTMLButtonElement>('button[aria-label="New folder in skills"]')
+  await act(async () => add?.click())
+  const name = container?.querySelector<HTMLInputElement>('input[aria-label="New folder path"]')
+  await changeValue(name!, 'reference')
+  await clickButton('Create folder')
+  await act(async () => Promise.resolve())
+
+  expect(createWorkspaceDir).toHaveBeenCalledWith('agent-a', 'skills/reference')
+  expect(container?.querySelector('[role="alert"]')?.textContent).toBe(
+    'A file or folder with that name already exists.'
+  )
+  expect(container?.querySelector<HTMLInputElement>('input[aria-label="New folder path"]')?.value).toBe('reference')
+
+  await clickButton('Create folder')
+  await act(async () => Promise.resolve())
+  expect(vi.mocked(createWorkspaceDir).mock.calls.at(-1)).toEqual(['agent-a', 'skills/reference'])
+  expect(container?.querySelector('input[aria-label="New folder path"]')).toBeNull()
+})
+
+it('cancels a folder draft with Escape without creating anything', async () => {
+  workspace.entries = [{ name: 'README.md', type: 'file', size: workspace.file.size, mtime: workspace.file.mtime }]
+  await renderWorkspace()
+  await clickButton('New folder')
+  expect(container?.querySelector('input[aria-label="New folder path"]')).not.toBeNull()
+
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  })
+  expect(container?.querySelector('input[aria-label="New folder path"]')).toBeNull()
+  expect(createWorkspaceDir).not.toHaveBeenCalled()
 })
 
 it('navigates back to the root from the breadcrumb root label', async () => {

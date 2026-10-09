@@ -19,6 +19,7 @@ import { z } from 'zod'
 import type {
   WorkspaceDeleteOk,
   WorkspaceListPage,
+  WorkspaceMkdirOk,
   WorkspaceReadContent,
   WorkspaceWriteOk
 } from '@agentconnect.md/protocol'
@@ -63,6 +64,11 @@ const DeleteReqSchema = z.object({
   ifMatchMtime: z.string()
 })
 
+const MkdirReqSchema = z.object({
+  agentId: z.string().min(1),
+  path: z.string()
+})
+
 /** Absolute because it is a path in the POD's coordinates, and the shim's fence compares absolutes. */
 const RootSchema = z.string().min(1).max(4096)
 
@@ -72,7 +78,8 @@ export const WorkspaceFilesPayloadSchema = z.discriminatedUnion('op', [
   // `scratch` is the daemon's answer (it reads agent configuration) and travels with the request, so
   // the half-trusted side never decides whether a workspace is writable — it only enforces it.
   z.object({ op: z.literal('write'), root: RootSchema, scratch: z.boolean(), req: WriteReqSchema }),
-  z.object({ op: z.literal('delete'), root: RootSchema, scratch: z.boolean(), req: DeleteReqSchema })
+  z.object({ op: z.literal('delete'), root: RootSchema, scratch: z.boolean(), req: DeleteReqSchema }),
+  z.object({ op: z.literal('mkdir'), root: RootSchema, scratch: z.boolean(), req: MkdirReqSchema })
 ])
 export type WorkspaceFilesPayload = z.infer<typeof WorkspaceFilesPayloadSchema>
 
@@ -140,6 +147,8 @@ function run(parsed: WorkspaceFilesPayload, files: WorkspaceFiles): Promise<unkn
       return files.write(parsed.root, parsed.scratch, parsed.req)
     case 'delete':
       return files.delete(parsed.root, parsed.scratch, parsed.req)
+    case 'mkdir':
+      return files.mkdir(parsed.root, parsed.scratch, parsed.req)
   }
 }
 
@@ -192,5 +201,9 @@ export class ShimWorkspaceFiles implements WorkspaceFiles {
 
   delete(root: string, scratch: boolean, req: Parameters<WorkspaceFiles['delete']>[2]): Promise<WorkspaceDeleteOk> {
     return this.run({ op: 'delete', root, scratch, req })
+  }
+
+  mkdir(root: string, scratch: boolean, req: Parameters<WorkspaceFiles['mkdir']>[2]): Promise<WorkspaceMkdirOk> {
+    return this.run({ op: 'mkdir', root, scratch, req })
   }
 }

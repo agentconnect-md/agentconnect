@@ -1351,6 +1351,23 @@ describe('workspace file access frames (console live proxy)', () => {
     expect(rep.frame.corr).toBe(ID)
   })
 
+  it('workspace/mkdir REQ and REP round-trip the created directory', () => {
+    const req = decodeEnvelope(
+      envelope('workspace/mkdir', { agentId: 'local-agent-1', path: 'notes/drafts' }, { epoch: 3 })
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/mkdir')(req.frame)) throw new Error('expected workspace/mkdir')
+    expect(req.frame.payload.path).toBe('notes/drafts')
+    expect(decodeEnvelope(envelope('workspace/mkdir', { agentId: 'local-agent-1', path: '' })).ok).toBe(false)
+
+    const rep = decodeEnvelope(
+      envelope('workspace/mkdir/ok', { agentId: 'local-agent-1', path: 'notes/drafts' }, { corr: ID })
+    )
+    expect(rep.ok).toBe(true)
+    if (!rep.ok || !isFrame('workspace/mkdir/ok')(rep.frame)) throw new Error('expected workspace/mkdir/ok')
+    expect(rep.frame.corr).toBe(ID)
+  })
+
   it('workspace/read/content REP carries a not-a-regular-file path as DATA (type, no content)', () => {
     const dir = decodeEnvelope(
       envelope(

@@ -79,6 +79,8 @@ import {
   WorkspaceWriteOk,
   WorkspaceDeleteReq,
   WorkspaceDeleteOk,
+  WorkspaceMkdirReq,
+  WorkspaceMkdirOk,
   WorkspaceGitStatusReq,
   WorkspaceGitStatus,
   WorkspaceGitDiffReq,
@@ -704,6 +706,12 @@ export class ControlSender {
   async workspaceDelete(daemonId: string, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk> {
     const c = this.must(daemonId)
     return c.conn.request<WorkspaceDeleteOk>('workspace/delete', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Create one empty scratch-workspace directory on the owning daemon. */
+  async workspaceMkdir(daemonId: string, req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceMkdirOk>('workspace/mkdir', req, { epoch: c.sessionEpoch })
   }
 
   /**

@@ -112,11 +112,13 @@ export function FileBrowserBreadcrumb({
   onDraftNameChange,
   onBack,
   onNavigate,
+  onSubmit,
   disabled,
   nested = true,
   rootControl = false,
   ariaLabel = 'File path',
-  inputAriaLabel = 'New file path'
+  inputAriaLabel = 'New file path',
+  placeholder
 }: {
   root: ReactNode
   path: string
@@ -126,12 +128,15 @@ export function FileBrowserBreadcrumb({
   onBack?: () => void
   /** Makes the root label and every ancestor segment jump to that directory ('' is the root). */
   onNavigate?: (directory: string) => void
+  /** Enter in the name input submits, for drafts that have no body to type into. */
+  onSubmit?: () => void
   disabled?: boolean
   nested?: boolean
   /** The root slot holds a CONTROL, not a label: it sizes itself and stays visible inside a path. */
   rootControl?: boolean
   ariaLabel?: string
   inputAriaLabel?: string
+  placeholder?: string
 }) {
   const t = useTranslations('Sessions.fileBrowser')
   const baseSegments = path.split('/').filter(Boolean)
@@ -216,11 +221,16 @@ export function FileBrowserBreadcrumb({
             value={draftLeaf}
             onChange={(event) => updateDraftLeaf(event.target.value)}
             onKeyDown={(event) => {
+              if (event.key === 'Enter' && onSubmit) {
+                event.preventDefault()
+                onSubmit()
+                return
+              }
               if (!nested || event.key !== 'Backspace' || draftLeaf || draftDirectories.length === 0) return
               event.preventDefault()
               onDraftNameChange([...draftDirectories.slice(0, -1), draftDirectories.at(-1)!].join('/'))
             }}
-            placeholder={t('fileNamePlaceholder')}
+            placeholder={placeholder ?? t('fileNamePlaceholder')}
             aria-label={inputAriaLabel === 'New file path' ? t('newFilePath') : inputAriaLabel}
             spellCheck={false}
             disabled={disabled}
@@ -236,12 +246,14 @@ export function FileBrowserEditorActions({
   saving,
   disabled,
   onCancel,
-  onSave
+  onSave,
+  saveLabel
 }: {
   saving: boolean
   disabled?: boolean
   onCancel: () => void
   onSave: () => void
+  saveLabel?: string
 }) {
   const t = useTranslations('Sessions.fileBrowser')
   return (
@@ -250,7 +262,7 @@ export function FileBrowserEditorActions({
         {t('cancel')}
       </Button>
       <Button size="xs" onClick={onSave} disabled={saving || disabled}>
-        {saving ? t('saving') : t('saveChanges')}
+        {saving ? t('saving') : (saveLabel ?? t('saveChanges'))}
       </Button>
     </div>
   )

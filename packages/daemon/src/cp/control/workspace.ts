@@ -11,6 +11,7 @@ import type {
   WorkspaceGitStageReq,
   WorkspaceGitStatusReq,
   WorkspaceListReq,
+  WorkspaceMkdirReq,
   WorkspaceReadReq,
   WorkspaceWriteReq
 } from '@agentconnect.md/protocol'
@@ -76,6 +77,14 @@ export const workspaceDelete: ControlHandler<WorkspaceControlDeps> = (frame: Any
     .delete(frame.payload as WorkspaceDeleteReq)
     .then((ok) => wire.reply(frame, 'workspace/delete/ok', ok))
     .catch((err) => workspaceError(wire, frame.id, 'workspace/delete', err))
+}
+
+export const workspaceMkdir: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
+  // Console manager folder create: scratch-only, and an existing path is a conflict.
+  deps.workspaceRead
+    .mkdir(frame.payload as WorkspaceMkdirReq)
+    .then((ok) => wire.reply(frame, 'workspace/mkdir/ok', ok))
+    .catch((err) => workspaceError(wire, frame.id, 'workspace/mkdir', err))
 }
 
 export const workspaceGitStatus: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
