@@ -397,15 +397,20 @@ below), so opening it everywhere does not reopen what the read rule closes.
 - **The widening is bound to the turn, not the place.** Turns in P's DM session that P did not
   start — a report round, a patrol's or a sub-session's report, a cron run, a later `handoff` — and
   every sub-session or patrol get the P0a source set.
-- **A turn that read a private place this way writes only to P's DM.** For the rest of that turn
-  the daemon refuses ledger writes (taking, updating or following an item — item summaries and
-  observations are team-visible and feed every place's standing summary), self-delegation, and
-  posts or drafts aimed at any other place. This is a refusal by tool, not an output filter.
+- **A session that read a private place this way writes only to P's DM.** The recalled content
+  stays in the DM's long-session context, so the restriction follows the session, not the turn:
+  from the first widened read until that session is retired (`!new`, or a rollover that starts a
+  fresh context), every turn in it — P's own, a report round or a cron run alike — is refused
+  ledger writes (taking, updating or following an item: item summaries and observations are
+  team-visible and feed every place's standing summary), self-delegation, and posts or drafts
+  aimed at any other place. The mark is stored with the session so it survives a restart or
+  handover, and the refusal tells P that starting a new conversation lifts it. This is a refusal
+  by tool, not an output filter.
 - **Memory**: DMs are already outside shared memory. When the per-person memory space lands,
-  anything it captures from such a turn is injected only where P is the whole audience.
+  anything it captures from such a session is injected only where P is the whole audience.
 - **Revocation**: after P leaves the place, excerpts already in P's DM context stay there; like
-  the downgrade rule, the context was never the risk — new reads are refused and nothing leaves
-  P's DM.
+  the downgrade rule, the context was never the risk — new reads are refused, and the session's
+  mark still keeps anything from leaving P's DM.
 - **The error metric**: "outside the allowed set" now depends on the place, whether the turn is
   P's own, and live membership, and is evaluated with all three.
 - Other places do not see a private place in recall's listing, and a refused read answers as
@@ -843,6 +848,7 @@ console.
 audience — their own DM with the agent — with membership checked live on platforms whose member
 listing is authoritative; every shared place keeps the P0a private-place rule. Architecture review
 of that change: the Read box, the `P's DM` row and the target now state the same rule; the widening
-is bound to a turn P started, never a report, patrol, cron or sub-session turn; a widened turn
-writes only to P's DM (no ledger writes, self-delegation or posts elsewhere); per-person memory
+is bound to a turn P started, never a report, patrol, cron or sub-session turn; a session that
+made a widened read writes only to P's DM — no ledger writes, self-delegation or posts elsewhere —
+until it is retired, because the content stays in its context across turns; per-person memory
 captured from it stays in P's DM; revocation residue and the metric's inputs are stated.
