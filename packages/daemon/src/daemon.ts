@@ -9194,7 +9194,7 @@ export class Daemon {
   }
 
   private agentConversationAdmits(agentId: string, msg: NormalizedMessage): boolean {
-    return conversationAdmitsAgent(this.mergedRules(), agentId, msg.channel)
+    return conversationAdmitsAgent(this.mergedRules(), agentId, msg.channel, msg.isDm)
   }
 
   /**

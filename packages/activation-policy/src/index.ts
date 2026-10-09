@@ -244,14 +244,25 @@ export function routeRules(
  *
  * Implemented as "some rule for this agent covers this channel and none mutes it",
  * which is the same data `routeRules` consults, minus the kind/trigger matching that
- * would be wrong here (an agent mention is explicit by construction).
+ * would be wrong here (an agent mention is explicit by construction). A rule bound to a
+ * conversation kind (`scope.kind`) covers only a conversation OF that kind, so the default
+ * rule that survives a bot's Off default cannot admit an unconfigured conversation of the
+ * Off kind here either; a caller that cannot say which kind the conversation is gets no
+ * cover from such a rule (fail-closed).
  */
-export function conversationAdmitsAgent(rules: readonly ActivationRule[], agentId: string, channel: string): boolean {
+export function conversationAdmitsAgent(
+  rules: readonly ActivationRule[],
+  agentId: string,
+  channel: string,
+  isDm?: boolean
+): boolean {
   const agentRules = rules.filter((rule) => rule.agentId === agentId)
   if (agentRules.length === 0) return false
   const covers = (scopeChannel: string | undefined): boolean => scopeChannel === undefined || scopeChannel === channel
+  const kindCovers = (kind: 'dm' | 'room' | undefined): boolean =>
+    kind === undefined || (isDm !== undefined && (kind === 'dm') === isDm)
   if (agentRules.some((rule) => rule.mutedChannels?.some((muted) => covers(muted)))) return false
-  return agentRules.some((rule) => covers(rule.scope.channel))
+  return agentRules.some((rule) => covers(rule.scope.channel) && kindCovers(rule.scope.kind))
 }
 
 /** Is a stamped source depth usable at all? §4.1 rule 1 / §5.2a fail-closed: a

@@ -91,6 +91,18 @@ describe('conversationAdmitsAgent (the Off/gated fence predicate)', () => {
     rule({ agentId: 'a2', mutedChannels: ['C1'] }),
     rule({ agentId: 'a3', scope: { channel: 'C2' } })
   ]
+
+  // §14.2: a verified agent's recipient is admitted through this predicate, not the ladder,
+  // so the kind binding has to hold here too — or a DM-bound default would open every room.
+  it('a kind-bound unscoped rule admits only a conversation of its kind, and nothing when the kind is unknown', () => {
+    const dmOnly = [rule({ agentId: 'a1', scope: { kind: 'dm' }, match: { kind: 'dm' } })]
+    expect(conversationAdmitsAgent(dmOnly, 'a1', 'D1', true)).toBe(true)
+    expect(conversationAdmitsAgent(dmOnly, 'a1', 'CNEW', false)).toBe(false)
+    expect(conversationAdmitsAgent(dmOnly, 'a1', 'CNEW')).toBe(false)
+    const roomOnly = [rule({ agentId: 'a1', scope: { kind: 'room' } })]
+    expect(conversationAdmitsAgent(roomOnly, 'a1', 'CNEW', false)).toBe(true)
+    expect(conversationAdmitsAgent(roomOnly, 'a1', 'DNEW', true)).toBe(false)
+  })
   it('admits an agent whose rule covers the channel', () => {
     expect(conversationAdmitsAgent(rules, 'a1', 'C1')).toBe(true)
   })
