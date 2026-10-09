@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, eighth revision (2026-10-09). Reviewed by three independent design reviews and
+**Status:** Design, ninth revision (2026-10-09). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -430,7 +430,7 @@ until use shows they are needed; the rest of this section and §5.7 describe tha
   1. Standing prompt: finish the work in the workspace; the outward step (push, open the PR) goes
      through `propose`.
   2. When one fires it is delivered to the place of origin (an external place's to the approver's
-     DM, §5.5) as a card through the existing two approval paths and listed in Activity; the card offers "always allow this tool".
+     DM, §5.5) as a card through the existing two approval paths and listed in Activity (deferred with this routing); the card offers "always allow this tool".
   3. **Waiting is waiting**: the ACP request stays open and the turn is not cancelled — the card
      and both approval paths are bound to that pending request; cancelling it expires the card,
      and a later "continue" grants nothing to the re-triggered request. Host and concurrency slot
@@ -586,6 +586,20 @@ recent patrols, pending cards — all derived from the ledger, the approval reco
 session records, read from the daemon through the BFF proxy. A background report into a webchat
 conversation only raises an unread badge.
 
+The first version (#2876) shows what exists today, for assistant-mode agents only, read and
+changed through the daemon without anything persisted on the Control Plane:
+
+| Section                                         | Who sees it                                                                                                                                                               | Who may change it              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| Items (open, then done and dropped)             | anyone who can view the agent; the places an item is followed from, never who follows it or what was said; a next check reads as noted, since nothing wakes the agent yet | editors delete an item         |
+| Sub-sessions                                    | anyone who can view the agent sees state and start time; the title, the session link and the conversation that opened it only where the viewer may open that session      | —                              |
+| Pending drafts                                  | editors                                                                                                                                                                   | — (approval stays on the card) |
+| Post grants ("always allow from here to there") | editors                                                                                                                                                                   | editors revoke a grant         |
+
+Deleting an item drops it from the standing summary at the next reminder; its followers are not
+told. Approving drafts from the console, runtime permission requests awaiting approval, patrols,
+scheduled wakes and the unread badge are not in it yet.
+
 ---
 
 ## 6. Relation to existing mechanisms
@@ -737,3 +751,7 @@ the runtimes' own in-turn sub-agents, which keep short parallel work but cannot 
 survive a restart or be seen and stopped. Corrections from the implementation: the `append`
 visibility lock is enforced; a channel-root self-wake's child inherits its parent; a share is read
 from the event envelope rather than a `channel_shared` subscription.
+
+**Ninth revision (2026-10-09)**: the first Activity view (#2876) — who sees and may change each
+section; deleting an item does not tell its followers; permission requests are not listed there
+while their routing is deferred.
