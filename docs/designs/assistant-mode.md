@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, seventh revision (2026-10-08). Reviewed by three independent design reviews and
+**Status:** Design, eighth revision (2026-10-09). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -153,12 +153,12 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | One long conversation per place | Channel `append` exists. Telegram, Discord and Feishu DMs are already one continuous session; **only Slack DMs** open a session per top-level message. The restriction lives only in the web control; CP and daemon do not check the conversation kind                                                                                                                                                                                                                                                                                                                       |
 | Keeping long sessions           | `append` sessions idle past the retention window (default 7 days) are reclaimed; on the pool, a session-isolated session's volume follows its row                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `append` visibility lock        | Documented, **not enforced** (`SessionChangeVisibility` in `policy.ts` checks ownership only); a channel session's owner is its first poster — #2813                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `append` visibility lock        | Enforced: `append` sessions refuse `session.visibility.change` (#2815); a channel session's owner is its first poster                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Conversation gating             | Exists (§14): a restricted agent is off everywhere, an editor enables places; `gated` is derived from `visibility === 'restricted'`; §14.8 auto-enables DMs of `sharedWith` members                                                                                                                                                                                                                                                                                                                                                                                          |
 | Session visibility              | DMs and webchat are `private`; channels **and group DMs** default to `org` (the group-DM case is tracked separately)                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Presence data                   | The daemon has none: member listing is authoritative only on Slack and unpaginated; Telegram returns admins; Discord returns nothing                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | DMs and memory                  | Private sessions are excluded from per-turn capture; **dreams deliberately mine every session, DMs included** (prompt-only); explicit memory writes offer "allow for this session", a grant kept until restart. Channel sessions (external ones too) **are** captured and dreamed                                                                                                                                                                                                                                                                                            |
-| Self-delegation                 | Only the channel-root form; the direct form refuses a self target (both admission checks exempt channel-root only). **In an `append` channel, agent-to-agent wakes resolve to the target's long-session coordinate** (`targetSessionCoordinate`), so self-delegation lands back in the main conversation today. A channel-root self-wake into a DM classifies by destination with no owner                                                                                                                                                                                   |
+| Self-delegation                 | Only the channel-root form; the direct form refuses a self target (both admission checks exempt channel-root only). **In an `append` channel, agent-to-agent wakes resolve to the target's long-session coordinate** (`targetSessionCoordinate`), so self-delegation lands back in the main conversation today. A channel-root self-wake's child carries no platform origin, so it inherits its parent's visibility and owner like any agent-to-agent child (pinned by tests, #2862)                                                                                         |
 | Reports                         | `replyToSession`: injected into the parent session, never posted, through the parent's serial gate. Gaps: link state in memory (`childSessionLinks`, cleared at 2000); random delivery id; a full parent queue (10) drops the report; `!stop` deletes the queued messages and their inbox rows; a failing turn rejects everything queued; no report on failure; reports count as agent calls, and the hop cap is today's only loop bound                                                                                                                                     |
 | Stopping                        | `!stop` interrupts the session's current turn, does not cascade, does not mute under `append`; senders are any non-bot member of an enabled place. Agent pause (#288) interrupts every session and **drops queued messages**; nothing is replayed on resume. ACP cancels whole turns only; runtime-started background tasks cannot be stopped                                                                                                                                                                                                                                |
 | Concurrency                     | Sessions sharing a workspace are **not serialized** (`admitActiveDispatch` waits on workspace mutations only); turns from several channels already run in parallel in one directory                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -271,18 +271,20 @@ An external place is not walled off: the agent reads there what it reads in an i
 and **every post is a draft an internal member approves first** (§5.5). External limits what
 leaves, not what the agent knows, so an agent added to a shared channel can still answer.
 
-- Slack: a Slack Connect channel (`is_ext_shared` / `is_pending_ext_shared` on the existing
-  membership listing) is external; a later listing that no longer reports the share lifts it.
-  Detection reads only that listing — no new API call, no manifest change.
-- Guests (`is_restricted` / `is_ultra_restricted`, one `users.info` per member join) and the
-  `channel_shared` event are detected in the change that adds the downgrade transition below,
-  and only for assistant-mode agents.
+- Slack: a Slack Connect channel is external. The share is read from the existing membership
+  listing (`is_ext_shared` / `is_pending_ext_shared`) and from the flag every event envelope
+  already carries (`is_ext_shared_channel`), so the first event after a share marks the place —
+  no `channel_shared` subscription, no manifest change. A later listing that no longer reports
+  the share lifts it.
+- For assistant-mode agents only, a member joining is looked up once (`users.info`): a guest
+  (`is_restricted` / `is_ultra_restricted`) or a member from another organization makes the place
+  external, and that detection is never lifted by a later listing.
 - Telegram groups, Discord channels, Feishu groups: no detection; enabled means trusted.
 - DM: enabling it is trusting that person as a member. Webchat is internal by construction.
 - A sub-session's place is its parent's: one born in an external place reports through that
   place's main session, so its result is drafted too.
 - **The downgrade transition (internal → external) changes the output path, not the context.**
-  On a downgrade — a detected share, a `channel_shared` event, a guest joining — the daemon
+  On a downgrade — a detected share, a guest or outside member joining — the daemon
   interrupts the place's in-flight turn, whose reply would otherwise post unapproved; from the
   next turn on, replies are drafts. The long session and its sub-sessions keep their context:
   what they know was never the risk, what they post is. An upgrade (external → internal) needs no
@@ -404,6 +406,13 @@ below), so opening it everywhere does not reopen what the read rule closes.
 
 ### 5.6 Sub-sessions
 
+**P0b ships the minimal form**: self-delegation as below, a failure report the daemon sends when a
+sub-session ends without reporting (§5.7), and a concurrency cap that refuses beyond
+`maxConcurrentSubsessions` (default 3). Reports use the existing parent-report path
+(`replyToSession`). The persistent outbox, the recovery order, permission-request routing and its
+wait cap, listing / steering / stopping, the daily budget and queueing over the cap are deferred
+until use shows they are needed; the rest of this section and §5.7 describe that target.
+
 - **Opening**: self-delegation without a post — the direct form of `sendMessage({ toAgent })`
   accepts a self target (both admission checks exempt it; `targetSessionCoordinate` is skipped),
   and the sub-session gets **its own coordinate**: a reserved `subsession:` thread segment minted
@@ -435,15 +444,20 @@ below), so opening it everywhere does not reopen what the read rule closes.
 - **Webchat**: a text list (list / stop) in P0b; the dock panel in P1.
 - **What stopping guarantees**: the current turn; a background process the runtime started may
   keep running; the adapter is never killed.
-- **Limits**: no sub-sessions of sub-sessions; at most `maxConcurrentSubsessions` running, the
-  rest queued (persistently) with the asker told; `dailySubsessionsPerItem` per item per day
-  (§5.7's loop bound).
+- **Limits**: no sub-sessions of sub-sessions; at most `maxConcurrentSubsessions` running (P0b
+  refuses beyond it; the target queues the rest persistently with the asker told);
+  `dailySubsessionsPerItem` per item per day (§5.7's loop bound, deferred).
 
 ### 5.7 The report channel
 
 > **Background sessions never speak on the platform.** Sub-session reports, patrol results,
 > permission requests and notifications are each one report injected into the target place's main
 > session, which speaks for them.
+
+In P0b a sub-session reports through the existing parent-report path, and when it ends without a
+report — an error, `!stop`, pause, the stall watchdog — the daemon sends one short failure report
+instead, never two; an interruption that will be replayed sends none. The outbox below is the
+deferred target.
 
 Implemented as a **persistent per-place outbox** (a table shaped like `orchestration_subtask`:
 agent-owned, CAS-claimed, duty-gated, re-armed on `agentsGained`):
@@ -597,14 +611,14 @@ conversation only raises an unread badge.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                       |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                          |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions** |
-| **P0b — background work**         | Direct self-delegation, own coordinates, the persistent parent–child index; the persistent outbox (merge, ack, dead letter, chain depth, failure reports, hop reset, recovery order); sub-session permission requests and the wait cap; list / steer / stop (text list); pause suspends the outbox                                                                                            |
-| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours                                                                                    |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                        |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                      |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                   |
+| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap |
+| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours                                                                                                      |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                          |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                        |
 
 ---
 
@@ -716,3 +730,10 @@ as opaque as the DM rule.
 "reply to the support thread on the other platform" → a post to another place is a draft the
 asker approves, with "always allow" per pair of places; whether a post needs approval follows
 from its target, never from the model's judgment.
+
+**Eighth revision (2026-10-09)**: P0b narrowed to its minimal form — self-delegation, a failure
+report and a refusing concurrency cap over the existing report path — after weighing it against
+the runtimes' own in-turn sub-agents, which keep short parallel work but cannot outlive a turn,
+survive a restart or be seen and stopped. Corrections from the implementation: the `append`
+visibility lock is enforced; a channel-root self-wake's child inherits its parent; a share is read
+from the event envelope rather than a `channel_shared` subscription.
