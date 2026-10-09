@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DecisionQuestion } from '@agentconnect.md/protocol'
+import { KeyServerClient } from '../src/key-server/client.js'
 import { DecisionEvaluator, decisionRequestBody, type DecisionEvaluationInput } from '../src/decisions/evaluator.js'
 import { fitDecisionState, largestDecisionRequest } from '../src/decisions/state.js'
 
@@ -171,12 +172,40 @@ describe('OpenAI Decisions provider', () => {
       orgForAgent: () => 'example-org',
       credentials: async () => ({ credentials: null }),
       keyServer,
-      cloudBaseUrl: 'https://gateway.example.test/typesafe',
+      cloudEndpoints: { typesafe: 'https://gateway.example.test/typesafe' },
       fetch: fetcher
     })
     expect(await evaluator.evaluate(input)).toEqual({ status: 'unavailable', reason: 'credentials' })
     expect(keyServer).not.toHaveBeenCalled()
     expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('calls the managed OpenAI gateway with an OpenAI-scoped grant instead of BYOK', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => response(predicate))
+    const credentials = vi.fn(async () => ({ credentials: null }))
+    const issuerFetch = vi.fn<typeof fetch>(async (url) =>
+      new URL(String(url)).pathname === '/v1/issue-key'
+        ? Response.json({ keyId: 'example-grant', key: 'example-gateway-token', expiresInSeconds: 60 })
+        : Response.json({})
+    )
+    const evaluator = new DecisionEvaluator({
+      orgForAgent: () => 'example-org',
+      credentials,
+      keyServer: () => new KeyServerClient('https://issuer.example.test', { fetch: issuerFetch }),
+      cloudEndpoints: { openai: 'https://gateway.example.test/openai/v1' },
+      fetch: fetcher
+    })
+    expect(evaluator.catalog().providers.find((p) => p.id === 'openai')!.cloudAvailable).toBe(true)
+    expect(await evaluator.evaluate(input)).toMatchObject({ status: 'answered' })
+    expect(credentials).not.toHaveBeenCalled()
+    expect(JSON.parse(issuerFetch.mock.calls[0]![1]!.body as string)).toMatchObject({
+      provider: 'openai',
+      sessionId: 'decision:example-evaluation',
+      ttlSeconds: 60
+    })
+    expect(String(fetcher.mock.calls[0]![0])).toBe('https://gateway.example.test/openai/v1/decisions')
+    expect(new Headers(fetcher.mock.calls[0]![1]!.headers).get('authorization')).toBe('Bearer example-gateway-token')
+    expect(String(issuerFetch.mock.calls[1]![0])).toBe('https://issuer.example.test/v1/revoke-key')
   })
 
   it.each([

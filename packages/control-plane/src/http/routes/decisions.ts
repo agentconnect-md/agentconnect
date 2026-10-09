@@ -263,10 +263,11 @@ export function decisionRoutes(deps: HttpDeps) {
           if (status === 'ready' && !(await executionAgent(req, daemon.daemonId))) status = 'pending_sync'
         }
         for (const profile of profiles) {
-          const source = keys.some((key) => key.provider === profile.id)
-            ? 'byok'
-            : profile.cloudAvailable
-              ? 'ac_credits'
+          // A managed daemon's gateway replaces BYOK, so its Cloud availability decides the source.
+          const source = profile.cloudAvailable
+            ? 'ac_credits'
+            : keys.some((key) => key.provider === profile.id)
+              ? 'byok'
               : null
           result.push({
             id: profile.id,
