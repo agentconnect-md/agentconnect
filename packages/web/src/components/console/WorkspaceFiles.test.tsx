@@ -76,12 +76,20 @@ let root: ReturnType<typeof createRoot> | undefined
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-async function renderWorkspace() {
+async function renderWorkspace({ canCreateFolder = false }: { canCreateFolder?: boolean } = {}) {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
   await act(async () => {
-    root?.render(<WorkspaceFiles agentId="agent-a" workdir="/workspace" canEdit renderHeader={() => null} />)
+    root?.render(
+      <WorkspaceFiles
+        agentId="agent-a"
+        workdir="/workspace"
+        canEdit
+        canCreateFolder={canCreateFolder}
+        renderHeader={() => null}
+      />
+    )
     await Promise.resolve()
   })
 }
@@ -748,7 +756,7 @@ it('moves the breadcrumb to a clicked folder and keeps the tree highlight in syn
 it('creates an empty folder from the header and lands in it, ready for its first file', async () => {
   workspace.entries = [{ name: 'README.md', type: 'file', size: workspace.file.size, mtime: workspace.file.mtime }]
   workspace.listings = { drafts: [] }
-  await renderWorkspace()
+  await renderWorkspace({ canCreateFolder: true })
   await clickButton('New folder')
 
   const name = container?.querySelector<HTMLInputElement>('input[aria-label="New folder path"]')
@@ -779,7 +787,7 @@ it('creates a nested folder from a tree row and keeps the draft when the name is
       Object.assign(new ApiError('exists', 409, 'WORKSPACE_EXISTS'), { status: 409, code: 'WORKSPACE_EXISTS' })
     )
   )
-  await renderWorkspace()
+  await renderWorkspace({ canCreateFolder: true })
 
   const add = container?.querySelector<HTMLButtonElement>('button[aria-label="New folder in skills"]')
   await act(async () => add?.click())
@@ -806,7 +814,7 @@ it('keeps the server reason for a folder refusal that is not a name collision', 
   vi.mocked(createWorkspaceDir).mockImplementationOnce(() =>
     Promise.reject(Object.assign(new ApiError(busy, 409, 'WORKSPACE_STALE'), { status: 409, code: 'WORKSPACE_STALE' }))
   )
-  await renderWorkspace()
+  await renderWorkspace({ canCreateFolder: true })
   await clickButton('New folder')
   const name = container?.querySelector<HTMLInputElement>('input[aria-label="New folder path"]')
   await changeValue(name!, 'drafts')
@@ -816,9 +824,23 @@ it('keeps the server reason for a folder refusal that is not a name collision', 
   expect(container?.querySelector('[role="alert"]')?.textContent).toBe(busy)
 })
 
+it('hides folder creation when the serving daemon predates it', async () => {
+  workspace.entries = [{ name: 'skills', type: 'dir', size: null, mtime: null }]
+  workspace.listings = { skills: [] }
+  await renderWorkspace()
+
+  const labels = Array.from(container!.querySelectorAll('button')).map(
+    (button) => button.getAttribute('aria-label') ?? button.textContent?.trim()
+  )
+  expect(labels).toContain('Add file')
+  expect(labels).toContain('Add file in skills')
+  expect(labels).not.toContain('New folder')
+  expect(labels).not.toContain('New folder in skills')
+})
+
 it('cancels a folder draft with Escape without creating anything', async () => {
   workspace.entries = [{ name: 'README.md', type: 'file', size: workspace.file.size, mtime: workspace.file.mtime }]
-  await renderWorkspace()
+  await renderWorkspace({ canCreateFolder: true })
   await clickButton('New folder')
   expect(container?.querySelector('input[aria-label="New folder path"]')).not.toBeNull()
 

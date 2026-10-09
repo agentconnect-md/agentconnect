@@ -147,6 +147,7 @@ export function WorkspaceFiles({
   onRepoChange,
   workdir,
   canEdit: workspaceCanEdit,
+  canCreateFolder = false,
   sandboxed = false,
   renderWorkspacePicker,
   renderHeader
@@ -165,6 +166,8 @@ export function WorkspaceFiles({
   onRepoChange?: (repo: string | null) => void
   workdir?: string
   canEdit: boolean
+  /** The serving daemon advertises folder creation; an older one hides the entry rather than refusing it. */
+  canCreateFolder?: boolean
   /** The agent runs in a cluster sandbox: its files are readable only through a running pod, so opening the tab wakes it rather than waiting for the read to refuse. */
   sandboxed?: boolean
   /** Checkout control rendered opposite the breadcrumb. The branch comes from
@@ -642,26 +645,28 @@ export function WorkspaceFiles({
                   onClick={() => openFolder(full)}
                   action={
                     canEdit && !editor && !folderDraft ? (
-                      <>
+                      <span className="flex items-center gap-[6px]">
                         <button
                           type="button"
-                          className="iconbtn h-[22px] w-[22px] flex-none rounded-xs"
+                          className="iconbtn h-[18px] w-[18px] flex-none rounded-xs"
                           aria-label={t('addFileIn', { path: full })}
                           title={t('addFileIn', { path: full })}
                           onClick={() => startCreate(full)}
                         >
-                          <Icon name="plus" size={13} />
+                          <Icon name="plus" size={12} />
                         </button>
-                        <button
-                          type="button"
-                          className="iconbtn h-[22px] w-[22px] flex-none rounded-xs"
-                          aria-label={t('addFolderIn', { path: full })}
-                          title={t('addFolderIn', { path: full })}
-                          onClick={() => startCreateFolder(full)}
-                        >
-                          <Icon name="folder-plus" size={13} />
-                        </button>
-                      </>
+                        {canCreateFolder ? (
+                          <button
+                            type="button"
+                            className="iconbtn h-[18px] w-[18px] flex-none rounded-xs"
+                            aria-label={t('addFolderIn', { path: full })}
+                            title={t('addFolderIn', { path: full })}
+                            onClick={() => startCreateFolder(full)}
+                          >
+                            <Icon name="folder-plus" size={12} />
+                          </button>
+                        ) : null}
+                      </span>
                     ) : undefined
                   }
                 />
@@ -819,10 +824,12 @@ export function WorkspaceFiles({
                     <Icon name="file-plus" size={13} />
                     {t('addFile')}
                   </Button>
-                  <Button variant="secondary" size="xs" className="flex-none" onClick={() => startCreateFolder()}>
-                    <Icon name="folder-plus" size={13} />
-                    {t('newFolder')}
-                  </Button>
+                  {canCreateFolder ? (
+                    <Button variant="secondary" size="xs" className="flex-none" onClick={() => startCreateFolder()}>
+                      <Icon name="folder-plus" size={13} />
+                      {t('newFolder')}
+                    </Button>
+                  ) : null}
                   {viewerCanEdit ? (
                     <Button variant="secondary" size="xs" className="flex-none" onClick={() => startEdit(viewer!.path)}>
                       <Icon name="pencil" size={13} />
