@@ -3107,7 +3107,6 @@
           "approveAlwaysConfirm": "现在发到 {target}，并始终允许从这里发到那里？",
           "discardConfirm": "丢弃这份草稿？不会发送任何内容。",
           "decideFailed": "操作失败，请重试。",
-          "unconfirmed": "无法确认是否已处理，已重新读取列表。",
           "upgradeDaemon": "升级此 Agent 的 Daemon 后才能在这里处理草稿。",
           "outcome": {
             "succeeded": "已发送。",
@@ -3118,7 +3117,9 @@
             "outcome_unknown": "不确定是否已发送，请查看该会话；不会再次发送。",
             "expired": "已过期，没有发送任何内容。",
             "decided": "已有人处理。",
-            "gone": "已不在等待批准。"
+            "gone": "已不在等待批准。",
+            "unconfirmedWaiting": "无法确认是否已处理，它仍在等待批准。",
+            "unconfirmedGone": "无法确认是否已处理，它已不在等待批准。请查看目标会话，可能已经发出。"
           }
         },
         "grants": {

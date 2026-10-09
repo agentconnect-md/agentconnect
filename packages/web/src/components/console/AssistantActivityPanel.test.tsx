@@ -379,14 +379,42 @@ describe('the Activity view for an editor', () => {
     expect(draft.querySelector('[role="alert"]')?.textContent).toBe('Couldn’t decide. Try again.')
     expect(button(draft, 'Approve')).toBeTruthy()
 
+    // Unconfirmed, and the next read still lists it: the warning, and the choices to try again.
     mocks.decideFailure = new ApiError('unconfirmed', 503, 'DECISION_UNCONFIRMED')
     const reads = api.fetchAssistantDrafts.mock.calls.length
     await click(button(draft, 'Approve'))
     await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
-    expect(draft.querySelector('[role="alert"]')?.textContent).toBe(
-      'Couldn’t confirm the decision. The list was read again.'
-    )
     expect(api.fetchAssistantDrafts.mock.calls.length).toBeGreaterThan(reads)
+    expect(draft.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
+      'Couldn’t confirm the decision. It is still waiting for approval.'
+    )
+    expect(draft.querySelector('[role="alert"]')).toBeNull()
+    mocks.decideFailure = null
+    await click(button(draft, 'Approve'))
+    await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
+    expect(draft.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe('Posted.')
+  })
+
+  it('keeps an unconfirmed row and its warning when the next read no longer lists it', async () => {
+    const host = await mount(true)
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(draft, 'Approve'))
+    // The post began or finished, but its answer was lost: the daemon no longer lists the draft as waiting.
+    mocks.drafts = []
+    mocks.decideFailure = new ApiError('unconfirmed', 503, 'DECISION_UNCONFIRMED')
+    const reads = api.fetchAssistantDrafts.mock.calls.length
+    await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
+    await act(async () => {})
+    expect(api.fetchAssistantDrafts.mock.calls.length).toBeGreaterThan(reads)
+    const row = host.querySelector('[data-assistant-draft="draft-1"]')!
+    expect(row).not.toBeNull()
+    expect(row.textContent).toContain('To #support')
+    expect(row.textContent).toContain('The release is out.\n\nNotes are in the docs.')
+    expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
+      'Couldn’t confirm the decision, and it is no longer waiting. Check the destination; it may have been posted.'
+    )
+    expect(row.querySelector('button')).toBeNull()
+    expect(section(host, 'drafts')!.querySelector('.badge')).toBeNull()
   })
 
   it('keeps a decided row when a later read no longer lists it', async () => {
