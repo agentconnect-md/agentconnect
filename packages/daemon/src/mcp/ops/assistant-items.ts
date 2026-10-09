@@ -13,6 +13,7 @@ import {
   type AssistantPlace
 } from '../../store/assistant-items.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
+import { isPatrolCoordinate } from '../../session/subsession-coordinate.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import { optionalPositiveInt, parseArgs, requiredString } from './args.js'
 
@@ -28,6 +29,14 @@ export interface AssistantItemDeps {
     ledgerFor(agentId: string): AssistantItemLedgerPort | undefined
     /** The person whose message started the session's live turn, as a follower identity; undefined when no person did. */
     askerFor(ctx: SessionContext): Promise<string | undefined>
+    /** A patrol session's side (assistant-mode.md §5.9). */
+    patrol?: {
+      /** The item the patrol in this session checks; undefined once it ended. */
+      itemFor(ctx: SessionContext): Promise<string | undefined>
+      /** Keep the patrol's report; it reaches the conversation the item was taken in once the patrol ends. False once it ended. */
+      report(ctx: SessionContext, itemId: string, text: string): Promise<boolean>
+      now(): number
+    }
   }
 }
 
@@ -106,6 +115,24 @@ export const UPDATE_ITEM_ARGS = z.object({
 
 export const FOLLOW_ITEM_ARGS = z.object({ itemId: boundedString('itemId', ASSISTANT_ITEM_LIMITS.refId) })
 
+/** A patrol may not set its next check sooner than this, so a patrol cannot wake itself in a loop. */
+export const PATROL_MIN_NEXT_CHECK_MS = 5 * 60_000
+const PATROL_STATUSES = ['active', 'waiting', 'done'] as const
+
+/** A patrol's `updateItem` (assistant-mode.md §5.9): its own item only, always with an observation, and an optional report. */
+export const PATROL_UPDATE_ITEM_ARGS = z.object({
+  itemId: boundedString('itemId', ASSISTANT_ITEM_LIMITS.refId),
+  version: optionalPositiveInt('version'),
+  status: z
+    .enum(PATROL_STATUSES, `argument status must be one of: ${PATROL_STATUSES.join(', ')}`)
+    .nullish()
+    .transform((value) => value ?? undefined),
+  nextCheck: nextCheckArg,
+  summary: optionalBoundedString('summary', ASSISTANT_ITEM_LIMITS.summary),
+  observation: boundedString('observation', ASSISTANT_ITEM_LIMITS.observation),
+  report: optionalBoundedString('report', ASSISTANT_ITEM_LIMITS.observation, 1)
+})
+
 const TEAM_VISIBLE =
   'The ledger is visible to everyone in the organization: write it as a neutral record of who asked for what and ' +
   'where it stands, and never quote or paraphrase a direct message.'
@@ -114,7 +141,8 @@ const nextCheckProp = {
   type: 'string',
   description:
     'When it should be checked on next: an ISO-8601 instant with an offset, e.g. `2026-10-09T09:00:00+08:00`. ' +
-    'It is recorded, not scheduled: nothing wakes you at that time yet.'
+    'At that time a read-only check of the item runs on its own; it reports in the conversation the item was taken ' +
+    'in only if something changed.'
 }
 const itemIdProp = { type: 'string', minLength: 1, description: 'The item id from listItems or the standing list.' }
 
@@ -124,10 +152,10 @@ export const ASSISTANT_ITEM_TOOLS: ToolDescriptor[] = [
     description:
       'Put work someone asked of you into your item ledger, so you follow it until it is done and report to them ' +
       'here. First restate in your reply what you will do, what counts as done and when it should be checked next, ' +
-      'and call this only after the person confirms. You cannot wake yourself yet: never promise to come back or ' +
-      'check in on your own at a time; say the next check is noted and that you will pick it up when someone ' +
-      'next talks to you. Check listItems before restating: when an open item already ' +
-      'covers the request, ask "attach this to <who>’s item?" instead and, on a yes, call followItem rather than ' +
+      'and call this only after the person confirms. A next check schedules a read-only check of the item at that ' +
+      'time, which reports here only if something changed; it only looks and records what it saw, so promise a ' +
+      'check then, never an action. Check listItems before restating: when an open item already covers the ' +
+      'request, ask "attach this to <who>’s item?" instead and, on a yes, call followItem rather than ' +
       `taking a second item. ${TEAM_VISIBLE} When the request came in a direct message, say so as you take it. The ` +
       'person asking and this conversation become the first follower.',
     inputSchema: obj(
@@ -182,8 +210,10 @@ export const ASSISTANT_ITEM_TOOLS: ToolDescriptor[] = [
     description:
       'Change an item in your ledger. A new status, nextCheck, title, doneWhen or summary is written only with the ' +
       'item’s current `version` (from listItems or your last call); if the item changed since, nothing is written ' +
-      'and the current item comes back, so reconcile and retry with its version. `observation` appends what you ' +
-      'checked and saw, with or without a version. Mark the item `done` when its done-when holds and `dropped` when ' +
+      'and the current item comes back, so reconcile and retry with its version. A new nextCheck schedules the next ' +
+      'read-only check of the item, which reports in the conversation the item was taken in only if something ' +
+      'changed. `observation` appends what you checked and saw, with or without a version. Mark the item `done` ' +
+      'when its done-when holds and `dropped` when ' +
       'the asker withdraws it, and tell its followers; closing an item clears its next check. When followers want ' +
       `conflicting things, say so in this conversation and record the conflict in the summary. ${TEAM_VISIBLE}`,
     inputSchema: obj(
@@ -226,6 +256,51 @@ export const ASSISTANT_ITEM_TOOLS: ToolDescriptor[] = [
     inputSchema: obj({ itemId: itemIdProp }, ['itemId'])
   }
 ]
+
+/** What a patrol records with in place of `updateItem` (assistant-mode.md §5.9); the same name, its own item only. */
+export const PATROL_UPDATE_ITEM_TOOL: ToolDescriptor = {
+  name: 'updateItem',
+  description:
+    'Record what this patrol checked on the item it was started for. `observation` is what you checked and saw. ' +
+    'With the item’s current `version`, also set `nextCheck` to when it should be checked again, or `status` to ' +
+    '`waiting` or `done` when that is what you found; `summary` replaces the summary. If the item changed since that ' +
+    'version, nothing is written and the current item comes back. Add `report` only when something changed since the ' +
+    'last observation that the people following the item should know: one short message, which the conversation ' +
+    `the item was taken in passes on. Leave it out to stay silent. ${TEAM_VISIBLE}`,
+  inputSchema: obj(
+    {
+      itemId: { ...itemIdProp, description: 'The item this patrol was started for.' },
+      version: {
+        type: 'integer',
+        minimum: 1,
+        description: 'The item’s current version; required with status, nextCheck or summary.'
+      },
+      status: { type: 'string', enum: [...PATROL_STATUSES], description: 'Optional. The new status.' },
+      nextCheck: {
+        ...nextCheckProp,
+        description: `Optional. At least five minutes from now. ${nextCheckProp.description}`
+      },
+      summary: {
+        type: 'string',
+        maxLength: ASSISTANT_ITEM_LIMITS.summary,
+        description: 'Optional. Replaces the summary.'
+      },
+      observation: {
+        type: 'string',
+        minLength: 1,
+        maxLength: ASSISTANT_ITEM_LIMITS.observation,
+        description: 'What you checked and saw, appended to the item’s history.'
+      },
+      report: {
+        type: 'string',
+        minLength: 1,
+        maxLength: ASSISTANT_ITEM_LIMITS.observation,
+        description: 'Optional. What changed, for the people following the item; omit it when nothing did.'
+      }
+    },
+    ['itemId', 'observation']
+  )
+}
 
 /** The item tools an agent's sessions are offered: all of them in assistant mode, none otherwise. */
 export function assistantItemToolsFor(agent: Pick<Agent, 'assistantMode'>): ToolDescriptor[] {
@@ -310,6 +385,7 @@ export const listItems: ToolHandler<AssistantItemDeps> = async (ctx, args, deps)
 }
 
 export const updateItem: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
+  if (isPatrolCoordinate(ctx.thread)) return await patrolUpdateItem(ctx, args, deps)
   const input = parseArgs(UPDATE_ITEM_ARGS, args)
   const ledger = ledgerOf(ctx, deps)
   const here = placeOfSession(ctx)
@@ -351,6 +427,52 @@ export const updateItem: ToolHandler<AssistantItemDeps> = async (ctx, args, deps
   const item = await ledger.get(ctx.agentId, input.itemId)
   if (!item) throw new Error(`no item ${input.itemId} in your ledger`)
   return { ok: true, item: itemView(item, here) }
+}
+
+/** A patrol's write (assistant-mode.md §5.9): what it saw on its own item, the next check, and a report kept for its end. */
+async function patrolUpdateItem(ctx: SessionContext, args: Record<string, unknown>, deps: AssistantItemDeps) {
+  const input = parseArgs(PATROL_UPDATE_ITEM_ARGS, args)
+  const ledger = ledgerOf(ctx, deps)
+  const patrol = deps.assistantItems?.patrol
+  const itemId = patrol ? await patrol.itemFor(ctx) : undefined
+  if (!patrol || itemId === undefined) throw new Error('this patrol has ended; nothing was written')
+  if (input.itemId !== itemId) throw new Error(`this patrol checks item ${itemId} only; nothing was written`)
+  if (input.nextCheck !== undefined && input.nextCheck < patrol.now() + PATROL_MIN_NEXT_CHECK_MS)
+    throw new Error('nextCheck must be at least five minutes from now; nothing was written')
+  const here = placeOfSession(ctx)
+  const patch: AssistantItemPatch = {
+    ...(input.status !== undefined ? { status: input.status } : {}),
+    ...(input.nextCheck !== undefined ? { nextCheck: input.nextCheck } : {}),
+    ...(input.status === 'done' ? { nextCheck: null } : {}),
+    ...(input.summary !== undefined ? { summary: input.summary } : {})
+  }
+  const transitions = Object.keys(patch).length > 0
+  if (transitions && input.version === undefined)
+    throw new Error('updateItem needs the item’s current version to change status, nextCheck or summary')
+  if (transitions) {
+    const result = await ledger.transition(ctx.agentId, itemId, input.version!, patch)
+    if (!result.ok && result.reason === 'not_found') throw new Error(`no item ${itemId} in your ledger`)
+    if (!result.ok)
+      return {
+        ok: false,
+        reason: 'conflict',
+        message:
+          `The item changed since version ${input.version}; nothing was written, including the observation. ` +
+          `Reconcile with the current item and retry with version ${result.current.version}.`,
+        current: itemView(result.current, here)
+      }
+  }
+  const appended = await ledger.appendObservation(ctx.agentId, itemId, { text: input.observation, author: 'patrol' })
+  if (!appended) throw new Error(`no item ${itemId} in your ledger`)
+  if (input.report !== undefined && !(await patrol.report(ctx, itemId, input.report)))
+    throw new Error('this patrol has ended; the observation was written but the report was not kept')
+  const item = await ledger.get(ctx.agentId, itemId)
+  if (!item) throw new Error(`no item ${itemId} in your ledger`)
+  return {
+    ok: true,
+    item: itemView(item, here),
+    ...(input.report !== undefined ? { report: 'passed on when this patrol ends' } : {})
+  }
 }
 
 export const followItem: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {

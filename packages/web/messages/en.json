@@ -3040,6 +3040,8 @@
         "on": "On",
         "off": "Off",
         "locked": "Unavailable",
+        "patrolsDegraded": "Patrols degraded",
+        "patrolsDegradedHint": "Patrols run read-only on the agent’s own host, with its credentials.",
         "responsibleNamed": "Responsible: {name}",
         "fallbackNamed": "Fallback: {name}",
         "edit": "Edit",
@@ -3096,7 +3098,7 @@
             "dropped": "Dropped"
           },
           "doneWhen": "Done when: {text}",
-          "nextCheckNoted": "Next check noted for {time}",
+          "nextCheck": "Next check {time}",
           "updated": "Updated {time}",
           "noObservations": "No observations yet.",
           "delete": "Delete",

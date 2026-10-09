@@ -51,6 +51,8 @@ export interface OpenRuntimeSessionInput {
   mcpServersFor: () => McpServer[]
   /** Trusted descriptors bound to an overridden host; dropped if the runtime rejects them. */
   additionalMcpServers?: McpServer[]
+  /** Runtime built-ins a new session must not offer (a patrol's, which nobody can approve). */
+  extraDisallowedTools?: readonly string[]
   /** Current chat authority for runtime changes, re-read immediately before each request. */
   chatRuntimeChangesAllowed: () => boolean
   /** The sticky per-session effort override (chat-selected or turn-supplied). */
@@ -128,11 +130,14 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     const bindOutward = await input.prepareOutwardBinding?.()
     while (true) {
       const selected = await sessionStartEffort()
+      const extra = input.extraDisallowedTools
       const create = (servers: McpServer[]) =>
         abortable(
           () =>
             withStartupPhase('runtime', () =>
-              host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories, bindOutward)
+              extra?.length
+                ? host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories, bindOutward, extra)
+                : host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories, bindOutward)
             ),
           signal
         )

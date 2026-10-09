@@ -30,6 +30,7 @@ import { MEMORY_WRITE_CLOSED, MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVE
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
+import { isPatrolCoordinate } from '../session/subsession-coordinate.js'
 import { ToolArgumentError } from './ops/args.js'
 import { describeToolArgumentFailure } from './ops/argument-error.js'
 import type { Logger } from '../log.js'
@@ -388,6 +389,9 @@ export async function executeTool(
   deps: OpsDeps
 ): Promise<unknown> {
   if (deps.canRun && !(await deps.canRun(ctx))) throw new Error('this agent turn has been stopped')
+  // assistant-mode.md §5.9: a patrol runs only the read tools it was offered, whatever name the runtime sends.
+  if (isPatrolCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
+    throw new Error(`${name} is not available in a read-only patrol`)
   // Collaboration Arena evaluation tools (collaboration-arena.md §6): game-owned
   // structured actions merged into the session tool set at composition time.
   // Name collisions with product tools are rejected at daemon startup, so this

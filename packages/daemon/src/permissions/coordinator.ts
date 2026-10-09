@@ -98,6 +98,7 @@ import {
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, turnState, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
+import { isPatrolCoordinate } from '../session/subsession-coordinate.js'
 import type { MemoryWriteAsk } from '../mcp/ops/memory.js'
 import {
   memoryWriteApprovalChoices,
@@ -1379,6 +1380,14 @@ export class PermissionCoordinator {
       })
       return { outcome: { outcome: 'cancelled' } }
     }
+    // assistant-mode.md §5.9: a patrol is read-only, so whatever would need approval is refused, never asked.
+    if (isPatrolCoordinate(p.plan.sessionThread)) {
+      this.permissionEvaluationDetails.set(evaluationParams, { reason: 'assistant_patrol' })
+      const reject = params.options.find((o) => o.kind === 'reject_once' || o.kind === 'reject_always')
+      return reject
+        ? { outcome: { outcome: 'selected', optionId: reject.optionId } }
+        : { outcome: { outcome: 'cancelled' } }
+    }
     // A list no surface can offer whole is declined, never truncated: the cards and the console share this cap (#1811, #1969).
     if (params.options.length > SLACK_PERMISSION_MAX_OPTIONS) {
       this.permissionEvaluationDetails.set(evaluationParams, { reason: 'permission_options_unrenderable' })
@@ -1466,6 +1475,8 @@ export class PermissionCoordinator {
     // advertised. Correlate its opaque id with a preceding trusted tool event;
     // never infer trust from the human-facing elicitation message.
     if (isBuiltinSystemToolElicitation(params, p.builtinSystemToolCallIds)) return { action: 'accept' }
+    // A patrol asks no one (assistant-mode.md §5.9).
+    if (isPatrolCoordinate(p.plan.sessionThread)) return { action: 'decline' }
     const isApproval = isMcpToolApprovalElicitation(params)
     if (isApproval && this.callerAnswers(p)) {
       return await this.askCaller<CreateElicitationResponse>(p, sessionId, elicitationApprovalParts(params), {

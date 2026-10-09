@@ -1,6 +1,7 @@
 import { agentWithRuntime } from '../decisions/model-selection.js'
 import { isAppendCoordinate } from './append-coordinate.js'
-import { isSubsessionCoordinate } from './subsession-coordinate.js'
+import { isPatrolCoordinate, isSubsessionCoordinate } from './subsession-coordinate.js'
+import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../runtime-defs/claude-runtime.js'
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
@@ -712,6 +713,8 @@ export class SessionManager {
           sessionKey: key
         }) ?? [],
       ...(options.additionalMcpServers !== undefined ? { additionalMcpServers: options.additionalMcpServers } : {}),
+      // A patrol (assistant-mode.md §5.9) runs in plan mode, whose exits need an approver nobody is.
+      ...(isPatrolCoordinate(thread) ? { extraDisallowedTools: CLAUDE_HEADLESS_DISALLOWED_TOOLS } : {}),
       // The sticky per-session effort override rides session `_meta` on new/load so the
       // `ultracode` sentinel (rejected by the `thought_level` select) takes effect. Chat
       // authority is resolved immediately before each request, then the await is fenced:

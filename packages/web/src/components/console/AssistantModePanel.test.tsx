@@ -234,6 +234,20 @@ describe('AssistantModePanel', () => {
     expect(mocks.updateAgent).not.toHaveBeenCalled()
   })
 
+  // assistant-mode.md §5.9: patrols run on the agent's own host, so they are marked degraded while the mode is on.
+  it('marks patrols as degraded only while assistant mode is on', async () => {
+    const on = await mount({ assistantMode: { enabled: true, responsibleUserId: 'usr_1' } })
+    const label = on.querySelector('[data-assistant-patrols]')
+    expect(label?.getAttribute('data-assistant-patrols')).toBe('degraded')
+    expect(label?.textContent).toBe('Patrols degraded')
+    expect(label?.getAttribute('title')).toContain('read-only')
+
+    await act(async () => root?.unmount())
+    root = undefined
+    const off = await mount()
+    expect(off.querySelector('[data-assistant-patrols]')).toBeNull()
+  })
+
   it('warns when the agent asks before every action', async () => {
     const host = await mount({ askEveryTime: true, assistantMode: { enabled: true, responsibleUserId: 'usr_1' } })
     expect(host.querySelector('[data-assistant-mode-ask-warning]')?.textContent).toContain('wait for approval')

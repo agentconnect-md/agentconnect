@@ -6,6 +6,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import { ASSISTANT_DRAFT_SCHEMA, AssistantDraftLedger } from './assistant-drafts.js'
 import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js'
+import { ASSISTANT_PATROL_SCHEMA, AssistantPatrolLedger } from './assistant-patrols.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
 import {
   APPEND_COORDINATE_PREFIX,
@@ -1319,7 +1320,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 38
+export const SCHEMA_VERSION = 39
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1736,7 +1737,19 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v37 adds the assistant draft and post-grant tables (assistant-mode.md §5.5), which the CREATE block emits; the bump fences out older members.
   async () => {},
   // v38 adds the assistant sub-session index (assistant-mode.md §5.6), which the CREATE block emits; the bump fences out older members.
-  async () => {}
+  async () => {},
+  // v39 marks patrol sub-sessions and adds the per-item patrol state (assistant-mode.md §5.9), which the CREATE block emits.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec(
+        "ALTER TABLE IF EXISTS assistant_subsession ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'delegation'"
+      )
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(assistant_subsession)', [])).rows as { name: string }[]
+    if (columns.length > 0 && !columns.some((c) => c.name === 'kind'))
+      await db.exec("ALTER TABLE assistant_subsession ADD COLUMN kind TEXT NOT NULL DEFAULT 'delegation'")
+  }
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1882,6 +1895,8 @@ export class LocalStore {
   readonly assistantDrafts: AssistantDraftLedger
   /** The parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6). */
   readonly assistantSubsessions: AssistantSubsessionIndex
+  /** Per-item patrol state (assistant-mode.md §5.9). */
+  readonly assistantPatrols: AssistantPatrolLedger
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -1911,6 +1926,7 @@ export class LocalStore {
     })
     this.assistantDrafts = new AssistantDraftLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantSubsessions = new AssistantSubsessionIndex({ query: (sql, params) => this.db.query(sql, params) })
+    this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
   }
 
   /**
@@ -1968,6 +1984,7 @@ export class LocalStore {
       ${ASSISTANT_ITEM_SCHEMA}
       ${ASSISTANT_DRAFT_SCHEMA}
       ${ASSISTANT_SUBSESSION_SCHEMA}
+      ${ASSISTANT_PATROL_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
@@ -3448,6 +3465,26 @@ export class LocalStore {
       .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
       .get(agentId, channel, transportScope ?? '')) as { coordinate: string } | undefined
     return row?.coordinate
+  }
+
+  /** A place's one long session (assistant-mode.md §5.2): the append session in force, else the place's only
+   *  session besides its sub-sessions; undefined when it has none, or several threads and no append session. */
+  async placeSession(
+    agentId: string,
+    platform: string,
+    channel: string,
+    transportScope?: string | null
+  ): Promise<SessionRecord | undefined> {
+    const coordinate = await this.currentAppendCoordinate(agentId, channel, transportScope)
+    if (coordinate !== undefined)
+      return await this.getSession(sessionKey(platform, channel, coordinate, agentId, transportScope))
+    const rows = (await this.db
+      .prepare(
+        `SELECT * FROM sessions WHERE agentId = ? AND platform = ? AND channel = ? AND COALESCE(transportScope, '') = ?
+           AND thread NOT LIKE 'subsession:%' LIMIT 2`
+      )
+      .all(agentId, platform, channel, transportScope ?? '')) as SessionRecord[]
+    return rows.length === 1 ? rows[0] : undefined
   }
 
   /**
