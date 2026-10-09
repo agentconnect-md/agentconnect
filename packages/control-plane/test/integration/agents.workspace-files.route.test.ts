@@ -290,7 +290,12 @@ describe('POST /agents/:id/workspace/dir', () => {
     await seedScratch()
     const control = new WorkspaceWriteSpy()
     control.workspaceMkdir = async () => {
-      throw new ProtocolError('CONFLICT', 'a file or folder already exists at that path')
+      throw ProtocolError.fromFrame({
+        code: 'CONFLICT',
+        message: 'workspace/mkdir failed: a file or folder already exists at that path',
+        retryable: false,
+        details: { reason: 'exists' }
+      })
     }
 
     const response = await app(control).app.inject({
@@ -298,6 +303,7 @@ describe('POST /agents/:id/workspace/dir', () => {
       url: `${ORG}/agents/${AGENT}/workspace/dir?path=skills`
     })
     expect(response.statusCode).toBe(409)
+    expect(response.json()).toMatchObject({ code: 'WORKSPACE_EXISTS' })
   })
 
   it('refuses a daemon that predates folder creation before any daemon I/O', async () => {

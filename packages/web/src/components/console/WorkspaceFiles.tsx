@@ -489,7 +489,8 @@ export function WorkspaceFiles({
           ? {
               ...current,
               saving: false,
-              error: e instanceof ApiError && e.status === 409 ? t('folderExists') : msg(e)
+              // Only a name collision asks for another name; any other refusal (the agent is working, an older daemon) keeps the server's reason.
+              error: e instanceof ApiError && e.code === 'WORKSPACE_EXISTS' ? t('folderExists') : msg(e)
             }
           : current
       )

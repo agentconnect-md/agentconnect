@@ -67,8 +67,10 @@ export class WorkspaceViolationError extends Error {
 
 /** Optimistic-concurrency failure → `CONFLICT` on the wire. */
 export class WorkspaceConflictError extends Error {
-  readonly reason: WorkspaceErrorReason = 'stale'
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly reason: WorkspaceErrorReason = 'stale'
+  ) {
     super(message)
     this.name = 'WorkspaceConflictError'
   }
@@ -620,7 +622,7 @@ function existingFile(): WorkspaceConflictError {
 
 /** Shared with the fd implementation, so both filesystems refuse an existing path in the same words. */
 export function existingWorkspacePath(): WorkspaceConflictError {
-  return new WorkspaceConflictError('a file or folder already exists at that path')
+  return new WorkspaceConflictError('a file or folder already exists at that path', 'exists')
 }
 
 /**

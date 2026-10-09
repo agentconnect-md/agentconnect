@@ -44,6 +44,7 @@ export const WorkspaceErrorReason = z.enum([
   'binary', // the target is not UTF-8 text
   'not-utf8', // the supplied content is not valid UTF-8
   'stale', // optimistic-concurrency failure (CONFLICT)
+  'exists', // a create target already exists (CONFLICT), so the caller picks another name rather than waiting
   'sandbox-unavailable', // no bound channel reaches the pod right now; the one TRANSIENT reason, so the CP answers 503 with a code
   'sandbox-removed', // a session's own sandbox claim and volume are gone, so no wake brings them back; its next message creates new ones
   'sandbox-outdated' // the agent's sandbox predates the requested operation; a restarted sandbox serves it

@@ -389,7 +389,10 @@ describe('the shim read capability', () => {
 
     expect(await mkdir('guides/reference')).toMatchObject({ ok: true, value: { path: 'guides/reference' } })
     expect(statSync(join(checkout, 'guides', 'reference')).isDirectory()).toBe(true)
-    expect(await mkdir('guides/reference')).toMatchObject({ ok: false, refusal: { kind: 'conflict' } })
+    expect(await mkdir('guides/reference')).toMatchObject({
+      ok: false,
+      refusal: { kind: 'conflict', reason: 'exists' }
+    })
     expect(await mkdir('README.md')).toMatchObject({ ok: false, refusal: { kind: 'conflict' } })
     expect(await mkdir('drafts', false)).toMatchObject({
       ok: false,

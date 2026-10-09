@@ -98,7 +98,8 @@ export const WorkspaceFilesReplySchema = z.discriminatedUnion('ok', [
     ok: z.literal(false),
     refusal: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('violation'), reason: WorkspaceErrorReason, message: z.string().max(500) }),
-      z.object({ kind: z.literal('conflict'), message: z.string().max(500) })
+      // `reason` is absent from an older shim, which the daemon reads as the default `stale`.
+      z.object({ kind: z.literal('conflict'), message: z.string().max(500), reason: WorkspaceErrorReason.optional() })
     ])
   })
 ])
@@ -131,7 +132,7 @@ export async function applyWorkspaceFilesPayload(
       return { ok: false, refusal: { kind: 'violation', reason: err.reason, message: err.message.slice(0, 500) } }
     }
     if (err instanceof WorkspaceConflictError) {
-      return { ok: false, refusal: { kind: 'conflict', message: err.message.slice(0, 500) } }
+      return { ok: false, refusal: { kind: 'conflict', message: err.message.slice(0, 500), reason: err.reason } }
     }
     throw err
   }
@@ -173,7 +174,8 @@ export class ShimWorkspaceFiles implements WorkspaceFiles {
     // Rebuilt as the SAME classes the local path throws, so the dispatcher above cannot tell the two
     // filesystems apart — which is the whole property this seam is for.
     if (!reply.ok) {
-      if (reply.refusal.kind === 'conflict') throw new WorkspaceConflictError(reply.refusal.message)
+      if (reply.refusal.kind === 'conflict')
+        throw new WorkspaceConflictError(reply.refusal.message, reply.refusal.reason)
       throw new WorkspaceViolationError(reply.refusal.message, reply.refusal.reason)
     }
     return reply.value as T

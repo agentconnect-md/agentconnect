@@ -775,7 +775,9 @@ it('creates a nested folder from a tree row and keeps the draft when the name is
   workspace.entries = [{ name: 'skills', type: 'dir', size: null, mtime: null }]
   workspace.listings = { skills: [] }
   vi.mocked(createWorkspaceDir).mockImplementationOnce(() =>
-    Promise.reject(Object.assign(new ApiError('exists'), { status: 409 }))
+    Promise.reject(
+      Object.assign(new ApiError('exists', 409, 'WORKSPACE_EXISTS'), { status: 409, code: 'WORKSPACE_EXISTS' })
+    )
   )
   await renderWorkspace()
 
@@ -796,6 +798,22 @@ it('creates a nested folder from a tree row and keeps the draft when the name is
   await act(async () => Promise.resolve())
   expect(vi.mocked(createWorkspaceDir).mock.calls.at(-1)).toEqual(['agent-a', 'skills/reference'])
   expect(container?.querySelector('input[aria-label="New folder path"]')).toBeNull()
+})
+
+it('keeps the server reason for a folder refusal that is not a name collision', async () => {
+  workspace.entries = [{ name: 'README.md', type: 'file', size: workspace.file.size, mtime: workspace.file.mtime }]
+  const busy = 'workspace/mkdir failed: the agent is working in this workspace; retry when it is idle'
+  vi.mocked(createWorkspaceDir).mockImplementationOnce(() =>
+    Promise.reject(Object.assign(new ApiError(busy, 409, 'WORKSPACE_STALE'), { status: 409, code: 'WORKSPACE_STALE' }))
+  )
+  await renderWorkspace()
+  await clickButton('New folder')
+  const name = container?.querySelector<HTMLInputElement>('input[aria-label="New folder path"]')
+  await changeValue(name!, 'drafts')
+  await clickButton('Create folder')
+  await act(async () => Promise.resolve())
+
+  expect(container?.querySelector('[role="alert"]')?.textContent).toBe(busy)
 })
 
 it('cancels a folder draft with Escape without creating anything', async () => {

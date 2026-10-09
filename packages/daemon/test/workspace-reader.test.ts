@@ -451,9 +451,11 @@ describe('workspace mkdir', () => {
     const page = await reader.list(listReq({ path: 'skills/reference' }))
     expect(page).toMatchObject({ exists: true, entries: [] })
 
-    await expect(reader.mkdir({ agentId: AGENT, path: 'skills/reference' })).rejects.toBeInstanceOf(
-      WorkspaceConflictError
-    )
+    // A name collision carries its own reason, so the console can tell it apart from a busy agent.
+    await expect(reader.mkdir({ agentId: AGENT, path: 'skills/reference' })).rejects.toMatchObject({
+      name: 'WorkspaceConflictError',
+      reason: 'exists'
+    })
     writeFileSync(join(ws, 'notes.md'), 'current')
     await expect(reader.mkdir({ agentId: AGENT, path: 'notes.md' })).rejects.toBeInstanceOf(WorkspaceConflictError)
     expect(readFileSync(join(ws, 'notes.md'), 'utf8')).toBe('current')
