@@ -398,6 +398,7 @@
       "unavailable": "此界面曾实时显示，但页面无法加载。"
     },
     "decisionResult": {
+      "modelSelection": "会话模型选择",
       "received": "收到决策结果",
       "open": "在最近评估中打开此次评估"
     },

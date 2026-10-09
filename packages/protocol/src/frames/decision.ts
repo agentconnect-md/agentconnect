@@ -28,6 +28,7 @@ export const DECISION_CHAIN_V1_FEATURE = 'decision-chain-v1'
 export const DECISION_EVALUATIONS_V1_FEATURE = 'decision-evaluations-v1'
 export const DECISION_MODEL_EVALUATIONS_V1_FEATURE = 'decision-model-evaluations-v1'
 export const DECISION_EVALUATION_FILTER_V1_FEATURE = 'decision-evaluation-filter-v1'
+export const DECISION_MODEL_SESSION_FILTER_V1_FEATURE = 'decision-model-session-filter-v1'
 // The peer answers decision/routing-evaluations and decision/routing-evaluation from its router verdicts.
 export const DECISION_ROUTING_EVALUATIONS_V1_FEATURE = 'decision-routing-evaluations-v1'
 // The peer returns rawRequest/rawResponse on evaluation details when a request sets includeRaw.
@@ -173,6 +174,7 @@ export type DecisionEvaluationReply = z.infer<typeof DecisionEvaluationReply>
 
 export const DecisionModelEvaluationsRequest = z.strictObject({
   agentId: z.string().uuid(),
+  sessionId: z.string().min(1).max(128).optional(),
   decisionId: z.string().uuid().optional(),
   cursor: z.number().int().positive().optional(),
   limit: z.number().int().min(1).max(50).default(20)

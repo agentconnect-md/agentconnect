@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  DECISION_MODEL_SESSION_FILTER_V1_FEATURE,
   DECISION_EVALUATION_FILTER_V1_FEATURE,
   DECISION_MODEL_EVALUATIONS_V1_FEATURE,
   type DecisionModelEvaluationRecord
@@ -53,9 +54,15 @@ describe('agent model evaluation reads', () => {
     await user.addMemberByEmail(DEFAULT_ORG_ID, email, 'viewer')
     const rows = [row(2, privateId), row(1, publicId)]
     let requestedDecisionId: string | undefined
+    let requestedSessionId: string | undefined
     const control = {
-      decisionModelEvaluations: async (_daemonId: string, _orgId: string, req: { decisionId?: string }) => {
+      decisionModelEvaluations: async (
+        _daemonId: string,
+        _orgId: string,
+        req: { decisionId?: string; sessionId?: string }
+      ) => {
         requestedDecisionId = req.decisionId
+        requestedSessionId = req.sessionId
         return { items: rows, nextCursor: null }
       },
       decisionModelEvaluation: async (_daemonId: string, _orgId: string, req: { seq: number }) => ({
@@ -70,7 +77,11 @@ describe('agent model evaluation reads', () => {
         }
       })
     }
-    let features = [DECISION_MODEL_EVALUATIONS_V1_FEATURE, DECISION_EVALUATION_FILTER_V1_FEATURE]
+    let features = [
+      DECISION_MODEL_EVALUATIONS_V1_FEATURE,
+      DECISION_EVALUATION_FILTER_V1_FEATURE,
+      DECISION_MODEL_SESSION_FILTER_V1_FEATURE
+    ]
     const liveness = {
       get: () => ({
         state: 'READY',
@@ -103,7 +114,25 @@ describe('agent model evaluation reads', () => {
     expect(filtered.statusCode, filtered.body).toBe(200)
     expect(requestedDecisionId).toBe(DECISION)
     expect(filtered.json().items).toEqual([rows[1]])
+    const sessionFiltered = await app.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${agentId}/model-evaluations?sessionId=${publicId}`
+    })
+    expect(sessionFiltered.statusCode, sessionFiltered.body).toBe(200)
+    expect(requestedSessionId).toBe(publicId)
+    expect(sessionFiltered.json().items).toEqual([rows[1]])
+    const hiddenSession = await app.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${agentId}/model-evaluations?sessionId=${privateId}`
+    })
+    expect(hiddenSession.json().items).toEqual([])
     features = [DECISION_MODEL_EVALUATIONS_V1_FEATURE]
+    const oldSessionHost = await app.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${agentId}/model-evaluations?sessionId=${publicId}`
+    })
+    expect(oldSessionHost.statusCode).toBe(503)
+    expect(oldSessionHost.json().code).toBe('DAEMON_UPGRADE_REQUIRED')
     const oldHost = await app.app.inject({
       method: 'GET',
       url: `${ORG}/agents/${agentId}/model-evaluations?decisionId=${DECISION}`

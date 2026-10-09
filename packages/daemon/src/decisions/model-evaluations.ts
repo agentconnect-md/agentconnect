@@ -62,12 +62,16 @@ export class DecisionModelEvaluationReader {
     this.assertScope(orgId, req.agentId)
     const rows = await this.deps
       .store()
-      .listDecisionModelEvaluations(orgId, req.agentId, req.cursor, req.limit + 1, req.decisionId)
+      .listDecisionModelEvaluations(orgId, req.agentId, req.cursor, req.limit + 1, req.decisionId, req.sessionId)
     const items: DecisionModelEvaluationRecord[] = []
     let more = rows.length > req.limit
     const summaries = rows.slice(0, req.limit).flatMap((row) => {
       const summary = this.summary(row)
-      return summary && (!req.decisionId || summary.decisionId === req.decisionId) ? [summary] : []
+      return summary &&
+        (!req.decisionId || summary.decisionId === req.decisionId) &&
+        (!req.sessionId || summary.sessionId === req.sessionId)
+        ? [summary]
+        : []
     })
     for (const summary of await this.titled(summaries, req.agentId)) {
       if (bytes({ items: [...items, summary], nextCursor: Number.MAX_SAFE_INTEGER }) > DECISION_LIST_MAX_BYTES) {

@@ -3,6 +3,7 @@
 // The conversation ↔ viewer switch on the real session page: that `?file=` opens the viewer, that closing it puts the conversation back, and above all that the round trip does not REMOUNT the transcript — the state inside that region (expanded tool bodies, the composer's caret, an open @mention menu and the latch it reports upward) belongs to the session, not to the pane.
 
 import { act } from 'react'
+import { SWRConfig } from 'swr'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Agent, Session } from '@/lib/data'
@@ -47,6 +48,7 @@ const wire = vi.hoisted(() => ({
   agentModel: 'sonnet',
   runtimeChanges: false,
   byDecision: false,
+  modelEvaluations: [] as unknown[],
   /** Overrides the session's steps: a playground session renders these instead of fetching a transcript. */
   steps: undefined as unknown[] | undefined,
   /** Every draft the composer wrote through `setPgInput`, newest last; the mocked `usePgDraft` reads the newest. */
@@ -84,6 +86,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>()
   return {
     ...actual,
+    fetchAgentModelEvaluations: vi.fn(async () => ({ items: wire.modelEvaluations, nextCursor: null })),
     fetchWorkspaceFiles: vi.fn((_agentId: string, opts: { path: string; sessionId?: string }) => {
       wire.listCalls.push(opts)
       // Root carries a directory whose name and child are deliberately hostile to a URL — space, `+`, parens and non-ASCII — so the param round-trip is exercised on bytes that actually encode, not on `notes.md`.
@@ -301,12 +304,17 @@ import SessionDetailView from './SessionDetailView'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
+let evaluationCache = new Map()
 let container: HTMLDivElement | undefined
 let root: ReturnType<typeof createRoot> | undefined
 
 async function render() {
   await act(async () => {
-    root?.render(<SessionDetailView />)
+    root?.render(
+      <SWRConfig value={{ provider: () => evaluationCache }}>
+        <SessionDetailView />
+      </SWRConfig>
+    )
     await Promise.resolve()
   })
   await act(async () => {
@@ -339,6 +347,8 @@ beforeEach(() => {
   nav.search = ''
   nav.replaced = []
   nav.pushed = []
+  evaluationCache = new Map()
+  wire.modelEvaluations = []
   wire.file = 'line one\nline two\n'
   wire.fileExists = true
   wire.fileCalls = []
@@ -400,6 +410,22 @@ describe('the session page in conversation mode', () => {
     expect(viewer()).toBeNull()
     expect(pane()?.className).toBe('contents')
   })
+})
+
+it('shows the retained model selection on a session after its agent binding is removed', async () => {
+  wire.byDecision = false
+  wire.modelEvaluations = [
+    {
+      seq: 7,
+      sessionId: 'session-1',
+      decisionId: 'removed-decision',
+      outcome: 'selected',
+      answer: { type: 'boolean', value: false, probability: 0 },
+      target: { runtime: 'claude', model: 'sonnet' }
+    }
+  ]
+  await render()
+  expect(container?.textContent).toContain('Session model selection')
 })
 
 it('does not show the agent fallback model for a session on another runtime', async () => {

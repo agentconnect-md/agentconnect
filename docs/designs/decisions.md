@@ -1524,7 +1524,13 @@ change preserves compatible conditions and invalidates preview results.
 
 Agent model selection keeps its own history, listed on the Decision page under that
 Agent's place; the By decision hover card on Agent Detail and in the composers links
-to the Decision and opens the same list in a drawer. It is an
+to the Decision and opens the same list in a drawer. Session and Webchat transcripts
+also show a Session model selection marker for the focused participant. It opens
+that session's frozen evaluation directly, including raw request/response diagnostics,
+even if the Agent binding changes or the original Decision is deleted. The list
+endpoint accepts `sessionId`, filtered on the daemon before paging; this read requires
+`decision-model-session-filter-v1` so older daemons cannot silently return another
+session's history. It is an
 Agent-scoped session-start history, never part of an Integration conversation or
 routing history. The daemon stores it separately from
 `decision_verdict`, and the CP returns each row only when the caller can also view

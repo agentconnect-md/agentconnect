@@ -74,6 +74,7 @@ import { useConsoleData } from '@/lib/data-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
+import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
 import { agentToneColor } from '@/lib/agent-tone'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
@@ -5308,6 +5309,18 @@ export default function SessionDetailView() {
           the composer stops short of. (Longhand `pb-*` always sorts after shorthand
           `p-*`, so the cancel wins — STYLE.md §8.) */}
               <div className="flex flex-1 flex-col gap-4 p-3 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
+                {headerFocusAgentId && (
+                  <SessionModelSelectionResult
+                    key={`${headerFocusAgentId}:${headerFocusSessionId ?? toolSid}`}
+                    target={{
+                      agentId: headerFocusAgentId,
+                      agentName: agentNameById.get(headerFocusAgentId) ?? session.agentName ?? headerFocusAgentId,
+                      live: !MOCK_MODE
+                    }}
+                    sessionId={headerFocusAgentId === session.agentId ? toolSid : headerFocusSessionId}
+                    pending={pgBusy}
+                  />
+                )}
                 {turns.length > 0 && (
                   <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
                     {turns.map((turn, ti) => (

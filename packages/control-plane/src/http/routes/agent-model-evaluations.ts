@@ -3,6 +3,7 @@ import { z } from 'zod'
 import {
   DECISION_MODEL_EVALUATIONS_V1_FEATURE,
   DECISION_EVALUATION_FILTER_V1_FEATURE,
+  DECISION_MODEL_SESSION_FILTER_V1_FEATURE,
   DecisionModelEvaluationRecordDetail,
   DecisionModelEvaluationRecordPage
 } from '@agentconnect.md/protocol'
@@ -39,7 +40,8 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
       reply: FastifyReply,
       agent: NonNullable<Awaited<ReturnType<typeof visibleAgent>>>,
       read: (id: string) => Promise<T>,
-      decisionId?: string
+      decisionId?: string,
+      sessionId?: string
     ): Promise<T | null> => {
       const ids = await deps.placementResolver.servingDaemons(agent)
       const ready = ids.filter((id) => deps.daemonConns.get(id)?.state === 'READY')
@@ -51,7 +53,9 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
         (id) =>
           deps.daemonConns.get(id)?.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE) &&
           (!decisionId ||
-            deps.daemonConns.get(id)?.capabilities?.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE))
+            deps.daemonConns.get(id)?.capabilities?.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE)) &&
+          (!sessionId ||
+            deps.daemonConns.get(id)?.capabilities?.features.includes(DECISION_MODEL_SESSION_FILTER_V1_FEATURE))
       )
       if (!capable.length) {
         await reply
@@ -94,13 +98,14 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
           tags: [Tag.Decisions],
           summary: 'List recent model selection evaluations',
           description:
-            "Lists this agent's recent session-start model choices from its serving daemon. `decisionId` optionally filters by the recorded root Decision before paging. Rows from sessions the caller cannot view are omitted; each row's `title` is its session's title, with mentions named while the serving daemon still holds the session. Detail bodies expire after 24 hours or 20 newer choices; summaries expire after seven days.",
+            "Lists this agent's recent session-start model choices from its serving daemon. `decisionId` and `sessionId` optionally filter by the recorded root Decision and session before paging. Rows from sessions the caller cannot view are omitted; each row's `title` is its session's title, with mentions named while the serving daemon still holds the session. Detail bodies expire after 24 hours or 20 newer choices; summaries expire after seven days.",
           operationId: 'listAgentModelEvaluations',
           params: Params,
           querystring: z.object({
             cursor: z.coerce.number().int().positive().optional(),
             limit: z.coerce.number().int().min(1).max(50).default(20),
-            decisionId: z.string().uuid().optional()
+            decisionId: z.string().uuid().optional(),
+            sessionId: z.string().min(1).max(128).optional()
           }),
           response: { 200: DecisionModelEvaluationRecordPage, 404: ErrorDto, 503: ErrorDto }
         }
@@ -117,7 +122,8 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
               agentId: agent.id,
               ...req.query
             }),
-          req.query.decisionId
+          req.query.decisionId,
+          req.query.sessionId
         )
         if (!result) return reply
         const allowed = await readable(
@@ -128,7 +134,9 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
         // The daemon's title names mentions; once its session row has aged out, the CP's title stands in.
         return {
           items: result.items
-            .filter((item) => allowed.has(item.sessionId))
+            .filter(
+              (item) => allowed.has(item.sessionId) && (!req.query.sessionId || item.sessionId === req.query.sessionId)
+            )
             .map((item) => ({ ...item, title: item.title ?? allowed.get(item.sessionId) ?? null })),
           nextCursor: result.nextCursor
         }

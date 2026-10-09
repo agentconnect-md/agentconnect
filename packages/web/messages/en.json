@@ -398,6 +398,7 @@
       "unavailable": "This interface was shown live; its page could not be loaded."
     },
     "decisionResult": {
+      "modelSelection": "Session model selection",
       "received": "Received a decision result",
       "open": "Open this evaluation in Recent evaluations"
     },
