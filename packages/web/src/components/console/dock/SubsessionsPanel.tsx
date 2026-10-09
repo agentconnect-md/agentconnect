@@ -22,6 +22,9 @@ import type { DockTabStatus } from './SessionDock'
 /** Rows one read asks for; "Show more" pages on by the cursor the last one returned. */
 export const SUBSESSIONS_PAGE = 20
 
+/** The listing route's own cap on one page, which a refresh asks for at most. */
+const SUBSESSIONS_READ_MAX = 50
+
 /** Re-read cadence while one runs, while none does, and while the tab is not the selected one. */
 const POLL_MS = 5_000
 const IDLE_POLL_MS = 20_000
@@ -62,16 +65,25 @@ const failureOf = (e: unknown) => ({
   code: e instanceof ApiError ? (e.code ?? null) : null
 })
 
-/** A fresh first page over what is on screen: rows older than its last one stay, so a new sub-session never pushes one out of view. */
-function withFirstPage(prev: ListState | null, scope: string, page: AssistantSubsessionsPageDto): ListState {
-  const last = page.subsessions.at(-1)
-  const kept = prev?.scope === scope && last ? prev.rows.filter((row) => row.startedAt < last.startedAt) : []
-  return {
-    scope,
-    rows: [...page.subsessions, ...kept],
-    cursor: kept.length > 0 ? (prev?.cursor ?? null) : page.nextCursor,
-    error: null
-  }
+/** Every row already on screen read afresh, page by page from the newest, so none keeps a state or a Stop the daemon no longer reports. */
+async function readLoaded(
+  agentId: string,
+  sessionId: string,
+  loaded: number
+): Promise<Pick<ListState, 'rows' | 'cursor'>> {
+  const want = Math.max(SUBSESSIONS_PAGE, loaded)
+  const rows: AssistantSubsessionDto[] = []
+  let cursor: string | null = null
+  do {
+    const page: AssistantSubsessionsPageDto = await fetchAssistantSubsessions(agentId, {
+      parentSessionId: sessionId,
+      limit: Math.min(SUBSESSIONS_READ_MAX, want - rows.length),
+      ...(cursor ? { cursor } : {})
+    })
+    rows.push(...page.subsessions)
+    cursor = page.nextCursor
+  } while (cursor !== null && rows.length < want)
+  return { rows, cursor }
 }
 
 function noticeKey(status: number | null, code: string | null): 'upgradeDaemon' | 'notReadable' | 'unavailable' {
@@ -107,12 +119,14 @@ export function SubsessionsPanel({
   const [moreState, setMore] = useState({ scope, loading: false, failed: false })
   const more = moreState.scope === scope ? moreState : { scope, loading: false, failed: false }
   const revision = refreshTick + ownTick
+  // How many rows this conversation has on screen, so a refresh re-reads as far as "Show more" reached.
+  const loaded = useRef({ scope, rows: 0 })
 
   useEffect(() => {
     let live = true
-    fetchAssistantSubsessions(agentId, { parentSessionId: sessionId, limit: SUBSESSIONS_PAGE }).then(
-      (page) => {
-        if (live) setList((prev) => withFirstPage(prev, scope, page))
+    readLoaded(agentId, sessionId, loaded.current.scope === scope ? loaded.current.rows : 0).then(
+      (fresh) => {
+        if (live) setList({ scope, ...fresh, error: null })
       },
       (e: unknown) => {
         // A failed re-read keeps the rows it already showed and says it could not refresh them.
@@ -131,6 +145,9 @@ export function SubsessionsPanel({
 
   const current = list?.scope === scope ? list : null
   const rows = current?.rows ?? []
+  useEffect(() => {
+    loaded.current = { scope, rows: rows.length }
+  }, [rows.length, scope])
   const running = rows.filter((row) => row.state === 'open').length
   const settled = current !== null
   const failed = current?.error != null && rows.length === 0

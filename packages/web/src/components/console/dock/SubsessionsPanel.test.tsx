@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const wire = vi.hoisted(() => ({
   pages: [] as unknown[],
+  /** When set, the daemon's whole list, newest first, paged by an index cursor as the route pages it. */
+  server: null as null | Array<{ state: string; canStop: boolean }>,
   failure: null as null | { status: number; code?: string },
   calls: [] as Array<{ agentId: string; opts: { parentSessionId?: string; cursor?: string; limit?: number } }>,
   stops: [] as Array<{ agentId: string; sessionId: string }>,
@@ -32,6 +34,13 @@ vi.mock('@/lib/api', () => {
       (agentId: string, opts: { parentSessionId?: string; cursor?: string; limit?: number }) => {
         wire.calls.push({ agentId, opts })
         if (wire.failure) return Promise.reject(new ApiError('nope', wire.failure.status, wire.failure.code))
+        if (wire.server) {
+          const start = opts.cursor ? Number(opts.cursor) : 0
+          const end = start + (opts.limit ?? 50)
+          const subsessions = wire.server.slice(start, end).map((r) => ({ ...r }))
+          const nextCursor = end < wire.server.length ? String(end) : null
+          return Promise.resolve({ subsessions, truncated: nextCursor !== null, nextCursor })
+        }
         // Each read answers the next queued page; the last one repeats.
         const page = wire.pages.length > 1 ? wire.pages.shift() : wire.pages[0]
         return Promise.resolve(page)
@@ -134,6 +143,7 @@ const last = () => verdicts.at(-1)
 
 beforeEach(() => {
   wire.pages = [page([])]
+  wire.server = null
   wire.failure = null
   wire.calls = []
   wire.stops = []
@@ -216,26 +226,63 @@ describe('SubsessionsPanel', () => {
     expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Couldn’t stop it. Try again.')
   })
 
-  it('pages on with the cursor, and a fresh first page keeps the row it pushed down', async () => {
-    const first = [row({ sessionId: 'c3', startedAt: '2026-10-09T09:03:00.000Z' })]
-    const second = [row({ sessionId: 'c2', startedAt: '2026-10-09T09:02:00.000Z', state: 'done' })]
-    wire.pages = [page(first, 'cursor-1'), page(second)]
+  it('pages on with the cursor, and a refresh after a new one keeps every row it had on screen', async () => {
+    const older = (i: number) => row({ sessionId: `c${i}`, state: 'done', canStop: false })
+    wire.server = Array.from({ length: SUBSESSIONS_PAGE + 1 }, (_, i) => older(SUBSESSIONS_PAGE + 1 - i))
     await render()
-    expect(buttons('Show more')).toHaveLength(1)
+    expect(rows()).toHaveLength(SUBSESSIONS_PAGE)
     await click(buttons('Show more')[0])
     expect(wire.calls.at(-1)).toEqual({
       agentId: 'agent-a',
-      opts: { parentSessionId: 'session-1', cursor: 'cursor-1', limit: SUBSESSIONS_PAGE }
+      opts: { parentSessionId: 'session-1', cursor: String(SUBSESSIONS_PAGE), limit: SUBSESSIONS_PAGE }
     })
-    expect(rows()).toHaveLength(2)
+    expect(rows()).toHaveLength(SUBSESSIONS_PAGE + 1)
     expect(buttons('Show more')).toHaveLength(0)
 
-    // A new sub-session lands on top of a one-row first page: the older rows stay on screen.
-    wire.pages = [page([row({ sessionId: 'c4', startedAt: '2026-10-09T09:04:00.000Z' })], 'cursor-2')]
+    // A new sub-session lands on top: the refresh reads as far as the reader had loaded, so the oldest stays.
+    wire.server = [older(99), ...wire.server]
     await rerender({ refreshTick: 1 })
     const links = Array.from(container?.querySelectorAll('a') ?? []).map((a) => a.getAttribute('href'))
-    expect(links).toEqual(['/acme/sessions/c4', '/acme/sessions/c3', '/acme/sessions/c2'])
-    expect(buttons('Show more')).toHaveLength(0)
+    expect(links).toHaveLength(SUBSESSIONS_PAGE + 1)
+    expect(links[0]).toBe('/acme/sessions/c99')
+    expect(links.at(-1)).toBe('/acme/sessions/c2')
+    expect(buttons('Show more')).toHaveLength(1)
+  })
+
+  it('refreshes a row loaded by "Show more", so one that ended or was stopped stops reading Running', async () => {
+    const done = (i: number) => row({ sessionId: `c${i}`, state: 'done', canStop: false })
+    // 20 settled ones, then an older one still running past the first page.
+    wire.server = [
+      ...Array.from({ length: SUBSESSIONS_PAGE }, (_, i) => done(SUBSESSIONS_PAGE + 1 - i)),
+      row({ sessionId: 'c1' })
+    ]
+    await render()
+    expect(last()).toMatchObject({ count: SUBSESSIONS_PAGE, running: 0 })
+    await click(buttons('Show more')[0])
+    expect(rows().at(-1)?.dataset.subsessionRow).toBe('open')
+    expect(buttons('Stop')).toHaveLength(1)
+    expect(last()).toMatchObject({ count: SUBSESSIONS_PAGE + 1, running: 1 })
+
+    // Stopped here: the read that follows the stop reaches it, and it reads as the daemon reports it.
+    wire.server[SUBSESSIONS_PAGE] = { ...wire.server[SUBSESSIONS_PAGE]!, state: 'failed', canStop: false }
+    await click(buttons('Stop')[0])
+    expect(wire.stops).toEqual([{ agentId: 'agent-a', sessionId: 'c1' }])
+    expect(rows().at(-1)?.dataset.subsessionRow).toBe('failed')
+    expect(rows().at(-1)?.querySelector('[data-subsession-state]')?.textContent).toBe('Failed')
+    expect(buttons('Stop')).toHaveLength(0)
+    expect(last()).toMatchObject({ count: SUBSESSIONS_PAGE + 1, running: 0 })
+
+    // One that finishes on its own is caught by the next refresh too.
+    wire.server[SUBSESSIONS_PAGE] = { ...wire.server[SUBSESSIONS_PAGE]!, state: 'open', canStop: true }
+    await rerender({ refreshTick: 1 })
+    expect(last()).toMatchObject({ running: 1 })
+    wire.server[SUBSESSIONS_PAGE] = { ...wire.server[SUBSESSIONS_PAGE]!, state: 'done', canStop: false }
+    await rerender({ refreshTick: 2 })
+    expect(rows().at(-1)?.querySelector('[data-subsession-state]')?.textContent).toBe('Reported')
+    expect(buttons('Stop')).toHaveLength(0)
+    expect(last()).toMatchObject({ count: SUBSESSIONS_PAGE + 1, running: 0 })
+    // One request covers the 21 rows on screen, within the route's page cap.
+    expect(wire.calls.at(-1)?.opts).toEqual({ parentSessionId: 'session-1', limit: SUBSESSIONS_PAGE + 1 })
   })
 
   it('reports an empty conversation as nothing to show, so its tab stays out of the strip', async () => {
