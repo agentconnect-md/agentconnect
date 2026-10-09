@@ -408,8 +408,10 @@ below), so opening it everywhere does not reopen what the read rule closes.
   `channel` post at a channel root, and a reply into another session through `sessionId` — since
   each carries the content into a session or place P does not alone see. The mark is stored with
   the session so it survives a restart or handover, and the refusal tells P that starting a new
-  conversation lifts it. This is a refusal by tool, not an output filter; writes that leave
-  through other tools are an open question (§9).
+  conversation lifts it. The DM's own history still holds the earlier answers, so any session that
+  reads it back — through `recall` or a history read of the DM — while another session there
+  carries the mark is marked too, a sub-session or patrol included. This is a refusal by tool, not
+  an output filter; writes that leave through other tools are an open question (§9).
 - **Memory**: DMs are already outside shared memory. When the per-person memory space lands,
   anything it captures from such a session is injected only where P is the whole audience.
 - **Revocation**: after P leaves the place, excerpts already in P's DM context stay there; like
@@ -859,5 +861,6 @@ of that change: the Read box, the `P's DM` row and the target now state the same
 is bound to a turn P started, never a report, patrol, cron or sub-session turn; a session that
 made a widened read writes only to P's DM — no ledger writes, self-delegation, posts elsewhere or
 agent-to-agent sends — until it is retired, because the content stays in its context across
-turns; per-person memory captured from it stays in P's DM; revocation residue and the metric's
-inputs are stated; writes through code-host, MCP and shell tools are left open (§9).
+turns, and a later session that reads the DM's history back is marked too; per-person memory
+captured from it stays in P's DM; revocation residue and the metric's inputs are stated; writes
+through code-host, MCP and shell tools are left open (§9).
