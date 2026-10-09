@@ -1,19 +1,13 @@
-// Console file transfer routes: the CP forwards the scope and proxies only presigned URLs, never file bytes.
+// Console file transfer routes: the CP signs the URLs itself and never sees file bytes.
 import { afterEach, describe, expect, it } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
 import { FILE_TRANSFER_FEATURE, WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
-import type {
-  TransferUploadGrant,
-  TransferUploadReq,
-  WorkspaceTransferGrant,
-  WorkspaceTransferReq
-} from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import { ProtocolError } from '../../src/domain/errors.js'
+import { FileTransferRefusal, type FileTransferService } from '../../src/file-transfer/service.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -32,31 +26,34 @@ afterEach(async () => {
   await Promise.all(opened.splice(0).map((app) => app.close()))
 })
 
-class TransferSpy {
-  uploads: TransferUploadReq[] = []
-  transfers: WorkspaceTransferReq[] = []
+type Download = Parameters<FileTransferService['workspaceDownload']>[0]
+
+class TransferSpy implements FileTransferService {
+  readonly maxBytes = 1024
+  uploads: Array<{ orgId: string; size: number; sha256: string }> = []
+  downloads: Download[] = []
   failure: Error | null = null
 
-  async transferUpload(_daemonId: string, req: TransferUploadReq): Promise<TransferUploadGrant> {
-    this.uploads.push(req)
+  async reserveUpload(input: { orgId: string; size: number; sha256: string }) {
+    this.uploads.push(input)
     if (this.failure) throw this.failure
     return {
       uploadId: '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b',
       url: 'https://store.example.test/bucket/key?X-Amz-Signature=sig',
       headers: {
-        'content-length': String(req.size),
-        'x-amz-checksum-sha256': req.sha256,
+        'content-length': String(input.size),
+        'x-amz-checksum-sha256': input.sha256,
         'x-amz-tagging': 'ac-cache=pending'
       },
       expiresAt: EXPIRES
     }
   }
 
-  async workspaceTransfer(_daemonId: string, req: WorkspaceTransferReq): Promise<WorkspaceTransferGrant> {
-    this.transfers.push(req)
+  async workspaceDownload(input: Download) {
+    this.downloads.push(input)
     if (this.failure) throw this.failure
     return {
-      path: req.path,
+      path: input.path,
       size: 42,
       url: 'https://store.example.test/bucket/dl?X-Amz-Signature=sig',
       expiresAt: EXPIRES,
@@ -64,10 +61,18 @@ class TransferSpy {
       cached: false
     }
   }
+
+  async signUpload(): Promise<never> {
+    throw new Error('unused')
+  }
+
+  async uploadedFile(): Promise<never> {
+    throw new Error('unused')
+  }
 }
 
-function app(control: TransferSpy): HttpApp {
-  const running = buildHttpApp(prisma, undefined, LIVE, control as unknown as ControlSender)
+function app(transfer?: TransferSpy): HttpApp {
+  const running = buildHttpApp(prisma, undefined, LIVE, undefined, transfer ? { fileTransfer: transfer } : {})
   opened.push(running)
   return running
 }
@@ -82,16 +87,16 @@ async function seedTransferAgent(features: string[] = [FILE_TRANSFER_FEATURE, WO
 const upload = { name: 'spec.pdf', mimeType: 'application/pdf', size: 1234, sha256: SHA }
 
 describe('POST /agents/:id/uploads', () => {
-  it('forwards the declared file and answers the presigned PUT', async () => {
+  it('signs the declared file and answers the presigned PUT', async () => {
     await seedTransferAgent()
-    const control = new TransferSpy()
-    const res = await app(control).app.inject({
+    const transfer = new TransferSpy()
+    const res = await app(transfer).app.inject({
       method: 'POST',
       url: `${ORG}/agents/${AGENT}/uploads`,
       payload: upload
     })
     expect(res.statusCode).toBe(200)
-    expect(control.uploads).toEqual([{ agentId: AGENT, ...upload }])
+    expect(transfer.uploads).toEqual([{ orgId: DEFAULT_ORG_ID, size: 1234, sha256: SHA }])
     expect(res.json()).toMatchObject({
       uploadId: '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b',
       headers: { 'x-amz-checksum-sha256': SHA },
@@ -99,32 +104,39 @@ describe('POST /agents/:id/uploads', () => {
     })
   })
 
-  it('refuses a daemon without a bucket before sending anything, and a malformed declaration', async () => {
+  it('refuses a deployment without a bucket, a daemon that cannot fetch uploads, and a malformed declaration', async () => {
     await seedTransferAgent([])
-    const control = new TransferSpy()
-    const running = app(control)
-    const missing = await running.app.inject({ method: 'POST', url: `${ORG}/agents/${AGENT}/uploads`, payload: upload })
-    expect(missing.statusCode).toBe(409)
-    expect(missing.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
+    const unconfigured = await app().app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/uploads`,
+      payload: upload
+    })
+    expect(unconfigured.statusCode).toBe(409)
+    expect(unconfigured.json()).toMatchObject({ code: 'WORKSPACE_TRANSFER_UNAVAILABLE' })
+
+    const transfer = new TransferSpy()
+    const running = app(transfer)
+    const outdated = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/uploads`,
+      payload: upload
+    })
+    expect(outdated.statusCode).toBe(409)
+    expect(outdated.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
     const badName = await running.app.inject({
       method: 'POST',
       url: `${ORG}/agents/${AGENT}/uploads`,
       payload: { ...upload, name: '../agent.json' }
     })
     expect(badName.statusCode).toBe(400)
-    expect(control.uploads).toHaveLength(0)
+    expect(transfer.uploads).toHaveLength(0)
   })
 
-  it('answers the daemon’s cap refusal with its code', async () => {
+  it('answers the signer’s cap refusal with its code', async () => {
     await seedTransferAgent()
-    const control = new TransferSpy()
-    control.failure = ProtocolError.fromFrame({
-      code: 'BAD_PAYLOAD',
-      message: 'transfer/upload failed: files over 10 bytes cannot be uploaded',
-      retryable: false,
-      details: { reason: 'too-large' }
-    })
-    const res = await app(control).app.inject({
+    const transfer = new TransferSpy()
+    transfer.failure = new FileTransferRefusal(400, 'WORKSPACE_TOO_LARGE', 'a transfer must be 1 byte to 10 bytes')
+    const res = await app(transfer).app.inject({
       method: 'POST',
       url: `${ORG}/agents/${AGENT}/uploads`,
       payload: upload
@@ -135,12 +147,12 @@ describe('POST /agents/:id/uploads', () => {
 })
 
 describe('POST /agents/:id/workspace/file/transfer', () => {
-  it('forwards the primary workspace, or an isolated session’s worktree', async () => {
+  it('scopes the primary workspace, or an isolated session’s worktree, to the serving daemon', async () => {
     await seedTransferAgent()
     const isolated = randomUUID()
     await seedSessionMeta(prisma, isolated, AGENT, { daemonId: DAEMON, workspaceIsolation: 'session' })
-    const control = new TransferSpy()
-    const running = app(control)
+    const transfer = new TransferSpy()
+    const running = app(transfer)
     const primary = await running.app.inject({
       method: 'POST',
       url: `${ORG}/agents/${AGENT}/workspace/file/transfer`,
@@ -154,9 +166,9 @@ describe('POST /agents/:id/workspace/file/transfer', () => {
       payload: { path: 'out.log', sessionId: isolated }
     })
     expect(session.statusCode).toBe(200)
-    expect(control.transfers).toEqual([
-      { agentId: AGENT, path: 'dist/app.tar.gz' },
-      { agentId: AGENT, sessionId: isolated, path: 'out.log' }
+    expect(transfer.downloads).toEqual([
+      { orgId: DEFAULT_ORG_ID, daemonId: DAEMON, agentId: AGENT, path: 'dist/app.tar.gz' },
+      { orgId: DEFAULT_ORG_ID, daemonId: DAEMON, agentId: AGENT, sessionId: isolated, path: 'out.log' }
     ])
   })
 
@@ -177,30 +189,33 @@ describe('POST /agents/:id/workspace/file/transfer', () => {
     expect(rewritten.json()).toMatchObject({ code: 'WORKSPACE_FILE_CHANGED' })
   })
 
-  it('hides an unknown session and maps a missing file to 404', async () => {
+  it('hides an unknown session and answers the signer’s and the daemon’s refusals with their codes', async () => {
     await seedTransferAgent()
-    const control = new TransferSpy()
-    const running = app(control)
-    const unknown = await running.app.inject({
-      method: 'POST',
-      url: `${ORG}/agents/${AGENT}/workspace/file/transfer`,
-      payload: { path: 'a.bin', sessionId: randomUUID() }
-    })
+    const transfer = new TransferSpy()
+    const running = app(transfer)
+    const post = (path: string, sessionId?: string) =>
+      running.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents/${AGENT}/workspace/file/transfer`,
+        payload: { path, ...(sessionId ? { sessionId } : {}) }
+      })
+    const unknown = await post('a.bin', randomUUID())
     expect(unknown.statusCode).toBe(404)
-    expect(control.transfers).toHaveLength(0)
+    expect(transfer.downloads).toHaveLength(0)
 
-    control.failure = ProtocolError.fromFrame({
-      code: 'BAD_PAYLOAD',
-      message: 'workspace/transfer failed: no such file',
-      retryable: false,
-      details: { reason: 'not-found' }
-    })
-    const missing = await running.app.inject({
-      method: 'POST',
-      url: `${ORG}/agents/${AGENT}/workspace/file/transfer`,
-      payload: { path: 'gone.bin' }
-    })
+    transfer.failure = new FileTransferRefusal(404, 'WORKSPACE_NOT_FOUND', 'no such file')
+    const missing = await post('gone.bin')
     expect(missing.statusCode).toBe(404)
     expect(missing.json()).toMatchObject({ code: 'WORKSPACE_NOT_FOUND' })
+
+    transfer.failure = ProtocolError.fromFrame({
+      code: 'BAD_PAYLOAD',
+      message: 'workspace/upload failed: the bucket refused the upload',
+      retryable: false,
+      details: { reason: 'transfer-failed' }
+    })
+    const refused = await post('dist/app.bin')
+    expect(refused.statusCode).toBe(503)
+    expect(refused.json()).toMatchObject({ code: 'WORKSPACE_TRANSFER_FAILED' })
   })
 })

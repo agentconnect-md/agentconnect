@@ -97,9 +97,8 @@ import {
   workspaceGitUnstage,
   workspaceList,
   workspaceRead,
-  workspaceTransfer,
+  workspaceUpload,
   workspaceWrite,
-  transferUpload,
   type WorkspaceControlDeps
 } from './workspace.js'
 
@@ -187,8 +186,7 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['workspace/write', workspaceWrite],
   ['workspace/delete', workspaceDelete],
   ['workspace/mkdir', workspaceMkdir],
-  ['workspace/transfer', workspaceTransfer],
-  ['transfer/upload', transferUpload],
+  ['workspace/upload', workspaceUpload],
   ['workspace/gitstatus', workspaceGitStatus],
   ['workspace/gitdiff', workspaceGitDiff],
   ['workspace/gitlog', workspaceGitLog],

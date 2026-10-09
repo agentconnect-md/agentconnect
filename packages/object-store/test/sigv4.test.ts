@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amzDate, canonicalQuery, canonicalUri, presign, s3UriEncode, signHeaders } from '../src/source-cache/sigv4.js'
+import { amzDate, canonicalQuery, canonicalUri, presign, s3UriEncode, signHeaders } from '../src/sigv4.js'
 
 // AWS's published S3 SigV4 examples (sigv4-query-string-auth / sigv4-header-based-auth).
 const AWS_EXAMPLE = {

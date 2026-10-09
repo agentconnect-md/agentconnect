@@ -105,7 +105,7 @@ import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
-import { FILE_TRANSFER_FEATURE, sessionFileDownload, sharedFileMarker, type SharedFile } from '@/lib/shared-file'
+import { transferCapable, sessionFileDownload, sharedFileMarker, type SharedFile } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -3491,8 +3491,7 @@ export default function SessionDetailView() {
   // Binary and large text download through the object store when the viewed agent's daemon presigns transfers.
   const viewerAgent = filesAgentId ? agents.find((a) => a.id === filesAgentId) : undefined
   const viewerTransfer =
-    viewerAgent !== undefined &&
-    agentCapabilitySource(viewerAgent, daemons, memberSets)?.caps.features.includes(FILE_TRANSFER_FEATURE) === true
+    viewerAgent !== undefined && transferCapable(agentCapabilitySource(viewerAgent, daemons, memberSets)?.caps.features)
   const visibleMsgLoading = transcriptMatchesSession ? msgLoading : wantTranscript
   const visibleMsgPaging = wantTranscript && transcriptMatchesSession && msgPaging
   const visibleMsgErr = wantTranscript && transcriptMatchesSession ? msgErr : null
@@ -4019,7 +4018,7 @@ export default function SessionDetailView() {
   const composerAgent = agents.find((a) => a.id === composerAgentId)
   const composerTransfer =
     composerAgent !== undefined &&
-    agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features.includes(FILE_TRANSFER_FEATURE) === true
+    transferCapable(agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features)
   const onAttachFile = (file: File | undefined): void => {
     if (!attachmentsEnabled || !file) return
     if (file.type.startsWith('image/')) return void onImageFile(file)

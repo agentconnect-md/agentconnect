@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { posix } from 'node:path'
-import type { SourceCacheCredentialsConfig } from './config.js'
+import type { BucketCredentialsConfig } from './config.js'
 
-// Bucket credentials for a pool member (source-cache.md §6 item 4): mounted static keys or STS web identity.
+// Bucket credentials (source-cache.md §6 item 4): mounted static keys or STS web identity.
 
-export interface SourceCacheCredentials {
+export interface BucketCredentials {
   accessKeyId: string
   secretAccessKey: string
   sessionToken?: string
@@ -16,7 +16,7 @@ export interface SourceCacheCredentials {
 export interface CredentialsProvider {
   readonly source: 'static' | 'webIdentity'
   /** Credentials that stay valid for at least `minValidityMs`, or a rejection (a Source Cache miss, §12). */
-  get(minValidityMs: number): Promise<SourceCacheCredentials>
+  get(minValidityMs: number): Promise<BucketCredentials>
 }
 
 export type ReadTextFile = (path: string) => string
@@ -59,7 +59,7 @@ export function staticCredentials(opts: StaticCredentialsOptions): CredentialsPr
       return undefined
     }
   }
-  const read = (): SourceCacheCredentials => {
+  const read = (): BucketCredentials => {
     const sessionToken = optional(opts.sessionTokenKey)
     return {
       accessKeyId: required(opts.accessKeyIdKey, 'access key id'),
@@ -114,14 +114,14 @@ export function webIdentityCredentials(opts: WebIdentityOptions): CredentialsPro
   const readFile = opts.readFile ?? defaultReadFile
   const now = opts.now ?? Date.now
 
-  let cached: SourceCacheCredentials | undefined
-  let inflight: Promise<SourceCacheCredentials> | undefined
+  let cached: BucketCredentials | undefined
+  let inflight: Promise<BucketCredentials> | undefined
   let lastFailureAt: number | undefined
 
-  const sufficient = (creds: SourceCacheCredentials | undefined, minValidityMs: number): boolean =>
+  const sufficient = (creds: BucketCredentials | undefined, minValidityMs: number): boolean =>
     creds !== undefined && (creds.expiresAt === undefined || creds.expiresAt - now() >= minValidityMs)
 
-  const assume = async (): Promise<SourceCacheCredentials> => {
+  const assume = async (): Promise<BucketCredentials> => {
     // Re-read every call: the kubelet rotates the projected token.
     let token: string
     try {
@@ -211,7 +211,7 @@ function xmlText(xml: string, tag: string): string | undefined {
 }
 
 /** Parse the `<Credentials>` element of an AssumeRoleWithWebIdentity answer. */
-export function parseStsCredentials(xml: string): SourceCacheCredentials {
+export function parseStsCredentials(xml: string): BucketCredentials {
   const block = /<Credentials>([\s\S]*?)<\/Credentials>/.exec(xml)?.[1]
   if (!block) throw new Error('STS answer carries no credentials')
   const accessKeyId = xmlText(block, 'AccessKeyId')
@@ -234,10 +234,7 @@ export interface CredentialsDeps {
 }
 
 /** Build the configured credential source; throws on missing files or identity so a bad deployment fails at boot. */
-export function createCredentialsProvider(
-  config: SourceCacheCredentialsConfig,
-  deps: CredentialsDeps
-): CredentialsProvider {
+export function createCredentialsProvider(config: BucketCredentialsConfig, deps: CredentialsDeps): CredentialsProvider {
   if (config.source === 'static') {
     return staticCredentials({
       dir: config.dir,

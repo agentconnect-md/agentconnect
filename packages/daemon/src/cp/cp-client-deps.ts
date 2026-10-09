@@ -1,5 +1,3 @@
-import { createFileTransferControl } from './file-transfer.js'
-import type { FileTransfer } from '../source-cache/transfer.js'
 import type { DecisionEvaluationReader } from '../decisions/evaluations.js'
 import type { DecisionModelEvaluationReader } from '../decisions/model-evaluations.js'
 import type { DecisionApiGateEvaluationReader } from '../decisions/api-gate-evaluations.js'
@@ -25,7 +23,8 @@ import type {
   SessionPullRequestFeedbackResult,
   TaskList,
   TaskListReq,
-  ExecutorStrategyTable
+  ExecutorStrategyTable,
+  TransferNetwork
 } from '@agentconnect.md/protocol'
 import { POD_TEMPLATE_HASH_ENV } from '@agentconnect.md/protocol'
 import { ClientTransport, systemClock } from '@agentconnect.md/connection'
@@ -180,9 +179,8 @@ export interface CpClientSeamHost {
   /** A cluster member's requested re-probe, or undefined where the deployment takes no requests. */
   runtimeProbeRequest(): (() => void) | undefined
   workspaceFilesFor: WorkspaceFilesResolver
-  /** Console file transfer through the Source Cache bucket, or undefined without one. */
-  fileTransfer(): FileTransfer | undefined
-  orgForAgent(agentId: string): string | undefined
+  /** Pool members and their sandbox pods reach the transfer bucket in-cluster; everything else over its public origin. */
+  transferNetwork(): TransferNetwork
   workspaceSkillLedger: NonNullable<Parameters<typeof createLocalSkillsReader>[4]>
   verifyWorkspaceSkills: (id: string, roots: ClusterSkillLedger['roots'], cwd: string) => Promise<boolean[] | undefined>
   memory(): AgentMemoryAdminResolver & MemoryProvider
@@ -255,7 +253,6 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     (id, write) => host.withWorkspaceFileWrite(id, write),
     (id, scope) => host.workspaceFilesFor(id, scope)
   )
-  const transfer = host.fileTransfer()
 
   return {
     url,
@@ -424,15 +421,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       return host.dispatchPullRequestFeedback(req)
     },
     workspaceRead,
-    ...(transfer
-      ? {
-          fileTransfer: createFileTransferControl({
-            transfer,
-            orgForAgent: (id) => host.orgForAgent(id),
-            workspaceRead
-          })
-        }
-      : {}),
+    transferNetwork: host.transferNetwork(),
     workspaceGit: {
       status: (id, sessionId, repo) => workspaceGit.status(id, sessionId, repo),
       // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.

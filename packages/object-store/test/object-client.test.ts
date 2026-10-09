@@ -1,14 +1,15 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import type { CredentialsProvider } from '../src/source-cache/credentials.js'
-import { bundleKey, pointerKey, type SourceCacheObjectKey } from '../src/source-cache/keys.js'
-import { createObjectClient, SourceCacheObjectError } from '../src/source-cache/object-client.js'
-import { canonicalUri, sha256Hex } from '../src/source-cache/sigv4.js'
+import type { CredentialsProvider } from '../src/credentials.js'
+import { createObjectClient, SourceCacheObjectError } from '../src/object-client.js'
+import { canonicalUri, sha256Hex } from '../src/sigv4.js'
 
-// The member's own header-signed HEAD, PutObjectTagging, DELETE and lifecycle read (source-cache.md §9, §10), against a fake fetch.
+// Header-signed HEAD, PutObjectTagging, DELETE and lifecycle read (source-cache.md §9, §10), against a fake fetch.
 
 const NOW = Date.UTC(2026, 9, 3, 12, 0, 0)
-const KEY = bundleKey({ org: 'org_1', class: 'cred', repo: 'github:42', id: '0b5c3f8e-8d0a-4c4e-9a1e-0123456789ab' })
+const KEY = 'src/org_1/cred/github:42/bundles/0b5c3f8e-8d0a-4c4e-9a1e-0123456789ab.bundle'
+// The daemon admits bundle keys only; this stand-in admits keys ending in `.bundle` under src/.
+const isBundle = (key: string): key is string => /^src\/[^.]+\/bundles\/[0-9a-f-]{36}\.bundle$/.test(key)
 
 interface Captured {
   url: string
@@ -36,6 +37,7 @@ function harness(opts: { response?: Response; forcePathStyle?: boolean; sessionT
       forcePathStyle: opts.forcePathStyle ?? true
     },
     credentials,
+    isKey: isBundle,
     now: () => NOW,
     fetch: (async (url: string, init: RequestInit) => {
       captured.push({
@@ -160,19 +162,13 @@ describe('Source Cache object client', () => {
     await expect(harness({ response: huge }).client.getBucketLifecycle()).rejects.toMatchObject({ code: 'TooLarge' })
   })
 
-  it('refuses a pointer key: pointers are store rows, never objects', async () => {
-    const pointer = pointerKey({
-      org: 'org_1',
-      class: 'cred',
-      repo: 'github:42',
-      ref: 'refs/heads/main',
-      shape: 'full'
-    })
+  it('refuses any key its validator does not admit, before signing', async () => {
+    const pointer = 'src/org_1/cred/github:42/refs/' + 'a'.repeat(64) + '/full/latest'
     const { client, captured } = harness()
-    await expect(client.head(pointer)).rejects.toThrow(/bundle key/)
-    await expect(client.putTagging(pointer, 'ac-cache=live')).rejects.toThrow(/bundle key/)
-    await expect(client.delete(pointer)).rejects.toThrow(/bundle key/)
-    await expect(client.head('src/../x' as SourceCacheObjectKey)).rejects.toThrow(/bundle key/)
+    await expect(client.head(pointer)).rejects.toThrow(/may touch/)
+    await expect(client.putTagging(pointer, 'ac-cache=live')).rejects.toThrow(/may touch/)
+    await expect(client.delete(pointer)).rejects.toThrow(/may touch/)
+    await expect(client.head('src/../x')).rejects.toThrow(/may touch/)
     expect(captured).toEqual([])
   })
 })

@@ -1,6 +1,6 @@
 'use client'
 
-import { FILE_TRANSFER_FEATURE } from '@/lib/shared-file'
+import { transferCapable } from '@/lib/shared-file'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
@@ -2791,7 +2791,7 @@ function AgentDetail() {
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
               canCreateFolder={capabilitySource?.caps.features.includes('workspace-dir-create-v1') === true}
               sandboxed={isPoolPlacementKind(da.placementKind)}
-              transfer={capabilitySource?.caps.features.includes(FILE_TRANSFER_FEATURE) === true}
+              transfer={transferCapable(capabilitySource?.caps.features)}
               renderWorkspacePicker={(primaryBranch) =>
                 isGitWorkspace(da.workspace) ? (
                   <WorkspaceScopePicker

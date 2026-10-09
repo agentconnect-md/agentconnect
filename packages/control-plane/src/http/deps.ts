@@ -1,3 +1,4 @@
+import type { FileTransferService } from '../file-transfer/service.js'
 /**
  * `http/deps.ts` — the dependency bundle the C2 BFF routes receive (design §2.1,
  * §2.4). Routes consume repository **ports** and cross-component services, never
@@ -505,4 +506,6 @@ export interface HttpDeps {
    *  unset, the connectors routes 404 and the console hides "Add connectors". */
   connectors?: ConnectorsClient
   config: HttpServerConfig
+  /** Console file transfer signer; absent ⇒ the upload and transfer routes answer WORKSPACE_TRANSFER_UNAVAILABLE. */
+  fileTransfer?: FileTransferService
 }

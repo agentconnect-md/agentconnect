@@ -44,6 +44,10 @@ import type {
   HookStartOk,
   GithubReviewAuthorize,
   GithubReviewAuthorized,
+  TransferGetOk,
+  TransferGetReq,
+  TransferSignOk,
+  TransferSignReq,
   AgentApprovalRoute,
   AgentApprovalRouted,
   GithubReviewResultReport,
@@ -386,7 +390,9 @@ export class CpClient {
       pullRequestFeedback: deps.pullRequestFeedback && ((req) => deps.pullRequestFeedback!(req)),
       workspaceRead: deps.workspaceRead,
       workspaceGit: deps.workspaceGit,
-      ...(deps.fileTransfer ? { fileTransfer: deps.fileTransfer } : {}),
+      // Every transfer URL is signed by the control plane, over this socket.
+      signTransfer: deps.signTransfer ?? ((req, orgId) => this.signTransfer(req, orgId)),
+      ...(deps.transferNetwork ? { transferNetwork: deps.transferNetwork } : {}),
       taskReader: deps.taskReader,
       assistantActivity: deps.assistantActivity,
       autoMerge: deps.autoMerge,
@@ -977,6 +983,26 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected hook/start/ok, got ${rep.type}`, false)
     }
     return rep.payload as HookStartOk
+  }
+
+  /** Presign the PUT for a `workspace/upload` snapshot (source-cache-file-transfer.md §5). */
+  async signTransfer(payload: TransferSignReq, orgId?: string): Promise<TransferSignOk> {
+    this.requireReady('transfer/sign')
+    const rep = await this.request('transfer/sign', payload, orgId)
+    if (rep.type !== 'transfer/sign/ok') {
+      throw new WireError('INTERNAL', `expected transfer/sign/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as TransferSignOk
+  }
+
+  /** Presign the agent's GET for a console upload; no `url` when the bucket does not hold those bytes. */
+  async transferGet(payload: TransferGetReq, orgId?: string): Promise<TransferGetOk> {
+    this.requireReady('transfer/get')
+    const rep = await this.request('transfer/get', payload, orgId)
+    if (rep.type !== 'transfer/get/ok') {
+      throw new WireError('INTERNAL', `expected transfer/get/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as TransferGetOk
   }
 
   /** One-attempt, action-time formal-review purpose token. */

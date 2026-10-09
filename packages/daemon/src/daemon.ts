@@ -91,6 +91,7 @@ import {
   WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   FILE_TRANSFER_FEATURE,
+  type TransferNetwork,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   effectiveManagedMemoryScope,
@@ -658,7 +659,6 @@ import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import {
   createCredentialedCacheReadAuthorizer,
-  createFileTransfer,
   createSkillReadPlanner,
   createSkillCachePlanner,
   createSourceCache,
@@ -666,7 +666,6 @@ import {
   createSourceCacheSweeper,
   createSourceCacheWriter,
   sourceCacheMetrics as defaultSourceCacheMetrics,
-  type FileTransfer,
   type SourceCache,
   type SourceCacheMetrics,
   type SourceCachePresigner,
@@ -1630,7 +1629,6 @@ export class Daemon {
   /** The member's share of the Source Cache sweep and lifecycle check; only with a Source Cache. */
   private readonly sourceCacheSweeper?: SourceCacheSweeper
   /** Console uploads and large workspace downloads through the Source Cache bucket; only with a Source Cache. */
-  private readonly fileTransfer?: FileTransfer
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -2050,13 +2048,6 @@ export class Daemon {
         onOutcome: (outcome, scope) => cacheMetrics.writeBack(outcome, scope)
       })
       this.workspaces.setSourceCacheWriter(writer)
-      // Console transfers ride the same bucket and its `pending` rule, so they stop whenever write-back does.
-      this.fileTransfer = createFileTransfer({
-        config: this.sourceCache.config,
-        credentials: this.sourceCache.credentials,
-        objects: this.sourceCache.objects,
-        enabled: () => sweeper.lifecycle() !== 'missing'
-      })
       this.skillCachePlan = createSkillCachePlanner({
         reads: skillReads,
         writer,
@@ -4448,10 +4439,14 @@ export class Daemon {
             ) ?? Promise.resolve(null))
           : Promise.resolve(null),
       attachmentMaxBytes: cfg.limits.maxAttachmentBytes,
+      // The control plane signs the agent's GET; the bytes stay in the bucket until the agent fetches them.
       transferUrl: async (agentId, att) => {
-        const org = this.orgForAgent(agentId)
-        if (!this.fileTransfer || !org || !att.transfer || att.size === undefined) return undefined
-        return await this.fileTransfer.uploadedFileUrl({ org, size: att.size, ...att.transfer })
+        if (!this.cpClient || !att.transfer || att.size === undefined) return undefined
+        const got = await this.cpClient.transferGet(
+          { agentId, size: att.size, ...att.transfer, network: this.transferNetwork() },
+          this.orgForAgent(agentId)
+        )
+        return got.url && got.expiresAt !== undefined ? { url: got.url, expiresAt: got.expiresAt } : undefined
       },
       // §8.4/§8.5/§9.2: snapshot real Slack thread history for cold backfill and
       // warm-turn unread reconciliation (#649).
@@ -7325,8 +7320,8 @@ export class Daemon {
       WORKSPACE_SESSION_READ_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
       WORKSPACE_FILE_DOWNLOAD_FEATURE,
-      // Only a member with a Source Cache bucket presigns console uploads and large downloads.
-      ...(this.fileTransfer ? [FILE_TRANSFER_FEATURE] : []),
+      // Snapshots workspace files onto, and fetches console uploads from, URLs the control plane signs; static.
+      FILE_TRANSFER_FEATURE,
       TASK_LIST_FEATURE,
       // Serves the console's assistant-mode Activity view from the store; static.
       ASSISTANT_ACTIVITY_FEATURE,
@@ -23764,8 +23759,7 @@ export class Daemon {
       // Before the start-up probe is scheduled a request has nothing to add: that probe is about to run.
       runtimeProbeRequest: () => (this.k8sProbeOnDemand ? () => this.k8sProbeSchedule?.request() : undefined),
       workspaceFilesFor: (id, scope) => this.workspaceFilesFor(id, scope),
-      fileTransfer: () => this.fileTransfer,
-      orgForAgent: (id) => this.orgForAgent(id),
+      transferNetwork: () => this.transferNetwork(),
       workspaceSkillLedger: (id, cwd) =>
         this.withWorkspaceSkillTarget(
           id,
@@ -24691,6 +24685,11 @@ export class Daemon {
   /** The organization an agent belongs to — the scope its MCP definitions and its Apps-host
    *  connections are resolved in. Undefined for a daemon with no CP, whose only definitions are
    *  the local ones. */
+  /** Pool members and their sandbox pods reach the transfer bucket in-cluster; a machine elsewhere over its public origin. */
+  private transferNetwork(): TransferNetwork {
+    return this.k8s ? 'cluster' : 'public'
+  }
+
   private orgForAgent(agentId: string): string | undefined {
     return this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
   }

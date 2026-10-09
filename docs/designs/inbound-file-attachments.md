@@ -2,9 +2,9 @@
 
 **Status:** Draft — not implemented as designed. Platform files reach `uploads/` only when
 the agent saves one through a read tool (#2104), not at prompt build (§8 phase 1). The
-web-console upload shipped differently from phases 2–3: on a daemon with a Source Cache
-bucket, the browser uploads straight into the bucket and the agent receives a download
-link ([source-cache-file-transfer.md](source-cache-file-transfer.md)). Console
+web-console upload shipped differently from phases 2–3: on a deployment whose Control
+Plane has a transfer bucket, the browser uploads straight into the bucket and the agent
+receives a download link ([source-cache-file-transfer.md](source-cache-file-transfer.md)). Console
 download-back (§5.1) is built and now serves any workspace file.
 
 Users can already hand an agent an image: webchat uploads one (re-encoded to WebP,
@@ -249,7 +249,7 @@ mode of the same bounded workspace read the file viewer already uses:
   (agent-authored-attachments.md §4) passes the digest prefix its `[shared: …]` marker
   recorded, and a file rewritten since it was shared is then refused (409) rather than
   passed off as the original. Binary files and large text use the bucket transfer instead
-  when the agent's daemon has one ([source-cache-file-transfer.md](source-cache-file-transfer.md)).
+  when the deployment offers one ([source-cache-file-transfer.md](source-cache-file-transfer.md)).
 - **Who may read it.** The workspace read's gate, plus the session's own when one is named:
   the agent must be visible to the caller and the session must pass its visibility rule,
   so a private session's files are as absent as its transcript.
@@ -263,8 +263,8 @@ mode of the same bounded workspace read the file viewer already uses:
   an attachment `Content-Disposition`, `nosniff` and a sandboxing CSP. It holds one file
   in memory for the length of the request and stores nothing.
 - **Bound.** `MAX_WORKSPACE_DOWNLOAD_BYTES` (8 MiB, the default `maxAttachmentBytes`). A
-  larger file is refused with 413 after its first slice; above the cap, a daemon with a
-  Source Cache bucket serves the file through a presigned transfer instead.
+  larger file is refused with 413 after its first slice; above the cap, a deployment with a
+  transfer bucket serves the file through a presigned transfer instead.
 - **Version skew.** A daemon without `workspace-file-download-v1` is refused with 409
   before any frame is sent. A sandbox whose shim predates byte reads drops the new field
   and answers text or nothing; the daemon refuses that as `sandbox-outdated` (409) instead

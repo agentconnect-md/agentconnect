@@ -29,7 +29,7 @@ esac
 
 . "$REPO_ROOT/scripts/runtime-sandbox-inputs.sh"
 # The image consumes the full lockfile, so even unrelated dependency bumps now refresh its daemon default.
-DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/k8s-client tsconfig.base.json $RUNTIME_SANDBOX_PATHS"
+DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/k8s-client packages/object-store tsconfig.base.json $RUNTIME_SANDBOX_PATHS"
 
 if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev/null; then
   # Word-splitting DAEMON_PATHS is deliberate: it is a list of pathspecs.

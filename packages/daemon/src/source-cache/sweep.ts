@@ -3,8 +3,13 @@ import type { LocalStore, SourceCacheDeleteResult, SourceCacheObjectRow } from '
 import type { SourceCacheLimits } from './config.js'
 import { SOURCE_CACHE_GRACE_SECONDS } from './config.js'
 import { parseSourceCacheObjectKey, type SourceCacheObjectKey } from './keys.js'
-import { evaluateSourceCacheLifecycle, sourceCacheLifecycleRules, sourceCacheSrcPrefix } from './lifecycle.js'
-import { SourceCacheObjectError, type SourceCacheObjectClient } from './object-client.js'
+import {
+  evaluateSourceCacheLifecycle,
+  SourceCacheObjectError,
+  sourceCacheLifecycleRules,
+  sourceCacheSrcPrefix
+} from '@agentconnect.md/object-store'
+import type { SourceCacheObjectClient } from './index.js'
 
 // The Source Cache sweep (source-cache.md §9 abandoned uploads, §10): every pool member, idempotent, over leased claims.
 

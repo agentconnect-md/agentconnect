@@ -1,3 +1,7 @@
+{{- $sourceCache := .Values.sourceCache | default dict }}
+{{- $sourceCacheCredentials := $sourceCache.credentials | default dict }}
+{{- $transferSecret := and $sourceCache.enabled (eq $sourceCacheCredentials.source "secret") }}
+{{- $transferIdentity := and $sourceCache.enabled (eq $sourceCacheCredentials.source "serviceAccount") (($sourceCacheCredentials.serviceAccount | default dict).roleArn) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -216,6 +220,27 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- if $sourceCache.enabled }}
+            {{- if hasKey .Values.controlPlane.extraEnv "AC_FILE_TRANSFER" }}
+            {{- fail "controlPlane.extraEnv.AC_FILE_TRANSFER collides with the chart-owned sourceCache values" }}
+            {{- end }}
+            {{- $limits := $sourceCache.limits | default dict }}
+            {{- $document := dict "version" 1 "region" (required "sourceCache.region is required when sourceCache.enabled" $sourceCache.region) "bucket" (required "sourceCache.bucket is required when sourceCache.enabled" $sourceCache.bucket) "prefix" ($sourceCache.prefix | default "") "forcePathStyle" ($sourceCache.forcePathStyle | default false) }}
+            {{- with $sourceCache.endpoint }}
+            {{- $_ := set $document "endpoint" . }}
+            {{- end }}
+            {{- with $sourceCache.publicEndpoint }}
+            {{- if not (hasPrefix "https://" .) }}
+            {{- fail "sourceCache.publicEndpoint must be an https:// origin" }}
+            {{- end }}
+            {{- $_ := set $document "publicEndpoint" . }}
+            {{- end }}
+            {{- $_ := set $document "limits" (dict "maxBytes" ($limits.transferMaxBytes | default "512Mi") "urlSeconds" ($limits.transferUrlLifetime | default "30m") "putUrlSeconds" ($limits.putUrlLifetime | default "15m")) }}
+            {{- $_ := set $document "credentials" (include "agentconnect.sourceCacheCredentials" . | fromJson) }}
+            # Console file transfer: the Control Plane signs every URL for the Source Cache bucket; bytes never cross it.
+            - name: AC_FILE_TRANSFER
+              value: {{ toJson $document | quote }}
+            {{- end }}
           # /readyz: DB ping, 503 from SIGTERM. A 2s period lists a new pod seconds after it listens; 10 misses (~20s) ride out a DB blip.
           readinessProbe:
             httpGet:
@@ -242,6 +267,40 @@ spec:
                 command: ["/bin/sh", "-c", "sleep 5"]
           resources:
             {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+          {{- if or $transferSecret $transferIdentity }}
+          volumeMounts:
+            {{- if $transferSecret }}
+            - name: source-cache-credentials
+              mountPath: /var/run/ac-source-cache
+              readOnly: true
+            {{- end }}
+            {{- if $transferIdentity }}
+            - name: source-cache-identity
+              mountPath: /var/run/ac-source-cache-identity
+              readOnly: true
+            {{- end }}
+          {{- end }}
+      {{- if or $transferSecret $transferIdentity }}
+      volumes:
+        {{- if $transferSecret }}
+        # No items: an optional session-token key need not exist in the Secret.
+        - name: source-cache-credentials
+          secret:
+            secretName: {{ $sourceCacheCredentials.secret.name }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if $transferIdentity }}
+        # The bucket role's web identity for signing console transfers; the role must trust this ServiceAccount too.
+        - name: source-cache-identity
+          projected:
+            defaultMode: 0400
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ $sourceCacheCredentials.serviceAccount.audience | default "sts.amazonaws.com" | quote }}
+                  expirationSeconds: 3600
+        {{- end }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

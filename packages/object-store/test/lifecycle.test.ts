@@ -3,7 +3,7 @@ import {
   evaluateSourceCacheLifecycle,
   SOURCE_CACHE_LIFECYCLE_DAYS,
   sourceCacheLifecycleRules
-} from '../src/source-cache/lifecycle.js'
+} from '../src/lifecycle.js'
 
 // The bucket lifecycle rules (source-cache.md §10): the document operators apply and the check of what a bucket holds.
 

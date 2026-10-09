@@ -804,13 +804,13 @@ objectStore:
   # SigV4 region — "auto" for R2; a concrete region for real S3 / MinIO.
   region: auto
 
-# Source Cache (docs/designs/source-cache.md, chart README): rendered into daemon-pool members only; pods get presigned URLs alone.
+# Source Cache (docs/designs/source-cache.md, chart README): pool members cache Git bundles; the Control Plane signs console file transfers; pods get presigned URLs alone.
 # Apply the bucket lifecycle rules yourself (chart README "Bucket lifecycle rules"); without them members stop writing bundles.
 sourceCache:
   enabled: false
   # S3 API origin; must be https:// (the shim admits only https bundle URLs). Empty => AWS regional S3.
   endpoint: ''
-  # Optional https:// origin browsers reach the bucket at for console file transfers; empty => endpoint. Needs a bucket CORS rule (chart README).
+  # Optional https:// origin browsers and out-of-cluster daemons reach the bucket at for console file transfers; empty => endpoint. Needs a bucket CORS rule (chart README).
   publicEndpoint: ''
   region: ''
   bucket: ''
@@ -822,7 +822,7 @@ sourceCache:
     # serviceAccount (STS web identity, e.g. IRSA) or secret (static keys mounted as files).
     source: serviceAccount
     serviceAccount:
-      # Set => a token for this role is projected onto members only; empty => webhook-injected AWS_ROLE_ARN/AWS_WEB_IDENTITY_TOKEN_FILE.
+      # Set => a token for this role is projected onto members and the Control Plane; empty => webhook-injected AWS_ROLE_ARN/AWS_WEB_IDENTITY_TOKEN_FILE.
       roleArn: ''
       audience: sts.amazonaws.com
       # Empty => https://sts.<region>.amazonaws.com.
@@ -830,7 +830,7 @@ sourceCache:
       # STS session length in seconds (900-43200). 0 => derived: max(1h, longest URL lifetime + 6m); the role's MaxSessionDuration must allow it.
       sessionDurationSeconds: 0
     secret:
-      # Existing Secret in the release namespace, mounted read-only into members.
+      # Existing Secret in the release namespace, mounted read-only into members and the Control Plane.
       name: ''
       accessKeyIdKey: AWS_ACCESS_KEY_ID
       secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
@@ -844,7 +844,7 @@ sourceCache:
     unreadPointerDays: 30
     getUrlLifetime: 5m
     putUrlLifetime: 15m
-    # Console file transfers: the per-file cap and how long a download link stays valid.
+    # Console file transfers, signed by the Control Plane: the per-file cap and how long a download link stays valid.
     transferMaxBytes: 512Mi
     transferUrlLifetime: 30m
 

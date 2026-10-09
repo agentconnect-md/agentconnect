@@ -6,7 +6,7 @@ import {
   staticCredentials,
   STS_FAILURE_BACKOFF_MS,
   webIdentityCredentials
-} from '../src/source-cache/credentials.js'
+} from '../src/credentials.js'
 
 function files(initial: Record<string, string>): {
   read: (path: string) => string

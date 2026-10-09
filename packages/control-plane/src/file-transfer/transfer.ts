@@ -1,11 +1,20 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { SOURCE_CACHE_GRACE_SECONDS, sourceCacheEndpoint, type SourceCacheConfig } from './config.js'
-import type { CredentialsProvider } from './credentials.js'
-import type { SourceCacheObjectClient } from './object-client.js'
-import { addressFor, PENDING_TAGGING } from './presigner.js'
-import { amzDate, presign } from './sigv4.js'
+import type { TransferNetwork } from '@agentconnect.md/protocol'
+import {
+  addressFor,
+  amzDate,
+  bucketEndpoint,
+  presign,
+  SOURCE_CACHE_GRACE_SECONDS,
+  type CredentialsProvider,
+  type SourceCacheObjectClient
+} from '@agentconnect.md/object-store'
+import type { FileTransferConfig } from './config.js'
 
-// Console file transfer through the Source Cache bucket (source-cache-file-transfer.md): uploads in, workspace files out.
+// Console file transfer (source-cache-file-transfer.md): the control plane signs every URL; bytes go straight to the bucket.
+
+/** The tag the bucket's 2-day `pending` lifecycle rule collects (source-cache.md §10). */
+const PENDING_TAGGING = 'ac-cache=pending'
 
 /** A key under `src/<org>/transfer/`, built only here; `pending`-tagged, so the bucket's 2-day rule collects it. */
 export type TransferObjectKey = string & { readonly __transferObjectKey: true }
@@ -52,9 +61,9 @@ export interface TransferUrl {
 }
 
 export interface FileTransferDeps {
-  config: SourceCacheConfig
+  config: FileTransferConfig
   credentials: CredentialsProvider
-  objects: SourceCacheObjectClient
+  objects: Pick<SourceCacheObjectClient<TransferObjectKey>, 'head'>
   /** False while the bucket lacks its lifecycle rules: nothing would ever collect a transfer. */
   enabled: () => boolean
   now?: () => number
@@ -73,20 +82,22 @@ export interface FileTransfer {
     uploadId: string
     size: number
     sha256: string
+    network: TransferNetwork
   }): Promise<TransferUrl | undefined>
-  /** Presign the browser's GET for one workspace file revision, uploading it first unless a recent copy is there. */
-  workspaceFileUrl(input: {
-    org: string
-    identity: readonly unknown[]
-    name: string
-    size: number
-    upload: (
-      put: (file: { bytes: number; sha256: string }) => Promise<TransferUrl>
-    ) => Promise<{ bytes: number; sha256: string }>
-  }): Promise<TransferUrl & { cached: boolean; sha256: string }>
+  /** The digest of a recent copy of this revision, or undefined when it has to be uploaded first. */
+  cachedDownload(input: { key: TransferObjectKey; size: number }): Promise<string | undefined>
+  /** Presign a daemon's PUT of a snapshot of exactly these bytes. */
+  signPut(input: {
+    key: TransferObjectKey
+    bytes: number
+    sha256: string
+    network: TransferNetwork
+  }): Promise<TransferUrl>
+  /** Presign the browser's GET that downloads the object as an attachment named `name`. */
+  signDownload(input: { key: TransferObjectKey; name: string }): Promise<TransferUrl>
 }
 
-/** A refusal the console can act on; `reason` is the workspace error reason the daemon answers with. */
+/** A refusal the console can act on; `reason` mirrors the workspace error reasons. */
 export class FileTransferError extends Error {
   constructor(
     readonly reason: 'too-large' | 'transfer-unavailable' | 'stale',
@@ -101,17 +112,18 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
   const { config, credentials, objects } = deps
   const now = deps.now ?? Date.now
   const internal = addressFor(
-    deps.endpointOverride?.internal ?? sourceCacheEndpoint(config),
+    deps.endpointOverride?.internal ?? bucketEndpoint(config),
     config.bucket,
     config.forcePathStyle
   )
-  // Browser URLs name the origin a browser can reach; the agent's pod reaches the same store at the internal one.
-  const browser = addressFor(
-    deps.endpointOverride?.public ?? config.publicEndpoint ?? sourceCacheEndpoint(config),
+  // Browsers and daemons outside the cluster reach the bucket at its public origin; sandbox pods at the internal one.
+  const external = addressFor(
+    deps.endpointOverride?.public ?? config.publicEndpoint ?? bucketEndpoint(config),
     config.bucket,
     config.forcePathStyle
   )
-  const { transferMaxBytes, transferUrlSeconds, putUrlSeconds } = config.limits
+  const addressOn = (network: TransferNetwork) => (network === 'cluster' ? internal : external)
+  const { maxBytes, urlSeconds, putUrlSeconds } = config.limits
 
   const sign = async (input: {
     method: 'GET' | 'PUT'
@@ -145,8 +157,8 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
   }
 
   const putHeaders = (bytes: number, sha256: string): Record<string, string> => {
-    if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > transferMaxBytes) {
-      throw new FileTransferError('too-large', `a transfer must be 1 byte to ${transferMaxBytes} bytes`)
+    if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > maxBytes) {
+      throw new FileTransferError('too-large', `a transfer must be 1 byte to ${maxBytes} bytes`)
     }
     if (!CHECKSUM_RE.test(sha256) || Buffer.from(sha256, 'base64').length !== 32) {
       throw new Error('transfer checksum must be a base64 SHA-256')
@@ -160,7 +172,7 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
 
   return {
     enabled: () => deps.enabled(),
-    maxBytes: transferMaxBytes,
+    maxBytes,
 
     async grantUpload({ org, size, sha256 }) {
       assertEnabled()
@@ -169,61 +181,58 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
       const put = await sign({
         method: 'PUT',
         key,
-        address: browser,
+        address: external,
         lifetimeSeconds: putUrlSeconds,
         headers: putHeaders(size, sha256)
       })
       return { ...put, uploadId }
     },
 
-    async uploadedFileUrl({ org, uploadId, size, sha256 }) {
+    async uploadedFileUrl({ org, uploadId, size, sha256, network }) {
       const key = transferUploadKey(org, uploadId)
       const head = await objects.head(key)
       // The PUT signed the checksum, so a matching one proves these bytes; a store that omits it is trusted on length alone.
       if (!head.exists || head.contentLength !== size) return undefined
       if (head.checksumSha256 !== undefined && head.checksumSha256 !== sha256) return undefined
-      return await sign({ method: 'GET', key, address: internal, lifetimeSeconds: transferUrlSeconds })
+      return await sign({ method: 'GET', key, address: addressOn(network), lifetimeSeconds: urlSeconds })
     },
 
-    async workspaceFileUrl({ org, identity, name, size, upload }) {
+    async cachedDownload({ key, size }) {
       assertEnabled()
-      if (size < 1 || size > transferMaxBytes) {
-        throw new FileTransferError('too-large', `a transfer must be 1 byte to ${transferMaxBytes} bytes`)
+      if (size < 1 || size > maxBytes) {
+        throw new FileTransferError('too-large', `a transfer must be 1 byte to ${maxBytes} bytes`)
       }
-      const key = transferDownloadKey(org, identity)
       const head = await objects.head(key)
       // A copy without its checksum cannot prove which bytes it holds, so it is replaced rather than reused.
-      const cached =
+      const recent =
         head.exists &&
         head.contentLength === size &&
         (head.lastModified === undefined || head.lastModified > now() - CACHED_DOWNLOAD_MAX_AGE_MS)
-          ? head.checksumSha256
-          : undefined
-      let sha256 = cached
-      if (sha256 === undefined) {
-        const sent = await upload(async (file) =>
-          sign({
-            method: 'PUT',
-            key,
-            address: internal,
-            lifetimeSeconds: putUrlSeconds,
-            headers: putHeaders(file.bytes, file.sha256)
-          })
-        )
-        if (sent.bytes !== size) throw new FileTransferError('stale', 'the file changed while it was uploaded')
-        sha256 = sent.sha256
-      }
-      const get = await sign({
+      return recent ? head.checksumSha256 : undefined
+    },
+
+    async signPut({ key, bytes, sha256, network }) {
+      assertEnabled()
+      return await sign({
+        method: 'PUT',
+        key,
+        address: addressOn(network),
+        lifetimeSeconds: putUrlSeconds,
+        headers: putHeaders(bytes, sha256)
+      })
+    },
+
+    async signDownload({ key, name }) {
+      return await sign({
         method: 'GET',
         key,
-        address: browser,
-        lifetimeSeconds: transferUrlSeconds,
+        address: external,
+        lifetimeSeconds: urlSeconds,
         query: {
           'response-content-disposition': attachmentDisposition(name),
           'response-content-type': 'application/octet-stream'
         }
       })
-      return { ...get, cached: cached !== undefined, sha256 }
     }
   }
 }

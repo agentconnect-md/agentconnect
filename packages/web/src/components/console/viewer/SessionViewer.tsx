@@ -182,7 +182,7 @@ export function SessionViewer({
   onOpenPath?: (path: string) => void
   /** How the download route names this file — its session, and a share's digest. Omitted ⇒ no Download and no image preview. */
   download?: SessionFileDownload
-  /** The daemon presigns object-store downloads (`file-transfer-v1`), so binary and large text download through it. */
+  /** The deployment signs object-store transfers and the daemon speaks them, so binary and large text download through it. */
   transfer?: boolean
   onClose: () => void
 }) {

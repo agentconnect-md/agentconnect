@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import type { CredentialsProvider, SourceCacheCredentials } from '../src/source-cache/credentials.js'
+import { presign, type BucketCredentials, type CredentialsProvider } from '@agentconnect.md/object-store'
 import { bundleKey, pointerKey, type SourceCacheObjectKey } from '../src/source-cache/keys.js'
 import {
   addressFor,
@@ -8,10 +8,9 @@ import {
   redactPresignedUrl,
   type SourceCachePresignerConfig
 } from '../src/source-cache/presigner.js'
-import { presign } from '../src/source-cache/sigv4.js'
 
 const NOW = Date.UTC(2026, 9, 3, 12, 0, 0, 500)
-const CREDS: SourceCacheCredentials = { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' }
+const CREDS: BucketCredentials = { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' }
 const KEY = bundleKey({
   org: 'org_1',
   class: 'cred',
@@ -20,7 +19,7 @@ const KEY = bundleKey({
 })
 const CHECKSUM = createHash('sha256').update('bundle').digest('base64')
 
-function provider(creds: SourceCacheCredentials = CREDS, seen: number[] = []): CredentialsProvider {
+function provider(creds: BucketCredentials = CREDS, seen: number[] = []): CredentialsProvider {
   return {
     source: 'static',
     get: async (minValidityMs) => {

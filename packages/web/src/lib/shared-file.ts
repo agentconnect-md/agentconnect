@@ -40,8 +40,21 @@ function downloadPath(raw: string): string | null {
 export const WORKSPACE_UPLOADS_DIR = 'uploads'
 export const MAX_WORKSPACE_DOWNLOAD_BYTES = 8 * 1024 * 1024
 export const WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES = 1024 * 1024
-export const FILE_TRANSFER_FEATURE = 'file-transfer-v1'
+export const FILE_TRANSFER_FEATURE = 'file-transfer-v2'
 export const WEBCHAT_FILES_MAX = 4
+
+/** The deployment's console file transfer, as the Control Plane's runtime config published it; undefined when off. */
+export function deploymentFileTransfer(): { maxBytes: number } | undefined {
+  const raw =
+    typeof window === 'undefined' ? process.env.FILE_TRANSFER_MAX_BYTES : window.__AC_ENV?.FILE_TRANSFER_MAX_BYTES
+  const maxBytes = Number(raw)
+  return raw && Number.isSafeInteger(maxBytes) && maxBytes > 0 ? { maxBytes } : undefined
+}
+
+/** Files move through the bucket when the deployment signs transfers and the agent's daemon speaks that flow. */
+export function transferCapable(features: readonly string[] | undefined): boolean {
+  return deploymentFileTransfer() !== undefined && features?.includes(FILE_TRANSFER_FEATURE) === true
+}
 
 /** How the download route names one workspace file: the session whose root holds it, and a share's digest when one names it. */
 export interface SessionFileDownload {

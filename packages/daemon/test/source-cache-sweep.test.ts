@@ -1,8 +1,7 @@
 import { FakeClock } from '@agentconnect.md/connection'
 import { describe, expect, it } from 'vitest'
 import { anonRepoId, bundleKey, newBundleId, pointerKey, refHash } from '../src/source-cache/keys.js'
-import type { SourceCacheBucketLifecycle } from '../src/source-cache/object-client.js'
-import { SourceCacheObjectError } from '../src/source-cache/object-client.js'
+import { SourceCacheObjectError, type SourceCacheBucketLifecycle } from '@agentconnect.md/object-store'
 import {
   createSourceCacheSweeper,
   SWEEP_LEASE_MS,

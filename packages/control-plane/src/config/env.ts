@@ -261,6 +261,8 @@ const CoreConfigShape = {
   S3_PUBLIC_BASE_URL: z.string().url().optional(),
   // SigV4 region. R2 ignores it ("auto"); real S3/MinIO may need a concrete one.
   S3_REGION: z.string().default('auto'),
+  // Console file transfer bucket (source-cache-file-transfer.md §7): one JSON document, parsed by file-transfer/config.ts.
+  AC_FILE_TRANSFER: z.string().optional(),
   // ── open-connector integration (docs: connectors) — opt-in ──
   // Base URL of the open-connector admin API the CP brokers connector browsing +
   // connection provisioning through. Unset ⇒ the feature is off: the connectors

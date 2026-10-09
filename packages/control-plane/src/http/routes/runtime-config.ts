@@ -27,7 +27,9 @@ export const RuntimeConfigDto = z
         gitlab: PublicGitlabInstance.nullable()
       })
       .strict()
-      .nullable()
+      .nullable(),
+    // Console file transfer through the deployment's bucket; null when this process signs none.
+    fileTransfer: z.object({ maxBytes: z.number().int().positive() }).strict().nullable().optional()
   })
   .strict()
 
@@ -37,6 +39,8 @@ export interface RuntimeConfigRouteDeps {
   /** Immutable DB-owned browser auth state loaded at process startup. */
   publicRuntimeConfig?: RuntimeConfigDto['config']
   deploymentRevision?: number
+  /** Set when this process signs console file transfers. */
+  fileTransfer?: { maxBytes: number }
 }
 
 /** Public, secret-free auth config consumed by the prebuilt Web image at startup. */
@@ -50,7 +54,7 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
           tags: [Tag.Deployment],
           summary: 'Get public runtime configuration',
           description:
-            'Returns the secret-free browser configuration loaded for this process: authentication plus the GitLab instance the deployment talks to. A deployment change takes effect after restart.',
+            'Returns the secret-free browser configuration loaded for this process: authentication, the GitLab instance the deployment talks to, and whether console file transfer is available with its per-file cap. A deployment change takes effect after restart.',
           operationId: 'getRuntimeConfig',
           response: { 200: RuntimeConfigDto }
         }
@@ -58,7 +62,8 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
       async () => ({
         schemaVersion: '1' as const,
         revision: deps.deploymentRevision ?? null,
-        config: deps.publicRuntimeConfig ?? null
+        config: deps.publicRuntimeConfig ?? null,
+        fileTransfer: deps.fileTransfer ?? null
       })
     )
   }

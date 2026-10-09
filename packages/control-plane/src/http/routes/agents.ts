@@ -77,6 +77,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
+import { FileTransferRefusal } from '../../file-transfer/service.js'
 import {
   type AgentMoveOpts,
   type AgentRecord,
@@ -886,6 +887,24 @@ export function workspaceFailure(
   }
   const unavailable = daemonEdgeFailure(err)
   return unavailable === null ? null : { status: 503, error: 'Service Unavailable', message: unavailable }
+}
+
+/** No transfer bucket on this deployment: the request was fine, the deployment is not. */
+function sendTransferUnavailable(reply: FastifyReply): FastifyReply {
+  return reply.code(409).send({
+    error: 'Conflict',
+    statusCode: 409,
+    message: 'this deployment has no object store for file transfers',
+    code: 'WORKSPACE_TRANSFER_UNAVAILABLE'
+  })
+}
+
+/** A transfer refusal the control plane decided itself; false ⇒ not one. */
+function sendTransferRefusal(reply: FastifyReply, err: unknown): boolean {
+  if (!(err instanceof FileTransferRefusal)) return false
+  const error = err.status === 404 ? 'Not Found' : err.status === 409 ? 'Conflict' : 'Bad Request'
+  void reply.code(err.status).send({ error, statusCode: err.status, message: err.message, code: err.code })
+  return true
 }
 
 /** A wake's failure: a removed session sandbox is the read's own 404 and code, so the console stops offering Start; any other daemon-edge failure is 503; null ⇒ rethrow. */
@@ -3984,7 +4003,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Large or binary workspace file: the daemon puts it in the Source Cache bucket and the browser fetches a presigned GET.
+    // Large or binary workspace file: the daemon PUTs it on a URL signed here, and the browser fetches a presigned GET.
     r.post(
       '/agents/:id/workspace/file/transfer',
       {
@@ -3992,7 +4011,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Get a download link for a workspace file',
           description:
-            'Return a short-lived presigned URL that downloads one workspace file as an attachment directly from the deployment’s object store, for files too large or too binary for the proxied download. The scope rules are the download route’s (sessionId, repo, containment, .git). When the store does not already hold this revision of the file, the owning daemon uploads it first, so the call may take as long as that upload; the control plane sees only the URL. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). 409 DAEMON_FEATURE_MISSING when the agent’s daemon has no object store for transfers, 409 WORKSPACE_TRANSFER_UNAVAILABLE when the store cannot take one right now, 404 WORKSPACE_NOT_FOUND for a missing file, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
+            'Return a short-lived presigned URL that downloads one workspace file as an attachment directly from the deployment’s object store, for files too large or too binary for the proxied download. The scope rules are the download route’s (sessionId, repo, containment, .git). When the store does not already hold this revision of the file, the owning daemon uploads it first on a URL the control plane signs, so the call may take as long as that upload; the control plane sees only URLs. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). 409 WORKSPACE_TRANSFER_UNAVAILABLE when the deployment has no transfer bucket or it cannot take one right now, 409 DAEMON_FEATURE_MISSING when the agent’s daemon predates control-plane-signed transfers, 404 WORKSPACE_NOT_FOUND for a missing file, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
           operationId: 'transferAgentWorkspaceFile',
           params: IdParam,
           body: WorkspaceTransferBody,
@@ -4002,19 +4021,23 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const transfers = deps.fileTransfer
+        if (!transfers) return sendTransferUnavailable(reply)
         const scope = await workspaceFileScope(req, reply, agent, req.body)
         if (!scope) return reply
         const { daemonId, ...target } = scope
-        const transfers = await requireDaemonFeature(
+        const capable = await requireDaemonFeature(
           reply,
           agent.orgId,
           daemonId,
           FILE_TRANSFER_FEATURE,
-          'this agent’s daemon has no object store for file transfers'
+          'this agent’s daemon predates control-plane-signed file transfers'
         )
-        if (!transfers) return reply
+        if (!capable) return reply
         try {
-          const { sha256, ...grant } = await deps.control.workspaceTransfer(daemonId, {
+          const { sha256, ...grant } = await transfers.workspaceDownload({
+            orgId: agent.orgId,
+            daemonId,
             agentId: agent.id,
             ...target,
             path: req.body.path
@@ -4031,13 +4054,13 @@ export function agentRoutes(deps: HttpDeps) {
           }
           return { ...grant, expiresAt: new Date(grant.expiresAt).toISOString() }
         } catch (err) {
-          if (sendWorkspaceFailure(reply, err)) return
+          if (sendTransferRefusal(reply, err) || sendWorkspaceFailure(reply, err)) return
           throw err
         }
       }
     )
 
-    // A file the console sends with a webchat turn: the daemon presigns a PUT into the Source Cache bucket.
+    // A file the console sends with a webchat turn: the control plane presigns a PUT into the transfer bucket.
     r.post(
       '/agents/:id/uploads',
       {
@@ -4045,7 +4068,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Reserve a file upload',
           description:
-            'Reserve one file upload for a chat turn with this agent and return a short-lived presigned PUT into the deployment’s object store. The browser hashes the file first (sha256, base64) and must send exactly the returned headers and the declared number of bytes; it then names uploadId in the turn’s files. The agent receives a download link, never the bytes through the control plane. Uploaded objects expire with the store’s lifecycle rule. 409 DAEMON_FEATURE_MISSING when the agent’s daemon has no object store for transfers, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
+            'Reserve one file upload for a chat turn with this agent and return a short-lived presigned PUT into the deployment’s object store. The browser hashes the file first (sha256, base64) and must send exactly the returned headers and the declared number of bytes; it then names uploadId in the turn’s files. The agent receives a download link, never the bytes through the control plane. Uploaded objects expire with the store’s lifecycle rule. 409 WORKSPACE_TRANSFER_UNAVAILABLE when the deployment has no transfer bucket or it cannot take one right now, 409 DAEMON_FEATURE_MISSING when the agent’s daemon cannot fetch uploads yet, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
           operationId: 'reserveAgentFileUpload',
           params: IdParam,
           body: FileUploadBody,
@@ -4055,25 +4078,30 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const transfers = deps.fileTransfer
+        if (!transfers) return sendTransferUnavailable(reply)
         if (!agent.daemonId) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
-        const daemonId = agent.daemonId
-        const transfers = await requireDaemonFeature(
+        const capable = await requireDaemonFeature(
           reply,
           agent.orgId,
-          daemonId,
+          agent.daemonId,
           FILE_TRANSFER_FEATURE,
-          'this agent’s daemon has no object store for file uploads'
+          'this agent’s daemon predates control-plane-signed file transfers'
         )
-        if (!transfers) return reply
+        if (!capable) return reply
         try {
-          const grant = await deps.control.transferUpload(daemonId, { agentId: agent.id, ...req.body })
+          const grant = await transfers.reserveUpload({
+            orgId: agent.orgId,
+            size: req.body.size,
+            sha256: req.body.sha256
+          })
           return { ...grant, expiresAt: new Date(grant.expiresAt).toISOString() }
         } catch (err) {
-          if (sendWorkspaceFailure(reply, err)) return
+          if (sendTransferRefusal(reply, err)) return
           throw err
         }
       }

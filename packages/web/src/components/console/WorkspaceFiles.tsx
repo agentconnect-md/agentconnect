@@ -172,7 +172,7 @@ export function WorkspaceFiles({
   canCreateFolder?: boolean
   /** The agent runs in a cluster sandbox: its files are readable only through a running pod, so opening the tab wakes it rather than waiting for the read to refuse. */
   sandboxed?: boolean
-  /** The daemon presigns object-store downloads (`file-transfer-v1`), so binary and large text download through it. */
+  /** The deployment signs object-store transfers and the daemon speaks them, so binary and large text download through it. */
   transfer?: boolean
   /** Checkout control rendered opposite the breadcrumb. The branch comes from
    *  the primary checkout's live git status, even while browsing a worktree. */

@@ -1,16 +1,26 @@
+import {
+  addressFor,
+  createCredentialsProvider,
+  createObjectClient,
+  type ReadTextFile,
+  type SourceCacheObjectClient as BucketObjectClient
+} from '@agentconnect.md/object-store'
 import { loadSourceCacheConfig, SOURCE_CACHE_ENV, sourceCacheEndpoint, type SourceCacheConfig } from './config.js'
-import { createCredentialsProvider, type CredentialsProvider, type ReadTextFile } from './credentials.js'
-import { createObjectClient, type SourceCacheObjectClient } from './object-client.js'
-import { addressFor, createPresigner, type SourceCachePresigner } from './presigner.js'
+import { parseSourceCacheObjectKey, type SourceCacheObjectKey } from './keys.js'
+import { createPresigner, type SourceCachePresigner } from './presigner.js'
 
 // Pool-member Source Cache wiring (source-cache.md §12): absent config means no signer, no I/O, no state.
+
+/** The member's own object requests, which touch bundle objects alone: pointers are store rows (§4). */
+export type SourceCacheObjectClient = BucketObjectClient<SourceCacheObjectKey>
+
+const isBundleKey = (key: string): key is SourceCacheObjectKey => parseSourceCacheObjectKey(key)?.kind === 'bundle'
 
 export interface SourceCache {
   config: SourceCacheConfig
   presigner: SourceCachePresigner
   /** Header-signed HEAD, retag, delete and lifecycle read the member runs itself (§9, §10). */
   objects: SourceCacheObjectClient
-  credentials: CredentialsProvider
 }
 
 export interface CreateSourceCacheOptions {
@@ -41,6 +51,7 @@ export function createSourceCache(opts: CreateSourceCacheOptions): SourceCache |
   const objects = createObjectClient({
     config,
     credentials,
+    isKey: isBundleKey,
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     ...(opts.now ? { now: opts.now } : {})
   })
@@ -49,11 +60,10 @@ export function createSourceCache(opts: CreateSourceCacheOptions): SourceCache |
   opts.log?.info(
     `source cache enabled (bucket=${config.bucket} prefix=${config.prefix || '(none)'} endpoint=${new URL(endpoint).host} credentials=${credentials.source} addressing=${style})`
   )
-  return { config, presigner, objects, credentials }
+  return { config, presigner, objects }
 }
 
 export type { SourceCacheConfig } from './config.js'
-export { createFileTransfer, FileTransferError, type FileTransfer, type TransferUrl } from './transfer.js'
 export type { PresignedRequest, SourceCachePresigner } from './presigner.js'
 export {
   createCredentialedCacheReadAuthorizer,
@@ -93,14 +103,14 @@ export {
   type SkillWriteBackIntent
 } from './skill-write-back.js'
 export { createSourceCacheMetrics, sourceCacheMetrics, type SourceCacheMetrics } from './metrics.js'
-export type { SourceCacheBucketLifecycle, SourceCacheObjectClient } from './object-client.js'
 export {
   evaluateSourceCacheLifecycle,
   SOURCE_CACHE_LIFECYCLE_DAYS,
   sourceCacheLifecycleRules,
+  type SourceCacheBucketLifecycle,
   type SourceCacheLifecycleDocument,
   type SourceCacheLifecycleEvaluation
-} from './lifecycle.js'
+} from '@agentconnect.md/object-store'
 export {
   createSourceCacheSweeper,
   type SourceCacheLifecycleStatus,

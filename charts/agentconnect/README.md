@@ -231,19 +231,34 @@ and keeps writing.
 
 ### Console file transfer
 
-With a Source Cache configured, members also carry console file transfers
-([design](../../docs/designs/source-cache-file-transfer.md)): a non-image file a user
-attaches in webchat is uploaded by the browser straight into the bucket, and the agent
-gets a presigned link to download it into its workspace; a large text or binary workspace
-file is uploaded from its pod into the bucket and downloaded by the browser from there.
-Transfer objects live under `<prefix>/src/<org>/transfer/` and are tagged
-`ac-cache=pending`, so the IAM policy and the 2-day `pending` lifecycle rule above already
-cover them. A member whose bucket lacks the lifecycle rules refuses transfers.
+With a Source Cache configured, the Control Plane also signs console file transfers
+([design](../../docs/designs/source-cache-file-transfer.md)), for every daemon: pool
+members, and self-hosted or local daemons that hold no bucket credentials of their own.
 
-Browsers reach the bucket directly, so two extra settings apply:
+- **Uploads:** a non-image file a user attaches in webchat is uploaded by the browser
+  straight into the bucket, and the agent gets a presigned link to download it into its
+  workspace.
+- **Downloads:** a large text or binary workspace file is uploaded by its daemon (or its
+  pod) on a URL the Control Plane signs, and the browser downloads it from the bucket.
 
-- `sourceCache.publicEndpoint` — the `https://` origin browsers use, when it differs from
-  the in-cluster `endpoint`. Agents keep using `endpoint`. Empty means `endpoint`.
+The chart renders the bucket document as `AC_FILE_TRANSFER` on the Control Plane, and
+mounts the same credentials there: the Secret, or the projected web identity token. With
+a web identity, the role must also trust the Control Plane's ServiceAccount. Its policy
+needs:
+
+- `s3:PutObject`, `s3:PutObjectTagging` and `s3:GetObject` under
+  `<prefix>/src/*/transfer/`;
+- `s3:GetLifecycleConfiguration` on the bucket.
+
+Transfer objects are tagged `ac-cache=pending`, so the 2-day `pending` lifecycle rule
+above collects them. The Control Plane refuses transfers while that rule is missing.
+
+Browsers and daemons outside the cluster reach the bucket directly, so two extra settings
+apply:
+
+- `sourceCache.publicEndpoint`: the `https://` origin browsers and out-of-cluster daemons
+  use, when it differs from the in-cluster `endpoint`. Pool members and their pods keep
+  using `endpoint`. Empty means `endpoint`.
 - A bucket CORS rule admitting the console origin. Browsers send the signed checksum and
   tagging headers on upload and read nothing but the body on download:
 
@@ -266,10 +281,12 @@ aws s3api put-bucket-cors --bucket example-agentconnect-source-cache --cors-conf
 ```
 
 A presigned link dies with the credentials that signed it, so a web-identity session must
-outlive the longest URL lifetime plus 6 minutes. By default the member derives that length:
-the larger of 1 hour and that sum. A `transferUrlLifetime` over 54 minutes therefore asks
-STS for more than an hour, and the role's `MaxSessionDuration` must allow it. Set
-`sourceCache.credentials.serviceAccount.sessionDurationSeconds` to pin the length instead.
+outlive the longest URL its holder signs plus 6 minutes. By default the Control Plane and
+each member derive that length: the larger of 1 hour and that sum. A
+`transferUrlLifetime` over 54 minutes therefore makes the Control Plane ask STS for more
+than an hour, and the role's `MaxSessionDuration` must allow it. Set
+`sourceCache.credentials.serviceAccount.sessionDurationSeconds` to pin the length
+instead.
 
 ## Node maintenance
 
