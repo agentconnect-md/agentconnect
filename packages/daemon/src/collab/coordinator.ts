@@ -224,6 +224,8 @@ export class CollabCoordinator {
 
   // A sub-session's inferred report still in flight when its turn ends, keyed by its session key (assistant-mode.md §5.7).
   private readonly subsessionInferences = new Map<string, Promise<void>>()
+  // Per sub-session: its own report and its turn's settlement take turns, so only one of them reaches the parent.
+  private readonly subsessionReportLocks = new Map<string, Promise<void>>()
 
   /** An agent's channel-directory display name, used to name the caller in the
    *  text delivered to a messaged agent. Resolution order:
@@ -266,6 +268,43 @@ export class CollabCoordinator {
       .catch((err) => this.host.log().warn(`sub-session ${key}: could not mark it reported: ${formatErr(err)}`))
   }
 
+  /** Run `fn` while no other report or settlement of this sub-session runs; one agent's sub-sessions all live on one daemon. */
+  private async withSubsessionReportLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.subsessionReportLocks.get(key) ?? Promise.resolve()
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const tail = prior.then(() => held)
+    this.subsessionReportLocks.set(key, tail)
+    await prior
+    try {
+      return await fn()
+    } finally {
+      release()
+      if (this.subsessionReportLocks.get(key) === tail) this.subsessionReportLocks.delete(key)
+    }
+  }
+
+  /** §5.7: a sub-session's own report; once the daemon has reported it ended, a late one is refused, never a second report. */
+  private async reportFromSubsession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
+    const key = sessionKey(
+      req.platform,
+      req.callerChannel,
+      req.callerThread,
+      req.callerAgentId,
+      req.callerTransportScope
+    )
+    return await this.withSubsessionReportLock(key, async () => {
+      const index = this.host.store().assistantSubsessions
+      if ((await index.get(req.callerAgentId, key))?.state === 'failed') {
+        this.host.log().info(`sub-session ${key}: a report after its end was already reported is not delivered`)
+        return { delivered: false, reason: 'subsession_ended' }
+      }
+      const result = await this.deliverReply(req)
+      if (result.delivered) await this.markSubsessionReported(req.callerAgentId, key)
+      return result
+    })
+  }
+
   /** assistant-mode.md §5.7: once a sub-session's turn ends, leave `open` and report a failure it will not report itself. */
   async settleSubsessionTurn(end: SubsessionTurnEnd): Promise<void> {
     const { agentId, key } = end
@@ -275,21 +314,24 @@ export class CollabCoordinator {
       await inferred
       if (end.replayed) return
       const index = this.host.store().assistantSubsessions
-      const row = await index.get(agentId, key)
-      // Done (it reported), already failed, or no sub-session at all.
-      if (row?.state !== 'open') return
-      if (end.outcome === 'completed') {
-        // The inferred report spoke for this turn; one the parent did not admit leaves nothing else to send.
-        if (inferred) {
-          await index.finish(agentId, key, 'failed')
-          return
+      // Under the report lock, so a report still being admitted settles the row first.
+      const claimed = await this.withSubsessionReportLock(key, async () => {
+        const row = await index.get(agentId, key)
+        // Done (it reported), already failed, or no sub-session at all.
+        if (row?.state !== 'open') return undefined
+        if (end.outcome === 'completed') {
+          // The inferred report spoke for this turn; one the parent did not admit leaves nothing else to send.
+          if (inferred) {
+            await index.finish(agentId, key, 'failed')
+            return undefined
+          }
+          // A background task still owes the sub-session a wake, whose turn settles it instead.
+          if (await this.awaitsBackgroundWake(agentId, key)) return undefined
         }
-        // A background task still owes the sub-session a wake, whose turn settles it instead.
-        if (await this.awaitsBackgroundWake(agentId, key)) return
-      }
-      // The claim: whoever moves the row out of `open` is the one report.
-      if (!(await index.finish(agentId, key, 'failed'))) return
-      void this.reportSubsessionEnd(row, end)
+        // The claim: whoever moves the row out of `open` is the one report.
+        return (await index.finish(agentId, key, 'failed')) ? row : undefined
+      })
+      if (claimed) void this.reportSubsessionEnd(claimed, end)
     } catch (err) {
       this.host.log().warn(`sub-session ${key}: could not settle its turn: ${formatErr(err)}`)
     }
@@ -1033,7 +1075,16 @@ export class CollabCoordinator {
 
   async replyToSession(
     req: ReplyToSessionReq,
-    // assistant-mode.md §5.7, daemon-authored only: a sub-session's own report, authorized by its index row.
+    // assistant-mode.md §5.7, daemon-authored only: a sub-session's end report, authorized by its index row.
+    subsessionReport?: { parentSessionId: string; hopCount: number }
+  ): Promise<ReplyToSessionResult> {
+    if (subsessionReport === undefined && isSubsessionCoordinate(req.callerThread))
+      return await this.reportFromSubsession(req)
+    return await this.deliverReply(req, subsessionReport)
+  }
+
+  private async deliverReply(
+    req: ReplyToSessionReq,
     subsessionReport?: { parentSessionId: string; hopCount: number }
   ): Promise<ReplyToSessionResult> {
     const platform = req.platform
@@ -1201,7 +1252,6 @@ export class CollabCoordinator {
         return failed(admission.reason === 'queue_full' ? 'queue_full' : 'busy', local.key)
       }
       await this.markChildParentReply(callerKey, req.sessionId, 'queued-for-parent')
-      if (isSubsessionCoordinate(req.callerThread)) await this.markSubsessionReported(req.callerAgentId, callerKey)
       this.host
         .log()
         .info(`replyToSession: ${req.callerAgentId} → ${originOwner} (${local.key}) delivery=${deliveryId}`)
@@ -1253,8 +1303,6 @@ export class CollabCoordinator {
       }
     )
     await this.markChildParentReply(callerKey, req.sessionId, res.delivered ? 'queued-for-parent' : 'failed')
-    if (res.delivered && isSubsessionCoordinate(req.callerThread))
-      await this.markSubsessionReported(req.callerAgentId, callerKey)
     return {
       delivered: res.delivered,
       targetSession: res.targetSession,

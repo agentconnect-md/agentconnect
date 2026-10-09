@@ -282,6 +282,8 @@ export interface ReplyToSessionResult {
     | 'not_allowed'
     | 'unsupported'
     | 'not_ready'
+    // assistant-mode.md §5.7: the daemon already reported this sub-session's end to its parent.
+    | 'subsession_ended'
 }
 
 /** The deps of the unified outbound send: peer wake, session reply, the visible post, and

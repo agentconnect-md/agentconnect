@@ -388,6 +388,75 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
   })
 })
 
+describe('a sub-session’s own report and the daemon’s end report never both reach the parent', () => {
+  const ownReport = (d: any, caller: { scope: string }, thread: string) =>
+    d.collab.replyToSession({
+      callerAgentId: 'bot-a',
+      platform: 'slack',
+      callerTransportScope: caller.scope,
+      callerChannel: 'C1',
+      callerThread: thread,
+      sessionId: 'sid-parent-1',
+      text: 'PR opened'
+    })
+
+  it('delivers only the report already admitted when an interrupt ends the turn before it is recorded', async () => {
+    const { daemon, d, rt, dispatched, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(d)
+    // Hold the report after the parent admitted it, before its bookkeeping runs.
+    let releaseReport!: () => void
+    const held = new Promise<void>((resolve) => (releaseReport = resolve))
+    const record = d.collab.markChildParentReply.bind(d.collab)
+    const holding = vi.spyOn(d.collab, 'markChildParentReply').mockImplementation(async (...args: unknown[]) => {
+      await held
+      return await record(...args)
+    })
+    const settling = vi.spyOn(d.collab, 'settleSubsessionTurn')
+    let report!: Promise<unknown>
+    let endTurn!: (stopReason: string) => void
+    rt.behavior.sub = async () => {
+      report = ownReport(d, caller, dispatched[0]!.msg.thread!)
+      return await new Promise((resolve) => (endTurn = resolve))
+    }
+
+    const res = await d.collab.messageAgent(delegation(caller))
+    await vi.waitFor(() => expect(holding).toHaveBeenCalled(), WAIT)
+    expect(reports()).toHaveLength(1)
+    await d.interruptTurn('bot-a', res.targetSession, 'stop')
+    endTurn('cancelled')
+    await vi.waitFor(() => expect(settling).toHaveBeenCalled(), WAIT)
+    releaseReport()
+    expect(await report).toMatchObject({ delivered: true })
+    await settled()
+
+    expect(reports().map((c) => c.msg.text)).toEqual(['PR opened'])
+    expect(await stateOf(d, res.targetSession)).toBe('done')
+    await daemon.stop()
+  })
+
+  it('refuses a report that arrives after the daemon reported the end, so the parent hears once', async () => {
+    const { daemon, d, rt, dispatched, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(d)
+    rt.behavior.sub = 'hang'
+
+    const res = await d.collab.messageAgent(delegation(caller))
+    await vi.waitFor(() => expect(rt.subPrompts).toHaveLength(1), WAIT)
+    await d.interruptTurn('bot-a', res.targetSession, 'stop')
+    await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
+    await settled()
+    expect(await ownReport(d, caller, dispatched[0]!.msg.thread!)).toEqual({
+      delivered: false,
+      reason: 'subsession_ended'
+    })
+    await settled()
+
+    expect(reports()).toHaveLength(1)
+    expect(reports()[0]!.msg.text).toContain('stopped before finishing (stop)')
+    expect(await stateOf(d, res.targetSession)).toBe('failed')
+    await daemon.stop()
+  })
+})
+
 describe('the sub-session cap', () => {
   it('refuses the fourth running sub-session by default, and admits one once another has settled', async () => {
     const { daemon, d, dispatched } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]), { spy: true })
