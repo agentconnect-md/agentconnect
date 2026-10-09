@@ -265,7 +265,10 @@ export const canonicalColumns = [
   'sourceThread',
   'sourceTransportScope',
   'sourcePlace',
-  'grantEpoch'
+  'grantEpoch',
+  'childSessionKey',
+  'parentSessionId',
+  'parentSessionKey'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

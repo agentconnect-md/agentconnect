@@ -1,5 +1,6 @@
 import { agentWithRuntime } from '../decisions/model-selection.js'
 import { isAppendCoordinate } from './append-coordinate.js'
+import { isSubsessionCoordinate } from './subsession-coordinate.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
@@ -771,7 +772,9 @@ export class SessionManager {
     // there is no provider history to fetch — and the fetch would address `append:…` as a
     // platform ts. Withholding the reader is what makes the backfill degrade rather than
     // mint a snapshot window for a snapshot that never happened.
-    const fetchThreadHistory = isAppendCoordinate(thread) ? undefined : this.deps.fetchThreadHistory
+    // A sub-session's coordinate (assistant-mode.md §5.6) is no thread's either.
+    const fetchThreadHistory =
+      isAppendCoordinate(thread) || isSubsessionCoordinate(thread) ? undefined : this.deps.fetchThreadHistory
     const { snapshotCutoffTs, withinSnapshot } = await backfillThreadHistory({
       platform: msg.platform,
       agentId,

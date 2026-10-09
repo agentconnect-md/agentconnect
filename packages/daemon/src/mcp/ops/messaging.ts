@@ -231,6 +231,10 @@ export interface MessageAgentResult {
   delivered: boolean
   targetSession: string
   reason?: string
+  /** A refusal the agent must read in words, beside its `reason`. */
+  message?: string
+  /** assistant-mode.md §5.6: the wake opened a background sub-session, which always reports back. */
+  subsession?: true
 }
 
 /**
@@ -923,17 +927,20 @@ export async function sendMessage(
   // (`viewSessionStatus`) without having to reconstruct the key. Only for an ADMITTED wake: a
   // rejected one opened nothing, and `wake.reason` explains why.
   const childSessionId = wake?.delivered === true ? wake.targetSession : undefined
+  // assistant-mode.md §5.6: a sub-session reports back whether or not `needsReply` was set.
+  const subsession = wake?.subsession === true
   return {
     ok: true,
     ...(wake !== undefined ? { wake } : {}),
     ...(post !== undefined ? { post } : {}),
     ...(childSessionId !== undefined ? { childSessionId } : {}),
-    ...(childSessionId !== undefined && needsReply
+    ...(childSessionId !== undefined && (needsReply || subsession)
       ? {
           reply: { requested: true, state: 'awaiting' as const },
           nextAction: 'finish-turn-and-wait' as const,
-          message:
-            'Message delivered. The agent will reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
+          message: subsession
+            ? 'Sub-session started in the background. Tell the people here it has started and end this turn; it reports back into this conversation when it finishes or fails. Do not do the work here as well.'
+            : 'Message delivered. The agent will reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
         }
       : {}),
     ...(notices.length ? { notice: notices.join(' ') } : {})

@@ -28,6 +28,7 @@ export default defineConfig({
       'test/source-cache-store.test.ts',
       'test/assistant-items.test.ts',
       'test/assistant-drafts.test.ts',
+      'test/assistant-subsessions.test.ts',
       'test/postgres-async-database.int.test.ts',
       'test/postgres-pool-store.int.test.ts',
       'test/postgres-transcript-org.int.test.ts',

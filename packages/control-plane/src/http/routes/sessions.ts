@@ -19,13 +19,20 @@ import type { HttpDeps } from '../deps.js'
 import { AgentId, DaemonId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
 import { decodeConversationKey, encodeConversationKey } from '../conversation-key.js'
-import { canChangeSessionVisibility, canContinueSession, canView, canViewSession } from '../../authorization/policy.js'
+import {
+  canChangeSessionVisibility,
+  canContinueSession,
+  canView,
+  canViewSession,
+  type SubsessionFacts
+} from '../../authorization/policy.js'
 import {
   AUTO_MERGE_FEATURE,
   AutoMergeErrorReason,
   CODE_HOST_PROVIDERS,
   isCodeHostHookKind,
   isSessionIdentityPlatform,
+  isSubsessionCoordinate,
   SANDBOX_KEEP_ALIVE_FEATURE,
   continuableOrigin,
   type CodeHostProvider,
@@ -580,6 +587,26 @@ export function sessionRoutes(deps: HttpDeps) {
       return { session, access }
     }
 
+    // assistant-mode.md §5.6: the lineage that recognises an assistant-mode agent's own sub-session, read only on its coordinate.
+    const subsessionFacts = async (
+      req: FastifyRequest,
+      session: SessionMetaRecord
+    ): Promise<{ subsession?: SubsessionFacts }> => {
+      if (!isSubsessionCoordinate(session.thread)) return {}
+      const [parent, agent] = await Promise.all([
+        session.parentSessionId ? deps.repos.session.get(orgOf(req), session.parentSessionId) : Promise.resolve(null),
+        deps.repos.agent.get(orgOf(req), session.agentId)
+      ])
+      return {
+        subsession: {
+          parentSessionId: session.parentSessionId,
+          parentAgentId: parent?.agentId ?? null,
+          agentId: session.agentId,
+          assistantMode: agent?.assistantMode?.enabled === true
+        }
+      }
+    }
+
     // Daemon-local session content, read through a daemon that can still serve it. The recorded
     // daemon owns it, but a pool member is replaceable: retiring one deletes its row and nulls the
     // session's `daemonId`, while every peer on the store it wrote to reads the same rows. So:
@@ -1079,7 +1106,11 @@ export function sessionRoutes(deps: HttpDeps) {
           // The §5.1 cutover state: CP read gates apply at commit, but the memory
           // boundary only takes effect once every affected daemon has acked.
           visibilityState: await visibilityStateOf(deps.visibilityPush, deps.repos, [s.id]),
-          canChangeVisibility: canChangeSessionVisibility(s, ctx, access.identitySet),
+          canChangeVisibility: canChangeSessionVisibility(
+            { ...s, ...(await subsessionFacts(req, s)) },
+            ctx,
+            access.identitySet
+          ),
           canContinue: continuationUnavailableReason === null,
           continuationUnavailableReason,
           accessSyncDegraded: access.degraded || relatedAccess.degraded,
@@ -1223,7 +1254,8 @@ export function sessionRoutes(deps: HttpDeps) {
         }
         const ctx = ctxOf(req)
         const identitySet = owned.access.identitySet
-        if (!canChangeSessionVisibility(owned.session, ctx, identitySet)) {
+        const facts = await subsessionFacts(req, owned.session)
+        if (!canChangeSessionVisibility({ ...owned.session, ...facts }, ctx, identitySet)) {
           return reply
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'not allowed to change this session visibility' })
@@ -1236,7 +1268,7 @@ export function sessionRoutes(deps: HttpDeps) {
           orgOf(req),
           SessionId(req.params.id),
           req.body.visibility,
-          (row) => canChangeSessionVisibility(row, ctx, identitySet)
+          (row) => canChangeSessionVisibility({ ...row, ...facts }, ctx, identitySet)
         )
         if (forbidden) {
           return reply

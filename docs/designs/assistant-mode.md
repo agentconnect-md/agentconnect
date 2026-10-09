@@ -406,9 +406,10 @@ below), so opening it everywhere does not reopen what the read rule closes.
 
 - **Opening**: self-delegation without a post — the direct form of `sendMessage({ toAgent })`
   accepts a self target (both admission checks exempt it; `targetSessionCoordinate` is skipped),
-  and the sub-session gets **its own coordinate**. It inherits the parent's visibility and owner
-  through the A2A path; **visibility changes on sub-sessions are refused** (a channel parent's
-  owner is its first poster).
+  and the sub-session gets **its own coordinate**: a reserved `subsession:` thread segment minted
+  per delegation, on which every turn runs headless and which the Control Plane also recognises.
+  It inherits the parent's visibility and owner through the A2A path; **visibility changes on
+  sub-sessions are refused** (a channel parent's owner is its first poster).
 - **Workspace**: no dedicated workspace and no change to isolation. Under session isolation each
   session has its own worktree; otherwise (git shared, scratch) sub-sessions share the primary
   like every other session of the agent — turns from several channels already run in parallel

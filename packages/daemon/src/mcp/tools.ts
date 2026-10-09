@@ -32,7 +32,9 @@ import { ASSISTANT_ITEM_TOOLS } from './ops/assistant-items.js'
  * ordinary reply cannot do: a postless agent call, a direct message, a channel-root post,
  * or a parent-session reply. A visible send is always at the channel ROOT.
  */
-function buildSendMessageTool(platforms: string[]): ToolDescriptor {
+function buildSendMessageTool(platforms: string[], options: { assistantMode?: boolean } = {}): ToolDescriptor {
+  // assistant-mode.md §5.6: only an assistant-mode agent may delegate to itself, so only it is told how.
+  const selfDelegation = options.assistantMode === true
   const platform = {
     type: 'string',
     ...(platforms.length > 0 ? { enum: platforms } : {}),
@@ -81,7 +83,12 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       '(`{"toAgent":"<id>","channel":"<C>","message":"..."}`) also posts one visible message at the channel root, ' +
       '@-mentions the target in it, and anchors the target to that post. The channel-root form may target YOURSELF: ' +
       'use your own AgentConnect ID from the # Agent block (never your Slack `U…` bot identity) to open and activate ' +
-      'one new conversation there. The direct form may not target yourself. To reach an agent in the thread you are ' +
+      'one new conversation there. ' +
+      (selfDelegation
+        ? 'The direct form with your own ID opens a background SUB-SESSION for long work instead (see the tool ' +
+          'description). '
+        : 'The direct form may not target yourself. ') +
+      'To reach an agent in the thread you are ' +
       'ALREADY in, do not use this tool — @-mention it in your ordinary reply instead. Either form takes ' +
       '`needsReply` (see `toAgent`), and you need it whenever you expect an answer back: the peer answers in ITS ' +
       'OWN conversation, so without `needsReply` nothing comes back to you.',
@@ -100,7 +107,9 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
             'fails. The result tells you to end the current turn and wait; use `viewSessionStatus` on the returned ' +
             '`childSessionId` only for optional diagnostics. To ' +
             'open a new channel-root conversation with YOURSELF, pass your own ID from the # Agent block together ' +
-            'with `channel`; a self target without `channel` is rejected.',
+            (selfDelegation
+              ? 'with `channel`; your own ID without `channel` opens a background sub-session instead.'
+              : 'with `channel`; a self target without `channel` is rejected.'),
           oneOf: [
             {
               type: 'string',
@@ -264,8 +273,14 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'into the parent session.\n' +
       '- toAgent — wake exactly one AgentConnect agent (id from listAgents or your own # Agent ID; never a ' +
       'platform member id):\n' +
-      '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless PEER wake: nothing is posted anywhere; ' +
-      'this form cannot target yourself.\n' +
+      (selfDelegation
+        ? '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless wake: nothing is posted anywhere. With ' +
+          'your own # Agent ID it opens a background SUB-SESSION for long work ("fix this bug and open a PR"): it ' +
+          'works on its own, posts nothing, and reports back into this conversation when it finishes or fails, so ' +
+          'say it has started and end your turn. Keep ordinary conversation here — questions, lookups and short ' +
+          'answers never need one. A sub-session cannot open sub-sessions of its own.\n'
+        : '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless PEER wake: nothing is posted anywhere; ' +
+          'this form cannot target yourself.\n') +
       '  • channel root: `{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}` — also posts one ' +
       'visible message at that channel’s ROOT, @-mentions the target, and anchors it to that post. This form MAY ' +
       'target yourself: use your own # Agent ID to open and activate one new conversation there.\n' +
@@ -295,7 +310,9 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'Every visible send except the `thread` update lands at the channel ROOT and opens a NEW conversation of ' +
       'your own there. Write ' +
       '`message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone. A self ' +
-      'wake is valid only in the explicit `toAgent` channel-root form above.',
+      (selfDelegation
+        ? 'wake is valid in the `toAgent` channel-root form and, as a sub-session, in the direct form above.'
+        : 'wake is valid only in the explicit `toAgent` channel-root form above.'),
     inputSchema: unionOf([agentTarget, userTarget, channelTarget, sessionTarget])
   }
 }
@@ -1450,7 +1467,7 @@ export function toolsForIntegrations(
   // its origin (`sessionId`). The `platform` enum is narrowed to the agent's own platforms
   // so it can post to any of them (empty ⇒ no channel posting, only wake/reply).
   const platforms = [...new Set(integrations.map((i) => i.platform))]
-  add([buildSendMessageTool(platforms)])
+  add([buildSendMessageTool(platforms, { assistantMode: options.assistantMode === true })])
   // Platform read helpers only make sense once the agent has at least one integration.
   if (platforms.length > 0) {
     add(buildReadTools(platforms, options.currentPlatform))
