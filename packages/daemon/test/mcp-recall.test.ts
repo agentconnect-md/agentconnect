@@ -684,15 +684,9 @@ const excerptsOf = async (ctx: SessionContext, place: string, deps: OpsDeps): Pr
   ((await executeTool(ctx, 'recall', { place }, deps)) as { excerpts: { text: string }[] }).excerpts.map((e) => e.text)
 
 describe("per-asker scoping in the asker's own DM", () => {
-  it('lists and reads a private channel and a private group DM the asker belongs to', async () => {
+  it('reads, but never lists, a private channel and a private group DM the asker belongs to', async () => {
     const { deps, gw } = perAsker()
-    expect(await listedPlaces(inOwnDm, deps)).toEqual([
-      'slack:D_P',
-      'slack:C_DEPLOY',
-      'slack:C_PRIV',
-      'slack:G_MPIM',
-      'telegram:-1001'
-    ])
+    expect(await listedPlaces(inOwnDm, deps)).toEqual(['slack:D_P', 'slack:C_DEPLOY', 'telegram:-1001'])
     expect(await excerptsOf(inOwnDm, 'slack:C_PRIV', deps)).toEqual(['secret merger talk'])
     expect(await excerptsOf(inOwnDm, '#leadership', deps)).toEqual(['secret merger talk'])
     expect(await excerptsOf(inOwnDm, 'slack:G_MPIM', deps)).toEqual(['group dm planning payments'])
@@ -925,10 +919,12 @@ describe('a session marked by a widened read writes only to the DM', () => {
     expect(await excerptsOf(inOwnDm, 'slack:C_DEPLOY', deps)).toContain('Noted: payments deploy Friday')
   })
 
-  it('marks the session on a listing that showed a private place, too', async () => {
-    const { deps } = perAsker()
-    await listedPlaces(inOwnDm, deps)
-    await expect(executeTool(inOwnDm, 'takeItem', { title: 'x', doneWhen: 'y' }, deps)).rejects.toThrow(/`!new`/)
+  it('leaves the session unmarked on a listing, which shows no private place', async () => {
+    const { deps, marks } = perAsker()
+    expect(await listedPlaces(inOwnDm, deps)).not.toContain('slack:C_PRIV')
+    await executeTool(inOwnDm, 'sendMessage', { toAgent: 'peer-1', message: 'hi' }, deps)
+    expect(deps.messageAgent).toHaveBeenCalledTimes(1)
+    expect(await marks.placeMarked(inOwnDm.agentId, 'slack', 'D_P')).toBe(false)
   })
 
   it('survives a restart, and a fresh coordinate (`!new`) lifts it', async () => {

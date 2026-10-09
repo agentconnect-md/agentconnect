@@ -94,7 +94,6 @@ const iso = (ms: number): string | undefined => (Number.isFinite(ms) && ms > 0 ?
 
 async function listing(ctx: SessionContext, places: Place[], deps: PlaceAccessDeps, names: Map<string, string>) {
   const current: PlaceRef = { platform: ctx.platform, channel: ctx.channel }
-  const member = askerMembership(ctx, deps)
   const listed: Record<string, unknown>[] = []
   let described = 0
   for (const place of places) {
@@ -106,9 +105,8 @@ async function listing(ctx: SessionContext, places: Place[], deps: PlaceAccessDe
       if (kind === 'dm' || kind === 'webchat' || described >= DESCRIBED_PLACES) continue
       described += 1
       const source = await describe(ctx, place, deps)
-      const refusal = placeReadRefusal(current, source)
-      // A private place is listed only to a confirmed member asking in their own DM (§5.5).
-      if (refusal && !(refusal === 'private' && (await member(place, askerBotOf(ctx, place, deps))))) continue
+      // A private place is never listed, even to a member: only a read of it by name widens, and marks (§5.5).
+      if (placeReadRefusal(current, source)) continue
       kind = source.kind
     }
     const name = nameOf(place, names)

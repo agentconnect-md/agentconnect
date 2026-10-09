@@ -846,9 +846,10 @@ turns external.
 
 An agent in assistant mode reads a private channel or group DM only from that conversation,
 with one exception: a person's own 1:1 DM with the agent. There, on a turn the person started with
-their own message, the agent may list and read a private channel or group DM the person is a
-member of right now. The conversation must be on the same platform and workspace as the DM, on a
-platform whose member list is complete (Slack). Membership is checked when the read happens and
+their own message, the agent may read a private channel or group DM the person is a member of
+right now, when it is named. The agent's list of places it can recall never shows one, so only
+an actual read restricts the conversation. The conversation must be on the same platform and
+workspace as the DM, on a platform whose member list is complete (Slack). Membership is checked when the read happens and
 trusted for at most a minute. When it cannot be confirmed, the answer is the same "I can't share
 that here" as for any other private place. Reports from sub-sessions, scheduled runs, patrols and
 every other conversation keep the ordinary rule. Another person's DM is never readable.
