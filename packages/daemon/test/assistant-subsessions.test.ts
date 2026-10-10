@@ -193,9 +193,134 @@ describe('the assistant sub-session index', () => {
   })
 })
 
+describe('the failure report a sub-session index row holds (assistant-mode.md §5.7)', () => {
+  it('holds a claimed report in `reporting`, counts its refused attempts, and settles it once', async () => {
+    const s = await open()
+    const [a, b] = [agent(), agent()]
+    const index = s.assistantSubsessions
+    await index.open(row(a, '1'))
+    await index.open(row(a, '2'))
+    expect(await index.claimReport(a, childKey(a, '1'), '{"text":"ended"}')).toBe(true)
+    expect(await index.claimReport(a, childKey(a, '1'), '{"text":"again"}')).toBe(false)
+    // Out of `open`, nothing else settles it: neither its own report nor a second claim.
+    expect(await index.finish(a, childKey(a, '1'), 'done')).toBe(false)
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ state: 'reporting', endReport: '{"text":"ended"}' })
+    expect(await index.get(a, childKey(a, '1'))).not.toHaveProperty('reportAttempts')
+
+    expect(await index.countReportAttempt(a, childKey(a, '1'))).toBe(1)
+    expect(await index.countReportAttempt(a, childKey(a, '1'))).toBe(2)
+    expect(await index.countReportAttempt(a, childKey(a, '2'))).toBeUndefined()
+    expect((await index.listReporting(a)).map((r) => [r.childSessionKey, r.reportAttempts])).toEqual([
+      [childKey(a, '1'), 2]
+    ])
+    expect(await index.listReporting(b)).toEqual([])
+    // A row whose turn has ended is no longer running, so it frees its place under the cap.
+    expect(await index.openWithinLimit(row(a, '3'), { limit: 2, startedSince: 0 })).toBe(true)
+
+    expect(await index.settleReport(a, childKey(a, '1'))).toBe(true)
+    expect(await index.settleReport(a, childKey(a, '1'))).toBe(false)
+    expect(await index.settleReport(a, childKey(a, '2'))).toBe(false)
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ state: 'failed', reportAttempts: 2 })
+    expect(await index.listReporting(a)).toEqual([])
+    expect(await index.countReportAttempt(a, childKey(a, '1'))).toBeUndefined()
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v43 → v44 failure report columns on SQLite', () => {
+  it('adds the columns to a v43 index and keeps its rows', async () => {
+    const path = tempStorePath('ac-assistant-v43-')
+    await (await LocalStore.open(path)).close()
+    const a = agent()
+    const old = new DatabaseSync(path)
+    old.exec(
+      'ALTER TABLE assistant_subsession DROP COLUMN endReport; ALTER TABLE assistant_subsession DROP COLUMN reportAttempts; PRAGMA user_version = 43'
+    )
+    old
+      .prepare(
+        `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
+         VALUES (?, ?, 'sid-parent-1', 'parent', 'open', 1000)`
+      )
+      .run(a, childKey(a, '1'))
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    try {
+      expect(await upgraded.assistantSubsessions.get(a, childKey(a, '1'))).toEqual({
+        agentId: a,
+        childSessionKey: childKey(a, '1'),
+        parentSessionId: 'sid-parent-1',
+        parentSessionKey: 'parent',
+        state: 'open',
+        createdAt: 1_000
+      })
+      expect(await upgraded.assistantSubsessions.claimReport(a, childKey(a, '1'), '{"text":"ended"}')).toBe(true)
+      expect(await upgraded.assistantSubsessions.countReportAttempt(a, childKey(a, '1'))).toBe(1)
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v43 → v44 failure report columns on PostgreSQL', () => {
+  it('adds the columns to a v43 index and keeps its rows', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pg.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    const a = agent()
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      await (await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })).close()
+
+      await admin.query(`SET search_path TO ${schema}`)
+      await admin.query('ALTER TABLE assistant_subsession DROP COLUMN endReport, DROP COLUMN reportAttempts')
+      await admin.query(
+        `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
+         VALUES ($1, $2, 'sid-parent-1', 'parent', 'open', 1000)`,
+        [a, childKey(a, '1')]
+      )
+      await admin.query('UPDATE _local_store_schema_version SET version = 43 WHERE singleton = true')
+
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        expect(await upgraded.assistantSubsessions.get(a, childKey(a, '1'))).toEqual({
+          agentId: a,
+          childSessionKey: childKey(a, '1'),
+          parentSessionId: 'sid-parent-1',
+          parentSessionKey: 'parent',
+          state: 'open',
+          createdAt: 1_000
+        })
+        expect(await upgraded.assistantSubsessions.claimReport(a, childKey(a, '1'), '{"text":"ended"}')).toBe(true)
+        expect(await upgraded.assistantSubsessions.countReportAttempt(a, childKey(a, '1'))).toBe(1)
+        expect(await upgraded.assistantSubsessions.get(a, childKey(a, '1'))).toMatchObject({
+          state: 'reporting',
+          endReport: '{"text":"ended"}',
+          reportAttempts: 1
+        })
+      } finally {
+        await upgraded.close()
+      }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
+  })
+})
+
 describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLite', () => {
   it('adds the table to a v37 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(43)
+    expect(SCHEMA_VERSION).toBe(44)
     const path = tempStorePath('ac-assistant-v37-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)

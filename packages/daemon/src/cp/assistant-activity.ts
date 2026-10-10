@@ -117,7 +117,8 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
             return {
               sessionId: child?.agentId === req.agentId ? (child.sessionId ?? null) : null,
               parentSessionId: row.parentSessionId,
-              state: row.state,
+              // A sub-session whose failure report is still on its way has ended, as `failed` shows.
+              state: row.state === 'reporting' ? 'failed' : row.state,
               createdAt: iso(row.createdAt)
             }
           }

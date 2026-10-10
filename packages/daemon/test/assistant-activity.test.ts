@@ -328,6 +328,18 @@ describe('the Activity view: stopping a sub-session', () => {
     expect(await stop(activity, a, 'sid-child')).toEqual({ operation: 'stop-subsession', result: 'not-running' })
   })
 
+  it('shows a sub-session whose failure report is still on its way as ended, with nothing to stop', async () => {
+    const { s, a, activity, stopSession } = await setup()
+    const key = await withChild(s, a, '1', 'sid-child')
+    expect(await s.assistantSubsessions.claimReport(a, key, '{"text":"ended"}')).toBe(true)
+    const page = await read(activity, { agentId: a, operation: 'subsessions', limit: 10 })
+    expect(page.subsessions).toEqual([
+      { sessionId: 'sid-child', parentSessionId: 'sid-parent', state: 'failed', createdAt: '1970-01-01T00:00:01.000Z' }
+    ])
+    expect(await stop(activity, a, 'sid-child')).toEqual({ operation: 'stop-subsession', result: 'not-running' })
+    expect(stopSession).not.toHaveBeenCalled()
+  })
+
   it('stops nothing that is settled, not indexed, or another agent’s', async () => {
     const { s, a, b, activity, stopSession } = await setup()
     const key = await withChild(s, a, '1', 'sid-child')

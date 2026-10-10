@@ -6,7 +6,7 @@ import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { isSubsessionCoordinate, subsessionCoordinate } from '../session/subsession-coordinate.js'
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import type { HostKey } from '../acp/host-key.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { Clock, TimerHandle } from '@agentconnect.md/connection'
 import {
   hasReachedAgentCallHopLimit,
@@ -81,6 +81,53 @@ export interface SubsessionTurnEnd {
   hopCount?: number | undefined
 }
 
+/** How many refused admissions a sub-session's failure report gets before it is given up (assistant-mode.md §5.7). */
+export const SUBSESSION_REPORT_ATTEMPTS = 3
+
+/** Where a sub-session sits, for a report the daemon makes on its behalf. */
+export interface DaemonReportCaller {
+  platform: string
+  channel: string
+  thread: string
+  transportScope?: string | undefined
+}
+
+/** One daemon-authored report — a patrol's, a task's, or a sub-session's failure report — into the place its sub-session belongs to. */
+export interface DaemonReport {
+  agentId: string
+  /** The sub-session the report speaks for. */
+  caller: DaemonReportCaller
+  /** The place whose current long session hears it; the caller's own by default. */
+  place?: { platform: string; channel: string; transportScope?: string | null | undefined }
+  /** The recorded parent, which hears it when the place has no current session. */
+  parentSessionId: string
+  text: string
+  /** Stable per report: its delivery id and inbox receipt derive from it, so a re-send is deduplicated. */
+  reportId: string
+  /** The hop depth the report continues; 0 when it starts a chain. */
+  hopCount?: number | undefined
+}
+
+/** What a `reporting` row holds to send its failure report again after a refusal or a restart. */
+interface SubsessionEndReport {
+  text: string
+  hopCount: number
+  caller: DaemonReportCaller
+}
+
+function subsessionEndReportOf(json: string | undefined): SubsessionEndReport | undefined {
+  try {
+    const value = JSON.parse(json ?? '') as Partial<SubsessionEndReport>
+    const caller = value.caller
+    if (typeof value.text !== 'string' || typeof value.hopCount !== 'number') return undefined
+    if (typeof caller?.platform !== 'string' || typeof caller.channel !== 'string' || typeof caller.thread !== 'string')
+      return undefined
+    return value as SubsessionEndReport
+  } catch {
+    return undefined
+  }
+}
+
 /** The one short report a sub-session that ended without its own gets in its parent. */
 function subsessionEndReport(key: string, end: SubsessionTurnEnd): string {
   const tail = 'It sent no result; delegate again if the work is still needed.'
@@ -151,6 +198,7 @@ export interface CollabTurnHost {
     callMeta?: CallMeta,
     opts?: {
       requireDurable?: boolean
+      receiptId?: string
       onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
     },
     codeHostReply?: CodeHostReplyTarget
@@ -226,6 +274,8 @@ export class CollabCoordinator {
   private readonly subsessionInferences = new Map<string, Promise<void>>()
   // Per sub-session: its own report and its turn's settlement take turns, so only one of them reaches the parent.
   private readonly subsessionReportLocks = new Map<string, Promise<void>>()
+  // Sub-sessions whose failure report is being sent right now, so a sweep or replay does not send it alongside.
+  private readonly subsessionReportSends = new Set<string>()
 
   /** An agent's channel-directory display name, used to name the caller in the
    *  text delivered to a messaged agent. Resolution order:
@@ -295,7 +345,8 @@ export class CollabCoordinator {
     )
     return await this.withSubsessionReportLock(key, async () => {
       const index = this.host.store().assistantSubsessions
-      if ((await index.get(req.callerAgentId, key))?.state === 'failed') {
+      const state = (await index.get(req.callerAgentId, key))?.state
+      if (state === 'failed' || state === 'reporting') {
         this.host.log().info(`sub-session ${key}: a report after its end was already reported is not delivered`)
         return { delivered: false, reason: 'subsession_ended' }
       }
@@ -305,7 +356,7 @@ export class CollabCoordinator {
     })
   }
 
-  /** assistant-mode.md §5.7: once a sub-session's turn ends, leave `open` and report a failure it will not report itself. */
+  /** assistant-mode.md §5.7: once a sub-session's turn ends, leave `open` and report a failure it will not report itself, held in `reporting` until admitted. */
   async settleSubsessionTurn(end: SubsessionTurnEnd): Promise<void> {
     const { agentId, key } = end
     const inferred = this.subsessionInferences.get(key)
@@ -328,10 +379,20 @@ export class CollabCoordinator {
           // A background task still owes the sub-session a wake, whose turn settles it instead.
           if (await this.awaitsBackgroundWake(agentId, key)) return undefined
         }
-        // The claim: whoever moves the row out of `open` is the one report.
-        return (await index.finish(agentId, key, 'failed')) ? row : undefined
+        // The claim: whoever moves the row out of `open` is the one report, kept on the row until it is admitted.
+        const report: SubsessionEndReport = {
+          text: subsessionEndReport(key, end),
+          hopCount: end.hopCount ?? 0,
+          caller: {
+            platform: end.msg.platform,
+            channel: end.msg.channel,
+            thread: sessionThreadOf(end.msg),
+            ...(end.msg.transportScope !== undefined ? { transportScope: end.msg.transportScope } : {})
+          }
+        }
+        return await index.claimReport(agentId, key, JSON.stringify(report))
       })
-      if (claimed) void this.reportSubsessionEnd(claimed, end)
+      if (claimed) void this.sendSubsessionEndReport(agentId, key)
     } catch (err) {
       this.host.log().warn(`sub-session ${key}: could not settle its turn: ${formatErr(err)}`)
     }
@@ -345,38 +406,184 @@ export class CollabCoordinator {
     return lease !== undefined && (lease.tasks.size > 0 || lease.armedWakes > 0)
   }
 
-  /** One short report into the parent through the injection `replyToSession` makes; a parent that is gone is only logged. */
-  private async reportSubsessionEnd(row: AssistantSubsession, end: SubsessionTurnEnd): Promise<void> {
-    const { key, msg } = end
+  /** §5.7: send a `reporting` row's failure report; once admitted it is `failed`, and a refusal counts an attempt until the last gives up. */
+  private async sendSubsessionEndReport(agentId: string, key: string): Promise<void> {
+    if (this.subsessionReportSends.has(key)) return
+    this.subsessionReportSends.add(key)
     try {
+      const index = this.host.store().assistantSubsessions
+      const row = await index.get(agentId, key)
+      if (row?.state !== 'reporting') return
       if (this.host.draining()) {
-        this.host.log().info(`sub-session ${key} ended without a report while the daemon drains; none sent`)
+        this.host
+          .log()
+          .info(`sub-session ${key} ended without a report while the daemon drains; it is sent on the next start`)
         return
       }
-      if (!(await this.host.store().getSessionByOutwardId(row.parentSessionId, row.agentId))) {
-        this.host.log().warn(`sub-session ${key} ended without a report, and its parent session is gone; none sent`)
+      const report = subsessionEndReportOf(row.endReport)
+      if (!report) return await this.giveUpSubsessionReport(row, 'its report is unreadable')
+      // The parent's place, whose current session hears it (after `!new`, the new one), else the recorded parent.
+      const parent = await this.host.store().getSession(row.parentSessionKey)
+      const result = await this.deliverDaemonReport({
+        agentId,
+        caller: report.caller,
+        place: parent
+          ? { platform: parent.platform, channel: parent.channel, transportScope: parent.transportScope ?? null }
+          : report.caller,
+        parentSessionId: row.parentSessionId,
+        text: report.text,
+        reportId: `subsession-end:${key}`,
+        hopCount: report.hopCount
+      })
+      if (result.admitted) {
+        if (await index.settleReport(agentId, key))
+          await this.markChildParentReply(key, row.parentSessionId, 'queued-for-parent')
         return
       }
-      // An interrupt refuses fresh deliveries until its turns have unwound, and this report is one.
-      await this.host.safetyDrained(row.agentId)
-      const result = await this.replyToSession(
-        {
-          callerAgentId: row.agentId,
-          platform: msg.platform,
-          ...(msg.transportScope !== undefined ? { callerTransportScope: msg.transportScope } : {}),
-          callerChannel: msg.channel,
-          callerThread: sessionThreadOf(msg),
-          sessionId: row.parentSessionId,
-          text: subsessionEndReport(key, end)
-        },
-        { parentSessionId: row.parentSessionId, hopCount: end.hopCount ?? 0 }
-      )
-      if (!result.delivered) {
-        this.host.log().warn(`sub-session ${key}: its end report was not delivered (${result.reason ?? 'unknown'})`)
-      }
+      if (result.reason === 'parent_gone') return await this.giveUpSubsessionReport(row, 'its parent session is gone')
+      if (result.reason === 'hop_limit') return await this.giveUpSubsessionReport(row, 'hop_limit')
+      // A drain that began meanwhile refused it, which the next start makes up for without counting.
+      if (this.host.draining()) return
+      const attempts = await index.countReportAttempt(agentId, key)
+      if (attempts === undefined) return
+      const reason = result.reason ?? 'unknown'
+      if (attempts >= SUBSESSION_REPORT_ATTEMPTS)
+        return await this.giveUpSubsessionReport(row, `${reason}, ${attempts} attempts`)
+      this.host
+        .log()
+        .info(
+          `sub-session ${key}: its end report was refused (${reason}); retried on the next sweep (${attempts} of ${SUBSESSION_REPORT_ATTEMPTS})`
+        )
     } catch (err) {
       this.host.log().warn(`sub-session ${key}: its end report failed: ${formatErr(err)}`)
+    } finally {
+      this.subsessionReportSends.delete(key)
     }
+  }
+
+  /** A failure report that cannot be delivered: the row settles `failed` and the loss is logged. */
+  private async giveUpSubsessionReport(row: AssistantSubsession, why: string): Promise<void> {
+    const key = row.childSessionKey
+    if (!(await this.host.store().assistantSubsessions.settleReport(row.agentId, key))) return
+    await this.markChildParentReply(key, row.parentSessionId, 'failed')
+    this.host
+      .log()
+      .warn(`sub-session ${key} ended without a report, and its end report was not delivered (${why}); none sent`)
+  }
+
+  /** §5.7: send the failure reports these agents still owe, on the duty holder — after a restart, on a duty gain, and on each sweep. */
+  async resendSubsessionReports(agentIds: Iterable<string>): Promise<void> {
+    const index = this.host.store().assistantSubsessions
+    for (const agentId of agentIds) {
+      if (this.host.draining()) return
+      if (!this.host.servesAgent(agentId)) continue
+      for (const row of await index.listReporting(agentId))
+        await this.sendSubsessionEndReport(agentId, row.childSessionKey)
+    }
+  }
+
+  /** One daemon-authored report (patrol, task, sub-session failure) into the place's current session, else the recorded parent, injected as `replyToSession` would; at most once per `reportId`, and no tool reaches it. */
+  async deliverDaemonReport(report: DaemonReport): Promise<{ admitted: boolean; reason?: string }> {
+    const { agentId, caller, text } = report
+    const store = this.host.store()
+    // An interrupt refuses fresh deliveries until its turns have unwound, and this report is one.
+    await this.host.safetyDrained(agentId)
+    const id = createHash('sha256').update(`${agentId}\n${report.reportId}`).digest('hex').slice(0, 32)
+    const deliveryId = `assistant-report:${id}`
+    const receiptId = `assistant-report-receipt:${id}`
+    // A re-delivery after a crash: the receipt minted with the first admission says it is already in.
+    if (await store.hasInbox(receiptId)) return { admitted: true }
+    const sourceHopCount = report.hopCount ?? 0
+    if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) {
+      this.host.log().warn('sub-session report not delivered (hop_limit)')
+      return { admitted: false, reason: 'hop_limit' }
+    }
+    const callerKey = sessionKey(caller.platform, caller.channel, caller.thread, agentId, caller.transportScope)
+    const callerRec = await store.getSession(callerKey)
+    // A code-host parent answers where the sub-session's origin turn would have, as `replyToSession` resolves it.
+    const replyTarget = callerRec?.originCodeHostReplyTarget
+      ? (JSON.parse(callerRec.originCodeHostReplyTarget) as CodeHostReplyTarget | null)
+      : undefined
+    const place = report.place ?? caller
+    // The place's current long session speaks (after `!new`, not the retired one), else the recorded parent.
+    const parent =
+      (await store.placeSession(agentId, place.platform, place.channel, place.transportScope ?? null)) ??
+      (await store.getSessionByOutwardId(report.parentSessionId, agentId))
+    const route =
+      parent && sessionReplyRoute(parent, (...args) => this.host.integrationIdForSessionTransport(...args), replyTarget)
+    if (!parent || !route) {
+      this.host.log().warn(`sub-session report not delivered (${parent ? 'not_found' : 'parent session is gone'})`)
+      return { admitted: false, reason: parent ? 'not_found' : 'parent_gone' }
+    }
+    const replierSessionId = callerRec
+      ? await store.ensureOutwardSessionId(callerKey, agentId, this.host.clock().now())
+      : undefined
+    const externalOrigin = await this.host.externalOriginForSession(agentId, callerKey)
+    // The lineage `replyToSession` gives a report: from the sub-session, one hop past the turn it continues.
+    const callMeta: CallMeta = {
+      callFrom: agentId,
+      hopCount: sourceHopCount + 1,
+      deliveryId,
+      ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
+      originCodeHostReplyTarget: codeHostReplySnapshot(
+        callerRec,
+        this.host.activeGateEntries().get(callerKey)?.githubReply
+      ),
+      originCoords: { platform: caller.platform, channel: caller.channel, thread: caller.thread },
+      ...(externalOrigin ? { externalOrigin } : {}),
+      ...(replierSessionId !== undefined && (await store.isCaptureExcluded(agentId, callerKey))
+        ? { parentPrivate: true }
+        : {})
+    }
+    const botUserId = route.integrationId
+      ? this.host.botUserIds()[route.integrationId]
+      : this.host.resolveCpAgent(agentId, parent.platform)?.botUserId
+    const msg: NormalizedMessage = {
+      msgId: `agentcall:${parent.channel}:${deliveryId}`,
+      traceId: deliveryId,
+      source: 'agent',
+      platform: parent.platform,
+      channel: parent.channel,
+      // A synthetic stored thread is the session's, never a reply target, so the parent posts at the root.
+      ...(isAppendCoordinate(parent.thread)
+        ? { sessionThread: parent.thread }
+        : parent.thread
+          ? { thread: parent.thread }
+          : {}),
+      ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
+      transcriptTs: monotonicTs(),
+      sender: { id: agentId, isBot: true },
+      text,
+      // Session-only, never a live conversation post (#966).
+      parentReport: true,
+      mentionedBots: botUserId ? [botUserId] : [],
+      isDm: false
+    }
+    let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
+    const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
+      settleAdmission = resolve
+    })
+    void this.host
+      .dispatch(
+        agentId,
+        msg,
+        route.integrationId,
+        this.host.webchatTransport().webchatWakeContext(parent.platform, parent.channel),
+        callMeta,
+        { requireDurable: true, receiptId, onAdmission: (result) => settleAdmission(result) },
+        route.codeHostReply
+      )
+      .catch((err) => {
+        this.host.log().error(`sub-session report dispatch failed for session "${parent.key}": ${formatErr(err)}`)
+        settleAdmission({ accepted: false, reason: 'error' })
+      })
+    const admission = await admitted
+    if (!admission.accepted) {
+      this.host.log().warn(`sub-session report not delivered (${admission.reason ?? 'unknown'})`)
+      return { admitted: false, reason: admission.reason ?? 'unknown' }
+    }
+    this.host.log().info(`sub-session report: ${agentId} → ${parent.key} delivery=${deliveryId}`)
+    return { admitted: true }
   }
 
   /**
@@ -1073,20 +1280,12 @@ export class CollabCoordinator {
     this.childSessionLinks.set(child.key, { ...link, replyState: 'failed' })
   }
 
-  async replyToSession(
-    req: ReplyToSessionReq,
-    // assistant-mode.md §5.7, daemon-authored only: a sub-session's end report, authorized by its index row.
-    subsessionReport?: { parentSessionId: string; hopCount: number }
-  ): Promise<ReplyToSessionResult> {
-    if (subsessionReport === undefined && isSubsessionCoordinate(req.callerThread))
-      return await this.reportFromSubsession(req)
-    return await this.deliverReply(req, subsessionReport)
+  async replyToSession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
+    if (isSubsessionCoordinate(req.callerThread)) return await this.reportFromSubsession(req)
+    return await this.deliverReply(req)
   }
 
-  private async deliverReply(
-    req: ReplyToSessionReq,
-    subsessionReport?: { parentSessionId: string; hopCount: number }
-  ): Promise<ReplyToSessionResult> {
+  private async deliverReply(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
     const platform = req.platform
     const callerKey = sessionKey(
       platform,
@@ -1102,8 +1301,7 @@ export class CollabCoordinator {
     // origin (present on the wake turn), else the origin PERSISTED on the caller session (set once
     // at spawn). A human-triggered follow-up turn carries no CallMeta, so without the persisted
     // fallback the reply would be wrongly refused (`not_authorized`) after the first turn.
-    const authorizedOrigin =
-      inbound?.originSessionId ?? callerRec?.originSessionId ?? subsessionReport?.parentSessionId ?? undefined
+    const authorizedOrigin = inbound?.originSessionId ?? callerRec?.originSessionId ?? undefined
     if (!authorizedOrigin || req.sessionId !== authorizedOrigin) {
       return { delivered: false, reason: 'not_authorized' }
     }
@@ -1125,7 +1323,7 @@ export class CollabCoordinator {
     }
     // A reply is an agent-call — bound it by the same hop cap so a reply ping-pong can't run away.
     // A human-triggered turn has no inbound depth, so it starts the chain at 0.
-    const sourceHopCount = inbound?.hopCount ?? subsessionReport?.hopCount ?? 0
+    const sourceHopCount = inbound?.hopCount ?? 0
     if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) {
       return failed('hop_limit')
     }

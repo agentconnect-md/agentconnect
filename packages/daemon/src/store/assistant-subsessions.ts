@@ -2,8 +2,8 @@
 import { AsyncMutex } from './async-mutex.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
 
-/** `open` from the delegation on; `done` once it reported back, `failed` once it ended without reporting. */
-export type AssistantSubsessionState = 'open' | 'done' | 'failed'
+/** `open` from the delegation on; `done` once it reported back; `reporting` while the daemon's failure report awaits admission, then `failed`. */
+export type AssistantSubsessionState = 'open' | 'reporting' | 'done' | 'failed'
 
 export interface AssistantSubsession {
   agentId: string
@@ -17,6 +17,10 @@ export interface AssistantSubsession {
   createdAt: number
   /** A patrol the daemon started (assistant-mode.md §5.9); a delegation reads back without it. */
   kind?: 'patrol'
+  /** The failure report the daemon owes the parent (assistant-mode.md §5.7), once it claimed one. */
+  endReport?: string
+  /** How many times that report's admission was refused. */
+  reportAttempts?: number
 }
 
 export const ASSISTANT_SUBSESSION_SCHEMA = `
@@ -28,6 +32,8 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         state TEXT NOT NULL,
         createdAt INTEGER NOT NULL,
         kind TEXT NOT NULL DEFAULT 'delegation',
+        endReport TEXT,
+        reportAttempts INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (agentId, childSessionKey)
       );
       CREATE INDEX IF NOT EXISTS assistant_subsession_by_parent
@@ -45,7 +51,9 @@ class ClaimRefused extends Error {}
 
 type Row = Record<string, unknown>
 
-type OpenInput = Omit<AssistantSubsession, 'state' | 'createdAt' | 'kind'> & { now?: number }
+type OpenInput = Omit<AssistantSubsession, 'state' | 'createdAt' | 'kind' | 'endReport' | 'reportAttempts'> & {
+  now?: number
+}
 
 function subsessionOf(row: Row): AssistantSubsession {
   return {
@@ -55,7 +63,9 @@ function subsessionOf(row: Row): AssistantSubsession {
     parentSessionKey: String(row.parentSessionKey),
     state: String(row.state) as AssistantSubsessionState,
     createdAt: Number(row.createdAt),
-    ...(row.kind === 'patrol' ? { kind: 'patrol' as const } : {})
+    ...(row.kind === 'patrol' ? { kind: 'patrol' as const } : {}),
+    ...(row.endReport != null ? { endReport: String(row.endReport) } : {}),
+    ...(Number(row.reportAttempts ?? 0) > 0 ? { reportAttempts: Number(row.reportAttempts) } : {})
   }
 }
 
@@ -202,13 +212,53 @@ export class AssistantSubsessionIndex {
   async finish(
     agentId: string,
     childSessionKey: string,
-    state: Exclude<AssistantSubsessionState, 'open'>
+    state: Exclude<AssistantSubsessionState, 'open' | 'reporting'>
   ): Promise<boolean> {
     const { changes } = await this.db.query(
       `UPDATE assistant_subsession SET state = ? WHERE agentId = ? AND childSessionKey = ? AND state = 'open'`,
       [state, agentId, childSessionKey]
     )
     return changes > 0
+  }
+
+  /** Move an `open` row to `reporting` with the failure report it owes; false when it was already settled. */
+  async claimReport(agentId: string, childSessionKey: string, report: string): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET state = 'reporting', endReport = ?, reportAttempts = 0
+        WHERE agentId = ? AND childSessionKey = ? AND state = 'open'`,
+      [report, agentId, childSessionKey]
+    )
+    return changes > 0
+  }
+
+  /** Count one refused attempt of a `reporting` row's report: the new count, or undefined when it is not reporting. */
+  async countReportAttempt(agentId: string, childSessionKey: string): Promise<number | undefined> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET reportAttempts = reportAttempts + 1
+        WHERE agentId = ? AND childSessionKey = ? AND state = 'reporting'`,
+      [agentId, childSessionKey]
+    )
+    return changes > 0 ? ((await this.get(agentId, childSessionKey))?.reportAttempts ?? 0) : undefined
+  }
+
+  /** Settle a `reporting` row `failed`, its report admitted or given up on; false when it was not reporting. */
+  async settleReport(agentId: string, childSessionKey: string): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET state = 'failed' WHERE agentId = ? AND childSessionKey = ? AND state = 'reporting'`,
+      [agentId, childSessionKey]
+    )
+    return changes > 0
+  }
+
+  /** The agent's rows whose failure report still awaits admission, oldest first. */
+  async listReporting(agentId: string): Promise<AssistantSubsession[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_subsession WHERE agentId = ? AND state = 'reporting' ORDER BY createdAt, childSessionKey`,
+        [agentId]
+      )
+    ).rows as Row[]
+    return rows.map(subsessionOf)
   }
 
   async get(agentId: string, childSessionKey: string): Promise<AssistantSubsession | undefined> {

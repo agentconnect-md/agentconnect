@@ -181,7 +181,7 @@ describe('the assistant reminder ledger', () => {
 
 describe.skipIf(usingPostgresStore())('the v41 → v42 reminder table on SQLite', () => {
   it('adds the table to a v41 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(43)
+    expect(SCHEMA_VERSION).toBe(44)
     const path = tempStorePath('ac-assistant-v41-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
