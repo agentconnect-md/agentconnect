@@ -2665,6 +2665,7 @@ export default function SessionDetailView() {
     getPgQueue,
     pgCancelQueued,
     pgAddAgent,
+    pgRemoveAgent,
     pgSetModel,
     pgStageRuntime,
     pgSetEffort,
@@ -4121,11 +4122,7 @@ export default function SessionDetailView() {
       ? (agentId: string | undefined, appId: string): void =>
           pgCloseApp(session.id, agentId ?? session.agentId ?? '', appId, webchatConversationId)
       : undefined
-  // Mid-conversation join (webchat-multi-agents.md §3.1): a live playground
-  // conversation may GROW its roster; removal stays unsupported. The join is
-  // still playground-only — `pgAddAgent` mutates provider-side session state that
-  // an adopted webchat session never had — so a resumed conversation shows its
-  // roster (above) without the `+`.
+  // Joins and removals (§3.1/§3.1a) mutate provider-side state an adopted session never had, so they stay playground-only.
   const pgWorktree =
     worktreeSelections[session.id] ??
     getPgWorktree(session.id) ??
@@ -6094,9 +6091,22 @@ export default function SessionDetailView() {
                                   </>
                                 )
                                 if (!pickRecipient) {
+                                  const removable = isPg && !p.primary && p.agentId !== session.agentId
                                   return (
                                     <span key={p.agentId} className={COMPOSER_PILL_STATIC} title={t('participant')}>
                                       {chip}
+                                      {removable && (
+                                        <button
+                                          type="button"
+                                          className="-mr-1 inline-flex h-4 w-4 flex-none cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
+                                          title={t('removeParticipant', { agent: p.name })}
+                                          aria-label={t('removeParticipant', { agent: p.name })}
+                                          disabled={pgBusy || pgQueue.length > 0}
+                                          onClick={() => void pgRemoveAgent(session.id, p.agentId)}
+                                        >
+                                          <Icon name="x" size={12} />
+                                        </button>
+                                      )}
                                     </span>
                                   )
                                 }

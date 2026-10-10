@@ -183,6 +183,17 @@ export function addWebchatConversationAgent(
   )
 }
 
+/** Remove a non-primary member from a conversation (§3.1a); owner-only, 409 for the primary, idempotent. */
+export function removeWebchatConversationAgent(
+  orgId: string,
+  conversationId: string,
+  agentId: string
+): Promise<{ participants: Array<{ agentId: string; primary?: boolean }> }> {
+  return apiDelete(
+    `/orgs/${encodeURIComponent(orgId)}/webchat/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(agentId)}`
+  )
+}
+
 /**
  * Conversation-scoped mint (webchat-multi-agents.md §6.2): pass `agentIds` (first
  * entry = primary) to CREATE a conversation — the roster is fixed at creation — or
