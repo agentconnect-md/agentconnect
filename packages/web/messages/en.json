@@ -636,6 +636,7 @@
       "addPhotos": "Add photos",
       "participant": "Participant",
       "addAgents": "Add agents",
+      "removeParticipant": "Remove {agent} from this conversation",
       "searchAgents": "Search agents…",
       "model": "Model",
       "defaultModel": "Default",

@@ -3413,11 +3413,7 @@ export const SessionDetailDto = z.object({
     .nullable(),
   accessSyncDegraded: z.boolean(),
   accessIssues: z.array(SessionAccessIssueDto).optional(),
-  /** Multi-agent webchat conversation roster, in pick order (webchat-multi-agents.md
-   *  §3.1). Adopted/refreshed sessions have no live relay socket to deliver the
-   *  verified roster, so the composer and header read it from here. Null for
-   *  single-agent conversations and for every other platform; `name` is null only
-   *  when the Agent no longer has a resolvable display record. */
+  /** Live multi-agent webchat roster in pick order (§3.1), also kept when removals shrank it to one (§3.1a); null otherwise, and `name` is null only for an unresolvable Agent. */
   participants: z
     .array(z.object({ agentId: z.string(), name: z.string().nullable(), primary: z.boolean() }))
     .nullable(),

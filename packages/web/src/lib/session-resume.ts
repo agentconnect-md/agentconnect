@@ -15,6 +15,17 @@ export interface SessionResumePlacement {
   holderDaemonId?: string | null
 }
 
+/** Conversation members still on the live roster (§3.1a): a removed member keeps its transcript but no longer gates resume. */
+export function liveResumeMembers<T extends { agentId: string }>(
+  members: readonly T[] | null | undefined,
+  liveRoster: readonly { agentId: string }[] | null | undefined
+): readonly T[] | undefined {
+  if (!members) return undefined
+  if (!liveRoster) return members
+  const live = new Set(liveRoster.map((p) => p.agentId))
+  return members.filter((member) => live.has(member.agentId))
+}
+
 /**
  * Select the ownership rows used by the resume gate. A session route may still
  * represent a multi-agent conversation (notably the diagnostic `view=flat`

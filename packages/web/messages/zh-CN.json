@@ -636,6 +636,7 @@
       "addPhotos": "添加图片",
       "participant": "参与者",
       "addAgents": "添加 Agent",
+      "removeParticipant": "将 {agent} 移出此对话",
       "searchAgents": "搜索 Agent…",
       "model": "模型",
       "defaultModel": "默认",

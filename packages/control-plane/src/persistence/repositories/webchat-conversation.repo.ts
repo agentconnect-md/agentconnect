@@ -1,13 +1,6 @@
-/**
- * Durable ownership metadata for browser webchat conversations. This table
- * stores no transcript or message content; the daemon remains the content
- * authority. The CP uses it only to authorize token minting for a resume and
- * to resolve the conversation's participant roster (webchat-multi-agents.md
- * §3.1 — the roster is fixed at creation; `webchat_conversation.agentId`
- * mirrors the `role='primary'` participant row).
- */
+// Webchat conversation ownership and roster metadata (no content); `webchat_conversation.agentId` mirrors the primary row.
 import { randomUUID } from 'node:crypto'
-import type { PrismaClient, Prisma } from '../../generated/prisma/client.js'
+import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type {
   WebchatConversationBinding,
@@ -98,7 +91,7 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
     // cross-org id yields the same empty roster as an unknown one, and every
     // caller already fails closed on empty.
     const rows = await this.db.webchatConversationAgent.findMany({
-      where: { conversationId, conversation: { orgId } },
+      where: { conversationId, conversation: { orgId }, removedAt: null },
       orderBy: { ord: 'asc' },
       select: { agentId: true, role: true, currentSessionId: true }
     })
@@ -122,23 +115,65 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
         where: { conversationId },
         _max: { ord: true }
       })
+      const ord = (last._max.ord ?? 0) + 1
+      // A removed member rejoins at the end of the roster; a live one stays where it is.
+      const restored = await tx.webchatConversationAgent.updateMany({
+        where: { conversationId, agentId, removedAt: { not: null } },
+        data: { removedAt: null, removedByUserId: null, ord, addedByUserId, addedAt: new Date() }
+      })
+      if (restored.count > 0) return
       await tx.webchatConversationAgent.createMany({
-        data: [
-          {
-            conversationId,
-            agentId,
-            role: 'member',
-            ord: (last._max.ord ?? 0) + 1,
-            addedByUserId
-          }
-        ],
+        data: [{ conversationId, agentId, role: 'member', ord, addedByUserId }],
         skipDuplicates: true
       })
     })
   }
 
+  async hasRemovedParticipants(orgId: OrgId, conversationId: string): Promise<boolean> {
+    if (!UUID_RE.test(conversationId)) return false
+    const removed = await this.db.webchatConversationAgent.findFirst({
+      where: { conversationId, conversation: { orgId }, removedAt: { not: null } },
+      select: { agentId: true }
+    })
+    return removed !== null
+  }
+
+  async removeParticipant(
+    orgId: OrgId,
+    conversationId: string,
+    agentId: AgentId,
+    removedByUserId: string
+  ): Promise<'removed' | 'absent' | 'primary'> {
+    if (!UUID_RE.test(conversationId)) return 'absent'
+    return this.inTx(async (tx) => {
+      // Lock the conversation row so a removal serializes with joins and session-pointer writes (§3.6 org fence included).
+      const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id" FROM "webchat_conversation" WHERE "id" = ${conversationId}::uuid AND "orgId" = ${orgId} FOR UPDATE
+      `)
+      if (locked.length === 0) return 'absent'
+      const live = await tx.webchatConversationAgent.findMany({
+        where: { conversationId, removedAt: null },
+        select: { agentId: true, role: true }
+      })
+      const row = live.find((p) => p.agentId === agentId)
+      if (!row) return 'absent'
+      if (row.role === 'primary' || live.length <= 1) return 'primary'
+      await tx.webchatConversationAgent.update({
+        where: { conversationId_agentId: { conversationId, agentId } },
+        data: {
+          removedAt: new Date(),
+          removedByUserId,
+          currentSessionId: null,
+          currentSessionRev: { increment: 1 }
+        }
+      })
+      return 'removed'
+    })
+  }
+
   async findOwner(conversationId: string, agentId: AgentId): Promise<string | null> {
     if (!UUID_RE.test(conversationId)) return null
+    // Removed members still match: a late session event from one must stay owned by the conversation's user.
     const row = await this.db.webchatConversation.findFirst({
       where: {
         id: conversationId,
@@ -170,7 +205,7 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
         agentId: true,
         userId: true,
         currentSessionId: true,
-        participants: { select: { currentSessionId: true } }
+        participants: { where: { removedAt: null }, select: { currentSessionId: true } }
       }
     })
     if (!row) return null

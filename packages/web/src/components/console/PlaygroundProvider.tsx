@@ -41,6 +41,7 @@ import {
   webchatWsUrl,
   webchatSessionWsUrl,
   addWebchatConversationAgent,
+  removeWebchatConversationAgent,
   fmtCountCompact,
   fmtCost,
   ApiError,
@@ -110,6 +111,8 @@ interface PlaygroundData {
    *  (e.g. the mention picker) can tell an actual join from a no-op/refusal.
    *  Refused while a turn streams. */
   pgAddAgent: (id: string, agent: Agent) => Promise<boolean>
+  /** Remove a non-primary member from a live conversation (§3.1a), then reconnect so the relay re-verifies the shrunk roster; refused while a turn streams or queues. */
+  pgRemoveAgent: (id: string, agentId: string) => Promise<boolean>
   /** Returns whether the send was ACCEPTED — false only when there is nothing to
    *  send. A send while a turn is still streaming is accepted too: it QUEUES
    *  (Claude Code-style) and dispatches in order as turns finish. Callers that
@@ -1892,6 +1895,21 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect, setPgImage, setPgInput, setBusy]
   )
 
+  // The relay caches the roster it verified at connect, so a join or removal rebuilds the socket for a fresh rc/verify.
+  const reverifyRoster = useCallback(
+    (id: string, primaryId: string, conversationId: string): void => {
+      const existing = conns.current.get(id)
+      if (existing) {
+        existing.closing = true
+        if (existing.reconnectTimer) window.clearTimeout(existing.reconnectTimer)
+        existing.ws?.close()
+        conns.current.delete(id)
+      }
+      connect(id, primaryId, conversationId).ready.catch(() => {})
+    },
+    [connect]
+  )
+
   const pgAddAgent = useCallback(
     async (id: string, added: Agent): Promise<boolean> => {
       const orgId = activeOrg?.id
@@ -1936,21 +1954,52 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           }
         }
       })
-      // A live conversation's relay connection caches the roster it verified at
-      // connect — rebuild the socket so a fresh rc/verify picks up the join.
-      if (conversationId) {
-        const existing = conns.current.get(id)
-        if (existing) {
-          existing.closing = true
-          if (existing.reconnectTimer) window.clearTimeout(existing.reconnectTimer)
-          existing.ws?.close()
-          conns.current.delete(id)
-        }
-        connect(id, primaryId, conversationId).ready.catch(() => {})
-      }
+      if (conversationId) reverifyRoster(id, primaryId, conversationId)
       return true
     },
-    [activeOrg, pgSessions, connect, pushStep]
+    [activeOrg, pgSessions, reverifyRoster, pushStep]
+  )
+
+  const pgRemoveAgent = useCallback(
+    async (id: string, agentId: string): Promise<boolean> => {
+      const orgId = activeOrg?.id
+      const session = pgSessions[id]
+      const primaryId = session?.agentId
+      if (!orgId || !primaryId || primaryId === agentId) return false
+      const removed = session.participants?.find((p) => p.agentId === agentId)
+      if (!removed) return true
+      if (busyRef.current[id] || (pgQueueRef.current[id]?.length ?? 0) > 0) {
+        pushStep(id, { kind: 'done', text: '⚠️ Wait for the current reply to finish before removing an agent.' })
+        return false
+      }
+      const conversationId = conversationIds.current.get(id)
+      if (conversationId) {
+        try {
+          await removeWebchatConversationAgent(orgId, conversationId, agentId)
+        } catch (err) {
+          pushStep(id, {
+            kind: 'done',
+            text: `⚠️ ${err instanceof ApiError ? err.message : `Could not remove ${removed.name}.`}`
+          })
+          return false
+        }
+      }
+      const ids = rosterAgentIds.current.get(id)
+      if (ids)
+        rosterAgentIds.current.set(
+          id,
+          ids.filter((a) => a !== agentId)
+        )
+      rosterNames.current.get(id)?.delete(agentId)
+      setPgSessions((cur) => {
+        const s = cur[id]
+        if (!s?.participants) return cur
+        return { ...cur, [id]: { ...s, participants: s.participants.filter((p) => p.agentId !== agentId) } }
+      })
+      if (conversationId) reverifyRoster(id, primaryId, conversationId)
+      return true
+    },
+    [activeOrg, pgSessions, reverifyRoster, pushStep]
   )
 
   /** Put one turn on the wire NOW. The composer read / busy check / queueing live
@@ -2517,6 +2566,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       isPgBusy,
       openPlayground,
       pgAddAgent,
+      pgRemoveAgent,
       pgSend,
       pgNotice,
       pgAttach,
@@ -2551,6 +2601,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       isPgBusy,
       openPlayground,
       pgAddAgent,
+      pgRemoveAgent,
       pgSend,
       pgNotice,
       pgAttach,

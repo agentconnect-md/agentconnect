@@ -879,9 +879,7 @@ export class PgSessionRepo implements SessionRepo {
     const webchatConversationId =
       ev.platform === 'webchat' && ev.channel && UUID_RE.test(ev.channel) ? ev.channel : null
     if (webchatConversationId) {
-      // Any PARTICIPANT's session serializes on the conversation row (the
-      // roster is fixed at creation; `agentId` on the conversation is the
-      // primary mirror, so member agents match through the participant table).
+      // Any participant's session serializes on the conversation row, removed members included (the lock only orders writes).
       await tx.$queryRaw(Prisma.sql`
         SELECT c."id" FROM "webchat_conversation" AS c
         WHERE c."id" = ${webchatConversationId}::uuid
@@ -1089,15 +1087,14 @@ export class PgSessionRepo implements SessionRepo {
             WHERE cur."id" = c."currentSessionId" AND cur."startedAt" >= ${session.startedAt}
           )
       `)
-      // The reporting participant's OWN pointer (webchat-multi-agents.md §3.1) —
-      // the primary's row mirrors the conversation-level fence above; a member's
-      // row is the only place its current session is recorded.
+      // The reporting participant's own pointer (§3.1); a removed member's late event never reinstalls one.
       await tx.$executeRaw(Prisma.sql`
         UPDATE "webchat_conversation_agent" AS p
         SET "currentSessionId" = ${session.id},
             "currentSessionRev" = p."currentSessionRev" + 1
         WHERE p."conversationId" = ${webchatConversationId}::uuid
           AND p."agentId" = ${ev.agentId}::uuid
+          AND p."removedAt" IS NULL
           AND p."currentSessionId" IS DISTINCT FROM ${session.id}
           AND NOT EXISTS (
             SELECT 1 FROM "session_meta" AS cur

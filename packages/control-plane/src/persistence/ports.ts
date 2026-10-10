@@ -1788,16 +1788,19 @@ export interface WebchatConversationRepo {
   ensure(binding: WebchatConversationBinding, apiKeyId: string): Promise<void>
   /** The name of the API key that opened each of these conversations through the agent chat API, org-fenced; console conversations are absent. */
   apiKeyNames(orgId: OrgId, conversationIds: readonly string[]): Promise<Map<string, string>>
-  /** The conversation's full roster (primary first, then pick order). Empty
-   *  for an unknown conversation — callers fail closed. Org-fenced
-   *  (org-scoped-data-layer.md §3): a cross-org conversation id yields the same
-   *  empty roster as an unknown one, so it fails closed identically. */
+  /** The live roster (primary first, removed members excluded); empty for an unknown or cross-org conversation, so callers fail closed. */
   participants(orgId: OrgId, conversationId: string): Promise<WebchatParticipant[]>
-  /** Append one member to an existing conversation's roster (mid-conversation
-   *  join, webchat-multi-agents.md §3.1). Idempotent — re-adding an existing
-   *  participant is a no-op. Authorization (owner, canView, capability, cap)
-   *  belongs to the caller. */
+  /** Idempotently append a member (§3.1); a removed member is restored at the roster's end. Authorization belongs to the caller. */
   addParticipant(orgId: OrgId, conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void>
+  /** Whether the conversation ever lost a member, so a shrunk singleton roster is still reported explicitly. */
+  hasRemovedParticipants(orgId: OrgId, conversationId: string): Promise<boolean>
+  /** Soft-remove one member (webchat-multi-agents.md §3.1a); the primary and the last participant are refused. Authorization belongs to the caller. */
+  removeParticipant(
+    orgId: OrgId,
+    conversationId: string,
+    agentId: AgentId,
+    removedByUserId: string
+  ): Promise<'removed' | 'absent' | 'primary'>
   /** The owning console user of a conversation, for session-visibility ingest
    *  (§4.2). Scoped to a PARTICIPANT agent (any roster role); unknown and
    *  foreign bindings both return null (the caller fails closed). */

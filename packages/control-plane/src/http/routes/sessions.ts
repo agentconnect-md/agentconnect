@@ -1037,6 +1037,11 @@ export function sessionRoutes(deps: HttpDeps) {
             hookMetadataForSessions(deps, [s], orgOf(req)),
             channelNamesForSessions(deps, [s], orgOf(req))
           ])
+        // A roster shrunk to one by removal stays explicit, so the console never falls back to its historical members (§3.1a).
+        const reportRoster =
+          webchatRoster.length > 1 ||
+          (webchatRoster.length === 1 &&
+            (await deps.repos.webchatConversation.hasRemovedParticipants(orgOf(req), s.channel ?? '')))
         const hook = hookMetadataForSession(hookMetadata, s)
         const display = sessionDisplayMetadata(s, hook, channelNames)
         // Continuation gate (webchat-cross-integration-continuation.md §6.5):
@@ -1106,14 +1111,13 @@ export function sessionRoutes(deps: HttpDeps) {
           triggeredByName: display.triggeredByName,
           threadUrl: s.threadUrl,
           tenantScope: s.tenantScope ?? null,
-          participants:
-            webchatRoster.length > 1
-              ? webchatRoster.map((p) => ({
-                  agentId: p.agentId,
-                  name: agentNames.get(p.agentId) ?? null,
-                  primary: p.role === 'primary'
-                }))
-              : null,
+          participants: reportRoster
+            ? webchatRoster.map((p) => ({
+                agentId: p.agentId,
+                name: agentNames.get(p.agentId) ?? null,
+                primary: p.role === 'primary'
+              }))
+            : null,
           runtime: s.runtime,
           model: s.model,
           effort: s.effort,
