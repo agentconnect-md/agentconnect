@@ -11,14 +11,16 @@ import {
   PATROL_UPDATE_ITEM_ARGS,
   PATROL_UPDATE_ITEM_TOOL
 } from '../src/mcp/ops/assistant-items.js'
-import { DEFAULT_DAILY_PATROL_BUDGET, patrolTools } from '../src/assistant/patrol.js'
+import { DEFAULT_DAILY_PATROL_BUDGET, patrolPrompt, patrolTools } from '../src/assistant/patrol.js'
 import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
 import { isPatrolCoordinate, isSubsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import type { AssistantItem } from '../src/store/assistant-items.js'
 import { PATROL_MAX_FAILURES } from '../src/store/assistant-patrols.js'
 import { sessionKey } from '../src/store/local-store.js'
+import type { ObjectToolSchema } from '../src/tool-schema/descriptor.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 import { z } from 'zod'
@@ -994,6 +996,28 @@ describe('item tool text', () => {
     expect(text('updateItem')).toContain('A new nextCheck schedules the next read-only check of the item')
     expect(text('takeItem')).not.toContain('nothing wakes you')
     expect(text('updateItem')).not.toContain('nothing wakes you')
+  })
+
+  it('tells a patrol its report promises no later message, time or check', () => {
+    const item = {
+      id: 'item-1',
+      version: 1,
+      status: 'active',
+      title: 'Confirm the new build works',
+      doneWhen: null,
+      summary: '',
+      observations: []
+    } as unknown as AssistantItem
+    const prompt = patrolPrompt(item, { itemId: 'item-1', nextCheck: Date.UTC(2030, 0, 1) })
+    expect(prompt).toContain(
+      '4. A report says what you found and promises nothing: no later message, no time anyone will hear back, no ' +
+        'next check. When the item should be looked at again, set `nextCheck`; the people following the item are ' +
+        'not told about it.'
+    )
+    // The report-only-on-a-change rule is unchanged.
+    expect(prompt).toContain('Otherwise leave `report` out: nothing is said.')
+    const report = JSON.stringify((PATROL_UPDATE_ITEM_TOOL.inputSchema as ObjectToolSchema).properties.report)
+    expect(report).toContain('promises no later message, no time anyone will hear back and no next check')
   })
 
   it('advertises exactly the patrol updateItem’s arguments', () => {
