@@ -55,8 +55,14 @@ export interface AssistantTasksHost {
   ): Promise<unknown>
   /** A delegated sub-session's end: its own report stands, else the daemon's failure report goes (§5.7). */
   settleSubsession(end: SubsessionTurnEnd): Promise<void>
-  /** One report into the parent through the parent-report path; true once it was admitted there. */
-  reportToParent(agentId: string, caller: TaskCaller, parentSessionId: string, text: string): Promise<boolean>
+  /** One report into the place's current long session, else the recorded parent; true once admitted, at most once per `reportId`. */
+  reportToParent(
+    agentId: string,
+    caller: TaskCaller,
+    parentSessionId: string,
+    text: string,
+    reportId: string
+  ): Promise<boolean>
   /** The card and the item take in how the task ended. */
   settled(draft: AssistantDraft): Promise<void>
   draining(): boolean
@@ -221,9 +227,16 @@ export class AssistantTasks {
   /** A task the inbox kept for replay is never re-run: one that already reported or was reported ended settles as such, else it may or may not have gone through and its place is told once. */
   async cut(agentId: string, key: string, caller: TaskCaller | undefined): Promise<void> {
     try {
+      // Left executing while the daemon drains, so whoever recovers it next tells its place.
+      if (this.host.draining()) return
       const ledger = this.host.ledger()
+      // An open sub-session of an executing task is what the claim below cuts: its place is told first, so a crash in between re-reports instead of losing it.
+      const draft = await ledger.taskBySubsession(agentId, key)
+      const row = await this.host.subsessions.get(agentId, key)
+      if (draft?.status === 'executing' && row?.state === 'open')
+        await this.reportCut(agentId, key, draft, row.parentSessionId, caller)
       const now = this.host.now()
-      // The sub-session's durable end and the record's settlement in one transaction, so a racing end never reports twice.
+      // The sub-session's durable end and the record's settlement in one transaction, so a racing end settles it once.
       const ended = await this.host.subsessions.finishClaiming(agentId, key, (tx, how) =>
         ledger.settleTaskIn(
           tx,
@@ -242,31 +255,39 @@ export class AssistantTasks {
       const settled = ended ? await ledger.taskBySubsession(agentId, key) : undefined
       if (!settled) return
       await this.host.settled(settled)
-      // Its own report, or the daemon's failure report, already reached the parent.
-      if (ended !== 'cut') return
-      const row = await this.host.subsessions.get(agentId, key)
-      const proposal = settled.proposal
-      const at = caller ?? callerOf(settled, key)
-      if (!row || !at || !proposal) return
-      const item = await this.host.items.get(agentId, proposal.itemId)
-      const delivered = await this.host
-        .reportToParent(
-          agentId,
-          at,
-          row.parentSessionId,
-          `[task] Not sure this went through, please check: the approved task "${oneLine(proposal.sentence)}"` +
-            (item ? ` for item ${item.id} ("${oneLine(item.title)}")` : '') +
-            ' was cut short by a restart or handover before it reported back. It may have partly run, and it will ' +
-            'not be run again. Tell the people here to check.'
-        )
-        .catch((err: unknown) => {
-          this.host.log.warn(`assistant task ${key}: its uncertain-outcome report failed: ${(err as Error).message}`)
-          return false
-        })
-      if (!delivered) this.host.log.warn(`assistant task ${key}: its uncertain-outcome report was not delivered`)
     } catch (err) {
       this.host.log.warn(`assistant task ${key}: could not record the cut: ${(err as Error).message}`)
     }
+  }
+
+  /** The one "please check" report of a cut task, which its place gets once however often it is sent. */
+  private async reportCut(
+    agentId: string,
+    key: string,
+    draft: AssistantDraft,
+    parentSessionId: string,
+    caller: TaskCaller | undefined
+  ): Promise<void> {
+    const proposal = draft.proposal
+    const at = caller ?? callerOf(draft, key)
+    if (!at || !proposal) return
+    const item = await this.host.items.get(agentId, proposal.itemId)
+    const delivered = await this.host
+      .reportToParent(
+        agentId,
+        at,
+        parentSessionId,
+        `[task] Not sure this went through, please check: the approved task "${oneLine(proposal.sentence)}"` +
+          (item ? ` for item ${item.id} ("${oneLine(item.title)}")` : '') +
+          ' was cut short by a restart or handover before it reported back. It may have partly run, and it will ' +
+          'not be run again. Tell the people here to check.',
+        `task:${draft.id}`
+      )
+      .catch((err: unknown) => {
+        this.host.log.warn(`assistant task ${key}: its uncertain-outcome report failed: ${(err as Error).message}`)
+        return false
+      })
+    if (!delivered) this.host.log.warn(`assistant task ${key}: its uncertain-outcome report was not delivered`)
   }
 
   /** Executing tasks of these agents that nothing here runs were cut before they reported (§5.7 step 1). */

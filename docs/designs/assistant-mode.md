@@ -582,7 +582,9 @@ killed sub-sessions do not restart. Stopping never undoes completed effects.
   defaults to 50.
 - **Recovery**: a patrol replayed after a restart or handover settles from state stored with the
   running patrol (its observation baseline and any held report), so an empty replay still counts
-  as a failure. Stopping a patrol from the dock ends it silently with its check done.
+  as a failure. A run's reports are admitted before it settles, each under a stable id the inbox
+  deduplicates, so a run whose turn ended before it settled is settled on the next replay without
+  a second report. Stopping a patrol from the dock ends it silently with its check done.
 
 Shipped in #2887; `propose` from patrols in #2895. The rest of this section is the target.
 

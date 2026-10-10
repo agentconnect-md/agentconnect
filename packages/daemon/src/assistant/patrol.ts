@@ -12,12 +12,13 @@ import {
 import { isAttachmentReadTool } from '../platforms/read-ports.js'
 import { patrolCoordinate } from '../session/subsession-coordinate.js'
 import type { AssistantItem, AssistantItemLedger, AssistantPlace } from '../store/assistant-items.js'
-import type { AssistantPatrolDue, AssistantPatrolLedger } from '../store/assistant-patrols.js'
+import type { AssistantPatrolDue, AssistantPatrolLedger, AssistantPatrolState } from '../store/assistant-patrols.js'
 import { PATROL_MAX_FAILURES, patrolBackoffMs } from '../store/assistant-patrols.js'
 import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
 import { sessionKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
+import { callerOfMessage, type TaskCaller } from './tasks.js'
 
 /** Patrols an agent may start in any 24 hours when its policy sets no `dailyPatrolBudget`. */
 export const DEFAULT_DAILY_PATROL_BUDGET = 50
@@ -106,8 +107,16 @@ export interface AssistantPatrolsHost {
     callMeta: CallMeta,
     onAdmission: (result: { accepted: boolean; reason?: string }) => void
   ): Promise<unknown>
-  /** One report into the parent through the parent-report path; true once it was admitted there. */
-  reportToParent(agentId: string, msg: NormalizedMessage, parentSessionId: string, text: string): Promise<boolean>
+  /** One report into the place's current long session, else the recorded parent; true once admitted, at most once per `reportId`. */
+  reportToParent(
+    agentId: string,
+    caller: TaskCaller,
+    parentSessionId: string,
+    text: string,
+    reportId: string
+  ): Promise<boolean>
+  /** Where a patrol session sits once its turn neither runs nor awaits replay here; undefined until then, or if it never started. */
+  endedSession(agentId: string, key: string): Promise<TaskCaller | undefined>
   /** Approval records for what a patrol proposes (assistant-mode.md §5.10). */
   proposals?: {
     /** Whether the run in this session already proposed. */
@@ -184,6 +193,8 @@ export class AssistantPatrols {
   private sweeping = false
   /** Patrol runs whose proposal is being recorded, so two calls at once still make one. */
   private readonly proposing = new Set<string>()
+  /** Patrol runs this process started and has not settled, which a recovery must leave alone. */
+  private readonly running = new Set<string>()
 
   constructor(private readonly host: AssistantPatrolsHost) {}
 
@@ -268,6 +279,7 @@ export class AssistantPatrols {
     )
     // The agent's one patrol is still running.
     if (!opened) return
+    this.running.add(key)
     await this.host.patrols.begin(agentId, item.id, {
       key,
       nextCheck: due.nextCheck,
@@ -321,82 +333,119 @@ export class AssistantPatrols {
   /** A patrol's turn ended: count it, back off or stop on failure, and pass on what it found. */
   async settle(end: PatrolTurnEnd): Promise<void> {
     const { agentId, key } = end
-    if (end.replayed) return
     try {
-      const now = this.host.now()
+      if (end.replayed) return
       const state = await this.host.patrols.byRunningKey(agentId, key)
-      const row = await this.host.subsessions.get(agentId, key)
       if (!state) {
         // The item is gone, or a newer patrol of it took over.
         await this.host.subsessions.finish(agentId, key, 'failed')
         return
       }
-      const { itemId, runningObservationVersion: baseline, runningReport: report } = state
       let verdict = verdictOf(end)
-      if (verdict.kind === 'completed' && baseline !== null) {
-        const item = await this.host.items.get(agentId, itemId)
-        if (item && item.observationVersion <= baseline) verdict = { kind: 'failed', why: 'nothing recorded' }
-      }
-      if (verdict.kind === 'completed' || verdict.kind === 'stopped') {
-        await this.host.patrols.succeed(agentId, itemId, key, now)
-        await this.host.subsessions.finish(agentId, key, verdict.kind === 'completed' ? 'done' : 'failed')
-      } else if (verdict.kind === 'released') {
-        await this.host.patrols.release(agentId, itemId, key, now)
-        await this.host.subsessions.finish(agentId, key, 'failed')
-      } else {
-        await this.host.subsessions.finish(agentId, key, 'failed')
-        const current = await this.host.items.get(agentId, itemId)
-        const failed = await this.host.patrols.fail(agentId, itemId, key, now, current?.nextCheck ?? null)
-        if (failed) {
-          await this.observe(
-            agentId,
-            itemId,
-            failed.stopped
-              ? `Scheduled check failed (${verdict.why}), ${PATROL_MAX_FAILURES} times in a row; checks stop until ` +
-                  'the next check is set to a new time.'
-              : `Scheduled check failed (${verdict.why}); the next attempt is in ` +
-                  `${patrolBackoffMs(failed.failures) / 60_000} minutes.`
-          )
-          if (failed.stopped && row && current)
-            await this.deliver(
-              agentId,
-              itemId,
-              end.msg,
-              row.parentSessionId,
-              `[patrol] Scheduled checks of item ${itemId} ("${quote(current.title)}") stopped after ` +
-                `${PATROL_MAX_FAILURES} failed attempts in a row. They resume once its next check is set to a new ` +
-                'time. Tell the people here.'
-            )
-        }
-      }
-      if (report !== null && row) {
-        const item = await this.host.items.get(agentId, itemId)
-        await this.deliver(
-          agentId,
-          itemId,
-          end.msg,
-          row.parentSessionId,
-          `[patrol] The scheduled check of item ${itemId}${item ? ` ("${quote(item.title)}")` : ''} found a ` +
-            `change. Pass it on to the people here:\n\n${report}`
-        )
-      }
+      if (verdict.kind === 'completed' && !(await this.recorded(agentId, state)))
+        verdict = { kind: 'failed', why: 'nothing recorded' }
+      await this.conclude(agentId, key, callerOfMessage(end.msg), state, verdict)
     } catch (err) {
       this.host.log.warn(`patrol ${key}: could not settle: ${(err as Error).message}`)
+    } finally {
+      this.running.delete(key)
     }
   }
 
-  /** One report into the parent; one that does not arrive is recorded on the item instead. */
+  /** Runs of these agents whose turn ended without settling (a crash or a drain in between) settle now from their stored state. */
+  async recover(agentIds: readonly string[]): Promise<void> {
+    const ids = new Set(agentIds)
+    for (const agent of this.host.agents()) {
+      const agentId = agent.id
+      if (!ids.has(agentId) || !assistantModeOn(agent) || this.host.draining() || !this.host.mayPatrol(agentId))
+        continue
+      for (const state of await this.host.patrols.running(agentId)) {
+        const key = state.runningKey!
+        if (this.running.has(key)) continue
+        try {
+          const caller = await this.host.endedSession(agentId, key)
+          if (!caller) continue
+          // A run that recorded what it saw did its check; any other says nothing about it, so the check stays due.
+          const verdict: Verdict = (await this.recorded(agentId, state)) ? { kind: 'completed' } : { kind: 'released' }
+          this.host.log.info(`patrol ${key}: its turn ended before it settled; settling it now`)
+          await this.conclude(agentId, key, caller, state, verdict)
+        } catch (err) {
+          this.host.log.warn(`patrol ${key}: could not recover: ${(err as Error).message}`)
+        }
+      }
+    }
+  }
+
+  /** Whether the run added an observation to its item since it started. */
+  private async recorded(agentId: string, state: AssistantPatrolState): Promise<boolean> {
+    const baseline = state.runningObservationVersion
+    if (baseline === null) return true
+    const item = await this.host.items.get(agentId, state.itemId)
+    return !item || item.observationVersion > baseline
+  }
+
+  /** Pass on what the run found, then settle it: a run cut in between re-delivers its reports, deduplicated, instead of losing them. */
+  private async conclude(
+    agentId: string,
+    key: string,
+    caller: TaskCaller,
+    state: AssistantPatrolState,
+    verdict: Verdict
+  ): Promise<void> {
+    const { itemId, runningReport: report } = state
+    const row = await this.host.subsessions.get(agentId, key)
+    const item = await this.host.items.get(agentId, itemId)
+    const stops = verdict.kind === 'failed' && state.failures + 1 >= PATROL_MAX_FAILURES
+    if (row && stops && item) {
+      const text =
+        `[patrol] Scheduled checks of item ${itemId} ("${quote(item.title)}") stopped after ` +
+        `${PATROL_MAX_FAILURES} failed attempts in a row. They resume once its next check is set to a new ` +
+        'time. Tell the people here.'
+      if (!(await this.deliver(agentId, itemId, caller, row.parentSessionId, `patrol:${key}:stopped`, text))) return
+    }
+    if (report !== null && row) {
+      const text =
+        `[patrol] The scheduled check of item ${itemId}${item ? ` ("${quote(item.title)}")` : ''} found a ` +
+        `change. Pass it on to the people here:\n\n${report}`
+      if (!(await this.deliver(agentId, itemId, caller, row.parentSessionId, `patrol:${key}:report`, text))) return
+    }
+    const now = this.host.now()
+    if (verdict.kind === 'completed' || verdict.kind === 'stopped') {
+      await this.host.patrols.succeed(agentId, itemId, key, now)
+      await this.host.subsessions.finish(agentId, key, verdict.kind === 'completed' ? 'done' : 'failed')
+    } else if (verdict.kind === 'released') {
+      await this.host.patrols.release(agentId, itemId, key, now)
+      await this.host.subsessions.finish(agentId, key, 'failed')
+    } else {
+      await this.host.subsessions.finish(agentId, key, 'failed')
+      const current = await this.host.items.get(agentId, itemId)
+      const failed = await this.host.patrols.fail(agentId, itemId, key, now, current?.nextCheck ?? null)
+      if (failed)
+        await this.observe(
+          agentId,
+          itemId,
+          failed.stopped
+            ? `Scheduled check failed (${verdict.why}), ${PATROL_MAX_FAILURES} times in a row; checks stop until ` +
+                'the next check is set to a new time.'
+            : `Scheduled check failed (${verdict.why}); the next attempt is in ` +
+                `${patrolBackoffMs(failed.failures) / 60_000} minutes.`
+        )
+    }
+  }
+
+  /** One report into the place; one refused is recorded on the item instead. False while the daemon drains, which leaves the run to recovery. */
   private async deliver(
     agentId: string,
     itemId: string,
-    msg: NormalizedMessage,
+    caller: TaskCaller,
     parentSessionId: string,
+    reportId: string,
     text: string
-  ): Promise<void> {
-    if (this.host.draining()) return
+  ): Promise<boolean> {
+    if (this.host.draining()) return false
     let delivered = false
     try {
-      delivered = await this.host.reportToParent(agentId, msg, parentSessionId, text)
+      delivered = await this.host.reportToParent(agentId, caller, parentSessionId, text, reportId)
     } catch (err) {
       this.host.log.warn(`patrol report for item ${itemId} failed: ${(err as Error).message}`)
     }
@@ -406,6 +455,7 @@ export class AssistantPatrols {
         itemId,
         'A report from a scheduled check could not reach the conversation the item was taken in.'
       )
+    return true
   }
 
   private async observe(agentId: string, itemId: string, text: string): Promise<void> {
