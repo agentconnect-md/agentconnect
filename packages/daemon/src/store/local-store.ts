@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { ASSISTANT_DRAFT_SCHEMA, AssistantDraftLedger } from './assistant-drafts.js'
 import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js'
 import { ASSISTANT_PATROL_SCHEMA, AssistantPatrolLedger } from './assistant-patrols.js'
+import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
 import { ASSISTANT_WIDENED_SCHEMA, AssistantWidenedSessions } from './assistant-widened.js'
 import {
@@ -1321,7 +1322,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 41
+export const SCHEMA_VERSION = 42
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1830,6 +1831,8 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     `)
   },
   // v41 adds the per-asker widened-session marks (assistant-mode.md §5.5), which the CREATE block emits; the bump fences out older members.
+  async () => {},
+  // v42 adds the assistant reminders (assistant-mode.md §5.9), which the CREATE block emits; the bump fences out older members.
   async () => {}
 ]
 
@@ -2025,6 +2028,8 @@ export class LocalStore {
   readonly assistantPatrols: AssistantPatrolLedger
   /** Sessions that read a private place through the asker's membership (assistant-mode.md §5.5). */
   readonly assistantWidened: AssistantWidenedSessions
+  /** Reminders the daemon posts at their time with no model turn (assistant-mode.md §5.9). */
+  readonly assistantReminders: AssistantReminderLedger
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -2059,6 +2064,7 @@ export class LocalStore {
     })
     this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantWidened = new AssistantWidenedSessions({ query: (sql, params) => this.db.query(sql, params) })
+    this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
   }
 
   /**
@@ -2118,6 +2124,7 @@ export class LocalStore {
       ${ASSISTANT_SUBSESSION_SCHEMA}
       ${ASSISTANT_WIDENED_SCHEMA}
       ${ASSISTANT_PATROL_SCHEMA}
+      ${ASSISTANT_REMINDER_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
