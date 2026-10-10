@@ -41,7 +41,7 @@ import { ConnectionClosed } from '../../ws/registry.js'
 import { sessionContentReaders } from '../../domain/session-content.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
 import type { PullRequestView } from '../../github/pull-request-view.service.js'
-import type { ConversationCoordinate, SessionMetaRecord } from '../../persistence/ports.js'
+import type { ConversationCoordinate, ConversationKey, SessionMetaRecord } from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitCredDeniedError } from '../../github/service.js'
 import { ProtocolError } from '../../domain/errors.js'
@@ -285,6 +285,23 @@ const HOOK_KIND_LABEL: Record<HookKind, string> = {
  *  The space is safe: no platform conversation id we store contains one. */
 function conversationNameKey(platform: string | null, channel: string): string {
   return `${platform ?? 'slack'} ${channel}`
+}
+
+/** A conversation's stable representative: the webchat primary's row when visible, else the earliest-started row — never activity order. */
+async function conversationRepresentativeId(
+  deps: HttpDeps,
+  orgId: OrgId,
+  key: ConversationKey,
+  rows: ReadonlyArray<{ id: string; agentId: string; startedAt: Date }>
+): Promise<string | undefined> {
+  if (rows.length === 0) return undefined
+  if (key.platform === 'webchat' && key.channel) {
+    const roster = await deps.repos.webchatConversation.participants(orgId, key.channel)
+    const primary = roster.find((participant) => participant.role === 'primary')
+    const primaryRow = primary && rows.find((row) => row.agentId === primary.agentId)
+    if (primaryRow) return primaryRow.id
+  }
+  return [...rows].sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime() || a.id.localeCompare(b.id))[0]!.id
 }
 
 /** Names for rows the daemon never labeled: a chat conversation from the org's channel directory, an agent chat API conversation from its key. */
@@ -870,9 +887,10 @@ export function sessionRoutes(deps: HttpDeps) {
           )
           const selected = new Set<string>(selectedAgentIds)
           const rows = members.filter((session) => selected.has(session.agentId))
-          const [hookMetadata, channelNames] = await Promise.all([
+          const [hookMetadata, channelNames, representativeSessionId] = await Promise.all([
             hookMetadataForSessions(deps, rows, orgOf(req)),
-            channelNamesForSessions(deps, rows, orgOf(req))
+            channelNamesForSessions(deps, rows, orgOf(req)),
+            conversationRepresentativeId(deps, orgOf(req), conversationKey, rows)
           ])
           return {
             conversations:
@@ -884,7 +902,8 @@ export function sessionRoutes(deps: HttpDeps) {
                       channel: conversationKey.channel,
                       thread: conversationKey.thread,
                       sessions: rows.map((session) => sessionDto(session, hookMetadata, agentNames, channelNames)),
-                      memberSessionIds: members.map((session) => session.id)
+                      memberSessionIds: members.map((session) => session.id),
+                      ...(representativeSessionId ? { representativeSessionId } : {})
                     }
                   ]
                 : [],

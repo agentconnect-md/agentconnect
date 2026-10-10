@@ -520,6 +520,8 @@ export interface ConversationDto {
    *  `sessions` included. Absent on a CP that predates the field, where the
    *  filtered rows are the best membership available. */
   memberSessionIds?: string[]
+  /** Key-addressed resolver only: the stable representative in `sessions` (webchat primary, else earliest started). */
+  representativeSessionId?: string
 }
 
 /** Why a provider failed closed — a CAUSE, never a target (no channel, user or

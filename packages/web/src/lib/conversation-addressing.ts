@@ -162,3 +162,26 @@ export function selfConversationPath(input: {
   if (input.flatView || !input.conversationKey || input.memberCount <= 1) return null
   return `/conversations/${encodeURIComponent(input.conversationKey)}`
 }
+
+/** The merged page's representative member: the pinned one while it is still a member, else the CP's stable pick, else the first row (older CP). */
+export function pickConversationRepresentative(
+  members: ReadonlyArray<{ sessionId: string }> | null,
+  pinnedSessionId: string | null,
+  suggestedSessionId: string | undefined
+): string | null {
+  if (!members?.length) return null
+  for (const candidate of [pinnedSessionId, suggestedSessionId]) {
+    if (candidate && members.some((member) => member.sessionId === candidate)) return candidate
+  }
+  return members[0]!.sessionId
+}
+
+/** The members with the representative moved to the front, the rest in their given order. */
+export function representativeFirst<T extends { sessionId: string }>(
+  members: T[],
+  representativeId: string | null
+): T[] {
+  const index = members.findIndex((member) => member.sessionId === representativeId)
+  if (index <= 0) return members
+  return [members[index]!, ...members.slice(0, index), ...members.slice(index + 1)]
+}

@@ -5,7 +5,11 @@ import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { PendingActionsBanner, usePendingAction } from '@/components/console/PendingActions'
-import { selfConversationPath } from '@/lib/conversation-addressing'
+import {
+  pickConversationRepresentative,
+  representativeFirst,
+  selfConversationPath
+} from '@/lib/conversation-addressing'
 import { assembleConversationLineage, type ConversationLineage } from '@/lib/conversation-lineage'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { unverifiedConversationNotice } from '@/lib/session-access-notifications'
@@ -2478,12 +2482,7 @@ export default function SessionDetailView() {
     },
     [pathname, router, searchParams]
   )
-  // Merged conversation mode (merged-conversation-view.md §5.3): /conversations/:key
-  // resolves the roster through the bounded key-addressed resolver; the
-  // REPRESENTATIVE (newest visible member) then drives every session-scoped
-  // affordance below — detail metadata, live adoption, the composer target —
-  // exactly like a /sessions/:id load. Peer members only feed the transcript
-  // fan-out and the participants roster.
+  // Merged conversation mode (§5.3): the stable REPRESENTATIVE drives every session-scoped affordance; peers only feed the transcript and roster.
   const conversationKey = conversationKeyParam ? decodeURIComponent(conversationKeyParam) : null
   const {
     data: conversationResolution,
@@ -2503,8 +2502,30 @@ export default function SessionDetailView() {
   // Why it could not be verified, which decides whether the blocked state below
   // is worth retrying or worth acting on.
   const conversationAccessIssues = conversationResolution?.accessIssues ?? []
-  const conversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
-  const id = conversationKey ? (conversationMembers?.[0]?.sessionId ?? '') : (routeId ?? '')
+  const resolvedConversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
+  // Pinned per key so a reply from another member never swaps the page's session out from under the reader.
+  const [pinnedRepresentative, setPinnedRepresentative] = useState({ scope: '', sessionId: '' })
+  const conversationRepresentativeId = pickConversationRepresentative(
+    resolvedConversationMembers,
+    pinnedRepresentative.scope === conversationKey ? pinnedRepresentative.sessionId : null,
+    conversationRoster?.representativeSessionId
+  )
+  useEffect(() => {
+    if (!conversationKey || !conversationRepresentativeId) return
+    setPinnedRepresentative((current) =>
+      current.scope === conversationKey && current.sessionId === conversationRepresentativeId
+        ? current
+        : { scope: conversationKey, sessionId: conversationRepresentativeId }
+    )
+  }, [conversationKey, conversationRepresentativeId])
+  const conversationMembers = useMemo(
+    () =>
+      resolvedConversationMembers
+        ? representativeFirst(resolvedConversationMembers, conversationRepresentativeId)
+        : null,
+    [resolvedConversationMembers, conversationRepresentativeId]
+  )
+  const id = conversationKey ? (conversationRepresentativeId ?? '') : (routeId ?? '')
   const conversationSourceKey =
     conversationMembers
       ?.map((m) => m.sessionId)
