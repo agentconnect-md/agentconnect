@@ -773,6 +773,7 @@ describe('hook routing evaluation lane', () => {
       return MATCH_BOTH
     })
     expect(h.agentsOf(await event.choose())).toEqual([])
+    await h.store.close()
   })
 
   it('cancels and fires nothing when the Decision changed or the routing stopped mid-call', async () => {
@@ -791,5 +792,6 @@ describe('hook routing evaluation lane', () => {
       return MATCH_BOTH
     })
     expect(h.agentsOf(await second.choose())).toBe('config_changed')
+    await h.store.close()
   })
 })

@@ -2148,7 +2148,13 @@ export class LocalStore {
         orgForAgent: source.orgForAgent
       })
     }
-    await store.initializeSchema()
+    try {
+      await store.initializeSchema()
+    } catch (error) {
+      // A refused path keeps no handle open; a caller's database is the caller's to close.
+      if (typeof source === 'string') await store.backend.close().catch(() => undefined)
+      throw error
+    }
     return store
   }
 

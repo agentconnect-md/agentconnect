@@ -553,6 +553,7 @@ describe('SessionReader', () => {
     expect(JSON.parse(shrunk.body!)).toEqual({ codehost: { provider: 'github', event: 'issues:opened', subject: {} } })
     expect(shrunk.bodyTruncated).toBe(true)
     expect(shrunk.bodyBytes).toBe(Buffer.byteLength(big))
+    await s.close()
   })
 
   it('carries a persisted MCP App card’s body, so a reloaded conversation still shows the card', async () => {

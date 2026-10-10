@@ -3,14 +3,21 @@
  * §5.1): the local fail-closed default, the CP-confirmed override, and the
  * revision rule that makes at-least-once delivery safe.
  */
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { LocalStore } from '../src/store/local-store.js'
 
+const opened: LocalStore[] = []
+afterEach(async () => {
+  for (const store of opened.splice(0)) await store.close()
+})
+
 async function newStore(): Promise<LocalStore> {
-  return await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-gate-')), 'daemon.db'))
+  const store = await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-gate-')), 'daemon.db'))
+  opened.push(store)
+  return store
 }
 
 describe('capture gate — local state', () => {
