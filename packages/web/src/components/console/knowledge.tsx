@@ -2,7 +2,7 @@
 
 // Shared Knowledge pieces: the publish editor, tag chips, and the one-line provenance (organization-knowledge.md §2).
 
-import { useEffect, useId, useState } from 'react'
+import { useId, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import {
   createOrganizationKnowledge,
@@ -12,8 +12,10 @@ import {
 } from '@/lib/api'
 import { agentLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
+import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { Button, Icon } from '@/components/ui'
+import { Scrim } from '@/components/console/Scrim'
 
 export function TagChips({ values, max }: { values: string[]; max?: number }) {
   if (!values.length) return null
@@ -54,6 +56,36 @@ export function useProvenanceLabel(): (value: KnowledgeProvenance) => string {
   }
 }
 
+interface KnowledgeDraft {
+  revision: number | null
+  title: string
+  summary: string
+  tags: string
+  content: string
+}
+
+const draftKey = (orgId: string, recordId: string | null) => `ac.knowledge-draft:${orgId}:${recordId ?? 'new'}`
+
+// Storage can throw (privacy mode, quota); a lost draft then degrades to the old behavior.
+function readDraft(key: string, revision: number | null): KnowledgeDraft | null {
+  try {
+    const raw = sessionStorage.getItem(key)
+    const draft = raw ? (JSON.parse(raw) as KnowledgeDraft) : null
+    return draft?.revision === revision ? draft : null
+  } catch {
+    return null
+  }
+}
+
+function writeDraft(key: string, draft: KnowledgeDraft | null) {
+  try {
+    if (draft) sessionStorage.setItem(key, JSON.stringify(draft))
+    else sessionStorage.removeItem(key)
+  } catch {
+    // Best effort only.
+  }
+}
+
 export function KnowledgeEditor({
   record,
   onClose,
@@ -66,21 +98,32 @@ export function KnowledgeEditor({
 }) {
   const t = useTranslations('Knowledge.editor')
   const titleId = useId()
-  const [title, setTitle] = useState(record?.title ?? '')
-  const [summary, setSummary] = useState(record?.summary ?? '')
-  const [tags, setTags] = useState(record?.tags.join(', ') ?? '')
-  const [content, setContent] = useState(record?.content ?? '')
+  const { activeOrg } = useOrgs()
+  const key = draftKey(activeOrg?.id ?? '', record?.id ?? null)
+  const revision = record?.currentRevision ?? null
+  const initial: KnowledgeDraft = {
+    revision,
+    title: record?.title ?? '',
+    summary: record?.summary ?? '',
+    tags: record?.tags.join(', ') ?? '',
+    content: record?.content ?? ''
+  }
+  const [restored] = useState(() => readDraft(key, revision))
+  const [title, setTitle] = useState(restored?.title ?? initial.title)
+  const [summary, setSummary] = useState(restored?.summary ?? initial.summary)
+  const [tags, setTags] = useState(restored?.tags ?? initial.tags)
+  const [content, setContent] = useState(restored?.content ?? initial.content)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const ready = !!title.trim() && !!content.trim()
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [busy, onClose])
+  // Closing without publishing keeps the edits for the next open in this tab.
+  const dismiss = () => {
+    const draft = { revision, title, summary, tags, content }
+    const edited = (['title', 'summary', 'tags', 'content'] as const).some((field) => draft[field] !== initial[field])
+    writeDraft(key, edited ? draft : null)
+    onClose()
+  }
 
   const save = async () => {
     if (busy || !ready) return
@@ -98,6 +141,7 @@ export function KnowledgeEditor({
     try {
       if (record) await updateOrganizationKnowledge(record.id, { ...input, expectedRevision: record.currentRevision })
       else await createOrganizationKnowledge(input)
+      writeDraft(key, null)
       await onSaved()
       onClose()
     } catch (cause) {
@@ -107,7 +151,7 @@ export function KnowledgeEditor({
   }
 
   return (
-    <div className="scrim" onClick={onClose}>
+    <Scrim onEscape={busy ? undefined : dismiss} onClick={dismiss}>
       <div
         className="modal max-w-[780px]"
         role="dialog"
@@ -122,7 +166,7 @@ export function KnowledgeEditor({
           <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
             {record ? t('revisionTitle', { value: record.currentRevision + 1 }) : t('createTitle')}
           </span>
-          <button type="button" className="iconbtn" onClick={onClose} aria-label={t('close')}>
+          <button type="button" className="iconbtn" onClick={dismiss} aria-label={t('close')}>
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -161,7 +205,7 @@ export function KnowledgeEditor({
         </div>
         <div className="modalfoot">
           <div className="flex-1" />
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={dismiss}>
             {t('cancel')}
           </Button>
           <Button variant="primary" disabled={busy || !ready} onClick={() => void save()}>
@@ -169,6 +213,6 @@ export function KnowledgeEditor({
           </Button>
         </div>
       </div>
-    </div>
+    </Scrim>
   )
 }
