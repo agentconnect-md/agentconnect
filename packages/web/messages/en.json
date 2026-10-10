@@ -811,6 +811,7 @@
         "stop": "Stop",
         "stopped": "Stopped.",
         "notRunning": "Nothing was running.",
+        "notRunningBackground": "No turn is running. A background task it started may still be running; it can’t be stopped from here, and the sub-session reports when that task ends.",
         "stopFailed": "Couldn’t stop it. Try again.",
         "upgradeDaemon": "Upgrade this agent’s daemon to see its sub-sessions here.",
         "notReadable": "This conversation’s sub-sessions can’t be read.",

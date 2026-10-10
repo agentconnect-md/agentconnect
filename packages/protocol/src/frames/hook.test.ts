@@ -8,6 +8,7 @@ import {
   GitlabHookMetadata,
   HookStart,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
+  HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
   HookConfigSnapshot,
@@ -213,6 +214,19 @@ describe('R1/R2a hook control schemas', () => {
         sessionId: 'acp-1',
         durationMs: 90_000,
         reason: HOOK_REPORT_REASON_AGENT_HANDOVER
+      }).success
+    ).toBe(true)
+  })
+
+  it('accepts the normalized session-source-mismatch reason', () => {
+    expect(HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH).toBe('session_source_mismatch')
+    expect(
+      HookReport.safeParse({
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'delivery-1',
+        status: 'failed',
+        reason: HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH
       }).success
     ).toBe(true)
   })

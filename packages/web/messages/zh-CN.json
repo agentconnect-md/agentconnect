@@ -811,6 +811,7 @@
         "stop": "停止",
         "stopped": "已停止。",
         "notRunning": "没有正在运行的回合。",
+        "notRunningBackground": "没有正在运行的回合。它启动的后台任务可能仍在运行，无法在这里停止；该任务结束后，子会话会回报。",
         "stopFailed": "停止失败，请重试。",
         "upgradeDaemon": "升级此 Agent 的 Daemon 后才能在这里查看子会话。",
         "notReadable": "无法读取此会话的子会话。",

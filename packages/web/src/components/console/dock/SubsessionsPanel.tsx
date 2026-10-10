@@ -272,6 +272,10 @@ const STOP_RESULT: Record<Exclude<StopState, 'busy'>, 'stopped' | 'notRunning' |
   upgrade: 'upgradeDaemon'
 }
 
+// No turn to stop on a row that has not reported: a background task its turn started may still be running.
+const stopNotice = (stop: Exclude<StopState, 'busy'>, state: AssistantSubsessionDto['state']) =>
+  stop === 'not_running' && state === 'open' ? 'notRunningBackground' : STOP_RESULT[stop]
+
 function SubsessionRow({
   row,
   stop,
@@ -352,7 +356,7 @@ function SubsessionRow({
             stop === 'failed' || stop === 'upgrade' ? 'text-(--status-error)' : 'text-(--text-secondary)'
           }`}
         >
-          {t(STOP_RESULT[stop])}
+          {t(stopNotice(stop, row.state))}
         </div>
       ) : null}
     </div>
