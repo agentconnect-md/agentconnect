@@ -1610,14 +1610,17 @@ model WebchatConversation {
 // Each participant carries its OWN current-session pointer, maintained by the
 // session-milestone upsert exactly like the conversation-level fence.
 model WebchatConversationAgent {
-  conversationId    String   @db.Uuid
-  agentId           String   @db.Uuid
-  role              String   @default("member") // 'primary' | 'member'
-  ord               Int      @default(0)
+  conversationId    String    @db.Uuid
+  agentId           String    @db.Uuid
+  role              String    @default("member") // 'primary' | 'member'
+  ord               Int       @default(0)
   addedByUserId     String
-  addedAt           DateTime @default(now()) @db.Timestamptz(6)
+  addedAt           DateTime  @default(now()) @db.Timestamptz(6)
   currentSessionId  String?
-  currentSessionRev Int      @default(0)
+  currentSessionRev Int       @default(0)
+  // Soft removal (webchat-multi-agents.md §3.1a): the row outlives the membership for late session events.
+  removedAt         DateTime? @db.Timestamptz(6)
+  removedByUserId   String?
 
   conversation   WebchatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   agent          Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)

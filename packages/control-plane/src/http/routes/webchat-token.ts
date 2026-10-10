@@ -46,6 +46,7 @@ const WebchatTokenDto = z.object({
 const ConversationParams = z.object({ orgId: z.string() })
 const AddAgentParams = z.object({ orgId: z.string(), conversationId: z.string().uuid() })
 const AddAgentBody = z.object({ agentId: z.string().uuid() })
+const RemoveAgentParams = AddAgentParams.extend({ agentId: z.string().uuid() })
 const ConversationParticipantsDto = z.object({
   participants: z.array(z.object({ agentId: z.string(), primary: z.boolean().optional() }))
 })
@@ -405,12 +406,15 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       }
     )
 
-    // Mid-conversation join (webchat-multi-agents.md §3.1): the owner may ADD a
-    // participant to an existing conversation; removal stays unsupported. The
-    // browser refreshes the relay's cached roster by simply reconnecting — a
-    // fresh mint + rc/verify returns the grown roster, so no relay protocol is
-    // involved. Growing past one participant suspends the delegated admin MCP
-    // via the live per-request authority check (§10.3).
+    // The roster a join or removal answers with; the browser then reconnects so a fresh rc/verify refreshes the relay's cache.
+    const rosterReply = async (orgId: OrgId, conversationId: string) => {
+      const roster = await deps.repos.webchatConversation.participants(orgId, conversationId)
+      return {
+        participants: roster.map((p) => ({ agentId: p.agentId, ...(p.role === 'primary' ? { primary: true } : {}) }))
+      }
+    }
+
+    // Mid-conversation join (§3.1): growing past one participant suspends the delegated admin MCP (§10.3).
     r.post(
       '/webchat/conversations/:conversationId/agents',
       {
@@ -447,15 +451,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         const roster = await deps.repos.webchatConversation.participants(orgId, conversationId)
-        const respond = async () => {
-          const updated = await deps.repos.webchatConversation.participants(orgId, conversationId)
-          return reply.send({
-            participants: updated.map((p) => ({
-              agentId: p.agentId,
-              ...(p.role === 'primary' ? { primary: true } : {})
-            }))
-          })
-        }
+        const respond = async () => reply.send(await rosterReply(orgId, conversationId))
         if (roster.some((p) => p.agentId === agent.id)) return respond()
         if (roster.length >= WEBCHAT_ROSTER_CAP) {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'conversation is full' })
@@ -478,6 +474,50 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         }
         await deps.repos.webchatConversation.addParticipant(orgId, conversationId, agent.id, userId)
         return respond()
+      }
+    )
+
+    // Member removal (§3.1a): the primary stays, and a removed member keeps its earlier posts in the transcript.
+    r.delete(
+      '/webchat/conversations/:conversationId/agents/:agentId',
+      {
+        preHandler: app.humanAuth,
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Remove an agent from a webchat conversation',
+          description:
+            'Removes a non-primary participant agent from a conversation owned by the authenticated user. The removed agent receives no further turns or context from the conversation; its earlier replies stay in the history. The primary agent cannot be removed. Idempotent for an agent that is not in the roster.',
+          operationId: 'removeWebchatConversationAgent',
+          params: RemoveAgentParams,
+          response: { 200: ConversationParticipantsDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const userId = req.principal!.userId
+        const orgId = req.orgCtx!.orgId
+        const conversationId = req.params.conversationId.toLowerCase()
+        const owned = await deps.repos.webchatConversation.ownedBy(conversationId, orgId, userId)
+        if (!owned) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+        }
+        const target = await deps.repos.webchatConversation.target(conversationId)
+        if (target?.targetSessionId) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'a session continuation has a fixed participant' })
+        }
+        const outcome = await deps.repos.webchatConversation.removeParticipant(
+          orgId,
+          conversationId,
+          AgentId(req.params.agentId.toLowerCase()),
+          userId
+        )
+        if (outcome === 'primary') {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'cannot remove the primary agent' })
+        }
+        return reply.send(await rosterReply(orgId, conversationId))
       }
     )
   }

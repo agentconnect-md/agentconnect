@@ -102,6 +102,36 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect(after?.currentSessionId).toBe('acp-replacement')
   })
 
+  it('tracks a member’s own pointer until it is removed, then never reinstalls one', async () => {
+    await webchatFixture()
+    await seedAgent(prisma, OTHER_AGENT)
+    await prisma.webchatConversationAgent.createMany({
+      data: [
+        { conversationId: CONVERSATION, agentId: AGENT, role: 'primary', ord: 0, addedByUserId: DEFAULT_OWNER_ID },
+        { conversationId: CONVERSATION, agentId: OTHER_AGENT, role: 'member', ord: 1, addedByUserId: DEFAULT_OWNER_ID }
+      ]
+    })
+    const repo = new PgSessionRepo(prisma)
+    const memberEv = (sessionId: string, at: Date) => ({
+      ...webchatEv(sessionId, 'start', at),
+      agentId: AgentId(OTHER_AGENT)
+    })
+    const member = () =>
+      prisma.webchatConversationAgent.findUnique({
+        where: { conversationId_agentId: { conversationId: CONVERSATION, agentId: OTHER_AGENT } }
+      })
+
+    await repo.recordMilestone(memberEv('acp-member', new Date('2026-07-05T10:00:00.000Z')))
+    expect((await member())?.currentSessionId).toBe('acp-member')
+
+    await prisma.webchatConversationAgent.update({
+      where: { conversationId_agentId: { conversationId: CONVERSATION, agentId: OTHER_AGENT } },
+      data: { removedAt: new Date(), currentSessionId: null }
+    })
+    await repo.recordMilestone(memberEv('acp-member-late', new Date('2026-07-05T11:00:00.000Z')))
+    expect((await member())?.currentSessionId).toBeNull()
+  })
+
   it('leaves the conversation pointer null when nothing maintained it', async () => {
     await webchatFixture()
     const repo = new PgSessionRepo(prisma)
