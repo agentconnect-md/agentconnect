@@ -4,6 +4,7 @@ import { getLocale, getMessages, getTranslations } from 'next-intl/server'
 import './globals.css'
 import { Analytics } from '@/components/Analytics'
 import { BrowserTelemetry } from '@/components/BrowserTelemetry'
+import { BrowserTimeZoneProvider } from '@/i18n/browser-time-zone'
 import { LOCALES, type Locale } from '@/i18n/config'
 import { pageTitleMetadata } from '@/lib/page-title'
 import { PublicEnvScript } from '@/lib/public-env'
@@ -32,9 +33,11 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
       </head>
       <body>
         <NextIntlClientProvider messages={messages}>
-          <Analytics />
-          <BrowserTelemetry />
-          {children}
+          <BrowserTimeZoneProvider>
+            <Analytics />
+            <BrowserTelemetry />
+            {children}
+          </BrowserTimeZoneProvider>
         </NextIntlClientProvider>
       </body>
     </html>
