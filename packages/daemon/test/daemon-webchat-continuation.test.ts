@@ -61,8 +61,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     const { posts, fanOut } = fakeRelay(holder, [P1, P2, REF])
     ;(daemon as any).relays = { sendWebchatPost: fanOut, stop: async () => {} }
 
-    // Human kickoff, mention-narrowed to player-1; the other participants get the
-    // user post as context only (user context copies never activate — §5.2).
+    // Human kickoff targeted at player-1 with no structured mentions, so no narrowed scope; peers get the user post as context only.
     const kickoffText = 'count to 6 together, alternating, one number per message; referee: observe silently'
     const ack = await (daemon as any).handleRelayMsg(
       rd(
@@ -353,6 +352,84 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     releaseP1()
     await vi.waitFor(() => expect(prompts.get(P2)).toHaveLength(1), WAIT)
     expect(posts.map((p) => p.post.text)).toEqual(['the committed answer'])
+    await daemon.stop()
+  })
+})
+
+// #2865: a human @mention never gates the wake (#549 parity), but a left-out peer is told to stay silent by default.
+describe('webchat continuation narrowed by a human @mention', () => {
+  const outsideScope = (prompt: string | undefined) => prompt?.includes('the human @-mentioned other participants')
+  async function narrowedKickoff(replies: Parameters<typeof scriptedHosts>[0]) {
+    const { factory, prompts } = scriptedHosts(replies)
+    const daemon = new Daemon({ root: scaffold([P1, P2, REF]), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    seedCallPolicy(daemon, [P1, P2, REF])
+    const { posts, fanOut } = fakeRelay({ current: daemon }, [P1, P2, REF])
+    ;(daemon as any).relays = { sendWebchatPost: fanOut, stop: async () => {} }
+    const text = `@${P1} what do you think?`
+    const ack = await (daemon as any).handleRelayMsg(
+      rd(
+        {
+          op: 'turn',
+          text,
+          user: 'owner',
+          turnId: KICKOFF_TURN,
+          mentions: [P1],
+          post: { postId: KICKOFF_TURN, at: 1_000 }
+        },
+        { agentId: P1, msgId: 'turn-p1' }
+      ),
+      () => {}
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    for (const [peer, msgId] of [
+      [P2, 'uctx-p2'],
+      [REF, 'uctx-ref']
+    ] as const) {
+      await (daemon as any).handleRelayMsg(
+        rd({ op: 'context', post: userPost(text, 1_000, KICKOFF_TURN) }, { agentId: peer, msgId }),
+        () => {}
+      )
+    }
+    return { daemon, prompts, posts }
+  }
+
+  it('still wakes the left-out peers, telling them the human addressed someone else', async () => {
+    const { daemon, prompts, posts } = await narrowedKickoff({
+      [P1]: () => 'here is my answer',
+      [P2]: () => NO_RESPONSE,
+      [REF]: () => NO_RESPONSE
+    })
+    await vi.waitFor(() => {
+      expect(prompts.get(P2)).toHaveLength(1)
+      expect(prompts.get(REF)).toHaveLength(1)
+    }, WAIT)
+    await settle()
+    expect(posts).toHaveLength(1)
+    expect(posts[0]!.post.author).toMatchObject({ kind: 'agent', agentId: P1, hopCount: 0, addressedAgentIds: [P1] })
+    expect(outsideScope(prompts.get(P2)![0])).toBe(true)
+    expect(outsideScope(prompts.get(REF)![0])).toBe(true)
+    expect(outsideScope(prompts.get(P1)![0])).toBe(false)
+    await daemon.stop()
+  })
+
+  it('treats a peer the reply @-names as addressed, and carries the widened scope on', async () => {
+    let p1Turns = 0
+    const { daemon, prompts, posts } = await narrowedKickoff({
+      [P1]: () => (++p1Turns === 1 ? `@${P2} your turn: 1` : NO_RESPONSE),
+      [P2]: () => '2',
+      [REF]: () => NO_RESPONSE
+    })
+    await vi.waitFor(() => expect(posts.map((p) => p.post.text)).toEqual([`@${P2} your turn: 1`, '2']), WAIT)
+    await vi.waitFor(() => expect(prompts.get(P1)).toHaveLength(2), WAIT)
+    await settle()
+    expect(outsideScope(prompts.get(P2)![0])).toBe(false)
+    expect(outsideScope(prompts.get(REF)![0])).toBe(true)
+    // P2's reply carries the widened scope, so P1 is woken inside it and the referee stays outside.
+    expect(posts[1]!.post.author).toMatchObject({ agentId: P2, hopCount: 1, addressedAgentIds: [P1, P2] })
+    expect(outsideScope(prompts.get(P1)![1])).toBe(false)
+    expect(prompts.get(REF)!.every(outsideScope)).toBe(true)
     await daemon.stop()
   })
 })

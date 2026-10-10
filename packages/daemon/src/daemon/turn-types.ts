@@ -185,6 +185,10 @@ export interface CallMeta {
    * with the inbox row like the rest of CallMeta.
    */
   conversationContinuation?: true
+  /** §5.2a: the human's webchat @mention scope a continuation inherits and stamps on its own reply. */
+  addressedAgentIds?: string[]
+  /** §5.2a: the human addressed other participants and the waking post does not @-name this one. */
+  outsideHumanScope?: true
   /** A self-authored channel-root post initializes its new session but is not a model turn.
    *  Persisted with the inbox row so crash replay cannot accidentally activate the model. */
   initializeOnly?: boolean
