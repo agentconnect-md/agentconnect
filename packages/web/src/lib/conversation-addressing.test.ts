@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   mentionQueryAt,
   mentionSpanEnd,
+  pickConversationRepresentative,
+  representativeFirst,
   resolveRoster,
   selfConversationPath,
   typedMentionIds,
@@ -181,5 +183,35 @@ describe('selfConversationPath', () => {
   it('never redirects an unresolved key or the view=flat diagnostic route', () => {
     expect(selfConversationPath({ ...multi, conversationKey: null })).toBeNull()
     expect(selfConversationPath({ ...multi, flatView: true })).toBeNull()
+  })
+})
+
+describe('pickConversationRepresentative', () => {
+  const members = [{ sessionId: 's-newest' }, { sessionId: 's-primary' }]
+
+  it('keeps the pinned member while it is still in the conversation', () => {
+    expect(pickConversationRepresentative(members, 's-newest', 's-primary')).toBe('s-newest')
+  })
+
+  it('falls back to the CP pick once the pinned member is gone', () => {
+    expect(pickConversationRepresentative(members, 's-rotated', 's-primary')).toBe('s-primary')
+  })
+
+  it('uses the first row when the CP names no representative', () => {
+    expect(pickConversationRepresentative(members, null, undefined)).toBe('s-newest')
+    expect(pickConversationRepresentative([], null, 's-primary')).toBeNull()
+  })
+})
+
+describe('representativeFirst', () => {
+  const members = [{ sessionId: 'a' }, { sessionId: 'b' }, { sessionId: 'c' }]
+
+  it('moves the representative to the front and keeps the rest in order', () => {
+    expect(representativeFirst(members, 'c').map((m) => m.sessionId)).toEqual(['c', 'a', 'b'])
+  })
+
+  it('returns the same array when the representative already leads or is absent', () => {
+    expect(representativeFirst(members, 'a')).toBe(members)
+    expect(representativeFirst(members, 'z')).toBe(members)
   })
 })

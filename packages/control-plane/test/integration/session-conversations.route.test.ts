@@ -90,6 +90,7 @@ type ConversationsBody = {
     thread: string | null
     sessions: Array<{ sessionId: string; agentId: string; contentPurgedAt?: string | null }>
     memberSessionIds: string[]
+    representativeSessionId?: string
   }>
   total: number | null
   nextCursor: string | null
@@ -249,12 +250,15 @@ describe('GET /sessions — grouped conversations', () => {
     const imBody = im.json() as ConversationsBody
     expect(imBody.conversations).toHaveLength(1)
     expect(imBody.conversations[0]!.sessions.map((s) => s.sessionId)).toEqual(['sess-k2', 'sess-k1'])
+    // The representative is the earliest-started member, not the newest reply.
+    expect(imBody.conversations[0]!.representativeSessionId).toBe('sess-k1')
 
     const wc = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?conversationKey=${CONVO}` })
     const wcBody = wc.json() as ConversationsBody
     expect(wcBody.conversations).toHaveLength(1)
     expect(wcBody.conversations[0]!.key).toBe(CONVO)
     expect(wcBody.conversations[0]!.sessions.map((s) => s.sessionId)).toEqual(['sess-wc-b', 'sess-wc-a'])
+    expect(wcBody.conversations[0]!.representativeSessionId).toBe('sess-wc-a')
 
     const missing = await running.app.inject({
       method: 'GET',
@@ -266,6 +270,38 @@ describe('GET /sessions — grouped conversations', () => {
 
     const invalid = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?conversationKey=%21%21%21` })
     expect(invalid.statusCode).toBe(400)
+  })
+
+  it("keeps a webchat conversation's primary as its representative whoever started or replied last", async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON })
+    const CONVO = 'c4c4c4c4-cccc-4ccc-8ccc-cccccccccccc'
+    await new PgWebchatConversationRepo(prisma).create(
+      { conversationId: CONVO, orgId: OrgId(DEFAULT_ORG_ID), agentId: AgentId(AGENT_B), userId: DEFAULT_OWNER_ID },
+      [AgentId(AGENT_A)]
+    )
+    running = buildHttpApp(prisma)
+    const report = (sessionId: string, agentId: string, at: number) =>
+      reportSession({
+        sessionId,
+        agentId,
+        phase: 'start',
+        platform: 'webchat',
+        channel: CONVO,
+        thread: `webchat:${CONVO}`,
+        lastActivityAt: new Date(at).toISOString(),
+        ts: new Date(at).toISOString()
+      })
+    // The member starts first and the primary replies, then the member replies last.
+    await report('sess-member', AGENT_A, 1_000)
+    await report('sess-primary', AGENT_B, 2_000)
+    await report('sess-member', AGENT_A, 3_000)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?conversationKey=${CONVO}` })
+    const conv = (res.json() as ConversationsBody).conversations[0]!
+    expect(conv.sessions[0]!.sessionId).toBe('sess-member')
+    expect(conv.representativeSessionId).toBe('sess-primary')
   })
 })
 

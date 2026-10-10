@@ -3306,7 +3306,9 @@ export const ConversationDto = z.object({
    *  membership off `sessions` would lose track of a conversation the moment the
    *  filter hid the member it had been identifying it by. Ids only: the metadata
    *  of a filtered-out member is not part of the answer. */
-  memberSessionIds: z.array(z.string())
+  memberSessionIds: z.array(z.string()),
+  /** Key-addressed resolver only: the member in `sessions` that stays the page's representative whatever replies last. */
+  representativeSessionId: z.string().optional()
 })
 
 /** Safe, requester-scoped explanation for a failed-closed external access check.
