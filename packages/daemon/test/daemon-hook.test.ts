@@ -17,6 +17,7 @@ import {
   GITEA_V1_FEATURE,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
+  HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH,
   hookSubjectSessionKey,
   type EventSession,
   type HookReport,
@@ -3609,6 +3610,81 @@ describe('Daemon rd/msg hook fires', () => {
       externalRealmKey: 'github.com',
       externalResourceKind: 'repository',
       externalResourceKey: '1001'
+    })
+    await daemon.stop()
+  })
+
+  // Without a report the CP held the run, and its review Check, until the run timed out.
+  it('reports a PR delivery refused for a session bound to another source as failed at once', async () => {
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => {}) },
+      collector: new GithubReplyCollector()
+    }))
+    const key = sessionKey('hook', 'example-org/example-repo', '7', AGENT_ID, 'github:1001')
+    await (daemon as any).store.upsertSession({
+      key,
+      agentId: AGENT_ID,
+      platform: 'hook',
+      channel: 'example-org/example-repo',
+      thread: '7',
+      transportScope: 'github:1001',
+      acpSessionId: 'acp-local',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await (daemon as any).store.setSessionClassification(key, { sourceBindingKind: 'local' })
+
+    await (daemon as any).handleRelayMsg(
+      fire({
+        sessionKey: 'example-org/example-repo#7',
+        msgId: `${HOOK_ID}:opened`,
+        deliveryKey: 'opened',
+        event: 'pull_request:opened',
+        github: {
+          repoId: '1001',
+          repoFullName: 'example-org/example-repo',
+          sourceInstallationId: '2002',
+          subjectKind: 'pull_request',
+          pullNumber: 7,
+          headSha: 'a'.repeat(40),
+          baseSha: '0'.repeat(40),
+          reportSha: 'a'.repeat(40)
+        },
+        context: {
+          source: 'github',
+          event: 'pull_request',
+          action: 'opened',
+          repo: 'example-org/example-repo',
+          number: 7,
+          title: 'Keep the session bound',
+          senderLogin: 'alice',
+          truncated: false
+        }
+      }),
+      () => {}
+    )
+
+    await vi.waitFor(
+      () =>
+        expect(cp.hookReports).toEqual([
+          expect.objectContaining({
+            deliveryKey: 'opened',
+            status: 'failed',
+            reason: HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH
+          })
+        ]),
+      WAIT
+    )
+    expect(host.prompt).not.toHaveBeenCalled()
+    expect(await (daemon as any).store.getSession(key)).toMatchObject({
+      sourceBindingKind: 'local',
+      externalProvider: null
     })
     await daemon.stop()
   })

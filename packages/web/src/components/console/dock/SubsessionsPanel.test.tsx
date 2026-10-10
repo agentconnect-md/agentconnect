@@ -217,13 +217,26 @@ describe('SubsessionsPanel', () => {
     // The stop re-reads, so the row's own state follows.
     expect(wire.calls.length).toBe(reads + 1)
 
+    // No turn in flight on a row that has not reported: a background task it started may still be running.
     wire.stopAnswer = { result: 'not_running' }
     await click(buttons('Stop')[0])
-    expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Nothing was running.')
+    expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe(
+      'No turn is running. A background task it started may still be running; it can’t be stopped from here, and the sub-session reports when that task ends.'
+    )
+    expect(rows()[0]?.querySelector('[data-subsession-state]')?.textContent).toBe('Running')
 
     wire.stopFailure = { status: 503, code: 'DAEMON_OFFLINE' }
     await click(buttons('Stop')[0])
     expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Couldn’t stop it. Try again.')
+  })
+
+  it('says nothing was running when the sub-session reported before the stop reached it', async () => {
+    wire.pages = [page([row()]), page([row({ state: 'done' })])]
+    wire.stopAnswer = { result: 'not_running' }
+    await render()
+    await click(buttons('Stop')[0])
+    expect(rows()[0]?.getAttribute('data-subsession-row')).toBe('done')
+    expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Nothing was running.')
   })
 
   it('pages on with the cursor, and a refresh after a new one keeps every row it had on screen', async () => {

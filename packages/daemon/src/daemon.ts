@@ -45,6 +45,7 @@ import {
   McpAppBody,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
+  HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH,
   HookReport,
   CP_URL_ENV,
   RELAY_DAEMON_SUBPROTOCOL,
@@ -14997,15 +14998,13 @@ export class Daemon {
     const { agentId, msg, integrationId, callMeta, hookContext } = entry
     const sourceBinding = await this.bindSessionSource(agentId, key, msg, callMeta, hookContext)
     if (sourceBinding !== 'unchanged') {
-      evaluation.finishEvaluation('turn.cancelled', { reason: 'session_source_mismatch' })
+      evaluation.finishEvaluation('turn.cancelled', { reason: HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH })
       const conn = this.replyConnFor(agentId, integrationId)
       const reason =
         sourceBinding === 'unavailable'
           ? 'This Slack conversation could not be assigned a stable workspace audience. Reconnect the Slack integration and try again.'
           : 'This thread already belongs to a session created from another source. Start a new Slack thread and mention the agent there.'
-      // Only a human ingress gets a visible repair instruction. A2A delivery is
-      // intentionally postless; turning a rejected internal wake into a Slack
-      // message would leak workflow state and create unsolicited channel noise.
+      // Only a human ingress gets a repair notice; a rejected A2A wake stays postless so no workflow state leaks.
       if (!callMeta && msg.source === 'user') {
         try {
           await conn?.postMessage(msg.channel, reason, msg.thread ?? msg.msgId)
@@ -15014,6 +15013,15 @@ export class Daemon {
         }
       }
       this.log.warn(`session source: rejected external audience binding for ${key} (${sourceBinding})`)
+      // A hook run waits for this report; without it the CP would hold the run until its timeout.
+      if (hookContext && this.reportsHookOutcome(entry)) {
+        await this.emitHookCompletion(
+          hookContext,
+          'failed',
+          { reason: HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH },
+          entry
+        )
+      }
       return 'rejected'
     }
     // §3.3 correlation-recording hook: if this turn is an agent→agent delivery carrying a

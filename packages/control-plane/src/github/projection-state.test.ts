@@ -5,7 +5,8 @@ import {
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
-  HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
+  HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
+  HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH
 } from '@agentconnect.md/protocol'
 import { describe, expect, it } from 'vitest'
 import {
@@ -49,6 +50,13 @@ describe('hookRuntimeProjectionState', () => {
     expect(hookIncompleteCheckLabel(HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED)).toBe(
       'Review could not be completed: provider usage limit reached'
     )
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH })).toBe(
+      'failure'
+    )
+    expect(hookIncompleteCheckLabel(HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH, 'example-app')).toBe(
+      'Review could not start: its session belongs to another source'
+    )
+    expect(hookIncompleteCheckGuidance(HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH)).toBeNull()
     expect(hookRuntimeProjectionState({ status: 'failed', reason: 'dispatch_timeout' })).toBe('failure')
     expect(hookRuntimeProjectionState({ status: 'failed', reason: 'rejected:paused' })).toBe('failure')
   })

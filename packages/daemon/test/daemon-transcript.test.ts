@@ -296,6 +296,7 @@ describe('Daemon transcript records the agent reply', () => {
     // so this legacy-compatible first turn binds the session as local.
     await (daemon as any).dispatch('bot-a', agentMsg('100', 'scheduled context'))
     const conn = makeRoutable(daemon)
+    const hookCompletion = vi.spyOn(daemon as any, 'emitHookCompletion')
     await (daemon as any).dispatch('bot-a', channelMsg('200', 'human reply'), 'int-a')
 
     expect(host.prompt).toHaveBeenCalledOnce()
@@ -304,6 +305,8 @@ describe('Daemon transcript records the agent reply', () => {
       'This thread already belongs to a session created from another source. Start a new Slack thread and mention the agent there.',
       'T1'
     )
+    // Only a hook delivery has a run waiting on a completion report.
+    expect(hookCompletion).not.toHaveBeenCalled()
     await daemon.stop()
   })
 

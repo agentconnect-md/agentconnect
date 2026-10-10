@@ -3,6 +3,7 @@ import {
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
+  HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH,
   isRetryableHookDeliveryReason
 } from '@agentconnect.md/protocol'
 import type { HookRunRecord } from '../persistence/ports.js'
@@ -58,6 +59,8 @@ export function hookIncompleteCheckLabel(reason?: string | null, appSlug?: strin
     return appSlug ? `Comment @${appSlug} to retry the interrupted review` : 'Review was interrupted before it finished'
   if (reason === HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED)
     return 'Review could not be completed: provider usage limit reached'
+  if (reason === HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH)
+    return 'Review could not start: its session belongs to another source'
   if (!reason || reason === HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED) return null
   return 'Review could not be completed'
 }
