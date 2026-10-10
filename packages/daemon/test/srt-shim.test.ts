@@ -18,7 +18,7 @@ import { srtShimBoundary, srtShimPolicy } from '../src/execution/srt-shim.js'
 import type { EnvironmentDescriptor, SessionEnvironment } from '../src/execution/strategies.js'
 import { shimEnvironment } from '../src/launch/prepare.js'
 import { ShimDialer } from '../src/shim/dialer.js'
-import { ShimGitRunner } from '../src/shim/git-exec.js'
+import { ShimGitRunner, type GitExecResult } from '../src/shim/git-exec.js'
 import { SHIM_SUBPROTOCOL, SHIM_WS_PATH } from '../src/shim/protocol.js'
 import { ShimSession } from '../src/shim/session.js'
 import { daemonSocket } from './fixtures/microsandbox-vm.js'
@@ -310,22 +310,42 @@ describe('the srt boundary around a shim', () => {
       // The holder's Git runs through the shim inside the boundary, so it writes `.git/config` as in a VM.
       expect(seen.git).toBe(0)
       const git = new ShimGitRunner(session, join(workspace, 'repo'))
-      await git.raw(['config', 'user.name', 'Example Holder'])
+      await git.raw(['config', 'credential.https://example.test.useHttpPath', 'true'])
       await git.raw(['remote', 'add', 'origin', 'https://example.test/example-org/example-repo.git'])
-      expect((await git.raw(['config', '--get', 'remote.origin.url'])).trim()).toBe(
+      expect((await git.raw(['remote', 'get-url', 'origin'])).trim()).toBe(
         'https://example.test/example-org/example-repo.git'
       )
       // A holder's empty proxy pin names SRT's bridge where its Git runs, with Basic proxy auth beside it.
-      const pinned = new ShimGitRunner(session, join(workspace, 'repo'), {
-        PATH: process.env.PATH ?? '',
-        GIT_CONFIG_COUNT: '1',
-        GIT_CONFIG_KEY_0: 'http.https://example.test/example-org/example-repo.git.proxy',
-        GIT_CONFIG_VALUE_0: ''
-      })
-      expect(
-        (await pinned.raw(['config', '--get', 'http.https://example.test/example-org/example-repo.git.proxy'])).trim()
-      ).toBe(seen.env.HTTPS_PROXY)
-      expect((await pinned.raw(['config', '--get', 'http.proxyAuthMethod'])).trim()).toBe('basic')
+      const pinned = (await session.request('exec', {
+        tool: 'git',
+        cwd: join(workspace, 'repo'),
+        args: ['remote', 'get-url', 'origin'],
+        env: {
+          PATH: process.env.PATH ?? '',
+          GIT_CONFIG_COUNT: '1',
+          GIT_CONFIG_KEY_0: 'http.https://example.test/example-org/example-repo.git.proxy',
+          GIT_CONFIG_VALUE_0: '',
+          GIT_TRACE2_EVENT: '1',
+          // Compare the disposable sandbox's generated proxy credentials as well as its address.
+          GIT_TRACE2_REDACT: '0',
+          GIT_TRACE2_CONFIG_PARAMS: 'http.*.proxy,http.proxyAuthMethod'
+        }
+      })) as GitExecResult
+      expect(pinned.code).toBe(0)
+      const trace = pinned.stderr
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+      expect(trace).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            event: 'def_param',
+            param: 'http.https://example.test/example-org/example-repo.git.proxy',
+            value: seen.env.HTTPS_PROXY
+          }),
+          expect.objectContaining({ event: 'def_param', param: 'http.proxyauthmethod', value: 'basic' })
+        ])
+      )
 
       // A runtime that needs to finish on SIGTERM, which the shim sends when it drains.
       const drained = join(workspace, 'drained')

@@ -31,13 +31,7 @@ const timers = {
   clearTimeout: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout)
 }
 
-/**
- * A repository whose `config` read blocks forever: git waits on a FIFO with no writer.
- *
- * `marker` goes in the ARGV, not the env, because the env is how the hang is arranged but not
- * something `pgrep -f` can see — a first version keyed the process search on the FIFO path and
- * therefore never found the child, so one test passed while observing nothing at all.
- */
+// Git blocks on a config FIFO; an argv pathspec marker lets pgrep observe the actual child.
 function blockingRepository(): { root: string; env: Record<string, string>; marker: string } {
   const root = mkdtempSync(join(tmpdir(), 'ac-cancel-'))
   roots.push(root)
@@ -126,9 +120,8 @@ describe('shim request cancellation', () => {
     const abort = new AbortController()
     const runner = new ShimGitRunner(channel, root, undefined, abort.signal).withEnv(env)
 
-    const inflight = runner.raw(['config', '--get', `user.${marker}`])
-    // Abort only once the child is really running, otherwise the test proves nothing about
-    // killing it — an earlier version of this workstream shipped exactly that mistake.
+    const inflight = runner.raw(['status', '--porcelain', '--', marker])
+    // Wait for the actual child so the test proves that cancellation kills it.
     expect(await until(() => liveGitChildren(marker) > 0)).toBe(true)
 
     abort.abort()
@@ -142,7 +135,7 @@ describe('shim request cancellation', () => {
     const { root, env, marker } = blockingRepository()
     const { channel, connection, sent } = await channelUnderTest(root)
     const runner = new ShimGitRunner(channel, root, undefined).withEnv(env)
-    const inflight = runner.raw(['config', '--get', `user.${marker}`]).catch(() => 'failed')
+    const inflight = runner.raw(['status', '--porcelain', '--', marker]).catch(() => 'failed')
     expect(await until(() => liveGitChildren(marker) > 0)).toBe(true)
 
     // The cancel targets the request that is ACTUALLY in flight, and differs from a valid one
@@ -165,7 +158,7 @@ describe('shim request cancellation', () => {
     const { root, env, marker } = blockingRepository()
     const { channel } = await channelUnderTest(root)
     const inflight = channel
-      .request('exec', { tool: 'git', args: ['config', '--get', `user.${marker}`], env }, { timeoutMs: 1_500 })
+      .request('exec', { tool: 'git', args: ['status', '--porcelain', '--', marker], env }, { timeoutMs: 1_500 })
       .then(() => 'resolved')
       .catch((err: Error) => err.message)
     // Prove the child got as far as running, so the assertion below is about it being killed.
@@ -186,7 +179,7 @@ describe('shim work spanning a credential renewal', () => {
     const { channel } = await channelUnderTest(root, { credentialTtlMs: 4_000, shimClock })
 
     const inflight = channel
-      .request('exec', { tool: 'git', args: ['config', '--get', `user.${marker}`], env }, { timeoutMs: 120_000 })
+      .request('exec', { tool: 'git', args: ['status', '--porcelain', '--', marker], env }, { timeoutMs: 120_000 })
       .then(() => 'resolved')
       .catch((err: Error) => err.message)
     expect(await until(() => liveGitChildren(marker) > 0)).toBe(true)
@@ -203,7 +196,7 @@ describe('shim work spanning a credential renewal', () => {
     const { root, env, marker } = blockingRepository()
     const { channel } = await channelUnderTest(root)
     void channel
-      .request('exec', { tool: 'git', args: ['config', '--get', `user.${marker}`], env }, { timeoutMs: 120_000 })
+      .request('exec', { tool: 'git', args: ['status', '--porcelain', '--', marker], env }, { timeoutMs: 120_000 })
       .catch(() => undefined)
     expect(await until(() => liveGitChildren(marker) > 0)).toBe(true)
     for (const client of fixtures.clients) client.stop()

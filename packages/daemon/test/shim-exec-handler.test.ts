@@ -359,13 +359,13 @@ describe('sandbox exec handler', () => {
   })
 
   it('applies the request env as given rather than merging the sandbox environment', async () => {
-    // Read config to verify that the request replaces the sandbox's environment.
+    // A configured log format proves the request environment reached Git.
     const root = repository()
     const globalConfig = join(root, 'from-request.gitconfig')
-    writeFileSync(globalConfig, '[user]\n\tname = Only From Request\n')
+    writeFileSync(globalConfig, '[format]\n\tpretty = format:Only From Request\n')
     const result = (await handler(root)('exec', {
       tool: 'git',
-      args: ['config', '--get', 'user.name'],
+      args: ['log', '-1'],
       env: {
         PATH: process.env.PATH ?? '',
         HOME: root,
@@ -375,11 +375,10 @@ describe('sandbox exec handler', () => {
     // git only reads that file if the request env reached the child.
     expect(result.stdout.trim()).toBe('Only From Request')
 
-    // And without it, the same argv does not see that name — so the previous result was the
-    // env doing the work rather than ambient configuration.
+    // Without the request environment, the same command uses the default format.
     const withoutEnv = (await handler(root)('exec', {
       tool: 'git',
-      args: ['config', '--get', 'user.name']
+      args: ['log', '-1']
     })) as GitExecResult
     expect(withoutEnv.stdout.trim()).not.toBe('Only From Request')
   })
@@ -571,15 +570,13 @@ describe('sandbox exec handler', () => {
   })
 
   it('reports a TIMED-OUT git as a failure, never as exit 0', async () => {
-    // Node gives a signalled child `code: null`, which an earlier version mapped to 0 — so a
-    // timed-out `status` returned success with partial output, which every caller reads as a
-    // clean tree. The hang is real: git blocks reading a config file that is a FIFO.
+    // Git blocks reading a config FIFO; its signal exit must not be mistaken for a clean status.
     const root = repository()
     const blocking = join(root, 'blocking.gitconfig')
     execFileSync('mkfifo', [blocking])
     const result = (await handler(root)('exec', {
       tool: 'git',
-      args: ['config', '--get', 'user.name'],
+      args: ['status', '--porcelain'],
       env: { PATH: process.env.PATH ?? '', HOME: root, GIT_CONFIG_GLOBAL: blocking },
       timeoutMs: 1_000
     })) as GitExecResult
@@ -590,15 +587,14 @@ describe('sandbox exec handler', () => {
   })
 
   it('bounds a caller-supplied deadline rather than trusting it', async () => {
-    // The deadline arrives from the daemon, so the sandbox keeps a ceiling: otherwise a
-    // compromised caller pins a child here for as long as it likes.
+    // The sandbox caps the daemon's requested deadline so a caller cannot pin a child indefinitely.
     const root = repository()
     const bounded = createExecHandler({ workspaceRoot: root, timeoutMs: 1_000 })
     const blocking = join(root, 'ceiling.gitconfig')
     execFileSync('mkfifo', [blocking])
     const result = (await bounded('exec', {
       tool: 'git',
-      args: ['config', '--get', 'user.name'],
+      args: ['status', '--porcelain'],
       env: { PATH: process.env.PATH ?? '', HOME: root, GIT_CONFIG_GLOBAL: blocking },
       timeoutMs: 900_000
     })) as GitExecResult

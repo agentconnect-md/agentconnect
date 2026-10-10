@@ -66,13 +66,44 @@ describe('admitted near-misses the daemon sends', () => {
     [['push', '--no-verify', 'origin', 'refs/heads/a:refs/heads/a']],
     [['commit', '--no-gpg-sign', '--cleanup=verbatim', '-m', 'x']],
     [['checkout', '--no-track', '-B', 'b', 'refs/remotes/origin/b']],
-    [['config', '--replace-all', 'k', 'v']],
-    [['config', '--add', 'k', 'v']],
-    [['config', '--no-includes', '--get', 'k']],
+    [['config', '--replace-all', 'credential.https://github.com.helper', '']],
+    [['config', '--add', 'credential.https://github.com.helper', "!'/opt/agentconnect/helper' agent-abc"]],
     [['diff', '--no-ext-diff', '--no-textconv', '--no-color']],
     [['rev-parse', '--abbrev-ref', '--symbolic-full-name', '--show-prefix', '--git-common-dir']],
     [['clone', '--no-bundle-uri', 'u', 'repo']]
   ])('admits %j', (args) => admits(args))
+})
+
+describe('config is restricted to managed-credential writes', () => {
+  it.each([
+    [['config', '--replace-all', 'credential.https://github.com.helper', '']],
+    [['config', '--add', 'credential.https://github.com.helper', "!'/opt/agentconnect/helper' agent-abc"]],
+    [['config', '--add', 'credential.https://github.com.helper', "!sh '/opt/agentconnect/helper' agent-abc"]],
+    [['config', '--add', 'credential.https://github.com.helper', "!'/opt/it'\\''s/helper' agent-abc"]],
+    [['config', 'credential.https://github.com.useHttpPath', 'true']],
+    [['config', '--add', 'credential.https://gitlab.example.com:8443/gitlab.helper', "!'/opt/h' agent-1"]],
+    [['config', '--blob', 'a'.repeat(40), '--no-includes', '--null', '--list']]
+  ])('admits %j', (args) => admits(args))
+
+  it.each([
+    [['config', 'core.sshCommand', 'touch /tmp/pwned']],
+    [['config', 'core.hooksPath', '/tmp/hooks']],
+    [['config', 'core.fsmonitor', '/tmp/mon']],
+    [['config', 'diff.external', '/tmp/diff']],
+    [['config', 'credential.helper', '!rm -rf /']],
+    [['config', 'url.https://evil.insteadOf', 'https://github.com']],
+    [['config', 'remote.origin.url', 'ssh://evil/repo']],
+    [['config', 'protocol.ext.allow', 'always']],
+    [['config', 'credential.https://github.com.helper', '!rm -rf /']],
+    [['config', 'credential.https://github.com.helper', '']],
+    [['config', 'credential.https://github.com.useHttpPath', 'false']],
+    [['config', '--get', 'credential.https://github.com.helper']],
+    [['config', '--no-includes', '--get', 'credential.https://github.com.helper']],
+    [['config', '--edit']],
+    [['config', '-e']],
+    [['config', '--blob', 'not-hex', '--no-includes', '--null', '--list']],
+    [['config', '--blob', 'a'.repeat(40), '--no-includes', '--null', '--list', 'extra']]
+  ])('refuses %j', (args) => refuses(args))
 })
 
 describe('clone --bundle-uri', () => {
