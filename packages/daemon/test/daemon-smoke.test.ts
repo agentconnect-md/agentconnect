@@ -79,7 +79,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect((defaultHost as any).opts.sandbox).toBeUndefined()
       // Opting the agent into the sandbox confines it via the available mechanism.
       ;(daemon as any).hosts.delete('bot-a')
-      agent.runInSandbox = true
+      agent.execution = 'srt'
       expect((daemon as any).agentRunsInSandbox(agent)).toBe(true)
       const driverFor = vi.spyOn((daemon as any).localSrtExecutor, 'driverFor')
       const sandboxed = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
@@ -104,7 +104,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const root = scaffold()
     writeFileSync(
       join(root, 'config.json'),
-      JSON.stringify({ version: 1, controlPlane: { enabled: false }, security: { requireSandbox: true } })
+      JSON.stringify({ version: 1, controlPlane: { enabled: false }, sandbox: { host: false } })
     )
 
     await expect(

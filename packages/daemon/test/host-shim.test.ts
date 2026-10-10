@@ -469,10 +469,9 @@ describe('the table an executor reports to its group', () => {
 })
 
 describe('the strategy an agent names', () => {
-  it('is its execution, or its runInSandbox read the way the Control Plane migrates it', () => {
-    expect(agentStrategyOf({ execution: 'microsandbox', runInSandbox: false }, undefined)).toBe('microsandbox')
-    expect(agentStrategyOf({ runInSandbox: false }, 'microsandbox')).toBe('host')
-    expect(agentStrategyOf({ runInSandbox: true }, undefined)).toBe('srt')
-    expect(agentStrategyOf({ runInSandbox: true }, 'microsandbox')).toBe('microsandbox')
+  it('is its execution, and host while a hand-authored file names none', () => {
+    expect(agentStrategyOf({ execution: 'microsandbox' })).toBe('microsandbox')
+    expect(agentStrategyOf({})).toBe('host')
+    expect(agentStrategyOf({ execution: '' })).toBe('host')
   })
 })

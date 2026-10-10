@@ -72,8 +72,8 @@ import {
   TaskErrorReason,
   gitRepoLabel,
   isCodeHostHookKind,
-  HOST_STRATEGY,
-  type AssistantModePolicy
+  type AssistantModePolicy,
+  type ExecutorStrategyTable
 } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
@@ -96,13 +96,7 @@ import {
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, IntegrationId, OrgId, SessionId } from '../../domain/ids.js'
 import { advertises } from '../../domain/daemon-features.js'
-import {
-  UNPLACED,
-  placementStrategies,
-  resolveExecution,
-  type DaemonStrategyReport,
-  type PlacementStrategies
-} from '../../domain/execution.js'
+import { UNPLACED, placementStrategies, resolveExecution } from '../../domain/execution.js'
 import { codeHostProviders, codeHostsOf } from '../../codehost/registry.js'
 import {
   dutyEligibility,
@@ -299,50 +293,8 @@ function iconBasesOf(deps: HttpDeps): IconUrlBases {
   }
 }
 
-interface SandboxPolicy {
-  supported: boolean
-  required: boolean
-  /** Why a supported sandbox cannot be provided right now; null when it can. */
-  unavailable: string | null
-}
-
-const NO_SANDBOX: SandboxPolicy = { supported: false, required: false, unavailable: null }
-
-function sandboxPolicyOf(daemon: DaemonView | null): SandboxPolicy {
-  if (!daemon) return NO_SANDBOX
-  const required = daemon.capabilities.features.includes('sandbox-required')
-  return {
-    supported: required || daemon.capabilities.features.includes('sandbox'),
-    required,
-    unavailable: daemon.capabilities.sandboxUnavailable ?? null
-  }
-}
-
-const EXECUTION_CONTRADICTION =
-  'runInSandbox contradicts execution: host runs unsandboxed, every other strategy is a sandbox'
-
-/** A request naming both must agree, since `runInSandbox` is derived from `execution`. */
-function contradictsExecution(body: { execution?: string; runInSandbox?: boolean }): boolean {
-  return (
-    body.execution !== undefined &&
-    body.runInSandbox !== undefined &&
-    body.runInSandbox !== (body.execution !== HOST_STRATEGY)
-  )
-}
-
 function badRequest(reply: FastifyReply, message: string) {
   return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message })
-}
-
-/** What one daemon reports about where its own sessions run; its legacy policy speaks only when it reports no table. */
-function strategyReportOf(daemon: DaemonView): DaemonStrategyReport {
-  const { strategies, sandboxBackend } = daemon.capabilities
-  const { supported, required } = sandboxPolicyOf(daemon)
-  return {
-    ...(strategies ? { strategies } : {}),
-    ...(sandboxBackend ? { sandboxBackend } : {}),
-    legacy: { supported, required }
-  }
 }
 
 /** Version-skew gate for memory dreaming. A daemon that predates the feature
@@ -464,35 +416,29 @@ function toDto(
     outboundPolicy: a.outboundPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
-    runInSandbox: a.runInSandbox,
     execution: a.execution,
-    strategies: placementView.strategies.kind === 'table' ? placementView.strategies.table : null,
-    sandboxSupported: placementView.sandbox.supported,
-    sandboxRequired: placementView.sandbox.required,
-    sandboxUnavailable: placementView.sandbox.unavailable,
+    strategies: placementView.strategies,
     hookKinds
   }
 }
 
-/** One placement resolution supplies its display name, sandbox policy, and readiness. */
+/** One placement resolution supplies its display name, strategy table, and readiness. */
 interface PlacementView {
   daemonName: string | null
-  sandbox: SandboxPolicy
   /** What `execution` is checked against: the daemon's table, or every ready member's for a set. */
-  strategies: PlacementStrategies
+  strategies: ExecutorStrategyTable
   ready: boolean
   /** Set only for an org's own group: the pool shares its store, and a machine placement names its daemon. */
   holderDaemonId?: string | null
 }
 
-const NO_PLACEMENT: PlacementView = { daemonName: null, sandbox: NO_SANDBOX, strategies: UNPLACED, ready: false }
+const NO_PLACEMENT: PlacementView = { daemonName: null, strategies: UNPLACED, ready: false }
 
 function placementViewOf(deps: HttpDeps, daemon: DaemonView | null): PlacementView {
   const live = daemon ? deps.liveness.get(daemon.daemonId) : undefined
   return {
     daemonName: daemon?.name ?? null,
-    sandbox: sandboxPolicyOf(daemon),
-    strategies: placementStrategies(daemon ? [strategyReportOf(daemon)] : []),
+    strategies: placementStrategies(daemon ? [daemon.capabilities] : []),
     ready: live?.reachable === true && live.state === 'READY'
   }
 }
@@ -547,7 +493,7 @@ async function placementViewFor(deps: HttpDeps, a: AgentRecord, setMembers?: Dae
   const members = setMembers ?? (await readySetMembers(deps, OrgId(a.orgId), eligibility.setId))
   const view = {
     ...placementViewOf(deps, members[0] ?? null),
-    strategies: placementStrategies(members.map(strategyReportOf))
+    strategies: placementStrategies(members.map((member) => member.capabilities))
   }
   if (eligibility.setId === (await deps.repos.memberSet.crossOrgSetId())) return view
   return { ...view, holderDaemonId: await deps.placementResolver.routableDaemon(a) }
@@ -1914,7 +1860,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Create an agent',
           description:
-            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding; a request authenticated by an API key cannot use it. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason. The legacy `runInSandbox` maps to `host` or the placement’s sandbox, and a request naming both must agree (400). `repositorySelector` names the Decision provider and model the per-session repository selector asks; one that does not answer Choice questions is refused with 400.',
+            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding; a request authenticated by an API key cannot use it. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason; absent, it is `host` where the placement runs it, else the first available sandbox. `repositorySelector` names the Decision provider and model the per-session repository selector asks; one that does not answer Choice questions is refused with 400.',
           operationId: 'createAgent',
           body: CreateAgentBody,
           querystring: z.object({ connect: z.stringbool().default(false) }),
@@ -1959,12 +1905,11 @@ export function agentRoutes(deps: HttpDeps) {
         if (req.body.managedSkills?.length && placedDaemon && !organizationKnowledgeSupportedOn(placedDaemon)) {
           return conflict('managed skills require a daemon that supports organization knowledge')
         }
-        if (contradictsExecution(req.body)) return badRequest(reply, EXECUTION_CONTRADICTION)
         const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
         if (selectorRefusal) return badRequest(reply, selectorRefusal)
         const executionChoice = resolveExecution(
-          placementStrategies((wantsSet ? setMembers : placedDaemon ? [placedDaemon] : []).map(strategyReportOf)),
-          { execution: req.body.execution, runInSandbox: req.body.runInSandbox }
+          placementStrategies((wantsSet ? setMembers : placedDaemon ? [placedDaemon] : []).map((d) => d.capabilities)),
+          req.body.execution
         )
         if ('refused' in executionChoice) return conflict(executionChoice.refused)
         // The one credential derivation (git-workspace-model.md §6) decides who
@@ -2127,7 +2072,6 @@ export function agentRoutes(deps: HttpDeps) {
                     : {}),
                   ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
                   ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
-                  runInSandbox: executionChoice.runInSandbox,
                   execution: executionChoice.execution,
                   ...(req.body.env !== undefined ? { env: req.body.env } : {}),
                   ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
@@ -2588,7 +2532,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an agent',
           description:
-            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home. A new `execution` (or the legacy `runInSandbox`) is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it (409 while any repository authorization or installation grant is marked `decision`).',
+            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home. A new `execution` is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it (409 while any repository authorization or installation grant is marked `decision`).',
           operationId: 'updateAgent',
           params: IdParam,
           body: UpdateAgentBody,
@@ -2639,7 +2583,6 @@ export function agentRoutes(deps: HttpDeps) {
               .send({ error: 'Conflict', statusCode: 409, message: 'agent changed; refresh and retry the edit' })
           }
           const placementView = await placementViewFor(deps, existing)
-          if (contradictsExecution(req.body)) return badRequest(reply, EXECUTION_CONTRADICTION)
           const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
           if (selectorRefusal) return badRequest(reply, selectorRefusal)
           if (req.body.repositorySelector === null && (await usesDecisionMaterialize(deps, existing.id))) {
@@ -2650,14 +2593,10 @@ export function agentRoutes(deps: HttpDeps) {
                 'the repository selector is in use; move every repository and installation marked by decision to another checkout first'
             })
           }
-          const asksExecution = req.body.execution !== undefined || req.body.runInSandbox !== undefined
-          const executionChoice = asksExecution
-            ? resolveExecution(
-                placementView.strategies,
-                { execution: req.body.execution, runInSandbox: req.body.runInSandbox },
-                existing.execution
-              )
-            : undefined
+          const executionChoice =
+            req.body.execution !== undefined
+              ? resolveExecution(placementView.strategies, req.body.execution)
+              : undefined
           if (executionChoice && 'refused' in executionChoice) {
             return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: executionChoice.refused })
           }
@@ -2799,7 +2738,6 @@ export function agentRoutes(deps: HttpDeps) {
             force: _force,
             memory: _memory,
             execution: _execution,
-            runInSandbox: _runInSandbox,
             ...bodyPatch
           } = req.body
           const skillsFence = skillSourceFenceFor(orgOf(req), ctxOf(req), req.body.skills)

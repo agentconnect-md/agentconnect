@@ -280,11 +280,11 @@ disposable test environment.
 
 The operator has three independent controls:
 
-| Control                                                                  | Trust consequence                                                                                                                                                                               |
-| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Restrict [daemon visibility](resource-visibility.md) to selected people  | Limits which organization members can discover, select, or manage the daemon as a placement target; selecting only the operator makes it private to them. It does not create process isolation. |
-| Give an agent a sandboxing strategy (`srt` or `microsandbox`)            | Treats that agent as untrusted relative to the host and confines its runtime; a daemon that cannot run the strategy refuses the session rather than running it unconfined.                      |
-| Set `sandbox.host: false` (or start the daemon with `--require-sandbox`) | Refuses every unsandboxed session on that daemon and fails closed at startup when no sandboxing strategy is available.                                                                          |
+| Control                                                                 | Trust consequence                                                                                                                                                                               |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Restrict [daemon visibility](resource-visibility.md) to selected people | Limits which organization members can discover, select, or manage the daemon as a placement target; selecting only the operator makes it private to them. It does not create process isolation. |
+| Give an agent a sandboxing strategy (`srt` or `microsandbox`)           | Treats that agent as untrusted relative to the host and confines its runtime; a daemon that cannot run the strategy refuses the session rather than running it unconfined.                      |
+| Set `sandbox.host: false`                                               | Refuses every unsandboxed session on that daemon and fails closed at startup when no sandboxing strategy is available.                                                                          |
 
 A host without a supported sandbox remains usable for operator-trusted agents unless
 the operator withdrew `host` from its strategy table. The daemon and console

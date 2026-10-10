@@ -35,7 +35,6 @@
       "unavailable": "不可用",
       "noneAvailable": "没有可用的执行策略",
       "refusal": {
-        "sandboxRequired": "此 Daemon 要求使用沙箱。",
         "notOffered": "当前位置不提供此策略。"
       }
     },

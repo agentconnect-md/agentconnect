@@ -103,8 +103,8 @@ describe('the machine’s own strategy table on registration', () => {
     microsandbox: { available: true }
   } as const
 
-  it('rides register and capabilities/update beside the legacy backend, whether or not the facet is on', () => {
-    const capabilities = { ...REGISTER.capabilities, strategies: OWN, sandboxBackend: 'microsandbox' }
+  it('rides register and capabilities/update, whether or not the facet is on', () => {
+    const capabilities = { ...REGISTER.capabilities, strategies: OWN }
     expect(roundTrip('register', { ...REGISTER, capabilities })).toMatchObject({ capabilities })
     expect(roundTrip('capabilities/update', { capabilities })).toEqual({ capabilities })
   })
@@ -112,19 +112,26 @@ describe('the machine’s own strategy table on registration', () => {
   it('takes the executor report’s shape, so an unavailable entry must say why and a slug stays a slug', () => {
     const capabilities = (extra: object) => ({ ...REGISTER, capabilities: { ...REGISTER.capabilities, ...extra } })
     expect(RegisterReq.safeParse(capabilities({ strategies: { host: { available: false } } })).success).toBe(false)
-    expect(RegisterReq.safeParse(capabilities({ sandboxBackend: 'Micro Sandbox' })).success).toBe(false)
+    expect(RegisterReq.safeParse(capabilities({ strategies: { 'Micro Sandbox': { available: true } } })).success).toBe(
+      false
+    )
     expect(RegisterReq.safeParse(capabilities({ strategies: { docker: { available: true } } })).success).toBe(true)
+  })
+
+  it('no longer carries the retired sandboxBackend report (#2463): the key is dropped, not refused', () => {
+    const capabilities = { ...REGISTER.capabilities, strategies: OWN, sandboxBackend: 'microsandbox' }
+    expect(roundTrip('register', { ...REGISTER, capabilities })).not.toHaveProperty('capabilities.sandboxBackend')
   })
 })
 
 describe('the agent’s execution strategy', () => {
   const SPEC = { name: 'agent-1', runtime: 'claude' }
 
-  it('rides the spec beside runInSandbox as a slug, and absent means not yet migrated', () => {
+  it('rides the spec as a slug, and the retired runInSandbox boolean is dropped (#2463)', () => {
     expect(AgentSpec.parse({ ...SPEC, runInSandbox: true, execution: 'microsandbox' })).toMatchObject({
-      runInSandbox: true,
       execution: 'microsandbox'
     })
+    expect(AgentSpec.parse({ ...SPEC, runInSandbox: true })).not.toHaveProperty('runInSandbox')
     expect(AgentSpec.parse(SPEC).execution).toBeUndefined()
     expect(AgentSpec.safeParse({ ...SPEC, execution: 'Host' }).success).toBe(false)
   })

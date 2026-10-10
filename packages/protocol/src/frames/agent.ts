@@ -476,12 +476,7 @@ export const AgentSpec = z.object({
   // → messageAgent) so they can record it in memory. Replicated CP→daemon. Optional
   // (absent ⇒ leave the on-disk agent.json value alone — same contract as pause/fastMode).
   introduceOnJoin: z.boolean().optional(),
-  // Per-agent OS sandbox preference (issue #642). It is effective only when the
-  // host has bwrap/sandbox-exec; daemon `security.requireSandbox` forces it on and
-  // prevents daemon startup when no mechanism exists. Optional means leave the
-  // on-disk agent.json value alone; a brand-new agent defaults to false.
-  runInSandbox: z.boolean().optional(),
-  // The strategy this agent's sessions run in (session-executors.md §5), kept beside `runInSandbox`; absent ⇒ not yet migrated, and the daemon reads the boolean.
+  // The strategy this agent's sessions run in (session-executors.md §5). A current CP always ships it; absent ⇒ leave the on-disk value alone, which reads as `host`.
   execution: ExecutorStrategyName.optional(),
   // True when this agent is an org built-in preset (preset-agents.md §3.1): a
   // `preset_agent` row references it. Replicated so the daemon can gate preset-only

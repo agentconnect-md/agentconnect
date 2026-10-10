@@ -111,11 +111,8 @@ export interface CpClientConnectionHost {
 export interface CpClientRegistrationHost {
   registrationPlatforms(): string[]
   registrationFeatures(): string[]
-  /** Why no offered sandboxing strategy can run here; unset while one can (session-executors.md §5). */
-  sandboxUnavailable(): string | undefined
-  /** The machine's effective strategy table, and the retiring `sandbox.backend` the CP migrates `runInSandbox` from (session-executors.md §5). */
+  /** The machine's effective strategy table (session-executors.md §5): each unavailable entry carries its probe's reason. */
   ownStrategies(): ExecutorStrategyTable
-  sandboxBackend(): string
   /** The id of the shared PostgreSQL store this daemon writes to; unset on a private local store. */
   contentStore(): string | undefined
   /** The executor facet (session-executors.md §6); while it is dark it reports nothing, and then nothing new is sent. */
@@ -302,7 +299,6 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     heartbeatDefaultMs: host.heartbeatDefaultMs(),
     maxAgents: host.maxAgents(),
     capabilities: () => {
-      const sandboxUnavailable = host.sandboxUnavailable()
       const executor = host.executorFacet()?.facts()
       const contentStore = host.contentStore()
       return {
@@ -313,10 +309,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         runtimes: host.admittedRuntimeIds().map((id) => host.runtimeNames()[id] ?? id),
         acp: true,
         features: host.registrationFeatures(),
-        ...(sandboxUnavailable ? { sandboxUnavailable } : {}),
         ...(executor ? { executor } : {}),
         strategies: host.ownStrategies(),
-        sandboxBackend: host.sandboxBackend(),
         ...(contentStore ? { contentStore } : {})
       }
     },

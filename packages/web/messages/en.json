@@ -35,7 +35,6 @@
       "unavailable": "unavailable",
       "noneAvailable": "No strategy available",
       "refusal": {
-        "sandboxRequired": "This daemon requires a sandbox.",
         "notOffered": "Not offered where this agent is placed."
       }
     },

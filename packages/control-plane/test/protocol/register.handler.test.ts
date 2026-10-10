@@ -243,8 +243,8 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       allowedTargetAgentIds: [],
       // #536: self-introduce-on-join — always shipped (definite column) so a toggle replicates.
       introduceOnJoin: false,
-      // #642: sandbox preference — always shipped (definite column); default false.
-      runInSandbox: false,
+      // The execution strategy (session-executors.md §5) — always shipped (definite column); default host.
+      execution: 'host',
       // Preset marker — always shipped so the daemon can gate preset-only capabilities.
       builtin: false,
       // The additional-repository allowlist rides the workspace; always shipped so a revoke replicates.

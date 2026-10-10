@@ -413,8 +413,34 @@ describe('HomeView readiness gate', () => {
     expect(host.textContent).toContain('No AI runtime is signed in')
   })
 
-  it.each([true, false])('requires the image binary only for sandboxed sessions (%s)', async (runInSandbox) => {
-    mocks.agents = [agent({ runInSandbox })]
+  it.each([
+    ['microsandbox', true],
+    ['srt', false],
+    ['host', false]
+  ])(
+    'requires the image binary only for a strategy that starts the image’s install (%s)',
+    async (execution, missing) => {
+      mocks.agents = [agent({ execution })]
+      mocks.daemons = [
+        daemon({
+          runtimeModels: [
+            {
+              runtime: 'claude',
+              models: ['claude-sonnet-4-5'],
+              modelCatalog: claudeCatalog,
+              unavailableReason: 'image-binary-missing'
+            }
+          ]
+        })
+      ]
+      await render()
+      expect(host.textContent?.includes('Binary not installed in image')).toBe(missing)
+      expect(host.textContent).not.toContain('No AI runtime is signed in')
+    }
+  )
+
+  it('reads the image binary from the runtime’s entry for the agent’s strategy when the daemon reports one', async () => {
+    mocks.agents = [agent({ execution: 'microsandbox' })]
     mocks.daemons = [
       daemon({
         runtimeModels: [
@@ -422,14 +448,13 @@ describe('HomeView readiness gate', () => {
             runtime: 'claude',
             models: ['claude-sonnet-4-5'],
             modelCatalog: claudeCatalog,
-            unavailableReason: 'image-binary-missing'
+            strategies: { microsandbox: { available: false, unavailableReason: 'the image lacks it' } }
           }
         ]
       })
     ]
     await render()
-    expect(host.textContent?.includes('Binary not installed in image')).toBe(runInSandbox)
-    expect(host.textContent).not.toContain('No AI runtime is signed in')
+    expect(host.textContent).toContain('Binary not installed in image')
   })
 
   it('shows no banner when the selected agent’s daemon is healthy but ANOTHER daemon is not', async () => {

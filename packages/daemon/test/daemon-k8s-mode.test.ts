@@ -33,7 +33,7 @@ import { SANDBOX_TUNNEL_PATHS } from '../src/shim/sandbox-paths.js'
  *  contract, so k8s and self-hosted behavior cannot drift apart unnoticed. */
 
 function root(
-  opts: { declared?: unknown; requireSandbox?: boolean; cliEntry?: boolean; store?: unknown; cp?: boolean } = {}
+  opts: { declared?: unknown; hostOff?: boolean; cliEntry?: boolean; store?: unknown; cp?: boolean } = {}
 ): string {
   const path = mkdtempSync(join(tmpdir(), 'ac-k8s-mode-'))
   writeFileSync(
@@ -41,7 +41,7 @@ function root(
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: opts.cp ?? false },
-      ...(opts.requireSandbox ? { security: { requireSandbox: true } } : {}),
+      ...(opts.hostOff ? { sandbox: { host: false } } : {}),
       ...(opts.store ? { store: opts.store } : {})
     })
   )
@@ -169,7 +169,6 @@ describe('daemon --k8s mode', () => {
         name: 'bot-a',
         status: 'active',
         runtime: 'claude',
-        runInSandbox: false,
         workspace: {
           mode: 'git-repo',
           path: '/agents/bot-a/workspace',
@@ -462,14 +461,13 @@ describe('daemon --k8s mode', () => {
     }
   })
 
-  it('claims no sandbox capability: the pod is the isolation unit, not the SRT mechanism', async () => {
+  it('offers no sandboxing strategy: the pod is the isolation unit, not the SRT mechanism', async () => {
     const k8sDaemon = daemon({ root: root({ declared: { runtimes: [{ id: 'claude' }] } }), k8s: true })
     try {
       await k8sDaemon.start()
       expect((k8sDaemon as any).sandboxMechanism).toBeUndefined()
-      const features: string[] = (k8sDaemon as any).registrationFeatures()
-      expect(features).not.toContain('sandbox')
-      expect(features).not.toContain('sandbox-required')
+      const pod = { available: false, reason: 'a k8s runtime is isolated by its own pod' }
+      expect((k8sDaemon as any).strategyTable()).toEqual({ host: { available: true }, srt: pod, microsandbox: pod })
     } finally {
       await k8sDaemon.stop()
     }
@@ -537,9 +535,9 @@ describe('daemon --k8s mode', () => {
     }
   })
 
-  it('refuses to start when requireSandbox is configured, rather than pretending', async () => {
+  it('refuses to start when sandbox.host is off, rather than pretending', async () => {
     const k8sDaemon = daemon({
-      root: root({ declared: { runtimes: [{ id: 'claude' }] }, requireSandbox: true }),
+      root: root({ declared: { runtimes: [{ id: 'claude' }] }, hostOff: true }),
       k8s: true
     })
     await expect(k8sDaemon.start()).rejects.toThrow(/sandbox\.host: false is not supported with --k8s/)
@@ -2550,7 +2548,6 @@ function poolAgent(isolation: 'shared' | 'session') {
     name: 'bot-a',
     status: 'active',
     runtime: 'claude',
-    runInSandbox: false,
     workspace: {
       mode: 'git-repo',
       path: '/agents/bot-a/workspace',

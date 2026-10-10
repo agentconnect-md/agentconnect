@@ -219,14 +219,10 @@ export interface DaemonCapabilities {
   runtimes: string[]
   acp: boolean
   features: string[]
-  /** Why a sandbox this daemon HAS cannot be provided right now; absent when it can. */
-  sandboxUnavailable?: string
   /** Session-executor facts (session-executors.md §10); absent while the facet is off. */
   executor?: DaemonExecutorFacts
   /** The machine's own effective strategy table (§5); absent for a daemon that predates it. */
   strategies?: ExecutorStrategyTable
-  /** Its retiring `sandbox.backend`, which the one-time `execution` migration reads (§5). */
-  sandboxBackend?: string
 }
 
 /** What a sharing daemon offers, for the console. The endpoint is deliberately dropped here: it is topology, never configured or shown (§10). */

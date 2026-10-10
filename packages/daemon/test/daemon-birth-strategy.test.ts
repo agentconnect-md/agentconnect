@@ -295,9 +295,8 @@ describe('the birth strategy on the holder', () => {
     })
   })
 
-  it('fills a verdict recorded before strategies were once, with the agent’s migrated `execution`', async () => {
-    // Not migrated by the Control Plane yet: `runInSandbox` is read as the migration reads it.
-    const root = scaffold({ runInSandbox: true })
+  it('fills a verdict recorded before strategies were once, with the agent’s `execution`', async () => {
+    const root = scaffold({ execution: 'srt' })
     const first = await start(root)
     const earlier = KEY('1700000000.000600')
     const undecided = KEY('1700000000.000700')

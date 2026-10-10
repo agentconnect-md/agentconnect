@@ -544,7 +544,6 @@ import {
   machineStrategies,
   SANDBOX_STRATEGIES,
   StrategyUnavailableError,
-  strategyReason,
   type EnvironmentDescriptor,
   type SandboxStrategy,
   type StrategyTable
@@ -2731,8 +2730,7 @@ export class Daemon {
       configPath: this.opts.configPath,
       overrides: this.opts.overrides,
       optional: !!this.opts.agentName,
-      autoCreate: true,
-      warn: (message) => this.log.warn(`config: ${message}`)
+      autoCreate: true
     })
     this.cfg = cfg
     // Validate operator mounts before startup can create any runtime hosts; a strategy that cannot honor them is unavailable.
@@ -2767,9 +2765,6 @@ export class Daemon {
   /** Phase 3 — probe every strategy the table offers (session-executors.md §5) and refuse a boot with none available. */
   private async sandboxPreflight(cfg: Config, root: string): Promise<void> {
     if (this.k8s) {
-      if (cfg.sandbox.backend === 'microsandbox') {
-        throw new Error('sandbox.backend=microsandbox cannot be combined with --k8s')
-      }
       if (!cfg.sandbox.host) {
         throw new Error(
           'daemon startup refused: sandbox.host: false is not supported with --k8s — a k8s runtime is isolated by its own pod, not by a strategy of this daemon'
@@ -7356,16 +7351,6 @@ export class Daemon {
     return platformIds()
   }
 
-  /** Why no sandboxing strategy can run here — what the console shows beside "Run in sandbox" until its strategy picker lands. */
-  private sandboxUnavailableReason(): string | undefined {
-    const table = this.strategyTable()
-    if (table.srt.available || table.microsandbox.available || this.k8s) return undefined
-    const offered = (['srt', 'microsandbox'] as const).filter((strategy) => this.strategyOffered(strategy))
-    if (!offered.length) return undefined
-    // Bounded before publishing: the log keeps the whole failure, while an over-long optional diagnostic would fail the register schema and strand the daemon.
-    return boundedDiagnostic(offered.map((strategy) => `${strategy}: ${strategyReason(table[strategy])}`).join('; '))
-  }
-
   private strategyOffered(strategy: SandboxStrategy): boolean {
     return strategy === 'microsandbox' ? this.cfg.sandbox.microsandbox !== false : this.cfg.sandbox[strategy]
   }
@@ -7394,9 +7379,9 @@ export class Daemon {
     return effectiveStrategies({ table: this.strategyTable() })
   }
 
-  /** The strategy an agent's sessions run in (§5), read the same way the Control Plane migrates `runInSandbox`. */
+  /** The strategy an agent's sessions run in (§5). */
   private agentStrategy(agent: Agent): string {
-    return agentStrategyOf(agent, this.cfg.sandbox.backend)
+    return agentStrategyOf(agent)
   }
 
   /** Why this machine cannot start a session in `strategy` now; undefined ⇒ it can. Nothing runs it in a weaker boundary instead (§5). */
@@ -7473,9 +7458,6 @@ export class Daemon {
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
-      // Only a machine that can confine claims it; one that cannot refuses a sandboxed session, and `sandboxUnavailable` says why.
-      ...(this.strategyTable().srt.available || this.strategyTable().microsandbox.available ? ['sandbox'] : []),
-      ...(!this.k8s && !this.cfg.sandbox.host ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       MEMORY_ENTRIES_V1_FEATURE,
       MEMORY_ENTRIES_SEARCH_V1_FEATURE,
@@ -24360,10 +24342,7 @@ export class Daemon {
       resolveInitialRegistry,
       registrationPlatforms: () => this.registrationPlatforms(),
       registrationFeatures: () => this.registrationFeatures(),
-      sandboxUnavailable: () => this.sandboxUnavailableReason(),
       ownStrategies: () => this.strategyTable(),
-      // Only for the Control Plane's one-time `runInSandbox` migration: the retiring key, or its old default.
-      sandboxBackend: () => this.cfg.sandbox.backend ?? 'srt',
       contentStore: () => this.dataPlane?.storeId,
       executorFacet: () => this.executorFacet,
       admittedRuntimeIds: () => this.admittedRuntimeIds(),
@@ -24907,15 +24886,9 @@ export class Daemon {
       hostAvailable: (runtimeId) => (this.k8s ? undefined : !!this.localRuntimeCatalog?.entries[runtimeId]),
       credentialsConfigured: (runtimeId) =>
         this.k8s ? undefined : runtimeCredentialsConfigured(runtimeId, this.runtimeCatalog.entries[runtimeId]?.runtime),
-      // The legacy single-environment reading, kept for a console without the strategy picker: the VM's only where the file still selects it.
+      // The runtime-level reading beside the per-strategy entries: the host install's, since `host` and `srt` start it.
       unavailableReason: (runtimeId) =>
-        this.cfg.sandbox.backend === 'microsandbox' && this.microsandboxTable
-          ? !this.microsandboxCatalog?.entries[runtimeId]
-            ? 'image-binary-missing'
-            : undefined
-          : !this.k8s && !this.localRuntimeCatalog?.entries[runtimeId]
-            ? 'host-binary-missing'
-            : undefined,
+        !this.k8s && !this.localRuntimeCatalog?.entries[runtimeId] ? 'host-binary-missing' : undefined,
       strategyEntries: (runtimeId, probed) => (this.k8s ? undefined : this.runtimeStrategyEntries(runtimeId, probed)),
       admittedRuntimes: () => this.runtimes,
       refreshAdmitted: () => this.refreshAdmittedRuntimes(),

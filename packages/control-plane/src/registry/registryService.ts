@@ -10,7 +10,7 @@
  *
  * Transport-free and Prisma-free: depends only on repository ports + a `Clock`.
  */
-import { ExecutorFacts, ExecutorStrategyName, ExecutorStrategyTable } from '@agentconnect.md/protocol'
+import { ExecutorFacts, ExecutorStrategyTable } from '@agentconnect.md/protocol'
 import type { RegisterReq, Heartbeat, FactsRuntimeProfile, FactsMcpServer } from '@agentconnect.md/protocol'
 import type {
   DaemonRegistry,
@@ -46,18 +46,13 @@ function normCapabilities(raw: unknown): DaemonCapabilities {
   const arr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
   const executor = normExecutor(c.executor)
   const strategies = ExecutorStrategyTable.safeParse(c.strategies)
-  const sandboxBackend = ExecutorStrategyName.safeParse(c.sandboxBackend)
   return {
     platforms: arr(c.platforms),
     runtimes: arr(c.runtimes),
     acp: c.acp === true,
     features: arr(c.features),
-    ...(typeof c.sandboxUnavailable === 'string' && c.sandboxUnavailable
-      ? { sandboxUnavailable: c.sandboxUnavailable }
-      : {}),
     ...(executor ? { executor } : {}),
-    ...(strategies.success ? { strategies: strategies.data } : {}),
-    ...(sandboxBackend.success ? { sandboxBackend: sandboxBackend.data } : {})
+    ...(strategies.success ? { strategies: strategies.data } : {})
   }
 }
 
