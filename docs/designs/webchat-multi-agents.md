@@ -41,7 +41,7 @@ participant roster** — a private mini-channel owned by one human:
 - The conversation keeps one owner (`userId`) and gains an ordered set of
   **participant agents** with a designated **primary agent** (the first agent
   it ever had). The roster grows by owner-initiated joins — at creation or
-  mid-conversation — and never shrinks in v1.
+  mid-conversation — and shrinks when the owner removes a non-primary member.
 - The browser addresses agents with **structured mentions**; an unmentioned
   turn routes by a deterministic client-side ladder (mention → last responder →
   primary agent), validated server-side against the roster.
@@ -128,9 +128,9 @@ model WebchatConversationAgent {
 - **Roster cap:** 8 participants. The cap bounds relay fan-out and browser
   stream multiplexing; it is a config constant, not a schema property.
 
-**The roster grows; it never shrinks (v1).** The owner selects the initial
+**The roster grows, and members can leave.** The owner selects the initial
 participants when starting the conversation and may **add** more at any point
-mid-conversation:
+mid-conversation, or remove a non-primary member (section 3.1a):
 
 ```
 POST /orgs/:orgId/webchat/conversations/:conversationId/agents   { agentId }
@@ -158,16 +158,61 @@ POST /orgs/:orgId/webchat/conversations/:conversationId/agents   { agentId }
   channel joiner does: its transcript starts at join (context fan-out reaches
   it from then on); backfilling pre-join history is deliberately out of scope.
 
-### 3.1a Future: removal
+### 3.1a Removal
 
-Removing a participant stays unsupported. When it is wanted, the sketch is
-recorded here so it is not re-derived: owner-only
-`DELETE /orgs/:orgId/webchat/conversations/:conversationId/agents/:agentId`;
-removal closes the participant's current session pointer while its transcript
-rows remain; removing the primary auto-promotes the longest-standing remaining
-member (by `addedAt`, tie-broken by `agentId`, swapped with the mirrored
-`agentId` column in one transaction); removing the last participant is
-refused.
+The owner may remove a **member** from a live conversation:
+
+```
+DELETE /orgs/:orgId/webchat/conversations/:conversationId/agents/:agentId
+```
+
+- Owner-only and idempotent: an agent that is not in the roster answers 200
+  with the current roster. A session continuation's fixed participant is
+  refused with 409, like a join.
+- **The primary cannot be removed** (409). It anchors
+  `WebchatConversation.agentId`, `owns()`, the legacy per-agent mint path, and
+  the delegated-MCP grant tuple, so removing it would need the promotion rule
+  below. Because the primary always stays, a conversation can never be emptied.
+- **Soft removal.** The participant row gets `removedAt`/`removedByUserId`,
+  its current-session pointer is cleared, and its `currentSessionRev` advances.
+  Every roster read (`rc/verify`, the remote-MCP authority check, the agent
+  chat key roster, the console's resume roster) excludes removed rows; a late
+  session event from the removed agent never reinstalls a pointer. The row
+  still lets `findOwner` attribute such a late event to the conversation's
+  owner. The removed agent's earlier posts stay in every transcript.
+- Removing down to one participant restores single-agent behavior: the
+  delegated admin MCP is granted again on the next verify (section 10.3), and
+  the runtime controls return (section 9.3).
+- **Rejoining** through the section 3.1 endpoint restores the row at the end
+  of the roster (`ord` = next slot).
+- **Roster refresh is the same reconnect as a join.** The browser that removed
+  the member rebuilds its socket, and the fresh `rc/verify` makes that relay
+  cache the shrunk roster (a newer verdict always replaces an older one).
+
+Known limits of the reconnect refresh, accepted for now:
+
+1. **Stale relays can still wake a removed member.** The relay caches rosters
+   per instance, and the chart runs two relay pods by default. Until a relay
+   that still caches the old roster sees a reconnect, it keeps fanning other
+   members' committed posts to the removed agent as `context` with their depth
+   stamp, so the section 5.2a continuation can still wake it and let it reply.
+   Other tabs keep their stale roster for user turns too; targeting an agent
+   the owner can still view is not an authorization breach (section 4.2).
+2. **A late reply is still shown once.** A reply the removed agent was already
+   producing is unbound on a refreshed relay (`bindWebchatPostAuthor`): the
+   relay strips its depth stamp, so it wakes nobody, but it still reaches the
+   browser and the other members' transcripts.
+3. **The busy guard covers the browser's own turns only.** The composer
+   refuses removal while a reply streams or a message is queued, but an
+   agent-to-agent continuation chain (section 5.2a) may run without the
+   browser being busy.
+
+A strongly consistent roster (a roster revision the daemon checks, or a
+CP→relay invalidation signal) would close the first limit.
+
+**Future: removing the primary.** Removing the primary would auto-promote the
+longest-standing remaining member (by `addedAt`, tie-broken by `agentId`,
+swapped with the mirrored `agentId` column in one transaction).
 
 ### 3.2 The conversation becomes a recorded coordinate
 
@@ -622,8 +667,9 @@ Two scope rules:
 - **`rc/verify`** (`relay-cp.ts:82-112`): the verdict returns the roster with
   placements — `participants: [{ agentId, daemonId, primary }]` — instead of
   the singular `agentId`/`daemonId`. The relay caches it per browser
-  connection; a mid-conversation join refreshes it by REBUILDING the browser
-  socket (section 3.1), so the cache is valid for the connection's lifetime.
+  connection; a mid-conversation join or removal refreshes it by REBUILDING the
+  browser socket (sections 3.1 and 3.1a), so the cache is valid for the
+  connection's lifetime.
   A daemon placement moved mid-connection surfaces as a failed delivery and
   the relay re-verifies once — the same lazy re-resolution reconnects use.
   The CP stays off the per-message path.
@@ -745,8 +791,8 @@ freely removable; the Home path creates the conversation at send
 (`HomeView.tsx:169-182` calls `openPlayground` inside `send()`), minting with
 `agentIds[]`. After that, agents join through the section 3.1 endpoint — the
 `+` chip stays available in the live conversation composer — and the client
-rebuilds its socket so the relay picks up the grown roster. What is never
-possible is REMOVING an agent from an existing conversation (section 3.1a).
+rebuilds its socket so the relay picks up the grown roster. A member can later
+be removed from its chip (sections 3.1a and 9.2); the primary cannot.
 
 ### 9.2 In-conversation composer
 
@@ -755,6 +801,9 @@ possible is REMOVING an agent from an existing conversation (section 3.1a).
 - The `+` chip beside the roster chips adds an agent mid-conversation
   (section 3.1) — the same affordance as pre-send assembly, now backed by the
   join endpoint plus a socket rebuild. Refused while a turn is streaming.
+- Each member's roster chip carries a remove button (section 3.1a), backed by
+  the removal endpoint plus the same socket rebuild. The primary's chip has
+  none, and the button is disabled while a turn streams or a message is queued.
 - **Routing is always visible**: the composer footer shows a small
   "→ <agent>" indicator of who will receive the message — the mentioned set
   when chips are present, else the affinity/primary target — so the implicit
@@ -909,14 +958,16 @@ user-facing product ("talk to several agents in one Playground conversation").
 
 Questions resolved during design review:
 
-1. **The roster grows mid-conversation; it never shrinks (v1)** — the owner
-   may add agents to a live conversation at any point (revising the earlier
-   fixed-at-creation call); roster refresh is a plain browser reconnect.
-   Removal stays future work with its shape recorded in section 3.1a.
+1. **The roster grows mid-conversation, and members can be removed** — the
+   owner may add agents to a live conversation at any point (revising the
+   earlier fixed-at-creation call) and remove any member except the primary
+   (section 3.1a, revising the earlier never-shrinks call); roster refresh is
+   a plain browser reconnect either way, with the stale-relay limits recorded
+   in section 3.1a.
 2. **Primary never changes** — it is the first agent the conversation ever
    had, a derived compatibility/default anchor with no user-facing management.
-   (The auto-promotion rule in section 3.1a applies only if removal ships
-   later.)
+   It cannot be removed; the auto-promotion rule in section 3.1a applies only
+   if removing the primary ships later.
 3. **Attachment fan-out** — full fan-out: a turn's image travels with its
    context copies to every participant, bounded by roster cap × the 160 KiB
    image cap (sections 5.1, 10.1).
