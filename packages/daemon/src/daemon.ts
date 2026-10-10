@@ -2103,7 +2103,12 @@ export class Daemon {
         return this.cpClient.requestProviderCredentials(request, signal)
       },
       keyServer: () => (this.k8s ? this.modelSessions.keyServer : undefined),
-      cloudBaseUrl: this.k8s ? process.env.TYPESAFE_MODEL_BASE_URL?.trim() : undefined,
+      cloudEndpoints: this.k8s
+        ? {
+            typesafe: process.env.TYPESAFE_MODEL_BASE_URL?.trim(),
+            openai: process.env.OPENAI_MODEL_BASE_URL?.trim()
+          }
+        : undefined,
       downloadImage: (agentId, integrationId, attachment, maxBytes, signal) => {
         signal.throwIfAborted()
         return attachment.sourceUrl

@@ -131,7 +131,8 @@ export interface DecisionEvaluatorDeps {
   orgForAgent(agentId: string): string | undefined
   credentials(request: ProviderCredentialsRequest, signal: AbortSignal): Promise<ProviderCredentialsReply>
   keyServer(): KeyServerClient | undefined
-  cloudBaseUrl?: string
+  // Managed-pool gateway API roots per provider; a configured one replaces BYOK for that provider.
+  cloudEndpoints?: Partial<Record<'typesafe' | 'openai', string>>
   fetch?: typeof fetch
   downloadImage?: DecisionImageDownload
   timeoutMs?: number
@@ -147,13 +148,19 @@ export class DecisionEvaluator {
   constructor(private readonly deps: DecisionEvaluatorDeps) {}
 
   catalog(): DecisionCatalogReply {
-    const cloudAvailable = !!this.deps.keyServer() && ProviderEndpoint.safeParse(this.deps.cloudBaseUrl).success
     return {
       providers: DECISION_PROVIDER_PROFILES.map((profile) => ({
         ...profile,
-        cloudAvailable: profile.id === 'typesafe' && cloudAvailable
+        cloudAvailable: !!this.cloudEndpoint(profile.id)
       }))
     }
+  }
+
+  private cloudEndpoint(provider: string): { issuer: KeyServerClient; endpoint: string } | undefined {
+    if (provider !== 'typesafe' && provider !== 'openai') return undefined
+    const endpoint = ProviderEndpoint.safeParse(this.deps.cloudEndpoints?.[provider])
+    const issuer = endpoint.success ? this.deps.keyServer() : undefined
+    return issuer && endpoint.success ? { issuer, endpoint: endpoint.data } : undefined
   }
 
   close(): void {
@@ -202,31 +209,30 @@ export class DecisionEvaluator {
     let issuer: KeyServerClient | undefined
     try {
       let credentials
-      try {
-        credentials = (await this.deps.credentials({ agentId, provider }, signal)).credentials
-      } catch {
-        signal.throwIfAborted()
-        return unavailable('credentials')
-      }
-      signal.throwIfAborted()
-      if (credentials) {
-        credentials = {
-          ...credentials,
-          endpoint: credentials.endpoint ?? PROVIDER_KEY_PROFILES[provider].defaultEndpoint
-        }
-      } else {
-        if (provider !== 'typesafe') return unavailable('credentials')
-        issuer = this.deps.keyServer()
-        const endpoint = ProviderEndpoint.safeParse(this.deps.cloudBaseUrl)
-        if (!issuer || !endpoint.success) return unavailable('credentials')
+      const cloud = this.cloudEndpoint(provider)
+      if (cloud) {
+        issuer = cloud.issuer
         grant = await issuer.issue(
-          { orgId, agentId, sessionId: `decision:${evaluationId}`, provider: 'typesafe', ttlSeconds: 60 },
+          { orgId, agentId, sessionId: `decision:${evaluationId}`, provider, ttlSeconds: 60 },
           signal
         )
         signal.throwIfAborted()
         const now = this.deps.now?.() ?? performance.timeOrigin + performance.now()
         if (grant.expiresAtMs !== undefined && grant.expiresAtMs <= now) return unavailable('credentials')
-        credentials = { apiKey: grant.key, endpoint: endpoint.data, headers: {} }
+        credentials = { apiKey: grant.key, endpoint: cloud.endpoint, headers: {} }
+      } else {
+        try {
+          credentials = (await this.deps.credentials({ agentId, provider }, signal)).credentials
+        } catch {
+          signal.throwIfAborted()
+          return unavailable('credentials')
+        }
+        signal.throwIfAborted()
+        if (!credentials) return unavailable('credentials')
+        credentials = {
+          ...credentials,
+          endpoint: credentials.endpoint ?? PROVIDER_KEY_PROFILES[provider].defaultEndpoint
+        }
       }
       if (this.deps.orgForAgent(agentId) !== orgId) return unavailable('credentials')
       let rawRequest = body
