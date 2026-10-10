@@ -3810,6 +3810,8 @@ export interface AgentPermissionRequestDto {
   resolvedByName?: string | null
   /** The live request's own options; absent for an elicitation, a settled request, or an older daemon. */
   options?: AgentPermissionOptionDto[]
+  /** Set on a background sub-session's request: the conversation it belongs to, which shows it too. */
+  parentSessionId?: string
 }
 
 export interface AgentPermissionOptionDto {
@@ -3984,9 +3986,25 @@ export async function stopAssistantSubsession(
   return apiPost(`${assistantBase(agentId)}/subsessions/${encodeURIComponent(sessionId)}/stop`, {})
 }
 
-export async function fetchAssistantDrafts(
-  agentId: string
-): Promise<{ drafts: AssistantDraftDto[]; truncated: boolean }> {
+/** A background sub-session's runtime permission request waiting on an answer; decided like any approval request. */
+export interface AssistantPermissionRequestDto {
+  requestId: string
+  tool: string
+  createdAt: string
+  /** When it is denied and the sub-session stops, unless someone answers first. */
+  expiresAt: string
+  options?: AgentPermissionOptionDto[]
+  /** Present only when the viewer may open it. */
+  subsession: { sessionId: string; title: string | null } | null
+  parent: { sessionId: string; title: string | null; platform: string | null; channelName: string | null } | null
+}
+
+export async function fetchAssistantDrafts(agentId: string): Promise<{
+  drafts: AssistantDraftDto[]
+  truncated: boolean
+  /** Absent before the Control Plane listed them. */
+  permissionRequests?: AssistantPermissionRequestDto[]
+}> {
   return apiGet(`${assistantBase(agentId)}/drafts`)
 }
 

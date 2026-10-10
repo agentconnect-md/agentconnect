@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type {
+  AssistantActivityPermission,
   FactsMcpServer,
   BootstrapLifecycle,
   FactsRuntimeProfile,
@@ -203,6 +204,8 @@ export interface CpClientSeamHost {
   decideAssistantDraft: AssistantActivityDeps['decideDraft']
   /** The `!cancel` core shared by every stop surface: interrupt a session's turn, no mute; true when one was interrupted. */
   cancelSessionByKey(key: string, actor?: InteractionActor): Promise<boolean>
+  /** Background sub-sessions' permission requests still waiting on a human (assistant-mode.md §5.6). */
+  pendingSubsessionApprovals(agentId: string): AssistantActivityPermission[]
   /** The edge's in-memory merge-when-ready registry, or undefined before agents are loaded. */
   autoMerge(): AutoMergeWatcher | undefined
   /** The console keep-alive leases over this daemon's sandboxes (`k8s/sandbox-hold.ts`). */
@@ -453,7 +456,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       agent: (agentId) => host.agents().get(agentId),
       now: () => systemClock.now(),
       decideDraft: (input) => host.decideAssistantDraft(input),
-      stopSession: (key, actor) => host.cancelSessionByKey(key, actor)
+      stopSession: (key, actor) => host.cancelSessionByKey(key, actor),
+      pendingPermissions: (agentId) => host.pendingSubsessionApprovals(agentId)
     }),
     // Merge-when-ready lives at the EDGE and nowhere else — the CP relays these two frames and
     // stores nothing, so an unarmed answer is the truth about this process, not a lost row.

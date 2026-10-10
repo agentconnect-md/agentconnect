@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   ASSISTANT_ACTIVITY_ITEMS_MAX,
   ASSISTANT_ACTIVITY_RESULT_BYTES,
+  AgentPermissionRequestRecord,
   AssistantActivityDraft,
+  AssistantActivityPermission,
   assistantActivityResultFits,
   buildEnvelope,
   decodeEnvelope,
@@ -235,6 +237,47 @@ describe('assistant/activity frames', () => {
         failure: 'The agent already has 3 sub-sessions running.'
       })
     ).toBe(true)
+  })
+
+  it('carries sub-sessions’ permission requests beside the drafts, and either side may predate them', () => {
+    const permission = {
+      requestId: '22222222-2222-4222-8222-222222222222',
+      sessionId: 'sid-sub',
+      parentSessionId: 'sid-parent',
+      tool: 'Write src/app.ts',
+      createdAt: '2026-10-09T09:00:00.000Z',
+      expiresAt: '2026-10-09T21:00:00.000Z',
+      options: [{ optionId: 'o-allow', name: 'Allow', kind: 'allow_once' }]
+    }
+    const drafts = { operation: 'drafts', drafts: [], truncated: false }
+    // A Control Plane that asks, and one that predates the flag.
+    expect(
+      decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'drafts', limit: 50, permissions: true })
+    ).toBe(true)
+    expect(decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'drafts', limit: 50 })).toBe(true)
+    // A daemon that lists them, and one that predates them.
+    expect(decodes('assistant/activity/read/result', { ...drafts, permissions: [permission] })).toBe(true)
+    expect(decodes('assistant/activity/read/result', drafts)).toBe(true)
+    expect(AssistantActivityPermission.safeParse({ ...permission, options: undefined }).success).toBe(true)
+    expect(AssistantActivityPermission.safeParse({ ...permission, requestId: 'not-a-uuid' }).success).toBe(false)
+    expect(AssistantActivityPermission.safeParse({ ...permission, tool: 'x'.repeat(241) }).success).toBe(false)
+
+    // The approval queue names the conversation a sub-session's request belongs to; an older daemon's rows have none.
+    const record = {
+      id: permission.requestId,
+      agentId: AGENT_ID,
+      sessionId: 'sid-sub',
+      createdAt: permission.createdAt,
+      requesterId: null,
+      requesterName: 'Butler',
+      command: permission.tool,
+      status: 'pending',
+      resolvedAt: null
+    }
+    expect(AgentPermissionRequestRecord.parse({ ...record, parentSessionId: 'sid-parent' }).parentSessionId).toBe(
+      'sid-parent'
+    )
+    expect(AgentPermissionRequestRecord.parse(record)).not.toHaveProperty('parentSessionId')
   })
 
   it('refuses unbounded or malformed requests and answers', () => {

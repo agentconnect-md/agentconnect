@@ -735,6 +735,11 @@ import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
 import { PermissionCoordinator, type PermissionHost } from './permissions/coordinator.js'
+import {
+  DEFAULT_PERMISSION_WAIT_HOURS,
+  platformThread,
+  type SubsessionApprovalRoute
+} from './permissions/subsession-approval.js'
 import { CollabCoordinator, type CollabHost } from './collab/coordinator.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
@@ -12976,7 +12981,8 @@ export class Daemon {
    *  physical convergence a duty change drives. */
   private permissionHost(): PermissionHost {
     return {
-      cancelTurn: (p) => this.interruptTurn(p.plan.agentId, p.plan.sessionKey, 'cancel', p.acpSessionId, { only: p }),
+      cancelTurn: (p, reason) =>
+        this.interruptTurn(p.plan.agentId, p.plan.sessionKey, reason ?? 'cancel', p.acpSessionId, { only: p }),
       log: () => this.log,
       clock: () => this.clock,
       store: () => this.store,
@@ -13008,10 +13014,43 @@ export class Daemon {
           .map((i) => i.id)
         return preferred && live.includes(preferred) ? [preferred, ...live.filter((id) => id !== preferred)] : live
       },
-      // Unconditional (§5.3): a DM lives outside the session conversation, so the click's
-      // only route home is the block_id target — on the direct path it is simply unread.
+      // Unconditional (§5.3): a card outside the session's conversation routes its click home only by this block_id.
       slackDmSessionTarget: (p, integrationId) =>
-        encodeSharedSlackStatusTarget({ agentId: p.plan.agentId, integrationId, sessionKey: p.plan.sessionKey })
+        encodeSharedSlackStatusTarget({ agentId: p.plan.agentId, integrationId, sessionKey: p.plan.sessionKey }),
+      subsessionApprovalRoute: (p) => this.subsessionApprovalRoute(p),
+      assistantApprover: (agentId, requestId) => this.drafts.cardApprover(agentId, requestId)
+    }
+  }
+
+  /** Where a background sub-session's permission request goes: the conversation it belongs to (assistant-mode.md §5.6). */
+  private async subsessionApprovalRoute(p: Pending): Promise<SubsessionApprovalRoute | undefined> {
+    const { agentId, sessionKey: key } = p.plan
+    const agent = this.agents.get(agentId)
+    if (!assistantModeOn(agent)) return undefined
+    const row = await this.store.assistantSubsessions.get(agentId, key)
+    if (!row || row.kind === 'patrol') return undefined
+    const parent = await this.store.getSessionByOutwardId(row.parentSessionId, agentId)
+    const route = {
+      parentSessionId: row.parentSessionId,
+      title: (await this.store.getSession(key))?.title ?? null,
+      waitHours: agent?.assistantMode?.limits?.permissionWaitHours ?? DEFAULT_PERMISSION_WAIT_HOURS
+    }
+    const integrationId =
+      parent?.platform === 'slack'
+        ? this.integrationIdForSessionTransport(agentId, parent.platform, parent.transportScope)
+        : undefined
+    // Webchat, and every platform without an in-chat card, has the console's own request list.
+    if (!parent || !integrationId) return { ...route, place: { kind: 'console' } }
+    const thread = platformThread(parent.thread)
+    return {
+      ...route,
+      place: {
+        kind: 'slack',
+        integrationId,
+        channel: parent.channel,
+        ...(thread ? { thread } : {}),
+        external: this.assistantPlaceExternal(agentId, integrationId, parent.channel)
+      }
     }
   }
 
@@ -24311,6 +24350,7 @@ export class Daemon {
       dispatchPullRequestFeedback: (req) => this.dispatchPullRequestFeedback(req),
       listBackgroundTasks: (req) => this.listBackgroundTasks(req),
       decideAssistantDraft: (input) => this.drafts.decideFromConsole(input),
+      pendingSubsessionApprovals: (agentId) => this.permissions.pendingSubsessionApprovals(agentId),
       cancelSessionByKey: async (key, actor) => {
         const applied = await this.commands.cancelSessionByKey(key, actor)
         if (applied) this.commands.logSessionAction('cancel', key, actor)

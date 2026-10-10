@@ -571,7 +571,21 @@ export function buildApprovalDmIntro(info: {
   sessionUrl: string
   sourceUrl?: string
   sourceText?: string
+  /** A background sub-session is asking (assistant-mode.md §5.6); `sessionUrl` is its own page. */
+  subsession?: { title: string | null; waitHours: number }
 }): unknown[] {
+  if (info.subsession) {
+    const { title, waitHours } = info.subsession
+    return [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `${subsessionAsker(info.agentName, title)} is waiting on an approval. ${subsessionWaitNote(waitHours)}\n<${info.sessionUrl}|Open the sub-session>`
+        }
+      }
+    ]
+  }
   const requester = info.requesterName ? ` for *${escapeMrkdwnLabel(clampTo(info.requesterName, 60))}*` : ''
   // Quoted on every line so a multi-line message stays one visual quote block.
   const quote = info.sourceText?.trim()
@@ -587,6 +601,53 @@ export function buildApprovalDmIntro(info: {
       text: {
         type: 'mrkdwn',
         text: `*${escapeMrkdwnLabel(clampTo(info.agentName, 60))}* is waiting on an approval${requester}.${quote}\n${links.join(' · ')}`
+      }
+    }
+  ]
+}
+
+/** "Agent's background sub-session “title”", the subject of every sub-session approval card. */
+function subsessionAsker(agentName: string, title: string | null): string {
+  const named = title?.trim() ? ` “${escapeMrkdwnLabel(clampTo(title.trim(), 80))}”` : ''
+  return `*${escapeMrkdwnLabel(clampTo(agentName, 60))}*’s background sub-session${named}`
+}
+
+const subsessionWaitNote = (hours: number): string =>
+  `If nobody answers within ${hours} hour${hours === 1 ? '' : 's'}, it is denied and the sub-session stops.`
+
+/** The header of a sub-session's approval card in the conversation it belongs to (assistant-mode.md §5.6). Pure. */
+export function buildSubsessionApprovalIntro(info: {
+  agentName: string
+  title: string | null
+  sessionUrl: string
+  waitHours: number
+}): unknown[] {
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `${subsessionAsker(info.agentName, info.title)} is asking for permission. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the sub-session>`
+      }
+    }
+  ]
+}
+
+/** The neutral notice a sub-session's request leaves in its conversation when only an Agent editor may answer it (§5.6). Pure. */
+export function buildSubsessionApprovalNotice(info: {
+  agentName: string
+  title: string | null
+  sessionUrl: string
+  waitHours: number
+}): unknown[] {
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `:lock: ${subsessionAsker(info.agentName, info.title)} is waiting for permission. Ask an Agent editor to ` +
+          `allow it from the Agent or Session page. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the sub-session>`
       }
     }
   ]

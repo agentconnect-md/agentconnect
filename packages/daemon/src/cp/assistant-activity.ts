@@ -8,6 +8,7 @@ import {
   type AssistantActivityErrorReason,
   type AssistantActivityGrant,
   type AssistantActivityItem,
+  type AssistantActivityPermission,
   type AssistantActivityPlace,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
@@ -64,6 +65,8 @@ export interface AssistantActivityDeps {
   }): Promise<DraftDecision>
   /** The `!cancel` core every stop surface shares; true when it interrupted a turn. */
   stopSession(key: string, actor: { userId: string; name?: string }): Promise<boolean>
+  /** Background sub-sessions' permission requests still waiting on a human (assistant-mode.md §5.6), decided through the approval queue. */
+  pendingPermissions?(agentId: string): AssistantActivityPermission[]
 }
 
 /** The seam the CP client dispatches `assistant/activity/*` to. */
@@ -155,7 +158,14 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
               titles.set(itemId, (await store.assistantItems.get(req.agentId, itemId))?.title ?? null)
           }
           const { kept, trimmed } = withinBudget(page.map((draft) => draftOf(draft, names, titles)))
-          return { operation: 'drafts', drafts: kept, truncated: rows.length > req.limit || trimmed }
+          // Permission requests only for a Control Plane that asked, as proposals are.
+          const permissions = req.permissions === true ? (deps.pendingPermissions?.(req.agentId) ?? []) : undefined
+          return {
+            operation: 'drafts',
+            drafts: kept,
+            truncated: rows.length > req.limit || trimmed,
+            ...(permissions ? { permissions } : {})
+          }
         }
         case 'grants': {
           const rows = await store.assistantDrafts.listGrants(req.agentId, ASSISTANT_ACTIVITY_GRANTS_MAX + 1)

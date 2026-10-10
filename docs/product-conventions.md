@@ -1003,6 +1003,31 @@ transcript with no composer and no composer stop, since nothing sent from there 
 sub-session. An agent whose daemon cannot list one conversation's sub-sessions says to upgrade
 it.
 
+## Assistant-mode sub-session permission requests
+
+When a background sub-session needs permission to run a tool, whether delegated or an approved
+proposal's task, the request goes to the conversation the work belongs to, and the sub-session
+waits; its turn is not cancelled. A patrol never asks.
+
+- In a Slack conversation where "allow runtime changes in chat" is on, an approval card is posted
+  there, in the conversation's thread or at its top level when it is one long conversation, and
+  anyone there may answer it. The card says a background sub-session is asking, names and links
+  it, and offers the runtime's own choices, "always allow" included where offered.
+- Where that setting is off, the conversation gets a notice that the sub-session is waiting, and an
+  Agent editor gets the request in a direct message, as for any other request.
+- In a webchat conversation, the request appears among the conversation's own pending requests,
+  marked as from a background sub-session.
+- A conversation shared with another organization gets no card. It goes to the agent's
+  responsible user in a direct message, or to its fallback conversation, as drafts do.
+- Editors can also answer it on the sub-session's own page and in the Activity view.
+
+The first answer from any of these places decides it, and the other cards show that decision. If
+nobody answers within the agent's "Hours to wait for approval" (12 unless set), the request is
+denied, the sub-session stops, and the conversation is told it ended; delegating the work again
+asks again. A request whose turn ends any other way, a restart included, expires and can no
+longer be answered. A main conversation's own requests, and agents outside assistant mode, keep
+today's behavior.
+
 ## Assistant-mode patrols
 
 When an active or waiting item's next check comes due, the daemon holding the agent's duty starts
@@ -1102,7 +1127,10 @@ shows the most recent entries, up to a limit, and says when more exist.
   labelled as proposals: the sentence, the reason, the task, the conversation it runs in, its item,
   who is asked and when it expires, with Approve and Deny. An approved one says it runs in the
   background and reports back in that conversation; one refused at the sub-session limit keeps its
-  choices and says why.
+  choices and says why. Sub-sessions waiting for permission are listed here as well: which
+  sub-session and conversation (named only to someone who may view them), what it asks to run and
+  when it is denied unless answered, with the runtime's own choices. An answer here is the same
+  decision as the card's, and one answered elsewhere first says it is no longer waiting.
 - **Always allowed** is shown to editors only: each "Always allow from here to there" route. An
   editor may revoke one after a confirmation; the next post along it waits for approval again.
 

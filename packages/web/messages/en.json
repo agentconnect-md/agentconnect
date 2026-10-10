@@ -2807,6 +2807,7 @@
         "offline": "offline",
         "approvalRequests": "Approval requests",
         "pendingRequests": "Pending requests",
+        "fromSubsession": "Background sub-session",
         "pendingCount": "{count} pending",
         "requestUpdateError": "This approval request could not be updated. Try again.",
         "loadingRequests": "Loading requests…",
@@ -3181,6 +3182,18 @@
               "expired": "Expired. Nothing was run.",
               "unconfirmedGone": "Couldn’t confirm the decision, and it is no longer waiting. Check {place}; it may have started."
             }
+          }
+        },
+        "permissions": {
+          "badge": "Permission",
+          "expires": "Denied and stopped {time} if nobody answers",
+          "allow": "Allow",
+          "deny": "Deny",
+          "decideFailed": "Couldn’t decide. Try again.",
+          "outcome": {
+            "allowed": "Allowed. The sub-session continues.",
+            "denied": "Denied.",
+            "gone": "No longer waiting for approval."
           }
         },
         "grants": {

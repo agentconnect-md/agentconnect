@@ -254,6 +254,8 @@ export type TurnInterruptReason =
   | 'stalled'
   // assistant-mode.md §5.3: the place turned external, so the turn's reply must not post unapproved.
   | 'place turned external'
+  // assistant-mode.md §5.6: a sub-session's permission request went unanswered past `permissionWaitHours`.
+  | 'approval wait expired'
 
 /** What an interrupt means for the agent's admitted-but-unrun durable rows. `terminal` ends that
  *  work here (pause, removal, host respawn); `handoff` leaves the rows for the successor holder to

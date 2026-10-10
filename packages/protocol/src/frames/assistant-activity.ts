@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AGENT_PERMISSION_MAX_OPTIONS, AgentPermissionOption } from './agent.js'
 
 // The console's Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): the owning daemon answers from its store, the Control Plane proxies and keeps nothing.
 
@@ -18,6 +19,7 @@ export const ASSISTANT_ACTIVITY_ITEMS_MAX = 100
 export const ASSISTANT_ACTIVITY_SUBSESSIONS_MAX = 50
 export const ASSISTANT_ACTIVITY_DRAFTS_MAX = 50
 export const ASSISTANT_ACTIVITY_GRANTS_MAX = 200
+export const ASSISTANT_ACTIVITY_PERMISSIONS_MAX = 50
 /** Distinct follower places carried per item. */
 export const ASSISTANT_ACTIVITY_PLACES_MAX = 20
 /** Newest observations carried by one item read. */
@@ -135,6 +137,23 @@ export const AssistantActivityDraft = z.object({
 })
 export type AssistantActivityDraft = z.infer<typeof AssistantActivityDraft>
 
+/** A background sub-session's runtime permission request awaiting a human (assistant-mode.md §5.6): which sub-session, which tool, and when its wait runs out. */
+export const AssistantActivityPermission = z.object({
+  requestId: z.string().uuid(),
+  /** The sub-session's outward id. */
+  sessionId: ref,
+  /** The conversation it belongs to, by its session's outward id. */
+  parentSessionId: ref,
+  /** What it asks to run, secret-masked and bounded as the approval queue shows it. */
+  tool: z.string().max(240),
+  createdAt: time,
+  /** When it is denied and the sub-session stops, unless someone answers first. */
+  expiresAt: time,
+  /** The request's own options; absent when it takes a plain Allow or Deny. */
+  options: z.array(AgentPermissionOption).max(AGENT_PERMISSION_MAX_OPTIONS).optional()
+})
+export type AssistantActivityPermission = z.infer<typeof AssistantActivityPermission>
+
 /** One end of a grant; webchat has no integration. */
 export const AssistantActivityGrantPlace = z.object({
   platform: z.string().min(1).max(64),
@@ -174,7 +193,9 @@ export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
     operation: z.literal('drafts'),
     limit: z.number().int().min(1).max(ASSISTANT_ACTIVITY_DRAFTS_MAX),
     /** Also list proposals (`kind: 'task'`); an older daemon ignores it and has none. */
-    proposals: z.boolean().optional()
+    proposals: z.boolean().optional(),
+    /** Also list sub-sessions' pending permission requests; an older daemon ignores it and lists none. */
+    permissions: z.boolean().optional()
   }),
   z.object({ agentId, operation: z.literal('grants') })
 ])
@@ -198,7 +219,9 @@ export const AssistantActivityReadResult = z.discriminatedUnion('operation', [
   z.object({
     operation: z.literal('drafts'),
     drafts: z.array(AssistantActivityDraft).max(ASSISTANT_ACTIVITY_DRAFTS_MAX),
-    truncated: z.boolean()
+    truncated: z.boolean(),
+    /** Present only when asked for, oldest first. */
+    permissions: z.array(AssistantActivityPermission).max(ASSISTANT_ACTIVITY_PERMISSIONS_MAX).optional()
   }),
   z.object({
     operation: z.literal('grants'),

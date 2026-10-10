@@ -16,11 +16,17 @@ import type {
   AgentPermissionDecision,
   AgentPermissionOption,
   ApprovalRouteTarget,
+  AssistantActivityPermission,
   ElicitCard,
   ElicitOutcome
 } from '@agentconnect.md/protocol'
-import { API_CALLER_ANSWER_PROTOCOLS, API_CALLER_ANSWER_TIMEOUT_MS, elicitFormBlockId } from '@agentconnect.md/protocol'
-import type { Clock } from '@agentconnect.md/connection'
+import {
+  API_CALLER_ANSWER_PROTOCOLS,
+  API_CALLER_ANSWER_TIMEOUT_MS,
+  ASSISTANT_ACTIVITY_PERMISSIONS_MAX,
+  elicitFormBlockId
+} from '@agentconnect.md/protocol'
+import type { Clock, TimerHandle } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
 import type { LocalStore } from '../store/local-store.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -40,6 +46,8 @@ import type {
 import {
   buildApprovalDmIntro,
   buildElicitationCard,
+  buildSubsessionApprovalIntro,
+  buildSubsessionApprovalNotice,
   buildElicitDmUnanswerableCard,
   buildElicitationResolvedCard,
   buildPermissionCard,
@@ -98,7 +106,8 @@ import {
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, turnState, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
-import { isPatrolCoordinate } from '../session/subsession-coordinate.js'
+import { isPatrolCoordinate, isSubsessionCoordinate } from '../session/subsession-coordinate.js'
+import { waitExpiredDecider, type SubsessionApprovalRoute, type SubsessionApprover } from './subsession-approval.js'
 import type { MemoryWriteAsk } from '../mcp/ops/memory.js'
 import {
   memoryWriteApprovalChoices,
@@ -127,8 +136,8 @@ export interface PermissionCoreHost {
   evalHooks(): DaemonEvaluationHooks
   /** The live extraction turn on this key, if any: only its bound bridge tools may be granted (#2091). */
   memoryExtraction(turnKey: string): MemoryExtractionTurn | undefined
-  /** End a turn as its caller's cancel would. */
-  cancelTurn(p: Pending): Promise<void>
+  /** End a turn as its caller's cancel would; a sub-session whose approval wait ran out names that instead. */
+  cancelTurn(p: Pending, reason?: 'approval wait expired'): Promise<void>
 }
 
 /** What the permission path knows about a live extraction turn: the bridge calls it has issued so far. */
@@ -185,6 +194,14 @@ function chosenLabel(target: ElicitTarget | null, value: string | string[] | num
 function surfaceActorId(rec: PendingElicitSurface & { surface: 'chat' }, userId: string): string {
   const scope = rec.facet.answerScope?.(rec)
   return scope ? `${rec.facet.platform}:${scope}:${userId}` : `${rec.facet.platform}:${userId}`
+}
+
+/** The requester a background sub-session's request is recorded under: the agent itself. */
+const agentAsker = (p: Pending): { id: null; name: string } => ({ id: null, name: p.plan.agentName })
+
+/** A chat card's blocks with the header it was posted under, which every rewrite keeps. */
+function chatCardBlocks(chat: { intro?: unknown[] }, blocks: unknown[]): unknown[] {
+  return chat.intro ? [...chat.intro, ...blocks] : blocks
 }
 
 /** One card's settlement, as its own surface re-renders it: the label, plus the ask it re-renders
@@ -331,6 +348,11 @@ export interface PermissionSurfaceHost {
   approvalDmIntegrations(agentId: string, preferred?: string): string[]
   /** Unconditional shared-target block_id for a DM card (§5.3). */
   slackDmSessionTarget(p: Pick<Pending, 'plan'>, integrationId: string): string
+  // ── assistant-mode sub-sessions (assistant-mode.md §5.6) ──
+  /** Where a background sub-session's request goes; undefined for every other turn. */
+  subsessionApprovalRoute?(p: Pending): Promise<SubsessionApprovalRoute | undefined>
+  /** The approver an external place's card goes to instead, as drafts route theirs (§5.5). */
+  assistantApprover?(agentId: string, requestId: string): Promise<SubsessionApprover | undefined>
 }
 
 /** Everything the permission coordinator touches on the `Daemon`. */
@@ -355,6 +377,24 @@ interface ChatPermissionCard {
   conn: SlackConnection
   channel: string
   ts?: string
+  /** A sub-session's card names who is asking above the request, on every rewrite too (assistant-mode.md §5.6). */
+  intro?: unknown[]
+  /** Its handle is also on the stored row, so a restart's sweep retires it; cleared once rewritten. */
+  stored?: { agentId: string; requestId: string }
+  /** Posted outside the turn's own conversation through this integration, which its relayed click names. */
+  routedVia?: string
+}
+
+/** A background sub-session's wait on one request (assistant-mode.md §5.6). */
+interface SubsessionWait {
+  route: SubsessionApprovalRoute
+  /** The sub-session's outward id. */
+  sessionId: string
+  /** What it asks to run, as the approval queue shows it. */
+  tool: string
+  createdAt: number
+  deadline: number
+  timer: TimerHandle
 }
 
 /** One approval every surface settles through (§11.1): the console always, plus whichever cards it was offered on. */
@@ -365,6 +405,8 @@ interface ApprovalEntry<P, R> {
   params: P
   resolve: (res: R) => void
   notify?: DmNotice
+  /** Set on a background sub-session's request: denied and stopped once its wait runs out. */
+  subsession?: SubsessionWait
 }
 
 interface PermissionApproval extends ApprovalEntry<RequestPermissionRequest, RequestPermissionResponse> {
@@ -507,13 +549,18 @@ export class PermissionCoordinator {
     sessionId: string,
     request: ApprovalRequestParts,
     p: Pending,
-    notifyChat = true
+    notifyChat = true,
+    requester?: { id: null; name: string }
   ): Promise<{ requesterName: string | null }> {
     const command = approvalRequestSummary(request)
     const store = this.host.store()
-    const session = await store.getSessionByAcpIdForAgent(agentId, sessionId)
-    const requesterId = p.plan.requesterId ?? session?.triggeredBy ?? null
-    const requesterName = requesterId ? ((await store.getDisplayNames([requesterId])).get(requesterId) ?? null) : null
+    const session = requester ? undefined : await store.getSessionByAcpIdForAgent(agentId, sessionId)
+    const requesterId = requester ? requester.id : (p.plan.requesterId ?? session?.triggeredBy ?? null)
+    const requesterName = requester
+      ? requester.name
+      : requesterId
+        ? ((await store.getDisplayNames([requesterId])).get(requesterId) ?? null)
+        : null
     await store.createPermissionRequest({
       id,
       agentId,
@@ -679,14 +726,15 @@ export class PermissionCoordinator {
     sessionId: string,
     params: RequestPermissionRequest,
     evaluationParams: RequestPermissionRequest,
-    p: Pending
+    p: Pending,
+    route?: SubsessionApprovalRoute
   ): Promise<RequestPermissionResponse> {
     const id = randomUUID()
     let resolveResult!: (res: RequestPermissionResponse) => void
     const result = new Promise<RequestPermissionResponse>((resolve) => (resolveResult = resolve))
     // Publish BEFORE the store write: the write awaits, and a cancellation sweep landing in
     // that window must find this entry or the agent waits on a resolver nobody can reach.
-    this.pendingApprovals.set(id, {
+    const entry: PermissionApproval = {
       kind: 'permission',
       owner: p.hostKey,
       agentId,
@@ -694,18 +742,23 @@ export class PermissionCoordinator {
       params,
       evaluationParams,
       resolve: resolveResult
-    })
+    }
+    this.pendingApprovals.set(id, entry)
+    const parts = permissionRequestParts(params)
+    if (route) this.armSubsessionWait(id, entry, p, route, parts)
     this.syncApprovalActivity(p.hostKey, sessionId)
     // The human wait starts when the request becomes answerable, not when its row lands — the
     // write used to be synchronous, and billing it to the turn's retry budget would shrink it.
     const wait = this.trackHumanApprovalWait(p, result)
-    const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, permissionRequestParts(params), p)
+    // A sub-session's turn was started by the agent itself, so the agent is who asks.
+    const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, parts, p, !route, route && agentAsker(p))
     this.recordedWrites.set(id, recorded)
     let requesterName: string | null = null
     try {
       requesterName = (await recorded).requesterName
     } catch (err) {
       this.pendingApprovals.delete(id)
+      this.clearSubsessionWait(entry)
       this.syncApprovalActivity(p.hostKey, sessionId, { id })
       this.recordedWrites.delete(id)
       resolveResult({ outcome: { outcome: 'cancelled' } })
@@ -713,7 +766,8 @@ export class PermissionCoordinator {
       throw err
     }
     this.recordedWrites.delete(id)
-    this.dispatchApprovalDm(id, agentId, p, requesterName)
+    if (route) this.dispatchSubsessionApproval(id, agentId, p, route, requesterName)
+    else this.dispatchApprovalDm(id, agentId, p, requesterName)
     return wait
   }
 
@@ -722,12 +776,13 @@ export class PermissionCoordinator {
     sessionId: string,
     params: CreateElicitationRequest,
     p: Pending,
-    choices: ApprovalChoice<CreateElicitationResponse>[] | undefined
+    choices: ApprovalChoice<CreateElicitationResponse>[] | undefined,
+    route?: SubsessionApprovalRoute
   ): Promise<CreateElicitationResponse> {
     const id = randomUUID()
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
-    this.pendingApprovals.set(id, {
+    const entry: ElicitationApproval = {
       kind: 'elicitation',
       owner: p.hostKey,
       agentId,
@@ -735,16 +790,21 @@ export class PermissionCoordinator {
       params,
       ...(choices ? { choices } : {}),
       resolve: resolveResult
-    })
+    }
+    this.pendingApprovals.set(id, entry)
+    const parts = elicitationApprovalParts(params)
+    if (route) this.armSubsessionWait(id, entry, p, route, parts)
     this.syncApprovalActivity(p.hostKey, sessionId)
     const wait = this.trackHumanApprovalWait(p, result)
-    const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, elicitationApprovalParts(params), p)
+    // A sub-session's turn was started by the agent itself, so the agent is who asks.
+    const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, parts, p, !route, route && agentAsker(p))
     this.recordedWrites.set(id, recorded)
     let requesterName: string | null = null
     try {
       requesterName = (await recorded).requesterName
     } catch (err) {
       this.pendingApprovals.delete(id)
+      this.clearSubsessionWait(entry)
       this.syncApprovalActivity(p.hostKey, sessionId, { id })
       this.recordedWrites.delete(id)
       resolveResult({ action: 'cancel' })
@@ -752,7 +812,8 @@ export class PermissionCoordinator {
       throw err
     }
     this.recordedWrites.delete(id)
-    this.dispatchApprovalDm(id, agentId, p, requesterName)
+    if (route) this.dispatchSubsessionApproval(id, agentId, p, route, requesterName)
+    else this.dispatchApprovalDm(id, agentId, p, requesterName)
     return wait
   }
 
@@ -873,31 +934,17 @@ export class PermissionCoordinator {
     requestId: string,
     agentId: string,
     p: Pending,
-    requesterName: string | null
+    requesterName: string | null,
+    subsession?: SubsessionApprovalRoute,
+    approver?: Extract<SubsessionApprover, { kind: 'member' }>
   ): Promise<void> {
-    const cp = this.host.cpApprovalRoute()
-    if (!cp) return
-    const preferred = p.plan.platform === 'slack' ? p.plan.integrationId : undefined
-    const integrationIds = this.host.approvalDmIntegrations(agentId, preferred)
-    if (integrationIds.length === 0) return
-    const requesterId = p.plan.platform === 'slack' && p.plan.requesterId ? p.plan.requesterId : undefined
-    const routed = await cp.approvalRoute(
-      {
-        agentId,
-        requestId,
-        sessionId: p.outwardSessionId,
-        ...(requesterId ? { requesterId } : {}),
-        integrationIds
-      },
-      this.host.orgForAgent(agentId)
-    )
-    const target = routed.target
+    const target = approver?.target ?? (await this.routeApprovalDm(requestId, agentId, p, subsession !== undefined))
     if (!target) return
     const rec = this.pendingApprovals.get(requestId)
     if (!rec) return
     const conn = this.host.slackConnFor(target.integrationId)
     if (!conn) return
-    const channel = await conn.openDirectMessage(target.userId)
+    const channel = approver?.channel ?? (await conn.openDirectMessage(target.userId))
     const sessionTarget = this.host.slackDmSessionTarget(p, target.integrationId)
     // A question this DM has no control for still gets its own block: the reader is handed the
     // ask and the console, never an intro with nothing under it (#1794). The request itself is
@@ -907,16 +954,13 @@ export class PermissionCoordinator {
         ? (buildPermissionCard(requestId, rec.params, sessionTarget) ?? buildPermissionDmUnanswerableCard(rec.params))
         : (buildElicitationCard(requestId, rec.params, sessionTarget, SLACK_DM_ELICIT_SURFACE) ??
           buildElicitDmUnanswerableCard(rec.params))
-    const fromSlack = p.plan.platform === 'slack'
+    // A sub-session's turn came from no message anyone wrote: its DM names the sub-session instead (assistant-mode.md §5.6).
+    const fromSlack = p.plan.platform === 'slack' && !subsession
     const sourceUrl =
       fromSlack && p.conn instanceof SlackConnection
         ? slackThreadUrl(p.conn.workspaceUrl, p.plan.channel, p.plan.thread ?? p.plan.statusThread)
         : undefined
-    // Quote the triggering Slack message only for its own author (§5.2): routing proves
-    // canEdit, not that the recipient may read the source conversation — a private
-    // channel's text must not ride a DM past Slack's ACL. Same integration ⇒ same
-    // workspace, so the member-id comparison is sound; everyone else keeps the
-    // permalink, where Slack enforces access itself.
+    // Quote the triggering message only for its own author (§5.2): routing proves canEdit, not that the recipient may read the source.
     const sourceText =
       fromSlack && target.integrationId === p.plan.integrationId && target.userId === p.plan.requesterId
         ? p.entry.msg.text
@@ -926,7 +970,8 @@ export class PermissionCoordinator {
       requesterName,
       sessionUrl: this.host.sessionLink(p.outwardSessionId, 'slack'),
       ...(sourceUrl ? { sourceUrl } : {}),
-      ...(sourceText ? { sourceText } : {})
+      ...(sourceText ? { sourceText } : {}),
+      ...(subsession ? { subsession: { title: subsession.title, waitHours: subsession.waitHours } } : {})
     })
     const ts = await conn.postBlocks(
       channel,
@@ -970,13 +1015,130 @@ export class PermissionCoordinator {
     }
   }
 
-  /** Whether this request's DM card was addressed through `integrationId` (§5.3). The relay
-   *  click path routes such clicks here directly: a DM lives outside any session conversation,
-   *  so the in-conversation session gate can never admit it — authorization is the click-time
-   *  actor + verify checks, fenced on the agent and the integration the card was posted via. */
+  /** The editor the CP's chain (§3) picks for a DM, or nobody; a sub-session's turn has no requester to start it from. */
+  private async routeApprovalDm(
+    requestId: string,
+    agentId: string,
+    p: Pending,
+    subsession: boolean
+  ): Promise<ApprovalRouteTarget | undefined> {
+    const cp = this.host.cpApprovalRoute()
+    if (!cp) return undefined
+    const preferred = p.plan.platform === 'slack' ? p.plan.integrationId : undefined
+    const integrationIds = this.host.approvalDmIntegrations(agentId, preferred)
+    if (integrationIds.length === 0) return undefined
+    const requesterId =
+      p.plan.platform === 'slack' && p.plan.requesterId && !subsession ? p.plan.requesterId : undefined
+    const routed = await cp.approvalRoute(
+      {
+        agentId,
+        requestId,
+        sessionId: p.outwardSessionId,
+        ...(requesterId ? { requesterId } : {}),
+        integrationIds
+      },
+      this.host.orgForAgent(agentId)
+    )
+    return routed.target
+  }
+
+  /** Deliver a background sub-session's request to the conversation it belongs to (assistant-mode.md §5.6); never blocks or fails it. */
+  private dispatchSubsessionApproval(
+    requestId: string,
+    agentId: string,
+    p: Pending,
+    route: SubsessionApprovalRoute,
+    requesterName: string | null
+  ): void {
+    void this.deliverSubsessionApproval(requestId, agentId, p, route, requesterName).catch((err) => {
+      this.host.log().warn(`sub-session approval for "${p.plan.sessionKey}" was not delivered: ${formatErr(err)}`)
+    })
+  }
+
+  /** The conversation's own path: its in-chat card where anyone there may answer, else its notice plus the editor DM; an external place's goes to the approver drafts go to. */
+  private async deliverSubsessionApproval(
+    requestId: string,
+    agentId: string,
+    p: Pending,
+    route: SubsessionApprovalRoute,
+    requesterName: string | null
+  ): Promise<void> {
+    const editorDm = () => this.sendApprovalDm(requestId, agentId, p, requesterName, route)
+    const place = route.place
+    if (place.kind !== 'slack') return await editorDm()
+    let at: { integrationId: string; channel: string; thread?: string } = place
+    if (place.external) {
+      // A card is output too, so an external place gets none (§5.5).
+      const approver = await this.host.assistantApprover?.(agentId, requestId).catch(() => undefined)
+      if (approver?.kind === 'member')
+        return await this.sendApprovalDm(requestId, agentId, p, requesterName, route, approver)
+      if (!approver) return await editorDm()
+      at = { integrationId: approver.integrationId, channel: approver.channel }
+    }
+    const rec = this.pendingApprovals.get(requestId)
+    const conn = this.host.slackConnFor(at.integrationId)
+    if (!rec) return
+    if (!conn) return await editorDm()
+    const view = {
+      agentName: p.plan.agentName,
+      title: route.title,
+      sessionUrl: this.host.sessionLink(p.outwardSessionId, 'slack'),
+      waitHours: route.waitHours
+    }
+    const identity = { ...(slackAgentIdentityOptions(p.plan) ?? {}), chrome: true }
+    // A failed post still leaves the editor DM to try.
+    const post = (blocks: unknown[], fallback: string) =>
+      conn.postBlocks(at.channel, blocks, fallback, at.thread, identity).catch((err: unknown) => {
+        this.host.log().warn(`sub-session approval post for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+        return undefined
+      })
+    const permission = rec.kind === 'permission' ? rec : undefined
+    const chatOn = this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true
+    // The card goes where the conversation is, outside the sub-session, so its click comes home through this integration.
+    const card =
+      chatOn && permission
+        ? buildPermissionCard(requestId, permission.params, this.host.slackDmSessionTarget(p, at.integrationId))
+        : null
+    if (!permission || !card) {
+      await post(buildSubsessionApprovalNotice(view), `${p.plan.agentName} is waiting for permission`)
+      return await editorDm()
+    }
+    const intro = buildSubsessionApprovalIntro(view)
+    const ts = await post([...intro, ...card], `Permission requested by ${p.plan.agentName}`)
+    if (!ts) return await editorDm()
+    // Kept on the row as well, so the sweep after a restart retires a card no resolver answers any more.
+    const stored = await this.host
+      .store()
+      .setPermissionRequestNotify(agentId, requestId, at.integrationId, at.channel, ts)
+    const live = this.pendingApprovals.get(requestId)
+    if (!stored || live !== permission) {
+      const settled = buildPermissionResolvedCard(permission.params, 'Already decided', undefined)
+      void conn.updateBlocks(at.channel, ts, [...intro, ...settled], 'Permission resolved', true).catch(() => {})
+      if (stored)
+        void this.host
+          .store()
+          .clearPermissionRequestNotify(agentId, requestId)
+          .catch(() => {})
+      return
+    }
+    permission.chat = {
+      conn,
+      channel: at.channel,
+      ts,
+      intro,
+      routedVia: at.integrationId,
+      stored: { agentId, requestId }
+    }
+  }
+
+  /** Whether this request's card was posted outside its session's conversation via `integrationId` (a DM, §5.3, or a sub-session's card in its conversation), so a relayed click is authorized by the card's own checks. */
   dmNotifiedVia(requestId: string, agentId: string, integrationId: string): boolean {
     const rec = this.pendingApprovals.get(requestId)
-    return rec?.agentId === agentId && rec.notify?.target.integrationId === integrationId
+    if (rec?.agentId !== agentId) return false
+    return (
+      rec.notify?.target.integrationId === integrationId ||
+      (rec.kind === 'permission' && rec.chat?.routedVia === integrationId)
+    )
   }
 
   /** §6.3 click-time checks: actor equality, then the CP verify — both fail closed.
@@ -1031,6 +1193,7 @@ export class PermissionCoordinator {
     // Only now is this answer the decision: the surface admitted it, the choice was real, and the row resolved.
     if (actor) this.host.logSessionAction(`permission:${picked.allow ? 'allowed' : 'denied'}`, rec.sessionId, actor)
     this.pendingApprovals.delete(id)
+    this.clearSubsessionWait(rec)
     this.syncApprovalActivity(rec.owner, rec.sessionId, { id, allowed: picked.allow })
     if (rec.kind === 'permission') {
       this.permissionEvaluationDetails.set(rec.evaluationParams, {
@@ -1051,11 +1214,16 @@ export class PermissionCoordinator {
         .updateBlocks(
           rec.chat.channel,
           rec.chat.ts,
-          buildPermissionResolvedCard(rec.params, label, allowed),
+          chatCardBlocks(rec.chat, buildPermissionResolvedCard(rec.params, label, allowed)),
           fallback,
           true
         )
         .catch(() => {})
+      if (rec.chat.stored)
+        void this.host
+          .store()
+          .clearPermissionRequestNotify(rec.chat.stored.agentId, rec.chat.stored.requestId)
+          .catch(() => {})
     }
     if (!rec.notify) return
     const mark = allowed === undefined ? ':hourglass:' : allowed ? ':white_check_mark:' : ':no_entry_sign:'
@@ -1125,6 +1293,91 @@ export class PermissionCoordinator {
           : 'No'
         : (target.options.find((o) => o.value === literal)?.label ?? literal)
     return { ok: true, allow: true, label, response: { action: 'accept', content: { [propName]: chosen } } }
+  }
+
+  /** A background sub-session's route to its conversation (assistant-mode.md §5.6); a patrol never asks, and a failed lookup keeps today's path. */
+  private async subsessionRoute(p: Pending): Promise<SubsessionApprovalRoute | undefined> {
+    const thread = p.plan.sessionThread
+    if (!isSubsessionCoordinate(thread) || isPatrolCoordinate(thread) || !this.host.subsessionApprovalRoute)
+      return undefined
+    try {
+      return await this.host.subsessionApprovalRoute(p)
+    } catch (err) {
+      this.host.log().warn(`sub-session approval route for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+      return undefined
+    }
+  }
+
+  /** Start the wait cap; in memory only, since a restart ends the turn and expires the request with it. */
+  private armSubsessionWait(
+    id: string,
+    rec: PendingApproval,
+    p: Pending,
+    route: SubsessionApprovalRoute,
+    request: ApprovalRequestParts
+  ): void {
+    const clock = this.host.clock()
+    const now = clock.now()
+    const ms = route.waitHours * 3_600_000
+    rec.subsession = {
+      route,
+      sessionId: p.outwardSessionId,
+      tool: approvalRequestSummary(request),
+      createdAt: now,
+      deadline: now + ms,
+      timer: clock.setTimeout(() => {
+        void this.expireSubsessionWait(id, rec, p).catch((err) =>
+          this.host.log().warn(`sub-session approval wait for "${p.plan.sessionKey}" did not settle: ${formatErr(err)}`)
+        )
+      }, ms)
+    }
+  }
+
+  private clearSubsessionWait(rec: PendingApproval): void {
+    if (rec.subsession) this.host.clock().clearTimeout(rec.subsession.timer)
+  }
+
+  /** The wait ran out (assistant-mode.md §5.6): denied once, like any answer, then the sub-session stops and its end reports to its conversation. */
+  private async expireSubsessionWait(id: string, rec: PendingApproval, p: Pending): Promise<void> {
+    const wait = rec.subsession
+    if (this.pendingApprovals.get(id) !== rec || !wait) return
+    const by = waitExpiredDecider(wait.route.waitHours)
+    if (!(await this.resolveStoredPermissionRequest(rec.agentId, id, 'denied', by))) return
+    this.pendingApprovals.delete(id)
+    this.syncApprovalActivity(rec.owner, rec.sessionId, { id, allowed: false })
+    if (rec.kind === 'permission')
+      this.permissionEvaluationDetails.set(rec.evaluationParams, { reason: 'approval_wait_expired' })
+    this.retireApprovalCards(id, rec, `Denied — ${by.resolvedByName}`, false)
+    this.host
+      .log()
+      .info(`sub-session "${p.plan.sessionKey}": ${by.resolvedByName.toLowerCase()} to "${wait.tool}"; stopping it`)
+    // The stop is latched before the runtime hears the answer, so the turn ends stopped rather than finished.
+    const stopping = this.host.cancelTurn(p, 'approval wait expired')
+    if (rec.kind === 'permission') rec.resolve({ outcome: { outcome: 'cancelled' } })
+    else rec.resolve({ action: 'cancel' })
+    await stopping
+  }
+
+  /** Background sub-sessions' requests still awaiting a human, oldest first, for the Activity view (assistant-mode.md §5.11). */
+  pendingSubsessionApprovals(agentId: string): AssistantActivityPermission[] {
+    const waits: Array<{ id: string; wait: SubsessionWait }> = []
+    for (const [id, rec] of this.pendingApprovals)
+      if (rec.agentId === agentId && rec.subsession) waits.push({ id, wait: rec.subsession })
+    return waits
+      .sort((a, b) => a.wait.createdAt - b.wait.createdAt)
+      .slice(0, ASSISTANT_ACTIVITY_PERMISSIONS_MAX)
+      .map(({ id, wait }) => {
+        const options = this.pendingPermissionOptions(agentId, id)
+        return {
+          requestId: id,
+          sessionId: wait.sessionId,
+          parentSessionId: wait.route.parentSessionId,
+          tool: wait.tool,
+          createdAt: new Date(wait.createdAt).toISOString(),
+          expiresAt: new Date(wait.deadline).toISOString(),
+          ...(options ? { options } : {})
+        }
+      })
   }
 
   /** The options a live approval offers the console; undefined once it is settled or when it offers no choices (#1969). */
@@ -1212,7 +1465,10 @@ export class PermissionCoordinator {
           .updateBlocks(
             rec.chat.channel,
             rec.chat.ts,
-            buildPermissionResolvedCard(rec.params, 'Ask an Agent editor to allow it', undefined),
+            chatCardBlocks(
+              rec.chat,
+              buildPermissionResolvedCard(rec.params, 'Ask an Agent editor to allow it', undefined)
+            ),
             'Permission requires an Agent editor',
             true
           )
@@ -1238,7 +1494,10 @@ export class PermissionCoordinator {
         .updateBlocks(
           pending.chat.channel,
           pending.chat.ts,
-          buildPermissionResolvedCard(pending.params, 'Ask an Agent editor to allow it', undefined),
+          chatCardBlocks(
+            pending.chat,
+            buildPermissionResolvedCard(pending.params, 'Ask an Agent editor to allow it', undefined)
+          ),
           'Permission requires an Agent editor',
           true
         )
@@ -1258,6 +1517,7 @@ export class PermissionCoordinator {
     for (const [id, pending] of this.pendingApprovals) {
       if (pending.owner !== owner || pending.sessionId !== sessionId) continue
       this.pendingApprovals.delete(id)
+      this.clearSubsessionWait(pending)
       this.syncApprovalActivity(owner, sessionId, { id })
       await this.resolveStoredPermissionRequest(agentId, id, 'expired')
       // Dead buttons must not survive the request (§5.4): retire every card in place.
@@ -1418,9 +1678,15 @@ export class PermissionCoordinator {
     if (chatApprovalEnabled) {
       return await this.awaitChatPermission(agentId, sessionId, params, evaluationParams, p)
     }
-    // Default policy: hold the runtime request and surface only a neutral notice
-    // in chat. The bounded, masked request is decided by an Agent editor.
-    return await this.awaitEditorPermission(agentId, sessionId, params, evaluationParams, p)
+    // Default policy: hold the runtime request and surface only a neutral notice in chat; a sub-session's goes to its conversation (assistant-mode.md §5.6).
+    return await this.awaitEditorPermission(
+      agentId,
+      sessionId,
+      params,
+      evaluationParams,
+      p,
+      await this.subsessionRoute(p)
+    )
   }
 
   /** Grant one of this daemon's own tools without a card; undefined when the runtime offered no allow option. */
@@ -1493,7 +1759,14 @@ export class PermissionCoordinator {
         p.conn instanceof SlackConnection &&
         !p.plan.approvalSurfaceSuppressed
       if (!chatApprovalEnabled)
-        return await this.awaitEditorElicitation(agentId, sessionId, params, p, elicitationApprovalChoices(params))
+        return await this.awaitEditorElicitation(
+          agentId,
+          sessionId,
+          params,
+          p,
+          elicitationApprovalChoices(params),
+          await this.subsessionRoute(p)
+        )
     }
     // A `none` Slack turn has no generic human-input card to answer this request.
     if (p.plan.approvalSurfaceSuppressed) return { action: 'cancel' }

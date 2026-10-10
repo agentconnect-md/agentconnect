@@ -7,6 +7,7 @@ import type {
   AssistantModePolicy
 } from '@agentconnect.md/protocol'
 import type { MessageGateway, SendIdentity } from '../mcp/ops/context.js'
+import type { SubsessionApprover } from '../permissions/subsession-approval.js'
 import type { AssistantDraftCardView, AssistantDraftChoice } from '../slack/render.js'
 import {
   assistantDraftHash,
@@ -303,6 +304,16 @@ export class AssistantDrafts {
     if (!carded.rung)
       this.host.log.warn(`assistant proposal ${id}: no approver could be reached for agent "${input.agentId}"`)
     return { draft: carded.draft, approver: carded.rung ? APPROVER_LABEL[carded.rung] : null }
+  }
+
+  /** Where another card for an external place goes instead (§5.5), routed as a proposal's is: a linked editor's DM, or the fallback conversation. */
+  async cardApprover(agentId: string, requestId: string): Promise<SubsessionApprover | undefined> {
+    const approver = (await this.route(agentId, requestId, undefined))?.approver
+    if (approver?.kind === 'conversation')
+      return { kind: 'conversation', integrationId: approver.integrationId, channel: approver.channel }
+    if (!approver?.userId || !approver.teamId || !approver.consoleUserId) return undefined
+    const { integrationId, teamId, userId, consoleUserId } = approver
+    return { kind: 'member', channel: approver.channel, target: { integrationId, teamId, userId, consoleUserId } }
   }
 
   /** A task's sub-session ended or was cut: the card shows the outcome and the item records it. */

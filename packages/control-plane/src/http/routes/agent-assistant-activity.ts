@@ -16,6 +16,7 @@ import {
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
   AssistantDraftStatus,
   AssistantSubsessionCursor,
+  AgentPermissionOption,
   isSubsessionCoordinate,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
@@ -51,7 +52,34 @@ const DraftDecisionDto = z.object({
 })
 
 const ItemsPageDto = z.object({ items: z.array(AssistantActivityItem), truncated: z.boolean() })
-const DraftsPageDto = z.object({ drafts: z.array(AssistantActivityDraft), truncated: z.boolean() })
+/** A conversation an Activity row names, shown only to a caller who may view it. */
+const ConversationDto = z.object({
+  sessionId: z.string(),
+  title: z.string().nullable(),
+  platform: z.string().nullable(),
+  channelName: z.string().nullable()
+})
+const PermissionRequestDto = z.object({
+  /** Decided like any approval request, through `decideAgentPermissionRequest`. */
+  requestId: z.string(),
+  /** What the sub-session asks to run. */
+  tool: z.string(),
+  createdAt: z.string(),
+  /** When it is denied and the sub-session stops, unless someone answers first. */
+  expiresAt: z.string(),
+  /** The request's own options; absent when it takes a plain Allow or Deny. */
+  options: z.array(AgentPermissionOption).optional(),
+  /** The sub-session asking, when the caller may view it. */
+  subsession: z.object({ sessionId: z.string(), title: z.string().nullable() }).nullable(),
+  /** The conversation it belongs to, when the caller may view it. */
+  parent: ConversationDto.nullable()
+})
+const DraftsPageDto = z.object({
+  drafts: z.array(AssistantActivityDraft),
+  truncated: z.boolean(),
+  /** Background sub-sessions' permission requests waiting on an answer, oldest first; empty from an agent version that does not list them. */
+  permissionRequests: z.array(PermissionRequestDto)
+})
 const GrantsPageDto = z.object({ grants: z.array(AssistantActivityGrant), truncated: z.boolean() })
 const SubsessionDto = z.object({
   /** The sub-session's id, present only when the caller may open it. */
@@ -64,14 +92,7 @@ const SubsessionDto = z.object({
   /** The caller may stop its current turn: it is running and they may continue its session. */
   canStop: z.boolean(),
   /** The conversation that opened it, when the caller may see it. */
-  parent: z
-    .object({
-      sessionId: z.string(),
-      title: z.string().nullable(),
-      platform: z.string().nullable(),
-      channelName: z.string().nullable()
-    })
-    .nullable()
+  parent: ConversationDto.nullable()
 })
 const SubsessionsPageDto = z.object({
   subsessions: z.array(SubsessionDto),
@@ -180,6 +201,22 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
   return async function agentAssistantActivityRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const access = makeSessionAccessResolver(deps)
+
+    // The agent's own session rows only, so a daemon can never name another agent's conversation, and which of them the caller may view.
+    const sessionsOf = async (req: FastifyRequest, agentId: string, ids: string[]) => {
+      const rows = (
+        await Promise.all([...new Set(ids)].map((id) => deps.repos.session.get(orgOf(req), SessionId(id))))
+      ).filter((row): row is SessionMetaRecord => row !== null && row.agentId === agentId)
+      const audience = await access.forSessions(req, rows)
+      const viewable = new Map(
+        rows
+          .filter((row) => canViewSession(row, ctxOf(req), audience.identitySet, audience.externalAccess))
+          .map((row) => [String(row.id), row])
+      )
+      return { rows, audience, viewable }
+    }
+    const conversationOf = (row: SessionMetaRecord | undefined) =>
+      row ? { sessionId: String(row.id), title: row.title, platform: row.platform, channelName: row.channelName } : null
 
     // Visible agent → editor (when asked) → assistant mode → serving daemon with the feature; the reply is sent on refusal.
     const admit = async (
@@ -400,16 +437,10 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         const listed = parentRow
           ? page.subsessions.filter((s) => s.parentSessionId === String(parentRow.id))
           : page.subsessions
-        // The agent's own session rows only, so a daemon can never name another agent's conversation here.
-        const ids = [...new Set(listed.flatMap((s) => [s.parentSessionId, ...(s.sessionId ? [s.sessionId] : [])]))]
-        const rows = (await Promise.all(ids.map((id) => deps.repos.session.get(orgOf(req), SessionId(id))))).filter(
-          (row): row is SessionMetaRecord => row !== null && row.agentId === admitted.agent.id
-        )
-        const audience = await access.forSessions(req, rows)
-        const viewable = new Map(
-          rows
-            .filter((row) => canViewSession(row, ctxOf(req), audience.identitySet, audience.externalAccess))
-            .map((row) => [String(row.id), row])
+        const { rows, audience, viewable } = await sessionsOf(
+          req,
+          admitted.agent.id,
+          listed.flatMap((s) => [s.parentSessionId, ...(s.sessionId ? [s.sessionId] : [])])
         )
         return {
           subsessions: listed.map((s) => {
@@ -428,14 +459,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
                 s.state === 'open' &&
                 !!child &&
                 canContinueSession(child, ctxOf(req), audience.identitySet, audience.externalAccess),
-              parent: parent
-                ? {
-                    sessionId: String(parent.id),
-                    title: parent.title,
-                    platform: parent.platform,
-                    channelName: parent.channelName
-                  }
-                : null
+              parent: conversationOf(parent)
             }
           }),
           truncated: page.truncated,
@@ -496,7 +520,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an assistant-mode agent’s pending drafts',
-          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it, whether its card offers "always allow from here to there" and when it expires. A proposal (\`kind: task\`) is what a scheduled check asks to do: its sentence, its reason and its item, with the task as its text; it runs in the conversation its item was taken in once approved. This read changes nothing. Only callers who can edit the agent may read it.`,
+          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it, whether its card offers "always allow from here to there" and when it expires. A proposal (\`kind: task\`) is what a scheduled check asks to do: its sentence, its reason and its item, with the task as its text; it runs in the conversation its item was taken in once approved. \`permissionRequests\` lists the runtime permission requests background sub-sessions are waiting on, oldest first: what each asks to run, when it is denied and its sub-session stops unless someone answers, and its options; the sub-session and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. This read changes nothing. Only callers who can edit the agent may read it.`,
           operationId: 'listAssistantDrafts',
           params: IdParam,
           response: { 200: DraftsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -509,9 +533,33 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           agentId: admitted.agent.id,
           operation: 'drafts',
           limit: ASSISTANT_ACTIVITY_DRAFTS_MAX,
-          proposals: true
+          proposals: true,
+          permissions: true
         })
-        return page ? { drafts: page.drafts, truncated: page.truncated } : reply
+        if (!page) return reply
+        // An older daemon answers without them: there is nothing to list.
+        const waiting = page.permissions ?? []
+        const { viewable } = await sessionsOf(
+          req,
+          admitted.agent.id,
+          waiting.flatMap((p) => [p.sessionId, p.parentSessionId])
+        )
+        return {
+          drafts: page.drafts,
+          truncated: page.truncated,
+          permissionRequests: waiting.map((p) => {
+            const child = viewable.get(p.sessionId)
+            return {
+              requestId: p.requestId,
+              tool: p.tool,
+              createdAt: p.createdAt,
+              expiresAt: p.expiresAt,
+              ...(p.options ? { options: p.options } : {}),
+              subsession: child ? { sessionId: String(child.id), title: child.title } : null,
+              parent: conversationOf(viewable.get(p.parentSessionId))
+            }
+          })
+        }
       }
     )
 

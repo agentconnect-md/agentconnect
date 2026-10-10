@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
@@ -32,7 +33,7 @@ export function ApprovalRequestsCard({
   className?: string
 }) {
   const t = useTranslations('Agents.detail.integrations')
-  const { activeOrg } = useOrgs()
+  const { activeOrg, orgPath } = useOrgs()
   const notifications = useOptionalNotifications()
   const requestsKey = MOCK_MODE ? null : consoleKeys.agentPermissionRequests(activeOrg?.id, agentId)
   const {
@@ -52,7 +53,12 @@ export function ApprovalRequestsCard({
   // a genuinely new request.
   const [collapseOverride, setCollapseOverride] = useState<{ key: string; collapsed: boolean } | null>(null)
   const [decisionError, setDecisionError] = useState<string | null>(null)
-  const sessionRequests = sessionId ? allRequests?.filter((request) => request.sessionId === sessionId) : allRequests
+  // A conversation also answers what its background sub-sessions ask (assistant-mode.md §5.6).
+  const fromSubsession = (request: AgentPermissionRequestDto) =>
+    sessionId !== undefined && request.parentSessionId === sessionId && request.sessionId !== sessionId
+  const sessionRequests = sessionId
+    ? allRequests?.filter((request) => request.sessionId === sessionId || fromSubsession(request))
+    : allRequests
   const pendingRequests = sessionRequests?.filter((request) => request.status === 'pending') ?? []
   const pendingCount = pendingRequests.length
   const pendingKey = pendingRequests
@@ -123,6 +129,14 @@ export function ApprovalRequestsCard({
                     <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                       {formatApprovalTime(request.createdAt)}
                     </span>
+                    {fromSubsession(request) && request.sessionId ? (
+                      <Link
+                        className="lnk font-sans text-[11px] font-medium leading-normal"
+                        href={orgPath(`/sessions/${encodeURIComponent(request.sessionId)}`)}
+                      >
+                        {t('fromSubsession')}
+                      </Link>
+                    ) : null}
                     {request.status !== 'pending' && (
                       <span className="badge bg-(--surface-active) text-(--text-tertiary)">
                         {request.status}

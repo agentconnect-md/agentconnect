@@ -6,6 +6,7 @@ import {
   ASSISTANT_ACTIVITY_RESULT_BYTES,
   AssistantActivityReadResult,
   AssistantActivityWriteResult,
+  type AssistantActivityPermission,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult as ReadResult
 } from '@agentconnect.md/protocol'
@@ -25,6 +26,19 @@ const DM = { platform: 'slack', channel: 'D0ALICE', transportScope: 'T0EXAMPLE' 
 const SUPPORT = { platform: 'slack', channel: 'C0SUPPORT', transportScope: 'T0EXAMPLE' }
 const WEBCHAT = { platform: 'webchat', channel: 'conv-1', transportScope: null }
 const NOW = 10_000
+/** A background sub-session's request awaiting an answer, as the permission path lists it. */
+const PERMISSION: AssistantActivityPermission = {
+  requestId: '00000000-0000-4000-8000-0000000000aa',
+  sessionId: 'sid-sub',
+  parentSessionId: 'sid-parent',
+  tool: 'Write src/app.ts',
+  createdAt: '1970-01-01T00:00:05.000Z',
+  expiresAt: '1970-01-01T12:00:05.000Z',
+  options: [
+    { optionId: 'o-allow', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'o-deny', name: 'Deny', kind: 'reject_once' }
+  ]
+}
 
 let store: LocalStore | undefined
 afterEach(async () => {
@@ -51,14 +65,16 @@ async function setup() {
     })
   )
   const stopSession = vi.fn(async (_key: string, _actor: { userId: string; name?: string }) => true)
+  const pendingPermissions = vi.fn((agentId: string) => (agentId === a ? [PERMISSION] : []))
   const activity = createAssistantActivity({
     store: () => s,
     agent: (id) => agents.get(id),
     now: () => NOW,
     decideDraft,
-    stopSession
+    stopSession,
+    pendingPermissions
   })
-  return { s, a, b, off, activity, decideDraft, stopSession }
+  return { s, a, b, off, activity, decideDraft, stopSession, pendingPermissions }
 }
 
 async function read<O extends AssistantActivityReadReq['operation']>(
@@ -397,6 +413,20 @@ describe('the Activity view: drafts and grants', () => {
       ],
       truncated: false
     })
+  })
+
+  it('lists sub-sessions’ permission requests waiting for an answer only for a Control Plane that asks', async () => {
+    const { a, b, activity, pendingPermissions } = await setup()
+    // An older Control Plane does not ask, so the answer is the shape it knows.
+    expect(await read(activity, { agentId: a, operation: 'drafts', limit: 10 })).not.toHaveProperty('permissions')
+    expect(pendingPermissions).not.toHaveBeenCalled()
+    expect(await read(activity, { agentId: a, operation: 'drafts', limit: 10, permissions: true })).toMatchObject({
+      permissions: [PERMISSION]
+    })
+    expect(await read(activity, { agentId: b, operation: 'drafts', limit: 10, permissions: true })).toMatchObject({
+      permissions: []
+    })
+    expect(pendingPermissions.mock.calls).toEqual([[a], [b]])
   })
 
   it('lists the agent’s grants with who granted them, and revokes one by its id', async () => {
