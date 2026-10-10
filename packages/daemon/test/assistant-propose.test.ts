@@ -616,7 +616,10 @@ describe('a task cut short by a restart or handover', () => {
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'outcome_unknown' })
     expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: 'failed' })
     expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain('not sure this went through')
-    expect((await h.d.store.listInboxBySessionKeyFifo()).filter((row: any) => row.agentId === 'bot-a')).toEqual([])
+    // Nothing left to run; only the report's receipt, which a re-delivery is recognized by.
+    const inbox = (await h.d.store.listInboxBySessionKeyFifo()).filter((row: any) => row.agentId === 'bot-a')
+    expect(inbox.filter((row: any) => row.completedAt === null)).toEqual([])
+    expect(inbox).toEqual([expect.objectContaining({ sessionKey: place.key, id: expect.stringMatching(/receipt/) })])
     await h.daemon.stop()
   })
 
@@ -675,6 +678,116 @@ describe('a task cut short by a restart or handover', () => {
       await h.daemon.stop()
     }
   )
+
+  /** An approved task that hangs, then is cut for a handover that keeps its delivery and replayed by a fresh service. */
+  async function cutTask(
+    h: Awaited<ReturnType<typeof boot>>,
+    before: (place: { coordinate: string; scope: string }) => Promise<void> = async () => {}
+  ) {
+    const { place, item, record } = await proposed(h)
+    h.behavior.task = 'hang'
+    await h.decide(record.id)
+    await vi.waitFor(() => expect(h.tasks()).toHaveLength(1), WAIT)
+    const key = sessionKey('slack', 'C1', h.tasks()[0]!.msg.thread!, 'bot-a', place.scope)
+    await vi.waitFor(async () => expect((await h.d.store.getSession(key))?.acpSessionId).toBeTruthy(), WAIT)
+    await before(place)
+    await h.d.interruptAgentTurns('bot-a', 'handover', 'handoff')
+    h.d.assistantTaskService = undefined
+    h.d.absorbedContextTs.clear()
+    const replayed = h.d.replayInbox(new Set(['bot-a'])) as Promise<void>
+    return { place, item, record, key, replayed }
+  }
+
+  /** Count the daemon's report deliveries, each held until `hold` resolves. */
+  function watchReports(d: any, hold: Promise<unknown> = Promise.resolve()) {
+    const seen = { calls: 0 }
+    const report = d.reportIntoParent.bind(d)
+    d.reportIntoParent = async (...args: unknown[]) => {
+      seen.calls += 1
+      await hold
+      return await report(...args)
+    }
+    return seen
+  }
+
+  it('tells its place before the record settles', async () => {
+    const h = await boot(scaffold())
+    let release!: () => void
+    const seen = watchReports(h.d, new Promise<void>((resolve) => (release = resolve)))
+    const { record, key, replayed } = await cutTask(h)
+    await vi.waitFor(() => expect(seen.calls).toBe(1), WAIT)
+    // The report is still on its way, so neither the record nor the sub-session has settled.
+    expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'executing' })
+    expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: 'open' })
+
+    release()
+    await replayed
+    await h.settled()
+    expect(h.reports()).toHaveLength(1)
+    expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'outcome_unknown' })
+    expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: 'failed' })
+    await h.daemon.stop()
+  })
+
+  it('tells its place again after a crash between the report and the settling, and the place hears it once', async () => {
+    const h = await boot(scaffold())
+    const seen = watchReports(h.d)
+    // The process dies after the report is in, before the record settles; the recovery that follows tries again.
+    const index = h.d.store.assistantSubsessions
+    const finishClaiming = index.finishClaiming.bind(index)
+    let crashed = false
+    index.finishClaiming = async (...args: unknown[]) => {
+      if (crashed) return await finishClaiming(...args)
+      crashed = true
+      throw new Error('the daemon was killed')
+    }
+    const { record, replayed } = await cutTask(h)
+    await replayed
+    await h.settled()
+
+    expect(crashed).toBe(true)
+    expect(seen.calls).toBe(2)
+    expect(h.reports()).toHaveLength(1)
+    expect(
+      h.hosts.flatMap((x) => x.prompt.mock.calls).filter((c: any) => JSON.stringify(c).includes('Not sure'))
+    ).toHaveLength(1)
+    expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'outcome_unknown' })
+    expect(h.tasks()).toHaveLength(1)
+    await h.daemon.stop()
+  })
+
+  it('tells the conversation’s current session after `!new`, not the one the task started under', async () => {
+    const h = await boot(scaffold())
+    let next = ''
+    // `!new` rotates the conversation while the task runs, and the next message starts the new session.
+    const { place, key, replayed } = await cutTask(h, async ({ coordinate, scope }) => {
+      next = await h.d.store.advanceAppendCoordinate('bot-a', 'C1', coordinate, scope)
+      await h.d.store.upsertSession({
+        key: sessionKey('slack', 'C1', next, 'bot-a', scope),
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: next,
+        transportScope: scope,
+        acpSessionId: 'acp-current-bot-a',
+        sessionId: 'sid-current-bot-a',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+    })
+    await replayed
+    await h.settled()
+
+    expect(next).not.toBe(place.coordinate)
+    expect(h.reports()).toHaveLength(1)
+    expect(h.reports()[0]!.msg.text).toContain('Not sure this went through, please check')
+    expect(h.reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: next })
+    expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({
+      parentSessionId: 'sid-parent-bot-a'
+    })
+    await h.daemon.stop()
+  })
 
   it('leaves a task this daemon is running alone when its inbox is replayed for another reason', async () => {
     const h = await boot(scaffold())

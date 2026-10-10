@@ -7850,8 +7850,8 @@ export class Daemon {
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
       settleSubsession: (end) => this.collab.settleSubsessionTurn(end),
-      reportToParent: (agentId, caller, parentSessionId, text) =>
-        this.reportIntoParent(agentId, caller, parentSessionId, text),
+      reportToParent: (agentId, caller, parentSessionId, text, reportId) =>
+        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId),
       settled: (draft) => this.drafts.taskSettled(draft),
       draining: () => this.draining
     })
@@ -7911,29 +7911,93 @@ export class Daemon {
     }
   }
 
-  /** One daemon-authored report into a sub-session's parent, through the injection `replyToSession` makes. */
+  /** One daemon-authored report of a patrol or task into its place, injected as `replyToSession` would; true once admitted, at most once per `reportId`. */
   private async reportIntoParent(
     agentId: string,
     caller: TaskCaller,
     parentSessionId: string,
-    text: string
+    text: string,
+    reportId: string
   ): Promise<boolean> {
     // An interrupt refuses fresh deliveries until its turns have unwound, and this report is one.
     await this.waitForSafetyDrain(agentId)
-    const result = await this.collab.replyToSession(
-      {
-        callerAgentId: agentId,
-        platform: caller.platform,
-        ...(caller.transportScope !== undefined ? { callerTransportScope: caller.transportScope } : {}),
-        callerChannel: caller.channel,
-        callerThread: caller.thread,
-        sessionId: parentSessionId,
-        text
-      },
-      { parentSessionId, hopCount: 0 }
-    )
-    if (!result.delivered) this.log.warn(`sub-session report not delivered (${result.reason ?? 'unknown'})`)
-    return result.delivered
+    const id = createHash('sha256').update(`${agentId}\n${reportId}`).digest('hex').slice(0, 32)
+    const deliveryId = `assistant-report:${id}`
+    const receiptId = `assistant-report-receipt:${id}`
+    // A re-delivery after a crash: the receipt minted with the first admission says it is already in.
+    if (await this.store.hasInbox(receiptId)) return true
+    // The place's current long session speaks (after `!new`, not the retired one), else the recorded parent.
+    const parent =
+      (await this.store.placeSession(agentId, caller.platform, caller.channel, caller.transportScope ?? null)) ??
+      (await this.store.getSessionByOutwardId(parentSessionId, agentId))
+    const route = parent && sessionReplyRoute(parent, (...args) => this.integrationIdForSessionTransport(...args))
+    if (!parent || !route) {
+      this.log.warn(`sub-session report not delivered (${parent ? 'not_found' : 'parent session is gone'})`)
+      return false
+    }
+    const callerKey = sessionKey(caller.platform, caller.channel, caller.thread, agentId, caller.transportScope)
+    const callerRec = await this.store.getSession(callerKey)
+    const replierSessionId = callerRec
+      ? await this.store.ensureOutwardSessionId(callerKey, agentId, this.clock.now())
+      : undefined
+    const externalOrigin = await this.externalOriginForSession(agentId, callerKey)
+    // The lineage `replyToSession` gives a report: from the sub-session, one hop deep.
+    const callMeta: CallMeta = {
+      callFrom: agentId,
+      hopCount: 1,
+      deliveryId,
+      ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
+      originCodeHostReplyTarget: codeHostReplySnapshot(callerRec, this.activeGateEntries.get(callerKey)?.githubReply),
+      originCoords: { platform: caller.platform, channel: caller.channel, thread: caller.thread },
+      ...(externalOrigin ? { externalOrigin } : {}),
+      ...(replierSessionId !== undefined && (await this.store.isCaptureExcluded(agentId, callerKey))
+        ? { parentPrivate: true }
+        : {})
+    }
+    const botUserId = route.integrationId
+      ? this.botUserIds[route.integrationId]
+      : this.resolveCpAgent(agentId, parent.platform)?.botUserId
+    const msg: NormalizedMessage = {
+      msgId: `agentcall:${parent.channel}:${deliveryId}`,
+      traceId: deliveryId,
+      source: 'agent',
+      platform: parent.platform,
+      channel: parent.channel,
+      // A synthetic stored thread is the session's, never a reply target, so the parent posts at the root.
+      ...(isAppendCoordinate(parent.thread)
+        ? { sessionThread: parent.thread }
+        : parent.thread
+          ? { thread: parent.thread }
+          : {}),
+      ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
+      transcriptTs: monotonicTs(),
+      sender: { id: agentId, isBot: true },
+      text,
+      // Session-only, never a live conversation post (#966).
+      parentReport: true,
+      mentionedBots: botUserId ? [botUserId] : [],
+      isDm: false
+    }
+    let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
+    const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
+      settleAdmission = resolve
+    })
+    void this.dispatch(
+      agentId,
+      msg,
+      route.integrationId,
+      this.webchatTransport.webchatWakeContext(parent.platform, parent.channel),
+      callMeta,
+      { requireDurable: true, receiptId, onAdmission: (result) => settleAdmission(result) },
+      route.codeHostReply
+    ).catch((err) => {
+      this.log.error(`sub-session report dispatch failed for session "${parent.key}": ${formatErr(err)}`)
+      settleAdmission({ accepted: false, reason: 'error' })
+    })
+    const admission = await admitted
+    if (!admission.accepted) this.log.warn(`sub-session report not delivered (${admission.reason ?? 'unknown'})`)
+    else this.log.info(`sub-session report: ${agentId} → ${parent.key} delivery=${deliveryId}`)
+    return admission.accepted
   }
 
   /** Assistant-mode patrols (assistant-mode.md §5.9), built on first use over the live store. */
@@ -7952,8 +8016,20 @@ export class Daemon {
       parentFor: (agentId, place) => this.patrolParent(agentId, place),
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
-      reportToParent: (agentId, msg, parentSessionId, text) =>
-        this.reportIntoParent(agentId, callerOfMessage(msg), parentSessionId, text),
+      reportToParent: (agentId, caller, parentSessionId, text, reportId) =>
+        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId),
+      endedSession: async (agentId, key) => {
+        if (this.inflight.has(key) || this.serialQueue.has(key) || (await this.store.sessionHasPendingInboxRows(key)))
+          return undefined
+        const rec = await this.store.getSession(key)
+        if (rec?.agentId !== agentId) return undefined
+        return {
+          platform: rec.platform,
+          channel: rec.channel,
+          thread: rec.thread,
+          ...(rec.transportScope ? { transportScope: rec.transportScope } : {})
+        }
+      },
       proposals: {
         proposedFrom: (agentId, key) => this.store.assistantDrafts.proposedFrom(agentId, key),
         propose: (run, input) => this.proposeFromPatrol(run, input)
@@ -23918,10 +23994,11 @@ export class Daemon {
   /** Re-admit durable inbox rows through the serial gate — at startup, on install, or on a duty gain — preserving replay ownership and FIFO. */
   private async replayInbox(agentIds?: ReadonlySet<string>): Promise<void> {
     await this.replayInboxRows(agentIds)
+    const agents = [...this.agents.keys()].filter((agentId) => !agentIds || agentIds.has(agentId))
     // After the rows, which drop a cut task's own: an executing task nothing here runs was cut before it reported (§5.7 step 1).
-    await this.tasks
-      .recover([...this.agents.keys()].filter((agentId) => !agentIds || agentIds.has(agentId)))
-      .catch((err) => this.log.warn(`assistant task recovery failed: ${formatErr(err)}`))
+    await this.tasks.recover(agents).catch((err) => this.log.warn(`assistant task recovery failed: ${formatErr(err)}`))
+    // After the rows too, which replay a cut patrol: one whose turn ended before it settled settles now (§5.9).
+    await this.patrols.recover(agents).catch((err) => this.log.warn(`patrol recovery failed: ${formatErr(err)}`))
   }
 
   private async replayInboxRows(agentIds?: ReadonlySet<string>): Promise<void> {

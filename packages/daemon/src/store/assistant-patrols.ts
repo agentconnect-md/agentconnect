@@ -116,6 +116,17 @@ export class AssistantPatrolLedger {
     return row ? stateOf(row) : undefined
   }
 
+  /** The agent's patrol runs not yet settled, oldest first. */
+  async running(agentId: string): Promise<AssistantPatrolState[]> {
+    const rows = (
+      await this.db.query(
+        'SELECT * FROM assistant_patrol WHERE agentId = ? AND runningKey IS NOT NULL ORDER BY updatedAt, itemId',
+        [agentId]
+      )
+    ).rows as Row[]
+    return rows.map(stateOf)
+  }
+
   /** A patrol starts; a stopped item that is due again had its next check moved, so its streak starts over. */
   async begin(
     agentId: string,
