@@ -39,7 +39,7 @@ export function EscapeLayer({ onEscape }: { onEscape: (() => void) | undefined }
   return null
 }
 
-/** The `.scrim` backdrop of a dialog, closing it on Escape. */
+/** The `.scrim` backdrop of a dialog, closing it on Escape; a click whose press began inside the dialog (a drag out) is ignored. */
 export function Scrim({
   onEscape,
   onClick,
@@ -50,8 +50,19 @@ export function Scrim({
   children: ReactNode
 }) {
   useEscapeLayer(onEscape)
+  const pressedInside = useRef(false)
   return (
-    <div className="scrim" onClick={onClick}>
+    <div
+      className="scrim"
+      onMouseDown={(event) => {
+        pressedInside.current = event.target !== event.currentTarget
+      }}
+      onClick={(event) => {
+        const dragged = pressedInside.current
+        pressedInside.current = false
+        if (!dragged) onClick?.(event)
+      }}
+    >
       {children}
     </div>
   )
