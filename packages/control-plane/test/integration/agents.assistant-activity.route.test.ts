@@ -7,6 +7,7 @@ import {
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
   SUBSESSION_COORDINATE_PREFIX,
   TASK_LIST_FEATURE,
+  type AssistantActivityPermission,
   type AssistantSubsessionStopResult,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
@@ -60,6 +61,8 @@ class ActivitySpy {
   writes: AssistantActivityWriteReq[] = []
   subsessions: Extract<AssistantActivityReadResult, { operation: 'subsessions' }>['subsessions'] = []
   nextCursor: string | null = null
+  /** Unset: the daemon predates listing sub-sessions' permission requests. */
+  permissions: AssistantActivityPermission[] | undefined
   stopResult: AssistantSubsessionStopResult = 'stopped'
   found = true
   decision: Omit<Extract<AssistantActivityWriteResult, { operation: 'decide-draft' }>, 'operation'> = {
@@ -121,7 +124,8 @@ class ActivitySpy {
               expiresAt: '2026-10-10T09:00:00.000Z'
             }
           ],
-          truncated: false
+          truncated: false,
+          ...(this.permissions ? { permissions: this.permissions } : {})
         }
       case 'grants':
         return {
@@ -209,9 +213,11 @@ describe('the assistant Activity routes', () => {
     const item = await get(running, '/items/item-1')
     expect(item.json()).toMatchObject({ id: 'item-1', summary: 'In review.', observations: [{ text: 'PR opened' }] })
     expect((await get(running, '/items/item-2')).statusCode).toBe(404)
+    // An agent version that does not list sub-sessions' permission requests has none to show.
     expect((await get(running, '/drafts')).json()).toMatchObject({
       drafts: [{ id: 'draft-1', text: 'The release is out.', offerAlways: true, target: { name: 'support' } }],
-      truncated: false
+      truncated: false,
+      permissionRequests: []
     })
     expect((await get(running, '/grants')).json()).toMatchObject({ grants: [{ id: GRANT, grantedByName: 'Alice' }] })
 
@@ -220,7 +226,7 @@ describe('the assistant Activity routes', () => {
       { agentId: AGENT, operation: 'items', section: 'closed', limit: 20 },
       { agentId: AGENT, operation: 'item', itemId: 'item-1' },
       { agentId: AGENT, operation: 'item', itemId: 'item-2' },
-      { agentId: AGENT, operation: 'drafts', limit: 50, proposals: true },
+      { agentId: AGENT, operation: 'drafts', limit: 50, proposals: true, permissions: true },
       { agentId: AGENT, operation: 'grants' }
     ])
 
@@ -403,6 +409,62 @@ describe('the assistant Activity routes', () => {
     const asOwner = (await get(app(control), '/subsessions')).json()
     expect(asOwner.subsessions[2]).toMatchObject({ sessionId: dmChild, visible: true, parent: { sessionId: dm } })
     expect(asOwner.subsessions[3]).toMatchObject({ sessionId: null, visible: false, parent: null })
+  })
+
+  it('lists sub-sessions’ permission requests for editors, naming each sub-session and conversation only to those who may view it', async () => {
+    await seedAssistant()
+    const member = await makeUser(`activity-member-${randomUUID()}`, 'collaborator')
+    const [team, teamChild, dm, dmChild] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()]
+    await seedSessionMeta(prisma, team, AGENT, { daemonId: DAEMON, channel: 'C0SUPPORT' })
+    await prisma.sessionMeta.update({ where: { id: team }, data: { title: 'support', channelName: 'support' } })
+    await seedSessionMeta(prisma, teamChild, AGENT, { daemonId: DAEMON, parentSessionId: team })
+    await prisma.sessionMeta.update({ where: { id: teamChild }, data: { title: 'Fix the flaky test' } })
+    const owner = { visibility: 'private' as const, ownerIdentity: `user:${DEFAULT_OWNER_ID}` }
+    await seedSessionMeta(prisma, dm, AGENT, { daemonId: DAEMON, ...owner })
+    await seedSessionMeta(prisma, dmChild, AGENT, { daemonId: DAEMON, ...owner, parentSessionId: dm })
+
+    const control = new ActivitySpy()
+    const waiting = (requestId: string, sessionId: string, parentSessionId: string): AssistantActivityPermission => ({
+      requestId,
+      sessionId,
+      parentSessionId,
+      tool: 'Write src/app.ts',
+      createdAt: '2026-10-09T09:00:00.000Z',
+      expiresAt: '2026-10-09T21:00:00.000Z'
+    })
+    const [teamAsk, dmAsk] = [randomUUID(), randomUUID()]
+    control.permissions = [
+      { ...waiting(teamAsk, teamChild, team), options: [{ optionId: 'o-allow', name: 'Allow', kind: 'allow_once' }] },
+      waiting(dmAsk, dmChild, dm)
+    ]
+
+    const asMember = await get(app(control, member), '/drafts')
+    expect(asMember.statusCode, asMember.body).toBe(200)
+    expect(asMember.json().permissionRequests).toEqual([
+      {
+        requestId: teamAsk,
+        tool: 'Write src/app.ts',
+        createdAt: '2026-10-09T09:00:00.000Z',
+        expiresAt: '2026-10-09T21:00:00.000Z',
+        options: [{ optionId: 'o-allow', name: 'Allow', kind: 'allow_once' }],
+        subsession: { sessionId: teamChild, title: 'Fix the flaky test' },
+        parent: { sessionId: team, title: 'support', platform: 'slack', channelName: 'support' }
+      },
+      {
+        requestId: dmAsk,
+        tool: 'Write src/app.ts',
+        createdAt: '2026-10-09T09:00:00.000Z',
+        expiresAt: '2026-10-09T21:00:00.000Z',
+        subsession: null,
+        parent: null
+      }
+    ])
+    const asOwner = (await get(app(control), '/drafts')).json()
+    expect(asOwner.permissionRequests[1]).toMatchObject({
+      subsession: { sessionId: dmChild },
+      parent: { sessionId: dm }
+    })
+    expect(control.reads.every((r) => r.operation === 'drafts' && r.permissions === true)).toBe(true)
   })
 })
 

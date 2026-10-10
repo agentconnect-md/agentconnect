@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, thirteenth revision (2026-10-10). Reviewed by three independent design reviews
+**Status:** Design, fourteenth revision (2026-10-10). Reviewed by three independent design reviews
 and the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -443,9 +443,10 @@ below), so opening it everywhere does not reopen what the read rule closes.
 **P0b ships the minimal form**: self-delegation as below, a failure report the daemon sends when a
 sub-session ends without reporting (§5.7), and a concurrency cap that refuses beyond
 `maxConcurrentSubsessions` (default 3). Reports use the existing parent-report path
-(`replyToSession`). The persistent outbox, the recovery order, permission-request routing and its
-wait cap, listing / steering / stopping, the daily budget and queueing over the cap are deferred
-until use shows they are needed; the rest of this section and §5.7 describe that target.
+(`replyToSession`). The persistent outbox, the recovery order, listing / steering / stopping, the
+daily budget and queueing over the cap are deferred until use shows they are needed; the rest of
+this section and §5.7 describe that target. Permission-request routing and its wait cap (items 2
+and 3 below) have shipped.
 
 - **Opening**: self-delegation without a post — the direct form of `sendMessage({ toAgent })`
   accepts a self target (both admission checks exempt it; `targetSessionCoordinate` is skipped),
@@ -464,7 +465,17 @@ until use shows they are needed; the rest of this section and §5.7 describe tha
   1. Standing prompt: finish the work in the workspace; the outward step (push, open the PR) goes
      through `propose`.
   2. When one fires it is delivered to the place of origin (an external place's to the approver's
-     DM, §5.5) as a card through the existing two approval paths and listed in Activity (deferred with this routing); the card offers "always allow this tool".
+     DM, §5.5) as a card through the existing two approval paths and listed in Activity; the card
+     offers "always allow this tool". **Shipped**, for delegated and `task` sub-sessions (a patrol
+     still refuses, §5.9), as the one pending request every surface settles (slack-approval-dm.md
+     §11): a Slack place gets the in-chat card where `allowRuntimeChangesInChat` lets anyone there
+     answer, otherwise a neutral notice plus the editor DM; the card names the sub-session, links
+     it and says how long it waits. It goes to the parent's own thread, or to the conversation's
+     root for an `append` conversation, where reports land too. A webchat place has the console:
+     the request carries its conversation (`parentSessionId`), whose page lists it among its own.
+     An external place's card goes where drafts route theirs: the responsible user's DM (a click is
+     verified like any approval DM), else the fallback conversation. Approval elicitations take the
+     notice and editor path, since a Slack chat card for them needs a live turn's surface.
   3. **Waiting is waiting**: the ACP request stays open and the turn is not cancelled — the card
      and both approval paths are bound to that pending request; cancelling it expires the card,
      and a later "continue" grants nothing to the re-triggered request. Host and concurrency slot
@@ -472,7 +483,12 @@ until use shows they are needed; the rest of this section and §5.7 describe tha
      `permissionWaitHours` (default 12) caps the wait: then deny, report, and the sub-session
      stops; re-delegate to continue and it asks again. Cost: on the pool a waiting sub-session
      holds a pod. If that becomes a cost problem, P1 may add "cancel the turn plus a cross-turn
-     one-shot grant".
+     one-shot grant". **Shipped**: the record is denied with "no answer within N hours" and its
+     cards rewritten; the stop is latched (`approval wait expired`) before the runtime is answered
+     `cancelled`, so the turn ends stopped and the existing failure report tells the parent. The
+     timer lives in memory: a restart ends the turn, the store expires every request no process
+     holds a resolver for, a stale card's click or console decision finds nothing pending, and the
+     card's handle on the row lets the reconnect sweep retire it.
   4. The user's permission policy is never changed; an `ask`-policy agent gets the warning in
      §1.8.
 - **Webchat**: the session-detail dock's Sub-sessions panel (#2885) lists the sub-sessions a
@@ -702,8 +718,10 @@ changed through the daemon without anything persisted on the Control Plane:
 
 Deleting an item drops it from the standing summary at the next reminder; its followers are not
 told. A console decision that cannot be confirmed keeps its row and tells the editor to check the
-destination (#2881). Runtime permission requests awaiting approval, patrol history and the unread
-badge are not in it yet.
+destination (#2881). Sub-sessions' runtime permission requests are listed under pending drafts for
+editors (§5.6): the sub-session and conversation where the viewer may open them, the tool, the
+wait's deadline and the request's own options, answered through the approval queue's decision so
+the first answer from any surface wins. Patrol history and the unread badge are not in it yet.
 
 ---
 
@@ -730,14 +748,14 @@ badge are not in it yet.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                          |
-| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap                                        |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9). Next: the target patrol (after per-runtime tests) on the credential-less host; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                 |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                               |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                                                                                                                  |
+| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, list / steer / stop, the daily budget, queueing over the cap                                                                                                                                                                             |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), sub-session permission requests routed to their conversation under the wait cap (§5.6). Next: the target patrol (after per-runtime tests) on the credential-less host; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 ---
 
@@ -896,3 +914,15 @@ hours late expires, a place that turned external drafts the text instead, and an
 most 100 pending reminders. Sub-sessions, patrols, external places and webchat cannot set one;
 a session marked by a per-asker read can, since it lands only in that DM. Listing reminders in
 Activity and delivery to another place or a person's DM are left for later.
+
+**Fourteenth revision (2026-10-10)**: §5.6 items 2 and 3 ship. A delegated or `task` sub-session's
+runtime permission request, seen only on the sub-session's own page until now, reaches the
+conversation it belongs to through that place's own approval path: the in-chat card where anyone
+there may answer, else a neutral notice and the editor DM; the console's request list for a
+webchat conversation; the drafts approver for an external place. It is the one pending request
+every surface settles, so the first answer wins, and Activity lists it for editors. After
+`permissionWaitHours` (default 12) it is recorded as denied, the sub-session stops with the reason
+latched before the runtime hears the answer, and the existing failure report tells the parent. The
+cap is an in-memory timer, which a restart cannot turn into a later grant: the turn ends, the
+request expires, and its card is retired by the reconnect sweep. Approval elicitations take the
+notice and editor path; patrols still refuse.

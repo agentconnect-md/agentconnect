@@ -694,7 +694,9 @@ export const AgentPermissionRequestRecord = z.object({
   resolvedBy: z.string().nullable().optional(),
   resolvedByName: z.string().nullable().optional(),
   // The live request's own options; absent once it is settled, for an elicitation, or from an older daemon.
-  options: z.array(AgentPermissionOption).max(AGENT_PERMISSION_MAX_OPTIONS).optional()
+  options: z.array(AgentPermissionOption).max(AGENT_PERMISSION_MAX_OPTIONS).optional(),
+  // A background sub-session's request (assistant-mode.md §5.6): the conversation it belongs to, by outward id; absent from an older daemon.
+  parentSessionId: z.string().min(1).optional()
 })
 export type AgentPermissionRequestRecord = z.infer<typeof AgentPermissionRequestRecord>
 

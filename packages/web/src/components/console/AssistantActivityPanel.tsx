@@ -1,12 +1,13 @@
 'use client'
 
-// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): its items, sub-sessions, pending drafts and proposals, and post grants.
+// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): its items, sub-sessions, what waits for approval, and post grants.
 import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useFormatter, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
   ApiError,
+  decideAgentPermissionRequest,
   decideAssistantDraft,
   deleteAssistantItem,
   fetchAssistantDrafts,
@@ -16,12 +17,14 @@ import {
   fetchAssistantSubsessions,
   memberDisplayName,
   revokeAssistantGrant,
+  type AgentPermissionOptionDto,
   type AssistantDraftDecision,
   type AssistantDraftDto,
   type AssistantDraftOutcomeDto,
   type AssistantGrantDto,
   type AssistantItemDto,
   type AssistantItemStatus,
+  type AssistantPermissionRequestDto,
   type AssistantSubsessionDto
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -46,6 +49,9 @@ const SUBSESSION_STATE_CLASS: Record<AssistantSubsessionDto['state'], string> = 
 }
 
 type Translate = ReturnType<typeof useTranslations<'Agents.detail.activity'>>
+
+/** How an answer to a sub-session's permission request ended here; `gone` is one another surface answered first. */
+type PermissionResult = 'allowed' | 'denied' | 'gone'
 
 /** How a decision on a draft ended: its outcome, why the daemon refused it, sent without an answer, or a proposal left waiting at the sub-session limit. */
 type DraftResult =
@@ -210,7 +216,42 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
     const result = decided[id]?.result
     return result !== undefined && !('unconfirmed' in result) && !('busy' in result)
   }
-  const waiting = pendingDrafts.filter((draft) => !settledHere(draft.id)).length
+  // A sub-session's permission request answered here keeps its row and what happened, like a draft.
+  const [answered, setAnswered] = useState<
+    Record<string, { request: AssistantPermissionRequestDto; result: PermissionResult }>
+  >({})
+  const pendingPermissions = drafts.data?.permissionRequests ?? []
+  const pendingPermissionIds = new Set(pendingPermissions.map((request) => request.requestId))
+  const permissionRows = [
+    ...pendingPermissions,
+    ...Object.values(answered)
+      .map((entry) => entry.request)
+      .filter((request) => !pendingPermissionIds.has(request.requestId))
+  ]
+  const waiting =
+    pendingDrafts.filter((draft) => !settledHere(draft.id)).length +
+    pendingPermissions.filter((request) => !answered[request.requestId]).length
+
+  const decidePermission = async (
+    request: AssistantPermissionRequestDto,
+    decision: 'allow' | 'deny',
+    optionId?: string
+  ) => {
+    const settle = (result: PermissionResult) =>
+      setAnswered((prev) => ({ ...prev, [request.requestId]: { request, result } }))
+    try {
+      await decideAgentPermissionRequest(agentId, request.requestId, decision, optionId)
+      settle(decision === 'allow' ? 'allowed' : 'denied')
+    } catch (err) {
+      // Answered elsewhere first, or its sub-session ended: whichever surface answered first won.
+      if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
+        settle('gone')
+        void drafts.mutate()
+        return
+      }
+      throw err
+    }
+  }
 
   const decideDraft = async (draft: AssistantDraftDto, decision: AssistantDraftDecision) => {
     const settle = (result: DraftResult) => setDecided((prev) => ({ ...prev, [draft.id]: { draft, result } }))
@@ -292,13 +333,27 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
 
       {canEdit ? (
         <Section title={t('drafts.title')} count={waiting} kind="drafts">
-          <Listing state={drafts} count={draftRows.length} truncated={drafts.data?.truncated} empty={t('drafts.empty')}>
+          <Listing
+            state={drafts}
+            count={permissionRows.length + draftRows.length}
+            truncated={drafts.data?.truncated}
+            empty={t('drafts.empty')}
+          >
+            {permissionRows.map((request, i) => (
+              <PermissionRequestRow
+                key={request.requestId}
+                request={request}
+                first={i === 0}
+                result={answered[request.requestId]?.result}
+                onDecide={decidePermission}
+              />
+            ))}
             {draftRows.map((draft, i) => (
               <DraftRow
                 key={draft.id}
                 agentId={agentId}
                 draft={draft}
-                first={i === 0}
+                first={i === 0 && permissionRows.length === 0}
                 result={decided[draft.id]?.result}
                 pending={pendingIds.has(draft.id)}
                 onDecide={decideDraft}
@@ -542,6 +597,125 @@ function SubsessionRow({ subsession, first }: { subsession: AssistantSubsessionD
           })}
         </span>
       </div>
+    </div>
+  )
+}
+
+/** A background sub-session waiting for permission (assistant-mode.md §5.6): which one, what it asks to run, and the same answers its card offers. */
+function PermissionRequestRow({
+  request,
+  first,
+  result,
+  onDecide
+}: {
+  request: AssistantPermissionRequestDto
+  first: boolean
+  result: PermissionResult | undefined
+  onDecide: (request: AssistantPermissionRequestDto, decision: 'allow' | 'deny', optionId?: string) => Promise<void>
+}) {
+  const t = useTranslations('Agents.detail.activity')
+  const format = useFormatter()
+  const { orgPath } = useOrgs()
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState(false)
+  const { subsession, parent } = request
+  const parentName = parent
+    ? parent.channelName
+      ? `${chatRoomSigil(parent.platform ?? undefined)}${parent.channelName}`
+      : (parent.title ?? t('subsessions.conversation'))
+    : null
+  const choices: { decision: 'allow' | 'deny'; label: string; optionId?: string }[] = request.options?.length
+    ? request.options.map((option: AgentPermissionOptionDto) => ({
+        decision: option.kind === 'allow_once' || option.kind === 'allow_always' ? 'allow' : 'deny',
+        label: option.name,
+        optionId: option.optionId
+      }))
+    : [
+        { decision: 'allow', label: t('permissions.allow') },
+        { decision: 'deny', label: t('permissions.deny') }
+      ]
+
+  const decide = async (choice: (typeof choices)[number]) => {
+    setBusy(true)
+    setFailure(false)
+    try {
+      await onDecide(request, choice.decision, choice.optionId)
+    } catch {
+      setFailure(true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className={`px-4 py-3 ${first ? '' : 'border-t border-(--border-subtle)'}`}
+      data-assistant-permission={request.requestId}
+    >
+      <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
+        <span className="badge w-fit flex-none bg-(--status-paused-soft) text-(--status-paused)">
+          {t('permissions.badge')}
+        </span>
+        <span className="min-w-0 break-words font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary) desktop:flex-1">
+          {subsession ? (
+            <Link className="lnk" href={orgPath(`/sessions/${encodeURIComponent(subsession.sessionId)}`)}>
+              {subsession.title ?? t('subsessions.untitled')}
+            </Link>
+          ) : (
+            <span className="inline-flex items-center gap-[6px] font-medium text-(--text-tertiary)">
+              <Icon name="lock" size={12} />
+              {t('subsessions.hidden')}
+            </span>
+          )}
+        </span>
+      </div>
+      <div
+        className="mt-2 break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-mono text-[11.5px] leading-[1.45] text-(--text-secondary)"
+        title={request.tool}
+      >
+        {request.tool}
+      </div>
+      <div className="mt-2 flex flex-col gap-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:flex-row desktop:gap-3">
+        {parent && parentName ? (
+          <Link className="lnk text-[12px]" href={orgPath(`/sessions/${encodeURIComponent(parent.sessionId)}`)}>
+            {t('subsessions.from', { name: parentName })}
+          </Link>
+        ) : null}
+        <span>
+          {t('permissions.expires', {
+            time: format.dateTime(new Date(request.expiresAt), { dateStyle: 'medium', timeStyle: 'short' })
+          })}
+        </span>
+      </div>
+      {result ? (
+        <div
+          role="status"
+          className={`mt-2 font-sans text-[12.5px] font-medium leading-normal ${
+            result === 'allowed' ? 'text-(--status-online-text)' : 'text-(--text-secondary)'
+          }`}
+        >
+          {t(`permissions.outcome.${result}`)}
+        </div>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2" data-assistant-permission-actions>
+          {choices.map((choice) => (
+            <Button
+              key={choice.optionId ?? choice.decision}
+              variant={choice.decision === 'allow' ? 'primary' : 'secondary'}
+              size="xs"
+              disabled={busy}
+              onClick={() => void decide(choice)}
+            >
+              {choice.label}
+            </Button>
+          ))}
+        </div>
+      )}
+      {failure && !result ? (
+        <div role="alert" className="mt-1 font-sans text-[12px] text-(--status-error)">
+          {t('permissions.decideFailed')}
+        </div>
+      ) : null}
     </div>
   )
 }

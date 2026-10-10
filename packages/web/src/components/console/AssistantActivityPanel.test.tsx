@@ -9,6 +9,7 @@ import type {
   AssistantGrantDto,
   AssistantItemDetailDto,
   AssistantItemDto,
+  AssistantPermissionRequestDto,
   AssistantSubsessionDto
 } from '@/lib/api'
 
@@ -23,10 +24,13 @@ const mocks = vi.hoisted(() => ({
   detail: null as unknown,
   subsessions: [] as unknown[],
   drafts: [] as unknown[],
+  /** Unset: a Control Plane that does not list sub-sessions' permission requests. */
+  permissions: undefined as unknown[] | undefined,
   grants: [] as unknown[],
   failure: null as Error | null,
   outcome: { status: 'succeeded', alwaysAllowed: false, failure: null } as unknown,
-  decideFailure: null as Error | null
+  decideFailure: null as Error | null,
+  permissionFailure: null as Error | null
 }))
 
 const api = vi.hoisted(() => ({
@@ -37,7 +41,16 @@ const api = vi.hoisted(() => ({
   fetchAssistantItem: vi.fn(async () => mocks.detail),
   deleteAssistantItem: vi.fn(async () => undefined),
   fetchAssistantSubsessions: vi.fn(async () => ({ subsessions: mocks.subsessions, truncated: false })),
-  fetchAssistantDrafts: vi.fn(async () => ({ drafts: mocks.drafts, truncated: false })),
+  fetchAssistantDrafts: vi.fn(async () => ({
+    drafts: mocks.drafts,
+    truncated: false,
+    ...(mocks.permissions ? { permissionRequests: mocks.permissions } : {})
+  })),
+  decideAgentPermissionRequest: vi.fn(
+    async (_agentId: string, _requestId: string, _decision: string, _optionId?: string) => {
+      if (mocks.permissionFailure) throw mocks.permissionFailure
+    }
+  ),
   fetchAssistantGrants: vi.fn(async () => ({ grants: mocks.grants, truncated: false })),
   revokeAssistantGrant: vi.fn(async () => undefined),
   decideAssistantDraft: vi.fn(async (_agentId: string, _draftId: string, _decision: string) => {
@@ -195,6 +208,28 @@ const PROPOSAL: AssistantDraftDto = {
   createdAt: '2026-10-09T09:00:00.000Z',
   expiresAt: '2026-10-10T09:00:00.000Z'
 }
+/** A background sub-session waiting for permission, with the options its runtime offered. */
+const PERMISSION: AssistantPermissionRequestDto = {
+  requestId: 'request-1',
+  tool: 'Write src/app.ts',
+  createdAt: '2026-10-09T09:00:00.000Z',
+  expiresAt: '2026-10-09T21:00:00.000Z',
+  options: [
+    { optionId: 'o-always', name: 'Always allow', kind: 'allow_always' },
+    { optionId: 'o-allow', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'o-deny', name: 'Deny', kind: 'reject_once' }
+  ],
+  subsession: { sessionId: 'sid-child', title: 'Fix the flaky test' },
+  parent: { sessionId: 'sid-parent', title: 'support', platform: 'slack', channelName: 'support' }
+}
+/** One the viewer may not open, asking for a plain Allow or Deny. */
+const HIDDEN_PERMISSION: AssistantPermissionRequestDto = {
+  ...PERMISSION,
+  requestId: 'request-2',
+  options: undefined,
+  subsession: null,
+  parent: null
+}
 const GRANT: AssistantGrantDto = {
   id: 'a'.repeat(32),
   source: { platform: 'webchat', integrationId: null, channel: 'conv-1' },
@@ -213,10 +248,12 @@ beforeEach(() => {
   mocks.detail = DETAIL
   mocks.subsessions = SUBSESSIONS
   mocks.drafts = [DRAFT]
+  mocks.permissions = undefined
   mocks.grants = [GRANT]
   mocks.failure = null
   mocks.outcome = { status: 'succeeded', alwaysAllowed: false, failure: null }
   mocks.decideFailure = null
+  mocks.permissionFailure = null
 })
 
 afterEach(async () => {
@@ -537,6 +574,58 @@ describe('the Activity view for an editor', () => {
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
       'Approved. It runs in the background and reports back in #support.'
     )
+  })
+
+  it('lists a sub-session waiting for permission and answers it with its own choices', async () => {
+    mocks.permissions = [PERMISSION, HIDDEN_PERMISSION]
+    const host = await mount(true)
+    const drafts = section(host, 'drafts')!
+    const waiting = () => drafts.firstElementChild?.querySelector('.badge')?.textContent
+    // Two requests and one draft wait.
+    expect(waiting()).toBe('3')
+    const row = drafts.querySelector('[data-assistant-permission="request-1"]')!
+    expect(row.querySelector('.badge')?.textContent).toBe('Permission')
+    expect(row.textContent).toContain('Write src/app.ts')
+    expect(row.textContent).toContain('Denied and stopped Oct 9, 2026')
+    const links = [...row.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
+    expect(links).toEqual([
+      ['Fix the flaky test', '/example/sessions/sid-child'],
+      ['From #support', '/example/sessions/sid-parent']
+    ])
+    const labels = (scope: Element) => [...scope.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    expect(labels(row)).toEqual(['Always allow', 'Allow', 'Deny'])
+    const hidden = drafts.querySelector('[data-assistant-permission="request-2"]')!
+    expect(hidden.textContent).toContain('Not visible to you')
+    expect(hidden.querySelector('a')).toBeNull()
+    expect(labels(hidden)).toEqual(['Allow', 'Deny'])
+
+    await click(button(row, 'Always allow'))
+    expect(api.decideAgentPermissionRequest).toHaveBeenCalledWith(AGENT, 'request-1', 'allow', 'o-always')
+    expect(row.querySelector('[role="status"]')?.textContent).toBe('Allowed. The sub-session continues.')
+    expect(row.querySelector('button')).toBeNull()
+    expect(waiting()).toBe('2')
+
+    await click(button(hidden, 'Deny'))
+    expect(api.decideAgentPermissionRequest).toHaveBeenLastCalledWith(AGENT, 'request-2', 'deny', undefined)
+    expect(hidden.querySelector('[role="status"]')?.textContent).toBe('Denied.')
+  })
+
+  it('says a request answered elsewhere first is no longer waiting, and reads the list again', async () => {
+    mocks.permissions = [PERMISSION]
+    mocks.permissionFailure = new ApiError('no longer pending', 409)
+    const host = await mount(true)
+    const row = host.querySelector('[data-assistant-permission="request-1"]')!
+    const reads = api.fetchAssistantDrafts.mock.calls.length
+    await click(button(row, 'Allow'))
+    expect(row.querySelector('[role="status"]')?.textContent).toBe('No longer waiting for approval.')
+    expect(api.fetchAssistantDrafts.mock.calls.length).toBeGreaterThan(reads)
+  })
+
+  it('shows only drafts when the console reads no permission requests', async () => {
+    const host = await mount(true)
+    const drafts = section(host, 'drafts')!
+    expect(drafts.querySelector('[data-assistant-permission]')).toBeNull()
+    expect(drafts.querySelector('[data-assistant-draft="draft-1"]')).not.toBeNull()
   })
 
   it('deletes an item after a confirmation, and drops it from the list', async () => {

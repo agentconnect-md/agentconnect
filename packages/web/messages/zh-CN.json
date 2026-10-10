@@ -2808,6 +2808,7 @@
         "offline": "离线",
         "approvalRequests": "审批请求",
         "pendingRequests": "待处理请求",
+        "fromSubsession": "后台子会话",
         "pendingCount": "{count} 个待处理",
         "requestUpdateError": "无法更新此审批请求，请重试。",
         "loadingRequests": "正在加载请求…",
@@ -3182,6 +3183,18 @@
               "expired": "已过期，没有执行任何操作。",
               "unconfirmedGone": "无法确认是否已处理，它已不在等待批准。请查看 {place}，可能已经开始执行。"
             }
+          }
+        },
+        "permissions": {
+          "badge": "权限",
+          "expires": "若无人处理，将于 {time} 拒绝并停止",
+          "allow": "允许",
+          "deny": "拒绝",
+          "decideFailed": "操作失败，请重试。",
+          "outcome": {
+            "allowed": "已允许，子会话继续执行。",
+            "denied": "已拒绝。",
+            "gone": "已不在等待批准。"
           }
         },
         "grants": {
