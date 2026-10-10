@@ -197,3 +197,12 @@ export function closeWebchatSegmentForImage(wc: WebchatTurnOutput, resolveFileLi
   if (!isNoResponsePrefix(wc.replyText.trim())) flushHeldWebchatText(wc, resolveFileLink)
   wc.segmentIndex = undefined
 }
+
+/** A segment's single transcript write: every caller awaits the same promise, and a failed write may be retried. */
+export function commitSegmentOnce(segment: { committing?: Promise<void> }, write: () => Promise<void>): Promise<void> {
+  segment.committing ??= write().catch((err: unknown) => {
+    segment.committing = undefined
+    throw err
+  })
+  return segment.committing
+}

@@ -4195,7 +4195,7 @@ export class Daemon {
               commitPrecedingText: async () => {
                 if (isNoResponsePrefix(wc.replyText.trim())) return
                 for (const segment of wc.replySegments)
-                  if (segment.text.trim() && !segment.committed) await this.commitWebchatSegment(p, segment)
+                  if (segment.text.trim()) await this.commitWebchatSegmentOnce(p, segment)
               },
               stillPublishable: () =>
                 [...this.pending.values()].includes(p) && !p.outputSuppressed && this.toolTurnRunnable(ctx)
@@ -16803,20 +16803,29 @@ export class Daemon {
   /** Persist each reply segment and send its canonical post in the same order. */
   private async publishWebchatReply(p: Pending, run: TurnRun, activatePeers: boolean): Promise<void> {
     if (!p.webchat) return
-    // A segment a shared image already committed keeps its place; only the rest land now.
-    const segments = p.webchat.replySegments.filter((segment) => segment.text.trim() && !segment.committed)
+    const segments = p.webchat.replySegments.filter((segment) => segment.text.trim())
+    // A segment a shared image already committed keeps its place; awaiting it keeps the order.
     for (const [index, segment] of segments.entries())
-      await this.commitWebchatSegment(
+      await this.commitWebchatSegmentOnce(
         p,
         segment,
         activatePeers && index === segments.length - 1 ? run.plan.sourceHopCount : undefined
       )
   }
 
+  /** One commit per segment, shared by every caller: concurrent image shares and turn end await the same write. */
+  private commitWebchatSegmentOnce(
+    p: Pending,
+    segment: { postId: string; text: string; committing?: Promise<void> },
+    hopCount?: number
+  ): Promise<void> {
+    return webchatTurnOutput.commitSegmentOnce(segment, () => this.commitWebchatSegment(p, segment, hopCount))
+  }
+
   /** Persist one finished reply segment and send its canonical post; `hopCount` makes it the activating post. */
   private async commitWebchatSegment(
     p: Pending,
-    segment: { postId: string; text: string; committed?: boolean },
+    segment: { postId: string; text: string },
     hopCount?: number
   ): Promise<void> {
     if (!p.webchat) return
@@ -16833,7 +16842,6 @@ export class Daemon {
         text: segment.text
       }
     )
-    segment.committed = true
     p.webchat.postSink?.({
       conversationId: p.webchat.conversationId,
       agentId,

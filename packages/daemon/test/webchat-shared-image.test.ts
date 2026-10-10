@@ -17,7 +17,7 @@ import {
   type SharedImageTurn
 } from '../src/webchat/shared-image.js'
 import type { WebchatTurnOutput } from '../src/webchat/turn-output.js'
-import { closeWebchatSegmentForImage } from '../src/webchat/turn-output.js'
+import { closeWebchatSegmentForImage, commitSegmentOnce } from '../src/webchat/turn-output.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const CONVERSATION = '22222222-2222-4222-8222-222222222222'
@@ -300,6 +300,25 @@ describe('closeWebchatSegmentForImage', () => {
     )
     expect(order).toEqual(['before', 'image'])
     await store.close()
+  })
+})
+
+describe('commitSegmentOnce', () => {
+  it('writes a segment once however many shares race for it, and retries after a failure', async () => {
+    const segment: { committing?: Promise<void> } = {}
+    let release!: () => void
+    const write = vi.fn(() => new Promise<void>((resolve) => (release = resolve)))
+    const first = commitSegmentOnce(segment, write)
+    const second = commitSegmentOnce(segment, write)
+    release()
+    await Promise.all([first, second])
+    expect(write).toHaveBeenCalledTimes(1)
+
+    const failing: { committing?: Promise<void> } = {}
+    await expect(commitSegmentOnce(failing, async () => Promise.reject(new Error('disk')))).rejects.toThrow('disk')
+    const retry = vi.fn(async () => {})
+    await commitSegmentOnce(failing, retry)
+    expect(retry).toHaveBeenCalledTimes(1)
   })
 })
 
