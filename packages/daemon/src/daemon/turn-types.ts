@@ -684,8 +684,8 @@ export interface Pending {
   webchat?: WebchatTurnContext & {
     index: number
     replyText: string
-    // `at` is pinned when a shared image follows the segment, so history keeps it above the card.
-    replySegments: { postId: string; text: string; at?: string }[]
+    // `committed` once a shared image after it persisted it early, so turn end does not write it twice.
+    replySegments: { postId: string; text: string; committed?: boolean }[]
     segmentIndex?: number
     heldText: string
     heldTextOffset?: number

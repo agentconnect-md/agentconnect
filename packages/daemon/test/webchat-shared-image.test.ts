@@ -261,7 +261,7 @@ describe('publishWebchatSharedImage', () => {
 })
 
 describe('closeWebchatSegmentForImage', () => {
-  it('flushes held text and pins earlier segments ahead of the card', () => {
+  it('flushes held text and starts later text as a new segment', () => {
     const { wc, outputs } = turnOutput()
     wc.replySegments.push({ postId: '44444444-4444-4444-8444-444444444444', text: 'Here [it' })
     wc.segmentIndex = 0
@@ -270,8 +270,36 @@ describe('closeWebchatSegmentForImage', () => {
     wc.heldTextOffset = 4
     closeWebchatSegmentForImage(wc)
     expect(wc.segmentIndex).toBeUndefined()
-    expect(wc.replySegments[0]!.at).toMatch(/^\d+$/)
     expect(outputs.map((o) => o.event?.kind)).toEqual(['message'])
+  })
+
+  it('persists the text above the card before the image row', async () => {
+    const store = await openStore()
+    const { d } = deps(store)
+    const { wc } = turnOutput()
+    const order: string[] = []
+    const append = store.appendTranscript.bind(store)
+    store.appendTranscript = async (entry) => {
+      order.push(entry.sharedImage ? 'image' : entry.text)
+      await append(entry)
+    }
+    await publishWebchatSharedImage(
+      d,
+      turnFor(wc, {
+        commitPrecedingText: async () => {
+          await store.appendTranscript({
+            channel: CONVERSATION,
+            ts: '1',
+            sender: AGENT,
+            kind: 'text',
+            text: 'before'
+          })
+        }
+      }),
+      { path: 'chart.png', bytes: Buffer.from('PNG'), sha256: SHA }
+    )
+    expect(order).toEqual(['before', 'image'])
+    await store.close()
   })
 })
 

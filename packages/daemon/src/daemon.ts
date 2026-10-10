@@ -694,7 +694,7 @@ import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-i
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
-import { isNoResponseBody } from './session/no-response.js'
+import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { codeHostReplySnapshot, sessionReplyRoute } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
@@ -4191,6 +4191,12 @@ export class Daemon {
               admission: { agentId: ctx.agentId, sessionKey: p.plan.sessionKey },
               wc,
               ...(p.resolveFileLink ? { resolveFileLink: p.resolveFileLink } : {}),
+              // History pages by insertion order, so the text above the card must land before it.
+              commitPrecedingText: async () => {
+                if (isNoResponsePrefix(wc.replyText.trim())) return
+                for (const segment of wc.replySegments)
+                  if (segment.text.trim() && !segment.committed) await this.commitWebchatSegment(p, segment)
+              },
               stillPublishable: () =>
                 [...this.pending.values()].includes(p) && !p.outputSuppressed && this.toolTurnRunnable(ctx)
             },
@@ -16797,37 +16803,49 @@ export class Daemon {
   /** Persist each reply segment and send its canonical post in the same order. */
   private async publishWebchatReply(p: Pending, run: TurnRun, activatePeers: boolean): Promise<void> {
     if (!p.webchat) return
-    const segments = p.webchat.replySegments.filter((segment) => segment.text.trim())
-    for (const [index, segment] of segments.entries()) {
-      const replyTs = await webchatTurnOutput.appendWebchatTextRow(
-        this.store,
-        p.plan.transcriptChannel,
-        run.plan.statusThread,
-        segment.at ?? monotonicTs(),
-        {
-          postId: segment.postId,
-          sender: run.entry.agentId,
-          admission: { agentId: run.entry.agentId, sessionKey: run.plan.sessionKey },
-          text: segment.text
-        }
+    // A segment a shared image already committed keeps its place; only the rest land now.
+    const segments = p.webchat.replySegments.filter((segment) => segment.text.trim() && !segment.committed)
+    for (const [index, segment] of segments.entries())
+      await this.commitWebchatSegment(
+        p,
+        segment,
+        activatePeers && index === segments.length - 1 ? run.plan.sourceHopCount : undefined
       )
-      p.webchat.postSink?.({
+  }
+
+  /** Persist one finished reply segment and send its canonical post; `hopCount` makes it the activating post. */
+  private async commitWebchatSegment(
+    p: Pending,
+    segment: { postId: string; text: string; committed?: boolean },
+    hopCount?: number
+  ): Promise<void> {
+    if (!p.webchat) return
+    const agentId = p.entry.agentId
+    const replyTs = await webchatTurnOutput.appendWebchatTextRow(
+      this.store,
+      p.plan.transcriptChannel,
+      p.plan.statusThread,
+      monotonicTs(),
+      {
+        postId: segment.postId,
+        sender: agentId,
+        admission: { agentId, sessionKey: p.plan.sessionKey },
+        text: segment.text
+      }
+    )
+    segment.committed = true
+    p.webchat.postSink?.({
+      conversationId: p.webchat.conversationId,
+      agentId,
+      post: {
+        postId: segment.postId,
         conversationId: p.webchat.conversationId,
-        agentId: run.entry.agentId,
-        post: {
-          postId: segment.postId,
-          conversationId: p.webchat.conversationId,
-          author: {
-            kind: 'agent',
-            agentId: run.entry.agentId,
-            ...(activatePeers && index === segments.length - 1 ? { hopCount: run.plan.sourceHopCount } : {})
-          },
-          text: segment.text,
-          at: Number(replyTs)
-        },
-        ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
-      })
-    }
+        author: { kind: 'agent', agentId, ...(hopCount !== undefined ? { hopCount } : {}) },
+        text: segment.text,
+        at: Number(replyTs)
+      },
+      ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
+    })
   }
 
   /** Commit the accepted webchat reply and close its browser stream. */

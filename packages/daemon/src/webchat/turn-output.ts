@@ -192,9 +192,8 @@ export function flushHeldWebchatText(wc: WebchatTurnOutput, resolveFileLink?: Wo
   }
 }
 
-/** Close the streamed text before a shared image: flush it and pin each earlier segment's `at` ahead of the card. */
+/** Close the streamed text before a shared image: release its held suffix and start any later text as a new segment. */
 export function closeWebchatSegmentForImage(wc: WebchatTurnOutput, resolveFileLink?: WorkspaceFileLinkResolver): void {
   if (!isNoResponsePrefix(wc.replyText.trim())) flushHeldWebchatText(wc, resolveFileLink)
-  for (const segment of wc.replySegments) segment.at ??= monotonicTs()
   wc.segmentIndex = undefined
 }

@@ -107,6 +107,8 @@ export interface SharedImageTurn {
   wc: WebchatTurnOutput
   resolveFileLink?: WorkspaceFileLinkResolver
   signal?: AbortSignal
+  /** Persist the reply text streamed before the card, so history keeps it above the image. */
+  commitPrecedingText?: () => Promise<void>
   /** Re-checked after preview preparation: cancellation or lost authority before commit publishes nothing. */
   stillPublishable: () => boolean
 }
@@ -232,6 +234,7 @@ export async function publishWebchatSharedImage(
   try {
     // The preceding text is a finished message: it keeps its place above the card, and later text starts a new one.
     closeWebchatSegmentForImage(wc, turn.resolveFileLink)
+    await turn.commitPrecedingText?.()
     ts = await appendWebchatTextRow(
       deps.store as LocalStore,
       turn.transcriptChannel,

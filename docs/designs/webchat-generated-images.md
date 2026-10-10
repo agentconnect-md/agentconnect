@@ -572,6 +572,10 @@ Choices this design left to implementation, and where the code settled them:
   hands the pixels to a peer model. A cached original also records its file `name`.
 - **Read-time state.** `ImageOriginal.status` gains `unavailable`: the read-time answer
   for a pending original with no live task in the owning process. It is never persisted.
+- **Ordering.** History pages webchat by insertion order, so publishing an image first
+  commits the reply text streamed before it, then the image row; later text commits at
+  turn end as usual. A reply that ends with an image therefore carries no activating hop
+  depth, like the image post itself.
 - **Update channel.** `rd/webchat-image-update` (daemon → relay) carries
   `WebchatImageUpdate`; the relay binds it to the authoring daemon, delivers it to the
   conversation's browsers as `image_update`, and fans it to peer daemons as the

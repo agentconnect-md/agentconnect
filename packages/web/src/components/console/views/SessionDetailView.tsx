@@ -4436,7 +4436,10 @@ export default function SessionDetailView() {
             {
               ...msgStep(m, toolSessionId, rowPlatform),
               ...(m.attachments?.[0] ? { image: m.attachments[0] } : {}),
-              ...(m.sharedImage ? { peerCopy: true } : {})
+              // Only a copy from another member's session is a peer copy; the author's own row resolves through its session.
+              ...(m.sharedImage && conversationSourceAgentByMessageRef.current.get(m) !== senderAgent.id
+                ? { peerCopy: true }
+                : {})
             },
             rowAnchor(m),
             sourceTurnKey
