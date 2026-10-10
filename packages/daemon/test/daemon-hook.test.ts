@@ -3542,6 +3542,77 @@ describe('Daemon rd/msg hook fires', () => {
     await restarted.stop()
   })
 
+  // A superseded first turn aborted after its row was written left the row unbound, rejecting every later delivery.
+  it('binds a PR session whose superseded first turn stopped before its first prompt', async () => {
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    // The cold-cancel backstop is what aborts a superseded turn that has not reached its prompt.
+    ;(daemon as any).cfg.limits.cancelBackstopMs = 50
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => {}) },
+      collector: new GithubReplyCollector()
+    }))
+    // The first turn's recall never answers, holding it after its row exists and before its prompt.
+    const recall = vi
+      .spyOn((daemon as any).memory, 'recallForTurn')
+      .mockImplementationOnce(() => new Promise(() => {}))
+      .mockResolvedValue([])
+    const revision = (deliveryKey: string, action: 'opened' | 'synchronize', head: string): RdMsgHook =>
+      fire({
+        sessionKey: 'example-org/example-repo#7',
+        msgId: `${HOOK_ID}:${deliveryKey}`,
+        deliveryKey,
+        event: `pull_request:${action}`,
+        github: {
+          repoId: '1001',
+          repoFullName: 'example-org/example-repo',
+          sourceInstallationId: '2002',
+          subjectKind: 'pull_request',
+          pullNumber: 7,
+          headSha: head.repeat(40),
+          baseSha: '0'.repeat(40),
+          reportSha: head.repeat(40)
+        },
+        context: {
+          source: 'github',
+          event: 'pull_request',
+          action,
+          repo: 'example-org/example-repo',
+          number: 7,
+          title: 'Keep the session bound',
+          senderLogin: 'alice',
+          truncated: false
+        }
+      })
+    const key = sessionKey('hook', 'example-org/example-repo', '7', AGENT_ID, 'github:1001')
+
+    await (daemon as any).handleRelayMsg(revision('opened', 'opened', 'a'), () => {})
+    await vi.waitFor(() => expect(recall).toHaveBeenCalledOnce(), WAIT)
+    expect(await (daemon as any).store.getSession(key)).toMatchObject({ sourceBindingKind: null })
+    await (daemon as any).handleRelayMsg(revision('synchronize', 'synchronize', 'b'), () => {})
+
+    await vi.waitFor(
+      () =>
+        expect(cp.hookReports).toEqual([
+          expect.objectContaining({ deliveryKey: 'opened', status: 'failed', reason: 'superseded' }),
+          expect.objectContaining({ deliveryKey: 'synchronize', status: 'success' })
+        ]),
+      WAIT
+    )
+    expect(host.prompt).toHaveBeenCalledOnce()
+    expect(await (daemon as any).store.getSession(key)).toMatchObject({
+      sourceBindingKind: 'external',
+      externalProvider: 'github',
+      externalRealmKey: 'github.com',
+      externalResourceKind: 'repository',
+      externalResourceKey: '1001'
+    })
+    await daemon.stop()
+  })
+
   it('collapses a burst of check re-requests for one head onto the newest delivery', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
     const releases: Array<(error?: Error) => void> = []
