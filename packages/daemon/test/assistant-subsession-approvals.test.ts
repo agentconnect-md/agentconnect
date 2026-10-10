@@ -367,6 +367,30 @@ describe('a sub-session’s permission request in the conversation it belongs to
     await w.store.close()
   })
 
+  it('opens nothing when a Stop sweeps the session while the route is still being looked up', async () => {
+    for (const ask of ['permission', 'elicitation'] as const) {
+      const w = await world({ route: routeTo({ kind: 'console' }) })
+      let found!: (route: SubsessionApprovalRoute) => void
+      w.subsessionApprovalRoute.mockImplementationOnce(() => new Promise((resolve) => (found = resolve)))
+      const answered =
+        ask === 'permission'
+          ? w.coordinator.onAcpPermission(OWNER, ACP, params())
+          : w.coordinator.onAcpElicit(OWNER, ACP, approvalElicitation())
+      await vi.waitFor(() => expect(w.subsessionApprovalRoute).toHaveBeenCalledTimes(1))
+      // A Stop suppresses the turn and sweeps its approvals before the lookup returns.
+      ;(w.p as { outputSuppressed?: string }).outputSuppressed = 'stop'
+      await w.coordinator.releaseApprovals(OWNER, ACP)
+      found(routeTo({ kind: 'console' }))
+      await expect(answered).resolves.toEqual(
+        ask === 'permission' ? { outcome: { outcome: 'cancelled' } } : { action: 'cancel' }
+      )
+      expect(w.coordinator.pendingSubsessionApprovals(AGENT)).toHaveLength(0)
+      expect(await rows(w.store)).toHaveLength(0)
+      expect(w.clock.pending).toBe(0)
+      await w.store.close()
+    }
+  })
+
   it('leaves no card that grants anything after a restart, and the sweep retires it', async () => {
     const database = new DatabaseSync(':memory:')
     const w = await world({ chatOn: true, database })

@@ -1679,14 +1679,20 @@ export class PermissionCoordinator {
       return await this.awaitChatPermission(agentId, sessionId, params, evaluationParams, p)
     }
     // Default policy: hold the runtime request and surface only a neutral notice in chat; a sub-session's goes to its conversation (assistant-mode.md §5.6).
-    return await this.awaitEditorPermission(
-      agentId,
-      sessionId,
-      params,
-      evaluationParams,
-      p,
-      await this.subsessionRoute(p)
-    )
+    const route = await this.subsessionRoute(p)
+    // The lookup awaited, so a Stop's release sweep may have passed without seeing this request: never open it then.
+    if (!this.turnStillLive(owner, sessionId, p)) {
+      this.permissionEvaluationDetails.set(evaluationParams, {
+        reason: p.outputSuppressed ?? 'permission_without_live_turn'
+      })
+      return { outcome: { outcome: 'cancelled' } }
+    }
+    return await this.awaitEditorPermission(agentId, sessionId, params, evaluationParams, p, route)
+  }
+
+  /** Whether `p` is still the session's live, unsuppressed turn after an await. */
+  private turnStillLive(owner: HostKey, sessionId: string, p: Pending): boolean {
+    return this.host.pending().get(pendingTurnKey(owner, sessionId)) === p && !p.outputSuppressed
   }
 
   /** Grant one of this daemon's own tools without a card; undefined when the runtime offered no allow option. */
@@ -1758,15 +1764,19 @@ export class PermissionCoordinator {
         turnChromeFor(p.plan.platform).chatInputCards === true &&
         p.conn instanceof SlackConnection &&
         !p.plan.approvalSurfaceSuppressed
-      if (!chatApprovalEnabled)
+      if (!chatApprovalEnabled) {
+        const route = await this.subsessionRoute(p)
+        // As for a permission request: a Stop during the lookup must not leave an answerable approval behind.
+        if (!this.turnStillLive(owner, sessionId, p)) return { action: 'cancel' }
         return await this.awaitEditorElicitation(
           agentId,
           sessionId,
           params,
           p,
           elicitationApprovalChoices(params),
-          await this.subsessionRoute(p)
+          route
         )
+      }
     }
     // A `none` Slack turn has no generic human-input card to answer this request.
     if (p.plan.approvalSurfaceSuppressed) return { action: 'cancel' }
