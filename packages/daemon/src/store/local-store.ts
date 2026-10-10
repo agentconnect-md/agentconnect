@@ -1338,7 +1338,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 43
+export const SCHEMA_VERSION = 44
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1859,6 +1859,23 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       )
       if (!columns.includes('sharedImageJson')) await db.exec('ALTER TABLE transcript ADD COLUMN sharedImageJson TEXT')
     }
+  },
+  // v44 holds a sub-session's failure report and its refused attempts until it is admitted (assistant-mode.md §5.7).
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec(`
+        ALTER TABLE IF EXISTS assistant_subsession ADD COLUMN IF NOT EXISTS endReport TEXT;
+        ALTER TABLE IF EXISTS assistant_subsession ADD COLUMN IF NOT EXISTS reportAttempts INTEGER NOT NULL DEFAULT 0;
+      `)
+      return
+    }
+    const columns = ((await db.query('PRAGMA table_info(assistant_subsession)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    if (columns.length === 0) return
+    if (!columns.includes('endReport')) await db.exec('ALTER TABLE assistant_subsession ADD COLUMN endReport TEXT')
+    if (!columns.includes('reportAttempts'))
+      await db.exec('ALTER TABLE assistant_subsession ADD COLUMN reportAttempts INTEGER NOT NULL DEFAULT 0')
   }
 ]
 

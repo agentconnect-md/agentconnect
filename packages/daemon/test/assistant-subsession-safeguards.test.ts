@@ -64,9 +64,10 @@ type PromptBehavior = 'answer' | 'throw' | 'hang' | ((sessionId: string) => Prom
 function runtimes() {
   const behavior: { sub: PromptBehavior; plain: PromptBehavior } = { sub: 'answer', plain: 'answer' }
   const subPrompts: string[] = []
+  const hosts: any[] = []
   const hostFactory = () => {
     let cancelled: (() => void) | undefined
-    return {
+    const host = {
       __started: true,
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => `acp-${randomUUID()}`),
@@ -82,9 +83,15 @@ function runtimes() {
       cancel: vi.fn(async () => cancelled?.()),
       stop: vi.fn(async () => {})
     } as any
+    hosts.push(host)
+    return host
   }
-  return { behavior, subPrompts, hostFactory }
+  return { behavior, subPrompts, hosts, hostFactory }
 }
+
+/** How many prompts of the agent's sessions carried `text`. */
+const told = (hosts: any[], text: string): number =>
+  hosts.flatMap((h) => h.prompt.mock.calls).filter((c: any) => JSON.stringify(c).includes(text)).length
 
 async function boot(root: string, opts: { spy?: boolean } = {}) {
   const rt = runtimes()
@@ -180,6 +187,37 @@ const delegation = (
 })
 
 const stateOf = async (d: any, key: string) => (await d.store.assistantSubsessions.get('bot-a', key))?.state
+const rowOf = async (d: any, key: string) => await d.store.assistantSubsessions.get('bot-a', key)
+
+/** Hold the agent paused, so the pause gate refuses every fresh delivery, its failure report included. */
+async function pauseWith(d: any, rt: ReturnType<typeof runtimes>, delegate: () => Promise<any>) {
+  rt.behavior.sub = 'hang'
+  const res = await delegate()
+  await vi.waitFor(() => expect(rt.subPrompts).toHaveLength(1), WAIT)
+  d.agents.get('bot-a').pause = true
+  await d.interruptAgentTurns('bot-a', 'pause')
+  await vi.waitFor(async () => expect(await rowOf(d, res.targetSession)).toMatchObject({ reportAttempts: 1 }), WAIT)
+  return res
+}
+
+/** The conversation's `!new`: it rotates onto its next coordinate, whose first message starts the new session. */
+async function rotate(d: any, caller: { scope: string; coordinate: string }): Promise<string> {
+  const next: string = await d.store.advanceAppendCoordinate('bot-a', 'C1', caller.coordinate, caller.scope)
+  await d.store.upsertSession({
+    key: sessionKey('slack', 'C1', next, 'bot-a', caller.scope),
+    agentId: 'bot-a',
+    platform: 'slack',
+    channel: 'C1',
+    thread: next,
+    transportScope: caller.scope,
+    acpSessionId: 'acp-current-1',
+    sessionId: 'sid-current-1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: Date.now()
+  })
+  return next
+}
 
 describe('a sub-session that ends without reporting is reported by the daemon', () => {
   it.each<[string, (d: any, key: string) => Promise<void>]>([
@@ -204,11 +242,15 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     expect(report!.msg.text).toBe(
       `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (${reason}). It sent no result; delegate again if the work is still needed.`
     )
-    // It continues the delegation's hop chain and comes from the sub-session.
+    // It continues the delegation's hop chain and comes from the sub-session, under a delivery id of its own.
     expect(report!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
+    expect(report!.callMeta.deliveryId).toMatch(/^assistant-report:[0-9a-f]{32}$/)
     expect(reports()).toHaveLength(1)
-    expect(await stateOf(d, res.targetSession)).toBe('failed')
+    await vi.waitFor(async () => expect(await stateOf(d, res.targetSession)).toBe('failed'), WAIT)
     expect(dispatched.filter((c) => isSubsessionCoordinate(c.msg.thread))).toHaveLength(1)
+    // Settled, it is not sent again.
+    await d.collab.resendSubsessionReports(['bot-a'])
+    expect(reports()).toHaveLength(1)
     await daemon.stop()
   })
 
@@ -286,11 +328,12 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
 
     const res = await d.collab.messageAgent(delegation(caller))
     expect(res).toMatchObject({ delivered: true, subsession: true })
-    await vi.waitFor(async () => expect(await stateOf(d, res.targetSession)).toBe('failed'), WAIT)
+    await vi.waitFor(async () => expect(await stateOf(d, res.targetSession)).toBe('reporting'), WAIT)
     expect(reports()).toHaveLength(0)
     release()
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
+    await vi.waitFor(async () => expect(await stateOf(d, res.targetSession)).toBe('failed'), WAIT)
 
     expect(reports()[0]!.msg.text).toContain(
       `Sub-session ${res.targetSession} stopped before finishing (not started: busy)`
@@ -299,26 +342,56 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await daemon.stop()
   })
 
-  it('while the agent stays paused, the pause gate refuses the report like any other turn', async () => {
+  it('keeps a report the pause gate refused, and the sweep delivers it once the agent resumes', async () => {
     const { daemon, d, rt, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(d)
-    rt.behavior.sub = 'hang'
 
-    const res = await d.collab.messageAgent(delegation(caller))
-    await vi.waitFor(() => expect(rt.subPrompts).toHaveLength(1), WAIT)
-    d.agents.get('bot-a').pause = true
-    await d.interruptAgentTurns('bot-a', 'pause')
-    await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
+    const res = await pauseWith(d, rt, () => d.collab.messageAgent(delegation(caller)))
+    await settled()
+    expect(reports()).toHaveLength(1)
+    expect(await reports()[0]!.turn).toBeNull()
+    expect(await stateOf(d, res.targetSession)).toBe('reporting')
+
+    d.agents.get('bot-a').pause = false
+    await d.collab.resendSubsessionReports(['bot-a'])
+    await settled()
+    expect(reports()).toHaveLength(2)
+    expect(await reports()[1]!.turn).not.toBeNull()
+    // One report, sent twice under the one delivery id.
+    expect(reports()[1]!.callMeta.deliveryId).toBe(reports()[0]!.callMeta.deliveryId)
+    expect(reports()[1]!.msg.text).toContain(`Sub-session ${res.targetSession} stopped before finishing (pause)`)
+    expect(await rowOf(d, res.targetSession)).toMatchObject({ state: 'failed', reportAttempts: 1 })
+    await d.collab.resendSubsessionReports(['bot-a'])
+    expect(reports()).toHaveLength(2)
+    await daemon.stop()
+  })
+
+  it('gives up a report refused three times, with a WARN naming the sub-session and why', async () => {
+    const { daemon, d, rt, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(d)
+    const warn = vi.spyOn(d.log, 'warn')
+
+    const res = await pauseWith(d, rt, () => d.collab.messageAgent(delegation(caller)))
+    await d.collab.resendSubsessionReports(['bot-a'])
+    expect(await rowOf(d, res.targetSession)).toMatchObject({ state: 'reporting', reportAttempts: 2 })
+    expect(warn.mock.calls.some(([m]) => String(m).includes(`sub-session ${res.targetSession} ended`))).toBe(false)
+    await d.collab.resendSubsessionReports(['bot-a'])
     await settled()
 
-    expect(await reports()[0]!.turn).toBeNull()
-    expect(await stateOf(d, res.targetSession)).toBe('failed')
+    expect(await rowOf(d, res.targetSession)).toMatchObject({ state: 'failed', reportAttempts: 3 })
+    expect(reports()).toHaveLength(3)
+    expect(warn).toHaveBeenCalledWith(
+      `sub-session ${res.targetSession} ended without a report, and its end report was not delivered (paused, 3 attempts); none sent`
+    )
+    await d.collab.resendSubsessionReports(['bot-a'])
+    expect(reports()).toHaveLength(3)
     await daemon.stop()
   })
 
   it('logs and reports nothing when the parent session is gone', async () => {
     const { daemon, d, rt, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(d)
+    const warn = vi.spyOn(d.log, 'warn')
     rt.behavior.sub = 'hang'
 
     const res = await d.collab.messageAgent(delegation(caller))
@@ -327,8 +400,30 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await d.interruptTurn('bot-a', res.targetSession, 'stop')
     await settled()
 
+    await vi.waitFor(async () => expect(await stateOf(d, res.targetSession)).toBe('failed'), WAIT)
     expect(reports()).toHaveLength(0)
-    expect(await stateOf(d, res.targetSession)).toBe('failed')
+    expect(warn).toHaveBeenCalledWith(
+      `sub-session ${res.targetSession} ended without a report, and its end report was not delivered (its parent session is gone); none sent`
+    )
+    await daemon.stop()
+  })
+
+  it('reports into the conversation’s current session after `!new`, not the one that delegated', async () => {
+    const { daemon, d, rt, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(d)
+    rt.behavior.sub = 'hang'
+
+    const res = await d.collab.messageAgent(delegation(caller))
+    await vi.waitFor(() => expect(rt.subPrompts).toHaveLength(1), WAIT)
+    const next = await rotate(d, caller)
+    await d.interruptTurn('bot-a', res.targetSession, 'stop')
+    await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
+    await settled()
+
+    expect(next).not.toBe(caller.coordinate)
+    expect(reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: next })
+    expect(reports()[0]!.msg.text).toContain(`Sub-session ${res.targetSession} stopped before finishing (stop)`)
+    expect(await rowOf(d, res.targetSession)).toMatchObject({ state: 'failed', parentSessionId: 'sid-parent-1' })
     await daemon.stop()
   })
 
@@ -388,6 +483,67 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
   })
 })
 
+describe('a failure report survives a drain or a crash', () => {
+  it('leaves a report a drain held back in `reporting`, and the next start sends it once', async () => {
+    const { daemon, d, rt, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(d)
+    rt.behavior.sub = 'hang'
+
+    const res = await d.collab.messageAgent(delegation(caller))
+    await vi.waitFor(() => expect(rt.subPrompts).toHaveLength(1), WAIT)
+    // The daemon starts draining as the sub-session is stopped.
+    d.draining = true
+    await d.interruptTurn('bot-a', res.targetSession, 'stop')
+    await settled()
+    await vi.waitFor(async () => expect(await stateOf(d, res.targetSession)).toBe('reporting'), WAIT)
+    await d.collab.resendSubsessionReports(['bot-a'])
+    expect(reports()).toHaveLength(0)
+    expect(await rowOf(d, res.targetSession)).not.toHaveProperty('reportAttempts')
+
+    d.draining = false
+    await d.replayInbox(new Set(['bot-a']))
+    await settled()
+    await d.replayInbox(new Set(['bot-a']))
+    await settled()
+
+    expect(reports()).toHaveLength(1)
+    expect(reports()[0]!.msg.text).toContain(`Sub-session ${res.targetSession} stopped before finishing (stop)`)
+    expect(await stateOf(d, res.targetSession)).toBe('failed')
+    await daemon.stop()
+  })
+
+  it('sends nothing again for a report already admitted when a crash kept it from settling', async () => {
+    const { daemon, d, rt, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(d)
+    rt.behavior.sub = 'hang'
+    // The process dies once the report is in, before the row settles.
+    const index = d.store.assistantSubsessions
+    const settleReport = index.settleReport.bind(index)
+    let crashed = false
+    index.settleReport = async (...args: [string, string]) => {
+      if (crashed) return await settleReport(...args)
+      crashed = true
+      throw new Error('the daemon was killed')
+    }
+
+    const res = await d.collab.messageAgent(delegation(caller))
+    await vi.waitFor(() => expect(rt.subPrompts).toHaveLength(1), WAIT)
+    await d.interruptTurn('bot-a', res.targetSession, 'stop')
+    await vi.waitFor(() => expect(crashed).toBe(true), WAIT)
+    await settled()
+    expect(reports()).toHaveLength(1)
+    expect(await stateOf(d, res.targetSession)).toBe('reporting')
+
+    // The next start finds it still reporting; the receipt says it is already in.
+    await d.replayInbox(new Set(['bot-a']))
+    await settled()
+    expect(reports()).toHaveLength(1)
+    expect(told(rt.hosts, `Sub-session ${res.targetSession} stopped before finishing`)).toBe(1)
+    expect(await stateOf(d, res.targetSession)).toBe('failed')
+    await daemon.stop()
+  })
+})
+
 describe('a sub-session’s own report and the daemon’s end report never both reach the parent', () => {
   const ownReport = (d: any, caller: { scope: string }, thread: string) =>
     d.collab.replyToSession({
@@ -431,6 +587,23 @@ describe('a sub-session’s own report and the daemon’s end report never both 
 
     expect(reports().map((c) => c.msg.text)).toEqual(['PR opened'])
     expect(await stateOf(d, res.targetSession)).toBe('done')
+    await daemon.stop()
+  })
+
+  it('refuses its own report while the daemon’s end report is still on its way', async () => {
+    const { daemon, d, rt, dispatched, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(d)
+
+    const res = await pauseWith(d, rt, () => d.collab.messageAgent(delegation(caller)))
+    expect(await stateOf(d, res.targetSession)).toBe('reporting')
+    expect(await ownReport(d, caller, dispatched[0]!.msg.thread!)).toEqual({
+      delivered: false,
+      reason: 'subsession_ended'
+    })
+    await settled()
+
+    expect(reports().map((c) => c.msg.text)).toEqual([expect.stringContaining('stopped before finishing (pause)')])
+    expect(await stateOf(d, res.targetSession)).toBe('reporting')
     await daemon.stop()
   })
 

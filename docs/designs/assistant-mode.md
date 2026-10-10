@@ -509,8 +509,12 @@ and 3 below) have shipped.
 
 In P0b a sub-session reports through the existing parent-report path, and when it ends without a
 report — an error, `!stop`, pause, the stall watchdog — the daemon sends one short failure report
-instead, never two; an interruption that will be replayed sends none. The outbox below is the
-deferred target.
+instead, never two; an interruption that will be replayed sends none. The failure report waits on
+the sub-session's index row as `reporting` until it is admitted: a refused admission is retried on
+the minute sweep, three attempts in all, a drain or restart leaves it to be re-sent on the next
+start, and a fixed delivery id with the inbox's receipt keeps a re-send from arriving twice. Like
+patrol and task reports, it goes to the current session of the parent's place (after `!new`, the
+new conversation), else the recorded parent. The outbox below is the deferred target.
 
 Implemented as a **persistent per-place outbox** (a table shaped like `orchestration_subtask`:
 agent-owned, CAS-claimed, duty-gated, re-armed on `agentsGained`):
@@ -932,3 +936,9 @@ notice and editor path; patrols still refuse.
 **Fifteenth revision (2026-10-10)**: quiet hours are dropped from P1 and the per-person form from
 P3. A teammate keeps no office hours of its own, and a person who wants quiet mutes notifications
 in their own chat client; nothing in the design depended on a delivery window.
+
+**Sixteenth revision (2026-10-10)**: a sub-session's failure report is no longer lost to a drain, a
+refused admission or a restart. It is held as `reporting` until admitted, retried on the sweep up to
+three times, re-sent after a restart and deduplicated by a fixed delivery id, and it reaches the
+parent place's current session through the one delivery path the daemon's patrol and task reports
+already use (§5.7).

@@ -281,7 +281,9 @@ export const canonicalColumns = [
   'runningObservationVersion',
   'runningReport',
   'itemVersion',
-  'subsessionKey'
+  'subsessionKey',
+  'endReport',
+  'reportAttempts'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */
