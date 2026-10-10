@@ -18,7 +18,8 @@ import { CODEX_MCP_STARTUP_GRACE_MS } from '../src/runtimes/codex-config.js'
 const here = dirname(fileURLToPath(import.meta.url))
 const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
 describe('AcpHost (against a fake ACP agent)', () => {
-  it('sends the native Claude tool policy on new/load without an outer SRT wrapper', async () => {
+  it('sends the selected Claude model and native tool policy before new/load', async () => {
+    const model = 'claude-fable-5-1[1m]'
     const toolSandbox = {
       protectedCredentialRoots: ['/credentials'],
       allowModelToolUnixSockets: true,
@@ -37,7 +38,8 @@ describe('AcpHost (against a fake ACP agent)', () => {
       true,
       [],
       toolSandbox.sharedWriteRoots
-    )
+    )!
+    expected.claudeCode.options = { model, ...expected.claudeCode.options }
     expect(expected?.claudeCode.options.settings?.permissions).toEqual({
       deny: ['Read(//credentials)', 'Read(//credentials/**)', 'Edit(//credentials)', 'Edit(//credentials/**)']
     })
@@ -46,14 +48,17 @@ describe('AcpHost (against a fake ACP agent)', () => {
       { command: process.execPath, args: [fakeAgent, 'claude-acp'], env: [] },
       {
         onUpdate: () => {},
+        configPrefs: { model },
         toolSandbox,
-        env: { AC_EXPECT_SESSION_META: JSON.stringify(expected), AC_LOAD_UPDATES: '1' }
+        env: { AC_EXPECT_SESSION_META: JSON.stringify(expected), AC_LOAD_UPDATES: '1', AC_MODELS: `default,${model}` }
       }
     )
     await host.start()
     try {
-      await host.newSession('/tmp')
+      const sessionId = await host.newSession('/tmp')
+      expect(host.modelOptions(sessionId)?.current).toBe(model)
       await host.loadSession('persisted-session', '/tmp')
+      expect(host.modelOptions('persisted-session')?.current).toBe(model)
     } finally {
       await host.stop()
     }
@@ -426,7 +431,7 @@ describe('AcpHost.setSessionModel (mid-session model switch)', () => {
     'surfaces a rejected model and its provider detail on %s',
     async (operation) => {
       const host = new AcpHost(
-        { command: process.execPath, args: [fakeAgent], env: [] },
+        { command: process.execPath, args: [fakeAgent, 'claude-acp'], env: [] },
         {
           onUpdate: () => {},
           configPrefs: operation === 'switch' ? undefined : { model: 'model-b' },

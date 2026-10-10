@@ -469,11 +469,13 @@ export function claudeSessionMeta(
   allowModelToolUnixSockets = false,
   extraDisallowedTools: readonly string[] = [],
   sharedWriteRoots: readonly string[] = [],
-  readOnlyStateRoots: readonly string[] = []
+  readOnlyStateRoots: readonly string[] = [],
+  model?: string
 ):
   | {
       claudeCode: {
         options: {
+          model?: string
           thinking: { type: 'adaptive'; display: 'summarized' }
           disallowedTools: readonly string[]
           settings?: ClaudeSessionSettings
@@ -506,6 +508,8 @@ export function claudeSessionMeta(
   return {
     claudeCode: {
       options: {
+        // Select before SDK initialization so a resumed model keeps its context suffix in the picker.
+        ...(model ? { model } : {}),
         thinking: { type: 'adaptive', display: 'summarized' },
         // Suppress built-in cross-session messaging through the SDK options (#998).
         disallowedTools: [...CLAUDE_DISALLOWED_BUILTIN_TOOLS, ...extraDisallowedTools],
@@ -1002,7 +1006,8 @@ export class AcpHost {
       this.opts.toolSandbox?.allowModelToolUnixSockets,
       extraDisallowedTools,
       this.opts.toolSandbox?.sharedWriteRoots,
-      this.opts.toolSandbox?.readOnlyStateRoots
+      this.opts.toolSandbox?.readOnlyStateRoots,
+      this.opts.configPrefs?.model
     )
     const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
     const res = await this.conn!.agent.request(methods.agent.session.new, {
@@ -1263,7 +1268,8 @@ export class AcpHost {
         this.opts.toolSandbox?.allowModelToolUnixSockets,
         [],
         this.opts.toolSandbox?.sharedWriteRoots,
-        this.opts.toolSandbox?.readOnlyStateRoots
+        this.opts.toolSandbox?.readOnlyStateRoots,
+        this.opts.configPrefs?.model
       )
       const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
       const res = await this.conn!.agent.request(methods.agent.session.load, {
