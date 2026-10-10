@@ -622,8 +622,10 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   - The duty holder's sweep, on the patrol cadence, claims a due reminder atomically and posts it
     through the executed-draft post path as the agent: no ACP, no turn. A claim cut short by a
     restart or handover fails and is never posted again, so delivery is at most once. A platform
-    error is retried on later sweeps, three attempts in all, then fails with a warning. A place
-    that turned external after the reminder was set gets the text as that place's reply draft.
+    error is retried on later sweeps, three attempts in all, then fails with a warning; a send
+    that timed out or came back without a message id may or may not have posted, so it fails at
+    once. A place that turned external after the reminder was set gets the text as that place's
+    reply draft.
   - While the agent is paused or out of assistant mode nothing is delivered; afterwards a reminder
     less than 24 hours late posts late and an older one expires. An agent holds at most 100
     pending reminders, a fixed limit with no setting. Settled rows stay, like the other assistant

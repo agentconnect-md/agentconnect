@@ -1,6 +1,7 @@
 // Assistant-mode reminders (assistant-mode.md §5.9): the cheap tier of self-scheduling, text the duty holder posts at its time with no model turn.
 import type { Agent } from '../agents/agent-schema.js'
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
+import { isSendQueueTimeout } from '../platforms/send-queue.js'
 import {
   ASSISTANT_REMINDER_CLAIM_STALE_MS,
   ASSISTANT_REMINDER_LATE_MAX_MS,
@@ -80,13 +81,20 @@ export class AssistantReminders {
       return await fail('the agent is no longer enabled in that conversation')
     // An external place posts nothing unapproved (§5.5): the text goes to an internal member as a draft.
     const external = this.host.placeExternal(agentId, integrationId, reminder.place.channel)
-    let outcome: { status: 'delivered'; messageId: string | null } | { status: 'drafted'; draftId: string }
+    let outcome: { status: 'delivered'; messageId: string } | { status: 'drafted'; draftId: string }
     try {
-      outcome = external
-        ? { status: 'drafted', draftId: await this.host.draft(reminder) }
-        : { status: 'delivered', messageId: (await this.host.post(reminder)) ?? null }
+      if (external) outcome = { status: 'drafted', draftId: await this.host.draft(reminder) }
+      else {
+        const messageId = await this.host.post(reminder)
+        // Some platforms swallow a failed send and return no id: unconfirmed, so never delivered and never retried.
+        if (!messageId) return await fail('the platform returned no message id, so it may not have posted; not retried')
+        outcome = { status: 'delivered', messageId }
+      }
     } catch (err) {
       const failure = (err as Error).message
+      // The queue abandoned the send but it keeps running and may still land, so a retry could post twice.
+      if (isSendQueueTimeout(err))
+        return await fail(`the post timed out and may still have landed; not retried (${failure})`)
       if (attempt >= ASSISTANT_REMINDER_MAX_ATTEMPTS)
         return await fail(`${attempt} attempts failed; the last: ${failure}`)
       await reminders.release(agentId, id, failure, this.host.now())

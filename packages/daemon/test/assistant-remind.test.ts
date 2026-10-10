@@ -365,6 +365,38 @@ describe('delivery', () => {
     expect(h.host.post).toHaveBeenCalledTimes(3)
   })
 
+  it('fails a send-queue timeout without a retry, since the abandoned post may still land', async () => {
+    const h = await delivery()
+    const r = await h.set()
+    h.at(T0 + HOUR)
+    h.host.post.mockRejectedValue(Object.assign(new Error('send timed out'), { sendQueueTimeout: true }))
+    await h.reminders.sweep()
+    expect(await h.get(r.id)).toMatchObject({
+      status: 'failed',
+      attempts: 1,
+      failure: expect.stringContaining('may still have landed')
+    })
+    expect(h.log.warn).toHaveBeenCalledWith(expect.stringContaining(`reminder ${r.id}`))
+    await h.reminders.sweep()
+    expect(h.host.post).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails a post that returns no message id rather than counting it delivered, and does not retry it', async () => {
+    const h = await delivery()
+    const r = await h.set()
+    h.at(T0 + HOUR)
+    h.host.post.mockResolvedValue(undefined)
+    await h.reminders.sweep()
+    expect(await h.get(r.id)).toMatchObject({
+      status: 'failed',
+      messageId: null,
+      failure: expect.stringContaining('no message id')
+    })
+    expect(h.log.warn).toHaveBeenCalledWith(expect.stringContaining(`reminder ${r.id}`))
+    await h.reminders.sweep()
+    expect(h.host.post).toHaveBeenCalledTimes(1)
+  })
+
   it('delivers nothing while paused; after the pause, a reminder under 24 hours late posts and an older one expires', async () => {
     const h = await delivery()
     const old = await h.set({ dueAt: T0 + HOUR })
