@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DECISION_RAW_JSON_MAX_CHARS } from '@agentconnect.md/protocol'
 import type {
   DecisionEvaluation,
@@ -95,8 +95,22 @@ interface Forward {
   resolve: (ack: RdRouteAck) => void
 }
 
+// Each case's routers stop before its stores close, so no SQLite handle outlives the case.
+const routers: DecisionRouter[] = []
+const stores: LocalStore[] = []
+afterEach(async () => {
+  for (const router of routers.splice(0)) router.close()
+  for (const store of stores.splice(0)) await store.close()
+})
+
+async function openStore(): Promise<LocalStore> {
+  const store = await openTestStore()
+  stores.push(store)
+  return store
+}
+
 async function harness(opts: { store?: LocalStore; fence?: string; limits?: Partial<DecisionRouterLimits> } = {}) {
-  const store = opts.store ?? (await openTestStore())
+  const store = opts.store ?? (await openStore())
   const calls: Call[] = []
   const forwards: Forward[] = []
   const admits: RouterAdmitRequest[] = []
@@ -181,6 +195,7 @@ async function harness(opts: { store?: LocalStore; fence?: string; limits?: Part
   }
   const limits = { ...DEFAULT_DECISION_ROUTER_LIMITS, retryDelayMs: 5, ...opts.limits }
   const router = new DecisionRouter(host, new DecisionLaneRuntime(limits), limits)
+  routers.push(router)
   let ts = 0
   const post = async (over: { thread?: string; constraint?: RdRoutingConstraintEntry[]; text?: string } = {}) => {
     ts += 1
@@ -478,7 +493,7 @@ describe('DecisionRouter', () => {
   })
 
   it('(e) a crash after settlement resumes from targetsJson: no re-evaluation, no second admission, usage once', async () => {
-    const store = await openTestStore()
+    const store = await openStore()
     const first = await harness({ store, fence: 'd-self:boot-1' })
     const m = await first.post()
     await first.router.intake(m.candidate)
@@ -508,7 +523,7 @@ describe('DecisionRouter', () => {
   })
 
   it('(e) a pending evaluation recovers as unavailable with no provider call', async () => {
-    const store = await openTestStore()
+    const store = await openStore()
     const first = await harness({ store, fence: 'd-self:boot-1' })
     first.state.routing = routingOf({}, C)
     const m = await first.post()
@@ -700,7 +715,7 @@ describe('DecisionRouter', () => {
   })
 
   it('a recovered early follow-up keeps its root recipients; it never falls back to the default', async () => {
-    const store = await openTestStore()
+    const store = await openStore()
     const first = await harness({ store, fence: 'd-self:boot-1' })
     first.state.routing = routingOf({}, C)
     // The root's admission never completes before the crash.

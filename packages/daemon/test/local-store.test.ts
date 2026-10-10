@@ -708,6 +708,7 @@ describe('LocalStore', () => {
     // Without that marker a re-observation must never rewrite an existing row.
     await s.appendTranscript(row('100.4', 'stale replay'))
     expect(await texts()).toEqual(['1', '3', '7 (complete)'])
+    await s.close()
   })
 
   it('upserts and reads back a session record', async () => {
@@ -2292,6 +2293,7 @@ describe('LocalStore pool-wide runtime probe claim', () => {
       payload: '{"table":{},"results":[]}',
       probedAt: 2_000
     })
+    await s.close()
   })
 
   it('lets another member retake a claim whose holder went away', async () => {
@@ -2301,6 +2303,7 @@ describe('LocalStore pool-wide runtime probe claim', () => {
     expect(
       await s.claimRuntimeImageProbe({ imageRef: 'runtime:v1', memberId: 'next', now: 9_000, staleBefore: 5_000 })
     ).toBe(true)
+    await s.close()
   })
 
   it('keys the answer on the image, so a template bump is a different question', async () => {
@@ -2313,6 +2316,7 @@ describe('LocalStore pool-wide runtime probe claim', () => {
     // And publishing the new image leaves the old row alone.
     await s.publishRuntimeImageProbe({ imageRef: 'runtime:v2', payload: '{"v":2}', now: 2 })
     expect((await s.readRuntimeImageProbe('runtime:v1'))?.payload).toBe('{"v":1}')
+    await s.close()
   })
 
   it('drops answers for images the pool stopped running long ago', async () => {
@@ -2323,6 +2327,7 @@ describe('LocalStore pool-wide runtime probe claim', () => {
     await s.publishRuntimeImageProbe({ imageRef: 'runtime:current', payload: '{"v":1}', now: year })
     expect(await s.readRuntimeImageProbe('runtime:ancient')).toBeUndefined()
     expect((await s.readRuntimeImageProbe('runtime:current'))?.payload).toBe('{"v":1}')
+    await s.close()
   })
 })
 
@@ -2349,6 +2354,7 @@ describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)'
     expect((await s.getRuntimeCatalogMeta('copilot'))?.defaultPermissionMode).toBe('agent')
     await s.recordRuntimeCatalogMeta(meta('claude', 'fp-1'))
     expect(await s.getRuntimeCatalogMeta('claude')).not.toHaveProperty('defaultPermissionMode')
+    await s.close()
   })
 
   it('round-trips catalog meta and per-model capability rows', async () => {
@@ -2593,6 +2599,7 @@ describe('LocalStore webchat MCP grant ledger', () => {
     })
     const after = (await s.transcriptSince(readScope('C1', 'T', 'bot-a'), null))[0] as { eventTimeUs?: number }
     expect(after.eventTimeUs).toBe(1_754_123_458_000_000)
+    await s.close()
   })
 
   it('a later append with the fetched image upgrades the observer-written row', async () => {
