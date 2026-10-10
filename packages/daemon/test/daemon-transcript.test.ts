@@ -346,6 +346,92 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   })
 
+  // An unbound legacy row may still carry context with its ACP id cleared, so an external turn never claims it.
+  it('rejects a Slack turn on a legacy unbound session that still carries context', async () => {
+    const { factory, host } = replyingHost('here is my answer')
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    const key = sessionKey('slack', 'C1', 'T1', 'bot-a', TRANSPORT_SCOPE)
+    await store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      transportScope: TRANSPORT_SCOPE,
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await store.appendTranscript({
+      channel: TRANSCRIPT_CHANNEL,
+      thread: 'T1',
+      ts: '50',
+      sender: 'U2',
+      kind: 'text',
+      text: 'earlier context'
+    })
+
+    await (daemon as any).dispatch('bot-a', channelMsg('200', 'human reply'), 'int-a')
+
+    expect(host.prompt).not.toHaveBeenCalled()
+    expect(conn.postMessage).toHaveBeenLastCalledWith(
+      'C1',
+      expect.stringContaining('already belongs to a session created from another source'),
+      'T1'
+    )
+    expect(await store.getSession(key)).toMatchObject({ sourceBindingKind: null, externalProvider: null })
+    await daemon.stop()
+  })
+
+  it('rejects a Slack turn on a session bound to another conversation', async () => {
+    const { factory, host } = replyingHost('here is my answer')
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    const key = sessionKey('slack', 'C1', 'T1', 'bot-a', TRANSPORT_SCOPE)
+    await store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      transportScope: TRANSPORT_SCOPE,
+      acpSessionId: 'acp-other',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      sourceBindingKind: 'external',
+      externalProvider: 'slack',
+      externalRealmKey: 'T1',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C9'
+    })
+
+    await (daemon as any).dispatch('bot-a', channelMsg('200', 'human reply'), 'int-a')
+
+    expect(host.prompt).not.toHaveBeenCalled()
+    expect(conn.postMessage).toHaveBeenLastCalledWith(
+      'C1',
+      expect.stringContaining('already belongs to a session created from another source'),
+      'T1'
+    )
+    expect(await store.getSession(key)).toMatchObject({ externalResourceKey: 'C9' })
+    await daemon.stop()
+  })
+
   it('reuses an external runtime only for the same inherited Slack source', async () => {
     const { factory, host } = replyingHost('here is my answer')
     const daemon = new Daemon({

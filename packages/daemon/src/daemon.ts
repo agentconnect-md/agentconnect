@@ -15051,6 +15051,18 @@ export class Daemon {
       try {
         // Keep this cold dispatch owned and non-idle until host cleanup settles.
         cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
+        // Bind a row this turn created before failing, or every later delivery to it rejects as a source mismatch.
+        const born = persisted ? undefined : await this.store.getSession(key)
+        if (born?.acpSessionId)
+          await this.classifyNewSession(
+            agentId,
+            key,
+            born.acpSessionId,
+            msg,
+            callMeta,
+            hookContext,
+            webchat?.evaluation === true
+          )
         if (!cleanupOutcome.blocked) {
           await this.store.setSessionState(key, 'idle', this.clock.now())
           // The turn died during initialization (agent spawn / ACP handshake), so it never reaches
