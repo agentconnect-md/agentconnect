@@ -27,14 +27,15 @@ export function imageWasmPath(asset: ImageWasmAsset): string {
   return createRequire(import.meta.url).resolve(specifier)
 }
 
-// The daemon's lib config omits the DOM, which is where the WebAssembly value is typed.
-const wasm = (globalThis as unknown as { WebAssembly: { compile(bytes: Uint8Array): Promise<WebAssembly.Module> } })
-  .WebAssembly
+/** A compiled WebAssembly module, opaque here: packages that typecheck this source omit the lib that names the namespace. */
+export type WasmModule = object
 
-const compiled = new Map<ImageWasmAsset, Promise<WebAssembly.Module>>()
+const wasm = (globalThis as unknown as { WebAssembly: { compile(bytes: Uint8Array): Promise<WasmModule> } }).WebAssembly
+
+const compiled = new Map<ImageWasmAsset, Promise<WasmModule>>()
 
 /** Compile one codec once per thread, and only when a job first needs it. */
-export function imageWasmModule(asset: ImageWasmAsset): Promise<WebAssembly.Module> {
+export function imageWasmModule(asset: ImageWasmAsset): Promise<WasmModule> {
   const cached = compiled.get(asset)
   if (cached) return cached
   const module = wasm.compile(readFileSync(imageWasmPath(asset)))

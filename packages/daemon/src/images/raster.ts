@@ -1,6 +1,6 @@
 import { decode as decodeJpeg, encode as encodeJpeg } from 'jpeg-js'
 import { PNG } from 'pngjs'
-import { imageWasmModule } from './assets.js'
+import { imageWasmModule, type WasmModule } from './assets.js'
 import { rasterFonts } from './fonts.js'
 
 // Pure decode/resize/encode steps of preview preparation; they run inside the preview worker.
@@ -40,7 +40,7 @@ let webpDecoder:
 async function decodeWebp(bytes: Buffer): Promise<Rgba> {
   webpDecoder ??= (async () => {
     const mod = (await import('@jsquash/webp/decode.js')) as {
-      init: (module: WebAssembly.Module) => Promise<void>
+      init: (module: WasmModule) => Promise<void>
       default: (data: ArrayBuffer) => Promise<{ width: number; height: number; data: Uint8ClampedArray }>
     }
     await mod.init(await imageWasmModule('webpDecoder'))
