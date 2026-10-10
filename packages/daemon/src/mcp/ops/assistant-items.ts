@@ -311,7 +311,10 @@ export const PATROL_UPDATE_ITEM_TOOL: ToolDescriptor = {
         type: 'string',
         minLength: 1,
         maxLength: ASSISTANT_ITEM_LIMITS.observation,
-        description: 'Optional. What changed, for the people following the item; omit it when nothing did.'
+        description:
+          'Optional. What changed, for the people following the item; omit it when nothing did. It says what you ' +
+          'found and promises no later message, no time anyone will hear back and no next check; when the item ' +
+          'should be looked at again, set `nextCheck`, which they are not told about.'
       }
     },
     ['itemId', 'observation']

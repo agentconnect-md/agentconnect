@@ -182,7 +182,10 @@ export function patrolPrompt(item: AssistantItem, due: AssistantPatrolDue): stri
       'report it. Otherwise, only when something changed since the latest observation that the people following the ' +
       'item should know, add `report` with one short message; the conversation the item was taken in passes it on. ' +
       'Otherwise leave `report` out: nothing is said. The item gets its observation either way.',
-    '4. This session runs under a read-only or plan permission mode, which restricts your native tools only. ' +
+    '4. A report says what you found and promises nothing: no later message, no time anyone will hear back, no next ' +
+      'check. When the item should be looked at again, set `nextCheck`; the people following the item are not told ' +
+      'about it.',
+    '5. This session runs under a read-only or plan permission mode, which restricts your native tools only. ' +
       'updateItem is how this check records its result, not an edit the mode forbids: call it directly, no one is ' +
       'here to approve a plan. Then end your turn.'
   ].join('\n')
