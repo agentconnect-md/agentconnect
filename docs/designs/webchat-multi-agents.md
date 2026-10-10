@@ -451,6 +451,22 @@ seam, keeping the relay's pre-addressed fan-out as the roster walk:
   commits advances the chain by one, and an alternating conversation
   terminates by REACHING A LIMIT rather than by an agent declining to address
   anyone — the same operator expectation #549 recorded for channels.
+- **A human @mention tells left-out peers to stay silent** (#2865). It does
+  not gate the wake, which would break the #549 parity the activation parity
+  spec pins. When the human's turn carries structured mentions, the addressed
+  agent's activating post carries them as `WebchatPost.author.addressedAgentIds`.
+  A peer outside that scope, which the post does not @-name by agent id, name,
+  or display name (`postNamesAgent`), is still woken, but its prompt carries
+  `OUTSIDE_HUMAN_SCOPE_REMINDER`: unless the post asks it something directly,
+  it answers `AC_NO_RESPONSE`. A woken continuation inherits the scope plus
+  itself, so two agents the human or a reply brought in can keep alternating
+  while the rest of the roster is reminded each time. An unnarrowed send
+  materializes the standing mention as the whole roster (section 4.2), so its
+  scope leaves no one out; a post without the field (an older daemon or
+  browser) adds no reminder. This is a prompt rule, so a model can still
+  choose to reply. Agents currently see peers by id in their context (the
+  section 4.3 participant line is not implemented yet), so naming a peer is
+  most reliable when the human's text already used its name.
 - **The response-choice contract still decides participation.** The wake is
   presented as a conversation post (`[<author>] <text>`), not as a direct
   agent call, so a participant whose role is to observe silently answers

@@ -948,6 +948,7 @@ import { UUID_RE, type WebchatSink, type WebchatTurnContext } from './webchat/ty
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as webchatTurnOutput from './webchat/turn-output.js'
+import { webchatReplyScope } from './webchat/narrowed-scope.js'
 import {
   publishWebchatSharedImage,
   resolveSharedImageOriginal,
@@ -15388,6 +15389,7 @@ export class Daemon {
           // conversation post, not an address — it must not defeat the response-choice
           // rule (webchat-multi-agents.md §5.2a).
           directAgentCall: plan.directAgentCall,
+          outsideHumanScope: callMeta?.outsideHumanScope === true,
           // Memory READS (index injection + auto-recall) are not session-gated — every session may
           // use shared memory (#653). WRITES stay gated (memory write tools via memoryAccessDecision,
           // which asks the human in a private session; post-turn distillation via isCaptureExcluded).
@@ -16877,6 +16879,7 @@ export class Daemon {
   ): Promise<void> {
     if (!p.webchat) return
     const agentId = p.entry.agentId
+    const scope = hopCount !== undefined ? webchatReplyScope(p.entry) : undefined
     const replyTs = await webchatTurnOutput.appendWebchatTextRow(
       this.store,
       p.plan.transcriptChannel,
@@ -16895,7 +16898,12 @@ export class Daemon {
       post: {
         postId: segment.postId,
         conversationId: p.webchat.conversationId,
-        author: { kind: 'agent', agentId, ...(hopCount !== undefined ? { hopCount } : {}) },
+        author: {
+          kind: 'agent',
+          agentId,
+          ...(hopCount !== undefined ? { hopCount } : {}),
+          ...(scope ? { addressedAgentIds: scope } : {})
+        },
         text: segment.text,
         at: Number(replyTs)
       },

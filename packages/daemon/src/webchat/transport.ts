@@ -23,6 +23,7 @@ import { sessionKey, transcriptChannelKey, type LocalStore } from '../store/loca
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { attachmentMention, transcriptImageAttachments } from '../session/attachment-block.js'
 import { routeRules, webchatContinuationDecision } from '../router/routing-table.js'
+import { continuationScope } from './narrowed-scope.js'
 import type { RoutingRule } from '../router/routing-rule.js'
 import { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
@@ -996,6 +997,19 @@ export class WebchatTransport {
    * MULTI-AGENT webchat conversations — single-agent conversations, the platform
    * ladders, and playground sessions are structurally unreachable from here.
    */
+  // The human's @mention scope never gates the wake (Slack #549 parity); it only tells a left-out peer to stay silent by default.
+  private narrowedCallMeta(
+    targetAgentId: string,
+    post: WebchatPost
+  ): Pick<CallMeta, 'addressedAgentIds' | 'outsideHumanScope'> {
+    const target = this.host.agents().get(targetAgentId)
+    const scope = continuationScope(post, targetAgentId, [target?.name, target?.displayName])
+    return {
+      ...(scope.addressedAgentIds ? { addressedAgentIds: scope.addressedAgentIds } : {}),
+      ...(scope.outsideHumanScope ? { outsideHumanScope: true as const } : {})
+    }
+  }
+
   async maybeActivateWebchatContinuation(
     targetAgentId: string,
     chatId: string,
@@ -1075,7 +1089,8 @@ export class WebchatTransport {
       deliveryId,
       // §8.6: settled centrally in `dispatch` — live, queued, and startup replay alike.
       activationKey: key,
-      conversationContinuation: true
+      conversationContinuation: true,
+      ...this.narrowedCallMeta(targetAgentId, contextPost)
     }
     void this.host
       .dispatch(targetAgentId, msg, undefined, webchat, callMeta, {

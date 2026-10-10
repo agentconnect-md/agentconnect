@@ -22,7 +22,12 @@ import type { LoadedAgent } from '../agents/load-agents.js'
 import { stableTurnId, type Attachment, type NormalizedMessage, sessionThreadOf } from '../messages/normalized.js'
 import { messageOrderingFor } from '../platforms/message-ordering.js'
 import { attachmentMention, buildAttachmentBlocks } from './attachment-block.js'
-import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
+import {
+  DIRECT_AGENT_CALL_REMINDER,
+  EXPLICIT_MENTION_REMINDER,
+  NO_RESPONSE_REMINDER,
+  OUTSIDE_HUMAN_SCOPE_REMINDER
+} from './no-response.js'
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
 import { AGENT_META_OPENING, buildStandingContext, type StandingContext } from './turn/standing-context.js'
 import { backfillThreadHistory } from './turn/thread-backfill.js'
@@ -351,6 +356,8 @@ export class SessionManager {
        * `source: agent` alone is insufficient: background-task and orchestration
        * wakes deliberately use that source without being direct agent calls. */
       directAgentCall?: boolean
+      /** A webchat continuation the human's @mention left out (§5.2a): remind the agent to stay silent by default. */
+      outsideHumanScope?: boolean
       /** Trusted daemon-owned host override for a conversation-isolated webchat
        * cell. Never derived from model/session input. */
       host?: AcpHost
@@ -984,6 +991,9 @@ export class SessionManager {
     // generic no-response rule cannot mistake the caller label for an addressee.
     if (options.directAgentCall === true) {
       promptPrelude.push({ type: 'text', text: DIRECT_AGENT_CALL_REMINDER })
+    }
+    if (options.outsideHumanScope === true) {
+      promptPrelude.push({ type: 'text', text: OUTSIDE_HUMAN_SCOPE_REMINDER })
     }
     // The router has already matched the raw platform token against THIS integration's
     // resolved bot identity. Preserve that trusted fact for the model: an opaque Slack

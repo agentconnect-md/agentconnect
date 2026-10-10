@@ -63,6 +63,14 @@ export const DIRECT_AGENT_CALL_REMINDER =
   `normally. Do not return ${NO_RESPONSE_SENTINEL} merely because the body names or discusses another agent.\n` +
   `</system-reminder>`
 
+/** Routing context for a webchat continuation the human's @mention left out (webchat-multi-agents.md §5.2a). */
+export const OUTSIDE_HUMAN_SCOPE_REMINDER =
+  `<system-reminder>\n` +
+  `Routing fact: In this multi-agent conversation the human @-mentioned other participants, not you, and the ` +
+  `post that woke you does not @-mention you. Stay out of their exchange: unless that post asks you something ` +
+  `directly, your entire reply must be exactly ${NO_RESPONSE_SENTINEL}.\n` +
+  `</system-reminder>`
+
 /** True while `trimmedBody` could still become the bare sentinel as more chunks stream
  *  in — i.e. it is a prefix of (or exactly) the sentinel. Convergers use this to HOLD
  *  buffered body instead of posting it, so a streamed sentinel never leaks a partial
