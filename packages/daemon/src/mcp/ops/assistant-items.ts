@@ -67,7 +67,7 @@ export function placeOfSession(ctx: Pick<SessionContext, 'platform' | 'channel' 
   return { platform: ctx.platform, channel: ctx.channel, transportScope: ctx.transportScope ?? null }
 }
 
-const OFFSET_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i
+export const OFFSET_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i
 const INSTANT_MESSAGE = 'argument nextCheck must be an ISO-8601 instant with an offset, e.g. 2026-10-09T09:00:00+08:00'
 
 const boundedString = (key: string, max: number) =>

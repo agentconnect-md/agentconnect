@@ -9,6 +9,7 @@ import {
 } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from '../src/mcp/ops/assistant-items.js'
+import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -80,7 +81,8 @@ const advertised: ToolDescriptor[] = [
   ...GITHUB_REVIEW_TOOLS,
   ...CODE_HOST_EFFECT_TOOLS,
   ...ASSISTANT_ITEM_TOOLS,
-  PROPOSE_TOOL
+  PROPOSE_TOOL,
+  ...ASSISTANT_REMINDER_TOOLS
 ]
 
 interface ObjectSchemaView {

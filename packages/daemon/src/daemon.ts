@@ -300,7 +300,16 @@ import {
 } from './mcp/apps/cards.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { askerIdentity, assistantItemToolsFor, assistantModeOn } from './mcp/ops/assistant-items.js'
-import { AssistantDrafts, type DraftAsker, type InterceptedPost, type PostInterception } from './assistant/drafts.js'
+import {
+  AssistantDrafts,
+  postAsAgent,
+  type DraftAsker,
+  type InterceptedPost,
+  type PostInterception
+} from './assistant/drafts.js'
+import { AssistantReminders } from './assistant/reminders.js'
+import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
+import type { AssistantReminder } from './store/assistant-reminders.js'
 import { PlaceMembers } from './assistant/place-members.js'
 import { AssistantPatrols, PATROL_SWEEP_INTERVAL_MS, patrolTools, type PatrolParent } from './assistant/patrol.js'
 import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
@@ -4046,6 +4055,15 @@ export class Daemon {
           now: () => this.clock.now()
         }
       },
+      // Reminders (assistant-mode.md §5.9): where they post comes from the live turn's own share target.
+      assistantReminders: {
+        ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantReminders : undefined),
+        requesterFor: async (ctx) => {
+          const msg = this.liveTurn(ctx)?.msg
+          return msg && msg.source === 'user' && !msg.sender.isBot && msg.sender.id ? msg.sender.id : undefined
+        },
+        now: () => this.clock.now()
+      },
       memoryScope: (ctx) => ({
         ...this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
         sourceTurnId: this.activeMemorySourceTurns.get(
@@ -4380,6 +4398,8 @@ export class Daemon {
         tools = [...tools, ...GITHUB_REVIEW_TOOLS]
         // Assistant mode's item ledger (assistant-mode.md §5.4); each call re-checks the mode, since this list is fixed per session.
         tools = [...tools, ...assistantItemToolsFor(agent)]
+        // Its reminders (§5.9), in a platform conversation of the session's own only.
+        tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
         // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
         const managedRepo = this.managedWorkspaceRepo(agent.id)
         if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
@@ -7880,13 +7900,98 @@ export class Daemon {
     }
   }
 
-  /** Once a minute, the duty holder's patrol sweep (assistant-mode.md §5.9). */
+  /** Once a minute, the duty holder's patrol and reminder sweeps (assistant-mode.md §5.9). */
   private armPatrolSweep(): void {
     this.patrolSweepTimer = this.clock.setTimeout(async () => {
       this.patrolSweepTimer = undefined
       await this.patrols.sweep().catch((err) => this.log.warn(`patrol sweep failed: ${formatErr(err)}`))
+      await this.reminders.sweep().catch((err) => this.log.warn(`reminder sweep failed: ${formatErr(err)}`))
       if (!this.draining) this.armPatrolSweep()
     }, PATROL_SWEEP_INTERVAL_MS)
+  }
+
+  /** Assistant-mode reminders (assistant-mode.md §5.9), built on first use over the live store. */
+  private assistantReminderService?: AssistantReminders
+  private get reminders(): AssistantReminders {
+    this.assistantReminderService ??= new AssistantReminders({
+      now: () => this.clock.now(),
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m), debug: (m) => this.log.debug(m) },
+      agents: () => this.agents.values(),
+      // Only the duty holder delivers, never for a paused or draining agent.
+      mayDeliver: (agentId) => this.servesAgent(agentId) && !this.paused(agentId) && !this.drainingAgents.has(agentId),
+      draining: () => this.draining,
+      reminders: this.store.assistantReminders,
+      placeEnabled: (agentId, integrationId, channel) => {
+        const int = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)
+        return int !== undefined && conversationAdmitted(integrationRouting(int), channel)
+      },
+      placeExternal: (agentId, integrationId, channel) => this.assistantPlaceExternal(agentId, integrationId, channel),
+      post: (reminder) => this.postReminder(reminder),
+      draft: (reminder) => this.draftReminder(reminder)
+    })
+    return this.assistantReminderService
+  }
+
+  /** The session a reminder was set in, as a post's lineage and a draft's source. */
+  private async reminderSource(reminder: AssistantReminder): Promise<AssistantDraftSource> {
+    const { agentId, place } = reminder
+    const key = sessionKey(place.platform, place.channel, reminder.thread, agentId, place.transportScope ?? undefined)
+    return {
+      platform: place.platform,
+      integrationId: reminder.integrationId,
+      channel: place.channel,
+      thread: reminder.thread,
+      transportScope: place.transportScope ?? null,
+      sessionKey: key,
+      sessionId: (await this.store.getSession(key).catch(() => undefined))?.sessionId ?? null,
+      place: true
+    }
+  }
+
+  /** A due reminder, posted as the agent the way an approved draft is: no turn, and its bookkeeping never re-posts. */
+  private async postReminder(reminder: AssistantReminder): Promise<string | undefined> {
+    const agent = this.agents.get(reminder.agentId)
+    if (!agent) throw new Error('the agent is no longer here')
+    const gw = this.connForIntegration(reminder.integrationId)
+    if (!gw) throw new Error('the conversation cannot be reached right now')
+    const target = { channel: reminder.place.channel, thread: reminder.targetThread }
+    const name = agent.displayName?.trim() || agent.name
+    const identity = { id: agent.id, name, ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {}) }
+    const messageId = await postAsAgent(gw, identity, target, reminder.message)
+    if (messageId) {
+      await this.settleDaemonPost({
+        agentId: reminder.agentId,
+        source: await this.reminderSource(reminder),
+        target: { platform: reminder.place.platform, integrationId: reminder.integrationId, ...target },
+        targetDm: reminder.targetDm,
+        text: reminder.message,
+        messageId,
+        seed: false
+      }).catch((err: unknown) =>
+        this.log.warn(`reminder ${reminder.id}: bookkeeping after the post failed: ${formatErr(err)}`)
+      )
+    }
+    return messageId
+  }
+
+  /** A due reminder whose conversation turned external: drafted like that place's reply, to an internal member (§5.5). */
+  private async draftReminder(reminder: AssistantReminder): Promise<string> {
+    const draft = await this.drafts.draftReply({
+      agentId: reminder.agentId,
+      target: {
+        platform: reminder.place.platform,
+        integrationId: reminder.integrationId,
+        channel: reminder.place.channel,
+        thread: reminder.targetThread
+      },
+      targetDm: reminder.targetDm,
+      text: reminder.message,
+      source: await this.reminderSource(reminder),
+      asker: reminder.requesterId
+        ? { integrationId: reminder.integrationId, userId: reminder.requesterId, trusted: false }
+        : undefined
+    })
+    return draft.id
   }
 
   /** Record an agent-sent message into the posting session's transcript, in the thread it belongs to. */
@@ -7937,15 +8042,39 @@ export class Daemon {
 
   /** An approved draft's post gets what any sent message gets, under the draft's source lineage; no turn, no retry. */
   private async settleApprovedDraft(draft: AssistantDraft, messageId: string): Promise<void> {
-    const gw = this.connForIntegration(draft.target.integrationId)
-    if (!gw || !draft.source) return
-    const origin: PostOrigin = {
+    if (!draft.source) return
+    await this.settleDaemonPost({
       agentId: draft.agentId,
-      platform: draft.source.platform,
-      channel: draft.source.channel,
-      thread: draft.source.thread,
-      ...(draft.source.transportScope ? { transportScope: draft.source.transportScope } : {}),
-      deliveryThread: draft.source.thread
+      source: draft.source,
+      target: draft.target,
+      targetDm: draft.targetDm,
+      text: draft.text,
+      messageId,
+      // A reply lands in the conversation its own session already holds.
+      seed: draft.kind === 'elsewhere'
+    })
+  }
+
+  /** The bookkeeping a daemon-made post gets (outbound record, root thread, seeded session), under its source session's lineage. */
+  private async settleDaemonPost(post: {
+    agentId: string
+    source: AssistantDraftSource
+    target: AssistantDraftTarget
+    targetDm: boolean
+    text: string
+    messageId: string
+    seed: boolean
+  }): Promise<void> {
+    const gw = this.connForIntegration(post.target.integrationId)
+    if (!gw) return
+    const { source, target } = post
+    const origin: PostOrigin = {
+      agentId: post.agentId,
+      platform: source.platform,
+      channel: source.channel,
+      thread: source.thread,
+      ...(source.transportScope ? { transportScope: source.transportScope } : {}),
+      deliveryThread: source.thread
     }
     await settlePost(
       origin,
@@ -7956,16 +8085,15 @@ export class Daemon {
       },
       gw,
       {
-        platform: draft.target.platform,
-        integrationId: draft.target.integrationId,
-        channel: draft.target.channel,
-        ...(draft.target.thread ? { updateThread: draft.target.thread } : {}),
-        body: draft.text,
-        providerPostId: messageId,
-        ts: messageId,
-        directMessage: draft.targetDm,
-        // A reply lands in the conversation its own session already holds.
-        seed: draft.kind === 'elsewhere'
+        platform: target.platform,
+        integrationId: target.integrationId,
+        channel: target.channel,
+        ...(target.thread ? { updateThread: target.thread } : {}),
+        body: post.text,
+        providerPostId: post.messageId,
+        ts: post.messageId,
+        directMessage: post.targetDm,
+        seed: post.seed
       }
     )
   }

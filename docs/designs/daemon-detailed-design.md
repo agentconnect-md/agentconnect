@@ -1148,7 +1148,10 @@ alias `listChannelAgents`) and `viewSessionStatus`; channel/user information
 memory `readMemory`, `writeMemory`, `searchMemory`; and others. An agent in assistant mode also
 gets its item ledger tools `takeItem`, `listItems`, `updateItem` and `followItem`
 (`src/mcp/ops/assistant-items.ts`, [assistant-mode.md](assistant-mode.md) §5.4); each call
-re-checks the mode, and the asker is the sender of the message that started the live turn.
+re-checks the mode, and the asker is the sender of the message that started the live turn. A
+session of such an agent with a platform conversation of its own also gets `remind`,
+`listReminders` and `cancelReminder` (`src/mcp/ops/assistant-reminders.ts`, §5.9): the daemon's
+patrol sweep posts a due reminder's text into that conversation, with no turn.
 
 A second group is gated by a **declared port** rather than by a platform name
 (`platforms/read-ports.ts`, §7.1 of

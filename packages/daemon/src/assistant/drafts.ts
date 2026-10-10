@@ -667,19 +667,8 @@ export class AssistantDrafts {
     }
     const gw = this.host.gatewayFor(target.integrationId)
     if (!gw) return failed('the conversation cannot be reached right now')
-    const identity: SendIdentity = {
-      username: agent.name,
-      ...(agent.iconUrl ? { icon_url: agent.iconUrl } : {}),
-      agentAuthorId: draft.agentId,
-      // A post into a thread arrives finalized, like sendMessage's update form, so the thread routes it.
-      ...(target.thread
-        ? {
-            response: { responseId: randomUUID(), deliveryState: 'final' as const, hopCount: 0, mentionedAgentIds: [] }
-          }
-        : {})
-    }
     try {
-      const messageId = await gw.postMessage(target.channel, draft.text, target.thread ?? undefined, identity)
+      const messageId = await postAsAgent(gw, { id: draft.agentId, ...agent }, target, draft.text)
       return messageId
         ? { status: 'succeeded', detail: { messageId } }
         : { status: 'outcome_unknown', detail: { failure: 'the platform returned no message id' } }
@@ -748,6 +737,25 @@ export class AssistantDrafts {
       ...(sessionId && this.host.sessionLink ? { sessionUrl: this.host.sessionLink(sessionId) } : {})
     }
   }
+}
+
+/** The daemon's own post as the agent, with no turn: an approved draft's, and a due reminder's (§5.9). */
+export async function postAsAgent(
+  gw: MessageGateway,
+  agent: { id: string; name: string; iconUrl?: string },
+  target: { channel: string; thread: string | null },
+  text: string
+): Promise<string | undefined> {
+  const identity: SendIdentity = {
+    username: agent.name,
+    ...(agent.iconUrl ? { icon_url: agent.iconUrl } : {}),
+    agentAuthorId: agent.id,
+    // A post into a thread arrives finalized, like sendMessage's update form, so the thread routes it.
+    ...(target.thread
+      ? { response: { responseId: randomUUID(), deliveryState: 'final' as const, hopCount: 0, mentionedAgentIds: [] } }
+      : {})
+  }
+  return await gw.postMessage(target.channel, text, target.thread ?? undefined, identity)
 }
 
 /** A grant's end of a place: integration and conversation, never a thread. */

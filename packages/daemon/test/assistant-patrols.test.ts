@@ -283,7 +283,7 @@ describe('the place a patrol reports into', () => {
 
 describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite', () => {
   it('marks the existing sub-sessions as delegations and adds the patrol state', async () => {
-    expect(SCHEMA_VERSION).toBe(41)
+    expect(SCHEMA_VERSION).toBe(42)
     const path = tempStorePath('ac-assistant-v38-')
     await (await LocalStore.open(path)).close()
     const a = agent()

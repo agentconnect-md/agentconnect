@@ -116,7 +116,7 @@ describe.skipIf(usingPostgresStore())('the widened-session marks across a restar
   })
 
   it('adds the table to a v40 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(41)
+    expect(SCHEMA_VERSION).toBe(42)
     const path = tempStorePath('ac-assistant-v40-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)

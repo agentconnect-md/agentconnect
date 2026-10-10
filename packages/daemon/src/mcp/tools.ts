@@ -13,6 +13,7 @@ import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
 import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 import { RECALL_TOOL } from './recall-tool.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from './ops/assistant-items.js'
+import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
 
 /**
  * The single unified send tool (session-concept §3). It merges the former
@@ -1428,7 +1429,8 @@ export const ALL_TOOL_NAMES = [
       ...CODE_HOST_EFFECT_TOOLS,
       RECALL_TOOL,
       ...ASSISTANT_ITEM_TOOLS,
-      PROPOSE_TOOL
+      PROPOSE_TOOL,
+      ...ASSISTANT_REMINDER_TOOLS
     ]
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.

@@ -336,7 +336,7 @@ const post = (s: LocalStore, agentId: string) =>
 
 describe.skipIf(usingPostgresStore())('the v39 → v40 approval record on SQLite', () => {
   it('widens the record to tasks and keeps every draft', async () => {
-    expect(SCHEMA_VERSION).toBe(41)
+    expect(SCHEMA_VERSION).toBe(42)
     const path = tempStorePath('ac-assistant-v39-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)

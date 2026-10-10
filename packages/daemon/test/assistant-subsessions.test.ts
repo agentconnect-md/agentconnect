@@ -195,7 +195,7 @@ describe('the assistant sub-session index', () => {
 
 describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLite', () => {
   it('adds the table to a v37 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(41)
+    expect(SCHEMA_VERSION).toBe(42)
     const path = tempStorePath('ac-assistant-v37-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)

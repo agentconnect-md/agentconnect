@@ -58,6 +58,7 @@ export const canonicalColumns = [
   'deliveryReason',
   'desiredHash',
   'directDestination',
+  'draftId',
   'dispatchId',
   'dreamId',
   'dueAt',

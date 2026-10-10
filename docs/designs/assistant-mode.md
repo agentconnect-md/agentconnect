@@ -1,7 +1,7 @@
 # Assistant Mode
 
-**Status:** Design, twelfth revision (2026-10-10). Reviewed by three independent design reviews and
-the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
+**Status:** Design, thirteenth revision (2026-10-10). Reviewed by three independent design reviews
+and the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
 **In one sentence:** switch an agent into assistant mode and it behaves like one person on the
@@ -611,7 +611,26 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
 - **Wake on time**: an item's `nextCheck` uses the deadline wake, generalized out of the
   `orchestration` record.
 - **Two tiers of self-scheduling**: `remind` (deliver text at a time, no model turn) and
-  `patrol`.
+  `patrol`. `remind` ships first, to sessions of an assistant-mode agent that have a
+  platform conversation of their own:
+  - `remind({ at, message })` keeps `message` verbatim for `at`, an ISO-8601 instant with an offset,
+    in the future and at most 366 days ahead; the text is non-empty and at most 40,000 characters.
+    `listReminders` and `cancelReminder` reach only the current conversation's pending reminders.
+  - It lands only where the setting session's replies land, that conversation and thread; there is
+    no target argument. It is refused in sub-sessions and patrols, in an external place, and in
+    webchat, which has no daemon-side post path without a turn.
+  - The duty holder's sweep, on the patrol cadence, claims a due reminder atomically and posts it
+    through the executed-draft post path as the agent: no ACP, no turn. A claim cut short by a
+    restart or handover fails and is never posted again, so delivery is at most once. A platform
+    error is retried on later sweeps, three attempts in all, then fails with a warning; a send
+    that timed out or came back without a message id may or may not have posted, so it fails at
+    once. A place that turned external after the reminder was set gets the text as that place's
+    reply draft.
+  - While the agent is paused or out of assistant mode nothing is delivered; afterwards a reminder
+    less than 24 hours late posts late and an older one expires. An agent holds at most 100
+    pending reminders, a fixed limit with no setting. Settled rows stay, like the other assistant
+    tables' settled rows, until the agent is removed.
+  - A session marked by a per-asker read (§5.5) may set reminders: they land only in its own DM.
 - **Budget and backoff**: `dailyPatrolBudget`; after a failure the next attempt backs off by
   `min(60, 2ⁿ)` minutes, and five consecutive failures pause that item's patrols.
 - **Start condition**: not before each runtime has been tested for exactly the residual stated
@@ -711,14 +730,14 @@ badge are not in it yet.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                            |
-| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap                          |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893). Next: per-asker recall in the asker's DM (§5.5); the target patrol (after per-runtime tests) on the credential-less host; `remind`; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                   |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                 |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                          |
+| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, permission-request routing and the wait cap, list / steer / stop, the daily budget, queueing over the cap                                        |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9). Next: the target patrol (after per-runtime tests) on the credential-less host; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                 |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                               |
 
 ---
 
@@ -867,3 +886,13 @@ because the content stays in its context across turns, and a later session that 
 history back is marked too; per-person memory captured from it stays in P's DM; revocation residue
 and the metric's inputs are stated; writes through code-host, MCP and shell tools are left open
 (§9).
+
+**Thirteenth revision (2026-10-10)**: `remind`, the cheap tier of self-scheduling, ships ahead of
+the target patrol (§5.9): text set for a time is posted verbatim by the duty holder's sweep into
+the conversation and thread where the setting session's replies land, through the executed-draft
+post path, with no turn. Delivery is at most once (an atomic claim; a claim cut short fails), a
+platform error is retried three times, a pause delivers nothing and a reminder more than 24
+hours late expires, a place that turned external drafts the text instead, and an agent holds at
+most 100 pending reminders. Sub-sessions, patrols, external places and webchat cannot set one;
+a session marked by a per-asker read can, since it lands only in that DM. Listing reminders in
+Activity and delivery to another place or a person's DM are left for later.
