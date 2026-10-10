@@ -317,8 +317,24 @@ describe('RelayBrowserConnection', () => {
       type: 'ready',
       conversationId: CHAT,
       agentId: AGENT,
+      features: ['webchat-images-v1'],
       participants: [{ agentId: AGENT, primary: true }]
     })
+  })
+
+  it('forwards an image update for its own conversation only', () => {
+    const { conn, transport } = build()
+    const update = {
+      conversationId: CHAT,
+      agentId: AGENT,
+      postId: AGENT,
+      revision: 1,
+      original: { kind: 'inline' as const }
+    }
+    conn.onImageUpdate(update)
+    expect(transport.last('image_update')).toEqual({ type: 'image_update', update })
+    conn.onImageUpdate({ ...update, conversationId: AGENT, revision: 2 })
+    expect(transport.last('image_update')).toEqual({ type: 'image_update', update })
   })
 
   it('stamps the verdict targetSessionId verbatim onto every rd/msg — turn and close alike', async () => {

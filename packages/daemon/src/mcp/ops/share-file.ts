@@ -3,6 +3,10 @@ import type { ImageUploader, SendIdentity, SessionContext, UploadFailReason } fr
 import type { GatewayDeps } from './gateway.js'
 import { parseArgs, requiredString } from './args.js'
 import { platformLabel } from '../../platforms/read-ports.js'
+import type { SharedImageReceipt, SharedImageSource } from '../../webchat/shared-image.js'
+
+/** Longest workspace path a share marker may carry. */
+const SHARE_PATH_MAX = 1024
 
 /**
  * `shareFile` — a produced file into the CURRENT conversation
@@ -58,7 +62,21 @@ export type ShareReadResult =
       detail?: string
     }
 
+/** A webchat turn's workspace image read: bounded by the image-processing limit, not the IM per-file cap. */
+export type SharedImageReadResult =
+  | { ok: true; bytes: Buffer; sha256: string }
+  | { ok: false; reason: 'sandboxed' | 'not-found' | 'escape' | 'too-large'; detail?: string }
+
 export interface ShareFileDeps extends GatewayDeps {
+  /** The active turn's webchat publisher (webchat-generated-images.md §4); `unsupported` when its console cannot show cards. */
+  webchatImagePublisherFor?: (
+    ctx: SessionContext
+  ) => ((source: SharedImageSource) => Promise<SharedImageReceipt>) | 'unsupported' | undefined
+  readWorkspaceSharedImage?: (ctx: SessionContext, path: string) => Promise<SharedImageReadResult>
+  /** Synchronous per-turn count and process-wide in-flight reservation for a console share; `done` says whether it published. */
+  reserveWebchatShare?: (
+    ctx: SessionContext
+  ) => { ok: true; done: (published: boolean) => void } | { ok: false; reason: 'turn' | 'busy' }
   // Platforms with turn-bound egress can reuse the image tool without a legacy message gateway.
   imageUploaderFor?: (ctx: SessionContext) => ImageUploader | undefined
   /** The active turn's trusted post target — absent outside a live daemon. */
@@ -130,6 +148,41 @@ export async function shareFile(
       )
     }
     throw new Error('shareFile: no active conversation turn to share into.')
+  }
+
+  // A console-owned turn publishes a durable card instead of an IM upload; an IM continuation keeps its platform.
+  const publishWebchat = deps.webchatImagePublisherFor?.(ctx)
+  if (publishWebchat === 'unsupported') {
+    throw new Error(
+      'shareFile: this console cannot display shared images yet — its relay needs an update. Describe the image in your reply instead.'
+    )
+  }
+  if (publishWebchat) {
+    if (path.length > SHARE_PATH_MAX || /[\u0000-\u001f\u007f]/.test(path)) throw new Error(READ_REFUSALS.escape(path))
+    if (!deps.readWorkspaceSharedImage) throw new Error('shareFile is not available in this environment.')
+    const reserved = deps.reserveWebchatShare?.(ctx) ?? { ok: true as const, done: () => {} }
+    if (!reserved.ok) {
+      throw new Error(
+        reserved.reason === 'turn'
+          ? "shareFile: this turn's image limit is reached — stop sharing images this turn."
+          : 'shareFile: too many images are being prepared right now — try again shortly.'
+      )
+    }
+    let published = false
+    try {
+      const read = await deps.readWorkspaceSharedImage(ctx, path)
+      if (!read.ok) throw new Error(READ_REFUSALS[read.reason](path, read.detail))
+      const receipt = await publishWebchat({
+        path,
+        ...(caption ? { caption: escapeCaptionMentions(caption) } : {}),
+        bytes: read.bytes,
+        sha256: read.sha256
+      })
+      published = true
+      return receipt
+    } finally {
+      reserved.done(published)
+    }
   }
 
   // Port-probe the platform BEFORE reading the file, so a webchat/fileless session costs no I/O.

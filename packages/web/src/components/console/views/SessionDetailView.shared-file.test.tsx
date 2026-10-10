@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Agent, Session } from '@/lib/data'
 import type { SessionMessageDto } from '@/lib/api'
 
-const wire = vi.hoisted(() => ({ messages: [] as unknown[], download: vi.fn(), save: vi.fn() }))
+const wire = vi.hoisted(() => ({ messages: [] as unknown[], download: vi.fn(), save: vi.fn(), resolve: vi.fn() }))
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'session-1' }),
@@ -48,7 +48,8 @@ vi.mock('@/lib/api', async (importOriginal) => {
     fetchWorkspaceGitLog: vi.fn(() =>
       Promise.resolve({ isRepo: false, commits: [], truncated: false, tracking: null })
     ),
-    downloadSessionFile: wire.download
+    downloadSessionFile: wire.download,
+    resolveSharedImageOriginal: wire.resolve
   }
 })
 
@@ -244,5 +245,68 @@ describe('a shared file on the session page', () => {
     await render()
     expect(text()).toContain('[shared: a.png')
     expect(container?.querySelector('button[title="Download a.png"]')).toBeNull()
+  })
+})
+
+describe('a shared image on the session page', () => {
+  const marker = `[shared: out/chart.png (image/png, 9 bytes, sha256:${SHA})]`
+  const preview = { name: 'chart.png', mimeType: 'image/png' as const, data: btoa('png-bytes') }
+
+  it('renders one card with the caption, and downloads an inline original from its own bytes', async () => {
+    wire.messages = [
+      row({ seq: 1, sender: 'sam', kind: 'text', text: 'draw a chart' }),
+      row({
+        seq: 2,
+        sender: 'agent-1',
+        kind: 'text',
+        text: `revenue by week\n${marker}`,
+        postId: '11111111-1111-4111-8111-111111111111',
+        sharedImage: { attachment: preview, original: { kind: 'inline' }, revision: 0 }
+      })
+    ]
+    await render()
+
+    expect(container?.querySelectorAll('[data-testid="shared-image-card"]')).toHaveLength(1)
+    expect(text()).toContain('revenue by week')
+    expect(text()).not.toContain('[shared:')
+    expect(container?.querySelector('img[alt="revenue by week"]')).not.toBeNull()
+    const download = [...(container?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Download')
+    await act(async () => {
+      download!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(wire.download).not.toHaveBeenCalled()
+    const [blob, name] = wire.save.mock.calls[0] as [Blob, string]
+    expect(name).toBe('chart.png')
+    expect(await blob.text()).toBe('png-bytes')
+  })
+
+  it('keeps the preview of an expired original and offers no original actions', async () => {
+    wire.messages = [
+      row({
+        seq: 2,
+        sender: 'agent-1',
+        kind: 'text',
+        text: marker,
+        postId: '11111111-1111-4111-8111-111111111111',
+        sharedImage: {
+          attachment: preview,
+          original: {
+            kind: 'cache',
+            attachmentId: '22222222-2222-4222-8222-222222222222',
+            mimeType: 'image/png',
+            bytes: 9_000_000,
+            sha256: 'ab'.repeat(32),
+            status: 'expired'
+          },
+          revision: 2
+        }
+      })
+    ]
+    await render()
+    expect(text()).toContain('Original expired')
+    expect(container?.querySelector('img[alt="chart.png"]')).not.toBeNull()
+    const view = [...(container?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'View original')
+    expect(view?.disabled).toBe(true)
+    expect(wire.resolve).not.toHaveBeenCalled()
   })
 })

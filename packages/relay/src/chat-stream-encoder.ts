@@ -156,6 +156,9 @@ export class UiMessageStreamEncoder implements ChatStreamEncoder {
       }
       case 'permission':
         return this.handOut(ev.requestId, APPROVAL_TOOL_NAME, { tool: ev.tool, detail: ev.detail }, output.index, true)
+      case 'image':
+        // A shared image is announced by caption only; its preview bytes stay on the console surface.
+        return this.close() + sse({ type: 'data-image', id: ev.postId, data: { postId: ev.postId, text: ev.text } })
       default:
         return '' // a settled card, MCP App, and `superseded` kinds have no representation here
     }

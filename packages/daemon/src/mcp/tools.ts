@@ -345,10 +345,13 @@ function buildShareFileTool(): ToolDescriptor {
       'Post an IMAGE from your workspace into THIS conversation — the thread you are answering right now. This is ' +
       'the only way to show someone a file you produced or downloaded: your ordinary reply is text-only, and ' +
       '`sendMessage` posts to channel roots, never here. `path` is relative to your workspace root; put files there ' +
-      'first. Images only (PNG, JPEG, or WEBP — not GIF), decided from the file bytes, not the name. The optional ' +
+      'first (generated images: save under `outputs/images/` with a unique name, copying any result that lives ' +
+      'outside the workspace). Images only (PNG, JPEG, or WEBP; the console also takes a self-contained static SVG — ' +
+      'never GIF), decided from the file bytes, not the name. The optional ' +
       '`caption` is plain text (max 1000 chars; mention syntax is neutralized, though a bare Telegram @username ' +
-      'may still notify); write everything else in your ordinary ' +
-      'reply. The image posts immediately, so it may appear before your streamed reply finishes. If the result says ' +
+      'may still notify); write everything else in your ordinary reply. Do not repeat the image as Markdown or paste ' +
+      'download links after a successful share — the card has its own view and download actions. ' +
+      'The image posts immediately, so it may appear before your streamed reply finishes. If the result says ' +
       'the upload MAY have been delivered, do NOT retry — report that instead.',
     inputSchema: obj(
       {
@@ -1454,6 +1457,8 @@ export function toolsForIntegrations(
     decisions?: boolean
     currentPlatform?: string
     assistantMode?: boolean
+    /** The console can show shared images, so a session with no IM integration still gets `shareFile`. */
+    consoleImages?: boolean
   } = {}
 ): ToolDescriptor[] {
   const tools: ToolDescriptor[] = []
@@ -1485,6 +1490,8 @@ export function toolsForIntegrations(
     // clean refusal at call time (port probe / coordinate gates).
     add([buildShareFileTool()])
   }
+  // A console turn's output capability, not the integration count, decides; execution re-checks the active turn.
+  if (options.consoleImages) add([buildShareFileTool()])
   // Per-platform CREDENTIALED attachment reads. A platform contributes its own
   // descriptor by declaring the read port (`platforms/read-ports.ts`); core does
   // not know which platforms have one, or what they are called. Registry order,

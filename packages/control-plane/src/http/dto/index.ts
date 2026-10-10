@@ -38,6 +38,8 @@ import {
   RepoMaterialization,
   RepoSubdirError,
   SessionImageAttachment,
+  SharedImage,
+  SharedImageResolveOk,
   SessionStayedHomeReason,
   ExecutorStrategyName,
   RuntimeStrategyEntries,
@@ -3481,6 +3483,8 @@ export const SessionMessageDto = z.object({
   kind: z.string(),
   text: z.string(),
   attachments: z.array(SessionImageAttachment).max(1).optional(),
+  // A shared image's preview and original descriptor (webchat-generated-images.md §4); never a signed URL.
+  sharedImage: SharedImage.optional(),
   // ── tool-body enrichment (mirrors protocol SessionMessage; tool and app rows) ──
   toolCallId: z.string().optional(),
   toolStatus: z.string().optional(),
@@ -3489,6 +3493,9 @@ export const SessionMessageDto = z.object({
   bodyTruncated: z.boolean().optional(), // preview shrunk for the frame; full body via /sessions/:id/tool-body
   bodyBytes: z.number().optional() // full (untruncated) body byte length
 })
+/** `POST /sessions/:id/shared-images/:attachmentId/original` — the original's state and, when ready, a temporary GET. */
+export const SharedImageOriginalDto = SharedImageResolveOk
+
 export const SessionHistoryDto = z.object({
   sessionId: z.string(),
   messages: z.array(SessionMessageDto),

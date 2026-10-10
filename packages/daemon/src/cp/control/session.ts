@@ -6,10 +6,13 @@ import type {
   SessionListReq,
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
+  SharedImageResolveOk,
+  SharedImageResolveReq,
   SessionToolBodyReq,
   SessionVisibilityPush
 } from '@agentconnect.md/protocol'
 import type { SessionReader } from '../session-reader.js'
+import { SharedImageNotFoundError } from '../../webchat/shared-image.js'
 import type { ConfigApplyDeps } from './config.js'
 import type { ControlHandler } from './context.js'
 
@@ -22,6 +25,23 @@ export interface SessionControlDeps extends ConfigApplyDeps {
   childSessionStatusProbe?: (probe: ChildSessionStatusProbe) => ChildSessionStatus | Promise<ChildSessionStatus>
   /** Continue the exact local session named by body-free GitHub feedback metadata. */
   pullRequestFeedback?: (req: SessionPullRequestFeedback) => Promise<SessionPullRequestFeedbackResult>
+  /** Resolve a shared image's original for an authorized console viewer (webchat-generated-images.md §5). */
+  sharedImageResolve?: (req: SharedImageResolveReq, orgId?: string) => Promise<SharedImageResolveOk>
+}
+
+export const sharedImageResolve: ControlHandler<SessionControlDeps> = (frame: AnyFrame, deps, wire) => {
+  if (!deps.sharedImageResolve) {
+    wire.sendError(frame.id, 'INTERNAL', 'image/original/resolve is not supported by this daemon', false)
+    return
+  }
+  Promise.resolve()
+    .then(() => deps.sharedImageResolve!(frame.payload as SharedImageResolveReq, frame.orgId))
+    .then((answer) => wire.reply(frame, 'image/original/resolve/ok', answer))
+    .catch((err) =>
+      err instanceof SharedImageNotFoundError
+        ? wire.sendError(frame.id, 'NO_SESSION', err.message, false)
+        : wire.sendError(frame.id, 'INTERNAL', `image/original/resolve failed: ${(err as Error).message}`, true)
+    )
 }
 
 export const sessionVisibility: ControlHandler<SessionControlDeps> = async (frame: AnyFrame, deps, wire) => {

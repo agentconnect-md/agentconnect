@@ -70,6 +70,7 @@ import { collaborationRoutes, relayRoster, routeAssign, routeUpdate } from './ro
 import {
   sessionChildStatusProbe,
   sessionHistory,
+  sharedImageResolve,
   sessionList,
   sessionPullRequestFeedback,
   sessionToolBody,
@@ -178,6 +179,7 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['daemon/runtimes/probe', runtimeProbe],
   ['session/list', sessionList],
   ['session/history', sessionHistory],
+  ['image/original/resolve', sharedImageResolve],
   ['session/pull-request-feedback', sessionPullRequestFeedback],
   ['session/child-status/probe', sessionChildStatusProbe],
   ['session/tool-body', sessionToolBody],

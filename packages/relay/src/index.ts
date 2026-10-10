@@ -27,7 +27,7 @@ import { RelayCpClient } from './relay-cp-client.js'
 import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
-import { WebchatRouter, bindWebchatPostAuthor } from './webchat-router.js'
+import { WebchatRouter, bindWebchatPostAuthor, fanImageUpdate, imageUpdateBound } from './webchat-router.js'
 import { VERDICT_TTL_MS, WebchatVerdictCache } from './webchat-verdict-cache.js'
 import { registerAgentChatRoutes } from './agent-chat-route.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
@@ -402,6 +402,19 @@ async function main(): Promise<void> {
           })
           .catch((err) => log.warn(`relay: webchat post context fan-out failed: ${(err as Error).message}`))
       }
+    },
+    onWebchatImageUpdate: (fromDaemonId, update) => {
+      if (!imageUpdateBound(update, fromDaemonId, router.rosterOf(update.conversationId))) {
+        log.warn(`relay: image update for post ${update.postId} not bound to daemon ${fromDaemonId} — dropped`)
+        return
+      }
+      router.deliverImageUpdate(update)
+      fanImageUpdate(
+        update,
+        router.rosterOf(update.conversationId),
+        (id) => rdServer.get(id),
+        (m) => log.warn(m)
+      )
     },
     onAgentMsg: (fromDaemonId, msg) => routeAgentMsg(fromDaemonId, msg),
     onRoute: (fromDaemonId, msg) => relayIngress.handleRoute(fromDaemonId, msg),

@@ -1,5 +1,12 @@
 // Fan conversation output to its verified browser connections; cache rosters separately for peer-daemon context.
-import type { RdChat, RdWebchatPost } from '@agentconnect.md/protocol'
+import { randomUUID } from 'node:crypto'
+import {
+  RD_WEBCHAT_IMAGES_V1,
+  type RdChat,
+  type RdMsg,
+  type RdWebchatImageUpdate,
+  type RdWebchatPost
+} from '@agentconnect.md/protocol'
 
 /** The browser sink the router delivers a reply chunk to. */
 export interface ChatSink {
@@ -7,6 +14,8 @@ export interface ChatSink {
   /** A participant's completed conversation post (multi-agent fan-out seam).
    *  Optional so a minimal test sink stays valid. */
   onPost?(post: RdWebchatPost): void
+  /** A published image's original changed state; optional like `onPost`. */
+  onImageUpdate?(update: RdWebchatImageUpdate): void
 }
 
 /** One cached roster entry (agentId + current placement, as verified by the CP). */
@@ -112,7 +121,56 @@ export class WebchatRouter {
     for (const sink of this.byChatId.get(post.conversationId) ?? []) sink.onPost?.(post)
   }
 
+  /** Deliver an original-state update to every browser on the conversation; peers never receive it. */
+  deliverImageUpdate(update: RdWebchatImageUpdate): void {
+    for (const sink of this.byChatId.get(update.conversationId) ?? []) sink.onImageUpdate?.(update)
+  }
+
   size(): number {
     return this.byChatId.size
+  }
+}
+
+/** Accept an image update only from the daemon the CP-verified roster places its agent on; an unknown roster fails closed. */
+export function imageUpdateBound(
+  update: RdWebchatImageUpdate,
+  fromDaemonId: string,
+  roster: CachedParticipant[]
+): boolean {
+  const placement = roster.find((p) => p.agentId === update.agentId)
+  return placement?.daemonId !== undefined && placement.daemonId === fromDaemonId
+}
+
+/** The slice of a daemon link the image fan-out needs. */
+export interface ImageUpdatePeer {
+  supports(capability: string): boolean
+  sendMsg(payload: RdMsg): Promise<unknown>
+}
+
+/** Send an original-state update to every other participant's daemon that holds a peer copy and can decode the op. */
+export function fanImageUpdate(
+  update: RdWebchatImageUpdate,
+  roster: CachedParticipant[],
+  daemonOf: (daemonId: string) => ImageUpdatePeer | undefined,
+  warn: (message: string) => void
+): void {
+  // Peers record state only; a signed GET is a browser's bearer link and never crosses to another daemon.
+  const { download: _download, ...peerUpdate } = update
+  for (const p of roster) {
+    // A continued member session takes no peer copy, so it has nothing to update.
+    if (p.agentId === update.agentId || !p.daemonId || p.targetSessionId) continue
+    const conn = daemonOf(p.daemonId)
+    if (!conn?.supports(RD_WEBCHAT_IMAGES_V1)) continue
+    void conn
+      .sendMsg({
+        source: 'webchat',
+        agentId: p.agentId,
+        sessionKey: update.conversationId,
+        msgId: randomUUID(),
+        chatId: update.conversationId,
+        ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {}),
+        payload: { op: 'image_update', update: peerUpdate }
+      })
+      .catch((err) => warn(`relay: webchat image update fan-out failed: ${(err as Error).message}`))
   }
 }

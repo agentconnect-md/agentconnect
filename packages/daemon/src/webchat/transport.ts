@@ -12,6 +12,7 @@ import type {
   WebchatAck,
   WebchatFileAttachment,
   WebchatImageAttachment,
+  WebchatImageUpdate,
   WebchatPost,
   WebchatRemoteMcpEntitlement,
   WebchatRuntimeConfig
@@ -924,6 +925,8 @@ export class WebchatTransport {
         postId: contextPost.postId,
         text: contextPost.text,
         ...(contextPost.author.kind === 'agent' ? { trustedAgentBot: true } : {}),
+        // A peer's shared image is transcript only: kept for display, never handed to this agent's model.
+        ...(contextPost.image && contextPost.author.kind === 'agent' ? { sharedImage: contextPost.image } : {}),
         ...(contextPost.attachments?.length
           ? {
               attachments: contextPost.attachments.map((a) => ({
@@ -935,6 +938,25 @@ export class WebchatTransport {
           : {})
       }
     )
+  }
+
+  /** Apply a peer's shared-image original update to this participant's copy; only the author's own rows change. */
+  async applyWebchatImageUpdate(agentId: string, chatId: string, update: WebchatImageUpdate): Promise<void> {
+    if (update.conversationId !== chatId || update.agentId === agentId) return
+    await this.host
+      .store()
+      .updateTranscriptSharedImage(
+        transcriptChannelKey(chatId, undefined),
+        update.postId,
+        (current) =>
+          update.revision > current.revision &&
+          current.original.kind === 'cache' &&
+          update.original.kind === 'cache' &&
+          update.original.attachmentId === current.original.attachmentId
+            ? { ...current, original: update.original, revision: update.revision }
+            : undefined,
+        update.agentId
+      )
   }
 
   /**

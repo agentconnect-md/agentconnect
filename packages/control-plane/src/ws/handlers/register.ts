@@ -14,6 +14,7 @@ import {
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
+  WEBCHAT_IMAGES_FEATURE,
   MEMORY_TRANSACTION_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   REPO_CANDIDATES_V1_FEATURE,
@@ -106,6 +107,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     ...snap,
     relays,
     ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
+    // A shared image picks its original's home at publication, before any signing (webchat-generated-images.md §5).
+    ...(deps.fileTransfer ? { fileTransfer: { maxBytes: deps.fileTransfer.maxBytes } } : {}),
     // `agent-directory-org-scope-v1`: this CP accepts a `channel/agents` REQ with NO
     // channel (the org-wide, policy-filtered peer directory) and ships the flat
     // `collabRoutes.agents[]`. A daemon that does not see it must keep substituting the
@@ -136,6 +139,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       // that arm before seeing this: a provider member an older CP cannot route is a fatal frame.
       CODEHOST_NOTE_PROJECTION_V1_FEATURE,
       'agent-directory-org-scope-v1',
+      // webchat-generated-images.md §5: this CP signs `image/original/put|get` and proxies `image/original/resolve`.
+      WEBCHAT_IMAGES_FEATURE,
       SESSION_LIVE_TAIL_FEATURE,
       SESSION_METADATA_ACK_FEATURE,
       SESSION_PURGE_FEATURE,

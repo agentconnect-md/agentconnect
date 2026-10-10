@@ -91,6 +91,9 @@ import {
   WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   FILE_TRANSFER_FEATURE,
+  WEBCHAT_IMAGES_FEATURE,
+  type SharedImageResolveOk,
+  type SharedImageResolveReq,
   type TransferNetwork,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
@@ -940,6 +943,20 @@ import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/t
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as webchatTurnOutput from './webchat/turn-output.js'
 import {
+  publishWebchatSharedImage,
+  resolveSharedImageOriginal,
+  SHARED_IMAGE_SOURCE_MAX_BYTES,
+  SharedImageNotFoundError,
+  sweepSharedImageStaging,
+  WEBCHAT_SHARES_IN_FLIGHT,
+  WEBCHAT_SHARES_PER_TURN,
+  webchatConversationIdOf,
+  type SharedImagePublisherDeps
+} from './webchat/shared-image.js'
+import { prepareSharedImagePreview } from './images/index.js'
+import { BUILTIN_SKILL_KEY_PREFIX, builtinSkillSources, reserveBuiltinSkills } from './skills/builtin-skills.js'
+import type { LocalSkillSource } from './skills/install-skills.js'
+import {
   activationKey,
   assertExclusiveAgentWorkspaces,
   configuredControlPlane,
@@ -1219,6 +1236,8 @@ export class Daemon {
   private noteProjector!: CodeHostNoteProjector
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
+  /** The CP's transfer cache from the last register; where a shared image's large original goes. */
+  private fileTransfer?: { maxBytes: number }
   private gitCredServer?: GitCredServer
   /** Leases over cluster pods, in memory: an open page's keep-alive, and this daemon's own on a pod it saw a watcher armed in. */
   private readonly sandboxHolds = new SandboxHolds({ now: () => Date.now() })
@@ -2649,6 +2668,8 @@ export class Daemon {
     await this.initGitCredentials(root)
     this.mintDaemonIdentity(root, cfg, cpKeyOnboarding)
     this.sweepProbeRoots()
+    // Original delivery is process-local (webchat-generated-images.md §4): an earlier process's staging is never resumed.
+    void sweepSharedImageStaging(join(root, 'shared-image-staging'))
     this.log.info(
       `control plane: ${cfg.controlPlane?.enabled ? `enabled (${cfg.controlPlane.url ?? 'no url'})` : 'disabled — running local'}`
     )
@@ -4109,86 +4130,72 @@ export class Daemon {
         return this.turnSurfaces.exact(p.plan.platform)?.imageUploader?.(p)
       },
       readWorkspaceImage: async (ctx, rel): Promise<ShareReadResult> => {
-        const scope = createWorkspaceScope({
-          workspaces: this.workspaces,
-          agentOf: (id) => this.agents.get(id),
-          sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
-          runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
-        })
-        // The session by its logical key; the scope answers by the outward id the row carries.
-        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-        const row = await this.store.getSession(key).catch(() => undefined)
-        const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
-        // Session-worktree first (an isolated session's files live there), then the agent
-        // root: `location(id, sessionId)` answers ONLY for git-repo agents on isolated
-        // sessions, and the default config (shared isolation, from-scratch) is the other arm.
-        // For a cluster agent the scope composes the root in POD coordinates.
-        const location =
-          (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
-          (await scope.location(ctx.agentId).catch(() => undefined))
-        if (!location) return { ok: false, reason: 'not-found' }
         const cap = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
-        // Sniff + name + digest, shared by both arms: outbound name and MIME come from the
-        // SNIFFED bytes, never the model-supplied path (§4) — Discord renders by extension
-        // alone, so `out/chart` must not land extensionless.
-        const imageOf = (bytes: Buffer): ShareReadResult => {
-          const sniffed = sniffImageMimeType(bytes)
-          if (!sniffed) {
-            const head = bytes.subarray(0, 6).toString('latin1')
-            // GIF gets a refusal that NAMES it (§4) — a plausible find-me-images result whose
-            // animation sendPhoto would silently strip; deferred behind the enum widening.
-            if (head === 'GIF87a' || head === 'GIF89a') return { ok: false, reason: 'gif' }
-            return { ok: false, reason: 'not-image' }
-          }
-          const ext = sniffed === 'image/png' ? 'png' : sniffed === 'image/jpeg' ? 'jpg' : 'webp'
-          const stem = basename(rel).replace(/\.[A-Za-z0-9]+$/, '') || 'image'
-          const sha256 = createHash('sha256').update(bytes).digest('hex')
-          return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
+        const read = await this.readShareWorkspaceFile(ctx, rel, cap)
+        if (!read.ok) return read
+        const bytes = read.bytes
+        // Sniff + name + digest: outbound name and MIME come from the SNIFFED bytes, never the model-supplied path (§4) — Discord renders by extension alone.
+        const sniffed = sniffImageMimeType(bytes)
+        if (!sniffed) {
+          const head = bytes.subarray(0, 6).toString('latin1')
+          // GIF gets a refusal that NAMES it (§4): sendPhoto would silently strip its animation.
+          if (head === 'GIF87a' || head === 'GIF89a') return { ok: false, reason: 'gif' }
+          return { ok: false, reason: 'not-image' }
         }
-
-        // Pod arm (design §6), and an executor's: the daemon adds the lexical fence (with the `.git` rule); the shim's fd-anchored descent is the symlink guarantee.
-        const podFs = this.workspaces.offDiskFsFor(ctx.agentId, { sessionKey: key })
-        if (podFs !== undefined) {
-          if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
-          let resolved: string
-          try {
-            resolved = containedWorkspacePath(location.root, rel)
-          } catch (err) {
-            return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
+        const ext = sniffed === 'image/png' ? 'png' : sniffed === 'image/jpeg' ? 'jpg' : 'webp'
+        const stem = basename(rel).replace(/\.[A-Za-z0-9]+$/, '') || 'image'
+        const sha256 = createHash('sha256').update(bytes).digest('hex')
+        return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
+      },
+      // A console turn's image is bounded by the image-processing limit, not the IM per-file cap (webchat-generated-images.md §5).
+      readWorkspaceSharedImage: async (ctx, rel) => {
+        const read = await this.readShareWorkspaceFile(ctx, rel, SHARED_IMAGE_SOURCE_MAX_BYTES)
+        if (!read.ok) return read
+        return { ok: true, bytes: read.bytes, sha256: createHash('sha256').update(read.bytes).digest('hex') }
+      },
+      reserveWebchatShare: (ctx) => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const used = this.webchatSharesByTurn.get(key) ?? 0
+        if (used >= WEBCHAT_SHARES_PER_TURN) return { ok: false, reason: 'turn' }
+        if (this.webchatSharesInFlight >= WEBCHAT_SHARES_IN_FLIGHT) return { ok: false, reason: 'busy' }
+        // Check + reserve in one synchronous step, so concurrent tool calls cannot both pass.
+        this.webchatSharesByTurn.set(key, used + 1)
+        this.webchatSharesInFlight += 1
+        let released = false
+        return {
+          ok: true,
+          done: (published) => {
+            if (released) return
+            released = true
+            this.webchatSharesInFlight -= 1
+            if (!published) this.webchatSharesByTurn.set(key, Math.max(0, (this.webchatSharesByTurn.get(key) ?? 0) - 1))
           }
-          // Refusals come back undefined, so anything THROWN is the channel: "sandbox unreachable" invites a retry where "missing" would not.
-          let read: Awaited<ReturnType<typeof podFs.readFileBytes>> | 'channel-lost'
-          try {
-            read = await podFs.readFileBytes(resolved, cap)
-          } catch {
-            read = 'channel-lost'
-          }
-          if (read === 'channel-lost') return { ok: false, reason: 'sandboxed' }
-          if (!read) return { ok: false, reason: 'not-found' }
-          if ('tooLarge' in read) {
-            return { ok: false, reason: 'too-large', detail: `${read.tooLarge} bytes > ${cap}-byte cap` }
-          }
-          return imageOf(read.bytes)
         }
-
-        let resolved: string | null
-        try {
-          resolved = await canonicalWorkspacePath(location.root, rel)
-        } catch (err) {
-          return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
-        }
-        if (!resolved) return { ok: false, reason: 'not-found' }
-        // Single-shot (§4) from one descriptor: the cwd is runtime-writable, so a FIFO or a swapped-in symlink is refused, not read.
-        let bytes: Buffer
-        try {
-          bytes = await readRegularFile(resolved, cap)
-        } catch (err) {
-          if (err instanceof RegularFileError && err.reason === 'too-large') {
-            return { ok: false, reason: 'too-large', detail: `${err.size} bytes > ${cap}-byte cap` }
-          }
-          return { ok: false, reason: 'not-found' }
-        }
-        return imageOf(bytes)
+      },
+      webchatImagePublisherFor: (ctx) => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const p = [...this.pending.values()].find((turn) => turn.plan.sessionKey === key)
+        // An IM continuation keeps its origin platform's delivery; only a console-owned turn publishes a card.
+        if (!p?.webchat || p.webchat.continuation) return undefined
+        if (p.outputSuppressed || !this.toolTurnRunnable(ctx)) return undefined
+        if (!this.relays?.supportsWebchatImages?.()) return 'unsupported'
+        const wc = p.webchat
+        return (source) =>
+          publishWebchatSharedImage(
+            this.sharedImageDeps(),
+            {
+              agentId: ctx.agentId,
+              outwardSessionId: p.outwardSessionId,
+              transcriptChannel: p.plan.transcriptChannel,
+              thread: p.plan.statusThread,
+              admission: { agentId: ctx.agentId, sessionKey: p.plan.sessionKey },
+              wc,
+              ...(p.resolveFileLink ? { resolveFileLink: p.resolveFileLink } : {}),
+              stillPublishable: () =>
+                [...this.pending.values()].includes(p) && !p.outputSuppressed && this.toolTurnRunnable(ctx)
+            },
+            source
+          )
       },
       // read*File (inbound-file-attachments.md §2): a downloaded non-image binary lands under
       // `uploads/` at the session's working root, so the agent's own tools can open it. The same
@@ -4390,7 +4397,9 @@ export class Daemon {
           decisions:
             !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
           currentPlatform: platform,
-          assistantMode: agent.assistantMode?.enabled === true
+          assistantMode: agent.assistantMode?.enabled === true,
+          // Static descriptor, dynamic authority: a console turn may reach any session, and execution re-checks it.
+          consoleImages: this.relays?.supportsWebchatImages?.() === true
         })
         // Static descriptor, dynamic authority: a per-thread ACP session can
         // outlive many hook deliveries. The call resolves the CURRENT daemon-
@@ -6348,7 +6357,11 @@ export class Daemon {
       ...(this.usesMicrosandbox(agent)
         ? { installSkills: (value: Agent, cwd: string) => this.reconcileMicrosandboxSkills(value, cwd) }
         : {}),
-      managedSkills: (value: Agent) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
+      // The builtin image workflow rides the managed sources; installation without a skillsAgentId simply skips it.
+      managedSkills: async (value: Agent) => [
+        ...((await this.managedSkillCache?.resolve(value)) ?? []),
+        ...(await builtinSkillSources())
+      ],
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null,
       resolveGitSkillRef: (entry: AgentSkillEntrySchema, value: Agent) => this.trackedGitSkillCommit(entry, value)
@@ -6525,7 +6538,8 @@ export class Daemon {
       configuredSources: agent.skills.length,
       managedBindings: agent.managedSkills.length,
       acceptedDreamSources: dreamed.length,
-      priorRoots: priorLedger?.roots.length ?? 0
+      // A builtin root alone never makes skill support mandatory.
+      priorRoots: priorLedger?.roots.filter((root) => !root.sourceId.startsWith(BUILTIN_SKILL_KEY_PREFIX)).length ?? 0
     })
     if (!client) {
       if (supportRequired) throw new Error('cluster runtime lacks skill installation support')
@@ -6545,6 +6559,63 @@ export class Daemon {
         })
       : []
     const acquireOptions = { agentId: agent.id, useGitCredential: this.workspaces.skillGitCredentialEnabled(agent) }
+    // Builtins join after the support gate: an optional helper must never make an otherwise usable runtime refuse to start.
+    const builtins = await builtinSkillSources()
+    const reconcile = (withBuiltins: boolean) => {
+      const sources = reserveBuiltinSkills([...managed, ...dreamed, ...(withBuiltins ? builtins : [])], (msg) =>
+        this.log.warn(msg)
+      )
+      return this.reconcileSandboxSkillSet(agent, peer, client, {
+        managed: sources.filter((source) => source.kind === 'managed'),
+        dreamed: sources.filter((source) => source.kind === 'dream'),
+        acquireOptions,
+        priorLedger,
+        duty,
+        daemonId,
+        workspaceIncarnation,
+        skillsAgentId,
+        shimGeneration
+      })
+    }
+    if (builtins.length === 0) return await reconcile(false)
+    try {
+      return await reconcile(true)
+    } catch (err) {
+      // A user-authored directory already holds the reserved name: keep it, start without the builtin.
+      if (!/ownership conflict/i.test((err as Error).message)) throw err
+      this.log.warn(`skills: builtin skill not installed for ${agent.id} (${(err as Error).message})`)
+      return await reconcile(false)
+    }
+  }
+
+  /** One sandbox skill reconcile over a fixed source set. */
+  private async reconcileSandboxSkillSet(
+    agent: Agent,
+    peer: Parameters<Daemon['reconcileSandboxSkills']>[1],
+    client: ClusterSkillClient,
+    set: {
+      managed: LocalSkillSource[]
+      dreamed: LocalSkillSource[]
+      acquireOptions: { agentId: string; useGitCredential: boolean }
+      priorLedger: ClusterSkillLedger | undefined
+      duty: { groupId: string; term: string }
+      daemonId: string
+      workspaceIncarnation: string
+      skillsAgentId: string
+      shimGeneration: number
+    }
+  ): Promise<ClusterSkillLedger | undefined> {
+    const {
+      managed,
+      dreamed,
+      acquireOptions,
+      priorLedger,
+      duty,
+      daemonId,
+      workspaceIncarnation,
+      skillsAgentId,
+      shimGeneration
+    } = set
     return await reconcileSandboxSkillSources(
       {
         store: this.store,
@@ -7368,6 +7439,8 @@ export class Daemon {
       WORKSPACE_FILE_DOWNLOAD_FEATURE,
       // Snapshots workspace files onto, and fetches console uploads from, URLs the control plane signs; static.
       FILE_TRANSFER_FEATURE,
+      // Answers `image/original/resolve` and publishes shared-image originals (webchat-generated-images.md).
+      WEBCHAT_IMAGES_FEATURE,
       TASK_LIST_FEATURE,
       // Serves the console's assistant-mode Activity view from the store; static.
       ASSISTANT_ACTIVITY_FEATURE,
@@ -8574,6 +8647,114 @@ export class Daemon {
     if (prior && prior !== key) this.memoryExtractionQuarantines.delete(prior)
     this.commitMessageTombstones.set(agentId, key)
     this.memoryExtractionQuarantines.set(key, agentId)
+  }
+
+  /** Resolve + fence + single-shot read of a workspace-relative file for `shareFile` (agent-authored-attachments.md §4). */
+  private async readShareWorkspaceFile(
+    ctx: SessionContext,
+    rel: string,
+    cap: number
+  ): Promise<
+    | { ok: true; bytes: Buffer }
+    | { ok: false; reason: 'sandboxed' | 'not-found' | 'escape' | 'too-large'; detail?: string }
+  > {
+    const scope = createWorkspaceScope({
+      workspaces: this.workspaces,
+      agentOf: (id) => this.agents.get(id),
+      sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
+      runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
+    })
+    // The session by its logical key; the scope answers by the outward id the row carries.
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const row = await this.store.getSession(key).catch(() => undefined)
+    const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
+    // Session-worktree first (an isolated session's files live there), then the agent root; a cluster agent's root is in POD coordinates.
+    const location =
+      (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
+      (await scope.location(ctx.agentId).catch(() => undefined))
+    if (!location) return { ok: false, reason: 'not-found' }
+
+    // Pod arm (design §6), and an executor's: the daemon adds the lexical fence (with the `.git` rule); the shim's fd-anchored descent is the symlink guarantee.
+    const podFs = this.workspaces.offDiskFsFor(ctx.agentId, { sessionKey: key })
+    if (podFs !== undefined) {
+      if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
+      let resolved: string
+      try {
+        resolved = containedWorkspacePath(location.root, rel)
+      } catch (err) {
+        return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
+      }
+      // Refusals come back undefined, so anything THROWN is the channel: "sandbox unreachable" invites a retry where "missing" would not.
+      let read: Awaited<ReturnType<typeof podFs.readFileBytes>> | 'channel-lost'
+      try {
+        read = await podFs.readFileBytes(resolved, cap)
+      } catch {
+        read = 'channel-lost'
+      }
+      if (read === 'channel-lost') return { ok: false, reason: 'sandboxed' }
+      if (!read) return { ok: false, reason: 'not-found' }
+      if ('tooLarge' in read)
+        return { ok: false, reason: 'too-large', detail: `${read.tooLarge} bytes > ${cap}-byte cap` }
+      return { ok: true, bytes: read.bytes }
+    }
+
+    let resolved: string | null
+    try {
+      resolved = await canonicalWorkspacePath(location.root, rel)
+    } catch (err) {
+      return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
+    }
+    if (!resolved) return { ok: false, reason: 'not-found' }
+    // Single-shot (§4) from one descriptor: the cwd is runtime-writable, so a FIFO or a swapped-in symlink is refused, not read.
+    try {
+      return { ok: true, bytes: await readRegularFile(resolved, cap) }
+    } catch (err) {
+      if (err instanceof RegularFileError && err.reason === 'too-large') {
+        return { ok: false, reason: 'too-large', detail: `${err.size} bytes > ${cap}-byte cap` }
+      }
+      return { ok: false, reason: 'not-found' }
+    }
+  }
+
+  /** Shared-image publication seams: CP signing over this daemon's socket, relay fan-out for original updates. */
+  private sharedImageDeps(): SharedImagePublisherDeps {
+    const client = (): CpClient => {
+      if (!this.cpClient) throw new Error('the control plane is not connected')
+      return this.cpClient
+    }
+    return {
+      store: this.store,
+      prepare: prepareSharedImagePreview,
+      fileTransfer: () => this.fileTransfer,
+      signPut: (req) => client().signSharedImagePut(req, this.orgForAgent(req.agentId)),
+      signGet: (req) => client().signSharedImageGet(req, this.orgForAgent(req.agentId)),
+      network: () => this.transferNetwork(),
+      stagingRoot: join(this.root, 'shared-image-staging'),
+      sendUpdate: (update) => this.relays?.sendWebchatImageUpdate(update),
+      log: this.log
+    }
+  }
+
+  /** `image/original/resolve`: the authoring session's own shared image, for a viewer the CP already authorized. */
+  private async resolveSharedImage(req: SharedImageResolveReq): Promise<SharedImageResolveOk> {
+    const session = await this.store.getSessionByOutwardId(req.sessionId, req.agentId)
+    if (!session) throw new SharedImageNotFoundError('session not found on this daemon')
+    const transcriptChannel = transcriptChannelKey(session.channel, session.transportScope)
+    const found = await this.store.transcriptSharedImageByAttachment(transcriptChannel, req.attachmentId)
+    // The originating session owns resolution; a peer copy never signs for another agent's object.
+    if (!found || found.sender !== req.agentId)
+      throw new SharedImageNotFoundError('shared image not found in this session')
+    return await resolveSharedImageOriginal(
+      this.sharedImageDeps(),
+      {
+        transcriptChannel,
+        ...(webchatConversationIdOf(session.channel) ? { conversationId: session.channel } : {}),
+        agentId: req.agentId,
+        postId: found.postId,
+        image: found.image
+      },
+      req.resolveId
+    )
   }
 
   /**
@@ -11809,6 +11990,7 @@ export class Daemon {
         case 'set_fast':
           return { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled for a continued session' }
         case 'context':
+        case 'image_update':
           return { msgId: msg.msgId, accepted: true }
         default:
           break // resume/cancel/close fall through to the ordinary handlers
@@ -11851,6 +12033,11 @@ export class Daemon {
         // fire-and-forget, exactly like the `turn` dispatch below it.
         if (landedTs !== undefined)
           await this.webchatTransport.maybeActivateWebchatContinuation(msg.agentId, msg.chatId, op.post, landedTs)
+        return { msgId: msg.msgId, accepted: true }
+      }
+      case 'image_update': {
+        // A peer's original changed state: apply it to this copy by revision, never as a turn.
+        await this.webchatTransport.applyWebchatImageUpdate(msg.agentId, msg.chatId, op.update)
         return { msgId: msg.msgId, accepted: true }
       }
       case 'resume': {
@@ -16616,7 +16803,7 @@ export class Daemon {
         this.store,
         p.plan.transcriptChannel,
         run.plan.statusThread,
-        monotonicTs(),
+        segment.at ?? monotonicTs(),
         {
           postId: segment.postId,
           sender: run.entry.agentId,
@@ -17016,6 +17203,7 @@ export class Daemon {
     this.activeTurnSearchOrigin.delete(key)
     this.activeMemorySourceTurns.delete(key)
     this.shareBudgetByTurn.delete(key)
+    this.webchatSharesByTurn.delete(key)
     this.activeTurnCodeHost.delete(key)
     const activeGithub = activeTurn.github
     const activeGithubReplyBatch = activeTurn.githubReplyBatch
@@ -18959,6 +19147,10 @@ export class Daemon {
   /** Bytes `shareFile` has uploaded this turn, by the same key — the synchronous per-turn
    *  reservation of agent-authored-attachments.md §5. */
   private shareBudgetByTurn = new Map<string, number>()
+  /** Console image shares per active turn, by logical sessionKey; bounds a looping model without the legacy byte budget. */
+  private webchatSharesByTurn = new Map<string, number>()
+  /** Console image shares reading or preparing right now, process-wide; each may hold a 64 MiB source. */
+  private webchatSharesInFlight = 0
 
   /** The hook-dispatched turn's trusted repository by sessionKey — the §14.2 broker target, never model input. */
   private activeTurnCodeHost = new Map<
@@ -23907,6 +24099,9 @@ export class Daemon {
       setGitCommitIdentity: (identity) => {
         this.gitCommitIdentity = identity
       },
+      setFileTransfer: (transfer) => {
+        this.fileTransfer = transfer
+      },
       flushReconcile: () => this.flushReconcile(),
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
@@ -24086,6 +24281,7 @@ export class Daemon {
       gitCommitIdentity: () => this.gitCommitIdentity,
       sessionThreadUrl: (session) => this.sessionThreadUrl(session),
       childSessionStatusProbe: (probe) => this.collab.childSessionStatusProbe(probe),
+      resolveSharedImage: (req) => this.resolveSharedImage(req),
       dispatchPullRequestFeedback: (req) => this.dispatchPullRequestFeedback(req),
       listBackgroundTasks: (req) => this.listBackgroundTasks(req),
       decideAssistantDraft: (input) => this.drafts.decideFromConsole(input),

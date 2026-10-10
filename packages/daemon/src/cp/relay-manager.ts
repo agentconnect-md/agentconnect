@@ -17,7 +17,8 @@ import type {
   RdRouteAck,
   RdRouteReport,
   RdRouteReportAck,
-  RdWebchatPost
+  RdWebchatPost,
+  WebchatImageUpdate
 } from '@agentconnect.md/protocol'
 import { RelayClient, type RelayClientDeps } from './relay-client.js'
 
@@ -115,6 +116,19 @@ export class RelayManager {
   sendWebchatPost(post: RdWebchatPost): void {
     for (const client of this.clients.values()) {
       if (client.isReady()) client.sendWebchatPost(post)
+    }
+  }
+
+  /** Shared images publish only when every ready relay can carry them, so no console behind an older relay is told a card exists. */
+  supportsWebchatImages(): boolean {
+    const ready = [...this.clients.values()].filter((client) => client.isReady())
+    return ready.length > 0 && ready.every((client) => client.supportsWebchatImages())
+  }
+
+  /** Fan one original-state change to every capable relay; whichever holds the conversation's browsers delivers it. */
+  sendWebchatImageUpdate(update: WebchatImageUpdate): void {
+    for (const client of this.clients.values()) {
+      if (client.supportsWebchatImages()) client.sendWebchatImageUpdate(update)
     }
   }
 }

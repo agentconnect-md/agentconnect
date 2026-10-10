@@ -1,6 +1,7 @@
 // AgentConnect Console — demo data + lookups.
 // Ported from the AgentConnect design (static demo content for the console UI).
 
+import type { SharedImageState } from '@/lib/shared-image'
 import type { AgentIcon } from '@/lib/agent-icon'
 import type {
   AgentModelSelection,
@@ -1235,6 +1236,8 @@ export interface SessionStep {
   code?: string
   files?: SessionFile[]
   image?: SessionImage
+  /** A shared image the agent published (webchat-generated-images.md); `postId` is its canonical post. */
+  sharedImage?: SharedImageState
   /** Client-side timestamp for live playground/webchat steps. Persisted transcripts
    *  carry their own message `ts`; this only keeps in-memory live stats moving. */
   observedAtMs?: number

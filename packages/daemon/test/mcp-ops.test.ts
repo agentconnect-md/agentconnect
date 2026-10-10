@@ -538,6 +538,84 @@ describe('executeTool: sendMessage (channel post)', () => {
       // No message id came back (Slack), so the transcript ts is synthesized like sendMessage's.
       expect(res).toMatchObject({ post: expect.objectContaining({ ts: 'local-1000' }) })
     })
+
+    // webchat-generated-images.md §4: a console-owned turn publishes a card, never an IM upload.
+    describe('webchat publication', () => {
+      const receipt = {
+        type: 'agentconnect.image' as const,
+        version: 1 as const,
+        postId: '00000000-0000-4000-8000-000000000001',
+        published: true as const,
+        original: { kind: 'inline' as const }
+      }
+      const shared = { ok: true as const, bytes: Buffer.from('SVGBYTES'), sha256: 'b'.repeat(64) }
+
+      it('hands the fenced bytes to the publisher and returns only its receipt', async () => {
+        const publish = vi.fn(async () => receipt)
+        const { d, gw } = shareDeps({
+          webchatImagePublisherFor: () => publish,
+          readWorkspaceSharedImage: async (_c, path) =>
+            path === 'out/d.svg' ? shared : { ok: false, reason: 'not-found' }
+        })
+        const res = await executeTool(ctx, 'shareFile', { path: 'out/d.svg', caption: 'see <@U1>' }, d)
+        expect(publish).toHaveBeenCalledWith({
+          path: 'out/d.svg',
+          caption: 'see <​@U1>',
+          bytes: shared.bytes,
+          sha256: shared.sha256
+        })
+        expect(res).toEqual(receipt)
+        expect(gw.uploadFile).not.toHaveBeenCalled()
+      })
+
+      it('refuses on a console that cannot show cards, before reading anything', async () => {
+        const read = vi.fn()
+        const { d } = shareDeps({ webchatImagePublisherFor: () => 'unsupported', readWorkspaceSharedImage: read })
+        await expect(executeTool(ctx, 'shareFile', { path: 'out/d.svg' }, d)).rejects.toThrow(/relay needs an update/)
+        expect(read).not.toHaveBeenCalled()
+      })
+
+      it('names a read refusal and publishes nothing', async () => {
+        const publish = vi.fn(async () => receipt)
+        const { d } = shareDeps({
+          webchatImagePublisherFor: () => publish,
+          readWorkspaceSharedImage: async () => ({ ok: false, reason: 'escape' })
+        })
+        await expect(executeTool(ctx, 'shareFile', { path: '../x.png' }, d)).rejects.toThrow(/not a workspace-relative/)
+        expect(publish).not.toHaveBeenCalled()
+      })
+
+      it('refuses a path a share marker could not carry', async () => {
+        const publish = vi.fn(async () => receipt)
+        const { d } = shareDeps({ webchatImagePublisherFor: () => publish, readWorkspaceSharedImage: vi.fn() })
+        await expect(executeTool(ctx, 'shareFile', { path: 'a\nb.png' }, d)).rejects.toThrow(/workspace-relative/)
+        expect(publish).not.toHaveBeenCalled()
+      })
+
+      it('bounds shares per turn and releases a reservation that did not publish', async () => {
+        const publish = vi.fn(async () => receipt)
+        const limited = shareDeps({
+          webchatImagePublisherFor: () => publish,
+          readWorkspaceSharedImage: vi.fn(),
+          reserveWebchatShare: () => ({ ok: false, reason: 'turn' })
+        })
+        await expect(executeTool(ctx, 'shareFile', { path: 'out/d.svg' }, limited.d)).rejects.toThrow(/image limit/)
+        const done = vi.fn()
+        const failing = shareDeps({
+          webchatImagePublisherFor: () => publish,
+          readWorkspaceSharedImage: async () => ({ ok: false, reason: 'not-found' }),
+          reserveWebchatShare: () => ({ ok: true, done })
+        })
+        await expect(executeTool(ctx, 'shareFile', { path: 'out/d.svg' }, failing.d)).rejects.toThrow(/no file/)
+        expect(done).toHaveBeenCalledWith(false)
+      })
+
+      it('keeps the IM path for a turn with no console publisher', async () => {
+        const { d, gw } = shareDeps({ webchatImagePublisherFor: () => undefined })
+        await executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)
+        expect(gw.uploadFile).toHaveBeenCalled()
+      })
+    })
   })
 
   describe('root post: one canonical thread key for every consumer', () => {

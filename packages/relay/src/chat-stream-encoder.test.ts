@@ -122,6 +122,33 @@ describe('UiMessageStreamEncoder', () => {
     ])
   })
 
+  it('announces a shared image by caption without its preview bytes', async () => {
+    const wire = encode((e) => [
+      e.open(),
+      e.output(out({ kind: 'message', text: 'Here it is' })),
+      e.output(
+        out({
+          kind: 'image',
+          postId: SEG_A,
+          at: 1,
+          text: 'A chart',
+          revision: 0,
+          attachment: { name: 'chart.png', mimeType: 'image/png', data: 'AAAA' },
+          original: { kind: 'inline' }
+        })
+      ),
+      e.done(done())
+    ])
+    expect(wire).not.toContain('AAAA')
+    const { message, errors } = await decode(wire)
+    expect(errors).toEqual([])
+    expect(message.parts).toMatchObject([
+      { type: 'step-start' },
+      { type: 'text', text: 'Here it is' },
+      { type: 'data-image', id: SEG_A, data: { postId: SEG_A, text: 'A chart' } }
+    ])
+  })
+
   it('drops kinds the stream has no representation for, and status-only snapshots', async () => {
     const wire = encode((e) => [
       e.open(),

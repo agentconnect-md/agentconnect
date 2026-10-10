@@ -43,7 +43,9 @@ export default defineConfig({
     index: 'src/index.ts',
     'prepare-upgrade': 'src/prepare-upgrade.ts',
     'skills/dist/cli': skillsCliEntry,
-    'skills/workspace-mutation': 'src/skills/skill-workspace-mutation-cli.ts'
+    'skills/workspace-mutation': 'src/skills/skill-workspace-mutation-cli.ts',
+    // Shared-image preview decoding runs in its own worker thread (src/images/preview.ts resolves it beside the bundle).
+    'image-preview-worker': 'src/images/preview-worker.ts'
   },
   format: ['esm'],
   platform: 'node',

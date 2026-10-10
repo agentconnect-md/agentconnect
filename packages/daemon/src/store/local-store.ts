@@ -24,6 +24,8 @@ import {
   ManagedMemoryHome,
   QuotedMessageSchema,
   SessionImageAttachment as SessionImageAttachmentSchema,
+  SharedImage as SharedImageSchema,
+  type SharedImage,
   type CronReport,
   type DecisionRuntimeTarget,
   type DecisionModelEvaluationRecord,
@@ -497,6 +499,8 @@ export interface TranscriptEntry {
   body?: string | null
   /** Bounded inline webchat images. Persisted daemon-side; never provider-backed files. */
   attachments?: SessionImageAttachment[]
+  /** A published shared image (webchat-generated-images.md §6): preview + original descriptor, never model input. */
+  sharedImage?: SharedImage
   /** Bounded provider-supplied reply source used only when rebuilding model context.
    *  It is stored beside the conversational row but never exposed as transcript text. */
   quoted?: QuotedMessage
@@ -523,6 +527,18 @@ export interface TranscriptRow extends Omit<TranscriptEntry, 'thread'> {
   eventTimeUs: number
   tool_call_id?: string | null // the one snake_case column; readers never alias it. NULL off tool rows
   attachmentsJson?: string | null // JSON.stringify(SessionImageAttachment[]); inline webchat only
+  sharedImageJson?: string | null // JSON.stringify(SharedImage); shared-image rows only
+}
+
+/** A row's shared image, or undefined when absent or unreadable — a corrupt sidecar never breaks a page. */
+export function parseSharedImageJson(raw: string | null | undefined): SharedImage | undefined {
+  if (!raw) return undefined
+  try {
+    const parsed = SharedImageSchema.safeParse(JSON.parse(raw))
+    return parsed.success ? parsed.data : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** The text the model reads for a transcript row: the persisted prompt behind a text row when it
@@ -1322,7 +1338,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 42
+export const SCHEMA_VERSION = 43
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1833,7 +1849,17 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v41 adds the per-asker widened-session marks (assistant-mode.md §5.5), which the CREATE block emits; the bump fences out older members.
   async () => {},
   // v42 adds the assistant reminders (assistant-mode.md §5.9), which the CREATE block emits; the bump fences out older members.
-  async () => {}
+  async () => {},
+  // v43: a shared image's preview and original descriptor ride their text row (webchat-generated-images.md §6).
+  async (db, store) => {
+    if (store.postgres) await db.exec('ALTER TABLE transcript ADD COLUMN IF NOT EXISTS sharedImageJson TEXT')
+    else {
+      const columns = ((await db.query('PRAGMA table_info(transcript)', [])).rows as { name: string }[]).map(
+        (c) => c.name
+      )
+      if (!columns.includes('sharedImageJson')) await db.exec('ALTER TABLE transcript ADD COLUMN sharedImageJson TEXT')
+    }
+  }
 ]
 
 /** The approval record's columns as of v40, which the v40 rebuild copies across where the old table has them. */
@@ -2296,7 +2322,8 @@ export class LocalStore {
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
         attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
         postId TEXT,
-        sessionScope TEXT NOT NULL DEFAULT ''
+        sessionScope TEXT NOT NULL DEFAULT '',
+        sharedImageJson TEXT
       );
       CREATE INDEX IF NOT EXISTS transcript_channel_seq ON transcript (orgId, channel, seq);
       -- One conversational message is one row per conversation, whoever admits it. Internal rows
@@ -5286,6 +5313,111 @@ export class LocalStore {
    *  `INSERT OR IGNORE` under the `transcript_text_ts` unique index would silently
    *  drop a DIFFERENT post landing on an occupied millisecond, so writers check
    *  the slot first and bump when it holds foreign content. */
+  /** Apply one revision-fenced change to every copy of a shared-image post in this conversation; returns the stored result. */
+  async updateTranscriptSharedImage(
+    channel: string,
+    postId: string,
+    next: (current: SharedImage) => SharedImage | undefined,
+    /** Only rows authored by this sender change. */
+    sender?: string
+  ): Promise<SharedImage | undefined> {
+    return await this.transcriptMutex.run(async () => {
+      const rows = (
+        (await this.lockedDb
+          .prepare(
+            `SELECT orgId, ts, thread, sender, sharedImageJson FROM transcript
+             WHERE channel = ? AND postId = ? AND kind = 'text' AND sharedImageJson IS NOT NULL`
+          )
+          .all(channel, postId)) as {
+          orgId: string
+          ts: string
+          thread: string | null
+          sender: string
+          sharedImageJson: string
+        }[]
+      ).filter((row) => sender === undefined || row.sender === sender) as {
+        orgId: string
+        ts: string
+        thread: string | null
+        sender: string
+        sharedImageJson: string
+      }[]
+      let stored: SharedImage | undefined
+      for (const row of rows) {
+        const current = parseSharedImageJson(row.sharedImageJson)
+        if (!current) continue
+        const updated = next(current)
+        if (!updated || updated.revision <= current.revision) {
+          stored ??= current
+          continue
+        }
+        const { changes, revision } = await this.writeTranscriptRows(row.orgId, channel, [
+          {
+            kind: 'run',
+            sql: `UPDATE transcript SET sharedImageJson = ?, revision = ?
+                  WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text' AND sharedImageJson = ?`,
+            params: [
+              JSON.stringify(updated),
+              this.transcriptRevision + 1,
+              row.orgId,
+              channel,
+              row.ts,
+              row.sharedImageJson
+            ]
+          }
+        ])
+        if (changes[0] !== 1) continue
+        this.transcriptRevision = revision
+        stored = updated
+        const admitted = (await this.lockedDb
+          .prepare(
+            `SELECT tr.agentId AS agentId, tr.sessionKey AS sessionKey FROM transcript_recipient tr
+             JOIN transcript t ON t.seq = tr.seq
+             WHERE t.orgId = ? AND t.channel = ? AND t.ts = ? AND t.kind = 'text'`
+          )
+          .all(row.orgId, channel, row.ts)) as { agentId: string; sessionKey: string }[]
+        this.notifyTranscriptMutation(
+          channel,
+          row.thread ?? '',
+          [row.sender, ...admitted.map((r) => r.agentId)],
+          this.transcriptRevision,
+          admitted.map((r) => r.sessionKey)
+        )
+      }
+      return stored
+    })
+  }
+
+  /** The row carrying one cached original's attachment id in this conversation. */
+  async transcriptSharedImageByAttachment(
+    channel: string,
+    attachmentId: string
+  ): Promise<{ postId: string; sender: string; image: SharedImage } | undefined> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT postId, sender, sharedImageJson FROM transcript
+         WHERE channel = ? AND kind = 'text' AND postId IS NOT NULL AND sharedImageJson LIKE ?`
+      )
+      .all(channel, `%${attachmentId}%`)) as { postId: string; sender: string; sharedImageJson: string }[]
+    for (const row of rows) {
+      const image = parseSharedImageJson(row.sharedImageJson)
+      if (image?.original.kind === 'cache' && image.original.attachmentId === attachmentId)
+        return { postId: row.postId, sender: row.sender, image }
+    }
+    return undefined
+  }
+
+  /** The stored shared image of one post in this conversation, if any copy holds it. */
+  async transcriptSharedImage(channel: string, postId: string): Promise<SharedImage | undefined> {
+    const row = (await this.db
+      .prepare(
+        `SELECT sharedImageJson FROM transcript
+         WHERE channel = ? AND postId = ? AND kind = 'text' AND sharedImageJson IS NOT NULL LIMIT 1`
+      )
+      .get(channel, postId)) as { sharedImageJson: string } | undefined
+    return parseSharedImageJson(row?.sharedImageJson)
+  }
+
   async transcriptTextAt(
     channel: string,
     ts: string,
@@ -5303,7 +5435,17 @@ export class LocalStore {
   }
 
   async appendTranscript(e: TranscriptEntry): Promise<void> {
-    const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, orgAgentId, admission, ...entry } = e
+    const {
+      attachments,
+      sharedImage,
+      trustedAgentBot,
+      quoted,
+      quoteJson,
+      authoritative,
+      orgAgentId,
+      admission,
+      ...entry
+    } = e
     const durableQuoteJson = quoted?.text ? JSON.stringify(quoted) : (quoteJson ?? null)
     // Attribution is a plain read, resolved before the lock the write path below holds.
     const orgId = await this.transcriptOrg(e.channel, e.thread, admission?.agentId, e.recipient, e.sender, orgAgentId)
@@ -5373,7 +5515,14 @@ export class LocalStore {
       orgId: string
       entry: Omit<
         TranscriptEntry,
-        'attachments' | 'trustedAgentBot' | 'quoted' | 'quoteJson' | 'authoritative' | 'orgAgentId' | 'admission'
+        | 'attachments'
+        | 'sharedImage'
+        | 'trustedAgentBot'
+        | 'quoted'
+        | 'quoteJson'
+        | 'authoritative'
+        | 'orgAgentId'
+        | 'admission'
       >
       attachments: SessionImageAttachment[] | undefined
       trustedAgentBot: boolean | undefined
@@ -5387,9 +5536,9 @@ export class LocalStore {
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
-           (orgId, channel, thread, ts, sender, kind, text, body, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
+           (orgId, channel, thread, ts, sender, kind, text, body, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId, sharedImageJson)
          VALUES
-           (@orgId, @channel, @thread, @ts, @sender, @kind, @text, @body, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`,
+           (@orgId, @channel, @thread, @ts, @sender, @kind, @text, @body, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId, @sharedImageJson)`,
         params: [
           {
             ...entry,
@@ -5399,6 +5548,7 @@ export class LocalStore {
             postId: e.postId ?? null,
             eventTimeUs: e.eventTimeUs ?? transcriptEventTimeUs(e.ts),
             attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
+            sharedImageJson: e.sharedImage ? JSON.stringify(e.sharedImage) : null,
             quoteJson: durableQuoteJson,
             trustedAgentBot: trustedAgentBot ? 1 : null,
             revision: this.transcriptRevision + 1
@@ -5496,6 +5646,16 @@ export class LocalStore {
             )
             .run(JSON.stringify(attachments), orgId, e.channel, e.ts)
         : undefined
+    // A copy recorded before its image (a text-only observer) gains it once; later state changes go through updateTranscriptSharedImage.
+    const sharedImageUpgraded =
+      inserted === 0 && e.sharedImage && e.kind === 'text'
+        ? await this.lockedDb
+            .prepare(
+              `UPDATE transcript SET sharedImageJson = ?
+               WHERE orgId = ? AND channel = ? AND ts = ? AND kind = 'text' AND sharedImageJson IS NULL`
+            )
+            .run(JSON.stringify(e.sharedImage), orgId, e.channel, e.ts)
+        : undefined
     // A later duplicate can be the first copy that carries provider reply metadata
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
     // a provider snapshot subsequently re-appends the same text row without metadata.
@@ -5520,6 +5680,7 @@ export class LocalStore {
     } else if (
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
       Number(attachmentsUpgraded?.changes ?? 0) === 1 ||
+      Number(sharedImageUpgraded?.changes ?? 0) === 1 ||
       Number(quoteUpgraded?.changes ?? 0) === 1 ||
       Number(postIdUpgraded?.changes ?? 0) === 1 ||
       Number(bodyUpgraded?.changes ?? 0) === 1 ||

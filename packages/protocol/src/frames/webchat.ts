@@ -41,6 +41,81 @@ export const WebchatImageAttachment = z.object({
 })
 export type WebchatImageAttachment = z.infer<typeof WebchatImageAttachment>
 
+// ── Shared images (webchat-generated-images.md) ─────────────────────────────
+
+/** Daemon, relay and console support shared-image cards: the `image` event, post/transcript images and `image_update`. */
+export const WEBCHAT_IMAGES_FEATURE = 'webchat-images-v1'
+
+/** Decoded-byte cap of one shared-image preview; the same transport limit inbound images use. */
+export const SHARED_IMAGE_PREVIEW_MAX_BYTES = WEBCHAT_IMAGE_MAX_BYTES
+
+/** Bound on the caption-plus-provenance text a shared image carries. */
+export const SHARED_IMAGE_TEXT_MAX_CHARS = 6000
+
+/** Outbound preview: unlike {@link WebchatImageAttachment} it admits SVG, so inbound uploads do not widen with it. */
+export const SharedImagePreview = WebchatImageAttachment.extend({
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']),
+  width: z.number().int().positive().max(65_535).optional(),
+  height: z.number().int().positive().max(65_535).optional()
+})
+export type SharedImagePreview = z.infer<typeof SharedImagePreview>
+
+/** Delivery state of a cache-backed original; `unavailable` is a read-time fallback for a pending upload with no live task. */
+export const SharedImageOriginalStatus = z.enum(['pending', 'ready', 'upload_failed', 'expired', 'unavailable'])
+export type SharedImageOriginalStatus = z.infer<typeof SharedImageOriginalStatus>
+
+/** Where the full-resolution original lives; never a URL — signed GETs are transient and travel beside it. */
+export const SharedImageOriginal = z.discriminatedUnion('kind', [
+  // The preview IS the complete original.
+  z.object({ kind: z.literal('inline') }),
+  z.object({
+    kind: z.literal('cache'),
+    attachmentId: z.string().uuid(),
+    // The original's file name for Download; sniffed extension, no path.
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .regex(/^[^\u0000-\u001f\u007f/\\]+$/)
+      .optional(),
+    mimeType: z.string().max(255),
+    bytes: z.number().int().positive(),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    status: SharedImageOriginalStatus
+  }),
+  // No transfer cache: the share marker's path and digest drive the authenticated workspace download.
+  z.object({ kind: z.literal('workspace') })
+])
+export type SharedImageOriginal = z.infer<typeof SharedImageOriginal>
+
+/** A temporary signed GET for a cached original; never persisted. */
+export const SharedImageDownload = z.object({
+  url: z.string().url().max(4096),
+  expiresAt: z.string().datetime()
+})
+export type SharedImageDownload = z.infer<typeof SharedImageDownload>
+
+/** The image half of a shared-image post, as every copy and transcript row carries it. */
+export const SharedImage = z.object({
+  attachment: SharedImagePreview,
+  original: SharedImageOriginal,
+  // Monotonic per post; readers ignore an update older than what they hold.
+  revision: z.number().int().min(0)
+})
+export type SharedImage = z.infer<typeof SharedImage>
+
+/** One original-state change of an already published image, delivered outside any turn stream. */
+export const WebchatImageUpdate = z.object({
+  conversationId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  postId: z.string().uuid(),
+  revision: z.number().int().min(1),
+  original: SharedImageOriginal,
+  download: SharedImageDownload.optional()
+})
+export type WebchatImageUpdate = z.infer<typeof WebchatImageUpdate>
+
 // The webchat turn verdict — `dispatchWebchatTurn` returns this and the relay path folds
 // it into `rd/ack` (accepted + the turnId that correlates the reply stream; `reason`
 // explains a rejection). Not a wire frame of its own anymore.
@@ -106,7 +181,9 @@ export const WebchatPost = z.object({
   ]),
   text: z.string(),
   at: z.number().int(), // canonical epoch-ms timestamp, minted once at origin
-  attachments: z.array(WebchatImageAttachment).max(1).optional()
+  attachments: z.array(WebchatImageAttachment).max(1).optional(),
+  // A shared image the agent published; peers keep it as transcript only, never as model input.
+  image: SharedImage.optional()
 })
 export type WebchatPost = z.infer<typeof WebchatPost>
 
@@ -506,6 +583,14 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     appId: z.string().min(1).max(200),
     callId: z.string().min(1).max(64),
     outcome: McpAppRpcResult
+  }),
+  // A shared image, already committed to the transcript; later original changes arrive as `image_update`.
+  SharedImage.extend({
+    kind: z.literal('image'),
+    postId: z.string().uuid(),
+    at: z.number().int(),
+    text: z.string().max(SHARED_IMAGE_TEXT_MAX_CHARS),
+    download: SharedImageDownload.optional()
   })
 ])
 export type WebchatEvent = z.infer<typeof WebchatEvent>

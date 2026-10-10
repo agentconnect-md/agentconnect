@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { RdChat, RdWebchatPost } from '@agentconnect.md/protocol'
-import { WebchatRouter, bindWebchatPostAuthor, type CachedParticipant } from './webchat-router.js'
+import type { RdChat, RdWebchatImageUpdate, RdWebchatPost } from '@agentconnect.md/protocol'
+import {
+  WebchatRouter,
+  bindWebchatPostAuthor,
+  fanImageUpdate,
+  imageUpdateBound,
+  type CachedParticipant
+} from './webchat-router.js'
 
 const CHAT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const CHAT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -133,5 +139,85 @@ describe('bindWebchatPostAuthor', () => {
     const bound = bindWebchatPostAuthor(p, 'daemon-2', roster)
     expect(bound.authorBound).toBe(false)
     expect(bound.post).toBe(p)
+  })
+})
+
+describe('image updates', () => {
+  const POST = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  const update: RdWebchatImageUpdate = {
+    conversationId: CHAT_A,
+    agentId: CHAT_B,
+    postId: POST,
+    revision: 1,
+    original: { kind: 'inline' }
+  }
+
+  it('delivers an update to every browser on the conversation and nowhere else', () => {
+    const r = new WebchatRouter()
+    const a = { onChat: vi.fn(), onImageUpdate: vi.fn() }
+    const tab = { onChat: vi.fn(), onImageUpdate: vi.fn() }
+    const other = { onChat: vi.fn(), onImageUpdate: vi.fn() }
+    r.register(CHAT_A, a)
+    r.register(CHAT_A, tab)
+    r.register(CHAT_B, other)
+    r.deliverImageUpdate(update)
+    expect(a.onImageUpdate).toHaveBeenCalledWith(update)
+    expect(tab.onImageUpdate).toHaveBeenCalledWith(update)
+    expect(other.onImageUpdate).not.toHaveBeenCalled()
+  })
+
+  it('binds an update to the daemon the roster places its agent on, failing closed', () => {
+    expect(imageUpdateBound(update, DAEMON, [{ agentId: CHAT_B, daemonId: DAEMON }])).toBe(true)
+    expect(imageUpdateBound(update, DAEMON, [{ agentId: CHAT_B, daemonId: CHAT_A }])).toBe(false)
+    expect(imageUpdateBound(update, DAEMON, [])).toBe(false)
+  })
+
+  it('fans an update to other capable participants only, never the author or a continued session', () => {
+    const peer = (capable: boolean) => ({ supports: vi.fn(() => capable), sendMsg: vi.fn(async () => ({})) })
+    const capable = peer(true)
+    const old = peer(false)
+    const continued = peer(true)
+    const author = peer(true)
+    const daemons: Record<string, ReturnType<typeof peer>> = { d1: capable, d2: old, d3: continued, d4: author }
+    fanImageUpdate(
+      update,
+      [
+        { agentId: CHAT_B, daemonId: 'd4' },
+        { agentId: 'peer-1', daemonId: 'd1', recordedDaemonId: 'r1' },
+        { agentId: 'peer-2', daemonId: 'd2' },
+        { agentId: 'peer-3', daemonId: 'd3', targetSessionId: 's-3' }
+      ],
+      (id) => daemons[id],
+      () => {}
+    )
+    expect(capable.sendMsg).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: 'webchat',
+        agentId: 'peer-1',
+        sessionKey: CHAT_A,
+        chatId: CHAT_A,
+        recordedDaemonId: 'r1',
+        payload: { op: 'image_update', update }
+      })
+    )
+    expect(old.sendMsg).not.toHaveBeenCalled()
+    expect(continued.sendMsg).not.toHaveBeenCalled()
+    expect(author.sendMsg).not.toHaveBeenCalled()
+  })
+
+  it('never hands a signed download link to a peer daemon', () => {
+    const capable = { supports: vi.fn(() => true), sendMsg: vi.fn(async () => ({})) }
+    const withLink = {
+      ...update,
+      download: { url: 'https://bucket.example.test/get', expiresAt: '2030-01-01T00:00:00.000Z' }
+    }
+    fanImageUpdate(
+      withLink,
+      [{ agentId: 'peer-1', daemonId: 'd1' }],
+      () => capable,
+      () => {}
+    )
+    expect(capable.sendMsg).toHaveBeenCalledWith(expect.objectContaining({ payload: { op: 'image_update', update } }))
   })
 })

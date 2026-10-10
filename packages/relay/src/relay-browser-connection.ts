@@ -24,6 +24,8 @@ import {
   RD_WEBCHAT_ATTACH_V1,
   type RdChat,
   type RdWebchatPost,
+  type RdWebchatImageUpdate,
+  WEBCHAT_IMAGES_FEATURE,
   type WebchatPost,
   type WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
@@ -279,6 +281,7 @@ export class RelayBrowserConnection implements ChatSink {
       type: 'ready',
       conversationId: this.deps.chatId,
       agentId: this.deps.agentId,
+      features: [WEBCHAT_IMAGES_FEATURE],
       participants: this.deps.participants.map((p) => ({
         agentId: p.agentId,
         ...(p.primary ? { primary: true } : {})
@@ -304,6 +307,12 @@ export class RelayBrowserConnection implements ChatSink {
   onPost(p: RdWebchatPost): void {
     if (p.conversationId !== this.deps.chatId) return
     this.send({ type: 'post', post: p.post, ...(p.initiator ? { initiator: p.initiator } : {}) })
+  }
+
+  /** A published image's original changed state: forward to this browser only. */
+  onImageUpdate(update: RdWebchatImageUpdate): void {
+    if (update.conversationId !== this.deps.chatId) return
+    this.send({ type: 'image_update', update })
   }
 
   private onText(text: string): void {

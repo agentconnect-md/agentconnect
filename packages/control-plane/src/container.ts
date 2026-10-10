@@ -228,6 +228,7 @@ import { createCredentialsProvider, createObjectClient } from '@agentconnect.md/
 import { loadFileTransferConfig } from './file-transfer/config.js'
 import { createLifecycleGate } from './file-transfer/lifecycle-gate.js'
 import { createFileTransferService } from './file-transfer/service.js'
+import { createSharedImageService } from './file-transfer/shared-image.js'
 import { createFileTransfer, isTransferObjectKey } from './file-transfer/transfer.js'
 import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
@@ -885,10 +886,15 @@ export function buildContainer(
           objects,
           enabled: () => gate.status() !== 'missing'
         })
-        return { gate, service: createFileTransferService({ transfer, control: sender }) }
+        return { gate, transfer, service: createFileTransferService({ transfer, control: sender }) }
       })()
     : undefined
   const fileTransfer = fileTransferBucket?.service
+  // Shared-image originals: the console's resolve works with or without a bucket; signing needs one.
+  const sharedImages = createSharedImageService({
+    ...(fileTransferBucket ? { transfer: fileTransferBucket.transfer } : {}),
+    control: sender
+  })
 
   // Per-session memory-capture gate convergence (session-visibility.md §5.1):
   // the CP is the authority on effective visibility; daemons only enforce it.
@@ -1998,6 +2004,7 @@ export function buildContainer(
     sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess, googleChatSessionAccess],
     ...(iconStore ? { iconStore } : {}),
     ...(fileTransfer ? { fileTransfer } : {}),
+    sharedImages,
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }
@@ -2599,6 +2606,7 @@ export function buildContainer(
     providerKey: repos.providerKey,
     decision: repos.decision,
     ...(fileTransfer ? { fileTransfer } : {}),
+    sharedImages,
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     codeHostReviewBroker,
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),

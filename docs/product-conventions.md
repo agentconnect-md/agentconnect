@@ -510,6 +510,38 @@ shared exactly as it renders what a user uploaded. An upload the platform abando
 mid-flight is reported as "may have been delivered — do not retry", never as a failure a
 retry could double-post.
 
+### Shared images in the console
+
+In a console conversation (and a console continuation of a hook or webhook session),
+`shareFile` publishes an image card under the agent's name instead of uploading to a
+platform; an IM session continued from the console still delivers through its own
+platform. The card shows a bounded preview, an optional caption, **View original** and
+**Download**. Several images are several calls, and a reply that is only an image is a
+complete answer. Text streamed before the image stays above the card; text after it starts
+a new message. Reloading keeps the card as its own message, with its own identity, in
+every open tab.
+
+The card appears once its preview is saved, without waiting for the original:
+
+- An image within the 160 KiB preview limit is its own original and needs no further
+  request to view or download.
+- A larger image gets a generated preview within that limit. With a transfer cache
+  configured, its unchanged original uploads in the background and the card moves from
+  **Uploading original…** to ready; a failed upload shows **Original upload failed** and
+  never removes the preview or asks the agent to share again. An original whose cache
+  object is gone shows **Original expired**, and a pending upload the daemon no longer
+  runs shows **Original unavailable**. Without a transfer cache, the original stays in the
+  workspace and downloads through the authenticated, digest-checked workspace download.
+- **View original** and **Download** always target the original bytes and file name,
+  never the preview. A failure leaves the preview visible.
+
+PNG, JPEG, WEBP and self-contained static SVG are accepted; an oversized SVG gets a PNG
+preview while its original stays SVG, and SVG only ever renders as an image, never as
+live markup. The agent receives a short receipt — never the image bytes or a download
+link — and is told not to repeat the image as Markdown. Peers in a multi-agent
+conversation see the caption and card as transcript only; a shared image never wakes
+another agent or feeds its pixels to another agent's model.
+
 ### Forwarding a received file
 
 A `toUser` or bare-`channel` send may carry `attachment`, naming a file **this

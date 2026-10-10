@@ -87,6 +87,26 @@ for (const arch of ['x64', 'arm64']) {
   }
 }
 
+// Shared-image previews decode in a worker entry and load codec WebAssembly beside the bundle.
+const previewWorker = new URL('../dist/image-preview-worker.js', import.meta.url)
+if (!existsSync(previewWorker)) {
+  console.error('✗ daemon bundle is missing the image preview worker')
+  process.exit(1)
+}
+const workerLeaks = [...readFileSync(previewWorker, 'utf8').matchAll(/\bfrom\s*["']([^"'./][^"']*)["']/g)]
+  .map((match) => match[1])
+  .filter((spec) => !nodeBuiltins.has(spec))
+if (workerLeaks.length > 0) {
+  console.error(`✗ image preview worker left imports external: ${[...new Set(workerLeaks)].join(', ')}`)
+  process.exit(1)
+}
+for (const asset of ['resvg.wasm', 'webp_dec.wasm']) {
+  if (!existsSync(new URL(`../dist/wasm/${asset}`, import.meta.url))) {
+    console.error(`✗ daemon bundle is missing image codec ${asset}`)
+    process.exit(1)
+  }
+}
+
 // The in-sandbox shim is a SEPARATE bundle, and its self-containment is a stronger
 // requirement than the daemon's: it ships in the runtime image, so a relative import here
 // means the image must also carry the daemon's chunk graph — its CP client, platform SDKs

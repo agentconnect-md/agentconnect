@@ -8,6 +8,7 @@ import {
   McpAppDimensions,
   McpAppOutcome,
   PlanEntry,
+  SharedImage,
   WebchatImageAttachment
 } from './webchat.js'
 
@@ -209,6 +210,8 @@ export const SessionMessage = z.object({
   kind: z.string(), // "text" / tool / reasoning / plan / elicit / … (daemon transcript kind)
   text: z.string(),
   attachments: z.array(SessionImageAttachment).max(1).optional(),
+  // A shared image's preview and original descriptor (webchat-generated-images.md §4); never a signed URL.
+  sharedImage: SharedImage.optional(),
   // ── body enrichment (optional ⇒ text/reasoning rows and old daemons omit these) ──
   toolCallId: z.string().optional(), // parsed from the ToolBody (tool rows only)
   toolStatus: z.string().optional(), // ACP ToolCallStatus, surfaced for the console badge

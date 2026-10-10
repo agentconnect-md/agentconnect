@@ -7,6 +7,7 @@ import {
   createFileTransfer,
   FileTransferError,
   isTransferObjectKey,
+  sharedImageKey,
   transferDownloadKey,
   transferUploadKey
 } from './transfer.js'
@@ -142,6 +143,34 @@ describe('file transfer signing', () => {
     expect(get.host).toBe('store.example.test')
     expect(get.searchParams.get('response-content-disposition')).toBe(attachmentDisposition('app.bin'))
     expect(get.searchParams.get('response-content-type')).toBe('application/octet-stream')
+  })
+})
+
+describe('shared-image originals', () => {
+  const AGENT = '11111111-1111-4111-8111-111111111111'
+  const ATTACHMENT = '22222222-2222-4222-8222-222222222222'
+
+  it('keys an original under the transfer prefix, so the pending lifecycle collects it', () => {
+    const key = sharedImageKey(ORG, AGENT, ATTACHMENT)
+    expect(key).toBe(`src/${ORG}/transfer/img/${AGENT}/${ATTACHMENT}`)
+    expect(isTransferObjectKey(key)).toBe(true)
+    expect(() => sharedImageKey(ORG, '../x', ATTACHMENT)).toThrow()
+    expect(() => sharedImageKey(ORG, AGENT, 'ATTACH')).toThrow()
+    expect(() => sharedImageKey('../o', AGENT, ATTACHMENT)).toThrow()
+  })
+
+  it('signs a GET while the object holds exactly those bytes, however old it is', async () => {
+    const key = sharedImageKey(ORG, AGENT, ATTACHMENT)
+    const old = { exists: true as const, contentLength: 5, checksumSha256: SHA, lastModified: NOW - 3 * 86_400_000 }
+    const get = await transfer(old).storedDownload({ key, size: 5, sha256: SHA, name: 'chart.png' })
+    expect(new URL(get!.url).host).toBe('store.example.test')
+    expect(new URL(get!.url).searchParams.get('response-content-disposition')).toBe(attachmentDisposition('chart.png'))
+    expect(
+      await transfer({ exists: false }).storedDownload({ key, size: 5, sha256: SHA, name: 'a.png' })
+    ).toBeUndefined()
+    expect(await transfer(old).storedDownload({ key, size: 6, sha256: SHA, name: 'a.png' })).toBeUndefined()
+    const other = createHash('sha256').update('other').digest('base64')
+    expect(await transfer(old).storedDownload({ key, size: 5, sha256: other, name: 'a.png' })).toBeUndefined()
   })
 })
 

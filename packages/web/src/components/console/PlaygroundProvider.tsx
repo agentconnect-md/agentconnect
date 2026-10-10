@@ -52,6 +52,8 @@ import { resolveRoster, typedMentionIds, wireMentions } from '@/lib/conversation
 import { leadingCommandToken } from '@/components/console/runtime-command-menu'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
 import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
+import { publishImageState, type SharedImageState, type WebchatImageUpdate } from '@/lib/shared-image'
+import { applyImageUpdateToSteps, upsertImageStep } from '@/lib/shared-image-steps'
 import {
   acceptWebchatDone,
   acceptWebchatOutput,
@@ -330,6 +332,7 @@ type WebchatEvent =
   | { kind: 'app_template'; appId: string; seq: number; chunk: string }
   | { kind: 'app_resolved'; appId: string; outcome: McpAppOutcome }
   | { kind: 'app_rpc_result'; appId: string; callId: string; outcome: McpAppRpcResult }
+  | ({ kind: 'image'; postId: string; at: number; text: string } & SharedImageState)
 
 /** The session status snapshot carried in a relay `rd/chat` WebchatOutput payload
  *  (mirrors protocol WebchatStatus). Partial: context/cost stream live, token
@@ -378,6 +381,8 @@ type WebchatPost = {
   postId: string
   author: { kind: 'user'; user?: string } | { kind: 'agent'; agentId: string }
   text: string
+  /** A shared image the agent published; rendered as one card per postId whatever its copy. */
+  image?: Omit<SharedImageState, 'download'>
 }
 
 /** One roster entry from the relay `ready` frame. */
@@ -715,7 +720,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             if ((step.agentId ?? undefined) !== agentId) continue
             if (step.turnId !== turnId) break
             if (step.boundary) break
-            if (step.kind === 'done') collapsed[i] = { ...step, kind: 'plan', demoted: true }
+            // A shared image is already published and stays where it is.
+            if (step.kind === 'done' && !step.sharedImage) collapsed[i] = { ...step, kind: 'plan', demoted: true }
           }
           // The marker lives INSIDE the collapsible work lane ('plan'), at the
           // chronological point the update happened — it is live-only chrome (a
@@ -883,6 +889,27 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               ...(ev.postId ? { postId: ev.postId } : {})
             })
           ]
+        }
+        if (ev.kind === 'image') {
+          // Its own bubble keyed by the post, so text before and after it never merges across the card.
+          const toolSessionId =
+            agentSessionIds.current.get(id)?.get(agentId ?? '') ?? agentSessionIds.current.get(id)?.get('')
+          return upsertImageStep(
+            steps,
+            lane({
+              kind: 'done',
+              text: ev.text,
+              segmentId: ev.postId,
+              postId: ev.postId,
+              sharedImage: {
+                attachment: ev.attachment,
+                original: ev.original,
+                revision: ev.revision,
+                ...(ev.download ? { download: ev.download } : {})
+              },
+              ...(toolSessionId ? { toolSessionId } : {})
+            })
+          )
         }
         if (ev.kind === 'thinking') {
           if (last && last.kind === 'plan' && last.who === who) {
@@ -1547,6 +1574,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 }
                 post?: WebchatPost
                 initiator?: string
+                update?: WebchatImageUpdate
               }
               try {
                 m = JSON.parse(String(e.data))
@@ -1628,7 +1656,30 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 // postId as that turn's retirement anchor. An agent-initiated post is
                 // a DIFFERENT turn's reply and must not anchor the attached one.
                 const coldKey = laneKey(id, agentId)
-                const cold = m.initiator === 'agent' ? undefined : coldAttached.current.get(coldKey)
+                const image = post.image
+                if (image) {
+                  // A shared image is its own post: one card per postId, whether this copy or its live event lands first.
+                  const toolSessionId =
+                    agentSessionIds.current.get(id)?.get(agentId) ?? agentSessionIds.current.get(id)?.get('')
+                  const who = participantName(id, agentId)
+                  mutateSteps(id, (steps) =>
+                    upsertImageStep(
+                      steps,
+                      stampStep({
+                        kind: 'done',
+                        turnId: post.postId,
+                        segmentId: post.postId,
+                        postId: post.postId,
+                        agentId,
+                        ...(who ? { who } : {}),
+                        text: post.text,
+                        sharedImage: image,
+                        ...(toolSessionId ? { toolSessionId } : {})
+                      })
+                    )
+                  )
+                }
+                const cold = m.initiator === 'agent' || image ? undefined : coldAttached.current.get(coldKey)
                 if (cold) {
                   cold.postId = post.postId
                   anchorColdTurn(id, coldKey)
@@ -1639,7 +1690,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 // turn already streamed it and only needs the anchor above.
                 // Keyed by postId so a daemon re-broadcast (inbox replay, relay fan-out
                 // echo) upserts instead of duplicating the step.
-                if (m.initiator === 'agent')
+                if (m.initiator === 'agent' && !image)
                   mutateSteps(id, (steps) =>
                     steps.some((step) => step.postId === post.postId)
                       ? steps
@@ -1659,6 +1710,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                           })
                         ]
                   )
+              } else if (m.type === 'image_update' && m.update?.postId) {
+                const update = m.update
+                publishImageState(update.postId, {
+                  original: update.original,
+                  revision: update.revision,
+                  ...(update.download ? { download: update.download } : {})
+                })
+                mutateSteps(id, (steps) => applyImageUpdateToSteps(steps, update))
               } else if (m.type === 'ack' && m.ack?.turnId && steerTurns.current.get(id)?.has(m.ack.turnId)) {
                 settleSteerAck(id, m.ack.turnId, m.ack)
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {

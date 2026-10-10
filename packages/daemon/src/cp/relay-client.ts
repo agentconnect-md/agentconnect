@@ -41,6 +41,8 @@ import {
   HOOK_DECISION_ROUTING_V2_FEATURE,
   RD_DECISION_ROUTE_V1,
   RD_IM_ADMISSION_V1,
+  RD_WEBCHAT_IMAGES_V1,
+  type WebchatImageUpdate,
   type RdRoute,
   type RdRouteAck,
   type RdRouteReport,
@@ -89,7 +91,9 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   // The relay sends GitLab and Gitea host copies and routed fires only here.
   HOOK_DECISION_ROUTING_V2_FEATURE,
   // An im ack answered through a platform strategy carries the strict routeAdmission/recoverable verdict; the shared path carries none, which the relay's strict forward reads as unsupported.
-  RD_IM_ADMISSION_V1
+  RD_IM_ADMISSION_V1,
+  // Shared-image cards: `image` events, post images and `rd/webchat-image-update`.
+  RD_WEBCHAT_IMAGES_V1
 ]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'
@@ -182,6 +186,16 @@ export class RelayClient {
       throw new WireError('INTERNAL', `expected rd/agentmsg/ack, got ${rep.type}`, false)
     }
     return rep.payload
+  }
+
+  /** Did this relay advertise shared-image cards for its console? */
+  supportsWebchatImages(): boolean {
+    return this.isReady() && this.relayCapabilities.has(RD_WEBCHAT_IMAGES_V1)
+  }
+
+  /** Send one shared image's original-state change; the relay hands it to the conversation's browsers only. */
+  sendWebchatImageUpdate(update: WebchatImageUpdate): void {
+    this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/webchat-image-update', update)))
   }
 
   /** Did this relay advertise the routed-forward leg (`rd/route`, `rd/route/report`)? */

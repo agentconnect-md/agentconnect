@@ -21,6 +21,8 @@ import type {
   ChildSessionStatusProbe,
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
+  SharedImageResolveOk,
+  SharedImageResolveReq,
   TaskList,
   TaskListReq,
   ExecutorStrategyTable,
@@ -195,6 +197,7 @@ export interface CpClientSeamHost {
   sessionThreadUrl(session: SessionRecord): string | undefined
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
   dispatchPullRequestFeedback(req: SessionPullRequestFeedback): Promise<SessionPullRequestFeedbackResult>
+  resolveSharedImage(req: SharedImageResolveReq, orgId?: string): Promise<SharedImageResolveOk>
   listBackgroundTasks(req: TaskListReq): Promise<TaskList>
   /** An editor's approve or discard of an assistant-mode draft, run exactly as its card click would. */
   decideAssistantDraft: AssistantActivityDeps['decideDraft']
@@ -413,6 +416,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
     // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
     childSessionStatusProbe: (probe) => host.childSessionStatusProbe(probe),
+    sharedImageResolve: (req, orgId) => host.resolveSharedImage(req, orgId),
     pullRequestFeedback: async (req) => {
       if (host.dutyCoordinator().dutyEnforced() && !host.duties().holdsAgent(req.agentId)) {
         const claimed = await host.dutyCoordinator().claimDutyForTrigger(req.agentId)

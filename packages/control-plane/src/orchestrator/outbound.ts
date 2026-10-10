@@ -68,6 +68,8 @@ import {
   SessionListReq,
   SessionListPage,
   SessionHistoryReq,
+  SharedImageResolveOk,
+  SharedImageResolveReq,
   SessionHistoryPage,
   SessionToolBodyReq,
   SessionToolBodyChunk,
@@ -657,6 +659,18 @@ export class ControlSender {
   async sessionHistory(daemonId: string, orgId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
     const c = this.must(daemonId)
     return c.conn.request<SessionHistoryPage>('session/history', req, { epoch: c.sessionEpoch }, undefined, orgId)
+  }
+
+  /** Resolve one shared image's original on a daemon holding the session (REQ → `image/original/resolve/ok`); org explicit as for history. */
+  async sharedImageResolve(daemonId: string, orgId: string, req: SharedImageResolveReq): Promise<SharedImageResolveOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<SharedImageResolveOk>(
+      'image/original/resolve',
+      req,
+      { epoch: c.sessionEpoch, agentId: req.agentId },
+      undefined,
+      orgId
+    )
   }
 
   /**

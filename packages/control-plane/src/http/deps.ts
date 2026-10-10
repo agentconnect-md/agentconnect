@@ -1,4 +1,5 @@
 import type { FileTransferService } from '../file-transfer/service.js'
+import type { SharedImageService } from '../file-transfer/shared-image.js'
 /**
  * `http/deps.ts` — the dependency bundle the C2 BFF routes receive (design §2.1,
  * §2.4). Routes consume repository **ports** and cross-component services, never
@@ -508,4 +509,6 @@ export interface HttpDeps {
   config: HttpServerConfig
   /** Console file transfer signer; absent ⇒ the upload and transfer routes answer WORKSPACE_TRANSFER_UNAVAILABLE. */
   fileTransfer?: FileTransferService
+  /** Shared-image originals (webchat-generated-images.md §5); absent ⇒ `image/original/*` answers SCOPE_DENIED. */
+  sharedImages?: SharedImageService
 }
