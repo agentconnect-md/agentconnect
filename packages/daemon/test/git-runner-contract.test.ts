@@ -238,29 +238,19 @@ describe('git runner contract, local and shim-backed', () => {
   })
 
   it('applies a complete per-invocation env on both sides, and scopes it to the request remotely', async () => {
-    // Every call site threads env per invocation — the credential-helper pointers among it —
-    // so a seam that could not carry env could not preserve behaviour. Remotely it must also
-    // stay ON the request: setting it on the sandbox would leave a runtime able to read the
-    // pointers back out of its own environment afterwards.
+    // Credential-helper pointers must travel with each request, not become sandbox-wide environment.
     const root = repository()
     const { local, remote, requester } = runners(root)
-    // Proven through `config`, a subcommand the daemon actually calls. An earlier version used
-    // `commit` and the shim handler refused it — correctly, since the daemon never commits and
-    // the inventory is the list of what it does. Widening the inventory to suit a test would
-    // have removed the guard the inventory exists to be.
     const globalConfig = join(root, 'from-request.gitconfig')
-    writeFileSync(globalConfig, '[user]\n\tname = Env Applied\n')
-    // Built from the production helper rather than raw process.env: that is what call sites
-    // pass, and it is also what simple-git's own checker accepts — raw process.env carries
-    // names it refuses, such as GIT_EDITOR, which is the sanitization earning its keep.
+    writeFileSync(globalConfig, '[format]\n\tpretty = format:Env Applied\n')
+    // Use the production environment sanitizer, which also satisfies simple-git's checks.
     const complete: Record<string, string> = { ...workspaceGitLocalEnv(), GIT_CONFIG_GLOBAL: globalConfig }
 
     const [fromLocal, fromRemote] = await Promise.all([
-      local.withEnv(complete).raw(['config', '--get', 'user.name']),
-      remote.withEnv(complete).raw(['config', '--get', 'user.name'])
+      local.withEnv(complete).raw(['log', '-1']),
+      remote.withEnv(complete).raw(['log', '-1'])
     ])
-    // git only reads that file if the env reached the child, so agreeing on its content is what
-    // establishes both sides applied it.
+    // The configured log format proves the request environment reached both Git children.
     expect(fromRemote.trim()).toBe(fromLocal.trim())
     expect(fromRemote.trim()).toBe('Env Applied')
 
