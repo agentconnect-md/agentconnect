@@ -515,7 +515,7 @@ jobs:
           key: ${{ runner.os }}-minio-go1.24.8-9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a
       - name: Set up Go for MinIO
         if: steps.minio-cache.outputs.cache-hit != 'true'
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           # The toolchain MinIO's go.mod names at that commit.
           go-version: 1.24.8
