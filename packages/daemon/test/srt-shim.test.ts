@@ -326,6 +326,8 @@ describe('the srt boundary around a shim', () => {
           GIT_CONFIG_KEY_0: 'http.https://example.test/example-org/example-repo.git.proxy',
           GIT_CONFIG_VALUE_0: '',
           GIT_TRACE2_EVENT: '1',
+          // Compare the disposable sandbox's generated proxy credentials as well as its address.
+          GIT_TRACE2_REDACT: '0',
           GIT_TRACE2_CONFIG_PARAMS: 'http.*.proxy,http.proxyAuthMethod'
         }
       })) as GitExecResult
