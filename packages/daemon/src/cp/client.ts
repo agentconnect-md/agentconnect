@@ -44,6 +44,10 @@ import type {
   HookStartOk,
   GithubReviewAuthorize,
   GithubReviewAuthorized,
+  SharedImageGetOk,
+  SharedImageGetReq,
+  SharedImagePutOk,
+  SharedImagePutReq,
   TransferGetOk,
   TransferGetReq,
   TransferSignOk,
@@ -388,6 +392,7 @@ export class CpClient {
       sessionRead: deps.sessionRead,
       childSessionStatusProbe: deps.childSessionStatusProbe && ((probe) => deps.childSessionStatusProbe!(probe)),
       pullRequestFeedback: deps.pullRequestFeedback && ((req) => deps.pullRequestFeedback!(req)),
+      sharedImageResolve: deps.sharedImageResolve && ((req, orgId) => deps.sharedImageResolve!(req, orgId)),
       workspaceRead: deps.workspaceRead,
       workspaceGit: deps.workspaceGit,
       // Every transfer URL is signed by the control plane, over this socket.
@@ -993,6 +998,26 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected transfer/sign/ok, got ${rep.type}`, false)
     }
     return rep.payload as TransferSignOk
+  }
+
+  /** Presign the PUT of a shared image's staged original (webchat-generated-images.md §5). */
+  async signSharedImagePut(payload: SharedImagePutReq, orgId?: string): Promise<SharedImagePutOk> {
+    this.requireReady('image/original/put')
+    const rep = await this.request('image/original/put', payload, orgId)
+    if (rep.type !== 'image/original/put/ok') {
+      throw new WireError('INTERNAL', `expected image/original/put/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as SharedImagePutOk
+  }
+
+  /** Presign a browser GET for a cached shared-image original; `missing` when the bucket no longer holds it. */
+  async signSharedImageGet(payload: SharedImageGetReq, orgId?: string): Promise<SharedImageGetOk> {
+    this.requireReady('image/original/get')
+    const rep = await this.request('image/original/get', payload, orgId)
+    if (rep.type !== 'image/original/get/ok') {
+      throw new WireError('INTERNAL', `expected image/original/get/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as SharedImageGetOk
   }
 
   /** Presign the agent's GET for a console upload; no `url` when the bucket does not hold those bytes. */

@@ -117,6 +117,9 @@ export class AgUiEventEncoder implements ChatStreamEncoder {
             ? this.activity(`notice-${++this.noticeSeq}`, 'notice', { text: ev.text, standing: true })
             : this.activity('notice', 'notice', { text: ev.text }))
         )
+      case 'image':
+        // A shared image is announced by caption only; its preview bytes stay on the console surface.
+        return this.close() + this.activity(`image:${ev.postId}`, 'image', { postId: ev.postId, text: ev.text })
       default:
         return '' // elicitation, MCP App, and `superseded` kinds have no representation here
     }

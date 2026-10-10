@@ -1,4 +1,5 @@
 import type { FileTransferService } from '../file-transfer/service.js'
+import type { SharedImageService } from '../file-transfer/shared-image.js'
 import type { AgentMemoryTransactionService } from '../agent-memory/transaction.service.js'
 /**
  * `DaemonWsDeps` — the dependency bundle every connection actor and frame
@@ -203,6 +204,8 @@ export interface DaemonWsDeps {
   decision?: Pick<DecisionRepo, 'listForAgent' | 'getForAgent'>
   /** Console file transfer signer; absent ⇒ `transfer/sign` and `transfer/get` answer SCOPE_DENIED. */
   fileTransfer?: FileTransferService
+  /** Shared-image originals (webchat-generated-images.md §5); absent ⇒ `image/original/*` answers SCOPE_DENIED. */
+  sharedImages?: SharedImageService
   /** R1 action-time formal-review broker; absent ⇒ review/start REQs fail closed. */
   githubReviewBroker?: GithubReviewBrokerService
   /** Provider-neutral formal reviews: publication lease, operation ledger, outcome

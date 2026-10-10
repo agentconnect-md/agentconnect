@@ -21,7 +21,9 @@ export type TransferObjectKey = string & { readonly __transferObjectKey: true }
 
 const ORG_RE = /^[A-Za-z0-9_-]{1,64}$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-const TRANSFER_KEY_RE = /^src\/[A-Za-z0-9_-]{1,64}\/transfer\/(?:up\/[0-9a-f-]{36}|dl\/[0-9a-f]{64})$/
+const ANY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const TRANSFER_KEY_RE =
+  /^src\/[A-Za-z0-9_-]{1,64}\/transfer\/(?:up\/[0-9a-f-]{36}|dl\/[0-9a-f]{64}|img\/[0-9a-f-]{36}\/[0-9a-f-]{36})$/
 const CHECKSUM_RE = /^[A-Za-z0-9+/]{43}=$/
 /** A cached download is reused only while it is well inside the 2-day `pending` lifecycle rule. */
 const CACHED_DOWNLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -42,6 +44,15 @@ export function transferDownloadKey(org: string, identity: readonly unknown[]): 
   assertOrg(org)
   const digest = createHash('sha256').update(JSON.stringify(identity), 'utf8').digest('hex')
   return `src/${org}/transfer/dl/${digest}` as TransferObjectKey
+}
+
+/** `src/<org>/transfer/img/<agentId>/<attachmentId>`: one shared image's original (webchat-generated-images.md §5). */
+export function sharedImageKey(org: string, agentId: string, attachmentId: string): TransferObjectKey {
+  assertOrg(org)
+  if (!ANY_UUID_RE.test(agentId) || !ANY_UUID_RE.test(attachmentId)) {
+    throw new Error('agent and attachment ids must be lower-case UUIDs')
+  }
+  return `src/${org}/transfer/img/${agentId}/${attachmentId}` as TransferObjectKey
 }
 
 export function isTransferObjectKey(key: unknown): key is TransferObjectKey {
@@ -95,6 +106,13 @@ export interface FileTransfer {
   }): Promise<TransferUrl>
   /** Presign the browser's GET that downloads the object as an attachment named `name`. */
   signDownload(input: { key: TransferObjectKey; name: string }): Promise<TransferUrl>
+  /** Presign the GET of a shared image's original while the bucket holds exactly those bytes; no reuse cutoff applies. */
+  storedDownload(input: {
+    key: TransferObjectKey
+    size: number
+    sha256: string
+    name: string
+  }): Promise<TransferUrl | undefined>
 }
 
 /** A refusal the console can act on; `reason` mirrors the workspace error reasons. */
@@ -166,6 +184,18 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
     return { 'content-length': String(bytes), 'x-amz-checksum-sha256': sha256, 'x-amz-tagging': PENDING_TAGGING }
   }
 
+  const signDownload = async ({ key, name }: { key: TransferObjectKey; name: string }): Promise<TransferUrl> =>
+    await sign({
+      method: 'GET',
+      key,
+      address: external,
+      lifetimeSeconds: urlSeconds,
+      query: {
+        'response-content-disposition': attachmentDisposition(name),
+        'response-content-type': 'application/octet-stream'
+      }
+    })
+
   const assertEnabled = (): void => {
     if (!deps.enabled()) throw new FileTransferError('transfer-unavailable', 'the bucket lacks its lifecycle rules')
   }
@@ -222,17 +252,13 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
       })
     },
 
-    async signDownload({ key, name }) {
-      return await sign({
-        method: 'GET',
-        key,
-        address: external,
-        lifetimeSeconds: urlSeconds,
-        query: {
-          'response-content-disposition': attachmentDisposition(name),
-          'response-content-type': 'application/octet-stream'
-        }
-      })
-    }
+    async storedDownload({ key, size, sha256, name }) {
+      const head = await objects.head(key)
+      if (!head.exists || head.contentLength !== size) return undefined
+      if (head.checksumSha256 !== undefined && head.checksumSha256 !== sha256) return undefined
+      return await signDownload({ key, name })
+    },
+
+    signDownload
   }
 }

@@ -12,6 +12,7 @@ function signer(cached?: string, seen: unknown[] = []): FileTransfer {
     maxBytes: 100,
     grantUpload: async () => ({ uploadId: 'u', url: 'https://store.example.test/u', headers: {}, expiresAt: 1 }),
     uploadedFileUrl: async () => undefined,
+    storedDownload: async () => undefined,
     cachedDownload: async (input) => {
       seen.push({ cachedDownload: input })
       return cached

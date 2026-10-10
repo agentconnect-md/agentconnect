@@ -80,6 +80,8 @@ export interface ConfigApplyCoreHost {
   /** `--agent` single-agent mode refuses every agent move. */
   singleAgentMode(): boolean
   setGitCommitIdentity(identity: GitCommitIdentity | undefined): void
+  /** The deployment's transfer cache as this register saw it; undefined ⇒ none. */
+  setFileTransfer(transfer: { maxBytes: number } | undefined): void
   flushReconcile(): Promise<void>
 }
 
@@ -200,6 +202,7 @@ export function applyConfigPush(host: ConfigApplyCoreHost, keys: Record<string, 
 
 export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: RegisterOk): Promise<void> {
   host.setGitCommitIdentity(snap.gitCommitIdentity)
+  host.setFileTransfer(snap.fileTransfer)
   // Console-set finished-session retention — the reconnect baseline for the
   // `config/push` hot update. Absent (older CP) ⇒ keep the local config value.
   if (snap.sessionRetention) host.cfg().sessions.retention = snap.sessionRetention

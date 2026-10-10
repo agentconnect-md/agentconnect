@@ -1,6 +1,6 @@
 // Webchat output mapping and canonical transcript helpers used by the turn engine.
 import { randomUUID } from 'node:crypto'
-import type { SessionImageAttachment, WebchatEvent } from '@agentconnect.md/protocol'
+import type { SessionImageAttachment, SharedImage, WebchatEvent } from '@agentconnect.md/protocol'
 import type { LocalStore, TranscriptAdmission } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { isNoResponsePrefix } from '../session/no-response.js'
@@ -138,6 +138,7 @@ export async function appendWebchatTextRow(
     postId?: string
     trustedAgentBot?: boolean
     attachments?: SessionImageAttachment[]
+    sharedImage?: SharedImage
   }
 ): Promise<string> {
   let slot = BigInt(ts)
@@ -189,4 +190,19 @@ export function flushHeldWebchatText(wc: WebchatTurnOutput, resolveFileLink?: Wo
       }
     })
   }
+}
+
+/** Close the streamed text before a shared image: release its held suffix and start any later text as a new segment. */
+export function closeWebchatSegmentForImage(wc: WebchatTurnOutput, resolveFileLink?: WorkspaceFileLinkResolver): void {
+  if (!isNoResponsePrefix(wc.replyText.trim())) flushHeldWebchatText(wc, resolveFileLink)
+  wc.segmentIndex = undefined
+}
+
+/** A segment's single transcript write: every caller awaits the same promise, and a failed write may be retried. */
+export function commitSegmentOnce(segment: { committing?: Promise<void> }, write: () => Promise<void>): Promise<void> {
+  segment.committing ??= write().catch((err: unknown) => {
+    segment.committing = undefined
+    throw err
+  })
+  return segment.committing
 }

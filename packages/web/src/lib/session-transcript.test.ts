@@ -135,6 +135,38 @@ describe('reconcilePersistedLiveSteps', () => {
     ).toEqual([])
   })
 
+  it('retires an image-only reply only once the saved post with its postId is present', () => {
+    const at = 1_785_000_000_000
+    const image = {
+      kind: 'done',
+      turnId: 'reply',
+      text: '[shared: out/a.png (image/png, 9 bytes, sha256:1a2b3c4d5e6f7a8b)]',
+      postId: 'post-img',
+      segmentId: 'post-img',
+      observedAtMs: at + 100,
+      sharedImage: {
+        attachment: { name: 'a.png', mimeType: 'image/png', data: 'AAAA' },
+        original: { kind: 'inline' },
+        revision: 0
+      }
+    } satisfies SessionStep
+    const live = [prompt('draw', at), image]
+    const promptRow = persistedPrompt(1, 'draw', at + 10)
+    // An unrelated agent row after the prompt must not stand in for the image's own post.
+    const other = persistedReply(2, 'agent', 'unrelated', at + 200, 'post-other')
+    expect(reconcilePersistedLiveSteps(live, [promptRow, other], agentId)).toEqual([
+      { ...live[0], hidden: true },
+      image
+    ])
+    expect(
+      reconcilePersistedLiveSteps(
+        live,
+        [promptRow, persistedReply(3, 'agent', image.text, at + 300, 'post-img')],
+        agentId
+      )
+    ).toEqual([])
+  })
+
   // #753: an agent-initiated post has no optimistic `msg` prompt to anchor a turn —
   // it renders as a standalone step, identified only by its canonical postId.
   it('drops a standalone agent-post step once ITS postId lands in a persisted row (adopted-conversation refresh)', () => {

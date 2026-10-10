@@ -56,7 +56,8 @@ const LIST_PAGE = 500
 
 export function originForSourceKey(sourceKey: string): LocalSkillOrigin {
   if (sourceKey.startsWith('dream:')) return 'dream-accepted'
-  if (sourceKey.startsWith('managed:')) return 'managed'
+  // A daemon-owned builtin (`builtin:`) is deployment-managed content, like a managed binding.
+  if (sourceKey.startsWith('managed:') || sourceKey.startsWith('builtin:')) return 'managed'
   return 'git-source'
 }
 

@@ -82,6 +82,12 @@ const feishuInt: Integration = {
 }
 
 describe('toolsForIntegrations', () => {
+  it('offers shareFile to an integration-less session only when the console can show shared images', () => {
+    expect(toolsForIntegrations([]).map((t) => t.name)).not.toContain('shareFile')
+    const names = toolsForIntegrations([], { currentPlatform: 'webchat', consoleImages: true }).map((t) => t.name)
+    expect(names.filter((name) => name === 'shareFile')).toHaveLength(1)
+  })
+
   const sendTool = (ints: Integration[]) => toolsForIntegrations(ints).find((t) => t.name === 'sendMessage')
   type ObjectSchema = {
     type?: string

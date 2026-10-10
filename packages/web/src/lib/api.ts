@@ -46,7 +46,10 @@ import type {
   SessionStayedHomeReason,
   ProviderKeyProvider,
   ProviderKeyStatus,
-  SetProviderKeyInput
+  SetProviderKeyInput,
+  SharedImageDownload,
+  SharedImageOriginal,
+  SharedImagePreview
 } from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { isSubsessionCoordinate } from '@agentconnect.md/protocol/subsession-coordinate'
@@ -688,6 +691,8 @@ export interface SessionMessageDto {
   kind: string
   text: string
   attachments?: SessionImage[]
+  /** A shared image's preview and original descriptor (webchat-generated-images.md §4); never a signed URL. */
+  sharedImage?: { attachment: SharedImagePreview; original: SharedImageOriginal; revision: number }
   toolCallId?: string // ties the row to its full body (session/tool-body key)
   toolStatus?: string // ACP ToolCallStatus — drives the console status badge
   toolKind?: string // ACP ToolKind — drives the console icon
@@ -2877,6 +2882,17 @@ export async function downloadSessionFile(
   const res = await authenticatedFetch(path, { cache: 'no-store' })
   if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
   return await res.blob()
+}
+
+/** Resolve a shared image's cached original for this viewer: its current state and, when ready, a fresh temporary GET. */
+export function resolveSharedImageOriginal(
+  sessionId: string,
+  attachmentId: string
+): Promise<{ original: SharedImageOriginal; download?: SharedImageDownload }> {
+  return apiPost(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/shared-images/${encodeURIComponent(attachmentId)}/original`,
+    {}
+  )
 }
 
 /** A presigned object-store GET for one workspace file (binary or large text); the daemon uploads it first when needed. */

@@ -684,7 +684,8 @@ export interface Pending {
   webchat?: WebchatTurnContext & {
     index: number
     replyText: string
-    replySegments: { postId: string; text: string }[]
+    // `committing` is the segment's one transcript write, started early by a shared image after it or at turn end.
+    replySegments: { postId: string; text: string; committing?: Promise<void> }[]
     segmentIndex?: number
     heldText: string
     heldTextOffset?: number

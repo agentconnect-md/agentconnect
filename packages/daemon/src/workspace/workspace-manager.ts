@@ -39,6 +39,7 @@ import { makeLogger } from '../log.js'
 import { withStartupPhase } from '../session/startup-progress.js'
 import { installSkills, type LocalSkillSource } from '../skills/install-skills.js'
 import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
+import { reserveBuiltinSkills } from '../skills/builtin-skills.js'
 import { bundlePathsFromCheckoutRoot, excludeManagedSkillBundles } from './git-exclude.js'
 import {
   canonicalWorkspaceGitUrl,
@@ -517,7 +518,7 @@ export class WorkspaceManager {
     const installed = await installSkills(agent, acpCwd, {
       ...(opts.skillsStateDir ? { stateDir: opts.skillsStateDir } : {}),
       ...(opts.skillsAgentId === undefined ? {} : { skillsAgentId: opts.skillsAgentId }),
-      localSkills: [...managedSkills, ...acceptedSkills],
+      localSkills: reserveBuiltinSkills([...managedSkills, ...acceptedSkills], (msg) => skillsLog.warn(msg)),
       useGitCredential: this.skillGitCredentialEnabled(agent),
       ...(opts.resolveGitSkillRef
         ? { resolveGitRef: (entry: AgentSkillEntry) => opts.resolveGitSkillRef!(entry, agent) }

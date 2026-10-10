@@ -4,6 +4,7 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
+  RD_WEBCHAT_IMAGES_V1,
   type RelayDaemonFrame,
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
@@ -37,7 +38,10 @@ class FakeServerTransport implements ServerTransport {
     this.closed = { code, reason }
     this.closeCb?.(code, reason)
   }
-  feed(type: 'rd/hello' | 'rd/ack' | 'rd/route' | 'rd/route/report', payload: unknown): void {
+  feed(
+    type: 'rd/hello' | 'rd/ack' | 'rd/route' | 'rd/route/report' | 'rd/webchat-image-update',
+    payload: unknown
+  ): void {
     this.msgCb?.(JSON.stringify(buildRelayDaemonFrame(type, payload as never)))
   }
   /** Deliver identical bytes again, the way a correlator retransmits an unanswered request. */
@@ -55,6 +59,7 @@ function build(
     relayId?: string | undefined
     onRoute?: RelayDaemonConnDeps['onRoute']
     onRouteReport?: RelayDaemonConnDeps['onRouteReport']
+    onWebchatImageUpdate?: RelayDaemonConnDeps['onWebchatImageUpdate']
   } = {}
 ) {
   const verify = vi.fn(opts.verify ?? (async () => ({ ok: true, daemonId: DAEMON_ID, orgId: 'org-1' })))
@@ -68,6 +73,7 @@ function build(
     clock,
     onChat: () => {},
     onWebchatPost: () => {},
+    ...(opts.onWebchatImageUpdate ? { onWebchatImageUpdate: opts.onWebchatImageUpdate } : {}),
     onAgentMsg: async () => ({ deliveryId: 'unused', delivered: false }),
     onRoute: opts.onRoute ?? (async (_from, msg) => ({ deliveryId: msg.deliveryId, disposition: 'admitted' as const })),
     onRouteReport: opts.onRouteReport ?? (() => ({ accepted: true })),
@@ -88,11 +94,29 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     expect(verify).toHaveBeenCalledWith('daemon-key', 'the-key', DAEMON_ID)
     expect(transport.lastRep('rd/hello/ok')!.payload).toEqual({
       relayId: RELAY_ID,
-      capabilities: [RD_CODEHOST_REPLY_TARGET_V1, RD_DECISION_ROUTE_V1]
+      capabilities: [RD_CODEHOST_REPLY_TARGET_V1, RD_DECISION_ROUTE_V1, RD_WEBCHAT_IMAGES_V1]
     })
     expect(conn.state).toBe('READY')
     expect(conn.daemonId).toBe(DAEMON_ID)
     expect(onReady).toHaveBeenCalledWith(DAEMON_ID, conn)
+  })
+
+  it('hands an rd/webchat-image-update to its handler bound to the authenticated daemon', async () => {
+    const onWebchatImageUpdate = vi.fn()
+    const { transport } = build({ onWebchatImageUpdate })
+    transport.feed('rd/hello', { apiKey: 'the-key', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    const update = {
+      conversationId: RELAY_ID,
+      agentId: OTHER_DAEMON,
+      postId: DAEMON_ID,
+      revision: 2,
+      original: { kind: 'inline' }
+    }
+    transport.feed('rd/webchat-image-update', update)
+    await Promise.resolve()
+    expect(onWebchatImageUpdate).toHaveBeenCalledWith(DAEMON_ID, update)
   })
 
   it('honours a per-request ack budget on rd/msg: one send, rejected only after its own timeout', async () => {

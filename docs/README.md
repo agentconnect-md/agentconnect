@@ -10,6 +10,7 @@ cross-references inside it.
 ## Guides
 
 - [product-conventions.md](product-conventions.md) — User-facing product behavior every implementation must preserve.
+- [GLOSSARY.md](../GLOSSARY.md) — Agreed domain terms, including shared images, previews and original delivery.
 - [config-file-secrets.md](config-file-secrets.md) — The `*_DATA` secret convention for file-shaped credentials (Docker config, kubeconfig).
 - [self-host-caddy-https.md](self-host-caddy-https.md) — Publishing a self-hosted stack behind Caddy HTTPS.
 
@@ -49,6 +50,7 @@ the picture it draws.
 ### Webchat and console
 
 - [webchat-multi-agents.md](designs/webchat-multi-agents.md) — Multi-agent webchat conversations: roster, primary agent, activation.
+- [webchat-generated-images.md](designs/webchat-generated-images.md) — Runtime-generated workspace images, explicit publication through `shareFile`, and retained inline previews in webchat.
 - [webchat-side-panels.md](designs/webchat-side-panels.md) — The session-detail right dock.
 - [webchat-cross-integration-continuation.md](designs/webchat-cross-integration-continuation.md) — Continuing other integrations' sessions from webchat.
 - [webchat-preset-agentconnect-mcp.md](designs/webchat-preset-agentconnect-mcp.md) — The AgentConnect admin MCP for webchat sessions.

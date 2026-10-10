@@ -1284,6 +1284,130 @@ describe('in-band elicitation cards', () => {
   })
 })
 
+// webchat-generated-images.md: a shared image is its own card, one per canonical post, updated in place.
+describe('shared image cards', () => {
+  class ImageSocket extends StubSocket {
+    static OPEN = 1
+    static CLOSED = 3
+    static instances: ImageSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      ImageSocket.instances.push(this)
+    }
+  }
+
+  async function openStream() {
+    ImageSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', ImageSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'draw it', 'c1')
+    })
+    const socket = ImageSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
+    return { socket, turnId: turn.turnId }
+  }
+
+  const frame = (socket: ImageSocket, data: unknown) =>
+    act(() => {
+      socket.onmessage?.({ data: JSON.stringify(data) })
+    })
+
+  const POST = '33333333-3333-4333-8333-333333333333'
+  const ATT = '44444444-4444-4444-8444-444444444444'
+  const attachment = { name: 'chart.png', mimeType: 'image/png', data: 'AAAA' }
+  const cache = (status: string) => ({
+    kind: 'cache',
+    attachmentId: ATT,
+    mimeType: 'image/png',
+    bytes: 9_000_000,
+    sha256: 'ab'.repeat(32),
+    status
+  })
+  const image = {
+    kind: 'image',
+    postId: POST,
+    at: 1,
+    text: 'A chart',
+    attachment,
+    original: cache('pending'),
+    revision: 0
+  }
+
+  it('splits the text around the card and keeps one card when the post copy arrives too', async () => {
+    const { socket, turnId } = await openStream()
+    frame(socket, {
+      type: 'output',
+      output: {
+        turnId,
+        agentId: 'agent-1',
+        index: 0,
+        event: { kind: 'message', text: 'Before', segmentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }
+      }
+    })
+    frame(socket, { type: 'output', output: { turnId, agentId: 'agent-1', index: 1, event: image } })
+    frame(socket, {
+      type: 'post',
+      post: {
+        postId: POST,
+        author: { kind: 'agent', agentId: 'agent-1' },
+        text: 'A chart',
+        at: 1,
+        image: { attachment, original: cache('pending'), revision: 0 }
+      }
+    })
+    frame(socket, {
+      type: 'output',
+      output: {
+        turnId,
+        agentId: 'agent-1',
+        index: 2,
+        event: { kind: 'message', text: 'After', segmentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }
+      }
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80))
+    })
+    const done = getLiveSteps('s1').filter((s) => s.kind === 'done')
+    expect(done.map((s) => (s.sharedImage ? 'image' : s.text))).toEqual(['Before', 'image', 'After'])
+    expect(done[1]).toMatchObject({ postId: POST, sharedImage: { original: { status: 'pending' } } })
+  })
+
+  it('renders a post that arrives before its live event once, and applies only newer updates', async () => {
+    const { socket, turnId } = await openStream()
+    frame(socket, {
+      type: 'post',
+      post: {
+        postId: POST,
+        author: { kind: 'agent', agentId: 'agent-1' },
+        text: 'A chart',
+        at: 1,
+        image: { attachment, original: cache('pending'), revision: 0 }
+      }
+    })
+    frame(socket, { type: 'output', output: { turnId, agentId: 'agent-1', index: 0, event: image } })
+    const update = (revision: number, status: string) =>
+      frame(socket, {
+        type: 'image_update',
+        update: { conversationId: POST, agentId: 'agent-1', postId: POST, revision, original: cache(status) }
+      })
+    update(2, 'ready')
+    update(1, 'upload_failed')
+    const cards = getLiveSteps('s1').filter((s) => s.sharedImage)
+    expect(cards).toHaveLength(1)
+    expect(cards[0]!.sharedImage).toMatchObject({ revision: 2, original: { status: 'ready' } })
+  })
+})
+
 // #547: once the daemon's status frame says the running turn is steerable, a send while it
 // streams goes straight to the wire as a steer instead of into the composer's queue.
 describe('mid-turn steering', () => {

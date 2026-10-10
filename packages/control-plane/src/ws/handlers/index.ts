@@ -57,6 +57,7 @@ import { handleHookStart } from './hook-start.js'
 import { handleHookPreparing } from './hook-preparing.js'
 import { handleApprovalRoute } from './approval-route.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
+import { handleSharedImageGet, handleSharedImagePut } from './shared-image.js'
 import { handleTransferGet, handleTransferSign } from './file-transfer.js'
 import { handleGithubReviewResult } from './github-review-result.js'
 import { handleCodeHostNoteResult } from './codehost-note-result.js'
@@ -114,6 +115,8 @@ export class FrameRouter {
       'github/review-authorize': handleGithubReviewAuthorize,
       'transfer/sign': handleTransferSign,
       'transfer/get': handleTransferGet,
+      'image/original/put': handleSharedImagePut,
+      'image/original/get': handleSharedImageGet,
       'github/review-result': handleGithubReviewResult,
       'codehost/note-result': handleCodeHostNoteResult,
       'codehost/review-authz': handleCodeHostReviewAuthorize,

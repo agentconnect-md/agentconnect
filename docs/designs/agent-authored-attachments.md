@@ -100,12 +100,10 @@ reply path resolves this per platform, and it is four shapes, not one:
 Three refusal classes, and only the first is port-probeable — the doc'd earlier claim that
 "postless/headless children get a clean port-probed refusal" was wrong on two of them:
 
-1. **No gateway** — webchat, which the port probe answers, but the refusal is a
-   deferral rather than a verdict: the console already renders images in transcript rows
-   (`WebchatImageAttachment`, png/jpeg/webp ≤ 160 KB), so the missing piece is only an
-   outbound agent→browser image frame — the current schema is inbound-only. Deferred in
-   §7; worth naming because phase 1's audience (self-hosted installs) is exactly where
-   webchat is used most.
+1. **No gateway** — a console-owned (webchat) turn has no platform gateway. It no longer
+   reaches the port probe: it publishes a durable image card through the webchat content
+   plane instead ([webchat-generated-images.md](webchat-generated-images.md)). A console
+   behind a relay without that support is refused by name.
 2. **No conversation** — a postless A2A child keeps the caller's real platform and a live
    gateway, so the probe _passes_; the tell is the synthetic `a2a:<caller>` channel. Gate
    on the coordinate, before the file is read.
@@ -303,18 +301,18 @@ shim boundary, and generalizes to none of the other three platforms.
 - **GIF** — needs the `SessionImageAttachment` enum widened across its wire surfaces and
   a `sendAnimation` shape on the Telegram arm; until then a GIF gets a refusal that names
   it (§4).
-- **Webchat** — not a refusal on principle: the console already renders transcript
-  images, so this is one outbound agent→browser image frame on the relay content plane.
+- **Webchat** — shipped separately as shared-image cards with bounded previews and
+  asynchronous original delivery; see [webchat-generated-images.md](webchat-generated-images.md).
 - **Agent-to-agent attachments** — a protocol-frame change with its own routing
   questions; its own design.
 
 ## 8. Phasing
 
-| Phase | Scope                                                                                                                                                     | Unlocks                           |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| 1     | `shareFile`; resolver + fence + sniff + caps; port widenings (reply anchor, typed failure reason, anchor refusal); refusal-class gates; description edits | Host agents, current conversation |
-| 2     | Bytes read on the `WorkspaceFs` seam (shim = existing base64 op), daemon-side fence on the relative path                                                  | Pod agents                        |
-| —     | `attachFile`, GIF, webchat image frame, multi-file, composition, `preview \| file` fidelity hint, A2A files                                               | Deferred; §7                      |
+| Phase | Scope                                                                                                                                                        | Unlocks                           |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- |
+| 1     | `shareFile`; resolver + fence + sniff + caps; port widenings (reply anchor, typed failure reason, anchor refusal); refusal-class gates; description edits    | Host agents, current conversation |
+| 2     | Bytes read on the `WorkspaceFs` seam (shim = existing base64 op), daemon-side fence on the relative path                                                     | Pod agents                        |
+| —     | `attachFile`, GIF, multi-file, composition, `preview \| file` fidelity hint, A2A files (webchat: [webchat-generated-images.md](webchat-generated-images.md)) | Deferred; §7                      |
 
 ## 9. Open questions
 

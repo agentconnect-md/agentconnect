@@ -85,6 +85,8 @@ import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/conso
 import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { SharedFileChip } from '@/components/console/SharedFileChip'
+import { SharedImageCard } from '@/components/console/SharedImageCard'
+import type { SharedImageState } from '@/lib/shared-image'
 import { platformSenderFallback } from '../platforms/registry'
 import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
 import { UserTurnDetails } from '../UserTurnDetails'
@@ -587,7 +589,14 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
     time: formatTranscriptRowTime(m),
     ...(platform ? { platform } : {}),
     // The download names the session that shared the file, which in a merged conversation is the row's source.
-    ...(shared ? { file: shared.file, ...(toolSessionId ? { toolSessionId } : {}) } : {})
+    ...(shared ? { file: shared.file, ...(toolSessionId ? { toolSessionId } : {}) } : {}),
+    ...(k === 'text' && m.sharedImage
+      ? {
+          sharedImage: m.sharedImage,
+          ...(m.postId ? { postId: m.postId } : {}),
+          ...(toolSessionId ? { toolSessionId } : {})
+        }
+      : {})
   }
 }
 
@@ -614,6 +623,11 @@ interface FmtStep {
   image?: SessionImage
   // A file the agent shared, parsed off the row's trailing marker and rendered as a download chip.
   file?: SharedFile
+  // A shared image card (webchat-generated-images.md) and the canonical post that names it.
+  sharedImage?: SharedImageState
+  postId?: string
+  // A peer participant's copy: its original resolves only through the author's own session, which this row does not name.
+  peerCopy?: boolean
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
   // Conversation rows keep their owning session out-of-band so full-body reads
@@ -1737,6 +1751,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     ...(stp.kind === 'app' && stp.app ? { app: stp.app } : {}),
     ...(stp.demoted ? { demoted: true } : {}),
     ...(platform ? { platform } : {}),
+    ...(stp.sharedImage ? sharedImageFields(stp) : {}),
     // The live wire frame carries no body (kept off the hot path); attach just
     // enough of a SessionMessageDto shape for ToolBodyDetail to pull the same
     // full body a history row shows, via `fetchToolBody` (no inline preview yet,
@@ -1757,6 +1772,18 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
           ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
         }
       : {})
+  }
+}
+
+// A live image step's card fields: its caption and file come off the same trailing share marker a history row carries.
+function sharedImageFields(stp: SessionStep): Partial<FmtStep> {
+  const shared = sharedFileMarker(stp.text)
+  return {
+    sharedImage: stp.sharedImage!,
+    text: shared ? shared.caption : stp.text,
+    ...(shared ? { file: shared.file } : {}),
+    ...(stp.postId ? { postId: stp.postId } : {}),
+    ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
   }
 }
 
@@ -4408,7 +4435,11 @@ export default function SessionDetailView() {
             senderAgent,
             {
               ...msgStep(m, toolSessionId, rowPlatform),
-              ...(m.attachments?.[0] ? { image: m.attachments[0] } : {})
+              ...(m.attachments?.[0] ? { image: m.attachments[0] } : {}),
+              // Only a copy from another member's session is a peer copy; the author's own row resolves through its session.
+              ...(m.sharedImage && conversationSourceAgentByMessageRef.current.get(m) !== senderAgent.id
+                ? { peerCopy: true }
+                : {})
             },
             rowAnchor(m),
             sourceTurnKey
@@ -4534,6 +4565,8 @@ export default function SessionDetailView() {
           last.agentId = stp.agentId
         }
         const step = fmtStep(stp, session.platform)
+        if (step.sharedImage && stp.agentId && stp.agentId !== session.agentId && !stp.toolSessionId)
+          step.peerCopy = true
         last.steps.push(step)
         if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
@@ -4615,6 +4648,8 @@ export default function SessionDetailView() {
           last.agentId = stp.agentId
         }
         const step = fmtStep(stp, session.platform)
+        if (step.sharedImage && stp.agentId && stp.agentId !== session.agentId && !stp.toolSessionId)
+          step.peerCopy = true
         last.steps.push(step)
         if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
@@ -5663,26 +5698,39 @@ export default function SessionDetailView() {
                                       </div>
                                     ) : (
                                       <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
-                                        {st.image && (
-                                          <img
-                                            src={`data:${st.image.mimeType};base64,${st.image.data}`}
-                                            alt={st.image.name}
-                                            className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
+                                        {st.sharedImage ? (
+                                          <SharedImageCard
+                                            {...(st.postId ? { postId: st.postId } : {})}
+                                            image={st.sharedImage}
+                                            {...(st.text ? { caption: st.text } : {})}
+                                            {...(st.file ? { file: st.file } : {})}
+                                            {...(turn.agentId ? { agentId: turn.agentId } : {})}
+                                            {...(st.peerCopy ? {} : { sessionId: st.toolSessionId ?? toolSid })}
                                           />
-                                        )}
-                                        {st.text && (
-                                          <div className="whitespace-pre-wrap">
-                                            <MessageText text={st.text} platform={st.platform} />
-                                          </div>
-                                        )}
-                                        {st.file && (
-                                          <div className={st.text ? 'mt-2' : ''}>
-                                            <SharedFileChip
-                                              file={st.file}
-                                              agentId={turn.agentId}
-                                              sessionId={st.toolSessionId ?? toolSid}
-                                            />
-                                          </div>
+                                        ) : (
+                                          <>
+                                            {st.image && (
+                                              <img
+                                                src={`data:${st.image.mimeType};base64,${st.image.data}`}
+                                                alt={st.image.name}
+                                                className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
+                                              />
+                                            )}
+                                            {st.text && (
+                                              <div className="whitespace-pre-wrap">
+                                                <MessageText text={st.text} platform={st.platform} />
+                                              </div>
+                                            )}
+                                            {st.file && (
+                                              <div className={st.text ? 'mt-2' : ''}>
+                                                <SharedFileChip
+                                                  file={st.file}
+                                                  agentId={turn.agentId}
+                                                  sessionId={st.toolSessionId ?? toolSid}
+                                                />
+                                              </div>
+                                            )}
+                                          </>
                                         )}
                                         <StepExtras step={st} sessionId={toolSid} />
                                       </div>

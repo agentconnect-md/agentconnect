@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SharedImageDownload, SharedImageOriginal } from './webchat.js'
 
 // File transfer through the deployment's bucket (source-cache-file-transfer.md): the CP signs, bytes never ride a WS.
 
@@ -93,3 +94,56 @@ export const WebchatFileAttachment = z.object({
   sha256: TransferSha256
 })
 export type WebchatFileAttachment = z.infer<typeof WebchatFileAttachment>
+
+// ── Shared-image originals (webchat-generated-images.md §5): daemon-initiated, bound to one attachment id ──
+
+/** D→C REQ: presign the PUT of one shared image's staged original under the org-scoped key the CP derives from `attachmentId`. */
+export const SharedImagePutReq = z.object({
+  agentId: z.string().uuid(),
+  sessionId: z.string().min(1).max(200),
+  postId: z.string().uuid(),
+  attachmentId: z.string().uuid(),
+  bytes: z.number().int().positive(),
+  sha256: TransferSha256,
+  network: TransferNetwork
+})
+export type SharedImagePutReq = z.infer<typeof SharedImagePutReq>
+
+/** C→D REP: the presigned PUT and the exact headers it signed. */
+export const SharedImagePutOk = TransferSignOk
+export type SharedImagePutOk = z.infer<typeof SharedImagePutOk>
+
+/** D→C REQ: presign a browser GET for a cached original; `resolveId` names the console read that asked, when one did. */
+export const SharedImageGetReq = z.object({
+  agentId: z.string().uuid(),
+  attachmentId: z.string().uuid(),
+  bytes: z.number().int().positive(),
+  sha256: TransferSha256,
+  name: TransferFileName,
+  resolveId: z.string().uuid().optional()
+})
+export type SharedImageGetReq = z.infer<typeof SharedImageGetReq>
+
+/** C→D REP: the GET, or `missing` when the bucket no longer holds exactly those bytes. */
+export const SharedImageGetOk = z.object({
+  url: z.string().url().optional(),
+  expiresAt: z.number().int().optional(),
+  missing: z.boolean().optional()
+})
+export type SharedImageGetOk = z.infer<typeof SharedImageGetOk>
+
+/** C→D REQ: resolve one shared image's original for an authorized console viewer. */
+export const SharedImageResolveReq = z.object({
+  agentId: z.string().uuid(),
+  sessionId: z.string().min(1).max(200),
+  attachmentId: z.string().uuid(),
+  resolveId: z.string().uuid()
+})
+export type SharedImageResolveReq = z.infer<typeof SharedImageResolveReq>
+
+/** D→C REP: the original's current state and, when ready, a fresh temporary GET. */
+export const SharedImageResolveOk = z.object({
+  original: SharedImageOriginal,
+  download: SharedImageDownload.optional()
+})
+export type SharedImageResolveOk = z.infer<typeof SharedImageResolveOk>

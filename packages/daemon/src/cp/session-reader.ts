@@ -24,6 +24,7 @@ import type {
   Platform
 } from '@agentconnect.md/protocol'
 import {
+  parseSharedImageJson,
   transcriptChannelKey,
   type LocalStore,
   type SessionRecord,
@@ -32,6 +33,7 @@ import {
 import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 import { hasNativeMessageOrder } from '../platforms/message-ordering.js'
 import { deriveTitle } from '../session/derive-title.js'
+import { displayedSharedImage } from '../webchat/shared-image.js'
 
 /** Encoded-payload ceiling, leaving headroom under MAX_FRAME_BYTES for the
  *  envelope (id/ts/type/corr + fencing ext, well under 4 KiB). */
@@ -360,6 +362,7 @@ export function createSessionReader(
         const senderName = names.get(sender)
         const senderAvatarUrl = avatars.get(sender)
         const attachments = transcriptAttachments(r.attachmentsJson)
+        const sharedImage = parseSharedImageJson(r.sharedImageJson)
         const base: SessionMessage = {
           seq: r.seq,
           sender,
@@ -371,7 +374,8 @@ export function createSessionReader(
           ...(r.postId ? { postId: r.postId } : {}),
           kind: r.kind,
           text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),
-          ...(attachments.length ? { attachments } : {})
+          ...(attachments.length ? { attachments } : {}),
+          ...(sharedImage ? { sharedImage: displayedSharedImage(sharedImage) } : {})
         }
         if (!r.body) return base
         // A text row's body is the `UserTurnBody` behind a user turn. It rides inline when it fits;

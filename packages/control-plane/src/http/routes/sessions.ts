@@ -34,7 +34,9 @@ import {
   isSessionIdentityPlatform,
   isSubsessionCoordinate,
   SANDBOX_KEEP_ALIVE_FEATURE,
+  WEBCHAT_IMAGES_FEATURE,
   continuableOrigin,
+  type SharedImageResolveOk,
   type CodeHostProvider,
   type HookKind
 } from '@agentconnect.md/protocol'
@@ -58,6 +60,7 @@ import {
   SessionFacetsDto,
   SessionDetailDto,
   SessionHistoryDto,
+  SharedImageOriginalDto,
   SessionToolBodyQueryDto,
   SessionToolBodyChunkDto,
   ErrorDto,
@@ -74,6 +77,11 @@ import {
   SetSessionExternalAccessBody,
   SessionExternalAccessDto
 } from '../dto/index.js'
+
+const SharedImageParams = z.object({ id: z.string(), attachmentId: z.string().uuid() })
+
+/** The daemon holding the session predates shared images, so it cannot answer the resolve. */
+class SharedImagesUnsupported extends Error {}
 
 const SESSION_PLATFORM_IDS = [
   'slack',
@@ -1198,6 +1206,64 @@ export function sessionRoutes(deps: HttpDeps) {
           liveCursor: page.liveCursor ?? null,
           liveMore: page.liveMore ?? false
         }
+      }
+    )
+
+    // Shared-image original (webchat-generated-images.md §5): the owning daemon reports state and signs a GET under this read's ticket.
+    r.post(
+      '/sessions/:id/shared-images/:attachmentId/original',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: "Resolve a shared image's original",
+          description:
+            "Asks a daemon holding the session for one shared image's original: its delivery state and, when the transfer cache still holds it, a short-lived signed download URL. 409 when that daemon predates shared images; 503 when none is reachable.",
+          operationId: 'resolveSessionSharedImageOriginal',
+          params: SharedImageParams,
+          response: { 200: SharedImageOriginalDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const owned = await getOrgViewableSession(req, req.params.id)
+        const sharedImages = deps.sharedImages
+        if (!owned || owned.session.contentPurgedAt || !sharedImages) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        const { session } = owned
+        let read: Awaited<ReturnType<typeof readSessionContent<SharedImageResolveOk>>>
+        try {
+          read = await readSessionContent(req, session, async (daemonId) => {
+            // Version skew: an older daemon drops the unknown REQ and would read as offline after its retries.
+            const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(daemonId))
+            if (!daemon?.capabilities.features.includes(WEBCHAT_IMAGES_FEATURE)) throw new SharedImagesUnsupported()
+            return await sharedImages.resolve({
+              orgId: session.orgId,
+              daemonId,
+              agentId: session.agentId,
+              sessionId: session.id,
+              attachmentId: req.params.attachmentId
+            })
+          })
+        } catch (err) {
+          if (err instanceof SharedImagesUnsupported) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: "this agent's daemon does not support shared-image originals",
+              code: 'DAEMON_FEATURE_MISSING'
+            })
+          }
+          if (err instanceof ProtocolError && err.code === 'NO_SESSION') {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'shared image not found' })
+          }
+          throw err
+        }
+        if (!read.ok) return reply.code(503).send(contentUnavailable(read.reason))
+        // Revalidate visibility before a signed URL leaves the CP, as the history read does for bodies.
+        if (!(await getOrgViewableSession(req, req.params.id))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        return read.value
       }
     )
 

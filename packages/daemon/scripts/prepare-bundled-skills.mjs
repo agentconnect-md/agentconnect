@@ -32,3 +32,21 @@ for (const arch of ['x64', 'arm64']) {
   copyFileSync(src, dest)
   chmodSync(dest, 0o755)
 }
+
+// Shared-image codecs are WebAssembly, which tsdown cannot inline; stage them where src/images/assets.ts looks first.
+const wasmAssets = {
+  'resvg.wasm': '@resvg/resvg-wasm/index_bg.wasm',
+  'webp_dec.wasm': '@jsquash/webp/codec/dec/webp_dec.wasm'
+}
+mkdirSync(fileURLToPath(new URL('../dist/wasm/', import.meta.url)), { recursive: true, mode: 0o755 })
+for (const [file, specifier] of Object.entries(wasmAssets)) {
+  copyFileSync(require.resolve(specifier), fileURLToPath(new URL(`../dist/wasm/${file}`, import.meta.url)))
+}
+
+// Daemon-owned builtin skills ship as plain files beside the bundle (src/skills/builtin-skills.ts reads them from dist/builtin-skills).
+const builtinSkills = ['agentconnect-images']
+for (const name of builtinSkills) {
+  const dest = fileURLToPath(new URL(`../dist/builtin-skills/${name}/SKILL.md`, import.meta.url))
+  mkdirSync(dirname(dest), { recursive: true, mode: 0o755 })
+  copyFileSync(fileURLToPath(new URL(`../builtin-skills/${name}/SKILL.md`, import.meta.url)), dest)
+}

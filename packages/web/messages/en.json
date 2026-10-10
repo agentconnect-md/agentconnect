@@ -819,7 +819,20 @@
         "more": "Show more",
         "moreFailed": "Couldn’t load more. Try again."
       },
-      "addFiles": "Add files"
+      "addFiles": "Add files",
+      "viewOriginal": "View original",
+      "downloadOriginal": "Download",
+      "originalUploading": "Uploading original…",
+      "originalUploadFailed": "Original upload failed",
+      "originalExpired": "Original expired",
+      "originalUnavailable": "Original unavailable",
+      "originalFailed": "Could not load the original.",
+      "originalLoading": "Loading original…",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "fitToScreen": "Fit to screen",
+      "actualSize": "Actual size",
+      "closeViewer": "Close"
     }
   },
   "Shell": {

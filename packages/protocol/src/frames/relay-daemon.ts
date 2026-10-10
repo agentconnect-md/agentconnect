@@ -15,7 +15,9 @@ import {
   WebchatDone,
   WebchatImageAttachment,
   WebchatOutput,
-  WebchatPost
+  WebchatPost,
+  WEBCHAT_IMAGES_FEATURE,
+  WebchatImageUpdate
 } from './webchat.js'
 import {
   GiteaHookMetadata,
@@ -138,6 +140,9 @@ export const RD_WEBCHAT_ATTACH_V1 = 'webchat-attach-v1'
 /** `im-admission-v1`: this daemon fills `routeAdmission`/`recoverable` beside the unchanged `accepted`/`reason` on every `im` ack answered through a platform strategy with an admission member; the shared best-effort path acks on dispatch and carries no verdict, which the relay's strict forward reads as `unsupported`, as it does a daemon without this feature. */
 export const RD_IM_ADMISSION_V1 = 'im-admission-v1'
 
+/** `webchat-images-v1`: the peer carries `image` events, post images and `rd/webchat-image-update`; the relay advertises it for its own console. */
+export const RD_WEBCHAT_IMAGES_V1 = WEBCHAT_IMAGES_FEATURE
+
 // D→R REQ → rd/hello/ok. The daemon presents the same credential it uses on the CP
 // socket — an API key, or an in-cluster daemon's projected ServiceAccount token. The
 // relay holds no database, so it delegates either to the CP via `rc/verify` and caches
@@ -234,6 +239,11 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('context'),
     post: WebchatPost
+  }),
+  // A peer's shared image changed original state; the daemon applies it to its copy by revision, never as a turn.
+  z.object({
+    op: z.literal('image_update'),
+    update: WebchatImageUpdate
   }),
   // Rebind an in-flight/recent turn to this relay connection and replay every
   // output after the browser's contiguous cursor. The generation monotonically
@@ -1200,6 +1210,10 @@ export const RdWebchatPost = z.object({
 })
 export type RdWebchatPost = z.infer<typeof RdWebchatPost>
 
+// D→R EVT — a published image's original changed state; browsers get it whole, peer daemons as the `image_update` op without its signed URL.
+export const RdWebchatImageUpdate = WebchatImageUpdate
+export type RdWebchatImageUpdate = z.infer<typeof RdWebchatImageUpdate>
+
 // ── the wire union ───────────────────────────────────────────────────────────
 
 /** `type` string → payload schema for the relay↔daemon wire. */
@@ -1217,6 +1231,7 @@ export const RELAY_DAEMON_SCHEMAS = {
   'rd/route/report/ack': RdRouteReportAck,
   'rd/chat': RdChat,
   'rd/webchat-post': RdWebchatPost,
+  'rd/webchat-image-update': RdWebchatImageUpdate,
   error: ErrorFrame
 } as const
 
@@ -1241,6 +1256,7 @@ export const RelayDaemonFrame = z.discriminatedUnion('type', [
   frameSchema('rd/route/report/ack', RELAY_DAEMON_SCHEMAS['rd/route/report/ack']),
   frameSchema('rd/chat', RELAY_DAEMON_SCHEMAS['rd/chat']),
   frameSchema('rd/webchat-post', RELAY_DAEMON_SCHEMAS['rd/webchat-post']),
+  frameSchema('rd/webchat-image-update', RELAY_DAEMON_SCHEMAS['rd/webchat-image-update']),
   frameSchema('error', RELAY_DAEMON_SCHEMAS['error'])
 ])
 export type RelayDaemonFrame = z.infer<typeof RelayDaemonFrame>

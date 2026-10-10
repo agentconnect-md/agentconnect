@@ -9,6 +9,7 @@ import {
   RELAY_DAEMON_WS_PATH,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
+  RD_WEBCHAT_IMAGES_V1,
   type RcVerifyResult,
   type RelayDaemonFrame
 } from '@agentconnect.md/protocol'
@@ -84,7 +85,10 @@ describe('createRelayDaemonServer (rd/* accept edge)', () => {
 
     ws.send(JSON.stringify(buildRelayDaemonFrame('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })))
     const ok = await nextFrame(ws, 'rd/hello/ok')
-    expect(ok.payload).toEqual({ relayId: RELAY_ID, capabilities: [RD_CODEHOST_REPLY_TARGET_V1, RD_DECISION_ROUTE_V1] })
+    expect(ok.payload).toEqual({
+      relayId: RELAY_ID,
+      capabilities: [RD_CODEHOST_REPLY_TARGET_V1, RD_DECISION_ROUTE_V1, RD_WEBCHAT_IMAGES_V1]
+    })
     expect(verify).toHaveBeenCalledWith('daemon-key', 'k', DAEMON_ID)
     await tick()
     expect(rd!.size()).toBe(1)

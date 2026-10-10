@@ -136,6 +136,8 @@ export const RegisterOk = z.object({
   // Console-set finished-session retention for this daemon's local store —
   // optional so new daemons still accept an older CP (absent ⇒ keep local config).
   sessionRetention: SessionRetentionSetting.optional(),
+  // The deployment's transfer cache, so a shared image can choose its original's home before any signing; absent ⇒ none.
+  fileTransfer: z.object({ maxBytes: z.number().int().positive() }).optional(),
   // Authoritative reconcile snapshot — daemon converges its local cache to this:
   assignments: z.array(RouteAssign), // the route/assign set the daemon SHOULD own
   agents: z.array(AgentSpec.extend({ agentId: z.string().uuid() })).default([]), // spec set CP wants present; daemon converges

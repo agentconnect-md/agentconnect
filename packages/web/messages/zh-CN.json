@@ -819,7 +819,20 @@
         "more": "显示更多",
         "moreFailed": "加载失败，请重试。"
       },
-      "addFiles": "添加文件"
+      "addFiles": "添加文件",
+      "viewOriginal": "查看原图",
+      "downloadOriginal": "下载",
+      "originalUploading": "正在上传原图…",
+      "originalUploadFailed": "原图上传失败",
+      "originalExpired": "原图已过期",
+      "originalUnavailable": "原图不可用",
+      "originalFailed": "无法加载原图。",
+      "originalLoading": "正在加载原图…",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "fitToScreen": "适应屏幕",
+      "actualSize": "实际大小",
+      "closeViewer": "关闭"
     }
   },
   "Shell": {
