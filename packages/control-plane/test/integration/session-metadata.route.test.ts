@@ -763,6 +763,13 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     const solo = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION2}` })
     expect(solo.statusCode).toBe(200)
     expect((solo.json() as { participants: unknown }).participants).toBeNull()
+
+    // Shrunk to one by removal, the roster stays explicit so the console never revives the removed member (§3.1a).
+    await conversations.removeParticipant(OrgId(DEFAULT_ORG_ID), CONVO, AgentId(AGENT2), DEFAULT_OWNER_ID)
+    const shrunk = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}` })
+    expect((shrunk.json() as { participants: unknown }).participants).toEqual([
+      { agentId: AGENT, name: 'answer-bot', primary: true }
+    ])
   })
 
   it('404s for an unknown session', async () => {

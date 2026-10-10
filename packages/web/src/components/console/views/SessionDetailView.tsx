@@ -94,7 +94,7 @@ import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
-import { sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
+import { liveResumeMembers, sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
@@ -3882,7 +3882,10 @@ export default function SessionDetailView() {
         : { daemonId: agent.daemon === '—' ? undefined : agent.daemon }
     ])
   )
-  const resumeConversationMembers = conversationKey ? conversationMembers : selfConversation?.sessions
+  const resumeConversationMembers = liveResumeMembers(
+    conversationKey ? conversationMembers : selfConversation?.sessions,
+    detailSession?.participants
+  )
   const resumeConversationLookupPending = conversationKey
     ? conversationLoading
     : Boolean(selfKey && selfConversationLoading)

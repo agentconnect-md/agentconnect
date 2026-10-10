@@ -1792,6 +1792,8 @@ export interface WebchatConversationRepo {
   participants(orgId: OrgId, conversationId: string): Promise<WebchatParticipant[]>
   /** Idempotently append a member (§3.1); a removed member is restored at the roster's end. Authorization belongs to the caller. */
   addParticipant(orgId: OrgId, conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void>
+  /** Whether the conversation ever lost a member, so a shrunk singleton roster is still reported explicitly. */
+  hasRemovedParticipants(orgId: OrgId, conversationId: string): Promise<boolean>
   /** Soft-remove one member (webchat-multi-agents.md §3.1a); the primary and the last participant are refused. Authorization belongs to the caller. */
   removeParticipant(
     orgId: OrgId,

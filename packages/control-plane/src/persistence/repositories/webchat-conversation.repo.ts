@@ -129,6 +129,15 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
     })
   }
 
+  async hasRemovedParticipants(orgId: OrgId, conversationId: string): Promise<boolean> {
+    if (!UUID_RE.test(conversationId)) return false
+    const removed = await this.db.webchatConversationAgent.findFirst({
+      where: { conversationId, conversation: { orgId }, removedAt: { not: null } },
+      select: { agentId: true }
+    })
+    return removed !== null
+  }
+
   async removeParticipant(
     orgId: OrgId,
     conversationId: string,
