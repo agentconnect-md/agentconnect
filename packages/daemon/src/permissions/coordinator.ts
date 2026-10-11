@@ -879,11 +879,10 @@ export class PermissionCoordinator {
     if (!this.pendingApprovals.has(requestId)) return await result
     const blocks = buildPermissionCard(requestId, params, this.host.httpSlackSessionTarget(p))
     const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
-    // The gate above admits only a list this card can offer whole, so null is unreachable here —
-    // and treated as the card never posting rather than trusted to be impossible.
+    // The gate above admits only a list this card can offer whole; a null card is treated as never posting, not trusted away.
     const ts = blocks
       ? await this.host.postCardSerialized(p, (slack) =>
-          (slack as SlackConnection).postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
+          (slack as SlackConnection).postBlocks(p.plan.channel, blocks, fallback, p.plan.thread, {
             ...(slackAgentIdentityOptions(p.plan) ?? {}),
             chrome: true
           })

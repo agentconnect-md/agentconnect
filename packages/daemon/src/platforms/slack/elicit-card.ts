@@ -66,13 +66,10 @@ export const slackElicitCards: ElicitCardFacet = {
     draft: ElicitCardDraft
   ): Promise<string | undefined> {
     return await host.postCardSerialized(turn, (conn) =>
-      (conn as SlackConnection).postBlocks(
-        turn.plan.channel,
-        draft as unknown[],
-        ask.fallback,
-        turn.plan.statusThread,
-        { ...(slackAgentIdentityOptions(turn.plan) ?? {}), chrome: true }
-      )
+      (conn as SlackConnection).postBlocks(turn.plan.channel, draft as unknown[], ask.fallback, turn.plan.thread, {
+        ...(slackAgentIdentityOptions(turn.plan) ?? {}),
+        chrome: true
+      })
     )
   },
 
