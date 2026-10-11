@@ -84,6 +84,15 @@ async function harness(opts: { statusShown?: boolean | Error } = {}) {
 }
 
 describe('turn-start acknowledgement', () => {
+  // As Slack's normalizer delivers it: a top-level message carries its own ts as its thread.
+  const slackDm = {
+    msgId: 'slack:C1:1700000000.000100',
+    platform: 'slack',
+    channel: 'C1',
+    thread: '1700000000.000100',
+    isDm: true
+  }
+
   it('reacts on the message that started the turn, addressed by its native coordinates', async () => {
     const h = await harness()
     try {
@@ -113,7 +122,7 @@ describe('turn-start acknowledgement', () => {
   it('on Slack, a lifecycle write Slack took is the acknowledgement: no reaction', async () => {
     const h = await harness({ statusShown: true })
     try {
-      await h.dispatch({ msgId: 'slack:C1:1700000000.000100', platform: 'slack', channel: 'C1', isDm: true })
+      await h.dispatch(slackDm)
       expect(h.setStatus).toHaveBeenCalled() // the turn ran and asked for the indicator
       expect(h.react).not.toHaveBeenCalled()
     } finally {
@@ -124,7 +133,7 @@ describe('turn-start acknowledgement', () => {
   it('on Slack, a refused lifecycle write falls back to the reaction, so the turn never shows neither', async () => {
     const h = await harness({ statusShown: false })
     try {
-      await h.dispatch({ msgId: 'slack:C1:1700000000.000100', platform: 'slack', channel: 'C1', isDm: true })
+      await h.dispatch(slackDm)
       expect(h.setStatus).toHaveBeenCalled()
       await vi.waitFor(() => expect(h.react).toHaveBeenCalledWith('C1', '1700000000.000100', 'seen'))
     } finally {
@@ -135,7 +144,7 @@ describe('turn-start acknowledgement', () => {
   it('on Slack, a lifecycle write that throws also falls back to the reaction', async () => {
     const h = await harness({ statusShown: new Error('slack down') })
     try {
-      await h.dispatch({ msgId: 'slack:C1:1700000000.000100', platform: 'slack', channel: 'C1', isDm: true })
+      await h.dispatch(slackDm)
       expect(h.setStatus).toHaveBeenCalled()
       await vi.waitFor(() => expect(h.react).toHaveBeenCalledWith('C1', '1700000000.000100', 'seen'))
     } finally {

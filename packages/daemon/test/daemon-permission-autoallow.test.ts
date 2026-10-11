@@ -1008,6 +1008,24 @@ describe('a permission card offers every option or sends the request where they 
     expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
   })
 
+  it("posts the card in the turn's thread, and at the root for a turn that has none", async () => {
+    for (const thread of ['1700000000.000100', undefined]) {
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+      const { pending } = slackPending(daemon)
+      // A threadless turn's transcript coordinate is its own daemon-minted id, never a Slack thread.
+      pending.plan.statusThread = thread ?? 'agentcall:test:d-1'
+      if (thread) pending.plan.thread = thread
+      const threads: (string | undefined)[] = []
+      pending.conn.postBlocks = async (_c: string, _b: unknown[], _t: string, at?: string) => {
+        threads.push(at)
+        return 'ts-1'
+      }
+      ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+      void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(2))
+      await vi.waitFor(() => expect(threads).toEqual([thread]))
+    }
+  })
+
   it('cancels a list it cannot offer whole, and says why, rather than truncating it', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const { pending, posted } = slackPending(daemon)

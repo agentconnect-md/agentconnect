@@ -57,9 +57,9 @@ export interface TurnPlan {
   readonly platform: string
   readonly isDm: boolean
   readonly channel: string
+  /** The platform thread posts, chrome and thread reads address; absent, the turn speaks at the conversation root. */
   readonly thread?: string
-  /** Where turn chrome posts — the DELIVERY thread, so a status bar lands in the room the
-   *  message came from even when the session belongs to no thread. */
+  /** The delivery's transcript coordinate: `thread`, else the message's own id, which names no platform thread. */
   readonly statusThread: string
   /** The SESSION coordinate this turn was admitted on (channel-session-mode.md §3.1),
    *  carried from the per-target resolution rather than re-derived. Matches `statusThread`

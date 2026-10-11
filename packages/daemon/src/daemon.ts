@@ -12399,10 +12399,10 @@ export class Daemon {
     )
   }
 
-  /** Incremental provider snapshot for the final-fence workflow. Other IMs use the
-   * same coordinator with daemon-observed rows until their history adapters land. */
+  /** Incremental provider snapshot of `thread` for the final-fence workflow; IMs without a history adapter use observed rows. */
   private finalThreadSnapshot(
     pending: Pending,
+    thread: string,
     providerCheckpoint?: string
   ): (() => Promise<ThreadContextSnapshot>) | undefined {
     // Capability-gated on the Layer-1 read port: only connections with a thread
@@ -12422,7 +12422,7 @@ export class Daemon {
       const history = await this.fetchThreadHistory(
         pending.plan.agentId,
         pending.plan.channel,
-        pending.plan.statusThread,
+        thread,
         checkpoint,
         providerCheckpoint,
         true,
@@ -12465,12 +12465,13 @@ export class Daemon {
     includeProviderSnapshot: boolean
   ): Promise<ContextRefresh> {
     const startedAt = this.clock.now()
-    // No provider snapshot for a session whose coordinate is synthetic (§6.3): it spans
-    // many threads, so there is no thread to fetch and importing one would misrepresent the
-    // conversation — and the fetch itself would address `append:…` as a platform ts.
-    const physical = !isAppendCoordinate(pending.plan.sessionThread)
+    // No provider snapshot without a platform thread to read, or for a synthetic session spanning many threads (§6.3).
+    const { thread, sessionThread } = pending.plan
+    const physical = !isAppendCoordinate(sessionThread) && !isSubsessionCoordinate(sessionThread)
     const snapshot =
-      includeProviderSnapshot && physical ? this.finalThreadSnapshot(pending, providerCheckpoint) : undefined
+      includeProviderSnapshot && physical && thread !== undefined
+        ? this.finalThreadSnapshot(pending, thread, providerCheckpoint)
+        : undefined
     const refresh = await this.threadContext.refresh({
       scope: {
         transcriptChannel: pending.plan.transcriptChannel,
@@ -13359,7 +13360,7 @@ export class Daemon {
     const replaced = (await ctx.acknowledgement?.replace(notice).catch(() => false)) === true
     if (ctx.replyConn) {
       // Settle the Slack slot (a sibling may still be working); Telegram's typing hint expires on its own.
-      this.settleSlackSlot(ctx.replyConn, ctx.channel, ctx.statusThread, ctx.sessionKey)
+      this.settleSlackSlot(ctx.replyConn, ctx.channel, ctx.thread, ctx.sessionKey)
       const chrome = turnChromeFor(ctx.platform).chromeMarkedNotices
       if (!replaced && chrome)
         void (ctx.replyConn as SlackConnection).postMessage(ctx.channel, notice, ctx.thread, {
@@ -14987,7 +14988,7 @@ export class Daemon {
     const indicatorShown = this.showActivity(
       replyConn,
       msg.channel,
-      plan.statusThread,
+      plan.thread,
       plan.startupActivityLabel,
       plan.statusOptions
     )
@@ -15138,12 +15139,10 @@ export class Daemon {
 
   // ── dispatchOne phases, in execution order ──────────────────────────────────
 
-  /** This turn is done with the activity indicator: hand the Slack slot to a surviving
-   *  sibling or clear it (settleSlackSlot); other platforms' transient hints just clear.
-   *  A turn displaced by a newer one leaves the slot alone — it belongs to its successor. */
+  /** Done with the activity indicator: settle the Slack slot, unless a newer turn displaced this one and owns it. */
   private clearTurnActivity(run: TurnRun): void {
     if (run.entry.displacedByNewerTurn) return
-    this.settleSlackSlot(run.replyConn, run.plan.channel, run.plan.statusThread, run.plan.sessionKey)
+    this.settleSlackSlot(run.replyConn, run.plan.channel, run.plan.thread, run.plan.sessionKey)
   }
 
   /**
@@ -16420,7 +16419,7 @@ export class Daemon {
     }
     // Startup observers have settled; a cold host's initial activity now yields to its ordinary turn.
     if (!plan.hostAlreadyRunning)
-      void this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
+      void this.showActivity(replyConn, plan.channel, plan.thread, 'is thinking…', plan.statusOptions)
     // Post/refresh the session status bar up front — with the model now known (session
     // created) plus any usage carried over from prior turns — so it sits at the top of
     // the thread before the reply streams in.
@@ -17567,7 +17566,7 @@ export class Daemon {
       // cancels the CardKit entity. Exact lookup — no core fallback.
       this.turnSurfaces.exact(live.plan.platform)?.onSuppress?.(live)
       if (!live.entry.displacedByNewerTurn)
-        this.settleSlackSlot(live.conn, live.plan.channel, live.plan.statusThread, live.plan.sessionKey)
+        this.settleSlackSlot(live.conn, live.plan.channel, live.plan.thread, live.plan.sessionKey)
       if (live.webchat && !live.webchat.doneSent) {
         live.webchat.doneSent = true
         live.webchat.sink.done({
@@ -17583,7 +17582,7 @@ export class Daemon {
       this.settleSlackSlot(
         this.replyConnFor(activeEntry.agentId, activeEntry.integrationId),
         activeEntry.msg.channel,
-        activeEntry.msg.thread ?? activeEntry.msg.msgId,
+        activeEntry.msg.thread,
         key
       )
     }
@@ -19007,16 +19006,11 @@ export class Daemon {
     }
   }
 
-  /** Show the transient "working" indicator: Slack's agent-session working state (non-empty
-   *  text; '' clears) or Telegram's typing chat-action (self-expiring, so a clear is a no-op).
-   *
-   *  Resolves `true` only when a DURABLE indicator is now showing for this turn — Slack's
-   *  lifecycle write, confirmed by the API. A typing hint resolves `false`: it expires on its
-   *  own and acknowledges nothing. Never rejects; callers that only fire it may drop the promise. */
+  /** Show ('' clears) the working indicator — Slack's thread status, else a self-expiring typing hint; true only for a status Slack took. Never rejects. */
   private async showActivity(
     conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined,
     channel: string,
-    thread: string,
+    thread: string | undefined,
     text: string,
     slackStatusOptions?: SlackStatusOptions
   ): Promise<boolean> {
@@ -19025,6 +19019,8 @@ export class Daemon {
     // Telegram/Discord have sendChatAction (a self-expiring "typing…", so a clear is a no-op).
     const slack = conn as Partial<SlackConnection>
     if (typeof slack.setStatus === 'function') {
+      // A Slack status lives on a thread; a turn at the conversation root has none to show.
+      if (!thread) return false
       if (!text) {
         void slack.setStatus(channel, thread, text, slackStatusOptions)
         return false
@@ -19100,10 +19096,9 @@ export class Daemon {
       // Check again at execution time: actions queued before an interrupt must not
       // publish later after a backed-up transport queue drains.
       if (p.outputSuppressed && !opts.allowWhenSuppressed) return
-      // The turn-final status clear settles the ONE shared Slack slot instead: a surviving
-      // sibling's `processing` takes the row over; only an empty thread clears.
+      // The turn-final status clear settles the ONE shared Slack slot: a surviving sibling's `processing` takes it over.
       if (action.kind === 'set-status' && action.text === '' && p.plan.platform === 'slack') {
-        this.settleSlackSlot(p.conn, p.plan.channel, p.plan.statusThread, p.plan.sessionKey)
+        this.settleSlackSlot(p.conn, p.plan.channel, p.plan.thread, p.plan.sessionKey)
         return
       }
       return this.turnSurfaces
