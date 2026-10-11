@@ -96,14 +96,13 @@ export function planReplay(input: ReplayPlanInput): ReplayPlan {
         ? (gap.filter((e) => ordering.coordinate(e.ts) !== null).at(-1)?.ts ?? markerBefore)
         : (participantGap.at(-1)?.ts ?? markerBefore)
       : ts
+  // Only a trigger the platform issued is on the cursor's order; a daemon-minted one (a report, a wake) is always new.
+  const triggerOrder = ordering !== undefined && ordering.coordinate(ts) !== null ? ordering : undefined
   const triggerWasAlreadyDelivered =
-    markerBefore !== null && ordering !== undefined && ordering.compare(ts, markerBefore) <= 0
-  // A stale Socket Mode event may be the wake-up signal even though the snapshot
-  // contains newer instructions. In that case the old `context + current` shape is
-  // actively wrong: it puts the obsolete trigger last. Deliver one chronological
-  // unread batch so the newest human instruction is last and therefore salient.
-  // Only a natively ordered platform can tell "newer" from "older" at all.
-  const hasMessageAfterTrigger = ordering !== undefined && participantGap.some((e) => ordering.compare(e.ts, ts) > 0)
+    markerBefore !== null && triggerOrder !== undefined && triggerOrder.compare(ts, markerBefore) <= 0
+  // A stale trigger with newer instructions in the snapshot is delivered as one chronological batch, the newest last.
+  const hasMessageAfterTrigger =
+    triggerOrder !== undefined && participantGap.some((e) => triggerOrder.compare(e.ts, ts) > 0)
 
   // A retained inbox row still needs its trigger delivered even when a previous reply advanced the cursor.
   if (
