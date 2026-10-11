@@ -29,7 +29,8 @@ import {
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   codeHostHookMetadataOf,
   WORKSPACE_SESSION_READ_FEATURE,
-  PROVIDER_CREDENTIALS_V1_FEATURE
+  PROVIDER_CREDENTIALS_V1_FEATURE,
+  AGENT_MODEL_PROVIDER_FEATURE
 } from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
@@ -1842,6 +1843,7 @@ export function buildContainer(
     providerCredentialsChanged: (orgId, provider) => {
       for (const peer of connReg.reachableDaemons()) {
         if (!peer.capabilities?.features?.includes(PROVIDER_CREDENTIALS_V1_FEATURE)) continue
+        if (provider === 'anthropic' && !peer.capabilities.features.includes(AGENT_MODEL_PROVIDER_FEATURE)) continue
         if (peer.orgId !== orgId && ![...(peer.orgByAgent?.values() ?? [])].includes(orgId)) continue
         try {
           peer.conn.send('provider-credentials/changed', { provider }, undefined, orgId)

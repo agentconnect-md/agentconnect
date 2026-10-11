@@ -333,10 +333,11 @@ export class ModelSessionHostPool {
   boundTarget(sessionKey: string, agentId: string): ModelProviderTarget | undefined {
     const credentialHost = this.entries.get(sessionKey)
     if (credentialHost) return credentialHost.target
-    if (this.keyServer || !this.opts.k8s || !this.staticModelCredentials) return undefined
     const agent = this.host.agent(agentId, sessionKey)
     const runtime = agent ? this.host.runtime(agent.runtime) : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime) : undefined
+    if (!this.opts.k8s && agent?.modelProvider) return target
+    if (this.keyServer || !this.opts.k8s || !this.staticModelCredentials) return undefined
     // A partial map binds only the providers it configures; the rest keep their runtime-owned auth.
     return target && this.staticCredential(target) ? target : undefined
   }
@@ -348,7 +349,13 @@ export class ModelSessionHostPool {
     const agent = this.host.agent(agentId, sessionKey)
     const runtime = agent ? this.host.runtime(agent.runtime) : undefined
     const target = agent && runtime ? modelProviderTarget(agent, runtime, model) : undefined
-    if (!this.keyServer && target?.runtime === 'opencode' && this.staticCredential(target)?.key) return false
+    if (
+      (this.opts.k8s || !agent?.modelProvider) &&
+      !this.keyServer &&
+      target?.runtime === 'opencode' &&
+      this.staticCredential(target)?.key
+    )
+      return false
     return !target || JSON.stringify(target) !== JSON.stringify(bound)
   }
 

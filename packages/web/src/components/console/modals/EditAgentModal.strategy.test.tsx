@@ -52,6 +52,7 @@ vi.mock('@/lib/data-context', () => ({
 }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
+  fetchProviderKeys: vi.fn(async () => []),
   fetchAgentDto: vi.fn(async () => mocks.dto)
 }))
 

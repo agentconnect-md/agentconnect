@@ -21,7 +21,7 @@ export default function ProviderKeysSection() {
 }
 
 // Only providers something consumes are offered; OpenRouter and Cloudflare AI Gateway have no consumer yet.
-const OFFERED_PROVIDERS: ReadonlySet<ProviderKeyProvider> = new Set(['typesafe', 'openai'])
+const OFFERED_PROVIDERS: ReadonlySet<ProviderKeyProvider> = new Set(['typesafe', 'openai', 'anthropic'])
 
 type HeaderDraft = { name: string; value: string; saved: boolean; removed: boolean }
 
@@ -29,13 +29,8 @@ function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolea
   const t = useTranslations('ProviderKeys')
   const format = useFormatter()
   const inputId = useId()
-  const {
-    data: entries,
-    error: loadError,
-    mutate
-  } = useSWR(consoleKeys.providerKeys(orgId), ([, id]) =>
-    fetchProviderKeys(id).then((rows) => rows.filter((row) => OFFERED_PROVIDERS.has(row.provider)))
-  )
+  const { data, error: loadError, mutate } = useSWR(consoleKeys.providerKeys(orgId), ([, id]) => fetchProviderKeys(id))
+  const entries = data?.filter((entry) => OFFERED_PROVIDERS.has(entry.provider))
   const [editing, setEditing] = useState<ProviderKeyStatus | null>(null)
   const [deleting, setDeleting] = useState<ProviderKeyStatus | null>(null)
   const [apiKey, setApiKey] = useState('')

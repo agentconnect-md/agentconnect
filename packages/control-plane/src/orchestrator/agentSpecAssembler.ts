@@ -490,6 +490,7 @@ export function agentRecordToSpec(
     // otherwise the stale value from the previous runtime survives in agent.json. Same
     // rationale as env/mcpServers below.
     model: a.model,
+    modelProvider: a.modelProvider ?? null,
     reasoningEffort: a.reasoningEffort,
     permissionMode: a.permissionMode,
     showFooter: a.showFooter,

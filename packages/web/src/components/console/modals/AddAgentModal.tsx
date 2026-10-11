@@ -3,6 +3,8 @@
 // "props must be serializable" entry-file check on the onClose callback.
 
 import { useEffect, useRef, useState } from 'react'
+import type { AgentModelProvider } from '@agentconnect.md/protocol'
+import { ModelProviderField } from '@/components/console/ModelProviderField'
 import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -168,6 +170,7 @@ export default function AddAgentModal({
   const [icon, setIcon] = useState<AgentIcon>(() => randomGlyphIcon())
   const [runtime, setRuntime] = useState(seed.runtime) // '' = untouched; the daemon supplies the default
   const [model, setModel] = useState(seed.model)
+  const [modelProvider, setModelProvider] = useState<AgentModelProvider | null>(null)
   const [modelSelection, setModelSelection] = useState<AgentModelSelection | null>(null)
   const [modelSelectionValid, setModelSelectionValid] = useState(true)
   const [effort, setEffort] = useState(seed.effort)
@@ -852,6 +855,7 @@ export default function AddAgentModal({
         outputMode,
         showFooter,
         showStatusBar,
+        ...(placement?.kind !== 'pool' && modelProvider ? { modelProvider } : {}),
         ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}),
         fastMode: fastModeAvailable || modelSelection ? fastMode : false,
         ...(memoryProvider === 'external'
@@ -1029,6 +1033,7 @@ export default function AddAgentModal({
                   <span className="fldlbl">{t('runsOn')}</span>
                   <DaemonSelect value={effectiveDaemonId} options={daemonOptions} onChange={setDaemonId} />
                 </div>
+                {placement?.kind !== 'pool' && <ModelProviderField value={modelProvider} onChange={setModelProvider} />}
               </div>
             </div>
           </section>

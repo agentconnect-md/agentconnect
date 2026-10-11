@@ -62,6 +62,7 @@ export interface PrepareMicrosandboxLaunchOptions {
   // Legacy VM sessions retain the agent's HOME while their ACP hosts have independent keys.
   homeKey?: HostKey
   explicitEnv?: Record<string, string>
+  inheritRuntimeCredentials?: boolean
   stateSourceEnv?: NodeJS.ProcessEnv
   nativeMemory?: boolean
   trustedSessionDir?: string
@@ -113,7 +114,13 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   )
   for (const path of [...writable, ...configDirs]) mkdirSync(path, { recursive: true, mode: 0o700 })
 
-  const credentialStep = microsandboxCredentialStep(opts.runtimeId, opts.runtime, hostEnv, opts.explicitEnv)
+  const credentialStep = microsandboxCredentialStep(
+    opts.runtimeId,
+    opts.runtime,
+    hostEnv,
+    opts.explicitEnv,
+    opts.inheritRuntimeCredentials
+  )
   const { protectedCredentials, credentials } = credentialStep
   runtimeHome = credentialStep.seedHome(scopeDir, runtimeHome)
   writable.push(...(credentials?.writablePaths ?? []))

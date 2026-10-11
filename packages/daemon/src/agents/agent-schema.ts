@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  AgentModelProvider,
   AgentAdditionalInstallation,
   AgentApiGateProjections,
   AgentDecisionIds,
@@ -157,6 +158,7 @@ export const AgentSchema = z.object({
   // System-prompt seed + runtime knobs. Settable in a local agent.json or supplied
   // in memory by the CP (agent/upsert + register/ok roster).
   description: z.string().optional(),
+  modelProvider: AgentModelProvider.optional(),
   reasoningEffort: z.string().optional(),
   executionMode: z.string().optional(),
   // Runtime fast mode (ACP `model_config` toggle, claude/codex). Absent ⇒ leave

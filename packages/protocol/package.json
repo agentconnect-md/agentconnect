@@ -35,6 +35,12 @@
       "import": "./dist/decision-api.js",
       "default": "./dist/decision-api.js"
     },
+    "./provider-key": {
+      "development": "./src/provider-key.ts",
+      "types": "./dist/provider-key.d.ts",
+      "import": "./dist/provider-key.js",
+      "default": "./dist/provider-key.js"
+    },
     "./subsession-coordinate": {
       "development": "./src/subsession-coordinate.ts",
       "types": "./dist/subsession-coordinate.d.ts",

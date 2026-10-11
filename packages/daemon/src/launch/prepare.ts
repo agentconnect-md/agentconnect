@@ -192,6 +192,7 @@ function prepareExecutorLaunch(
     runtimeId: string
     runtime?: RuntimeDef
     explicitEnv?: Record<string, string>
+    inheritRuntimeCredentials?: boolean
     sessionGitDirs?: string[]
   },
   executor: { home: string; codexState?: PrivateRuntimeState },
@@ -200,9 +201,10 @@ function prepareExecutorLaunch(
   const { home, codexState } = executor
   // An empty host env: this daemon's own variables describe a machine the runtime is not on.
   const env = runtimeHomeEnvironment(opts.runtimeId, home, opts.explicitEnv, {})
-  // Runtime credentials are the executor's own, even one configured as an agent secret; the rest travels (§8).
+  // The executor supplies ambient credentials; an explicit organization provider travels with the launch.
   for (const name of Object.keys(env))
-    if (isRecognizedCredentialEnv(opts.runtimeId, opts.runtime, name)) delete env[name]
+    if (opts.inheritRuntimeCredentials !== false && isRecognizedCredentialEnv(opts.runtimeId, opts.runtime, name))
+      delete env[name]
   if (sharedCredentialProfile(opts.runtimeId, opts.runtime) !== 'codex') {
     return { env, inheritProcessEnv: false, runtimeHome: home, gitMetadataWriteRoots: [] }
   }
@@ -236,8 +238,8 @@ export function prepareRuntimeLaunch(opts: {
   runInSandbox: boolean
   isolateHome?: boolean
   explicitEnv?: Record<string, string>
-  /** Host state roots used only to seed the private HOME. Probe launches keep
-   * these separate from their deliberately tiny child environment. */
+  inheritRuntimeCredentials?: boolean
+  // Host state roots seed the private HOME separately from the probe's child environment.
   stateSourceEnv?: NodeJS.ProcessEnv
   hostEnv?: NodeJS.ProcessEnv
   /** True when the runtime will run in a sandbox pod rather than on this host. */
@@ -380,18 +382,22 @@ export function prepareRuntimeLaunch(opts: {
       .filter((trusted) => denyReadRoots.some((denied) => inside(denied, trusted)))
   )
 
-  const credentials = prepareSharedRuntimeCredentials({
-    runtimeId: opts.runtimeId,
-    runtime: opts.runtime,
-    hostEnv: stateSourceEnv,
-    platform: opts.credentialPlatform
-  })
+  const credentials =
+    opts.inheritRuntimeCredentials === false
+      ? undefined
+      : prepareSharedRuntimeCredentials({
+          runtimeId: opts.runtimeId,
+          runtime: opts.runtime,
+          hostEnv: stateSourceEnv,
+          platform: opts.credentialPlatform
+        })
   const runtimeHome = prepareRuntimeHome(
     opts.runtimeId,
     opts.scopeDir,
     stateSourceEnv,
     sessionHome,
-    credentials?.seedExclusions
+    credentials?.seedExclusions,
+    opts.inheritRuntimeCredentials
   )
   credentials?.preparePrivateHome(runtimeHome)
   const packageCacheEnv = opts.hostPackageCache ? hostPackageCacheEnv(opts.runtime?.command, stateSourceEnv) : {}

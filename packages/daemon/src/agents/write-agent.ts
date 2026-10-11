@@ -752,6 +752,10 @@ export function applySpecFields(
   // null ⇒ clear (revert to runtime default), a value ⇒ set, absent ⇒ leave alone.
   // Clearing must delete the key so a runtime switch drops the old runtime's override
   // instead of leaving it stale (model handled below, inside runtimeOverrides).
+  if (spec.modelProvider !== undefined) {
+    if (spec.modelProvider === null) delete raw.modelProvider
+    else raw.modelProvider = spec.modelProvider
+  }
   if (spec.reasoningEffort !== undefined) {
     if (spec.reasoningEffort === null) delete raw.reasoningEffort
     else raw.reasoningEffort = spec.reasoningEffort

@@ -12,6 +12,11 @@
       "waiting": "{label} 正等待你的操作",
       "show": "查看"
     },
+    "modelProvider": {
+      "label": "使用已保存的凭据（Beta）",
+      "daemon": "Daemon 本机凭据",
+      "providerHelp": "请先在 Providers 中配置 API key。所选 key 需与 agent 的运行时和模型匹配。"
+    },
     "runtimeChat": {
       "label": "允许在聊天中更改",
       "enabled": "聊天用户可以更改 Runtime 设置并回答审批请求。",

@@ -15,13 +15,13 @@ export const CODEX_DEFAULT_ENDPOINT = 'https://api.openai.com/v1'
  *  auth header, responses wire), authRequired() short-circuits before account/read, and nothing
  *  touches the shared auth.json — so a persisted account of any shape cannot override the grant
  *  and concurrently launching hosts share no credential state. */
-export function codexGatewayAuthRequest(baseUrl: string, key: string): string {
+export function codexGatewayAuthRequest(baseUrl: string, key: string, headers: Record<string, string> = {}): string {
   return JSON.stringify({
     methodId: 'gateway',
     _meta: {
       gateway: {
         baseUrl,
-        headers: { Authorization: `Bearer ${key}` },
+        headers: { Authorization: `Bearer ${key}`, ...headers },
         providerName: 'AgentConnect model egress'
       }
     }

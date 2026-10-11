@@ -1725,6 +1725,25 @@ fixes on the existing branch. This association never guesses a session from a
 shared checkout, a fork, or an additional workspace root. Provider event support
 and delivery rules are documented in [Pull-request feedback continuation](designs/codehost-pr-feedback.md).
 
+## Agent model credentials
+
+Provider keys are organization-scoped, encrypted and write-only. Anthropic (Claude)
+and OpenAI keys may be selected in a self-hosted agent's Use saved credential (Beta)
+field, immediately after Runs on.
+The default uses the daemon's existing credentials. Cloud keeps its existing
+subscription credentials and ignores this selection, including after a move from
+a self-hosted daemon. An explicit provider must match the runtime and model the
+self-hosted agent starts.
+
+The daemon retrieves the selected key when starting the runtime process and applies
+its key, endpoint and custom headers together in the child environment. Selecting a
+key does not log in, log out, or modify the host's runtime login files. Missing keys
+and credential delivery failures refuse that launch rather than falling back to a
+different billing source. Runtime output masks the injected secrets. Key updates
+take effect on the next process start; a running process keeps its original key.
+Sandboxed launches with a selected key skip seeding host runtime settings and
+credentials into their private runtime home.
+
 ## Agent secret environment variables
 
 A write-only secret (the console's Secrets card, `AgentSpec.secrets`) is not an

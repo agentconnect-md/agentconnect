@@ -277,12 +277,13 @@ export function prepareRuntimeHome(
   scopeDir: string,
   hostEnv: NodeJS.ProcessEnv = process.env,
   targetHome?: string,
-  excludedDestinations: readonly string[] = []
+  excludedDestinations: readonly string[] = [],
+  inheritCredentials = true
 ): string {
   const home = targetHome ? resolve(targetHome) : runtimeHomePath(scopeDir)
   ensurePrivateDir(home)
   const excluded = new Set(excludedDestinations.map((destination) => containedDestination(home, destination)))
-  const locations = runtimeStateLocations(runtimeId, hostEnv)
+  const locations = inheritCredentials ? runtimeStateLocations(runtimeId, hostEnv) : []
   const credentialDestinations = locations.flatMap((location) =>
     (location.credentialFiles ?? []).map((file) => containedDestination(home, join(location.destination, file.path)))
   )

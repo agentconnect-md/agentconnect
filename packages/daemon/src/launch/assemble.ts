@@ -54,6 +54,7 @@ export interface AssembleRuntimeLaunchOptions {
   mcpSocketPath?: string
   allowModelToolUnixSockets?: boolean
   isolateHome?: boolean
+  inheritRuntimeCredentials?: boolean
   stateSourceEnv?: NodeJS.ProcessEnv
   hostEnv?: NodeJS.ProcessEnv
   k8s?: boolean
@@ -122,6 +123,7 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
     mcpSocketPath: opts.mcpSocketPath,
     allowModelToolUnixSockets: opts.allowModelToolUnixSockets,
     isolateHome: opts.isolateHome,
+    inheritRuntimeCredentials: opts.inheritRuntimeCredentials,
     stateSourceEnv: opts.stateSourceEnv,
     hostEnv: opts.hostEnv,
     ...(opts.k8s ? { k8s: true as const } : {}),

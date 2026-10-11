@@ -151,6 +151,7 @@ export function composeRuntimeLaunch(opts: {
   cwd: string
   hostKey?: HostKey
   explicitEnv?: Record<string, string>
+  inheritRuntimeCredentials?: boolean
   stateSourceEnv?: NodeJS.ProcessEnv
   hostEnv?: NodeJS.ProcessEnv
   isolateHome?: boolean
@@ -216,6 +217,7 @@ export function composeRuntimeLaunch(opts: {
     runInSandbox: opts.runInSandbox,
     isolateHome: opts.isolateHome || (protectedMemory && policyId === 'hermes-agent'),
     explicitEnv: opts.explicitEnv,
+    inheritRuntimeCredentials: opts.inheritRuntimeCredentials,
     stateSourceEnv,
     hostEnv: opts.hostEnv,
     daemonRoot: opts.daemonRoot,

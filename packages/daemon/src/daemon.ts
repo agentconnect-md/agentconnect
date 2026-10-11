@@ -1,6 +1,8 @@
 import { memorySourceTurnId } from './memory/source-turn.js'
 import {
   MEMORY_ENTRIES_V1_FEATURE,
+  AGENT_MODEL_PROVIDER_FEATURE,
+  type ProviderCredential,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_MODEL_EVALUATIONS_V1_FEATURE,
@@ -587,6 +589,7 @@ import {
   applyCodexSessionFloor,
   applyClaudeModelAliases,
   applyModelCredential,
+  applyOrganizationModelCredential,
   applyConfiguredModelProviders,
   configuredClaudeModelAliases,
   configuredCodexSessionFloor,
@@ -1267,6 +1270,7 @@ export class Daemon {
   private readonly unattributableFileAgents = new Set<string>()
   // Every live ACP host by HostKey (agent id, or agent id + session key for a confined session); every per-host map below is keyed alike.
   private hosts = new Map<HostKey, AcpHost>()
+  private readonly modelProviderSecrets = new Map<HostKey, { name: string; value: string }[]>()
   // Per-host launch facts: the agent dir (the roster entry is gone when a removed agent's host stops) and the launch cwd.
   private hostLaunch = new Map<HostKey, { agentDir: string; cwd: string }>()
   // host → when it was (re)built (clock ms), so the idle reaper gives a host with no recorded activity yet a full window.
@@ -4774,7 +4778,7 @@ export class Daemon {
       ask,
       holderHostedSessions: await this.hostedSessionCount(sessionKey),
       holderCapacity: this.cfg.limits.maxConcurrentSessions,
-      holderAuthenticates: this.holderAuthenticates(ask.runtime),
+      holderAuthenticates: (!this.k8s && !!agent.modelProvider) || this.holderAuthenticates(ask.runtime),
       holderOffers: this.holderOffers(ask),
       ...(answer ? { answer } : {})
     })
@@ -4890,7 +4894,7 @@ export class Daemon {
       ask,
       holderHostedSessions: await this.hostedSessionCount(placed.sessionKey),
       holderCapacity: this.cfg.limits.maxConcurrentSessions,
-      holderAuthenticates: this.holderAuthenticates(ask.runtime),
+      holderAuthenticates: (!this.k8s && !!agent.modelProvider) || this.holderAuthenticates(ask.runtime),
       holderOffers: this.holderOffers(ask),
       replacing: placed.executorDaemonId,
       ...(answer ? { answer } : {})
@@ -6198,6 +6202,7 @@ export class Daemon {
 
   /** A one-off dream host's environment goes with it — its VM and runtime home, or its srt shim — rather than waiting for the idle sweep. */
   private async discardDreamEnvironment(agent: LoadedAgent, dreamHostKey: HostKey): Promise<void> {
+    this.modelProviderSecrets.delete(dreamHostKey)
     await this.microsandbox
       ?.discard(hostEnvironmentId(agent.id, dreamHostKey))
       .then(() => rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
@@ -6938,12 +6943,31 @@ export class Daemon {
     await this.stopHost(agentId)
   }
 
-  /** Construct + memoize the host for `key`; `cwd` is the session directory for a session-bound host, `sessionGitDirs` its clones' `.git` when they are off this disk. */
+  // Fetch only the selected provider; failures never fall back to a different billing source.
+  private async requestModelProviderCredential(agent: LoadedAgent): Promise<ProviderCredential | undefined> {
+    if (this.k8s || !agent.modelProvider) return undefined
+    if (!this.cpClient) throw new Error('Provider API keys require a control-plane connection')
+    let credentials: ProviderCredential | null
+    try {
+      ;({ credentials } = await this.cpClient.requestProviderCredentials({
+        agentId: agent.id,
+        provider: agent.modelProvider
+      }))
+    } catch {
+      throw new Error('Could not load the selected provider API key; check the control-plane connection')
+    }
+    if (!credentials)
+      throw new Error(`Configure the ${agent.modelProvider} API key in Providers before starting this agent`)
+    return credentials
+  }
+
+  // Construct and memoize the host with its session workspace and launch credentials.
   private ensureHost(
     key: HostKey,
     cfg: ReturnType<typeof loadConfig>,
     cwd?: string,
-    sessionGitDirs?: string[]
+    sessionGitDirs?: string[],
+    providerCredential?: ProviderCredential
   ): AcpHost {
     const host = this.hosts.get(key)
     if (host) return host
@@ -6952,6 +6976,7 @@ export class Daemon {
     const launchCwd = cwd ?? agent.workspace.path
     const built = this.buildAcpHost(agent, cfg, {
       hostKey: key,
+      providerCredential,
       // A host of the session's own launches in its birth strategy; the agent's shared host, in the agent's (§5).
       strategy: this.sessionStrategy(agent, hostKeySessionKey(key)),
       cwd: launchCwd,
@@ -6985,6 +7010,7 @@ export class Daemon {
       strategy: string
       cwd: string
       excludeAgentToolCredentials?: boolean
+      providerCredential?: ProviderCredential
       modelCredential?: { target: ModelProviderTarget; credential: ModelCredential }
       /** A session whose clones are off this disk: their `.git`, as the filesystem holding them answered. */
       sessionGitDirs?: string[]
@@ -6995,7 +7021,22 @@ export class Daemon {
     configFileState?: { childEnv?: Record<string, string | undefined>; materialized: boolean }
   } {
     const agentId = agent.id
-    const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(opts.hostKey, sid, u)
+    if (!this.k8s && agent.modelProvider && !opts.providerCredential)
+      throw new Error('The selected provider API key must be loaded before launching this agent')
+    const providerSecrets = opts.providerCredential
+      ? [
+          { name: 'MODEL_API_KEY', value: opts.providerCredential.apiKey },
+          ...Object.entries(opts.providerCredential.headers).map(([name, value]) => ({
+            name: `MODEL_HEADER_${name}`,
+            value
+          }))
+        ]
+      : []
+    const secrets = maskableSecrets({
+      runtimeOverrides: { secrets: [...(agent.runtimeOverrides?.secrets ?? []), ...providerSecrets] }
+    })
+    const onUpdate = (sid: string, u: any) =>
+      this.enqueueAcpUpdate(opts.hostKey, sid, opts.providerCredential ? maskSecretsDeep(u, secrets) : u)
     // A session placed on another machine runs inside that machine's strategy, so this one's own VM composes none of it (§7).
     const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
     const micro = !this.k8s && opts.strategy === 'microsandbox' && !remoteSession
@@ -7213,6 +7254,7 @@ export class Daemon {
         agentsRoot: cfg.agentsDir,
         runtimeEnv,
         agentEnv: env,
+        inheritRuntimeCredentials: !opts.providerCredential,
         // A dream host materializes nothing: it has no cleanup path and needs none of these secrets.
         ...(excludeAgentToolCredentials
           ? {}
@@ -7226,6 +7268,10 @@ export class Daemon {
           // Every launch but a pod inherits this daemon's environment beneath the explicit env, so overlay that value too.
           if (excludeAgentToolCredentials) {
             applyOpenCodeReadOnlyMode(target, launchEnv, this.k8s ? undefined : process.env.OPENCODE_CONFIG_CONTENT)
+          }
+          if (!this.k8s && opts.providerCredential && agent.modelProvider) {
+            applyOrganizationModelCredential(agent.modelProvider, target, launchEnv, opts.providerCredential)
+            return
           }
           if (!this.k8s) return
           if (target) {
@@ -7346,9 +7392,18 @@ export class Daemon {
         reasoningEffort: agent.reasoningEffort,
         fastMode: agent.fastMode
       },
-      log: this.log
+      log: opts.providerCredential
+        ? {
+            trace: (message) => this.log.trace(maskSecretsDeep(message, secrets)),
+            debug: (message) => this.log.debug(maskSecretsDeep(message, secrets)),
+            info: (message) => this.log.info(maskSecretsDeep(message, secrets)),
+            warn: (message) => this.log.warn(maskSecretsDeep(message, secrets)),
+            error: (message) => this.log.error(maskSecretsDeep(message, secrets))
+          }
+        : this.log
     })
     constructed.host = host
+    if (providerSecrets.length) this.modelProviderSecrets.set(opts.hostKey, secrets)
     if (micro) this.imageRuntimeHosts.set(host, runtimeEntry?.aliasOf ?? agent.runtime)
     return { host, configFileState }
   }
@@ -7443,6 +7498,7 @@ export class Daemon {
 
   private registrationFeatures(): string[] {
     return [
+      AGENT_MODEL_PROVIDER_FEATURE,
       PROVIDER_CREDENTIALS_V1_FEATURE,
       DECISION_PREVIEW_V1_FEATURE,
       DECISION_PREVIEW_RAW_V1_FEATURE,
@@ -7656,6 +7712,7 @@ export class Daemon {
 
   /** Forget a host's launch facts once its process is gone. */
   private releaseHostLaunch(key: HostKey): void {
+    this.modelProviderSecrets.delete(key)
     this.hostLaunch.delete(key)
   }
 
@@ -8938,8 +8995,10 @@ export class Daemon {
     hostKey: HostKey,
     issued?: { target: ModelProviderTarget; grant: KeyGrant }
   ): Promise<AcpHost> {
+    const providerCredential = await this.requestModelProviderCredential(agent)
     const { host } = this.buildAcpHost(agent, this.cfg, {
       hostKey,
+      providerCredential,
       strategy: this.agentStrategy(agent),
       cwd,
       // A dream needs only its materialized inputs, never the agent's tool
@@ -19332,7 +19391,10 @@ export class Daemon {
    *  payload about to be rendered, streamed, or persisted (session/secret-mask.ts).
    *  No-op (same reference) for agents without maskable secrets. */
   private maskAgentSecrets<T>(agentId: string, payload: T): T {
-    return maskSecretsDeep(payload, maskableSecrets(this.agents.get(agentId)))
+    const providerSecrets = [...this.modelProviderSecrets].flatMap(([key, secrets]) =>
+      hostKeyAgentId(key) === agentId ? secrets : []
+    )
+    return maskSecretsDeep(payload, [...maskableSecrets(this.agents.get(agentId)), ...providerSecrets])
   }
 
   /** Keep native usage and the runtime's concrete model together, including notifications after turn completion. */
@@ -20033,7 +20095,15 @@ export class Daemon {
         throw new Error(`host start superseded for ${label}`)
       }
       // Constructs + memoizes into this.hosts, in the session directory for a session-bound host.
-      const host = this.ensureHost(key, this.cfg, bound ? (bound.cwd ?? prepared) : undefined, sessionGitDirs)
+      const providerCredential = await this.requestModelProviderCredential(agent)
+      if (this.hostStartGeneration.get(key) !== generation) throw new Error(`host start superseded for ${label}`)
+      const host = this.ensureHost(
+        key,
+        this.cfg,
+        bound ? (bound.cwd ?? prepared) : undefined,
+        sessionGitDirs,
+        providerCredential
+      )
       try {
         await withStartupPhase('runtime', () => host.start())
         if (this.hostStartGeneration.get(key) !== generation) {
@@ -20043,13 +20113,13 @@ export class Daemon {
         this.lastStartFailure.delete(agentId)
         return host
       } catch (err) {
-        lastErr = err
+        lastErr = providerCredential ? new Error(this.maskAgentSecrets(agentId, formatErr(err))) : err
         this.readyHosts.delete(key)
         // Reap the dead child and drop it so the next attempt spawns a fresh one.
         if (this.hosts.get(key) === host) this.hosts.delete(key)
         await host.stop().catch(() => {})
-        this.hostLaunch.delete(key)
-        if (this.hostStartGeneration.get(key) !== generation) throw err
+        this.releaseHostLaunch(key)
+        if (this.hostStartGeneration.get(key) !== generation) throw lastErr
         // Remove the failed attempt's materialized config-file secrets unless another host of the agent still reads them.
         if (!this.agentHasOtherHosts(agentId, key)) {
           const failedSpawnDir = this.hostConfigFiles.get(agentId)?.agentDir
@@ -20063,7 +20133,7 @@ export class Daemon {
         // let the loop try again rather than burning every attempt and staging the agent out. An
         // attempt that failed for some other reason must not spend the one repair.
         if (!repairTried) {
-          const outcome = await this.repairAgentRuntimeInstall(agentId, err)
+          const outcome = await this.repairAgentRuntimeInstall(agentId, lastErr)
           if (outcome !== 'declined') repairTried = true
           if (outcome === 'repaired') extraAttempts = 1
         }
@@ -20071,12 +20141,12 @@ export class Daemon {
         if (i < budget) {
           const backoff = this.cfg.limits.agentStartBackoffMs
           this.log.warn(
-            `acp: agent "${label}" start attempt ${i}/${budget} failed (${(err as Error).message}) — retrying in ${backoff}ms`
+            `acp: agent "${label}" start attempt ${i}/${budget} failed (${(lastErr as Error).message}) — retrying in ${backoff}ms`
           )
           await this.sleep(backoff, signal)
         } else {
-          this.log.error(`acp: agent "${label}" failed to start after ${budget} attempt(s): ${formatErr(err)}`)
-          this.lastStartFailure.set(agentId, startFailureDetail(err))
+          this.log.error(`acp: agent "${label}" failed to start after ${budget} attempt(s): ${formatErr(lastErr)}`)
+          this.lastStartFailure.set(agentId, startFailureDetail(lastErr))
         }
       }
     }

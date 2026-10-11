@@ -208,6 +208,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         managedSkills: [],
         decisionIds: [decisionId],
         modelSelection,
+        modelProvider: null,
         apiGates: {}, // always shipped so removing the last chat API gate replicates
         repositorySelector: null, // always shipped value-or-null so clearing the evaluator replicates
         assistantMode: null, // always shipped value-or-null so switching it off replicates
