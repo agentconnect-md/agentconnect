@@ -1900,8 +1900,9 @@ export class Daemon {
   // Last look for Running pods no launch here tracks, and the one still in flight, off the sweep's critical path.
   private lastUntrackedSandboxAdoptionAt = 0
   private untrackedSandboxAdoption?: Promise<void>
-  // When each long-quiet pod's skip reason was last logged at info, per subject.
+  // When each long-quiet pod's skip reason was last logged at info, per subject, and each long-quiet host's, per label.
   private readonly longIdleSkipReportedAt = new Map<string, number>()
+  private readonly longIdleHostReportedAt = new Map<string, number>()
   // Single-flight for the retention pass — a slow git cleanup must not overlap
   // the next sweep's pass (the sweep itself is synchronous, the GC is not).
   private sessionRetentionSweepInFlight = false
@@ -6231,13 +6232,25 @@ export class Daemon {
 
   /** Admission the session holds right now, read with no await so a stop can decide against it in one tick. */
   private sessionAdmitted(sessionKey: string, hostKey: HostKey): boolean {
+    return this.sessionAdmissionHold(sessionKey, hostKey) !== undefined
+  }
+
+  /** What admission the session holds right now, or undefined when it holds none. */
+  private sessionAdmissionHold(sessionKey: string, hostKey: HostKey): string | undefined {
+    const turn = [...this.pending.values()].find((p) => p.plan.sessionKey === sessionKey)
+    if (turn) return this.pendingTurnHold(turn)
+    if (this.inflight.has(sessionKey)) return 'a message is being admitted'
+    if (this.activeDispatchDoneByKey.has(sessionKey)) return 'a dispatch is in flight'
     // Successful starts stay cached; only a not-yet-ready host still holds startup admission.
-    return (
-      this.inflight.has(sessionKey) ||
-      this.activeDispatchDoneByKey.has(sessionKey) ||
-      (this.hostStarts.has(hostKey) && !this.readyHosts.has(hostKey)) ||
-      [...this.pending.values()].some((p) => p.plan.sessionKey === sessionKey)
-    )
+    if (this.hostStarts.has(hostKey) && !this.readyHosts.has(hostKey)) return 'its runtime is still starting'
+    return undefined
+  }
+
+  /** Why a turn still holds its host: a human it waits on, as the stall watchdog reads it, or its runtime. */
+  private pendingTurnHold(p: Pending): string {
+    if (p.approval.depth > 0 || this.permissions.awaitingHuman(p.hostKey, p.acpSessionId))
+      return 'a turn awaits a human answer to a permission or question'
+    return p.promptInFlight ? 'a turn is still running' : 'a turn is queued'
   }
 
   /** The host and start generation a session-host stop decision is taken against. */
@@ -23010,6 +23023,10 @@ export class Daemon {
       )
     }
     // §7.2 ready→provisioned: reclaim a host with no recent activity of its own and no work in flight (a long turn stamps no activity, so the in-flight guards are load-bearing).
+    const hostLabels = new Set([...this.hosts.keys()].map(hostKeyLabel))
+    for (const label of this.longIdleHostReportedAt.keys()) {
+      if (!hostLabels.has(label)) this.longIdleHostReportedAt.delete(label)
+    }
     for (const [key, host] of [...this.hosts]) {
       const agentId = hostKeyAgentId(key)
       const sessionKey = hostKeySessionKey(key)
@@ -23023,14 +23040,18 @@ export class Daemon {
       const staleRoots = this.staleRootHosts.has(host)
       if (now - last <= ttl && !staleRoots) continue
       // Read admission after the store round trip; only this session's work holds its host.
-      if (this.hosts.get(key) !== host || this.hostStopping.has(key) || this.drainingAgents.has(agentId)) continue
-      if (
-        sessionKey === undefined
-          ? (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ||
-            [...this.pending.values()].some((p) => p.plan.agentId === agentId)
-          : this.sessionAdmitted(sessionKey, key)
-      )
+      if (this.hosts.get(key) !== host) continue
+      const held = this.hostStopping.has(key)
+        ? 'its stop is in flight'
+        : this.drainingAgents.has(agentId)
+          ? 'its agent is draining'
+          : sessionKey === undefined
+            ? this.sharedHostHold(agentId)
+            : this.sessionAdmissionHold(sessionKey, key)
+      if (held) {
+        this.reportIdleSkip('host', label, held, now - last, ttl, now)
         continue
+      }
       // A pass of the daemon's own holds its host until it settles, read after the store round trip in the tick that stops it; one past the lifetime ceiling is taken as wedged.
       if (this.hostPasses.holds(key, now, maxLifetime)) {
         this.log.info(`idle: host "${label}" has an internal pass in flight — deferring reclaim`)
@@ -23104,7 +23125,7 @@ export class Daemon {
       // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
       const last = Math.max(activity ?? 0, since)
       const quiet = now - last > ttl
-      const skip = (reason: string): void => this.reportIdleSkip(subject, reason, now - last, ttl, now)
+      const skip = (reason: string): void => this.reportIdleSkip('sandbox', subject, reason, now - last, ttl, now)
       // Recheck duty and admission after reading the store, before asking the pod to suspend.
       if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) {
         skip('duty held elsewhere')
@@ -23136,19 +23157,34 @@ export class Daemon {
     }
   }
 
-  /** One sweep skip, at debug unless the pod has stayed quiet several timeouts, when it is logged at info once an hour so a pod that never suspends names what holds it. */
-  private reportIdleSkip(subject: string, reason: string, quietMs: number, ttl: number, now: number): void {
-    const reportedAt = this.longIdleSkipReportedAt.get(subject)
+  /** What still holds the agent's shared host: any turn of the agent, or a dispatch in flight. */
+  private sharedHostHold(agentId: string): string | undefined {
+    const turn = [...this.pending.values()].find((p) => p.plan.agentId === agentId)
+    if (turn) return this.pendingTurnHold(turn)
+    return (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ? 'a dispatch is in flight' : undefined
+  }
+
+  /** One sweep skip, at debug unless the host or pod has stayed quiet several timeouts, when it is logged at info once an hour so one that never goes names what holds it. */
+  private reportIdleSkip(
+    kind: 'host' | 'sandbox',
+    name: string,
+    reason: string,
+    quietMs: number,
+    ttl: number,
+    now: number
+  ): void {
+    const reported = kind === 'host' ? this.longIdleHostReportedAt : this.longIdleSkipReportedAt
+    const reportedAt = reported.get(name)
     if (
       quietMs <= LONG_IDLE_SKIP_AFTER_TTLS * ttl ||
       (reportedAt !== undefined && now - reportedAt < LONG_IDLE_SKIP_REPORT_INTERVAL_MS)
     ) {
-      this.log.debug(`idle: skipping sandbox "${subject}" — ${reason}`)
+      this.log.debug(`idle: skipping ${kind} "${name}" — ${reason}`)
       return
     }
-    this.longIdleSkipReportedAt.set(subject, now)
+    reported.set(name, now)
     this.log.info(
-      `idle: the sandbox "${subject}" is still up after ${Math.round(quietMs / 60_000)} min without recorded activity — ${reason}`
+      `idle: the ${kind} "${name}" is still up after ${Math.round(quietMs / 60_000)} min without recorded activity — ${reason}`
     )
   }
 

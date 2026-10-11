@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
 import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
+import { LONG_IDLE_SKIP_AFTER_TTLS, LONG_IDLE_SKIP_REPORT_INTERVAL_MS } from '../src/daemon/constants.js'
 import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
 import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
@@ -2026,6 +2027,51 @@ describe('Daemon idle sweep (#111/#118)', () => {
     await (daemon as any).sweepIdle()
     expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
 
+    await daemon.stop()
+  })
+
+  it('names what keeps a long-quiet host at info once an hour, and at debug before and in between', async () => {
+    const clock = new FakeClock()
+    // The store stamps a turn's activity off the wall clock, so the fake one starts there.
+    clock.advance(Date.now())
+    const blocked = blockingHost()
+    const daemon = new Daemon({
+      root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 10_000_000 }),
+      hostFactory: () => blocked.host as any,
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    const inner = daemon as any
+    const turn = inner.dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(blocked.host.prompt).toHaveBeenCalled(), WAIT)
+    // The turn waits on a permission card nobody answers, which the stall watchdog leaves alone by design.
+    vi.spyOn(inner.permissions, 'awaitingHuman').mockReturnValue(true)
+    const info = vi.spyOn(inner.log, 'info')
+    const debug = vi.spyOn(inner.log, 'debug')
+    const held = 'a turn awaits a human answer to a permission or question'
+    const named = (): number =>
+      info.mock.calls.filter(([line]) => String(line).startsWith('idle: the host "bot-a" is still up after')).length
+
+    clock.advance(2001)
+    await inner.sweepIdle()
+    expect(debug).toHaveBeenCalledWith(`idle: skipping host "bot-a" — ${held}`)
+    expect(named()).toBe(0)
+    clock.advance(LONG_IDLE_SKIP_AFTER_TTLS * 1000)
+    await inner.sweepIdle()
+    expect(info).toHaveBeenCalledWith(
+      `idle: the host "bot-a" is still up after 0 min without recorded activity — ${held}`
+    )
+    clock.advance(LONG_IDLE_SKIP_REPORT_INTERVAL_MS - 1)
+    await inner.sweepIdle()
+    expect(named()).toBe(1)
+    clock.advance(1)
+    await inner.sweepIdle()
+    expect(named()).toBe(2)
+    expect(inner.hosts.has('bot-a')).toBe(true)
+
+    blocked.release()
+    await turn
     await daemon.stop()
   })
 
