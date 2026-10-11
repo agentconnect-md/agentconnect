@@ -2032,8 +2032,8 @@ describe('Daemon idle sweep (#111/#118)', () => {
 
   it('names what keeps a long-quiet host at info once an hour, and at debug before and in between', async () => {
     const clock = new FakeClock()
-    // The store stamps a turn's activity off the wall clock, so the fake one starts there.
-    clock.advance(Date.now())
+    // Reproduce slow startup by leaving the fake clock behind the store's wall-clock timestamps.
+    clock.advance(Date.now() - 10_000)
     const blocked = blockingHost()
     const daemon = new Daemon({
       root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 10_000_000 }),
@@ -2053,7 +2053,8 @@ describe('Daemon idle sweep (#111/#118)', () => {
     const named = (): number =>
       info.mock.calls.filter(([line]) => String(line).startsWith('idle: the host "bot-a" is still up after')).length
 
-    clock.advance(2001)
+    // Measure idle time after setup, whose wall-clock duration varies across runners.
+    clock.advance(Date.now() - clock.now() + 2001)
     await inner.sweepIdle()
     expect(debug).toHaveBeenCalledWith(`idle: skipping host "bot-a" — ${held}`)
     expect(named()).toBe(0)
