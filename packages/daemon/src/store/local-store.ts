@@ -1349,7 +1349,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 45
+export const SCHEMA_VERSION = 46
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1901,6 +1901,18 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     )
     for (const column of added)
       if (!columns.includes(column)) await db.exec(`ALTER TABLE permission_requests ADD COLUMN ${column} TEXT`)
+  },
+  // v46 records what a draft's card shows, so a reconnect rewrites one that missed its settlement (assistant-mode.md §5.10).
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE IF EXISTS assistant_draft ADD COLUMN IF NOT EXISTS cardShows TEXT')
+      return
+    }
+    const columns = ((await db.query('PRAGMA table_info(assistant_draft)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    if (columns.length > 0 && !columns.includes('cardShows'))
+      await db.exec('ALTER TABLE assistant_draft ADD COLUMN cardShows TEXT')
   }
 ]
 

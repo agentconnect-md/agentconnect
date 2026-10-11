@@ -291,7 +291,8 @@ function draftOf(
     offerAlways: draft.offerAlways,
     approver: approver
       ? {
-          kind: approver.kind,
+          // A proposal carded in its own place is approved by people there, which the wire names as a conversation.
+          kind: approver.kind === 'member' ? 'member' : 'conversation',
           integrationId: approver.integrationId,
           channel: approver.channel,
           userId: approver.userId,

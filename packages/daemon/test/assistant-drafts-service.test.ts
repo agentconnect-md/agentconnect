@@ -7,7 +7,9 @@ import {
   type DraftAsker,
   type DraftCard,
   type DraftCardPort,
-  type InterceptedPost
+  type InterceptedPost,
+  type ProposalPlace,
+  type TaskStart
 } from '../src/assistant/drafts.js'
 import type { MessageGateway } from '../src/mcp/ops/context.js'
 import { settlePost } from '../src/mcp/ops/messaging.js'
@@ -34,6 +36,15 @@ const HERE: AssistantDraftSource = {
   sessionId: 'outward-dm',
   place: true
 }
+/** A patrol of an item taken in C0GENERAL. */
+const PATROL: AssistantDraftSource = {
+  ...HERE,
+  channel: 'C0GENERAL',
+  thread: 'subsession:patrol-1',
+  sessionKey: 'key-patrol',
+  sessionId: 'outward-patrol',
+  place: false
+}
 /** A cron run with no conversation of its own. */
 const PLACELESS: AssistantDraftSource = { ...HERE, integrationId: null, channel: 'cron-1', place: false }
 const TO_SUPPORT: InterceptedPost = {
@@ -57,8 +68,11 @@ function fakePort() {
     openDirectMessage: vi.fn(async (user: string) => `D_${user}`),
     isFullMember: vi.fn(async (_user: string) => false),
     scope: () => 'T0EXAMPLE',
-    postCard: vi.fn(async (_channel: string, _card: DraftCard) => `card-${++n}`),
-    updateCard: vi.fn(async (_channel: string, _ts: string, _card: DraftCard) => {})
+    postCard: vi.fn(async (_channel: string, _card: DraftCard, _thread?: string) => `card-${++n}`),
+    updateCard: vi.fn(async (_channel: string, _ts: string, _card: DraftCard): Promise<boolean | void> => {}),
+    // Members whose id starts with B are bots; D0ALICE is Alice's direct message with the agent.
+    isPerson: vi.fn(async (user: string) => !user.startsWith('B')),
+    directMessageWith: vi.fn(async (channel: string) => (channel === 'D0ALICE' ? 'U0ALICE' : null))
   } satisfies DraftCardPort
 }
 
@@ -69,6 +83,8 @@ async function world(
     external?: string[]
     post?: MessageGateway['postMessage']
     route?: (req: Omit<AgentApprovalRoute, 'agentId'>) => Promise<unknown>
+    /** Conversations where a person's own message would start a turn of the agent. */
+    askable?: string[]
   } = {}
 ) {
   store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
@@ -100,6 +116,14 @@ async function world(
         }
   )
   const afterPost = vi.fn(async (_draft: AssistantDraft, _messageId: string) => {})
+  const askable = new Set(over.askable ?? ['C0GENERAL', 'D0ALICE'])
+  // An approved task's start claims the record, as the daemon's does; one that lost the claim ran nothing.
+  const startTask = vi.fn(
+    async (draft: AssistantDraft, by: { id: string | null; name: string | null }): Promise<TaskStart> =>
+      (await s.assistantDrafts.beginTask(draft.id, by, `task-${draft.id}`, now))
+        ? { kind: 'started' }
+        : { kind: 'lost' }
+  )
   const drafts = new AssistantDrafts({
     ledger: () => s.assistantDrafts,
     now: () => now,
@@ -113,7 +137,10 @@ async function world(
     sessionLink: (id) => `https://console.example.test/sessions/${id}`,
     platformName: () => 'Slack',
     describeDestination,
-    afterPost
+    afterPost,
+    startTask,
+    observe: async () => {},
+    admitsAsker: (_agent, id, channel, isDm) => id === INT && askable.has(channel) && isDm === channel.startsWith('D')
   })
   const click = (requestId: string, optionId: string, userId = 'U0ALICE') =>
     drafts.handleChoice({ requestId, optionId, actor: { userId, name: userId.toLowerCase() } })
@@ -136,8 +163,24 @@ async function world(
     only,
     advance: (ms: number) => (now += ms),
     enabled,
+    askable,
+    startTask,
     describeDestination,
     afterPost,
+    // A patrol's proposal for an item taken in `place`'s conversation.
+    propose: (place?: ProposalPlace) =>
+      drafts.propose({
+        agentId: AGENT,
+        target: { platform: 'slack', integrationId: INT, channel: place?.channel ?? 'C0GENERAL', thread: null },
+        destination: { name: 'general' },
+        task: 'Rebase PR #12 onto main and push.',
+        sentence: 'I want to rebase PR #12 because it conflicts with main.',
+        why: 'The check found a merge conflict.',
+        itemId: 'item-1',
+        itemVersion: 1,
+        source: PATROL,
+        ...(place ? { place } : {})
+      }),
     /** Switch assistant mode as the daemon does: the live policy, then a new grant generation. */
     switchMode: async (on: boolean) => {
       policy.enabled = on
@@ -805,5 +848,162 @@ describe('the Slack draft card', () => {
     const other = text(view({ platform: 'telegram', channel: '-1001', name: 'ops' }, 'Telegram'))
     expect(other).toContain('*ops* on Telegram')
     expect(other).toContain('Telegram `-1001`')
+  })
+})
+
+describe('a proposal in the conversation its item belongs to', () => {
+  const GENERAL: ProposalPlace = { integrationId: INT, channel: 'C0GENERAL', thread: '1700000000.000100' }
+  const ALICES_DM: ProposalPlace = { integrationId: INT, channel: 'D0ALICE' }
+  const DENIED = '\u{1F6AB} Denied by u0bob. Nothing was run.'
+
+  it('is carded there, in the thread its replies land in, and nowhere else', async () => {
+    const w = await world()
+    const { draft, approver } = await w.propose(GENERAL)
+    expect(approver).toBe('the people in the conversation the item was taken in')
+    expect(w.port.postCard).toHaveBeenCalledTimes(1)
+    expect(w.port.postCard.mock.calls[0]).toEqual([
+      'C0GENERAL',
+      expect.objectContaining({
+        draftId: draft.id,
+        view: expect.objectContaining({
+          kind: 'task',
+          proposal: expect.objectContaining({ sentence: expect.any(String) })
+        })
+      }),
+      '1700000000.000100'
+    ])
+    expect(w.route).not.toHaveBeenCalled()
+    expect(draft).toMatchObject({
+      approver: { kind: 'place', integrationId: INT, channel: 'C0GENERAL', userId: null },
+      cardTs: 'card-1',
+      cardShows: 'awaiting_review'
+    })
+  })
+
+  it('is approved by a person whose message there would start a turn, and by no one else', async () => {
+    const w = await world()
+    const { draft } = await w.propose(GENERAL)
+    await w.click(draft.id, 'approve', 'B0BOT')
+    w.askable.delete('C0GENERAL')
+    await w.click(draft.id, 'approve', 'U0BOB')
+    expect(await w.store.assistantDrafts.get(draft.id)).toMatchObject({ status: 'awaiting_review' })
+    expect(w.startTask).not.toHaveBeenCalled()
+
+    w.askable.add('C0GENERAL')
+    await w.click(draft.id, 'approve', 'U0BOB')
+    expect(w.startTask).toHaveBeenCalledTimes(1)
+    expect(await w.store.assistantDrafts.get(draft.id)).toMatchObject({
+      status: 'executing',
+      decidedBy: 'T0EXAMPLE:U0BOB',
+      decidedByName: 'u0bob',
+      cardShows: 'executing'
+    })
+    expect(w.port.updateCard).toHaveBeenLastCalledWith(
+      'C0GENERAL',
+      'card-1',
+      expect.objectContaining({ outcome: expect.stringContaining('Approved by u0bob') })
+    )
+  })
+
+  it('in a direct message, is approved by that person only', async () => {
+    const w = await world()
+    const { draft } = await w.propose(ALICES_DM)
+    expect(w.port.postCard.mock.calls[0]![0]).toBe('D0ALICE')
+    expect(w.port.postCard.mock.calls[0]![2]).toBeUndefined()
+    await w.click(draft.id, 'approve', 'U0BOB')
+    expect(w.startTask).not.toHaveBeenCalled()
+    await w.click(draft.id, 'approve', 'U0ALICE')
+    expect(await w.store.assistantDrafts.get(draft.id)).toMatchObject({ status: 'executing', decidedByName: 'u0alice' })
+  })
+
+  it('says on its card that nothing was run once denied, or once expired', async () => {
+    const w = await world()
+    const { draft: denied } = await w.propose(GENERAL)
+    await w.click(denied.id, 'discard', 'U0BOB')
+    expect(w.port.updateCard).toHaveBeenLastCalledWith(
+      'C0GENERAL',
+      'card-1',
+      expect.objectContaining({ outcome: DENIED })
+    )
+    const { draft: lapsed } = await w.propose(GENERAL)
+    w.advance(ASSISTANT_DRAFT_TTL_MS)
+    await w.drafts.sweep([AGENT])
+    expect(w.port.updateCard).toHaveBeenLastCalledWith(
+      'C0GENERAL',
+      'card-2',
+      expect.objectContaining({ outcome: expect.stringContaining('Expired. Nothing was run.') })
+    )
+    expect(await w.store.assistantDrafts.get(lapsed.id)).toMatchObject({ status: 'expired', cardShows: 'expired' })
+    expect(w.startTask).not.toHaveBeenCalled()
+  })
+
+  it('runs once when its card and the console answer together', async () => {
+    const w = await world()
+    const { draft } = await w.propose(GENERAL)
+    const [answer] = await Promise.all([w.decide(draft.id, 'approve'), w.click(draft.id, 'approve', 'U0BOB')])
+    expect(answer.result).toMatch(/^(decided|already-decided)$/)
+    const started = await Promise.all(w.startTask.mock.results.map((r) => r.value as Promise<TaskStart>))
+    expect(started.filter((r) => r.kind === 'started')).toHaveLength(1)
+    expect((await w.store.assistantDrafts.get(draft.id))?.status).toBe('executing')
+  })
+
+  it('falls back to the responsible user, and only there, when the place cannot take the card', async () => {
+    const w = await world()
+    w.port.postCard.mockImplementationOnce(async () => {
+      throw new Error('not_in_channel')
+    })
+    const { draft, approver } = await w.propose(GENERAL)
+    expect(approver).toBe("the agent's responsible user, in a direct message")
+    expect(w.port.postCard.mock.calls.map((c) => c[0])).toEqual(['C0GENERAL', 'D_U0RESP'])
+    expect(draft).toMatchObject({ approver: { kind: 'member', userId: 'U0RESP' }, cardTs: 'card-1' })
+    // The place's people decide nothing now: the card they would click was never posted.
+    await w.click(draft.id, 'approve', 'U0BOB')
+    expect(w.startTask).not.toHaveBeenCalled()
+    await w.click(draft.id, 'approve', 'U0RESP')
+    expect(w.startTask).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a card whose post timed out in its place, and never cards it twice', async () => {
+    const w = await world()
+    w.port.postCard.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('send queue: task timed out'), { sendQueueTimeout: true })
+    })
+    const { draft, approver } = await w.propose(GENERAL)
+    expect(approver).toBe('the people in the conversation the item was taken in')
+    expect(w.port.postCard.mock.calls.map((c) => c[0])).toEqual(['C0GENERAL'])
+    expect(draft).toMatchObject({ approver: { kind: 'place', channel: 'C0GENERAL' }, cardTs: null })
+    // The card may have landed late, and the place's people still decide it.
+    await w.click(draft.id, 'approve', 'U0BOB')
+    expect(w.startTask).toHaveBeenCalledTimes(1)
+  })
+
+  it('goes to the responsible user, as before, where no one could ask the agent', async () => {
+    const w = await world()
+    const { draft } = await w.propose({ integrationId: INT, channel: 'C0SHARED' })
+    expect(w.port.postCard.mock.calls.map((c) => c[0])).toEqual(['D_U0RESP'])
+    expect(draft.approver).toMatchObject({ kind: 'member', userId: 'U0RESP' })
+  })
+
+  it('rewrites a card that missed its settlement when the integration reconnects, once', async () => {
+    const w = await world()
+    const { draft } = await w.propose(GENERAL)
+    w.port.updateCard.mockResolvedValueOnce(false)
+    await w.click(draft.id, 'discard', 'U0BOB')
+    expect(await w.store.assistantDrafts.get(draft.id)).toMatchObject({
+      status: 'denied',
+      cardShows: 'awaiting_review'
+    })
+    // A restart: a fresh service over the same store, as the reconnect sweep runs it.
+    const restarted = new AssistantDrafts(w.drafts['host'])
+    await restarted.retireStaleCards(INT)
+    expect(w.port.updateCard).toHaveBeenLastCalledWith(
+      'C0GENERAL',
+      'card-1',
+      expect.objectContaining({ outcome: DENIED })
+    )
+    expect((await w.store.assistantDrafts.get(draft.id))?.cardShows).toBe('denied')
+    w.port.updateCard.mockClear()
+    await restarted.retireStaleCards(INT)
+    expect(w.port.updateCard).not.toHaveBeenCalled()
   })
 })

@@ -105,10 +105,13 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 
 ### 1.6 Approval
 
-- The card lands in the item's place of origin; for an external place, in the approver's DM
-  instead (§5.5). Who may approve follows the existing in-chat
-  approval rules: with "allow runtime changes in chat" switched on, anyone who sees the card can
-  click; otherwise the console and the editor DM path. The card offers "always allow this tool".
+- A proposal's card lands in the item's place of origin; for an external place, in the approver's
+  DM instead (§5.5). Whoever could ask the agent there may approve it: in a DM, that person; in a
+  channel, anyone whose own message would start a turn of the agent there. Approving runs the task
+  with the agent's own permissions, which is what asking there gets, so it grants nothing more.
+- A runtime permission request inside the task follows the existing in-chat approval rules: with
+  "allow runtime changes in chat" switched on, anyone who sees the card can click; otherwise the
+  console and the editor DM path. That card offers "always allow this tool".
 - The card leads with one plain sentence; the raw arguments are folded underneath.
 - It acts only after approval and reports back. An uncertain outcome is reported as "not sure this
   went through, please look" — never retried. An expired card is never executed.
@@ -669,16 +672,21 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   createdAt, expiresAt = createdAt + 30min }
 ```
 
-- The card is delivered through §5.7 to the item's place of origin, or for an external place to
-  the approver's DM (§5.5).
+- The card is posted in the item's place of origin, where the place's own replies land: its root,
+  or the thread its long session lives in. An external place's card, or one the place cannot take,
+  goes where a draft with no asker goes instead (§5.5): the responsible user's DM, else the
+  fallback conversation.
 - **Drafts are the record's first use** (P0a): action "post" — into an external place or into
   another place (§5.5) — executed by the daemon. General
   `propose` actions come with P1.
-- **Approvers follow the existing two paths** (`allowRuntimeChangesInChat` on ⇒ any participant
-  of the conversation may click; off ⇒ the editor path); for an external place, the internal
-  member of §5.5. Only the policy is reused: both existing
-  paths bind to a pending ACP request, so a `propose` record that outlives a turn is a new
-  mechanism; the chat card and the editor DM exist on Slack only, other platforms use the console.
+- **Approvers of a proposal are whoever could ask the agent in its place**: a DM's own person; in
+  a channel, a person whose own message would start a turn of the agent there, judged at the click
+  by the place's live admission and trigger; never a bot. Approving runs the task with the agent's
+  own permissions, which is what asking there gets, so it grants nothing more. For an external
+  place, the internal member of §5.5; editors always, in Activity. A draft's approvers stay as
+  §5.5 says. `allowRuntimeChangesInChat` is not read: it guards runtime-setting changes and runtime
+  approval controls in chat, a different decision. Cards exist on Slack only; other platforms use
+  the console.
 - Approval ⇒ CAS to `executing`, record the sub-session id and write the marked inbox row in one
   transaction ⇒ open a normal-permission sub-session.
 - An uncertain outcome ⇒ `outcome_unknown`, never retried automatically; on restart or handover
@@ -700,9 +708,15 @@ places:
 3. **The item version is in the hash but does not cancel an approval**: a later update to the
    item would otherwise void every proposal; a closed or deleted item is still refused, and the
    task's prompt shows both versions and says to check the current state first.
-4. **Approvers** are the responsible user or the fallback conversation through the draft card,
-   plus the agent's editors in the console's Activity view, not the in-place card under the in-chat
-   approval rule.
+4. **Approvers** are the people who could ask the agent in the item's place, through the draft card
+   posted there, plus the agent's editors in the console's Activity view; the first answer from any
+   surface wins. The responsible user's DM or the fallback conversation gets the card only when the
+   place cannot: an external place, a post that definitely failed, a place gated by a decision's
+   verdict, a platform with no card. A timed-out post may still land, so it is never carded twice:
+   the place keeps it. The card's handle and the status it last showed are on the record, so a reconnect
+   rewrites a card a restart left behind. A webchat place has Activity only: its conversation's
+   pending-requests strip is the editors' approval queue, and offering it to the conversation's
+   owner needs routes of its own.
 
 A cut execution settles from the sub-session's durable end: reported ⇒ `succeeded`, failure report
 already sent ⇒ `failed`, otherwise `outcome_unknown` with one "please check" report.
@@ -952,3 +966,20 @@ channel itself was refused. The item tools' descriptions now forbid quoting or p
 these conversations, down to a figure or a detail, and have the agent tell the person, as it takes
 such an item, that the item is visible to the whole organization. The rule stays an instruction
 rather than a per-place filter on the ledger.
+
+**Eighteenth revision (2026-10-12)**: a patrol's proposal is carded in the conversation its item
+belongs to. In a test, the card went to the responsible user's DM or the fallback conversation,
+and the place that asked saw nothing: not the proposal, not its denial, not its expiry. Now the
+card is posted there and rewritten in place as it is approved, denied or expires, and again when
+the task ends. Whoever could ask the agent there may approve it: in a DM, that person; in a
+channel, anyone whose own message would start a turn of the agent, judged at the click by the
+place's live admission and trigger. This grants nothing new. An approved proposal runs a task with
+the agent's own permissions, which is exactly what a person there gets by typing the request, and
+runtime permission requests inside the task still take the normal path. So the approval does not
+read `allowRuntimeChangesInChat`, which guards runtime-setting changes and runtime approval
+controls in chat, a different kind of decision, and it adds no setting. The first version kept
+proposals off the in-place card because that card was bound to an ACP request of the
+conversation's own turn. Since #2913 a conversation shows cards for requests its own turn did not
+raise, so that reason no longer holds. The responsible user and the fallback conversation are now
+the fallback only, used when the place cannot take the card. The first answer from any surface
+still wins. Webchat places keep Activity for now (§5.10).
