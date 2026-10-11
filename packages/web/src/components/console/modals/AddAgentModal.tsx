@@ -117,6 +117,7 @@ import { gitRepoUrlTileHint } from '@/lib/git-url-tile'
 import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
+import { useSavedModelSource } from '@/lib/use-saved-model-source'
 
 type WsMode = WorkspaceMode
 
@@ -389,16 +390,22 @@ export default function AddAgentModal({
   // Only a strategy that starts the image's install reads its image-binary warning.
   const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(effectiveExecution)
   // Models come from the chosen strategy's catalog: the host install's for host and srt, the image's for a VM.
-  const modelSource =
+  const strategySource =
     daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : effectiveExecution)
+  const savedCredentials = placement?.kind !== 'pool' && modelProvider !== null
+  const modelSource = useSavedModelSource(strategySource, savedCredentials)
   // The pool's pod, not the strategy, is what encloses a session there.
   const isolationLabel = sessionIsolationLabel({ pool: placement?.kind === 'pool', execution: effectiveExecution })
   const isolationMode = isolationLabel.mode === 'Session isolation' ? t('sessionIsolation') : t('worktree')
   // A selected daemon's reported profiles are authoritative, including an empty list.
-  const runtimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : FALLBACK_RUNTIME_IDS
+  const runtimeIds = savedCredentials
+    ? selectableRuntimeIds(modelSource!, runtime)
+    : daemon
+      ? selectableRuntimeIds(daemon, runtime)
+      : FALLBACK_RUNTIME_IDS
   // Runtimes the daemon reports as logged out. Marked in the picker, never blocked —
   // creating on one is a supported state (docs/designs/preset-agents.md §3.2).
-  const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
+  const runtimesNeedingLogin = loginRequiredRuntimeIds(modelSource)
   const runtimesMissingImageBinary = readsImage ? imageBinaryMissingRuntimeIds(daemon) : []
   // …but the DEFAULT prefers a signed-in one, mirroring how auto-placement picks a
   // preset's runtime. Falls through to the first reported id when all are logged out.
@@ -1053,6 +1060,7 @@ export default function AddAgentModal({
               source={modelSource}
               runtimes={runtimeIds}
               readsImage={readsImage}
+              requireAvailableModel={savedCredentials}
               onFallbackChange={(target) => {
                 if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
                 setRuntime(target.runtime)

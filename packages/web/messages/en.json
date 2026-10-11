@@ -13,9 +13,9 @@
       "show": "Show"
     },
     "modelProvider": {
-      "label": "Use saved credential (Beta)",
+      "label": "Credentials",
       "daemon": "Daemon credentials",
-      "providerHelp": "Configure API keys in Providers first. The selected key must match the agent's runtime and model."
+      "saved": "Use saved credential (Beta)"
     },
     "runtimeChat": {
       "label": "Allow change in chat",
@@ -2560,6 +2560,7 @@
         "addRule": "Add rule",
         "invalidRules": "Check the conditions: assign each answer once and keep score intervals separate. At least one rule is required.",
         "missingModel": "Choose an available provider and model for every rule and the fallback.",
+        "savedModelUnavailable": "Choose a model with a key configured in Providers.",
         "fallback": "No rule matches, or the evaluation is unavailable.",
         "providerModel": "Provider · model",
         "chooseDecision": "Choose a Decision",

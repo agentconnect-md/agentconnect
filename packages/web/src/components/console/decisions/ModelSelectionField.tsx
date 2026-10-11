@@ -92,7 +92,8 @@ export function ModelSelectionField({
   onFallbackChange,
   source,
   runtimes,
-  readsImage
+  readsImage,
+  requireAvailableModel = false
 }: {
   agentId?: string
   value: AgentModelSelection | null
@@ -104,6 +105,7 @@ export function ModelSelectionField({
   runtimes: readonly string[]
   /** Whether the agent's strategy starts the image's runtime install, so a profile's image-binary warning applies. */
   readsImage?: boolean
+  requireAvailableModel?: boolean
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
   const tDecisions = useTranslations('Decisions')
@@ -146,14 +148,16 @@ export function ModelSelectionField({
   const fallbackAvailable = source?.runtimeModels
     .find((profile) => profile.runtime === fallback.runtime)
     ?.models.includes(fallback.model)
-  const valid = !active || (!!configuration && !!fallbackAvailable && !missingModel && issues.length === 0)
+  const valid =
+    (!requireAvailableModel || !!fallbackAvailable) &&
+    (!active || (!!configuration && !!fallbackAvailable && !missingModel && issues.length === 0))
   useEffect(() => onValidityChange(valid), [valid, onValidityChange])
   // Fixed and By decision share one control: the fallback's run settings are the agent's own.
   const fallbackPicker = (dense: boolean) => (
     <RuntimeModelSelect
       dense={dense}
       runSettings
-      allowRuntimeOnly={!active}
+      allowRuntimeOnly={!active && !requireAvailableModel}
       value={fallback}
       onChange={onFallbackChange}
       source={source}
@@ -635,6 +639,11 @@ export function ModelSelectionField({
         <div className="fld">
           <span className="fldlbl">{t('providerModel')}</span>
           <div className="w-[340px] max-w-full">{fallbackPicker(false)}</div>
+          {requireAvailableModel && !fallbackAvailable && (
+            <div role="alert" className="text-[12px] text-(--status-error)">
+              {t('savedModelUnavailable')}
+            </div>
+          )}
         </div>
       ) : (
         <>

@@ -1741,13 +1741,15 @@ and delivery rules are documented in [Pull-request feedback continuation](design
 
 ## Agent model credentials
 
-Provider keys are organization-scoped, encrypted and write-only. Anthropic (Claude)
-and OpenAI keys may be selected in a self-hosted agent's Use saved credential (Beta)
-field, immediately after Runs on.
-The default uses the daemon's existing credentials. Cloud keeps its existing
+Provider keys are organization-scoped, encrypted and write-only. Immediately after
+Runs on, a self-hosted agent has one compact Credentials row with two choices:
+Daemon credentials (the default) and Use saved credential (Beta). Only the saved
+credential choice is Beta. With saved credentials, model pickers offer only models
+whose Anthropic or OpenAI key is configured, including Decision rules and their
+fallback. The daemon matches the key to each session's selected runtime and model.
+Cloud keeps its existing
 subscription credentials and ignores this selection, including after a move from
-a self-hosted daemon. An explicit provider must match the runtime and model the
-self-hosted agent starts.
+a self-hosted daemon.
 
 The daemon retrieves the selected key when starting the runtime process and applies
 its key, endpoint and custom headers together in the child environment. Selecting a

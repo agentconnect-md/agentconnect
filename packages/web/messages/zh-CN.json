@@ -13,9 +13,9 @@
       "show": "查看"
     },
     "modelProvider": {
-      "label": "使用已保存的凭据（Beta）",
+      "label": "凭据",
       "daemon": "Daemon 本机凭据",
-      "providerHelp": "请先在 Providers 中配置 API key。所选 key 需与 agent 的运行时和模型匹配。"
+      "saved": "使用已保存的凭据（Beta）"
     },
     "runtimeChat": {
       "label": "允许在聊天中更改",
@@ -2560,6 +2560,7 @@
         "addRule": "添加规则",
         "invalidRules": "请检查条件：每个答案只能分配一次，Score 区间不能重叠，且至少保留一条规则。",
         "missingModel": "请为每条规则和兜底配置选择可用的运行时与模型。",
+        "savedModelUnavailable": "请选择已在 Providers 中配置 key 的模型。",
         "fallback": "没有规则匹配，或评估不可用时使用。",
         "providerModel": "Provider · 模型",
         "chooseDecision": "选择 Decision",
