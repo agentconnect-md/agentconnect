@@ -838,6 +838,9 @@ export default function EditAgentModal({
                       </div>
                     </div>
                   )}
+                  {daemonId !== POOL_PLACEMENT && (
+                    <ModelProviderField value={modelProvider} onChange={setModelProvider} />
+                  )}
                 </div>
               </div>
             </section>
@@ -869,9 +872,6 @@ export default function EditAgentModal({
                 }}
               />
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-                {daemonId !== POOL_PLACEMENT && (
-                  <ModelProviderField value={modelProvider} onChange={setModelProvider} />
-                )}
                 <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
                 {placementStrategies.kind !== 'pool' && (
                   <ExecutionStrategyField

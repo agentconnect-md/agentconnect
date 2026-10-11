@@ -1033,6 +1033,7 @@ export default function AddAgentModal({
                   <span className="fldlbl">{t('runsOn')}</span>
                   <DaemonSelect value={effectiveDaemonId} options={daemonOptions} onChange={setDaemonId} />
                 </div>
+                {placement?.kind !== 'pool' && <ModelProviderField value={modelProvider} onChange={setModelProvider} />}
               </div>
             </div>
           </section>
@@ -1070,7 +1071,6 @@ export default function AddAgentModal({
               }}
             />
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-              {placement?.kind !== 'pool' && <ModelProviderField value={modelProvider} onChange={setModelProvider} />}
               <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
               {placementStrategies.kind !== 'pool' && (
                 <ExecutionStrategyField options={executionOptions} value={effectiveExecution} onChange={setExecution} />

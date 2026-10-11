@@ -1728,7 +1728,8 @@ and delivery rules are documented in [Pull-request feedback continuation](design
 ## Agent model credentials
 
 Provider keys are organization-scoped, encrypted and write-only. Anthropic (Claude)
-and OpenAI keys may be selected in a self-hosted agent's Model credentials field.
+and OpenAI keys may be selected in a self-hosted agent's Use saved credential (Beta)
+field, immediately after Runs on.
 The default uses the daemon's existing credentials. Cloud keeps its existing
 subscription credentials and ignores this selection, including after a move from
 a self-hosted daemon. An explicit provider must match the runtime and model the
