@@ -99,10 +99,10 @@ async function boot() {
     setTitle: vi.fn(async () => {}),
     postMessage: vi.fn(async (channel: string, text: string, thread?: string) => {
       posts.push({ channel, text, thread })
-      return `1791748400.${String(posts.length).padStart(6, '0')}`
+      return `1700000200.${String(posts.length).padStart(6, '0')}`
     }),
     updateMessage: vi.fn(async () => {}),
-    postBlocks: vi.fn(async () => '1791748400.900000'),
+    postBlocks: vi.fn(async () => '1700000200.900000'),
     updateBlocks: vi.fn(async () => {}),
     postContext: vi.fn(async () => {})
   })
@@ -172,7 +172,7 @@ async function seedSubsession(b: Booted, channel: Channel, parentKey: string, th
 describe('a report into a Slack parent that appends reaches its runtime', () => {
   it.each(CHANNELS)('from a self-delegated sub-session in %s, through replyToSession', async (channel) => {
     const b = await boot()
-    const humanTs = '1791748295.965399'
+    const humanTs = '1700000100.000100'
     const parent = await humanTurn(b, channel, humanTs)
 
     const res = await b.d.collab.messageAgent({
@@ -206,7 +206,7 @@ describe('a report into a Slack parent that appends reaches its runtime', () => 
   ])('from a daemon %s report, in D1 and C1', async (kind, callerThread, text) => {
     const b = await boot()
     for (const [i, channel] of CHANNELS.entries()) {
-      const parent = await humanTurn(b, channel, `1791748295.96539${i}`)
+      const parent = await humanTurn(b, channel, `1700000100.00010${i}`)
       await seedSubsession(b, channel, parent.key, callerThread)
       const prompted = b.prompts.length
 
