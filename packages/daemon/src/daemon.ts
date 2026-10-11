@@ -739,6 +739,7 @@ import { PermissionCoordinator, type PermissionHost } from './permissions/coordi
 import {
   DEFAULT_PERMISSION_WAIT_HOURS,
   platformThread,
+  subsessionLabel,
   type SubsessionApprovalRoute
 } from './permissions/subsession-approval.js'
 import { CollabCoordinator, type CollabHost } from './collab/coordinator.js'
@@ -2438,8 +2439,7 @@ export class Daemon {
     }
   }
 
-  /** Rewrite DM approval cards orphaned by a restart or takeover (slack-approval-dm.md §5.4):
-   *  the rows settled while no connection could edit their cards, so retire them now. */
+  /** Retire the approval cards and sub-session notices whose rows settled while no connection could edit them (slack-approval-dm.md §5.4). */
   private sweepOrphanedApprovalCards(integrationId: string, conn: SlackConnection): void {
     void this.store
       .takeOrphanedPermissionNotices(integrationId)
@@ -2457,6 +2457,11 @@ export class Daemon {
         }
       })
       .catch((err) => this.log.warn(`orphaned approval-card sweep failed for "${integrationId}": ${formatErr(err)}`))
+    void this.permissions
+      .retireOrphanedSubsessionNotices(integrationId, conn)
+      .catch((err) =>
+        this.log.warn(`orphaned sub-session notice sweep failed for "${integrationId}": ${formatErr(err)}`)
+      )
   }
 
   /** Point an integration at a live connection: one platform's binding map plus the bot
@@ -13035,7 +13040,7 @@ export class Daemon {
     const parent = await this.store.getSessionByOutwardId(row.parentSessionId, agentId)
     const route = {
       parentSessionId: row.parentSessionId,
-      title: (await this.store.getSession(key))?.title ?? null,
+      title: subsessionLabel((await this.store.getSession(key))?.title, p.entry.msg.text),
       waitHours: agent?.assistantMode?.limits?.permissionWaitHours ?? DEFAULT_PERMISSION_WAIT_HOURS
     }
     const integrationId =

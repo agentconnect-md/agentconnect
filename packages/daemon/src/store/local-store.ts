@@ -373,6 +373,17 @@ export interface PermissionNoticeRow {
   notifyTs: string
 }
 
+/** A settled sub-session request whose notice in its conversation was never rewritten (assistant-mode.md §5.6). */
+export interface SubsessionNoticeRow {
+  id: string
+  agentId: string
+  /** The sub-session's ACP session id. */
+  sessionId: string
+  status: PermissionRequestStatus
+  noticeChannel: string
+  noticeTs: string
+}
+
 /**
  * Per-session token accounting, folded from the agent's ACP usage stream (mirrors
  * the protocol `SessionUsage`). Token counts are cumulative across turns; context
@@ -1338,7 +1349,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 44
+export const SCHEMA_VERSION = 45
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1876,6 +1887,20 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     if (!columns.includes('endReport')) await db.exec('ALTER TABLE assistant_subsession ADD COLUMN endReport TEXT')
     if (!columns.includes('reportAttempts'))
       await db.exec('ALTER TABLE assistant_subsession ADD COLUMN reportAttempts INTEGER NOT NULL DEFAULT 0')
+  },
+  // v45 keeps a sub-session's notice handle on its request, so a restart's sweep settles it (assistant-mode.md §5.6).
+  async (db, store) => {
+    const added = ['noticeIntegrationId', 'noticeChannel', 'noticeTs']
+    if (store.postgres) {
+      for (const column of added)
+        await db.exec(`ALTER TABLE permission_requests ADD COLUMN IF NOT EXISTS ${column} TEXT`)
+      return
+    }
+    const columns = ((await db.query('PRAGMA table_info(permission_requests)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    for (const column of added)
+      if (!columns.includes(column)) await db.exec(`ALTER TABLE permission_requests ADD COLUMN ${column} TEXT`)
   }
 ]
 
@@ -2330,7 +2355,10 @@ export class LocalStore {
         resolvedByName TEXT,
         notifyIntegrationId TEXT,
         notifyChannel TEXT,
-        notifyTs TEXT
+        notifyTs TEXT,
+        noticeIntegrationId TEXT,
+        noticeChannel TEXT,
+        noticeTs TEXT
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
@@ -2987,6 +3015,47 @@ export class LocalStore {
       )
       .all(integrationId, Math.max(1, Math.min(100, limit)))) as unknown as PermissionNoticeRow[]
     for (const row of rows) await this.clearPermissionRequestNotify(row.agentId, row.id)
+    return rows
+  }
+
+  /** Record a pending sub-session request's notice handle in its conversation; false if the row already settled. */
+  async setPermissionRequestNotice(
+    agentId: string,
+    id: string,
+    integrationId: string,
+    channel: string,
+    ts: string
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE permission_requests SET noticeIntegrationId = ?, noticeChannel = ?, noticeTs = ?
+         WHERE agentId = ? AND id = ? AND status = 'pending'`
+      )
+      .run(integrationId, channel, ts, agentId, id)
+    return Number(result.changes) === 1
+  }
+
+  /** Drop the notice handle once the notice says how the request settled. */
+  async clearPermissionRequestNotice(agentId: string, id: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE permission_requests SET noticeIntegrationId = NULL, noticeChannel = NULL, noticeTs = NULL
+         WHERE agentId = ? AND id = ?`
+      )
+      .run(agentId, id)
+  }
+
+  /** Settled rows whose sub-session notice was never rewritten — returned once, handles cleared, like the DM cards' sweep. */
+  async takeOrphanedSubsessionNotices(integrationId: string, limit = 20): Promise<SubsessionNoticeRow[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT id, agentId, sessionId, status, noticeChannel, noticeTs
+         FROM permission_requests
+         WHERE noticeIntegrationId = ? AND noticeTs IS NOT NULL AND status != 'pending'
+         ORDER BY resolvedAt DESC LIMIT ?`
+      )
+      .all(integrationId, Math.max(1, Math.min(100, limit)))) as unknown as SubsessionNoticeRow[]
+    for (const row of rows) await this.clearPermissionRequestNotice(row.agentId, row.id)
     return rows
   }
 

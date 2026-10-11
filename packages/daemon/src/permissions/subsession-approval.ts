@@ -1,6 +1,7 @@
 // A background sub-session's runtime permission request, routed to the conversation it belongs to (assistant-mode.md §5.6).
 import type { ApprovalRouteTarget } from '@agentconnect.md/protocol'
 import { isAppendCoordinate } from '../session/append-coordinate.js'
+import { deriveTitle } from '../session/derive-title.js'
 import { isSubsessionCoordinate } from '../session/subsession-coordinate.js'
 
 /** How long a sub-session's request waits when the policy sets no `permissionWaitHours`. */
@@ -14,7 +15,7 @@ export type SubsessionApprovalPlace =
 export interface SubsessionApprovalRoute {
   /** The conversation the sub-session belongs to, by its session's outward id. */
   parentSessionId: string
-  /** The sub-session's title, when it has one. */
+  /** The sub-session's label ({@link subsessionLabel}); null when it has none. */
   title: string | null
   place: SubsessionApprovalPlace
   /** Hours the request waits before it is denied and the sub-session stops. */
@@ -25,6 +26,19 @@ export interface SubsessionApprovalRoute {
 export type SubsessionApprover =
   | { kind: 'member'; target: ApprovalRouteTarget; channel: string }
   | { kind: 'conversation'; integrationId: string; channel: string }
+
+// How a self-delegation's message opens (collab/coordinator.ts): no name for the sub-session it opens.
+const DELEGATION_WRAPPER = 'From your own main conversation, as a background sub-session:'
+
+const unwrapped = (text: string | null | undefined): string | undefined =>
+  text?.trimStart().startsWith(DELEGATION_WRAPPER) ? text.trimStart().slice(DELEGATION_WRAPPER.length) : undefined
+
+/** A sub-session's name on its cards: its title, else its task without the delegation wrapper, truncated; null when neither says anything. */
+export function subsessionLabel(title: string | null | undefined, task: string | undefined): string | null {
+  const own = title?.trim()
+  if (own && unwrapped(own) === undefined) return own
+  return deriveTitle(unwrapped(task) ?? task) ?? deriveTitle(unwrapped(own)) ?? null
+}
 
 /** The approval record's decider once the wait ran out. */
 export function waitExpiredDecider(hours: number): { resolvedBy: null; resolvedByName: string } {
