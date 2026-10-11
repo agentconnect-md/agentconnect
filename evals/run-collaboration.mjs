@@ -24,6 +24,7 @@ if (!process.env.AGENTCONNECT_DAEMON_ENTRY) {
   // explicitly so real ACP runtimes spawn the real `mcp-bridge` subprocess.
   process.env.AGENTCONNECT_DAEMON_ENTRY = daemonEntry
 }
+const suiteConfig = process.env.AGENTCONNECT_EVAL_GAME_CONFIG?.trim() || 'evals/collabconfig.yaml'
 const extraArgs = process.argv.slice(2).filter((arg, index) => !(arg === '--' && index === 0))
 // Real-agent trials (§14 step 4) need the operator's subject template. Without
 // one, run only the credential-free scripted gate instead of failing the run.
@@ -45,7 +46,7 @@ const child = spawn(
     entrypoint,
     'eval',
     '-c',
-    'evals/collabconfig.yaml',
+    suiteConfig,
     '--no-cache',
     '--max-concurrency',
     '1',
