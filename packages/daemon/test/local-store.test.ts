@@ -1151,6 +1151,53 @@ describe('LocalStore', () => {
     await reopened.close()
   })
 
+  it('keeps a sub-session notice handle beside the DM card’s and hands an orphan out exactly once', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-subsession-notice-')), 'local.sqlite')
+    const s = await reopen(path)
+    const request = (id: string) => ({
+      id,
+      agentId: 'bot-a',
+      sessionId: 'acp-sub-1',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: 'Butler',
+      command: 'Write src/app.ts',
+      status: 'pending' as const,
+      resolvedAt: null
+    })
+    await s.createPermissionRequest(request('request-1'))
+    await s.createPermissionRequest(request('request-2'))
+
+    // The notice and the editor DM each keep their own handle, and only while the row is pending.
+    expect(await s.setPermissionRequestNotice('bot-a', 'request-1', 'int-1', 'C1', '1.100')).toBe(true)
+    expect(await s.setPermissionRequestNotify('bot-a', 'request-1', 'int-1', 'D111', '1.200')).toBe(true)
+    expect(await s.resolvePermissionRequest('bot-a', 'request-1', 'allowed', 250)).toBe(true)
+    expect(await s.setPermissionRequestNotice('bot-a', 'request-1', 'int-1', 'C1', '1.300')).toBe(false)
+    expect(await s.setPermissionRequestNotice('bot-a', 'request-2', 'int-1', 'C1', '2.100')).toBe(true)
+    expect(await s.takeOrphanedSubsessionNotices('int-2')).toEqual([])
+    expect(await s.takeOrphanedSubsessionNotices('int-1')).toMatchObject([
+      {
+        id: 'request-1',
+        agentId: 'bot-a',
+        sessionId: 'acp-sub-1',
+        status: 'allowed',
+        noticeChannel: 'C1',
+        noticeTs: '1.100'
+      }
+    ])
+    expect(await s.takeOrphanedSubsessionNotices('int-1')).toEqual([])
+    // Taking the notice leaves the DM card's handle to its own sweep.
+    expect(await s.takeOrphanedPermissionNotices('int-1')).toMatchObject([{ id: 'request-1', notifyTs: '1.200' }])
+
+    // A restart expires the pending row and its notice becomes the orphan.
+    await s.close()
+    const reopened = await reopen(path)
+    expect(await reopened.takeOrphanedSubsessionNotices('int-1')).toMatchObject([
+      { id: 'request-2', status: 'expired', noticeTs: '2.100' }
+    ])
+    await reopened.close()
+  })
+
   it('tracks channel-intro state per (agent, platform, channel) and integration seeding', async () => {
     const s = await store()
     expect(await s.channelIntroSet('bot-a', 'slack')).toEqual(new Set())
@@ -3908,7 +3955,7 @@ describe.skipIf(pg)('decision table migrations', () => {
   }
 
   it('creates the decision tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(44)
+    expect(SCHEMA_VERSION).toBe(45)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual([

@@ -469,8 +469,9 @@ and 3 below) have shipped.
      offers "always allow this tool". **Shipped**, for delegated and `task` sub-sessions (a patrol
      still refuses, §5.9), as the one pending request every surface settles (slack-approval-dm.md
      §11): a Slack place gets the in-chat card where `allowRuntimeChangesInChat` lets anyone there
-     answer, otherwise a neutral notice plus the editor DM; the card names the sub-session, links
-     it and says how long it waits. It goes to the parent's own thread, or to the conversation's
+     answer, otherwise a neutral notice plus the editor DM, the notice rewritten in place to how
+     the request settled; the card names the sub-session (its title, else its task), links it
+     and says how long it waits. It goes to the parent's own thread, or to the conversation's
      root for an `append` conversation, where reports land too. A webchat place has the console:
      the request carries its conversation (`parentSessionId`), whose page lists it among its own.
      An external place's card goes where drafts route theirs: the responsible user's DM (a click is
@@ -488,7 +489,7 @@ and 3 below) have shipped.
      `cancelled`, so the turn ends stopped and the existing failure report tells the parent. The
      timer lives in memory: a restart ends the turn, the store expires every request no process
      holds a resolver for, a stale card's click or console decision finds nothing pending, and the
-     card's handle on the row lets the reconnect sweep retire it.
+     card's and the notice's handles on the row let the reconnect sweep retire them.
   4. The user's permission policy is never changed; an `ask`-policy agent gets the warning in
      §1.8.
 - **Webchat**: the session-detail dock's Sub-sessions panel (#2885) lists the sub-sessions a

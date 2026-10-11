@@ -48,6 +48,7 @@ import {
   buildElicitationCard,
   buildSubsessionApprovalIntro,
   buildSubsessionApprovalNotice,
+  buildSubsessionApprovalSettledNotice,
   buildElicitDmUnanswerableCard,
   buildElicitationResolvedCard,
   buildPermissionCard,
@@ -76,7 +77,7 @@ import {
   textAccepts,
   WEBCHAT_ELICIT_SURFACE
 } from '../slack/render.js'
-import type { ElicitKind, ElicitSurface, ElicitTarget } from '../slack/render.js'
+import type { ElicitKind, ElicitSurface, ElicitTarget, SubsessionNoticeOutcome } from '../slack/render.js'
 import { consolePermissionOptions } from './editor-options.js'
 import {
   choiceById,
@@ -107,7 +108,12 @@ import {
 import { pendingTurnKey, turnState, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
 import { isPatrolCoordinate, isSubsessionCoordinate } from '../session/subsession-coordinate.js'
-import { waitExpiredDecider, type SubsessionApprovalRoute, type SubsessionApprover } from './subsession-approval.js'
+import {
+  subsessionLabel,
+  waitExpiredDecider,
+  type SubsessionApprovalRoute,
+  type SubsessionApprover
+} from './subsession-approval.js'
 import type { MemoryWriteAsk } from '../mcp/ops/memory.js'
 import {
   memoryWriteApprovalChoices,
@@ -385,6 +391,14 @@ interface ChatPermissionCard {
   routedVia?: string
 }
 
+/** A sub-session's neutral notice in its conversation (§5.6); its handle is on the row too, so a restart's sweep settles it. */
+interface SubsessionNotice {
+  conn: SlackConnection
+  channel: string
+  ts: string
+  view: { agentName: string; title: string | null; sessionUrl: string }
+}
+
 /** A background sub-session's wait on one request (assistant-mode.md §5.6). */
 interface SubsessionWait {
   route: SubsessionApprovalRoute
@@ -407,6 +421,9 @@ interface ApprovalEntry<P, R> {
   notify?: DmNotice
   /** Set on a background sub-session's request: denied and stopped once its wait runs out. */
   subsession?: SubsessionWait
+  notice?: SubsessionNotice
+  /** How it settled, for a notice whose post returns after that. */
+  settled?: SubsessionNoticeOutcome
 }
 
 interface PermissionApproval extends ApprovalEntry<RequestPermissionRequest, RequestPermissionResponse> {
@@ -1100,7 +1117,8 @@ export class PermissionCoordinator {
         ? buildPermissionCard(requestId, permission.params, this.host.slackDmSessionTarget(p, at.integrationId))
         : null
     if (!permission || !card) {
-      await post(buildSubsessionApprovalNotice(view), `${p.plan.agentName} is waiting for permission`)
+      const ts = await post(buildSubsessionApprovalNotice(view), `${p.plan.agentName} is waiting for permission`)
+      if (ts) await this.keepSubsessionNotice(requestId, rec, { conn, channel: at.channel, ts, view }, at.integrationId)
       return await editorDm()
     }
     const intro = buildSubsessionApprovalIntro(view)
@@ -1128,6 +1146,57 @@ export class PermissionCoordinator {
       intro,
       routedVia: at.integrationId,
       stored: { agentId, requestId }
+    }
+  }
+
+  /** Hold the notice's handle until its request settles, on the row too; a request settled while it posted gets its settled line now. */
+  private async keepSubsessionNotice(
+    requestId: string,
+    rec: PendingApproval,
+    notice: SubsessionNotice,
+    integrationId: string
+  ): Promise<void> {
+    const store = this.host.store()
+    const stored = await store
+      .setPermissionRequestNotice(rec.agentId, requestId, integrationId, notice.channel, notice.ts)
+      .catch(() => false)
+    // Still listed, a decision in flight included: whichever path settles it rewrites the notice.
+    if (this.pendingApprovals.get(requestId) === rec) {
+      rec.notice = notice
+      return
+    }
+    // Only a turn's release awaits between unlisting and settling, and it settles as cancelled.
+    this.settleSubsessionNotice(notice, rec.settled ?? { kind: 'cancelled' })
+    if (stored) void store.clearPermissionRequestNotice(rec.agentId, requestId).catch(() => {})
+  }
+
+  private settleSubsessionNotice(notice: SubsessionNotice, outcome: SubsessionNoticeOutcome): void {
+    const blocks = buildSubsessionApprovalSettledNotice(notice.view, outcome)
+    void notice.conn.updateBlocks(notice.channel, notice.ts, blocks, 'Permission request settled', true).catch(() => {})
+  }
+
+  /** Settle sub-session notices whose requests ended while no process could edit them (a restart): the reconnect sweep's half for §5.6. */
+  async retireOrphanedSubsessionNotices(integrationId: string, conn: SlackConnection): Promise<void> {
+    const store = this.host.store()
+    for (const row of await store.takeOrphanedSubsessionNotices(integrationId)) {
+      const agent = this.host.agents().get(row.agentId)
+      const session = await store.getSessionByAcpIdForAgent(row.agentId, row.sessionId).catch(() => undefined)
+      const view = {
+        agentName: agent?.displayName?.trim() || agent?.name || row.agentId,
+        title: subsessionLabel(session?.title, undefined),
+        ...(session?.sessionId ? { sessionUrl: this.host.sessionLink(session.sessionId, 'slack') } : {})
+      }
+      const outcome: SubsessionNoticeOutcome =
+        row.status === 'allowed' || row.status === 'denied' ? { kind: row.status, by: null } : { kind: 'cancelled' }
+      void conn
+        .updateBlocks(
+          row.noticeChannel,
+          row.noticeTs,
+          buildSubsessionApprovalSettledNotice(view, outcome),
+          'Permission request settled',
+          true
+        )
+        .catch(() => {})
     }
   }
 
@@ -1201,13 +1270,30 @@ export class PermissionCoordinator {
       })
     }
     const name = by?.resolvedByName ?? (surface === 'console' ? 'an Agent editor' : null)
-    this.retireApprovalCards(id, rec, name ? `${picked.label} — ${name}` : picked.label, picked.allow)
+    this.retireApprovalCards(id, rec, name ? `${picked.label} — ${name}` : picked.label, picked.allow, {
+      kind: picked.allow ? 'allowed' : 'denied',
+      by: name
+    })
     rec.resolve(picked.response)
     return true
   }
 
   /** Rewrite every card a request was offered on to its settled state; `allowed` is unset when nothing was decided. */
-  private retireApprovalCards(id: string, rec: PendingApproval, label: string, allowed?: boolean): void {
+  private retireApprovalCards(
+    id: string,
+    rec: PendingApproval,
+    label: string,
+    allowed: boolean | undefined,
+    outcome: SubsessionNoticeOutcome
+  ): void {
+    rec.settled = outcome
+    if (rec.notice) {
+      this.settleSubsessionNotice(rec.notice, outcome)
+      void this.host
+        .store()
+        .clearPermissionRequestNotice(rec.agentId, id)
+        .catch(() => {})
+    }
     const fallback = allowed === undefined ? 'Permission cancelled' : 'Permission resolved'
     if (rec.kind === 'permission' && rec.chat?.ts) {
       void rec.chat.conn
@@ -1347,7 +1433,10 @@ export class PermissionCoordinator {
     this.syncApprovalActivity(rec.owner, rec.sessionId, { id, allowed: false })
     if (rec.kind === 'permission')
       this.permissionEvaluationDetails.set(rec.evaluationParams, { reason: 'approval_wait_expired' })
-    this.retireApprovalCards(id, rec, `Denied — ${by.resolvedByName}`, false)
+    this.retireApprovalCards(id, rec, `Denied — ${by.resolvedByName}`, false, {
+      kind: 'expired',
+      hours: wait.route.waitHours
+    })
     this.host
       .log()
       .info(`sub-session "${p.plan.sessionKey}": ${by.resolvedByName.toLowerCase()} to "${wait.tool}"; stopping it`)
@@ -1521,7 +1610,7 @@ export class PermissionCoordinator {
       this.syncApprovalActivity(owner, sessionId, { id })
       await this.resolveStoredPermissionRequest(agentId, id, 'expired')
       // Dead buttons must not survive the request (§5.4): retire every card in place.
-      this.retireApprovalCards(id, pending, 'Cancelled')
+      this.retireApprovalCards(id, pending, 'Cancelled', undefined, { kind: 'cancelled' })
       if (pending.kind === 'permission') {
         this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'turn_cancelled' })
         pending.resolve({ outcome: { outcome: 'cancelled' } })
