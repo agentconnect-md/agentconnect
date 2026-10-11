@@ -798,6 +798,7 @@ idle --(message/cron synthetic message)--> prompting (session/prompt)
 prompting --(streaming session/update)--> idle (turn ends with stopReason)
 idle --(cancel)--> cancelling (session/cancel, 30s forced backstop) --> idle
 prompting --(no runtime signal > turnStallTimeoutMs)--> cancelling (stall watchdog: ⚠️ notice, session/cancel, same backstop) --> idle
+prompting --(a card unanswered > agentMaxLifetimeMs)--> cancelling (⚠️ notice, cards retired, session/cancel, same backstop) --> idle
 prompting | resuming | cancelling --(no turn held by this process, untouched > agentMaxLifetimeMs)--> idle (a process died mid-turn)
 idle --(long inactivity / TTL)--> closed (metadata retained; body in Local Store)
 closed --(new thread message)--> resuming (session/load) --> idle
@@ -817,6 +818,18 @@ through the `!stop` path: `session/cancel`, the `cancelBackstopMs` force-stop
 if the runtime ignores it, and queued messages fail-stopped. A prompt the
 runtime rejects with "Session not found" also clears the row's `acpSessionId`,
 so the next message opens a fresh session instead of repeating the failure.
+
+**An unanswered permission request or question.** The wait on a human does not
+count against the stall budget, but it is bounded too: once a turn's card has
+gone unanswered for `limits.agentMaxLifetimeMs`, the ceiling that already bounds
+an idle host's background work, the sweep stops the turn through the same path
+with reason `approval wait expired`. Its cards retire as cancelled, the request
+is recorded as expired, the runtime receives `cancelled`, and the conversation
+is told nobody answered in time. Without it, a turn whose card nobody watches,
+such as a schedule's, holds its host and its sandbox pod forever (#2780). A
+request with a wait cap of its own is left to that cap: a background
+sub-session's `permissionWaitHours` (assistant-mode.md §5.6) or an API caller's
+answer timeout.
 
 **A turn a dead process left behind.** A daemon killed mid-turn leaves its row
 in `prompting`, `resuming` or `cancelling`, and none of its in-process repair

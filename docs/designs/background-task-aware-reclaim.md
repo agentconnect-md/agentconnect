@@ -133,11 +133,11 @@ guards:
 The defaults in
 [`config-schema.ts`](../../packages/daemon/src/config/config-schema.ts) are:
 
-| Setting              |    Default | Purpose                                                        |
-| -------------------- | ---------: | -------------------------------------------------------------- |
-| `agentIdleTimeoutMs` | 15 minutes | Close inactive sessions and reclaim genuinely idle hosts.      |
-| `agentMaxLifetimeMs` |    6 hours | Bound lease- and pass-based reclaim deferral for an idle host. |
-| `idleSweepMs`        | 60 seconds | Re-evaluate session and host eligibility.                      |
+| Setting              |    Default | Purpose                                                                                                                                                               |
+| -------------------- | ---------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agentIdleTimeoutMs` | 15 minutes | Close inactive sessions and reclaim genuinely idle hosts.                                                                                                             |
+| `agentMaxLifetimeMs` |    6 hours | Bound lease- and pass-based reclaim deferral for an idle host, and a turn's wait on an unanswered card ([daemon-detailed-design.md](daemon-detailed-design.md) §7.3). |
+| `idleSweepMs`        | 60 seconds | Re-evaluate session and host eligibility.                                                                                                                             |
 
 The maximum lifetime does not preempt an active foreground prompt: the pending
 turn guard runs before the lifetime check. When the daemon does choose to stop a

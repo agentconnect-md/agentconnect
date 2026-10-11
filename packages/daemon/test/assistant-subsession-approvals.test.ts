@@ -397,6 +397,8 @@ describe('a sub-session’s permission request in the conversation it belongs to
       tool: 'Write src/app.ts',
       expiresAt: new Date(1_000_000 + 2 * HOUR).toISOString()
     })
+    // Its own cap, so the turn watchdog's shorter answer window leaves it alone.
+    expect(w.coordinator.hasOwnWaitCap(OWNER, ACP)).toBe(true)
 
     w.clock.advance(2 * HOUR - 1)
     expect(w.cancelTurn).not.toHaveBeenCalled()
@@ -556,6 +558,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     expect(blocksOf(main.place)).not.toContain('background sub-session')
     expect(main.coordinator.pendingSubsessionApprovals(AGENT)).toEqual([])
     expect(main.clock.pending).toBe(0)
+    expect(main.coordinator.hasOwnWaitCap(OWNER, ACP)).toBe(false)
     await main.coordinator.releaseApprovals(OWNER, ACP)
     await main.store.close()
 

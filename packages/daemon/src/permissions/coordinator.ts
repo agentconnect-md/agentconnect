@@ -659,6 +659,15 @@ export class PermissionCoordinator {
     return false
   }
 
+  /** Whether a request the session waits on carries a wait cap of its own: a background sub-session's (assistant-mode.md §5.6) or an API caller's. */
+  hasOwnWaitCap(owner: HostKey, sessionId: string): boolean {
+    const mine = (pending: { owner: HostKey; sessionId: string }): boolean =>
+      pending.owner === owner && pending.sessionId === sessionId
+    for (const pending of this.pendingApprovals.values()) if (pending.subsession && mine(pending)) return true
+    for (const pending of this.pendingCallerApprovals.values()) if (mine(pending)) return true
+    return false
+  }
+
   /** Whether this turn's caller answers the agent's questions: an API turn over a protocol whose stream carries them. */
   private callerAnswers(p: Pending): p is CallerTurn {
     const wc = p.webchat
