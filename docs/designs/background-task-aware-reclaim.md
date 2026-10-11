@@ -144,6 +144,12 @@ turn guard runs before the lifetime check. When the daemon does choose to stop a
 host, normal ACP child teardown applies and outstanding background work may be
 terminated.
 
+A host the sweep still keeps four idle windows after its last activity has the
+reason logged at info, once an hour: a turn still running or queued, a turn
+waiting on a human answer to a permission or question, a stop in flight, or a
+draining agent. Nothing above bounds a turn that waits on a human, so without that
+line a host nobody is answering would stay up with nothing saying why.
+
 The same pending-turn and live-lease checks protect idle removal of materialized
 config-file secrets. Once the agent is quiet, those files may be removed after
 `configFilesIdleMs` and are materialized again before the next turn.

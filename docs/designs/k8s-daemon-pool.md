@@ -270,7 +270,9 @@ follow. An agent whose duty-gain takeover is still running or retrying is left t
 it, and a member outside a member set never does this, since before its first
 authentication it cannot tell its agents from a peer's. A pod the sweep still skips
 after four idle timeouts has the reason logged at info once an hour, so a pod that
-never suspends names what holds it.
+never suspends names what holds it. A session pod is most often held by its runtime
+host, which names its own hold the same way
+([background-task-aware-reclaim.md](background-task-aware-reclaim.md) §4).
 
 Before publishing a launch, the member stamps its durable binding generation onto
 the Sandbox's `agentconnect.md/launch-generation` annotation. A resourceVersion CAS
