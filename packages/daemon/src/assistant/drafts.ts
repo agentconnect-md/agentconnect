@@ -8,6 +8,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { MessageGateway, SendIdentity } from '../mcp/ops/context.js'
 import type { SubsessionApprover } from '../permissions/subsession-approval.js'
+import { isSendQueueTimeout } from '../platforms/send-queue.js'
 import type { AssistantDraftCardView, AssistantDraftChoice } from '../slack/render.js'
 import {
   assistantDraftHash,
@@ -343,6 +344,11 @@ export class AssistantDrafts {
       now: this.host.now()
     })
     let carded = await this.card(draft, routed, place?.thread)
+    if (carded.mayHaveLanded) {
+      // The in-place card may still land, so it is never carded twice: its people decide it, or editors in Activity.
+      this.host.log.warn(`assistant proposal ${id}: its card's post timed out and may still land; not rerouted`)
+      return { draft: carded.draft, approver: APPROVER_LABEL.place }
+    }
     if (place && !carded.rung) {
       // The place could not take the card, so it goes where a proposal's went before, and only there.
       const fallback = await this.route(input.agentId, id, undefined)
@@ -408,20 +414,24 @@ export class AssistantDrafts {
     })
   }
 
-  /** Post the pending card to its approver and keep its handle; undefined rung when no card went out. */
+  /** Post the pending card to its approver and keep its handle; undefined rung when no card went out, `mayHaveLanded` when a timed-out post may still. */
   private async card(
     draft: AssistantDraft,
     routed: Routed | undefined,
     thread?: string
-  ): Promise<{ draft: AssistantDraft; rung: ApproverRung | undefined }> {
+  ): Promise<{ draft: AssistantDraft; rung: ApproverRung | undefined; mayHaveLanded?: true }> {
     if (!routed) return { draft, rung: undefined }
     const ledger = this.host.ledger()
     const port = this.host.cardPortFor(routed.approver.integrationId)
-    const ts = await port?.postCard(routed.approver.channel, this.pendingCard(draft), thread).catch((err: unknown) => {
-      this.host.log.warn(`assistant draft ${draft.id}: card post failed: ${(err as Error).message}`)
-      return undefined
-    })
-    if (!ts) return { draft, rung: undefined }
+    const posted = await port?.postCard(routed.approver.channel, this.pendingCard(draft), thread).then(
+      (ts) => ({ ts, mayHaveLanded: false }),
+      (err: unknown) => {
+        this.host.log.warn(`assistant draft ${draft.id}: card post failed: ${(err as Error).message}`)
+        return { ts: undefined, mayHaveLanded: isSendQueueTimeout(err) }
+      }
+    )
+    const ts = posted?.ts
+    if (!ts) return posted?.mayHaveLanded ? { draft, rung: undefined, mayHaveLanded: true } : { draft, rung: undefined }
     await ledger.setCard(draft.id, ts)
     // A click can land before the card handle is stored; settle the card here if it did.
     const live = await ledger.get(draft.id)

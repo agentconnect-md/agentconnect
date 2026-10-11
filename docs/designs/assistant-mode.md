@@ -711,8 +711,9 @@ places:
 4. **Approvers** are the people who could ask the agent in the item's place, through the draft card
    posted there, plus the agent's editors in the console's Activity view; the first answer from any
    surface wins. The responsible user's DM or the fallback conversation gets the card only when the
-   place cannot: an external place, a failed post, a place gated by a decision's verdict, a platform
-   with no card. The card's handle and the status it last showed are on the record, so a reconnect
+   place cannot: an external place, a post that definitely failed, a place gated by a decision's
+   verdict, a platform with no card. A timed-out post may still land, so it is never carded twice:
+   the place keeps it. The card's handle and the status it last showed are on the record, so a reconnect
    rewrites a card a restart left behind. A webchat place has Activity only: its conversation's
    pending-requests strip is the editors' approval queue, and offering it to the conversation's
    owner needs routes of its own.

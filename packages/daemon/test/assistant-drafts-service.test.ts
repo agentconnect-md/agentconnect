@@ -963,6 +963,20 @@ describe('a proposal in the conversation its item belongs to', () => {
     expect(w.startTask).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps a card whose post timed out in its place, and never cards it twice', async () => {
+    const w = await world()
+    w.port.postCard.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('send queue: task timed out'), { sendQueueTimeout: true })
+    })
+    const { draft, approver } = await w.propose(GENERAL)
+    expect(approver).toBe('the people in the conversation the item was taken in')
+    expect(w.port.postCard.mock.calls.map((c) => c[0])).toEqual(['C0GENERAL'])
+    expect(draft).toMatchObject({ approver: { kind: 'place', channel: 'C0GENERAL' }, cardTs: null })
+    // The card may have landed late, and the place's people still decide it.
+    await w.click(draft.id, 'approve', 'U0BOB')
+    expect(w.startTask).toHaveBeenCalledTimes(1)
+  })
+
   it('goes to the responsible user, as before, where no one could ask the agent', async () => {
     const w = await world()
     const { draft } = await w.propose({ integrationId: INT, channel: 'C0SHARED' })

@@ -1071,9 +1071,10 @@ message would start a turn of the agent there; never a bot. A click from anyone 
 Approving grants nothing that typing the request there would not: the task runs with the agent's
 own permissions, and its permission requests follow "Assistant-mode sub-session permission
 requests". "Allow runtime changes in chat" makes no difference to proposals. A conversation shared
-with another organization, one gated By decision, one the card cannot be posted in, and
-conversations on other platforms get the card where drafts go instead: the agent's responsible user
-in a direct message, otherwise its fallback conversation. Webchat conversations do not show
+with another organization, one gated By decision, one the card definitely could not be posted in,
+and conversations on other platforms get the card where drafts go instead: the agent's responsible
+user in a direct message, otherwise its fallback conversation. A post that timed out may still land,
+so it is never sent a second time elsewhere. Webchat conversations do not show
 proposals yet. An editor may decide any proposal from the Activity view, including one no one could
 be reached for, and the first answer decides it.
 
