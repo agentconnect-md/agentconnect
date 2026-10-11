@@ -47,6 +47,8 @@ export interface DraftCardPort {
   scope?(): string | undefined
   /** Whether a member is a person rather than a bot; fails closed. */
   isPerson?(user: string): Promise<boolean>
+  /** A member's display name, for a click that arrived without one (a relayed click carries only the id). */
+  nameOf?(user: string): Promise<string | undefined>
   /** The person a one-to-one direct message is with; null for any other conversation; throws when it cannot tell. */
   directMessageWith?(channel: string): Promise<string | null>
   /** `thread` posts into a platform thread rather than at the conversation's root. */
@@ -272,10 +274,9 @@ export class AssistantDrafts {
     }
     const port = this.host.cardPortFor(approver.integrationId)
     const scope = port?.scope?.()
-    const by = {
-      id: input.actor ? (scope ? `${scope}:${input.actor.userId}` : input.actor.userId) : null,
-      name: input.actor?.name ?? null
-    }
+    const actor = input.actor
+    const name = actor?.name ?? (actor ? await port?.nameOf?.(actor.userId).catch(() => undefined) : undefined)
+    const by = { id: actor ? (scope ? `${scope}:${actor.userId}` : actor.userId) : null, name: name ?? null }
     await this.decide(draft, input.optionId, by)
     return true
   }
