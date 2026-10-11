@@ -435,7 +435,7 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     try {
       const inner = daemon as any
       inner.sandboxMechanism = 'bwrap'
-      inner.agents.get('bot-a').runInSandbox = true // the agent opts into the sandbox
+      inner.agents.get('bot-a').execution = 'srt' // the agent opts into the sandbox
       const buildSpy = vi.spyOn(inner, 'buildAcpHost')
       const res = await inner.runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
         dreamId: 'drm-sandboxed',

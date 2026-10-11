@@ -87,14 +87,12 @@ function quietHost(): AcpHost {
 }
 
 describe('runChat', () => {
-  it.each([
-    ['names it', { execution: 'microsandbox' }, {}],
-    ['has not been migrated off a microsandbox backend', { runInSandbox: true }, { backend: 'microsandbox' }]
-  ])('rejects an agent that %s before probing or launching a runtime', async (_case, agent, sandbox) => {
+  it('rejects an agent that names microsandbox before probing or launching a runtime', async () => {
     const files = scaffold()
-    writeFileSync(files.configPath, JSON.stringify({ version: 1, sandbox }))
+    writeFileSync(files.configPath, JSON.stringify({ version: 1 }))
     const agentFile = join(files.agentsDir, 'agent.json')
-    writeFileSync(agentFile, JSON.stringify({ ...JSON.parse(readFileSync(agentFile, 'utf8')), ...agent }))
+    const agent = { ...JSON.parse(readFileSync(agentFile, 'utf8')), execution: 'microsandbox' }
+    writeFileSync(agentFile, JSON.stringify(agent))
     const resolveCatalog = vi.fn()
     const probeRuntimes = vi.fn()
     const hostFactory = vi.fn()

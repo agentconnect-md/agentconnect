@@ -36,7 +36,6 @@ import {
   defaultStrategy,
   executionAsk,
   groupStrategies,
-  isSandboxStrategy,
   strategyModelSource,
   strategyOptions,
   strategyUsesImage,
@@ -384,19 +383,13 @@ export default function AddAgentModal({
     executionOptions.find((option) => option.value === execution && option.available)?.value ??
     defaultStrategy(executionOptions) ??
     ''
-  const effectiveRunInSandbox = placementStrategies.kind !== 'pool' && isSandboxStrategy(effectiveExecution)
   // Only a strategy that starts the image's install reads its image-binary warning.
   const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(effectiveExecution)
   // Models come from the chosen strategy's catalog: the host install's for host and srt, the image's for a VM.
   const modelSource =
     daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : effectiveExecution)
   // The pool's pod, not the strategy, is what encloses a session there.
-  const isolationLabel = sessionIsolationLabel({
-    pool: placement?.kind === 'pool',
-    runInSandbox: effectiveRunInSandbox,
-    sandboxSupported: true,
-    sandboxRequired: false
-  })
+  const isolationLabel = sessionIsolationLabel({ pool: placement?.kind === 'pool', execution: effectiveExecution })
   const isolationMode = isolationLabel.mode === 'Session isolation' ? t('sessionIsolation') : t('worktree')
   // A selected daemon's reported profiles are authoritative, including an empty list.
   const runtimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : FALLBACK_RUNTIME_IDS
@@ -1054,7 +1047,7 @@ export default function AddAgentModal({
               }}
               source={modelSource}
               runtimes={runtimeIds}
-              runInSandbox={readsImage}
+              readsImage={readsImage}
               onFallbackChange={(target) => {
                 if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
                 setRuntime(target.runtime)

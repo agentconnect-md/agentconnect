@@ -741,8 +741,7 @@ export interface CreateAgentInput {
   allowRuntimeChangesInChat?: boolean // explicit opt-in; default false
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
-  runInSandbox?: boolean // #642: request an OS sandbox (absent ⇒ DB default false)
-  execution?: string | null // the strategy slug, kept in step with runInSandbox; null ⇒ sandboxed, backend not yet reported (absent ⇒ host unless runInSandbox)
+  execution?: string // the strategy slug sessions run in (session-executors.md §5); absent ⇒ DB default host
   env?: Record<string, string> // extra env injected into the runtime (AgentSpec.env)
   // NOTE: write-only secret env vars are NOT part of the agent row — they live behind
   // the AgentSecretStore seam (routes write them there after create).
@@ -795,8 +794,7 @@ export interface UpdateAgentInput {
   allowRuntimeChangesInChat?: boolean
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
-  runInSandbox?: boolean // #642: request an OS sandbox for this agent
-  execution?: string | null // written together with runInSandbox by the route that resolves them
+  execution?: string // the strategy slug, resolved by the route against the placement's table
   /** Widen an existing App-backed GitHub workspace from read to write. */
   gitAccess?: 'write'
   /** GitHub workspace-relative ACP cwd; null restores repository root. */
@@ -889,8 +887,7 @@ export interface AgentRecord {
   outboundPolicy: AgentCallPolicy
   allowedTargetAgentIds: string[] // agent.id set; meaningful only when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join (default false)
-  runInSandbox: boolean // #642: persisted per-agent sandbox preference (default false)
-  execution: string | null // the strategy slug sessions run in (session-executors.md §5); null ⇒ sandboxed, backend not yet reported
+  execution: string // the strategy slug sessions run in (session-executors.md §5)
   lastModifiedAt: Date // last human edit (create/PATCH); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
   /**
@@ -1049,7 +1046,6 @@ export interface AgentRepo {
     byUserId?: string
   ): Promise<AgentRecord>
   /** The one-time `execution` migration (session-executors.md §5): null sandboxed rows placed on this daemon or its set, each bumping configRevision. */
-  migrateExecution(daemonId: DaemonId, execution: string): Promise<AgentId[]>
   /** Serialize on the Agent row. A real placement change atomically revokes all
    *  active webchat MCP delegations; a same-placement write does not. */
   setPlacement(agentId: AgentId, target: PlacementTarget): Promise<void>

@@ -104,6 +104,7 @@ const onGroup = (id: string, setId = 'g1', over: Partial<Agent> = {}): Agent =>
     status: 'online',
     runtime: 'claude',
     model: 'opus',
+    execution: 'host',
     ...over
   }) as Agent
 
@@ -118,6 +119,7 @@ const pinned = (id: string, daemonId: string, over: Partial<Agent> = {}): Agent 
     status: 'online',
     runtime: 'claude',
     model: 'opus',
+    execution: 'host',
     ...over
   }) as Agent
 

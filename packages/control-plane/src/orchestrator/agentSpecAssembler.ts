@@ -548,10 +548,8 @@ export function agentRecordToSpec(
     // #536: self-introduce-on-join. A definite column value, always shipped so a
     // toggle replicates to the owning daemon (which applies it to agent.json).
     introduceOnJoin: a.introduceOnJoin,
-    // #642: sandbox toggle, always shipped; the daemon decides fail-open/closed from host support.
-    runInSandbox: a.runInSandbox,
-    // The strategy beside it (session-executors.md §5); null until migrated, which leaves the daemon on the boolean.
-    ...(a.execution !== null ? { execution: a.execution } : {}),
+    // The strategy sessions run in (session-executors.md §5), always shipped.
+    execution: a.execution,
     // Preset marker (preset-agents.md §3.1). Always shipped (definite record field)
     // so the daemon can gate preset-only behavior locally.
     builtin: a.builtin,

@@ -8,7 +8,7 @@ const a = (id: string): Agent =>
     name: id,
     status: 'active',
     runtime: 'claude',
-    runInSandbox: false,
+    execution: 'host',
     workspace: { mode: 'from-scratch', path: '/tmp', gitBranch: 'main', pullOnNewSession: true, skills: [] },
     skills: [],
     managedSkills: [],
@@ -78,9 +78,9 @@ describe('diffAgents', () => {
     expect(diffAgents([settled], actual(at({ provider: 'managed', home: 'control-plane' }))).toChange).toEqual([])
   })
 
-  it('classifies enabling or disabling the OS sandbox as a host-spawn change', () => {
+  it('classifies a change of execution strategy as a host-spawn change', () => {
     const unsandboxed = a('x')
-    const sandboxed = { ...unsandboxed, runInSandbox: true } as Agent
+    const sandboxed = { ...unsandboxed, execution: 'srt' } as Agent
 
     expect(diffAgents([sandboxed], actual(unsandboxed)).toChange[0]).toMatchObject({
       hostRespawn: true,

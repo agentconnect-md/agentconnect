@@ -56,6 +56,8 @@ import {
   daemonStrategies,
   executionAsk,
   groupStrategies,
+  HOST_ONLY_TABLE,
+  HOST_STRATEGY,
   strategyModelSource,
   strategyOptions,
   strategyUsesImage,
@@ -261,23 +263,11 @@ export default function EditAgentModal({
         initialAllowRuntimeChangesInChat.current = dto.allowRuntimeChangesInChat ?? false
         setIntroduceOnJoin(dto.introduceOnJoin ?? false)
         initialIntroduceOnJoin.current = dto.introduceOnJoin ?? false
-        const storedExecution = agentStrategyValue({
-          execution: dto.execution ?? null,
-          runInSandbox: dto.runInSandbox ?? false
-        })
+        // An older CP that names no strategy reads as the unplaced agent's host-only table.
+        const storedExecution = agentStrategyValue({ execution: dto.execution ?? HOST_STRATEGY })
         setExecution(storedExecution)
         initialExecution.current = storedExecution
-        setSavedStrategies(
-          agentStrategies(
-            {
-              strategies: dto.strategies ?? null,
-              sandboxSupported: dto.sandboxSupported ?? false,
-              sandboxRequired: dto.sandboxRequired ?? false,
-              sandboxUnavailable: dto.sandboxUnavailable ?? null
-            },
-            false
-          )
-        )
+        setSavedStrategies(agentStrategies({ strategies: dto.strategies ?? HOST_ONLY_TABLE }, false))
         const fresh: SharingValue = { visibility: dto.visibility, sharedWith: dto.sharedWith }
         setSharing(fresh)
         initialSharing.current = fresh
@@ -854,7 +844,7 @@ export default function EditAgentModal({
                 fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
                 source={modelSource}
                 runtimes={runtimeOptions}
-                runInSandbox={readsImage}
+                readsImage={readsImage}
                 onFallbackChange={(target) => {
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)
                   setModel((stored) => storedModelAfterPick(target, runtime, selectedModel, stored))

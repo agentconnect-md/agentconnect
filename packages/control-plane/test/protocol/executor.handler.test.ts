@@ -177,73 +177,22 @@ describe('executor facts — what registration and the heartbeat persist (real P
   })
 })
 
-describe('the machine’s own strategy table and the execution migration (real Postgres)', () => {
+describe('the machine’s own strategy table (real Postgres)', () => {
   const OWN = {
     host: { available: true },
-    srt: { available: false, reason: 'srt is not the configured sandbox backend' },
+    srt: { available: false, reason: 'bwrap is missing' },
     microsandbox: { available: true }
   }
 
-  const agentRow = (id: string) =>
-    prisma.agent.findUniqueOrThrow({
-      where: { id },
-      select: { execution: true, runInSandbox: true, configRevision: true }
-    })
-
-  it('stores the table and the legacy backend, and migrates the sandboxed agents placed on the daemon or its set once', async () => {
+  it('stores the table from registration, and drops the retired sandboxBackend report (#2463)', async () => {
     const h = buildWsHarness(prisma)
     const setId = await memberSet()
-    const pinned = randomUUID()
-    const onSet = randomUUID()
-    const chosen = randomUUID()
-    const elsewhere = randomUUID()
     await prisma.daemon.create({ data: { id: EXECUTOR, orgId: DEFAULT_ORG_ID, status: 'provisioned' } })
-    await seedAgent(prisma, pinned, { daemonId: EXECUTOR })
-    await seedAgent(prisma, onSet, { setId })
-    await seedAgent(prisma, chosen, { setId })
-    await seedAgent(prisma, elsewhere, {})
-    // What the migration leaves for a placed, sandboxed agent; `chosen` already names its strategy.
-    await prisma.agent.updateMany({
-      where: { id: { in: [pinned, onSet, elsewhere] } },
-      data: { runInSandbox: true, execution: null }
-    })
-    await prisma.agent.update({ where: { id: chosen }, data: { runInSandbox: true, execution: 'srt' } })
-    const before = await agentRow(pinned)
-
-    const stub = await member(h, EXECUTOR, { setId, capabilities: { strategies: OWN, sandboxBackend: 'microsandbox' } })
+    await member(h, EXECUTOR, { setId, capabilities: { strategies: OWN, sandboxBackend: 'microsandbox' } })
     const stored = (await prisma.daemon.findUniqueOrThrow({ where: { id: EXECUTOR } })).capabilities
-    expect(stored).toMatchObject({ strategies: OWN, sandboxBackend: 'microsandbox' })
-    expect((await h.deps.registry.getUnscoped(EXECUTOR as never))?.capabilities).toMatchObject({
-      strategies: OWN,
-      sandboxBackend: 'microsandbox'
-    })
-
-    expect(await agentRow(pinned)).toEqual({
-      execution: 'microsandbox',
-      runInSandbox: true,
-      configRevision: before.configRevision + 1n
-    })
-    expect((await agentRow(onSet)).execution).toBe('microsandbox')
-    expect((await agentRow(chosen)).execution).toBe('srt')
-    expect((await agentRow(elsewhere)).execution).toBeNull()
-    // The snapshot the daemon converges to already carries it.
-    const snapshot = stub.lastSent('register/ok')!.payload as { agents: { agentId: string; execution?: string }[] }
-    expect(snapshot.agents.find((a) => a.agentId === pinned)?.execution).toBe('microsandbox')
-
-    // Once: a later registration naming another backend changes nothing already migrated.
-    const again = await agentRow(pinned)
-    await member(h, EXECUTOR, { capabilities: { sandboxBackend: 'srt' } })
-    expect(await agentRow(pinned)).toEqual(again)
-  })
-
-  it('a daemon that reports no backend migrates nothing', async () => {
-    const h = buildWsHarness(prisma)
-    const agent = randomUUID()
-    await prisma.daemon.create({ data: { id: EXECUTOR, orgId: DEFAULT_ORG_ID, status: 'provisioned' } })
-    await seedAgent(prisma, agent, { daemonId: EXECUTOR })
-    await prisma.agent.update({ where: { id: agent }, data: { runInSandbox: true, execution: null } })
-    await member(h, EXECUTOR, { features: [] })
-    expect((await agentRow(agent)).execution).toBeNull()
+    expect(stored).toMatchObject({ strategies: OWN })
+    expect(stored).not.toHaveProperty('sandboxBackend')
+    expect((await h.deps.registry.getUnscoped(EXECUTOR as never))?.capabilities).toMatchObject({ strategies: OWN })
   })
 })
 

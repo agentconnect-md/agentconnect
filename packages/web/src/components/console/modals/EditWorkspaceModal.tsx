@@ -130,12 +130,7 @@ export default function EditWorkspaceModal({
   // Pool placements do not materialize secondary roots yet, so they keep the authorization-only wording.
   const poolPlaced = isPoolPlacementKind(agent.placementKind, agent.setId, orgSetIds)
   // Session isolation is named by its EFFECTIVE boundary (git-workspace-model.md §11), and a pool pod is one whether or not a sandbox is.
-  const isolationLabel = sessionIsolationLabel({
-    pool: poolPlaced,
-    runInSandbox: agent.runInSandbox,
-    sandboxSupported: agent.sandboxSupported,
-    sandboxRequired: agent.sandboxRequired
-  })
+  const isolationLabel = sessionIsolationLabel({ pool: poolPlaced, execution: agent.execution })
   // The tile an existing workspace edits under is DERIVED from host + credential
   // (git-workspace-model.md §7) — no source is stored.
   const currentSource = workspaceSourceOf(agent.workspace)

@@ -134,7 +134,6 @@ The daemon does not implement these, but interacts with them through the section
 | `--agents-dir <dir>`             | `agentsDir`                         | Override agent discovery root. Daemon/`chat` recursively collect `agent.json`, skipping `node_modules`, `.git`, dot directories, depth about four. |
 | `--agent <name>`                 | Selector                            | Select by `agent.id`: single-agent `run` ignoring status, or disambiguate `chat`.                                                                  |
 | `--max-agents <n>`               | `limits.maxAgents`                  | Capacity reported to CP + local hard limit.                                                                                                        |
-| `--require-sandbox`              | `sandbox.host=false`                | Refuse unsandboxed sessions; startup is refused when no remaining strategy is available.                                                           |
 | n/a (config only)                | `sandbox.host`/`srt`/`microsandbox` | The strategy table: each `false`, `true` or its parameters; all on by default, each available once its startup probe passes.                       |
 | n/a (config only)                | `sandbox.mounts`                    | Host mappings: `readonly` (default), `writable`, or microsandbox-only `overlay`. SRT requires equal source/target paths.                           |
 | `--k8s`                          | n/a (mode switch)                   | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
@@ -461,8 +460,8 @@ host files and another runtime's credential source require a separate policy.
 
 When the live probe fails, `srt` is unavailable with the probe's reason, and a session
 whose agent names it is refused with that reason rather than run without confinement.
-A daemon whose table has nothing available, such as one with `sandbox.host: false` or
-`--require-sandbox` and no working sandbox, refuses startup. macOS and Windows always
+A daemon whose table has nothing available, such as one with `sandbox.host: false`
+and no working sandbox, refuses startup. macOS and Windows always
 follow this unsupported-host behavior; this rollout intentionally adds no
 runtime-specific Keychain integration.
 

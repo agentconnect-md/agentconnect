@@ -4,7 +4,7 @@ import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ExecutionStrategyField } from './ExecutionStrategyField'
-import { LEGACY_SANDBOX, type StrategyOption } from '@/lib/execution-strategy'
+import type { StrategyOption } from '@/lib/execution-strategy'
 
 let root: Root | undefined
 let container: HTMLDivElement | undefined
@@ -91,20 +91,6 @@ describe('ExecutionStrategyField', () => {
     await act(async () => rows[2]!.click())
     await act(async () => rows[1]!.click())
     expect(picked).toEqual(['srt'])
-  })
-
-  it('names the sandbox of a daemon that predates the table, and why host is refused there', async () => {
-    const rows = await open(
-      await mount([
-        { value: LEGACY_SANDBOX, available: true },
-        { value: 'host', available: false, refusal: 'sandboxRequired' }
-      ])
-    )
-    expect(rows[0]?.textContent).toBe('Sandbox')
-    expect(rows[0]?.getAttribute('title')).toBeNull()
-    expect(rows[1]?.getAttribute('title')).toBe(
-      'No isolation boundary: sessions run directly on the machine.\nThis daemon requires a sandbox.'
-    )
   })
 
   it('keeps the current value but refuses to open while another change must be saved first', async () => {

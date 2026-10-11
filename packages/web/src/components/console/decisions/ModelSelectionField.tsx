@@ -92,7 +92,7 @@ export function ModelSelectionField({
   onFallbackChange,
   source,
   runtimes,
-  runInSandbox
+  readsImage
 }: {
   agentId?: string
   value: AgentModelSelection | null
@@ -102,7 +102,8 @@ export function ModelSelectionField({
   onFallbackChange(value: DecisionRuntimeTarget): void
   source?: RuntimeModelSource
   runtimes: readonly string[]
-  runInSandbox?: boolean
+  /** Whether the agent's strategy starts the image's runtime install, so a profile's image-binary warning applies. */
+  readsImage?: boolean
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
   const tDecisions = useTranslations('Decisions')
@@ -157,7 +158,7 @@ export function ModelSelectionField({
       onChange={onFallbackChange}
       source={source}
       runtimes={runtimes}
-      runInSandbox={runInSandbox}
+      readsImage={readsImage}
     />
   )
   const fallbackPanel = (
@@ -249,7 +250,7 @@ export function ModelSelectionField({
                 ariaLabel={ariaLabel}
                 source={source}
                 runtimes={runtimes}
-                runInSandbox={runInSandbox}
+                readsImage={readsImage}
                 onChange={(target) => onPick(target)}
               />
             </div>

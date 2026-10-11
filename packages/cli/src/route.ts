@@ -25,8 +25,8 @@ export const CLI_OWNED_COMMANDS = new Set([
 
 /**
  * Global options that consume the following token as their value (so it is not
- * mistaken for the command). Boolean flags (--no-cp, --require-sandbox,
- * --dry-run, -h/--help, -V/--version) and the `--opt=value` form take no
+ * mistaken for the command). Boolean flags (--no-cp, --dry-run, -h/--help,
+ * -V/--version) and the `--opt=value` form take no
  * separate token.
  */
 const VALUE_OPTS = new Set([

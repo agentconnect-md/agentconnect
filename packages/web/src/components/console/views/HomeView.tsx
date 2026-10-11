@@ -65,7 +65,7 @@ import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
-import { agentStrategyValue, strategyModelSource } from '@/lib/execution-strategy'
+import { agentStrategyValue, HOST_STRATEGY, strategyModelSource, strategyUsesImage } from '@/lib/execution-strategy'
 
 // Design composer selectors: agent/model are "pills" (rounded, with a leading
 // mark), effort/permission are plain "chips". Full literal strings so Tailwind's
@@ -145,10 +145,13 @@ export default function HomeView() {
   // looking one up found nothing and every such agent read as signed in (never blocked, never fixed).
   const authRequiredFor = (a: Agent) =>
     !!agentCapabilitySource(a, daemons, memberSets)?.runtimeModels.find((r) => r.runtime === a.runtime)?.authRequired
-  const imageBinaryMissingFor = (a: Agent) =>
-    (a.runInSandbox || a.sandboxRequired) &&
-    agentCapabilitySource(a, daemons, memberSets)?.runtimeModels.find((r) => r.runtime === a.runtime)
-      ?.unavailableReason === 'image-binary-missing'
+  // Only a strategy that starts the image's install can miss its binary: its own entry says so, else an older daemon's single reading.
+  const imageBinaryMissingFor = (a: Agent) => {
+    if (!strategyUsesImage(a.execution)) return false
+    const rt = agentCapabilitySource(a, daemons, memberSets)?.runtimeModels.find((r) => r.runtime === a.runtime)
+    const entry = rt?.strategies?.[a.execution]
+    return entry ? !entry.available : rt?.unavailableReason === 'image-binary-missing'
+  }
   const agentReady = (a: Agent) => isOnline(a) && !authRequiredFor(a) && !imageBinaryMissingFor(a)
 
   // Preferred default agent: the "agentconnect" preset when it's READY, else the
@@ -247,10 +250,7 @@ export default function HomeView() {
   const defaultWorktree = gitWorkspace?.worktree === true
   const worktree = worktreeOverride ?? defaultWorktree
   // What that toggle is CALLED follows the agent's effective boundary, not its stored sandbox flag (git-workspace-model.md §11).
-  const isolationLabel = agentSessionIsolationLabel(
-    agent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false },
-    orgSetIds
-  )
+  const isolationLabel = agentSessionIsolationLabel(agent ?? { execution: HOST_STRATEGY }, orgSetIds)
   const isolationMode =
     isolationLabel.mode === 'Session isolation' ? t('composer.sessionIsolation') : t('composer.worktree')
 
@@ -725,7 +725,7 @@ export default function HomeView() {
                   <RuntimeModelSelect
                     compact
                     readOnly={!runtimeChangesAllowed}
-                    runInSandbox={agent.runInSandbox}
+                    readsImage={strategyUsesImage(agent.execution)}
                     value={{ runtime: selectedRuntime, model }}
                     source={modelSource}
                     decision={

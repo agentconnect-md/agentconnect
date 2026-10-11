@@ -608,8 +608,7 @@ describe('GET /daemons — live-status overlay', () => {
           runtimes: ['claude'],
           acp: true,
           features: [],
-          strategies,
-          sandboxBackend: 'srt'
+          strategies
         },
         maxAgents: 3
       },
@@ -619,7 +618,6 @@ describe('GET /daemons — live-status overlay', () => {
 
     const caps = (await listCapabilities()).find((r) => r.daemonId === DAEMON)!
     expect(caps.capabilities.strategies).toEqual(strategies)
-    expect(caps.capabilities).not.toHaveProperty('sandboxBackend')
     const one = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })).json() as DaemonDto
     expect(one.capabilities.strategies).toEqual(strategies)
   })

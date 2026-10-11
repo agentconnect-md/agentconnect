@@ -63,7 +63,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
   const agent = selectAgent(cfg.agentsDir!, opts.agentName)
   // The agent's own strategy, refused rather than run in a weaker one (session-executors.md §5); a VM needs the daemon.
-  const strategy = agentStrategyOf(agent, cfg.sandbox.backend)
+  const strategy = agentStrategyOf(agent)
   if (strategy === 'microsandbox') {
     throw new Error('chat does not support microsandbox yet; use a daemon session for an agent that runs in it')
   }

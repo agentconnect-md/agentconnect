@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadConfig } from '../src/config/load-config.js'
+import { loadConfig, retiredKeyError } from '../src/config/load-config.js'
 import { ConfigSchema, McpServerDefSchema, RuntimeDefSchema, sessionRetentionMs } from '../src/config/config-schema.js'
 import { CP_URL_ENV, WORKSPACE_GIT_ORIGINS_ENV } from '@agentconnect.md/protocol'
 
@@ -113,7 +113,7 @@ describe('loadConfig', () => {
   })
 
   it('keeps sandbox.share off unless the machine owner sets it, and takes nothing but a boolean', () => {
-    expect(ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } }).sandbox.share).toBe(false)
+    expect(ConfigSchema.parse({ version: 1, sandbox: { microsandbox: true } }).sandbox.share).toBe(false)
     expect(ConfigSchema.parse({ version: 1, sandbox: { share: true } }).sandbox.share).toBe(true)
     expect(() => ConfigSchema.parse({ version: 1, sandbox: { share: 'yes' } })).toThrow()
   })
@@ -128,9 +128,10 @@ describe('loadConfig', () => {
     expect(() => ConfigSchema.parse({ version: 1, store: { backend: 'mysql' } })).toThrow()
   })
 
-  it('rejects an unimplemented sandbox backend', () => {
-    expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'docker' } })).toThrow()
+  it('rejects a strategy it does not implement, and the retired backend key', () => {
+    expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'srt' } })).toThrow()
     expect(() => ConfigSchema.parse({ version: 1, sandbox: { docker: true } })).toThrow()
+    expect(() => ConfigSchema.parse({ version: 1, security: { requireSandbox: true } })).toThrow()
   })
 
   it('offers every strategy by default and takes false, true or parameters for each (session-executors.md §5)', () => {
@@ -150,32 +151,20 @@ describe('loadConfig', () => {
     expect(() => table({ srt: { profile: 'strict' } })).toThrow()
   })
 
-  it('maps the retiring keys once, with a warning each, onto the default table', () => {
-    const warnings: string[] = []
-    const cfg = loadConfig({
-      root: tmpRoot({
-        version: 1,
-        sandbox: { backend: 'microsandbox', microsandbox: { cpus: 4 } },
-        security: { requireSandbox: true }
-      }),
-      warn: (message) => warnings.push(message)
-    })
-    expect({ host: cfg.sandbox.host, srt: cfg.sandbox.srt }).toEqual({ host: false, srt: true })
-    expect(cfg.sandbox.microsandbox).toEqual({ cpus: 4, memoryMiB: 2048, diskGiB: 10 })
-    // Kept only as what the Control Plane migrates `runInSandbox` from; nothing launches on it.
-    expect(cfg.sandbox.backend).toBe('microsandbox')
-    expect(cfg.security.requireSandbox).toBeUndefined()
-    expect(warnings).toEqual([
-      expect.stringContaining('sandbox.backend is retired'),
-      expect.stringContaining('security.requireSandbox is retired and read as sandbox.host: false')
-    ])
-    const quiet: string[] = []
-    const defaults = loadConfig({
-      root: tmpRoot({ version: 1, security: { requireSandbox: false } }),
-      warn: (m) => quiet.push(m)
-    })
-    expect(defaults.sandbox.host).toBe(true)
-    expect(quiet).toEqual([expect.stringContaining('read as sandbox.host: true')])
+  it('refuses a file that still sets a retired key, naming its replacement (#2463)', () => {
+    const load = (config: unknown) => () => loadConfig({ root: tmpRoot(config) })
+    expect(load({ version: 1, sandbox: { backend: 'microsandbox', microsandbox: { cpus: 4 } } })).toThrow(
+      'sandbox.backend is no longer supported: remove "backend: "microsandbox"" — the sandbox table offers every strategy by default'
+    )
+    expect(load({ version: 1, security: { requireSandbox: true } })).toThrow(
+      'security.requireSandbox is no longer supported: set "sandbox": { "host": false } instead'
+    )
+    expect(load({ version: 1, security: { requireSandbox: false } })).toThrow(
+      'security.requireSandbox is no longer supported: remove it (sandbox.host is on by default)'
+    )
+    // The replacement loads without a word.
+    expect(loadConfig({ root: tmpRoot({ version: 1, sandbox: { host: false } }) }).sandbox.host).toBe(false)
+    expect(retiredKeyError({ version: 1, sandbox: { host: false }, security: {} })).toBeUndefined()
   })
 
   it('loads sandbox environment values literally, including empty values', () => {
@@ -211,10 +200,7 @@ describe('loadConfig', () => {
   ])('bounds microsandbox %s to positive integers supported by the backend', (field, max) => {
     const config = (value: number) => ({
       version: 1,
-      sandbox: {
-        backend: 'microsandbox',
-        microsandbox: { image: 'registry.example.test/runtime:test', [field]: value }
-      }
+      sandbox: { microsandbox: { image: 'registry.example.test/runtime:test', [field]: value } }
     })
     for (const value of [0, -1, 1.5, Number(max) + 1]) {
       expect(() => ConfigSchema.parse(config(value))).toThrow()
@@ -341,12 +327,10 @@ describe('loadConfig', () => {
     })
     const cfg = loadConfig({
       root,
-      overrides: { apiUrl: 'wss://override.example/daemon', logLevel: 'debug', requireSandbox: true }
+      overrides: { apiUrl: 'wss://override.example/daemon', logLevel: 'debug' }
     })
     expect(cfg.controlPlane?.url).toBe('wss://override.example/daemon')
     expect(cfg.logging.level).toBe('debug')
-    // `--require-sandbox` withdraws host from the table.
-    expect(cfg.sandbox.host).toBe(false)
   })
 
   it('allows the daemon to opt out of account-app isolation explicitly', () => {

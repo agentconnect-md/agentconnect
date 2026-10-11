@@ -39,7 +39,13 @@ beforeEach(() => {
     version: '1.0.0',
     status: 'online',
     pool: false,
-    caps: { platforms: [], runtimes: ['claude', 'codex'], acp: true, features: ['sandbox'] },
+    caps: {
+      platforms: [],
+      runtimes: ['claude', 'codex'],
+      acp: true,
+      features: [],
+      strategies: { host: { available: true }, microsandbox: { available: true } }
+    },
     runtimeModels: [
       { runtime: 'claude', version: '9.0.0', hostVersion: '2.0.0', models: ['example-model'] },
       {
@@ -93,7 +99,7 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
     expect(host.textContent).toContain('Login required')
     expect(host.textContent).not.toContain('Binary not installed in image')
 
-    await choose('Sandbox')
+    await choose('VM')
     expect(host.textContent).toContain('v9.0.0')
     expect(host.textContent).not.toContain('v2.0.0')
     expect(host.textContent).not.toContain('v3.0.0')
@@ -107,12 +113,8 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
     expect(mocks.daemon!.runtimeModels[1]!.unavailableReason).toBe('image-binary-missing')
   })
 
-  it.each(['required', 'pool'])('shows only sandbox when policy is %s', async (policy) => {
-    if (policy === 'pool') {
-      mocks.daemon!.pool = true
-      // The pod is a pool agent's boundary, so the pool keeps one view even beside a table.
-      mocks.daemon!.caps.strategies = { host: { available: true }, microsandbox: { available: true } }
-    } else mocks.daemon!.caps.features.push('sandbox-required')
+  it('shows one strategy without tabs when the table offers nothing else', async () => {
+    mocks.daemon!.caps.strategies = { microsandbox: { available: true } }
     mocks.daemon!.runtimeModels.push({
       runtime: 'opencode',
       version: '1',
@@ -123,26 +125,45 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
     })
     await render()
     expect(control()).toBeNull()
-    expect(host.textContent).toContain('Sandbox')
+    expect(host.querySelector('[title^="microsandbox"]')?.textContent).toBe('VM')
     expect(host.textContent).toContain('v9.0.0')
     expect(host.textContent).not.toContain('v2.0.0')
     expect(host.textContent).toContain('Binary not installed in image')
-    expect(host.textContent?.includes('OpenCode')).toBe(policy === 'pool')
-    expect(host.textContent?.includes('Show runtimes not on host')).toBe(policy !== 'pool')
+    expect(host.textContent).not.toContain('OpenCode')
+    expect(host.textContent).toContain('Show runtimes not on host')
   })
 
-  it('explains an unavailable sandbox while keeping host runtimes visible', async () => {
-    mocks.daemon!.caps.features = []
+  it('shows the pool without tabs, its runtimes as the pod reports them, whatever table it carries', async () => {
+    mocks.daemon!.pool = true
+    mocks.daemon!.runtimeModels.push({
+      runtime: 'opencode',
+      version: '1',
+      models: [],
+      hostAvailable: false,
+      credentialsConfigured: false,
+      authRequired: true
+    })
     await render()
-    expect(host.textContent).toContain('v2.0.0')
-    await choose('Sandbox')
-    expect(host.textContent).toContain('Sandbox is unavailable on this daemon.')
-    expect(host.textContent).not.toContain('v9.0.0')
-    await choose('Host')
-    expect(host.textContent).toContain('v2.0.0')
+    expect(control()).toBeNull()
+    expect(host.querySelector('[title^="microsandbox"]')).toBeNull()
+    expect(host.querySelector('[title^="No isolation boundary"]')).toBeNull()
+    expect(host.textContent).toContain('v9.0.0')
+    expect(host.textContent).not.toContain('v2.0.0')
+    expect(host.textContent).toContain('Binary not installed in image')
+    expect(host.textContent).toContain('OpenCode')
+    expect(host.textContent).not.toContain('Show runtimes not on host')
   })
 
-  it.each(['Host', 'Sandbox'])('applies all four installation/login states in %s', async (environment) => {
+  it('shows a daemon that reports no table as host alone', async () => {
+    delete mocks.daemon!.caps.strategies
+    await render()
+    expect(control()).toBeNull()
+    expect(host.querySelector('[title^="No isolation boundary"]')?.textContent).toBe('Host')
+    expect(host.textContent).toContain('v2.0.0')
+    expect(host.textContent).not.toContain('v9.0.0')
+  })
+
+  it.each(['Host', 'VM'])('applies all four installation/login states in %s', async (environment) => {
     mocks.daemon!.runtimeModels = [
       { runtime: 'opencode', version: '1', models: [], hostAvailable: true, credentialsConfigured: true },
       {
@@ -173,7 +194,7 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
       }
     ]
     await render()
-    if (environment === 'Sandbox') await choose(environment)
+    if (environment === 'VM') await choose(environment)
     expect(host.textContent).toContain('OpenCode')
     expect(host.textContent).toContain('Codex')
     expect(host.textContent).toContain('Claude')
@@ -210,7 +231,7 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
       await render()
       expect(host.textContent?.includes('OpenCode')).toBe(credentialsConfigured)
       expect(host.textContent).toContain('Codex')
-      await choose('Sandbox')
+      await choose('VM')
       expect(host.textContent).not.toContain('OpenCode')
       expect(host.textContent).not.toContain('Login required')
       expect(host.textContent).toContain('Expand below to see runtimes not installed on host.')
@@ -240,7 +261,6 @@ const agent = (id: string, execution: string) =>
     runtime: 'claude',
     model: 'example-model',
     execution,
-    runInSandbox: execution !== 'host',
     status: 'online'
   }) as unknown as Agent
 const expand = async (label: string) => {
@@ -308,6 +328,13 @@ describe.each([false, true])('one runtime tab per strategy in the daemon’s tab
     expect(host.textContent).not.toContain('Codex')
     await expand('Claude')
     expect(host.textContent).toContain('srt-model-2')
+  })
+
+  it('lists every hosted agent on the pool, whose pod is the boundary whatever strategy each names', async () => {
+    mocks.daemon!.pool = true
+    await render()
+    expect(control()).toBeNull()
+    expect(host.textContent).toContain('v9.0.0 · 3 agents')
   })
 
   it('shows an unavailable strategy’s probe reason instead of runtimes', async () => {

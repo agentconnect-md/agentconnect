@@ -360,7 +360,6 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     outboundPolicy: a.outboundPolicy as AgentCallPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
-    runInSandbox: a.runInSandbox,
     execution: a.execution,
     lastModifiedAt: a.lastModifiedAt,
     lastModifiedBy: a.lastModifiedBy
@@ -497,10 +496,8 @@ export class PgAgentRepo implements AgentRepo {
           capabilities: input.capabilities ?? [],
           // #536 self-introduce-on-join (dedicated column; absent ⇒ DB default false).
           ...(input.introduceOnJoin !== undefined ? { introduceOnJoin: input.introduceOnJoin } : {}),
-          // #642 sandbox preference (dedicated column; absent ⇒ DB default false).
-          ...(input.runInSandbox !== undefined ? { runInSandbox: input.runInSandbox } : {}),
-          // An agent that is not sandboxed runs on `host`; a sandboxed one names its strategy or stays null until its daemon reports.
-          execution: input.execution !== undefined ? input.execution : input.runInSandbox ? null : 'host',
+          // The strategy sessions run in (session-executors.md §5); absent ⇒ DB default `host`.
+          ...(input.execution !== undefined ? { execution: input.execution } : {}),
           // Initial visibility (absent ⇒ DB default 'org'). sharedWith only bites
           // when restricted; a stray set under 'org' is inert (the predicate ignores it).
           ...(input.visibility ? { visibility: input.visibility } : {}),
@@ -788,7 +785,6 @@ export class PgAgentRepo implements AgentRepo {
         ...(patch.runtime !== undefined ? { runtime: patch.runtime } : {}),
         ...(patch.capabilities !== undefined ? { capabilities: patch.capabilities } : {}),
         ...(patch.introduceOnJoin !== undefined ? { introduceOnJoin: patch.introduceOnJoin } : {}),
-        ...(patch.runInSandbox !== undefined ? { runInSandbox: patch.runInSandbox } : {}),
         ...(patch.execution !== undefined ? { execution: patch.execution } : {}),
         ...(patch.gitAccess !== undefined ? { gitAccess: patch.gitAccess } : {}),
         ...(patch.agentDir !== undefined ? { agentDir: patch.agentDir } : {}),
@@ -1121,19 +1117,6 @@ export class PgAgentRepo implements AgentRepo {
       include: withUsers
     })
     return toRecord(a)
-  }
-
-  async migrateExecution(daemonId: DaemonId, execution: string): Promise<AgentId[]> {
-    // A set placement is the daemon's own set; the membership invariants already keep both arms inside its org.
-    const rows = await this.db.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      UPDATE "agent" SET "execution" = ${execution}, "configRevision" = "configRevision" + 1
-      WHERE "execution" IS NULL AND "runInSandbox" AND (
-        ("placementKind" = 'daemon' AND "daemonId" = ${daemonId}::uuid)
-        OR ("placementKind" = 'set' AND "setId" = (SELECT "setId" FROM "member_set_member" WHERE "daemonId" = ${daemonId}::uuid))
-      )
-      RETURNING "id"
-    `)
-    return rows.map((r) => AgentId(r.id))
   }
 
   async setPlacement(agentId: AgentId, target: PlacementTarget): Promise<void> {

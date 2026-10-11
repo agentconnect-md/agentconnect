@@ -121,7 +121,6 @@ describe('Daemon CP agent → memory + reconcile', () => {
     const { daemon, hosts } = makeDaemon(root)
     await daemon.start()
     await seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })
-    ;(daemon as any).cfg.sandbox.backend = 'microsandbox'
     const preparation = vi
       .spyOn(daemon as any, 'runAgentWorkspacePreparation')
       .mockResolvedValue(join(root, 'agents', 'bot-a', 'ws'))
@@ -129,7 +128,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
       seam(daemon).applyAgentActivate({
         agentId: 'bot-a',
         moveId: MOVE_ID,
-        spec: { name: 'bot-a', runtime: 'claude', runInSandbox: true },
+        spec: { name: 'bot-a', runtime: 'claude', execution: 'microsandbox' },
         integrations: [],
         crons: []
       })

@@ -102,7 +102,7 @@ export function RuntimeModelSelect({
   pending = false,
   decision,
   allowRuntimeOnly = false,
-  runInSandbox = false,
+  readsImage = false,
   readOnly = false
 }: {
   value: DecisionRuntimeTarget
@@ -119,7 +119,8 @@ export function RuntimeModelSelect({
   settings?: RunSettingsControls
   pending?: boolean
   allowRuntimeOnly?: boolean
-  runInSandbox?: boolean
+  /** Whether the agent's strategy starts the image's runtime install, so a profile's image-binary warning applies. */
+  readsImage?: boolean
   readOnly?: boolean
   decision?: RuntimeDecisionChoice
 }) {
@@ -157,7 +158,7 @@ export function RuntimeModelSelect({
         profile &&
         runtimeWarning({
           authRequired: profile.authRequired,
-          unavailableReason: runInSandbox ? profile.unavailableReason : undefined
+          unavailableReason: readsImage ? profile.unavailableReason : undefined
         })
       return { runtime, profile, warning, options: modelOptionsFor(source, runtime, profile?.models ?? []) }
     })

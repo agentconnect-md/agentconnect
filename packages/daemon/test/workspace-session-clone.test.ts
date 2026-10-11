@@ -1421,7 +1421,7 @@ describe('a session directory no row names (#2283)', () => {
 })
 
 // git-workspace-model §11 "Changing the tier": the disk is the record, and every side reads it — so an
-// agent's `runInSandbox` or `workspaceIsolation` changing under a live session cannot leave preparation,
+// agent's `execution` or `workspaceIsolation` changing under a live session cannot leave preparation,
 // the launch and the reads serving three different directories.
 describe('changing the agent tier never strands a session', () => {
   it('keeps a session in its clones once the agent stops being sandboxed, preparation and launch on one directory', async () => {
@@ -1431,7 +1431,7 @@ describe('changing the agent tier never strands a session', () => {
     writeFileSync(join(cwd, 'wip.md'), 'in progress\n')
 
     // The next turn arrives with the boundary gone: nothing asks for confinement any more.
-    const open = { ...agent, runInSandbox: false, workspace: { ...agent.workspace, isolation: 'shared' } } as Agent
+    const open = { ...agent, execution: 'host', workspace: { ...agent.workspace, isolation: 'shared' } } as Agent
     const again = await workspaces.prepareSessionWorkspace(open, unconfined())
 
     expect(again).toBe(cwd)
