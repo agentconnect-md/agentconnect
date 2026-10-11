@@ -14,6 +14,7 @@ import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 import { RECALL_TOOL } from './recall-tool.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from './ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
+import { STOP_SUBSESSION_TOOL } from './ops/assistant-subsessions.js'
 
 /**
  * The single unified send tool (session-concept §3). It merges the former
@@ -1433,7 +1434,8 @@ export const ALL_TOOL_NAMES = [
       RECALL_TOOL,
       ...ASSISTANT_ITEM_TOOLS,
       PROPOSE_TOOL,
-      ...ASSISTANT_REMINDER_TOOLS
+      ...ASSISTANT_REMINDER_TOOLS,
+      STOP_SUBSESSION_TOOL
     ]
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.

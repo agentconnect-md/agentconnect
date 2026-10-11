@@ -66,8 +66,8 @@ one exists, and does not pretend to defend against effects it cannot defend agai
   PR". Ordinary conversation stays in the main conversation.
 - In an IM: the main conversation says "started", then reports the result with a console link.
   Nothing extra appears on the platform.
-- Steering and stopping go through the main conversation: "change the PR task to X", "stop the
-  PR one".
+- Stopping goes through the main conversation: "stop the PR one". Steering ("change the PR task
+  to X") is deferred (§7).
 - In webchat: the sub-sessions a conversation opened are visible — watch, talk to one directly,
   stop one.
 - The workspace is whatever the agent's other sessions get: a worktree each under session
@@ -82,9 +82,10 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 
 - "Stop" in the main conversation interrupts only that conversation's current turn — **not the
   work already delegated**, and it does not mute the conversation.
-- To stop one piece of work, name it in the main conversation or stop it in webchat. That
-  interrupts its current turn; a background process the runtime started itself (a build, a dev
-  server) may keep running and is marked as such.
+- To stop one piece of work, name it in the main conversation that opened it, or stop it in
+  webchat. The agent first confirms in one sentence which one you mean. Stopping interrupts its
+  current turn; a background process the runtime started itself (a build, a dev server) may keep
+  running, and the answer says so.
 - To stop everything, **pause the agent** in the console (today's pause): main conversations,
   sub-sessions and patrols stop until resumed. Patrols missed meanwhile are not replayed; items
   whose check is overdue are each checked once on the next patrol.
@@ -322,6 +323,11 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
 **② The standing summary**: `id`, title, status and followers' places of active and waiting
 items; capped at 30; injected through the existing reminder path (`shouldRemind`, which already
 handles first turn, restart and compaction); every place receives the same summary. Incremental injection (`lastInjectedVersion`) is not in P0.
+A main conversation's summary also lists the sub-sessions that conversation opened which are
+running now, each by its id and label, at most 10 and then a count. The block is omitted when
+none runs. It rides the same points and is re-injected on the next turn after one starts or
+ends, so the list the model holds stays current (§5.8); after the last one ends, that turn says
+none is running.
 
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
 another place, under §5.5.
@@ -447,10 +453,10 @@ below), so opening it everywhere does not reopen what the read rule closes.
 **P0b ships the minimal form**: self-delegation as below, a failure report the daemon sends when a
 sub-session ends without reporting (§5.7), and a concurrency cap that refuses beyond
 `maxConcurrentSubsessions` (default 3). Reports use the existing parent-report path
-(`replyToSession`). The persistent outbox, the recovery order, listing / steering / stopping, the
-daily budget and queueing over the cap are deferred until use shows they are needed; the rest of
-this section and §5.7 describe that target. Permission-request routing and its wait cap (items 2
-and 3 below) have shipped.
+(`replyToSession`). The persistent outbox, the recovery order, listing / steering, the daily
+budget and queueing over the cap are deferred until use shows they are needed; the rest of this
+section and §5.7 describe that target. Permission-request routing and its wait cap (items 2 and 3
+below) have shipped, and so has stopping from the main conversation (§5.8).
 
 - **Opening**: self-delegation without a post — the direct form of `sendMessage({ toAgent })`
   accepts a self target (both admission checks exempt it; `targetSessionCoordinate` is skipped),
@@ -464,7 +470,8 @@ and 3 below) have shipped.
   there today.
 - **Relation to the main conversation**: the main conversation can list, steer (reuse
   "re-delegate into the same child") and stop a sub-session; listing needs a **persistent
-  parent–child index** (`childSessionLinks` is in memory).
+  parent–child index** (`childSessionLinks` is in memory). Stopping has shipped (§5.8). Listing
+  is the running block of the standing summary (§5.4); a listing tool and steering stay deferred.
 - **Runtime permission requests** (far more common than `propose`):
   1. Standing prompt: finish the work in the workspace; the outward step (push, open the PR) goes
      through `propose`.
@@ -556,11 +563,24 @@ agent-owned, CAS-claimed, duty-gated, re-armed on `agentsGained`):
 
 ### 5.8 Stopping
 
-| Action                                        | Effect                                                                                                          | Who                                                     |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                | today's `!stop` rules                                   |
-| Stop one piece of work (named, or in webchat) | Interrupts that sub-session's current turn                                                                      | same / whoever may continue that session in the console |
-| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission                               |
+| Action                                        | Effect                                                                                                          | Who                                                                                   |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                | today's `!stop` rules                                                                 |
+| Stop one piece of work (named, or in webchat) | Interrupts that sub-session's current turn                                                                      | same, for whoever started the turn / whoever may continue that session in the console |
+| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission                                                             |
+
+**Stopping a named piece of work** is the `stopSubsession` tool, given the sub-session's id. Only
+an assistant-mode agent's main conversations are offered it: never a sub-session, patrol, task,
+hook or cron run. It stops only a sub-session whose parent in the persistent index is the calling
+conversation. Any other id is refused with the same words as an unknown one, so nothing about
+another conversation is revealed. The turn must have been started by a person's own message, and
+that person must pass today's `!stop` sender rule there; in webchat, the Control Plane admitted
+the message only from someone who may continue the conversation. A report round, a reminder or a
+scheduled run is refused. The stop itself is the console's Stop: the same daemon core, logged
+with who asked. So it answers the same way: stopped, or not running, adding that a background
+process the runtime started may keep running. Stopping one's own sub-session moves no content, so
+a session marked by a per-asker read (§5.5) may still do it. The tool's description tells the
+agent to confirm in one sentence which sub-session the person means before it stops one.
 
 No new "stop everything". The sender rules for `!stop`, `!new` and pause are **unchanged and not
 narrowed** — effects at this level cannot be defended against, and the design does not pretend
@@ -770,14 +790,14 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                                                                                                     |
-| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, list / steer / stop, the daily budget, queueing over the cap                                                                                                                                                                |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), sub-session permission requests routed to their conversation under the wait cap (§5.6). Next: the target patrol (after per-runtime tests) on the credential-less host; `handoff`; the per-person memory space; identity links pushed to the daemon |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                                                                                                                                                                              |
+| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, list / steer (the standing summary names the running ones; stop has shipped, §5.8), the daily budget, queueing over the cap                                                                                                                                                                          |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), sub-session permission requests routed to their conversation under the wait cap (§5.6), stopping a sub-session from the main conversation that opened it (§5.8). Next: the target patrol (after per-runtime tests) on the credential-less host; `handoff`; the per-person memory space; identity links pushed to the daemon |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ---
 
@@ -983,3 +1003,14 @@ conversation's own turn. Since #2913 a conversation shows cards for requests its
 raise, so that reason no longer holds. The responsible user and the fallback conversation are now
 the fallback only, used when the place cannot take the card. The first answer from any surface
 still wins. Webchat places keep Activity for now (§5.10).
+
+**Nineteenth revision (2026-10-12)**: the main conversation can stop a sub-session it opened. In
+a test, a person asked in a Slack DM to stop one, and the agent answered that it had no tool for
+it; only the console could. Now the main conversation of a place has `stopSubsession` (§5.8). It
+stops only a sub-session that conversation opened, on a turn a person there started, under the
+`!stop` sender rule; in webchat, the person may continue the conversation. It runs the console's
+own Stop, so the effect and the answer are the same. The agent confirms which sub-session is
+meant before it stops one. To name one, the standing summary of a main conversation lists the
+sub-sessions it opened that are running now (§5.4). That block is re-injected on the next turn
+after one starts or ends. Stop leaves P0b's deferred list; listing as a tool and steering stay
+deferred.

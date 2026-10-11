@@ -30,7 +30,8 @@ import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from '
 import { openRuntimeSession } from './turn/runtime-session.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
-import { standingSummaryFor } from '../assistant/standing-summary.js'
+import { runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
+import { assistantMainConversation } from '../mcp/ops/assistant-subsessions.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
 import { backgroundConversationText, intakeEvidenceText } from '../decisions/evidence.js'
@@ -294,6 +295,8 @@ export class SessionManager {
   // to spot a compaction drop.
   private readonly turnsSinceReminder = new Map<string, number>()
   private readonly lastContextUsed = new Map<string, number>()
+  // The running-sub-session list each main conversation was last shown, so a change re-injects it.
+  private readonly runningSubsessionsShown = new Map<string, string>()
 
   /**
    * Every agent that is ALREADY part of this thread — open sessions first, then ones
@@ -978,6 +981,19 @@ export class SessionManager {
     if (opening || reminded) {
       const summary = await standingSummaryFor(this.deps.store.assistantItems, agent)
       if (summary) promptPrelude.push({ type: 'text', text: summary })
+    }
+    // A main conversation's running sub-sessions ride the same points, and any turn after that list changed (§5.6).
+    const place = { platform: msg.platform, channel: msg.channel, thread, integrationId }
+    if (assistantModeOn(agent) && rec.sessionId && assistantMainConversation(place)) {
+      // A list that cannot be read is left for a later turn, never a reason to fail this one.
+      const running = await runningSubsessionsBlock(
+        this.deps.store,
+        agentId,
+        { sessionId: rec.sessionId, key },
+        { last: this.runningSubsessionsShown.get(key), refresh: opening || reminded }
+      ).catch(() => undefined)
+      if (running) this.runningSubsessionsShown.set(key, running.shown)
+      if (running?.text) promptPrelude.push({ type: 'text', text: running.text })
     }
     // A trusted direct agent call is addressed to this agent regardless of names
     // or quoted mentions in its body. State that routing fact per turn so the
