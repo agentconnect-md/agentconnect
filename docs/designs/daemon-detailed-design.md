@@ -821,11 +821,11 @@ so the next message opens a fresh session instead of repeating the failure.
 
 **An unanswered permission request or question.** The wait on a human does not
 count against the stall budget, but it is bounded too: once a turn's card has
-gone unanswered for `limits.agentMaxLifetimeMs`, the ceiling that already bounds
-an idle host's background work, the sweep stops the turn through the same path
-with reason `approval wait expired`. Its cards retire as cancelled, the request
-is recorded as expired, the runtime receives `cancelled`, and the conversation
-is told nobody answered in time. Without it, a turn whose card nobody watches,
+gone unanswered for `limits.agentMaxLifetimeMs` since it was asked, the ceiling
+that already bounds an idle host's background work, the sweep stops the turn
+through the same path with reason `approval wait expired`. Its cards retire as
+cancelled, the request is recorded as expired, the runtime receives `cancelled`,
+and the conversation is told nobody answered in time. Without it, a turn whose card nobody watches,
 such as a schedule's, holds its host and its sandbox pod forever (#2780). A
 request with a wait cap of its own is left to that cap: a background
 sub-session's `permissionWaitHours` (assistant-mode.md §5.6) or an API caller's

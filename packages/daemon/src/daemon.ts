@@ -22829,8 +22829,13 @@ export class Daemon {
       if (!p.promptInFlight || p.outputSuppressed || p.runtimeActivityAt === undefined) continue
       // A card the human has not answered is the human's time, not the runtime's — up to the ceiling an idle host's own work gets (#2780).
       if (p.approval.depth > 0 || this.permissions.awaitingHuman(p.hostKey, p.acpSessionId)) {
-        const waitedMs = now - (p.approval.startedAt ?? p.runtimeActivityAt)
-        if (waitedMs >= answerWindow && !this.permissions.hasOwnWaitCap(p.hostKey, p.acpSessionId))
+        // From when it was asked, never from runtime activity: neither silence before it nor updates after it move the window.
+        const askedAt = this.permissions.oldestHumanWaitAskedAt(p.hostKey, p.acpSessionId) ?? p.approval.startedAt
+        if (
+          askedAt !== undefined &&
+          now - askedAt >= answerWindow &&
+          !this.permissions.hasOwnWaitCap(p.hostKey, p.acpSessionId)
+        )
           await this.expireUnansweredTurn(p, answerWindow)
         continue
       }

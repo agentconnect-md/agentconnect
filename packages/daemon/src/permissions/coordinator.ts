@@ -305,6 +305,8 @@ type PendingElicit = PendingElicitSurface & {
   owner: HostKey
   agentId: string
   sessionId: string
+  /** When it was asked: the start of the human's answer window, which runtime activity does not move. */
+  askedAt: number
   params: CreateElicitationRequest
   propName: string
   kind: ElicitKind
@@ -416,6 +418,8 @@ interface ApprovalEntry<P, R> {
   owner: HostKey
   agentId: string
   sessionId: string
+  /** When it was asked: the start of the human's answer window, which runtime activity does not move. */
+  askedAt: number
   params: P
   resolve: (res: R) => void
   notify?: DmNotice
@@ -659,6 +663,16 @@ export class PermissionCoordinator {
     return false
   }
 
+  /** When the session's oldest unanswered request or question was asked, or undefined when none waits. */
+  oldestHumanWaitAskedAt(owner: HostKey, sessionId: string): number | undefined {
+    let oldest: number | undefined
+    for (const pending of [...this.pendingApprovals.values(), ...this.pendingElicits.values()]) {
+      if (pending.owner !== owner || pending.sessionId !== sessionId) continue
+      if (oldest === undefined || pending.askedAt < oldest) oldest = pending.askedAt
+    }
+    return oldest
+  }
+
   /** Whether a request the session waits on carries a wait cap of its own: a background sub-session's (assistant-mode.md §5.6) or an API caller's. */
   hasOwnWaitCap(owner: HostKey, sessionId: string): boolean {
     const mine = (pending: { owner: HostKey; sessionId: string }): boolean =>
@@ -765,6 +779,7 @@ export class PermissionCoordinator {
       owner: p.hostKey,
       agentId,
       sessionId,
+      askedAt: this.host.clock().now(),
       params,
       evaluationParams,
       resolve: resolveResult
@@ -813,6 +828,7 @@ export class PermissionCoordinator {
       owner: p.hostKey,
       agentId,
       sessionId,
+      askedAt: this.host.clock().now(),
       params,
       ...(choices ? { choices } : {}),
       resolve: resolveResult
@@ -860,6 +876,7 @@ export class PermissionCoordinator {
       owner: p.hostKey,
       agentId,
       sessionId,
+      askedAt: this.host.clock().now(),
       params,
       evaluationParams,
       chat,
@@ -1999,6 +2016,7 @@ export class PermissionCoordinator {
       owner: p.hostKey,
       agentId,
       sessionId,
+      askedAt: this.host.clock().now(),
       params,
       propName: inputs || url ? '' : (target?.propName ?? ''),
       kind: inputs || url ? 'text' : (target?.kind ?? 'text'),
@@ -2190,6 +2208,7 @@ export class PermissionCoordinator {
       owner: p.hostKey,
       agentId,
       sessionId,
+      askedAt: this.host.clock().now(),
       params,
       propName: target.propName,
       kind: target.kind,
@@ -2246,6 +2265,7 @@ export class PermissionCoordinator {
       owner: p.hostKey,
       agentId,
       sessionId,
+      askedAt: this.host.clock().now(),
       params,
       // A URL card has no field; these are the record's unused shape, never read on this path.
       propName: '',
