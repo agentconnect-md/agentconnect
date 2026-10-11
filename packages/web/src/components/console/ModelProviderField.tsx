@@ -1,4 +1,4 @@
-import { AgentModelProvider, PROVIDER_KEY_PROFILES } from '@agentconnect.md/protocol'
+import { AgentModelProvider, PROVIDER_KEY_PROFILES } from '@agentconnect.md/protocol/provider-key'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { fetchProviderKeys } from '@/lib/api'
