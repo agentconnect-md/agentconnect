@@ -112,7 +112,12 @@ human-facing turn with a quiescent runtime.
 guards:
 
 1. An idle session older than `agentIdleTimeoutMs` is closed only when its lease
-   is quiescent.
+   is quiescent. A closed session on the agent's shared host is also ended there
+   with ACP `session/close` when the runtime advertises it, so its runtime child
+   exits while the host stays warm for its other sessions; the history stays
+   loadable, so a later turn resumes it with `session/load`. A session-bound host
+   is stopped instead. The retention purge and the worktree cleanup close the
+   same way before they drop a session.
 2. An ACP host older than the idle window is reclaimed only when it has no
    foreground prompt, no internal pass of the daemon's own (distillation, the
    commit-message wand) and no live SDK work. The agent's shared host measures

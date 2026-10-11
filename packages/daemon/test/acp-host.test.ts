@@ -293,6 +293,34 @@ describe('AcpHost session deletion', () => {
   })
 })
 
+describe('AcpHost session close', () => {
+  it('uses session/close when advertised, releases local ownership, and can load the session again', async () => {
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      { onUpdate: () => {}, env: { AC_CLOSE_SESSION: '1', AC_LOAD_UPDATES: '1' } }
+    )
+    await host.start()
+    expect(host.closeSupported()).toBe(true)
+    const sessionId = await host.newSession('/tmp')
+    expect(await host.closeSession(sessionId)).toBe(true)
+    expect(host.hasSession(sessionId)).toBe(false)
+    expect(await host.closeSession(sessionId)).toBe(false)
+    await host.loadSession(sessionId, '/tmp')
+    expect(host.hasSession(sessionId)).toBe(true)
+    await host.stop()
+  })
+
+  it('keeps the session when the agent does not advertise session/close', async () => {
+    const host = new AcpHost({ command: process.execPath, args: [fakeAgent], env: [] }, { onUpdate: () => {} })
+    await host.start()
+    expect(host.closeSupported()).toBe(false)
+    const sessionId = await host.newSession('/tmp')
+    expect(await host.closeSession(sessionId)).toBe(false)
+    expect(host.hasSession(sessionId)).toBe(true)
+    await host.stop()
+  })
+})
+
 describe('AcpHost session/load update filtering', () => {
   it('forwards restored title metadata while suppressing replayed conversation output', async () => {
     const updates: string[] = []
