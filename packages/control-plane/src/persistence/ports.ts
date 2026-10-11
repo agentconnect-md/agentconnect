@@ -11,6 +11,7 @@
  */
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
+  AgentModelProvider,
   AgentApiGates,
   AgentApiProtocol,
   AuthReq,
@@ -732,6 +733,7 @@ export interface CreateAgentInput {
    *  create route still requires a runtime — only preset provisioning defers. */
   runtime?: string
   model?: string
+  modelProvider?: AgentModelProvider
   reasoningEffort?: string
   outputMode?: string // platform output verbosity: low | medium | high
   showFooter?: boolean // render platform attribution/session footers (default true)
@@ -785,6 +787,7 @@ export interface UpdateAgentInput {
   runtime?: string
   capabilities?: string[]
   model?: string | null
+  modelProvider?: AgentModelProvider | null
   reasoningEffort?: string | null
   outputMode?: string | null
   showFooter?: boolean
@@ -838,6 +841,7 @@ export interface AgentRecord {
   description: string | null
   runtime: string | null // null ⇒ deferred exec config (unplaced preset; set at placement)
   model: string | null // from runtimeOverrides.model
+  modelProvider?: AgentModelProvider | null
   reasoningEffort: string | null // from runtimeOverrides.reasoningEffort
   outputMode: string | null // from runtimeOverrides.outputMode
   showFooter: boolean // from runtimeOverrides.showFooter (default true)

@@ -12,6 +12,11 @@
       "waiting": "{label} is waiting for your action",
       "show": "Show"
     },
+    "modelProvider": {
+      "label": "Model credentials",
+      "daemon": "Daemon credentials",
+      "providerHelp": "Configure API keys in Providers first. The selected key must match the agent's runtime and model."
+    },
     "runtimeChat": {
       "label": "Allow change in chat",
       "enabled": "Chat users can change runtime settings and answer approval requests.",

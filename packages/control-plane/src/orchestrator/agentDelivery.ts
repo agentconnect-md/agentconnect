@@ -103,6 +103,7 @@ export class AgentDelivery {
     // own tables), and a target that has not advertised the required features is skipped
     // rather than sent a frame it would decode into the wrong host.
     const shaped = {
+      modelProvider: spec.modelProvider,
       workspace: spec.workspace ?? agent.workspace,
       ...(spec.gitlabHost !== undefined ? { gitlabHost: spec.gitlabHost } : {}),
       ...(spec.giteaHost !== undefined ? { giteaHost: spec.giteaHost } : {})

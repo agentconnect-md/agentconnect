@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
+  AgentModelProvider,
   AgentDecisionIds,
   AssistantModeAdmission,
   AssistantModePolicy,
@@ -695,6 +696,7 @@ export const CreateAgentBody = z.object({
   description: z.string().optional(),
   runtime: z.string().min(1),
   model: z.string().optional(),
+  modelProvider: AgentModelProvider.optional(),
   reasoningEffort: z.string().min(1).optional(),
   outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(), // platform output verbosity ('none' = session-only)
   showFooter: z.boolean().optional(), // attribution/session footer (absent ⇒ default true)
@@ -752,6 +754,7 @@ export const UpdateAgentBody = z
     runtime: z.string().min(1).optional(),
     capabilities: z.array(z.string()).optional(),
     model: z.string().nullable().optional(),
+    modelProvider: AgentModelProvider.nullable().optional(),
     reasoningEffort: z.string().min(1).nullable().optional(),
     outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).nullable().optional(),
     showFooter: z.boolean().optional(),
@@ -857,6 +860,7 @@ export const AgentDto = z.object({
    *  the console renders "—" and choosing a runtime happens at placement. */
   runtime: z.string().nullable(),
   model: z.string().nullable(),
+  modelProvider: AgentModelProvider.nullable().optional(),
   reasoningEffort: z.string().nullable(),
   outputMode: z.string().nullable(),
   showFooter: z.boolean(),

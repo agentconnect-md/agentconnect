@@ -10,6 +10,7 @@ import {
   modelSelectionDecisionIds,
   type AgentApiGates,
   type AgentModelSelection,
+  type AgentModelProvider,
   type AgentRepositorySelector,
   isCodeHostProvider,
   redactGitUrlSecrets,
@@ -183,6 +184,7 @@ async function assertWorkspaceIntegrationCompatible(
 // spawn (flattened into the wire AgentSpec by agentRecordToSpec).
 type RuntimeOverrides = {
   model?: string
+  modelProvider?: AgentModelProvider
   reasoningEffort?: string
   outputMode?: string
   showFooter?: boolean
@@ -322,6 +324,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     description: a.description,
     runtime: a.runtime,
     model: ov.model ?? null,
+    modelProvider: ov.modelProvider ?? null,
     reasoningEffort: ov.reasoningEffort ?? null,
     outputMode: ov.outputMode ?? null,
     showFooter: ov.showFooter ?? true,
@@ -450,6 +453,7 @@ export class PgAgentRepo implements AgentRepo {
           ...(input.managedSkills ? { managedSkills: input.managedSkills } : {}),
           ...(input.repositorySelector ? repositorySelectorColumns(input.repositorySelector) : {}),
           ...(input.model ||
+          input.modelProvider ||
           input.reasoningEffort ||
           input.outputMode ||
           input.showFooter !== undefined ||
@@ -467,6 +471,7 @@ export class PgAgentRepo implements AgentRepo {
             ? {
                 runtimeOverrides: {
                   ...(input.model ? { model: input.model } : {}),
+                  ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
                   ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
                   ...(input.outputMode ? { outputMode: input.outputMode } : {}),
                   ...(input.showFooter !== undefined ? { showFooter: input.showFooter } : {}),
@@ -606,6 +611,7 @@ export class PgAgentRepo implements AgentRepo {
     let overrides: RuntimeOverrides | typeof undefined
     if (
       patch.model !== undefined ||
+      patch.modelProvider !== undefined ||
       patch.reasoningEffort !== undefined ||
       patch.outputMode !== undefined ||
       patch.showFooter !== undefined ||
@@ -674,6 +680,10 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.model !== undefined) {
         if (patch.model === null) delete next.model
         else next.model = patch.model
+      }
+      if (patch.modelProvider !== undefined) {
+        if (patch.modelProvider === null) delete next.modelProvider
+        else next.modelProvider = patch.modelProvider
       }
       if (patch.reasoningEffort !== undefined) {
         if (patch.reasoningEffort === null) delete next.reasoningEffort

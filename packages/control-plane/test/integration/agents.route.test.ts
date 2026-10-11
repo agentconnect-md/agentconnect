@@ -17,6 +17,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { poolSetId } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
@@ -901,7 +902,33 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(bad.statusCode).toBe(400)
   })
 
-  it('POST + PATCH /agents carries reasoningEffort + env; the JSON merge never clobbers siblings', async () => {
+  it('refuses provider selection on Cloud and daemons that cannot apply it', async () => {
+    const app = build()
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const cloudAgent = await seedAgent(prisma, randomUUID(), { setId: await poolSetId(prisma) })
+    for (const id of [agentId, cloudAgent]) {
+      const response = await app.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/agents/${id}`,
+        payload: { modelProvider: 'anthropic' }
+      })
+      expect(response.statusCode).toBe(409)
+      expect((await prisma.agent.findUniqueOrThrow({ where: { id } })).runtimeOverrides ?? {}).not.toHaveProperty(
+        'modelProvider'
+      )
+    }
+    for (const placement of [{ daemonId }, { placementKind: 'pool' }]) {
+      const response = await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents`,
+        payload: { name: 'provider-agent', runtime: 'claude', modelProvider: 'anthropic', ...placement }
+      })
+      expect(response.statusCode).toBe(409)
+    }
+  })
+
+  it('POST + PATCH /agents carries provider selection, reasoningEffort and env without clobbering siblings', async () => {
     const app = build()
     const create = await app.app.inject({
       method: 'POST',
@@ -910,6 +937,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         name: 'tuned',
         runtime: 'claude',
         model: 'opus',
+        modelProvider: 'anthropic',
         reasoningEffort: 'high',
         env: { GITHUB_TOKEN: 'ghp_x', DEPLOY_ENV: 'production' }
       }
@@ -917,12 +945,14 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(create.statusCode).toBe(201)
     const created = create.json() as { id: string; reasoningEffort: string | null; env: Record<string, string> }
     expect(created.reasoningEffort).toBe('high')
+    expect(create.json().modelProvider).toBe('anthropic')
     expect(created.env).toEqual({ GITHUB_TOKEN: 'ghp_x', DEPLOY_ENV: 'production' })
 
-    // All three live side by side in the runtimeOverrides JSON.
+    // Provider selection shares the runtimeOverrides JSON with runtime preferences.
     const row = await prisma.agent.findUnique({ where: { id: created.id } })
     expect(row?.runtimeOverrides).toEqual({
       model: 'opus',
+      modelProvider: 'anthropic',
       reasoningEffort: 'high',
       env: { GITHUB_TOKEN: 'ghp_x', DEPLOY_ENV: 'production' }
     })
@@ -934,6 +964,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: { env: { GITHUB_TOKEN: 'ghp_y' } }
     })
     expect(envPatch.statusCode).toBe(200)
+    expect(envPatch.json().modelProvider).toBe('anthropic')
     const afterEnv = envPatch.json() as {
       model: string | null
       reasoningEffort: string | null
@@ -947,7 +978,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const clearEffort = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${created.id}`,
-      payload: { reasoningEffort: null, env: {} }
+      payload: { reasoningEffort: null, env: {}, modelProvider: null }
     })
     const cleared = clearEffort.json() as {
       model: string | null
@@ -955,6 +986,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       env: Record<string, string>
     }
     expect(cleared.reasoningEffort).toBeNull()
+    expect(clearEffort.json().modelProvider).toBeNull()
     expect(cleared.env).toEqual({})
     expect(cleared.model).toBe('opus')
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({

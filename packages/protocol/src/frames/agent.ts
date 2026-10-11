@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AgentModelProvider } from '../provider-key.js'
 import { AgentDecisionIds, AgentModelSelection, AgentRepositorySelector, HookRoutingProjection } from '../decision.js'
 import { AgentApiGateProjections } from '../agent-api.js'
 import { CodeHostProviderString } from '../code-host.js'
@@ -373,6 +374,7 @@ export const AgentSpec = z.object({
   //   string ⇒ set it
   // The CP's agentRecordToSpec always ships these (value or null) so a clear replicates.
   model: z.string().nullable().optional(), // runtime model, e.g. "opus"
+  modelProvider: AgentModelProvider.nullable().optional(),
   reasoningEffort: z.string().nullable().optional(),
   executionMode: z.string().optional(), // e.g. "byoc"
   outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(), // platform output verbosity → agent.json output.mode ('none' = session-only, nothing to the IM)

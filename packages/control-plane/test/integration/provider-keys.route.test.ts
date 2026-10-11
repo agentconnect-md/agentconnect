@@ -30,7 +30,7 @@ describe('organization provider keys', () => {
     deps.repos.providerKey = store
     expect(
       (await app.inject({ method: 'GET', url: BASE })).json().map((row: { provider: string }) => row.provider)
-    ).toEqual(['typesafe', 'openrouter', 'cloudflare', 'openai'])
+    ).toEqual(['typesafe', 'openrouter', 'cloudflare', 'openai', 'anthropic'])
     expect(
       (await app.inject({ method: 'PUT', url: `${BASE}/openrouter`, payload: { headers: { 'X-Title': 'Example' } } }))
         .statusCode
@@ -48,6 +48,14 @@ describe('organization provider keys', () => {
     })
     expect(openai.body).not.toContain('example-openai-key')
     expect(await store.get(OrgId(DEFAULT_ORG_ID), 'openai')).toMatchObject({ apiKey: 'example-openai-key' })
+    const anthropic = await app.inject({
+      method: 'PUT',
+      url: `${BASE}/anthropic`,
+      payload: { apiKey: 'example-anthropic-key' }
+    })
+    expect(anthropic.statusCode).toBe(200)
+    expect(anthropic.json()).toMatchObject({ configured: true, defaultEndpoint: 'https://api.anthropic.com' })
+    expect(anthropic.body).not.toContain('example-anthropic-key')
     cipher.open.mockClear()
     const url = `${BASE}/cloudflare`
     expect((await app.inject({ method: 'PUT', url, payload: { apiKey: 'example-gateway-key' } })).statusCode).toBe(400)

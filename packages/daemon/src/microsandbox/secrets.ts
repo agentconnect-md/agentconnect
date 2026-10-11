@@ -109,11 +109,14 @@ export function microsandboxCredentialStep(
   runtimeId: string,
   runtime: RuntimeDef | undefined,
   hostEnv: NodeJS.ProcessEnv,
-  explicitEnv: Record<string, string> = {}
+  explicitEnv: Record<string, string> = {},
+  inheritRuntimeCredentials = true
 ): MicrosandboxCredentialStep {
-  const protectedCredentials = prepareMicrosandboxCredentials(runtimeId, runtime, hostEnv, explicitEnv)
+  const protectedCredentials = inheritRuntimeCredentials
+    ? prepareMicrosandboxCredentials(runtimeId, runtime, hostEnv, explicitEnv)
+    : undefined
   const credentials =
-    protectedCredentials?.shareNativeCredentials === false
+    !inheritRuntimeCredentials || protectedCredentials?.shareNativeCredentials === false
       ? undefined
       : prepareSharedRuntimeCredentials({ runtimeId, runtime, hostEnv })
   if (
@@ -130,11 +133,14 @@ export function microsandboxCredentialStep(
     protectedCredentials,
     credentials,
     seedHome(scopeDir, runtimeHome, excluded = []) {
-      const home = prepareRuntimeHome(runtimeId, scopeDir, hostEnv, runtimeHome, [
-        ...(credentials?.seedExclusions ?? []),
-        ...(protectedCredentials?.seedExclusions ?? []),
-        ...excluded
-      ])
+      const home = prepareRuntimeHome(
+        runtimeId,
+        scopeDir,
+        hostEnv,
+        runtimeHome,
+        [...(credentials?.seedExclusions ?? []), ...(protectedCredentials?.seedExclusions ?? []), ...excluded],
+        inheritRuntimeCredentials
+      )
       protectedCredentials?.preparePrivateHome(home)
       credentials?.preparePrivateHome(home)
       return home

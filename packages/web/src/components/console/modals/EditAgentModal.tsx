@@ -1,6 +1,8 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { AgentModelProvider } from '@agentconnect.md/protocol'
+import { ModelProviderField } from '@/components/console/ModelProviderField'
 import { useTranslations } from 'next-intl'
 import {
   FALLBACK_RUNTIME_IDS,
@@ -168,6 +170,8 @@ export default function EditAgentModal({
   const initialShowFooter = useRef(agent.showFooter)
   const [showStatusBar, setShowStatusBar] = useState(agent.showStatusBar)
   const initialShowStatusBar = useRef(agent.showStatusBar)
+  const [modelProvider, setModelProvider] = useState<AgentModelProvider | null>(null)
+  const initialModelProvider = useRef<AgentModelProvider | null>(null)
   const [effort, setEffort] = useState('')
   const initialEffort = useRef('')
   const [fastMode, setFastMode] = useState(agent.fastMode)
@@ -246,6 +250,8 @@ export default function EditAgentModal({
         initialModel.current = dto.model ?? ''
         setModelSelection(dto.modelSelection ?? null)
         initialModelSelection.current = dto.modelSelection ?? null
+        setModelProvider(dto.modelProvider ?? null)
+        initialModelProvider.current = dto.modelProvider ?? null
         setEffort(dto.reasoningEffort ?? '')
         initialEffort.current = dto.reasoningEffort ?? ''
         const nextOutputMode = isOutputMode(dto.outputMode) ? dto.outputMode : ''
@@ -575,6 +581,7 @@ export default function EditAgentModal({
         : {}),
     ...(modelSelectionChanged ? { modelSelection, ...(modelSelection && !model ? { model: selectedModel } : {}) } : {}),
     ...(runtime.trim() !== initialRuntime.current ? { runtime: runtime.trim() } : {}),
+    ...(daemonId !== POOL_PLACEMENT && modelProvider !== initialModelProvider.current ? { modelProvider } : {}),
     ...(effort !== initialEffort.current ? { reasoningEffort: effort || null } : {}),
     ...(outputMode !== initialOutputMode.current ? { outputMode: outputMode || null } : {}),
     ...(showFooter !== initialShowFooter.current ? { showFooter } : {}),
@@ -862,6 +869,9 @@ export default function EditAgentModal({
                 }}
               />
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
+                {daemonId !== POOL_PLACEMENT && (
+                  <ModelProviderField value={modelProvider} onChange={setModelProvider} />
+                )}
                 <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
                 {placementStrategies.kind !== 'pool' && (
                   <ExecutionStrategyField

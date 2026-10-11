@@ -29,6 +29,18 @@ function harness(grants: Array<Record<string, unknown>>, opts: Record<string, un
 const agent = { id: 'agent-a', runtime: 'claude' }
 
 describe('daemon model-key session lifecycle', () => {
+  it('keeps Cloud credentials when an agent retains a self-hosted provider selection', async () => {
+    const h = harness([{ keyId: 'key-1', key: 'cloud-secret', requestedAtMs: 1_000 }])
+    const selected = { ...agent, modelProvider: 'anthropic' }
+    const requestProviderCredentials = vi.fn()
+    h.daemon.cpClient = { requestProviderCredentials }
+    expect(await h.daemon.requestModelProviderCredential(selected)).toBeUndefined()
+    expect(requestProviderCredentials).not.toHaveBeenCalled()
+    await h.daemon.modelSessions.ensure(selected, 'session-a')
+    expect(h.issue).toHaveBeenCalledOnce()
+    await h.daemon.modelSessions.release('session-a')
+  })
+
   it('restores the pinned Decision model into both provider selection and host startup', async () => {
     const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
     const configured = {

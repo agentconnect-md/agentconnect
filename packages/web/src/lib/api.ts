@@ -40,6 +40,7 @@ import type {
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
 import { HOST_ONLY_TABLE, HOST_STRATEGY } from '@/lib/execution-strategy'
 import type {
+  AgentModelProvider,
   AgentApiProtocol,
   AssistantModeAdmission,
   AssistantModePolicy,
@@ -339,6 +340,7 @@ export interface AgentDto {
   description: string | null
   runtime: string | null // null ⇒ deferred exec config (an unplaced preset; set at placement)
   model: string | null
+  modelProvider?: AgentModelProvider | null
   reasoningEffort: string | null
   outputMode: string | null // platform output verbosity: low | medium | high; null when unset
   showFooter: boolean // render attribution/session footer; defaults true
@@ -1043,6 +1045,7 @@ export interface UpdateAgentInput {
   description?: string | null
   runtime?: string
   model?: string | null
+  modelProvider?: AgentModelProvider | null
   reasoningEffort?: string | null
   outputMode?: string | null
   showFooter?: boolean
@@ -1261,6 +1264,7 @@ export interface CreateAgentInput {
   runtime: string
   description?: string
   model?: string
+  modelProvider?: AgentModelProvider
   reasoningEffort?: string
   outputMode?: string // platform output verbosity: low | medium | high
   showFooter?: boolean

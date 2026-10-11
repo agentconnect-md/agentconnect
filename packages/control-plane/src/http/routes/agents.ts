@@ -1,5 +1,6 @@
 import { DecisionBindingDenied, ModelSelectionInvalid } from '../../persistence/decision-binding-fence.js'
 import {
+  AGENT_MODEL_PROVIDER_FEATURE,
   DecisionToolDefinition,
   modelSelectionDecisionIds,
   MemoryEntryCreateRequest,
@@ -364,6 +365,7 @@ function toDto(
     description: a.description,
     runtime: a.runtime,
     model: a.model,
+    modelProvider: a.modelProvider ?? null,
     reasoningEffort: a.reasoningEffort,
     outputMode: a.outputMode,
     showFooter: a.showFooter,
@@ -1890,6 +1892,11 @@ export function agentRoutes(deps: HttpDeps) {
         if (wantsSet && targetSetId === null) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'member set not found' })
         }
+        if (req.body.modelProvider && targetSetId && (await deps.repos.memberSet.get(targetSetId))?.orgId === null) {
+          return conflict(
+            'provider API key selection is only available on self-hosted daemons; Cloud uses its existing credentials'
+          )
+        }
         const setMembers = targetSetId ? await readySetMembers(deps, orgOf(req), targetSetId) : []
         if (wantsSet && setMembers.length === 0) return conflict('no daemon in the target member set is ready')
         const placedDaemon = wantsSet
@@ -1904,6 +1911,14 @@ export function agentRoutes(deps: HttpDeps) {
         }
         if (req.body.managedSkills?.length && placedDaemon && !organizationKnowledgeSupportedOn(placedDaemon)) {
           return conflict('managed skills require a daemon that supports organization knowledge')
+        }
+        if (
+          req.body.modelProvider &&
+          !wantsSet &&
+          placedDaemon &&
+          !advertises(placedDaemon.capabilities.features, [AGENT_MODEL_PROVIDER_FEATURE])
+        ) {
+          return conflict('upgrade the selected daemon before using a provider API key')
         }
         const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
         if (selectorRefusal) return badRequest(reply, selectorRefusal)
@@ -2061,6 +2076,7 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.description !== undefined ? { description: req.body.description } : {}),
                   runtime: req.body.runtime,
                   ...(req.body.model !== undefined ? { model: req.body.model } : {}),
+                  ...(req.body.modelProvider !== undefined ? { modelProvider: req.body.modelProvider } : {}),
                   ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
                   ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
                   ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
@@ -2583,6 +2599,25 @@ export function agentRoutes(deps: HttpDeps) {
               .send({ error: 'Conflict', statusCode: 409, message: 'agent changed; refresh and retry the edit' })
           }
           const placementView = await placementViewFor(deps, existing)
+          if (req.body.modelProvider) {
+            if (existing.setId && (await deps.repos.memberSet.get(existing.setId))?.orgId === null) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message:
+                  'provider API key selection is only available on self-hosted daemons; Cloud uses its existing credentials'
+              })
+            }
+            const serving = await deps.agentDelivery.daemonsFor(existing)
+            const daemons = await Promise.all(serving.map((id) => deps.registry.getAvailable(orgOf(req), DaemonId(id))))
+            if (daemons.some((daemon) => !advertises(daemon?.capabilities.features, [AGENT_MODEL_PROVIDER_FEATURE]))) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'upgrade the serving daemons before using a provider API key'
+              })
+            }
+          }
           const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
           if (selectorRefusal) return badRequest(reply, selectorRefusal)
           if (req.body.repositorySelector === null && (await usesDecisionMaterialize(deps, existing.id))) {
