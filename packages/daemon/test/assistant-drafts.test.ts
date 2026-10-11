@@ -179,6 +179,55 @@ describe('assistant drafts: the approval record', () => {
   })
 })
 
+describe('assistant drafts: the card and its approver', () => {
+  const PLACE = {
+    kind: 'place' as const,
+    integrationId: 'int-a',
+    channel: 'C0GENERAL',
+    userId: null,
+    teamId: null,
+    consoleUserId: null
+  }
+
+  it('round-trips an approver in the proposal’s own place, and reroutes only a card nobody posted', async () => {
+    const s = await open()
+    const draft = await create(s, { approver: PLACE })
+    expect(draft.approver).toEqual(PLACE)
+    expect(draft.cardShows).toBeNull()
+    const fallback = { ...PLACE, kind: 'conversation' as const, channel: 'C0FALLBACK' }
+    expect(await s.assistantDrafts.reroute(draft.id, fallback)).toBe(true)
+    expect((await s.assistantDrafts.get(draft.id))?.approver).toEqual(fallback)
+    await s.assistantDrafts.setCard(draft.id, '111.222')
+    expect(await s.assistantDrafts.reroute(draft.id, PLACE)).toBe(false)
+    const decided = await create(s, { approver: PLACE })
+    await s.assistantDrafts.deny(decided.id, BY, 2_000)
+    expect(await s.assistantDrafts.reroute(decided.id, fallback)).toBe(false)
+  })
+
+  it('lists a decided draft whose card still shows less, until a rewrite is recorded', async () => {
+    const s = await open()
+    const denied = await create(s, { approver: PLACE })
+    await s.assistantDrafts.setCard(denied.id, '111.1')
+    expect((await s.assistantDrafts.get(denied.id))?.cardShows).toBe('awaiting_review')
+    await s.assistantDrafts.deny(denied.id, BY, 2_000)
+    const posting = await create(s, { approver: PLACE })
+    await s.assistantDrafts.setCard(posting.id, '111.2')
+    await s.assistantDrafts.begin(posting.id, BY, 2_000)
+    const waiting = await create(s, { approver: PLACE })
+    await s.assistantDrafts.setCard(waiting.id, '111.3')
+    // A card from before the status was recorded is never swept.
+    const legacy = await create(s, { approver: PLACE })
+    await s.assistantDrafts.setCard(legacy.id, '111.4')
+    await s.assistantDrafts['db'].query('UPDATE assistant_draft SET cardShows = NULL WHERE id = ?', [legacy.id])
+    await s.assistantDrafts.deny(legacy.id, BY, 2_000)
+
+    expect((await s.assistantDrafts.staleCards('int-a')).map((d) => d.id)).toEqual([denied.id])
+    expect(await s.assistantDrafts.staleCards('int-b')).toEqual([])
+    await s.assistantDrafts.markCard(denied.id, 'denied')
+    expect(await s.assistantDrafts.staleCards('int-a')).toEqual([])
+  })
+})
+
 describe('assistant drafts: "always allow from here to there"', () => {
   it('is keyed by the pair of places and never covers another source or target', async () => {
     const s = await open()
@@ -291,7 +340,7 @@ describe.skipIf(usingPostgresStore())('the v36 → v37 draft tables on SQLite', 
   }
 
   it('adds both tables to a v36 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(45)
+    expect(SCHEMA_VERSION).toBe(46)
     const path = tempStorePath('ac-assistant-v36-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
@@ -314,6 +363,80 @@ describe.skipIf(usingPostgresStore())('the v36 → v37 draft tables on SQLite', 
     const db = new DatabaseSync(path)
     expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
     db.close()
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v45 → v46 card status on SQLite', () => {
+  it('adds the column and leaves the cards already settled alone', async () => {
+    const path = tempStorePath('ac-assistant-v45-')
+    const first = await LocalStore.open(path)
+    const kept = await create(first)
+    await first.assistantDrafts.setCard(kept.id, '111.222')
+    await first.assistantDrafts.deny(kept.id, BY, 2_000)
+    await first.close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE assistant_draft DROP COLUMN cardShows; PRAGMA user_version = 45')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    try {
+      expect(await upgraded.assistantDrafts.get(kept.id)).toMatchObject({
+        status: 'denied',
+        cardTs: '111.222',
+        cardShows: null
+      })
+      expect(await upgraded.assistantDrafts.staleCards('int-a')).toEqual([])
+      const draft = await create(upgraded)
+      await upgraded.assistantDrafts.setCard(draft.id, '111.333')
+      expect((await upgraded.assistantDrafts.get(draft.id))?.cardShows).toBe('awaiting_review')
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v45 → v46 card status on PostgreSQL', () => {
+  it('adds the column and leaves the cards already settled alone', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pg.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      const first = await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })
+      const kept = await create(first)
+      await first.assistantDrafts.setCard(kept.id, '111.222')
+      await first.assistantDrafts.deny(kept.id, BY, 2_000)
+      await first.close()
+
+      await admin.query(`SET search_path TO ${schema}`)
+      await admin.query('ALTER TABLE assistant_draft DROP COLUMN cardShows')
+      await admin.query('UPDATE _local_store_schema_version SET version = 45 WHERE singleton = true')
+
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        expect(await upgraded.assistantDrafts.get(kept.id)).toMatchObject({ status: 'denied', cardShows: null })
+        expect(await upgraded.assistantDrafts.staleCards('int-a')).toEqual([])
+        const draft = await create(upgraded)
+        await upgraded.assistantDrafts.setCard(draft.id, '111.333')
+        expect((await upgraded.assistantDrafts.get(draft.id))?.cardShows).toBe('awaiting_review')
+      } finally {
+        await upgraded.close()
+      }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
   })
 })
 

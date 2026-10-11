@@ -1,4 +1,4 @@
-// Assistant-mode drafts (assistant-mode.md §5.5, §5.10): a post or a patrol's proposed task that needs approval is recorded, carded to an internal member, and run once approved.
+// Assistant-mode drafts (assistant-mode.md §5.5, §5.10): a post or a patrol's proposed task that needs approval is recorded, carded to its approvers, and run once approved.
 import { randomUUID } from 'node:crypto'
 import type {
   AgentApprovalRoute,
@@ -44,8 +44,14 @@ export interface DraftCardPort {
   isFullMember?(user: string): Promise<boolean>
   /** The workspace a member id lives in, for the decision record. */
   scope?(): string | undefined
-  postCard(channel: string, card: DraftCard): Promise<string | undefined>
-  updateCard(channel: string, ts: string, card: DraftCard): Promise<void>
+  /** Whether a member is a person rather than a bot; fails closed. */
+  isPerson?(user: string): Promise<boolean>
+  /** The person a one-to-one direct message is with; null for any other conversation; throws when it cannot tell. */
+  directMessageWith?(channel: string): Promise<string | null>
+  /** `thread` posts into a platform thread rather than at the conversation's root. */
+  postCard(channel: string, card: DraftCard, thread?: string): Promise<string | undefined>
+  /** False when the platform refused the edit. */
+  updateCard(channel: string, ts: string, card: DraftCard): Promise<boolean | void>
 }
 
 /** Who asked for the post. */
@@ -91,11 +97,21 @@ export interface AssistantDraftsHost {
   startTask?(draft: AssistantDraft, by: { id: string | null; name: string | null }): Promise<TaskStart>
   /** An observation on a proposal's item, so its next patrol knows how the proposal went. */
   observe?(agentId: string, itemId: string, text: string): Promise<void>
+  /** Whether a person's own message in this conversation would start a turn of the agent right now; fails closed. */
+  admitsAsker?(agentId: string, integrationId: string, channel: string, isDm: boolean): boolean
 }
 
 /** How an approved task's start went: running, refused for the sub-session limit, lost to another decision, or failed for good. */
 export type TaskStart =
   { kind: 'started' } | { kind: 'busy'; reason: string } | { kind: 'lost' } | { kind: 'failed'; reason: string }
+
+/** The conversation a proposal's card goes to in place, its item's own (§5.10). */
+export interface ProposalPlace {
+  integrationId: string
+  channel: string
+  /** The platform thread the conversation's replies land in; absent posts at the root. */
+  thread?: string
+}
 
 /** A patrol's proposal (§5.10), as the patrol hands it over. */
 export interface ProposalInput {
@@ -109,6 +125,8 @@ export interface ProposalInput {
   itemId: string
   itemVersion: number
   source: AssistantDraftSource
+  /** The item's conversation, for its card; absent for one with no integration (webchat). */
+  place?: ProposalPlace
 }
 
 /** A post `sendMessage` resolved and is about to make. */
@@ -136,13 +154,16 @@ export interface DraftDecision {
 /** The console user an editor's decision is recorded under, beside a card's `<workspace>:<member>`. */
 export const consoleDecider = (userId: string): string => `user:${userId}`
 
-type ApproverRung = 'asker' | 'responsible' | 'fallback'
+type ApproverRung = 'asker' | 'responsible' | 'fallback' | 'place'
 
 const APPROVER_LABEL: Record<ApproverRung, string> = {
   asker: 'the person who asked, in a direct message',
   responsible: "the agent's responsible user, in a direct message",
-  fallback: "the agent's fallback conversation"
+  fallback: "the agent's fallback conversation",
+  place: 'the people in the conversation the item was taken in'
 }
+
+type Routed = { approver: AssistantDraftApprover; rung: ApproverRung }
 
 const isChoice = (optionId: string): optionId is AssistantDraftChoice =>
   optionId === 'approve' || optionId === 'discard' || optionId === 'always'
@@ -267,6 +288,12 @@ export class AssistantDrafts {
     })
   }
 
+  /** Rewrite this integration's cards, of agents held here, that were not edited when their draft was decided, as after a restart. */
+  async retireStaleCards(integrationId: string): Promise<void> {
+    for (const draft of await this.host.ledger().staleCards(integrationId))
+      if (this.host.agent(draft.agentId)) await this.rewriteDraft(draft)
+  }
+
   /** Expire the due drafts of these agents; an expired draft is never posted. */
   async sweep(agentIds: readonly string[]): Promise<void> {
     for (const draft of await this.host.ledger().expireDue(agentIds, this.host.now())) {
@@ -282,11 +309,26 @@ export class AssistantDrafts {
     }
   }
 
-  /** A patrol's proposal (§5.10): recorded and carded like a draft with no asker, so it goes to the responsible user or the fallback conversation. */
+  /** A patrol's proposal (§5.10): carded in its item's conversation, else like a draft with no asker (the responsible user, then the fallback conversation). */
   async propose(input: ProposalInput): Promise<{ draft: AssistantDraft; approver: string | null }> {
     const id = randomUUID()
-    const routed = await this.route(input.agentId, id, undefined)
-    const draft = await this.host.ledger().createTask({
+    const ledger = this.host.ledger()
+    // Only a place whose people could ask the agent there gets the card: anyone else could not approve it.
+    const place = input.place && (await this.askers(input.agentId, input.place)) ? input.place : undefined
+    const routed: Routed | undefined = place
+      ? {
+          rung: 'place',
+          approver: {
+            kind: 'place',
+            integrationId: place.integrationId,
+            channel: place.channel,
+            userId: null,
+            teamId: null,
+            consoleUserId: null
+          }
+        }
+      : await this.route(input.agentId, id, undefined)
+    const draft = await ledger.createTask({
       id,
       agentId: input.agentId,
       target: input.target,
@@ -300,7 +342,13 @@ export class AssistantDrafts {
       approver: routed?.approver ?? null,
       now: this.host.now()
     })
-    const carded = await this.card(draft, routed)
+    let carded = await this.card(draft, routed, place?.thread)
+    if (place && !carded.rung) {
+      // The place could not take the card, so it goes where a proposal's went before, and only there.
+      const fallback = await this.route(input.agentId, id, undefined)
+      if (await ledger.reroute(id, fallback?.approver ?? null))
+        carded = await this.card((await ledger.get(id)) ?? draft, fallback)
+    }
     if (!carded.rung)
       this.host.log.warn(`assistant proposal ${id}: no approver could be reached for agent "${input.agentId}"`)
     return { draft: carded.draft, approver: carded.rung ? APPROVER_LABEL[carded.rung] : null }
@@ -353,11 +401,7 @@ export class AssistantDrafts {
     return await this.card(draft, routed)
   }
 
-  private async route(
-    agentId: string,
-    id: string,
-    asker: DraftAsker | undefined
-  ): Promise<{ approver: AssistantDraftApprover; rung: ApproverRung } | undefined> {
+  private async route(agentId: string, id: string, asker: DraftAsker | undefined): Promise<Routed | undefined> {
     return await this.approverFor(agentId, id, asker).catch((err: unknown) => {
       this.host.log.warn(`assistant draft ${id}: approver lookup failed: ${(err as Error).message}`)
       return undefined
@@ -367,12 +411,13 @@ export class AssistantDrafts {
   /** Post the pending card to its approver and keep its handle; undefined rung when no card went out. */
   private async card(
     draft: AssistantDraft,
-    routed: { approver: AssistantDraftApprover; rung: ApproverRung } | undefined
+    routed: Routed | undefined,
+    thread?: string
   ): Promise<{ draft: AssistantDraft; rung: ApproverRung | undefined }> {
     if (!routed) return { draft, rung: undefined }
     const ledger = this.host.ledger()
     const port = this.host.cardPortFor(routed.approver.integrationId)
-    const ts = await port?.postCard(routed.approver.channel, this.pendingCard(draft)).catch((err: unknown) => {
+    const ts = await port?.postCard(routed.approver.channel, this.pendingCard(draft), thread).catch((err: unknown) => {
       this.host.log.warn(`assistant draft ${draft.id}: card post failed: ${(err as Error).message}`)
       return undefined
     })
@@ -400,7 +445,7 @@ export class AssistantDrafts {
     agentId: string,
     draftId: string,
     asker: DraftAsker | undefined
-  ): Promise<{ approver: AssistantDraftApprover; rung: ApproverRung } | undefined> {
+  ): Promise<Routed | undefined> {
     if (asker?.integrationId && asker.userId) {
       const port = this.host.cardPortFor(asker.integrationId)
       const internal = port && (asker.trusted || (await port.isFullMember?.(asker.userId)) === true)
@@ -475,13 +520,19 @@ export class AssistantDrafts {
     }
   }
 
-  /** The addressed member, re-verified with the control plane when it chose them; anyone in a fallback conversation. */
+  /** The addressed member, re-verified with the control plane when it chose them; anyone in a fallback conversation; in a proposal's place, whoever could ask the agent there. */
   private async authorized(
     draft: AssistantDraft,
     approver: AssistantDraftApprover,
     actor: { userId: string } | undefined
   ): Promise<boolean> {
     if (!actor?.userId) return false
+    if (approver.kind === 'place') {
+      const askers = await this.askers(draft.agentId, approver)
+      if (!askers || (askers.dmWith !== null && askers.dmWith !== actor.userId)) return false
+      const port = this.host.cardPortFor(approver.integrationId)
+      return (await port?.isPerson?.(actor.userId).catch(() => false)) === true
+    }
     if (approver.kind === 'conversation') return true
     if (actor.userId !== approver.userId) return false
     if (!approver.consoleUserId) return true
@@ -499,6 +550,18 @@ export class AssistantDrafts {
       })
       .catch(() => undefined)
     return verified?.allowed === true
+  }
+
+  /** Who may ask the agent in a place right now: its DM's person, or anyone its admission lets start a turn; undefined when no one may or it cannot tell. */
+  private async askers(
+    agentId: string,
+    place: { integrationId: string; channel: string }
+  ): Promise<{ dmWith: string | null } | undefined> {
+    const port = this.host.cardPortFor(place.integrationId)
+    if (!port?.isPerson || !port.directMessageWith || !this.host.admitsAsker) return undefined
+    const dmWith = await port.directMessageWith(place.channel).catch(() => undefined)
+    if (dmWith === undefined) return undefined
+    return this.host.admitsAsker(agentId, place.integrationId, place.channel, dmWith !== null) ? { dmWith } : undefined
   }
 
   /** Approve or discard: the one path a card click and the console share, so one CAS admits one execution. */
@@ -700,22 +763,30 @@ export class AssistantDrafts {
     const pending = draft.status === 'awaiting_review' || (draft.status === 'executing' && draft.action === 'post')
     if (!approver || !draft.cardTs || pending) return
     const port = this.host.cardPortFor(approver.integrationId)
-    await port
-      ?.updateCard(approver.channel, draft.cardTs, { view: this.viewOf(draft), outcome: outcomeOf(draft, granted) })
-      .catch((err: unknown) =>
+    if (!port) return
+    const shown = await port
+      .updateCard(approver.channel, draft.cardTs, { view: this.viewOf(draft), outcome: outcomeOf(draft, granted) })
+      .catch((err: unknown) => {
         this.host.log.warn(`assistant draft ${draft.id}: card update failed: ${(err as Error).message}`)
-      )
+        return false
+      })
+    if (shown !== false) await this.host.ledger().markCard(draft.id, draft.status)
   }
 
   /** A proposal's card from its record as it stands now, one rewrite at a time, so a late one never shows an older state. */
   private async rewriteTaskCard(id: string): Promise<void> {
     const write = async (): Promise<void> => {
-      const live = await this.host.ledger().get(id)
+      const ledger = this.host.ledger()
+      const live = await ledger.get(id)
       const approver = live?.approver
       if (!live || !approver || !live.cardTs || live.status === 'awaiting_review') return
-      await this.host
-        .cardPortFor(approver.integrationId)
-        ?.updateCard(approver.channel, live.cardTs, { view: this.viewOf(live), outcome: outcomeOf(live, false) })
+      const port = this.host.cardPortFor(approver.integrationId)
+      if (!port) return
+      const shown = await port.updateCard(approver.channel, live.cardTs, {
+        view: this.viewOf(live),
+        outcome: outcomeOf(live, false)
+      })
+      if (shown !== false) await ledger.markCard(id, live.status)
     }
     const next = (this.taskCards.get(id) ?? Promise.resolve())
       .then(write)

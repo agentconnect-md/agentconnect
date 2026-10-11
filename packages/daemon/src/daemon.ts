@@ -317,6 +317,7 @@ import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
 import { PlaceMembers } from './assistant/place-members.js'
+import { personCouldActivate } from './assistant/place-askers.js'
 import { AssistantPatrols, PATROL_SWEEP_INTERVAL_MS, patrolTools, type PatrolParent } from './assistant/patrol.js'
 import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
 import type { ProposeInput } from './mcp/ops/assistant-items.js'
@@ -2479,6 +2480,9 @@ export class Daemon {
       .catch((err) =>
         this.log.warn(`orphaned sub-session notice sweep failed for "${integrationId}": ${formatErr(err)}`)
       )
+    void this.drafts
+      .retireStaleCards(integrationId)
+      .catch((err) => this.log.warn(`stale draft card sweep failed for "${integrationId}": ${formatErr(err)}`))
   }
 
   /** Point an integration at a live connection: one platform's binding map plus the bot
@@ -7919,9 +7923,28 @@ export class Daemon {
           author: 'proposal',
           now: this.clock.now()
         })
-      }
+      },
+      admitsAsker: (agentId, integrationId, channel, isDm) => this.admitsAsker(agentId, integrationId, channel, isDm)
     })
     return this.assistantDraftService
+  }
+
+  /** Whether a person's own message in a conversation would start a turn of this agent (assistant-mode.md §5.10): the routing ladder over its live rules; a verdict-gated or external place never says yes. */
+  private admitsAsker(agentId: string, integrationId: string, channel: string, isDm: boolean): boolean {
+    const int = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)
+    if (!int) return false
+    const routing = integrationRouting(int)
+    // A By decision or routed conversation admits a message only on a verdict, which a click never has.
+    if (!conversationAdmitted(routing, channel) || routing.decisionBound(channel) || routing.routingFor(channel))
+      return false
+    if (this.assistantPlaceExternal(agentId, integrationId, channel)) return false
+    return personCouldActivate(this.mergedRulesForSource([integrationId]), {
+      agentId,
+      integrationId,
+      platform: int.platform,
+      channel,
+      isDm
+    })
   }
 
   /** Approved proposals (assistant-mode.md §5.10), built on first use over the live store. */
@@ -7970,6 +7993,12 @@ export class Daemon {
     const destination = integrationId
       ? await this.describeDraftDestination(target, { dm: false }).catch(() => ({}))
       : {}
+    // The card goes where the conversation's own replies land: its root, or the thread its long session lives in.
+    const placeThread = integrationId
+      ? platformThread(
+          (await this.store.placeSession(agentId, origin.platform, origin.channel, origin.transportScope))?.thread
+        )
+      : undefined
     const source: AssistantDraftSource = {
       platform: rec?.platform ?? origin.platform,
       integrationId: integrationId ?? null,
@@ -7989,7 +8018,10 @@ export class Daemon {
       why: input.why,
       itemId: item.id,
       itemVersion: item.version,
-      source
+      source,
+      ...(integrationId
+        ? { place: { integrationId, channel: origin.channel, ...(placeThread ? { thread: placeThread } : {}) } }
+        : {})
     })
     const expiresAt = new Date(draft.expiresAt).toISOString()
     return {

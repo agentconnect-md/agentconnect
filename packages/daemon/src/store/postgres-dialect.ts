@@ -260,6 +260,7 @@ export const canonicalColumns = [
   'approverTeamId',
   'approverConsoleUserId',
   'cardTs',
+  'cardShows',
   'offerAlways',
   'decidedAt',
   'decidedBy',

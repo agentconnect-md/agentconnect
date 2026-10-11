@@ -1064,11 +1064,24 @@ A patrol that finds something worth doing asks for approval with `propose`: one 
 as "rebase PR #12 onto main and push". A patrol proposes at most once and runs nothing itself; no
 other session and no agent outside assistant mode is offered `propose`.
 
-The proposal is carded like a draft with no asker: to the agent's responsible user in a direct
-message, otherwise its fallback conversation, and an editor may decide it from the Activity view,
-including one no one could be reached for. The card leads with the sentence, shows the reason and
-the task, and offers Approve and Deny; there is no "always allow". A proposal expires after 24 hours
-and never runs afterwards, and a denied one never runs.
+The proposal is carded in the Slack conversation the item was taken in, where that conversation's
+replies land: its top level when it is one long conversation, else its thread. Whoever could ask
+the agent there may approve it: in a direct message, that person; in a channel, anyone whose own
+message would start a turn of the agent there; never a bot. A click from anyone else does nothing.
+Approving grants nothing that typing the request there would not: the task runs with the agent's
+own permissions, and its permission requests follow "Assistant-mode sub-session permission
+requests". "Allow runtime changes in chat" makes no difference to proposals. A conversation shared
+with another organization, one gated By decision, one the card cannot be posted in, and
+conversations on other platforms get the card where drafts go instead: the agent's responsible user
+in a direct message, otherwise its fallback conversation. Webchat conversations do not show
+proposals yet. An editor may decide any proposal from the Activity view, including one no one could
+be reached for, and the first answer decides it.
+
+The card leads with the sentence, shows the reason and the task, and offers Approve and Deny; there
+is no "always allow". Once decided it is rewritten in place: approved by whom and running, denied by
+whom, or expired with nothing run, and later how the task ended. A card a restart left unedited is
+rewritten when its integration reconnects. A proposal expires after 24 hours and never runs
+afterwards, and a denied one never runs.
 
 Approval runs the task once, in a background sub-session of the conversation the item was taken in,
 under that conversation's long session, with the agent's own permissions rather than a patrol's
