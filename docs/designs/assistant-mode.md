@@ -52,8 +52,8 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 
 - Ask as you would a colleague. It restates its understanding — what to do, what counts as done,
   when to check next — and on your confirmation the item enters its ledger.
-- The ledger is visible to the team. An item born in a DM records who asked for what, never the
-  DM's wording; it says so when it takes the item.
+- The ledger is visible to the team. An item born in a DM or a private channel records who asked
+  for what, never that conversation's wording or details; it says so when it takes the item.
 - **It reports to whoever asked, in the place they asked.**
 - When two people ask for the same thing in different places, it asks "attach this to X's item?"
   when restating, and both receive the report after you confirm.
@@ -302,7 +302,8 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
   origin: place, summary, observations: [...], subsessions: [...], proposals: [...], version }
 ```
 
-- Item summaries are visible to organization members; the wording stays in the source session.
+- Item summaries are visible to organization members; the wording, and any detail from a DM or a
+  private place, stays in the source session. This is an instruction to the model, not a filter.
   Observations written by patrols are bound by standing instructions: team-visible, no quotes,
   source content framed as untrusted data.
 - The ledger does not pass through the shared-memory exclusion gate — it is its own store, not
@@ -943,3 +944,11 @@ refused admission or a restart. It is held as `reporting` until admitted, retrie
 three times, re-sent after a restart and deduplicated by a fixed delivery id, and it reaches the
 parent place's current session through the one delivery path the daemon's patrol and task reports
 already use (§5.7).
+
+**Seventeenth revision (2026-10-12)**: the ledger's no-quote rule covers private channels and group
+conversations as well as DMs. In a test, an item taken in a private channel carried a figure said
+there into its done-when, and another place read it back from the ledger although recalling the
+channel itself was refused. The item tools' descriptions now forbid quoting or paraphrasing any of
+these conversations, down to a figure or a detail, and have the agent tell the person, as it takes
+such an item, that the item is visible to the whole organization. The rule stays an instruction
+rather than a per-place filter on the ledger.

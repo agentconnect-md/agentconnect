@@ -87,10 +87,13 @@ describe('item tools are offered only to assistant-mode agents', () => {
   it('carries the confirmation, team-visibility and duplicate rules in the descriptions', () => {
     const take = ASSISTANT_ITEM_TOOLS.find((t) => t.name === 'takeItem')!.description
     expect(take).toContain('only after the person confirms')
-    expect(take).toContain('never quote or paraphrase a direct message')
+    const privateRule = 'never quote or paraphrase a direct message, a private channel or a private group conversation'
+    expect(take).toContain(privateRule)
+    expect(take).toContain('visible to the whole organization and records only who asked for what')
     expect(take).toContain('attach this to <who>’s item?')
     const update = ASSISTANT_ITEM_TOOLS.find((t) => t.name === 'updateItem')!.description
     expect(update).toContain('record the conflict in the summary')
+    expect(update).toContain(privateRule)
   })
 })
 
