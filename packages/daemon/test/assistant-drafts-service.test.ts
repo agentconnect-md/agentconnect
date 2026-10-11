@@ -72,6 +72,7 @@ function fakePort() {
     updateCard: vi.fn(async (_channel: string, _ts: string, _card: DraftCard): Promise<boolean | void> => {}),
     // Members whose id starts with B are bots; D0ALICE is Alice's direct message with the agent.
     isPerson: vi.fn(async (user: string) => !user.startsWith('B')),
+    nameOf: vi.fn(async (user: string) => `Name of ${user}`),
     directMessageWith: vi.fn(async (channel: string) => (channel === 'D0ALICE' ? 'U0ALICE' : null))
   } satisfies DraftCardPort
 }
@@ -902,6 +903,22 @@ describe('a proposal in the conversation its item belongs to', () => {
       'C0GENERAL',
       'card-1',
       expect.objectContaining({ outcome: expect.stringContaining('Approved by u0bob') })
+    )
+  })
+
+  it('names who decided when a relayed click carries only their id', async () => {
+    const w = await world()
+    const { draft } = await w.propose(GENERAL)
+    await w.drafts.handleChoice({ requestId: draft.id, optionId: 'approve', actor: { userId: 'U0BOB' } })
+    expect(w.port.nameOf).toHaveBeenCalledWith('U0BOB')
+    expect(await w.store.assistantDrafts.get(draft.id)).toMatchObject({
+      decidedBy: 'T0EXAMPLE:U0BOB',
+      decidedByName: 'Name of U0BOB'
+    })
+    expect(w.port.updateCard).toHaveBeenLastCalledWith(
+      'C0GENERAL',
+      'card-1',
+      expect.objectContaining({ outcome: expect.stringContaining('Approved by Name of U0BOB') })
     )
   })
 

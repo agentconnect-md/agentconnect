@@ -31,6 +31,10 @@ export function slackDraftCardPort(conn: DraftCardConnection, integrationId: str
     isFullMember: (user) => conn.isFullMember(user),
     scope: () => conn.workspaceId() || undefined,
     isPerson: async (user) => (await conn.getUserProfile(user).catch(() => undefined))?.isBot === false,
+    nameOf: async (user) => {
+      const profile = await conn.getUserProfile(user)
+      return profile.realName?.trim() || profile.name?.trim() || undefined
+    },
     directMessageWith: async (channel) => {
       const info = await conn.getChannelInfo(channel)
       if (!info.isIm) return null
