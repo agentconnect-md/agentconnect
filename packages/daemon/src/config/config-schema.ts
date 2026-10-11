@@ -296,12 +296,7 @@ export const ConfigSchema = z.object({
       // window, is what keeps background work alive. (Was widened to 2h by bb328c01 as
       // an interim workaround before the lease existed; now dialed back.)
       agentIdleTimeoutMs: z.number().int().default(900_000),
-      // Absolute host lifetime ceiling (from host start). The background-task lease
-      // defers idle reclaim while work is in flight; this bounds that deferral so a
-      // wedged / never-ending background task (a hung build, a long-lived dev server)
-      // can't pin an otherwise-idle host forever. Past this, the sweep force-reclaims
-      // even with live background work (logged at warn). Must exceed agentIdleTimeoutMs
-      // to have any effect. 6h.
+      // Ceiling on what may hold an idle host: live background work from host start, and a turn's unanswered card from when it was asked. 6h.
       agentMaxLifetimeMs: z.number().int().default(21_600_000),
       // How often the idle sweep runs: reaps idle ACP adapter children back to
       // `provisioned` (§7.2) and TTL-closes idle sessions (§7.3). Keep well below

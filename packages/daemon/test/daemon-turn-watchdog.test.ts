@@ -285,6 +285,99 @@ describe('turn stall watchdog', () => {
     }
   })
 
+  it('stops a turn whose permission request nobody answers within agentMaxLifetimeMs, and says why (#2780)', async () => {
+    const { clock, daemon, host } = await startDaemon({ limits: { ...LIMITS, agentMaxLifetimeMs: 120_000 } })
+    const info = vi.spyOn((daemon as any).log, 'info')
+    const stream = webchatSink()
+    try {
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'hello',
+        { id: 'alice', name: 'alice' },
+        stream.sink
+      )
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      const pending = [...(daemon as any).pending.values()][0] as {
+        approval: { depth: number; startedAt?: number }
+        hostKey: unknown
+      }
+      pending.approval.depth = 1
+      pending.approval.startedAt = clock.now()
+
+      // Inside the window the wait is the human's, and the stall budget does not apply to it.
+      await advance(clock, 110_000)
+      expect(host.cancel).not.toHaveBeenCalled()
+
+      // A request with a cap of its own (a background sub-session's) is left to that cap.
+      const ownCap = vi.spyOn((daemon as any).permissions, 'hasOwnWaitCap').mockReturnValue(true)
+      await advance(clock, 20_000)
+      expect(host.cancel).not.toHaveBeenCalled()
+      expect(ownCap).toHaveBeenCalledWith(pending.hostKey, 'acp-1')
+
+      ownCap.mockRestore()
+      await advance(clock, 10_000)
+      await vi.waitFor(() => expect(host.cancel).toHaveBeenCalledWith('acp-1'), WAIT)
+      expect(info).toHaveBeenCalledWith(
+        expect.stringMatching(/turn watchdog: session .* \(acp-1\) waited 2 min on an unanswered permission request/)
+      )
+      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
+      expect(stream.dones).toEqual([
+        expect.objectContaining({
+          error:
+            "⚠️ Nobody answered the agent's permission request or question within 2 minutes — " +
+            'this turn was stopped; send your message again to start over.'
+        })
+      ])
+      const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+      expect((await (daemon as any).store.getSession(key))?.state).toBe('idle')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('gives an ordinary question its whole answer window from when it is asked, whatever the runtime did before', async () => {
+    const { clock, daemon, host } = await startDaemon({
+      limits: { ...LIMITS, turnStallTimeoutMs: 0, agentMaxLifetimeMs: 120_000 }
+    })
+    const stream = webchatSink()
+    try {
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'hello',
+        { id: 'alice', name: 'alice' },
+        stream.sink
+      )
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      const pending = [...(daemon as any).pending.values()][0] as {
+        approval: { depth: number }
+        hostKey: unknown
+      }
+      // A long silent tool run, past the window, before the runtime asks anything.
+      await advance(clock, 300_000)
+      const answered = (daemon as any).permissions.onAcpElicit(pending.hostKey, 'acp-1', {
+        mode: 'form',
+        message: 'Which branch?',
+        requestedSchema: { type: 'object', properties: { branch: { type: 'string' } }, required: ['branch'] }
+      })
+      await vi.waitFor(
+        () => expect((daemon as any).permissions.awaitingHuman(pending.hostKey, 'acp-1')).toBe(true),
+        WAIT
+      )
+      // An ordinary question carries no approval meter: its window starts when it was asked.
+      expect(pending.approval.depth).toBe(0)
+      await advance(clock, 110_000)
+      expect(host.cancel).not.toHaveBeenCalled()
+      await advance(clock, 20_000)
+      await vi.waitFor(() => expect(host.cancel).toHaveBeenCalledWith('acp-1'), WAIT)
+      await expect(answered).resolves.toEqual({ action: 'cancel' })
+      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it('is off when turnStallTimeoutMs is 0', async () => {
     const { clock, daemon, host } = await startDaemon({ limits: { ...LIMITS, turnStallTimeoutMs: 0 } })
     const stream = webchatSink()

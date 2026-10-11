@@ -1084,6 +1084,19 @@ const SHUTDOWN_NOTICE: TurnCutNotice = {
   lost: '⚠️ The agent is restarting — this turn was stopped; send your message again once it is back.'
 }
 
+/** Why a turn whose permission request or question nobody answered was stopped; it is never replayed. */
+function unansweredWaitNotice(windowMs: number): TurnCutNotice {
+  const minutes = Math.max(1, Math.round(windowMs / 60_000))
+  const hours = minutes / 60
+  const span = Number.isInteger(hours)
+    ? `${hours} hour${hours === 1 ? '' : 's'}`
+    : `${minutes} minute${minutes === 1 ? '' : 's'}`
+  const text =
+    `⚠️ Nobody answered the agent's permission request or question within ${span} — ` +
+    `this turn was stopped; send your message again to start over.`
+  return { replayed: text, lost: text }
+}
+
 /** A runtime process a config change made stale while turns still ran on it (respawnHostsWhenIdle). */
 type HostRetirement = {
   /** The turns it waits for. They run on the old process; every later turn waits for its successor. */
@@ -22878,18 +22891,44 @@ export class Daemon {
     if (this.sessionPurgeDrainRerun) await this.drainSessionPurges()
   }
 
-  /** Stall watchdog (#1915, daemon-detailed-design.md §7.3): cancel a prompt with no runtime signal for `turnStallTimeoutMs`. */
+  /** Stall watchdog (#1915, daemon-detailed-design.md §7.3): cancel a prompt with no runtime signal for `turnStallTimeoutMs`, or one whose card went unanswered for `agentMaxLifetimeMs`. */
   private async sweepStalledTurns(now: number): Promise<void> {
     const budget = this.cfg.limits.turnStallTimeoutMs
-    if (budget <= 0) return
+    const answerWindow = this.cfg.limits.agentMaxLifetimeMs
     for (const p of [...this.pending.values()]) {
       if (!p.promptInFlight || p.outputSuppressed || p.runtimeActivityAt === undefined) continue
-      // A card the human has not answered is the human's time, not the runtime's.
-      if (p.approval.depth > 0 || this.permissions.awaitingHuman(p.hostKey, p.acpSessionId)) continue
+      // A card the human has not answered is the human's time, not the runtime's — up to the ceiling an idle host's own work gets (#2780).
+      if (p.approval.depth > 0 || this.permissions.awaitingHuman(p.hostKey, p.acpSessionId)) {
+        // From when it was asked, never from runtime activity: neither silence before it nor updates after it move the window.
+        const askedAt = this.permissions.oldestHumanWaitAskedAt(p.hostKey, p.acpSessionId) ?? p.approval.startedAt
+        if (
+          askedAt !== undefined &&
+          now - askedAt >= answerWindow &&
+          !this.permissions.hasOwnWaitCap(p.hostKey, p.acpSessionId)
+        )
+          await this.expireUnansweredTurn(p, answerWindow)
+        continue
+      }
+      if (budget <= 0) continue
       const silentMs = now - p.runtimeActivityAt
       if (silentMs < budget) continue
       await this.tripStalledTurn(p, silentMs)
     }
+  }
+
+  /** Stop a turn whose permission request or question went unanswered for `windowMs`; the interrupt retires its cards and tells the conversation. */
+  private async expireUnansweredTurn(p: Pending, windowMs: number): Promise<void> {
+    const { agentId, sessionKey } = p.plan
+    // Synchronous, as for a stall: a prompt that returns inside the window below is dropped, never delivered.
+    p.outputSuppressed ??= 'approval wait expired'
+    this.log.info(
+      `turn watchdog: session ${sessionKey} (${p.acpSessionId}) waited ${Math.round(windowMs / 60_000)} min on an ` +
+        `unanswered permission request or question — stopping the turn`
+    )
+    await this.interruptTurn(agentId, sessionKey, 'approval wait expired', p.acpSessionId, {
+      only: p,
+      notice: unansweredWaitNotice(windowMs)
+    })
   }
 
   /** Own the exact turn before anything yields, cancel it the way `!stop` does, then tell the conversation. */
