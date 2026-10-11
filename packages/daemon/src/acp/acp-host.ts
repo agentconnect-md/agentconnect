@@ -608,6 +608,9 @@ export class AcpHost {
   // This is capability-gated because older ACP adapters reject the field.
   private canUseAdditionalDirectories = false
   private canDelete = false
+  private canClose = false
+  // In-flight session/close requests, so a reload of the same id waits for the runtime to release it.
+  private closing = new Map<string, Promise<void>>()
   // whether the agent advertised mid-turn steering (`_meta.steering.supported`) at initialize.
   private canSteer = false
   // prompt content-block variants the agent opted into at initialize. text +
@@ -930,6 +933,7 @@ export class AcpHost {
     this.canLoad = init.agentCapabilities?.loadSession ?? false
     this.canUseAdditionalDirectories = init.agentCapabilities?.sessionCapabilities?.additionalDirectories != null
     this.canDelete = init.agentCapabilities?.sessionCapabilities?.delete != null
+    this.canClose = init.agentCapabilities?.sessionCapabilities?.close != null
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
     this.canSteer = steeringSupported(init._meta)
     const mcp = init.agentCapabilities?.mcpCapabilities
@@ -1240,6 +1244,11 @@ export class AcpHost {
     return this.canDelete
   }
 
+  /** Whether the agent advertised support for ACP session/close. */
+  closeSupported(): boolean {
+    return this.canClose
+  }
+
   /** Resume a previously-created session by id (ACP `session/load`). The agent
    *  restores its own history server-side; replayed conversation/tool output is
    *  suppressed while metadata updates still converge. `mcpServers` must be
@@ -1258,6 +1267,7 @@ export class AcpHost {
   ): Promise<void> {
     this.loadingSessions.add(sessionId)
     try {
+      await this.closing.get(sessionId)
       const _meta = claudeSessionMeta(
         effortOverride ?? this.opts.configPrefs?.reasoningEffort,
         this.isClaudeRuntime(),
@@ -1338,6 +1348,22 @@ export class AcpHost {
     if (!this.canDelete) return false
     await this.conn!.agent.request(methods.agent.session.delete, { sessionId })
     this.forgetSession(sessionId)
+    return true
+  }
+
+  /** End a live session's runtime resources (its `claude` child) but keep its history loadable; false when unsupported or not live here. */
+  async closeSession(sessionId: string): Promise<boolean> {
+    if (!this.canClose || !this.live.has(sessionId)) return false
+    // Forget before the request goes out, so a turn admitted meanwhile reloads instead of prompting a closing session.
+    this.forgetSession(sessionId)
+    const request = this.conn!.agent.request(methods.agent.session.close, { sessionId }).then(() => undefined)
+    const settled = request.catch(() => undefined)
+    this.closing.set(sessionId, settled)
+    try {
+      await request
+    } finally {
+      if (this.closing.get(sessionId) === settled) this.closing.delete(sessionId)
+    }
     return true
   }
 

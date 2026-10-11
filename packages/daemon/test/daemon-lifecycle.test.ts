@@ -1938,6 +1938,66 @@ describe('Daemon idle sweep (#111/#118)', () => {
     await daemon.stop()
   })
 
+  it('closes a TTL-expired session on a shared host that another session keeps warm, and resumes it on a follow-up (#2923)', async () => {
+    const clock = new FakeClock()
+    const live = new Set<string>()
+    let nextSession = 0
+    const host = {
+      ...quietHost(),
+      newSession: vi.fn(async () => {
+        const id = `acp-${++nextSession}`
+        live.add(id)
+        return id
+      }),
+      hasSession: vi.fn((id: string) => live.has(id)),
+      closeSupported: vi.fn(() => true),
+      closeSession: vi.fn(async (id: string) => live.delete(id)),
+      loadSupported: vi.fn(() => true),
+      loadSession: vi.fn(async (id: string) => {
+        live.add(id)
+      })
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 10_000_000 }),
+      hostFactory: () => host as any,
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'first run', 'T1'), 'int-a')
+    clock.advance(600)
+    await (daemon as any).dispatch('bot-a', dm('200', 'second run', 'T2'), 'int-a')
+    clock.advance(500)
+    await (daemon as any).sweepIdle()
+
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
+    await vi.waitFor(() => expect(host.closeSession).toHaveBeenCalledWith('acp-1'), WAIT)
+    expect(host.closeSession).not.toHaveBeenCalledWith('acp-2')
+    // The second session's activity keeps the shared host warm; only the expired session's runtime goes.
+    expect((daemon as any).hosts.has('bot-a')).toBe(true)
+    expect(host.stop).not.toHaveBeenCalled()
+
+    // A follow-up in the closed thread resumes the same ACP session (session/load) instead of starting over.
+    await (daemon as any).dispatch('bot-a', dm('300', 'follow-up question', 'T1'), 'int-a')
+    expect(host.loadSession).toHaveBeenCalledWith(
+      'acp-1',
+      expect.any(String),
+      expect.anything(),
+      undefined,
+      undefined,
+      expect.anything()
+    )
+    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(host.prompt).toHaveBeenLastCalledWith('acp-1', expect.anything())
+    const resumed = await (daemon as any).store.getSession(KEY)
+    expect(resumed?.acpSessionId).toBe('acp-1')
+    expect(resumed?.state).toBe('idle')
+
+    await daemon.stop()
+  })
+
   it('does not TTL-close a session while an admitted initialization owns its dispatch fences', async () => {
     const clock = new FakeClock()
     const daemon = new Daemon({

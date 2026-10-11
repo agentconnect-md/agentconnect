@@ -6265,6 +6265,30 @@ export class Daemon {
     await this.stopHostByKey(key)
   }
 
+  // End a session the agent's shared host loaded (ACP session/close) so its runtime child exits; a session-bound host is stopSessionHost's.
+  private async closeSharedHostSession(
+    row: { key: string; agentId: string; acpSessionId: string | null },
+    expected?: AcpHost
+  ): Promise<boolean> {
+    const sessionId = row.acpSessionId
+    const owner = agentHostKey(row.agentId)
+    try {
+      if (!sessionId || this.sessionOwnerKey(row.agentId, row.key) !== owner) return false
+      const host = this.hosts.get(owner)
+      if (!host?.closeSupported() || !host.hasSession(sessionId) || (expected && host !== expected)) return false
+      if (await this.sessionRetentionActive(row)) return false
+      // Read again with no await between here and the close: the probe above awaited a store query.
+      if (this.hosts.get(owner) !== host || !host.hasSession(sessionId) || this.sessionAdmitted(row.key, owner))
+        return false
+      const closed = await host.closeSession(sessionId)
+      if (closed) this.log.debug(`acp: closed runtime session ${sessionId} of ${row.key} on the shared host`)
+      return closed
+    } catch (err) {
+      this.log.warn(`acp: session/close for ${row.key} failed (${formatErr(err)})`)
+      return false
+    }
+  }
+
   /**
    * Whether a bridge spawned for this daemon's tools can reach it at all.
    *
@@ -22274,7 +22298,7 @@ export class Daemon {
         // this stale warm binding so the next reopened/comment turn recreates
         // the worktree and runs session/load/new before prompting in its cwd.
         const current = await this.store.getSession(rec.key)
-        if (current?.acpSessionId === rec.acpSessionId) {
+        if (current?.acpSessionId === rec.acpSessionId && !(await this.closeSharedHostSession(current))) {
           this.hostForOwner(this.sessionOwnerKey(rec.agentId, rec.key))?.forgetSession(rec.acpSessionId)
         }
       }
@@ -22444,6 +22468,7 @@ export class Daemon {
             this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
           this.legacyMicrosandboxSessions.delete(sessionHostKey(rec.agentId, rec.key))
           await this.modelSessions.release(rec.key)
+          await this.closeSharedHostSession(rec)
           if (!this.microsandbox) {
             // The row is already gone, so the claim MUST still be attempted: a throw from stopping the
             // host would otherwise leave the pod's claim alive with this member's launch still cached,
@@ -22924,6 +22949,8 @@ export class Daemon {
       void this.stopSessionHost(row.agentId, row.key, fence).catch((error) =>
         this.log.warn(`idle: stopping the host of closed session ${row.key} failed (${formatErr(error)})`)
       )
+      // A session on the agent's shared host keeps its runtime child until the session itself is closed (#2923).
+      void this.closeSharedHostSession(row, hostsAtDecision.get(agentHostKey(row.agentId)))
       if (!row.acpSessionId) continue
       this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(row.agentId, row.key), row.acpSessionId)) // the session is gone
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
