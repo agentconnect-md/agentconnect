@@ -12,6 +12,9 @@ export const ASSISTANT_DRAFT_DECISION_FEATURE = 'assistant-draft-decision-v1'
 /** Daemon serves a `subsessions` read narrowed to one conversation and `stop-subsession` writes; an older daemon would list every conversation's. */
 export const ASSISTANT_SUBSESSION_PANEL_FEATURE = 'assistant-subsession-panel-v1'
 
+/** Daemon serves a `drafts` read narrowed to one webchat conversation's proposals and a `decide-draft` bound to one; an older daemon would ignore both and answer for every draft. */
+export const ASSISTANT_CONVERSATION_PROPOSALS_FEATURE = 'assistant-conversation-proposals-v1'
+
 /** JSON bytes one read result may take, leaving envelope headroom below the 256 KiB wire cap; a list stops short and says so. */
 export const ASSISTANT_ACTIVITY_RESULT_BYTES = 192 * 1024
 
@@ -132,10 +135,16 @@ export const AssistantActivityDraft = z.object({
     .nullable(),
   /** Present on a `task`: what it would do and why. */
   proposal: AssistantActivityProposal.optional(),
+  /** A webchat proposal, decided on its conversation's page by whoever may continue it; its `approver` is null. */
+  inConversation: z.boolean().optional(),
   createdAt: time,
   expiresAt: time
 })
 export type AssistantActivityDraft = z.infer<typeof AssistantActivityDraft>
+
+/** A webchat conversation by its session's outward id. */
+export const AssistantActivityConversation = z.object({ sessionId: ref })
+export type AssistantActivityConversation = z.infer<typeof AssistantActivityConversation>
 
 /** A background sub-session's runtime permission request awaiting a human (assistant-mode.md §5.6): which sub-session, which tool, and when its wait runs out. */
 export const AssistantActivityPermission = z.object({
@@ -195,7 +204,9 @@ export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
     /** Also list proposals (`kind: 'task'`); an older daemon ignores it and has none. */
     proposals: z.boolean().optional(),
     /** Also list sub-sessions' pending permission requests; an older daemon ignores it and lists none. */
-    permissions: z.boolean().optional()
+    permissions: z.boolean().optional(),
+    /** Only this webchat conversation's proposals, no posts and no permission requests; an older daemon ignores it. */
+    conversation: AssistantActivityConversation.optional()
   }),
   z.object({ agentId, operation: z.literal('grants') })
 ])
@@ -246,7 +257,7 @@ export const AssistantDraftStatus = z.enum([
 ])
 export type AssistantDraftStatus = z.infer<typeof AssistantDraftStatus>
 
-/** C→D REQ: an editor deleting an item, revoking a grant or deciding a draft, or someone who may continue a sub-session stopping it; the Control Plane has already checked the caller. */
+/** C→D REQ: an editor deleting an item, revoking a grant or deciding a draft, someone who may continue a webchat conversation deciding its proposal, or one who may continue a sub-session stopping it; the Control Plane has already checked the caller. */
 export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
   z.object({ agentId, operation: z.literal('delete-item'), itemId: ref }),
   z.object({ agentId, operation: z.literal('revoke-grant'), grantId: z.string().regex(/^[0-9a-f]{32}$/) }),
@@ -256,7 +267,9 @@ export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
     draftId: ref,
     choice: AssistantDraftChoice,
     /** The console user deciding, stamped by the Control Plane. */
-    decider: z.object({ userId: ref, name })
+    decider: z.object({ userId: ref, name }),
+    /** Decide only a proposal of this webchat conversation; any other draft answers `not-found`. */
+    conversation: AssistantActivityConversation.optional()
   }),
   z.object({
     agentId,

@@ -528,6 +528,22 @@ describe('the Activity view for an editor', () => {
     expect(section(host, 'drafts')!.querySelector('.badge:not([class*="status-info"])')?.textContent).toBe('2')
   })
 
+  it('names a webchat proposal’s approvers as whoever may continue its conversation', async () => {
+    mocks.drafts = [
+      {
+        ...PROPOSAL,
+        target: { ...PROPOSAL.target, platform: 'webchat', integrationId: null, channel: 'conv-1', name: null },
+        approver: null,
+        inConversation: true
+      }
+    ]
+    const host = await mount(true)
+    const row = section(host, 'drafts')!.querySelector('[data-assistant-draft="proposal-1"]')!
+    expect(row.textContent).toContain('Runs in Webchat')
+    expect(row.textContent).toContain('Approver: anyone who may continue the conversation')
+    expect(row.textContent).not.toContain('No one reachable')
+  })
+
   it('approves a proposal after a confirmation, and says it runs in the background', async () => {
     mocks.drafts = [PROPOSAL]
     mocks.outcome = { status: 'executing', alwaysAllowed: false, failure: null }

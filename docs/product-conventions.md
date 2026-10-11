@@ -1074,9 +1074,13 @@ requests". "Allow runtime changes in chat" makes no difference to proposals. A c
 with another organization, one gated By decision, one the card definitely could not be posted in,
 and conversations on other platforms get the card where drafts go instead: the agent's responsible
 user in a direct message, otherwise its fallback conversation. A post that timed out may still land,
-so it is never sent a second time elsewhere. Webchat conversations do not show
-proposals yet. An editor may decide any proposal from the Activity view, including one no one could
-be reached for, and the first answer decides it.
+so it is never sent a second time elsewhere. In a webchat conversation there is no card: the
+proposal waits among the conversation's pending requests above the composer, and is not sent to the
+responsible user. Whoever may continue that conversation may approve or deny it there after a
+confirmation, and so may the agent's editors. The row leads with the sentence, folds the reason and
+the task, and shows the item and when it expires; once decided it says what happened until
+dismissed. An editor may decide any proposal from the Activity view, including one no one could be
+reached for, and the first answer decides it.
 
 The card leads with the sentence, shows the reason and the task, and offers Approve and Deny; there
 is no "always allow". Once decided it is rewritten in place: approved by whom and running, denied by

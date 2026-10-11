@@ -3925,6 +3925,8 @@ export interface AssistantDraftDto {
     name: string | null
   } | null
   proposal?: AssistantProposalDto
+  /** A webchat proposal, decided on its conversation's page by whoever may continue it; `approver` is then null. */
+  inConversation?: boolean
   createdAt: string
   expiresAt: string
 }
@@ -4018,6 +4020,39 @@ export async function decideAssistantDraft(
   decision: AssistantDraftDecision
 ): Promise<AssistantDraftOutcomeDto> {
   return apiPost(`${assistantBase(agentId)}/drafts/${encodeURIComponent(draftId)}/decision`, { decision })
+}
+
+/** A proposal waiting in one webchat conversation, for whoever may continue it and the agent's editors (assistant-mode.md §5.10). */
+export interface AssistantConversationProposalDto {
+  id: string
+  sentence: string
+  why: string
+  /** What a background session would carry out once approved. */
+  task: string
+  itemId: string
+  itemTitle: string | null
+  createdAt: string
+  expiresAt: string
+}
+
+export async function fetchAssistantConversationProposals(
+  agentId: string,
+  sessionId: string
+): Promise<{ proposals: AssistantConversationProposalDto[]; truncated: boolean }> {
+  return apiGet(`${assistantBase(agentId)}/conversations/${encodeURIComponent(sessionId)}/proposals`)
+}
+
+/** Approve (start its task) or deny one; `executing` started it, `failed` ran nothing. */
+export async function decideAssistantConversationProposal(
+  agentId: string,
+  sessionId: string,
+  draftId: string,
+  decision: 'approve' | 'deny'
+): Promise<{ status: AssistantDraftOutcomeDto['status']; failure: string | null }> {
+  return apiPost(
+    `${assistantBase(agentId)}/conversations/${encodeURIComponent(sessionId)}/proposals/${encodeURIComponent(draftId)}/decision`,
+    { decision }
+  )
 }
 
 export async function fetchAssistantGrants(

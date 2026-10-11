@@ -107,8 +107,9 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 
 - A proposal's card lands in the item's place of origin; for an external place, in the approver's
   DM instead (§5.5). Whoever could ask the agent there may approve it: in a DM, that person; in a
-  channel, anyone whose own message would start a turn of the agent there. Approving runs the task
-  with the agent's own permissions, which is what asking there gets, so it grants nothing more.
+  channel, anyone whose own message would start a turn of the agent there; in webchat, whoever may
+  continue the conversation, from its pending requests. Approving runs the task with the agent's
+  own permissions, which is what asking there gets, so it grants nothing more.
 - A runtime permission request inside the task follows the existing in-chat approval rules: with
   "allow runtime changes in chat" switched on, anyone who sees the card can click; otherwise the
   console and the editor DM path. That card offers "always allow this tool".
@@ -714,9 +715,11 @@ places:
    place cannot: an external place, a post that definitely failed, a place gated by a decision's
    verdict, a platform with no card. A timed-out post may still land, so it is never carded twice:
    the place keeps it. The card's handle and the status it last showed are on the record, so a reconnect
-   rewrites a card a restart left behind. A webchat place has Activity only: its conversation's
-   pending-requests strip is the editors' approval queue, and offering it to the conversation's
-   owner needs routes of its own.
+   rewrites a card a restart left behind. A webchat place has no card: the proposal waits in its
+   conversation's pending-requests strip. Whoever may continue that conversation in the console may
+   decide it there, and so may the agent's editors. The strip reads and decides through routes of
+   its own, which pass the conversation to the daemon. The daemon lists only that conversation's
+   proposals and refuses a decision on any other. The responsible user is not asked.
 
 A cut execution settles from the sub-session's durable end: reported ⇒ `succeeded`, failure report
 already sent ⇒ `failed`, otherwise `outcome_unknown` with one "please check" report.
@@ -983,3 +986,13 @@ conversation's own turn. Since #2913 a conversation shows cards for requests its
 raise, so that reason no longer holds. The responsible user and the fallback conversation are now
 the fallback only, used when the place cannot take the card. The first answer from any surface
 still wins. Webchat places keep Activity for now (§5.10).
+
+**Nineteenth revision (2026-10-12)**: a patrol's proposal for an item taken in a webchat
+conversation now shows in that conversation's pending-requests strip. Until now only editors saw
+it, in Activity, and the conversation itself showed nothing. Whoever may continue the conversation
+in the console may approve or deny it there, the same check that lets them stop its sub-sessions.
+The agent's editors may too, there and in Activity. This matches Slack, where the card goes to
+whoever could ask the agent in the item's conversation, and it grants nothing new. The proposal is
+no longer carded to the responsible user or the fallback conversation. Two new routes list and
+decide one conversation's proposals, and the daemon refuses a decision for a proposal of any other
+conversation. The first answer from any surface still wins.
