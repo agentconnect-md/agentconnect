@@ -173,7 +173,8 @@ async function placeRows(
       before = last.seq
     }
   }
-  return { rows, complete: true }
+  // Sessions past the cap were never searched, so the answer covers only the recent part.
+  return { rows, complete: place.sessions.length <= RECALLED_SESSIONS }
 }
 
 /** Up to `EXCERPT_CHARS` of a row, centered on the first matched word. */

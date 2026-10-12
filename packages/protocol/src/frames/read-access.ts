@@ -12,7 +12,9 @@ export const AgentReadAccess = z.object({
   agentId: z.string().uuid(),
   asker: ReadAccessAsker,
   // Outward session ids; empty asks only whether the asker is a linked console user.
-  sessionIds: z.array(z.string().min(1).max(256)).max(8)
+  sessionIds: z.array(z.string().min(1).max(256)).max(8),
+  // A DM or webchat source: only sessions the asker owns count, whoever else the console shows them to.
+  ownerOnly: z.boolean().optional()
 })
 export type AgentReadAccess = z.infer<typeof AgentReadAccess>
 

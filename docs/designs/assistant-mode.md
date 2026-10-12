@@ -454,7 +454,10 @@ below), so opening it everywhere does not reopen what the read rule closes.
   to the one organization member who linked that identity, or takes a console user directly, and
   answers which of the agent's sessions there that user could see. Every session the read would
   show must be visible; `recall` reads at most the place's eight newest sessions, the ones it checks.
-  A CP that is unreachable, or lacks the feature, refuses the read.
+  For a DM, a webchat conversation or an undescribed place the rule is stricter than the console:
+  the daemon asks `ownerOnly`, and the CP counts only sessions whose recorded owner is that user
+  (a webchat session always), so a DM the console shows every member stays its owner's alone. A CP
+  that is unreachable, or lacks the feature, refuses the read.
 - **Who is asking** on a turn: the senders of its message and of every message coalesced or steered
   into it, recorded before the runtime sees them; the console user in webchat and a console
   continuation; a sub-session's opener (kept in memory, so a restart reads it as no one); a patrol's

@@ -1818,7 +1818,7 @@ export class Daemon {
   private readonly placeMembers = new PlaceMembers({
     now: () => this.clock.now(),
     gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
-    readAccess: (agentId, asker, sessionIds) => this.readAccess(agentId, asker, sessionIds)
+    readAccess: (agentId, asker, sessionIds, ownerOnly) => this.readAccess(agentId, asker, sessionIds, ownerOnly)
   })
   /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
   private readonly subsessionOpeners = new Map<string, TurnAskers>()
@@ -8689,7 +8689,12 @@ export class Daemon {
   }
 
   /** The console's session visibility for whoever is behind the asker; rejects when the Control Plane cannot be asked. */
-  private async readAccess(agentId: string, asker: ReadAsker, sessionIds: readonly string[]): Promise<ConsoleVerdict> {
+  private async readAccess(
+    agentId: string,
+    asker: ReadAsker,
+    sessionIds: readonly string[],
+    ownerOnly: boolean
+  ): Promise<ConsoleVerdict> {
     const cp = this.cpClient
     if (cp?.supportsServerFeature?.(READ_ACCESS_V1_FEATURE) !== true) throw new Error('read access unavailable')
     const res = await cp.readAccess(
@@ -8699,7 +8704,8 @@ export class Daemon {
           asker.kind === 'console'
             ? { consoleUserId: asker.userId }
             : { integrationId: asker.integrationId, memberId: asker.userId },
-        sessionIds: [...sessionIds]
+        sessionIds: [...sessionIds],
+        ...(ownerOnly ? { ownerOnly: true } : {})
       },
       this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
     )

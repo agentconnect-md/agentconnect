@@ -10,7 +10,9 @@ import {
   offersReadPort,
   platformLabel,
   readPortsFor,
-  reportsSharedConversations
+  reportsChannelPrivacy,
+  reportsSharedConversations,
+  tellsWorkspaceMembers
 } from '../src/platforms/read-ports.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
@@ -71,19 +73,40 @@ describe('the read-port registry', () => {
     expect(offersDirectMessages('feishu')).toBe(has(FeishuConnection, 'openDirectMessage'))
   })
 
-  // assistant-mode.md §5.5: membership is decided only where the listing names every member — Slack alone.
+  // assistant-mode.md §5.5: membership is decided only where the listing names every member — Slack, and Feishu/Lark by union_id.
   it('declares an authoritative member listing exactly where the adapter offers one', () => {
-    expect(membersAuthoritative('slack')).toBe(true)
-    expect(membersAuthoritative('slack')).toBe(has(SlackConnection, 'listMemberIds'))
+    for (const [platform, ctor] of [
+      ['slack', SlackConnection],
+      ['feishu', FeishuConnection]
+    ] as const) {
+      expect(membersAuthoritative(platform), platform).toBe(true)
+      expect(has(ctor, 'listMemberIds'), platform).toBe(true)
+    }
     for (const [platform, ctor] of [
       ['telegram', TelegramConnection],
-      ['discord', DiscordConnection],
-      ['feishu', FeishuConnection]
+      ['discord', DiscordConnection]
     ] as const) {
       expect(membersAuthoritative(platform), platform).toBe(false)
       expect(has(ctor, 'listMemberIds'), platform).toBe(false)
     }
     for (const platform of ['qq', 'linear', 'googlechat']) expect(membersAuthoritative(platform)).toBe(false)
+  })
+
+  // assistant-mode.md §5.5: a public channel is confirmed only by a platform's own privacy report, and only Slack tells a guest apart.
+  it('declares channel privacy and workspace standing exactly where the adapter answers them', () => {
+    for (const platform of ['slack', 'discord', 'feishu', 'telegram'])
+      expect(reportsChannelPrivacy(platform), platform).toBe(true)
+    for (const platform of ['qq', 'linear', 'googlechat', 'webchat', ''])
+      expect(reportsChannelPrivacy(platform), platform).toBe(false)
+    expect(tellsWorkspaceMembers('slack')).toBe(has(SlackConnection, 'isFullMember'))
+    for (const [platform, ctor] of [
+      ['telegram', TelegramConnection],
+      ['discord', DiscordConnection],
+      ['feishu', FeishuConnection]
+    ] as const) {
+      expect(tellsWorkspaceMembers(platform), platform).toBe(false)
+      expect(has(ctor, 'isFullMember'), platform).toBe(false)
+    }
   })
 
   // assistant-mode.md §5.3: only Slack's channel lookup says whether another organization shares a channel.

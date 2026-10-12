@@ -9,11 +9,12 @@ describe('agent/read-access frames', () => {
     for (const asker of [{ consoleUserId: 'user-1' }, { integrationId: INTEGRATION_ID, memberId: 'U0MEMBER' }]) {
       const req = buildEnvelope(
         'agent/read-access',
-        { agentId: AGENT_ID, asker, sessionIds: ['ses-1'] },
+        { agentId: AGENT_ID, asker, sessionIds: ['ses-1'], ownerOnly: true },
         { orgId: 'org-a' }
       )
       const decoded = decodeEnvelope(JSON.stringify(req))
       expect(decoded.ok && decoded.frame.type).toBe('agent/read-access')
+      expect(decoded.ok && (decoded.frame.payload as { ownerOnly?: boolean }).ownerOnly).toBe(true)
     }
     for (const asker of ['linked', 'unlinked', 'unidentifiable'] as const) {
       const rep = buildEnvelope(

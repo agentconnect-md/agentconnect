@@ -70,10 +70,20 @@ describe('resolveReadAccess', () => {
       asker: 'linked',
       visibleSessionIds: ['visible-1']
     })
-    expect(sessionsVisible).toHaveBeenCalledWith({ orgId: ORG, userId: 'user-r', role: 'viewer' }, AGENT_ID, [
-      'visible-1',
-      'hidden-1'
-    ])
+    expect(sessionsVisible).toHaveBeenCalledWith(
+      { orgId: ORG, userId: 'user-r', role: 'viewer' },
+      AGENT_ID,
+      ['visible-1', 'hidden-1'],
+      false
+    )
+    // A DM or webchat source asks for the asker's own sessions only.
+    await resolveReadAccess({ ...ask({ consoleUserId: 'user-r' }), ownerOnly: true }, d, ORG)
+    expect(sessionsVisible).toHaveBeenLastCalledWith(
+      { orgId: ORG, userId: 'user-r', role: 'viewer' },
+      AGENT_ID,
+      ['visible-1', 'hidden-1'],
+      true
+    )
     expect(await resolveReadAccess(ask({ consoleUserId: 'user-x' }), d, ORG)).toEqual({
       asker: 'unidentifiable',
       visibleSessionIds: []

@@ -13,7 +13,12 @@ export interface PlaceMembersHost {
     integrationId: string
   ): Pick<MessageGateway, 'getChannelInfo' | 'listMemberIds' | 'isFullMember'> | undefined
   /** The console's session visibility for whoever is behind the asker, from the Control Plane; rejects when it cannot be asked. */
-  readAccess?(agentId: string, asker: ReadAsker, sessionIds: readonly string[]): Promise<ConsoleVerdict>
+  readAccess?(
+    agentId: string,
+    asker: ReadAsker,
+    sessionIds: readonly string[],
+    ownerOnly: boolean
+  ): Promise<ConsoleVerdict>
 }
 
 interface Entry<T> {
@@ -48,11 +53,16 @@ export class PlaceMembers {
   }
 
   /** Who the console says is behind the asker and which of these sessions they could see; rejects when it cannot be asked. */
-  async consoleVerdict(agentId: string, asker: ReadAsker, sessionIds: readonly string[]): Promise<ConsoleVerdict> {
+  async consoleVerdict(
+    agentId: string,
+    asker: ReadAsker,
+    sessionIds: readonly string[],
+    ownerOnly = false
+  ): Promise<ConsoleVerdict> {
     const ask = this.host.readAccess
     if (!ask) throw new Error('no console verdict on this daemon')
-    const key = [agentId, askerKey(asker), ...[...sessionIds].sort()].join('\u001f')
-    return await this.cached(this.verdicts, key, () => ask(agentId, asker, sessionIds))
+    const key = [agentId, askerKey(asker), String(ownerOnly), ...[...sessionIds].sort()].join('\u001f')
+    return await this.cached(this.verdicts, key, () => ask(agentId, asker, sessionIds, ownerOnly))
   }
 
   /** The read rule's lookups for one agent. */
@@ -60,7 +70,7 @@ export class PlaceMembers {
     return {
       member: (integrationId, channel, userId) => this.isMember(integrationId, channel, userId),
       fullMember: (integrationId, userId) => this.isFullMember(integrationId, userId),
-      console: (asker, sessionIds) => this.consoleVerdict(agentId, asker, sessionIds)
+      console: (asker, sessionIds, ownerOnly) => this.consoleVerdict(agentId, asker, sessionIds, ownerOnly)
     }
   }
 

@@ -589,7 +589,10 @@ Invariants preserved:
   console user directly, and answers which of the agent's named sessions that
   user could see, through the same resolver and `canViewSession` the console's
   own reads use (`http/read-access.ts`). The daemon fails the read closed when
-  the CP cannot answer.
+  the CP cannot answer. For a DM or webchat source the read rule is stricter
+  than this predicate: only sessions the user owns count (`ownsSession` on the
+  recorded `ownerIdentity`), so an `org` DM shown to every member is read only
+  for its owner, and one with no recorded owner for no one.
 
 ### 5.1 Agent-scoped memory is a bypass — must be plugged
 
