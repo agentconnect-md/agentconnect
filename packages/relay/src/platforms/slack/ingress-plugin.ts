@@ -363,7 +363,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
       botId,
       { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
       {
-        onMessage: async (msg, sidecar) => void (await host.forward(botId, msg, sidecar)),
+        onMessage: (msg, sidecar) => host.forward(botId, msg, sidecar),
         onBotUserId: (uid) => host.reportBotUserId(botId, uid),
         onChannelsChanged: (channels) => {
           if (!a.claimUrl) host.reportChannels({ botId, channels })
@@ -468,20 +468,23 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
   },
 
   async handle(ingest, verified, host): Promise<HandledDelivery> {
-    // Plugin-minted identity, core-owned table (§8).
-    if (verified.kind === 'event' && host.dedupSeen(verified.dedupKey)) return {}
     if (verified.kind === 'interaction') {
       // block_suggestion needs its options ON the 200 body; every other branch
       // resolves to '' — the same contract the interactions route holds today.
       const result = await ingest.handleInteraction(verified.body)
       return { syncResponse: result ?? '' }
     }
-    // Events are ACK'd by the route within Slack's 3s window; handling is async
-    // and a forward miss is bounded loss. Failures log exactly as the live
-    // route logs them today.
-    void ingest
-      .handleEvent(verified.event, verified.eventAtMs, verified.eventId, verified.externallyShared === true)
-      .catch((err) => host.log.warn(`slack ingress: event handler error: ${(err as Error).message}`))
+    // Plugin-minted identity, core-owned table (§8): a settled repeat answers 200, an unsettled one is handled again.
+    if (host.dedupPeek(verified.dedupKey)) return {}
+    const outcome = await ingest.handleEvent(
+      verified.event,
+      verified.eventAtMs,
+      verified.eventId,
+      verified.externallyShared === true
+    )
+    // No daemon took the message, so it stays unmarked and the route asks Slack to redeliver it.
+    if (outcome === 'retry') return { admission: { disposition: 'retry' } }
+    host.dedupMark(verified.dedupKey)
     return {}
   }
 }

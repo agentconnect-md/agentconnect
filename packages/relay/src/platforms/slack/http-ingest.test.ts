@@ -427,7 +427,7 @@ describe('HTTP Slack agent selector', () => {
 describe('SlackHttpIngest.handleInteraction', () => {
   const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
   const ingestDeps = (over: Partial<SlackHttpIngestDeps> = {}): SlackHttpIngestDeps => ({
-    onMessage: vi.fn(async () => {}),
+    onMessage: vi.fn(async () => 'accepted' as const),
     onBotUserId: vi.fn(),
     onChannelsChanged: vi.fn(),
     agents: () => [
@@ -501,7 +501,7 @@ describe('SlackHttpIngest.handleInteraction', () => {
 describe('SlackHttpIngest events', () => {
   const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
   const deps = (web: object, over: Partial<SlackHttpIngestDeps> = {}): SlackHttpIngestDeps => ({
-    onMessage: vi.fn(async () => {}),
+    onMessage: vi.fn(async () => 'accepted' as const),
     onBotUserId: vi.fn(),
     onChannelsChanged: vi.fn(),
     agents: () => [],
@@ -743,7 +743,7 @@ describe('SlackHttpIngest events', () => {
   it('forwards the agent-session stop with its conversation and the tapping user', async () => {
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
     const onSessionStopped = vi.fn()
-    const onMessage = vi.fn(async () => {})
+    const onMessage = vi.fn(async () => 'accepted' as const)
     const ingest = new SlackHttpIngest(
       'bot',
       { botToken: 'xoxb', signingSecret: 's' },
@@ -786,7 +786,7 @@ describe('SlackHttpIngest events', () => {
     async (type) => {
       const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
       const onSessionStopped = vi.fn()
-      const onMessage = vi.fn(async () => {})
+      const onMessage = vi.fn(async () => 'accepted' as const)
       const ingest = new SlackHttpIngest(
         'bot',
         { botToken: 'xoxb', signingSecret: 's' },
@@ -807,7 +807,7 @@ describe('SlackHttpIngest events', () => {
   it.each(['app_uninstalled', 'tokens_revoked'] as const)('reports %s upstream as a bot revocation', async (type) => {
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
     const onBotRevoked = vi.fn()
-    const onMessage = vi.fn(async () => {})
+    const onMessage = vi.fn(async () => 'accepted' as const)
     const ingest = new SlackHttpIngest(
       'bot',
       { botToken: 'xoxb', signingSecret: 's' },
@@ -980,7 +980,7 @@ describe('normalizeSlackMessage conversation kinds', () => {
 
 describe('SlackHttpIngest message events', () => {
   it('drops self and Slack system messages while forwarding peer app text', async () => {
-    const onMessage = vi.fn<SlackHttpIngestDeps['onMessage']>(async () => {})
+    const onMessage = vi.fn<SlackHttpIngestDeps['onMessage']>(async () => 'accepted')
     const botIds = [undefined, 'BSELF']
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: botIds.shift() })) } }
     const ingest = new SlackHttpIngest(

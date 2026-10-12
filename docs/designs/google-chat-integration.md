@@ -524,7 +524,7 @@ Concurrent copies elect one admission in the store transaction; receipts outlive
 turn completion, steering, and inbox removal. Check them before an in-memory dedup
 fast path can settle a delivery: the relay host's `dedupSeen` marks an identity
 on first sight and answers a repeat with 200 before any admission result exists,
-which suits Slack's bounded-loss path and not this one. The Google module uses
+which suits an always-200 path and not this one. The Google module uses
 the host's split pair instead: `dedupPeek(msgId)` before forwarding answers a
 settled repeat with 200 and forwards nothing; after `forwardStrict`,
 `dedupMark(msgId)` marks an `admitted` or `rejected` disposition and never a
