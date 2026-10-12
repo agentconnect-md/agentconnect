@@ -196,6 +196,7 @@ import {
 import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
 import {
+  chatApprovalsAllowed,
   sessionEffortAfterModelChange,
   sessionEffortChoicesForSelection,
   sessionPermissionChoices,
@@ -3900,6 +3901,8 @@ export default function SessionDetailView() {
       continuationReason === 'daemon_offline' ||
       continuationReason === 'unavailable')
   const isLive = !readOnlySubsession && (isPg || isWebchat || isContinuable || continuationBlocked)
+  // The server says whether this caller owns a webchat conversation; a playground they opened is theirs until it answers.
+  const ownsThisConversation = currentSessionDetail ? currentSessionDetail.ownsConversation : isPg ? true : undefined
   // Where each agent runs NOW: a machine for a `daemon` placement, the set otherwise (a pool matched by `contentSetId`, a group by its holder).
   const placementByAgent = new Map(
     agents.map((agent) => [
@@ -4817,7 +4820,11 @@ export default function SessionDetailView() {
   // may not have a live frame, so fall back to the owning daemon's discovered catalog.
   // A continuation adds human input but never session-global runtime
   // administration — pills stay hidden (§6.5).
-  const runtimeChangesEnabled = !isContinuable && !continuationBlocked && sessionRuntimeChangesEnabled(owner, session)
+  const runtimeChangesEnabled =
+    !isContinuable && !continuationBlocked && sessionRuntimeChangesEnabled(owner, session, ownsThisConversation)
+  // People in chat may change settings here, just not this reader: the pill names who may.
+  const runtimeOwnersOnly =
+    !isContinuable && !continuationBlocked && !runtimeChangesEnabled && sessionRuntimeChangesEnabled(owner, session)
   const runtimeSelection = runtimeSelections[session.id]
   const setRuntimeSelection = (patch: {
     runtime?: string
@@ -4991,6 +4998,16 @@ export default function SessionDetailView() {
   // max-desktop:), never JS-forked.
   // The approval strip rides the sticky composer footer on a live session (the top slot otherwise) while something waits; the Requests popover keeps the history.
   const canReviewApprovals = Boolean(owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId)
+  // Where people in chat may approve, a webchat conversation's owner answers its own requests here too, through the conversation.
+  const ownerApprovals = Boolean(
+    !canReviewApprovals &&
+    (isWebchat || (isPg && session.realSessionId)) &&
+    !readOnlySubsession &&
+    ownsThisConversation === true &&
+    chatApprovalsAllowed(owner) &&
+    owner &&
+    !owner.name.startsWith(MOCK_PREFIX)
+  )
   // A webchat conversation's proposals (assistant-mode.md §5.10): whoever may continue it and editors decide them here; the CP refuses anyone else.
   const conversationProposals = Boolean(
     isWebchat &&
@@ -5000,13 +5017,14 @@ export default function SessionDetailView() {
     !owner.name.startsWith(MOCK_PREFIX)
   )
   const approvalCard = (className: string) =>
-    (canReviewApprovals || conversationProposals) && session.agentId ? (
+    (canReviewApprovals || ownerApprovals || conversationProposals) && session.agentId ? (
       <ApprovalRequestsCard
         key={session.id}
         agentId={session.agentId}
         sessionId={session.realSessionId ?? session.id}
         pendingOnly
-        permissions={canReviewApprovals}
+        permissions={canReviewApprovals || ownerApprovals}
+        conversationPermissions={ownerApprovals}
         proposals={conversationProposals}
         className={className}
       />
@@ -6216,6 +6234,7 @@ export default function SessionDetailView() {
                                 runtimes={beforeFirstTurn ? undefined : [agentRuntime]}
                                 readsImage={!!owner && strategyUsesImage(owner.execution)}
                                 readOnly={!runtimeChangesEnabled}
+                                {...(runtimeOwnersOnly ? { readOnlyNote: runtimeModelT('readOnlyOwner') } : {})}
                                 decision={
                                   beforeFirstTurn && owner?.modelSelection
                                     ? {

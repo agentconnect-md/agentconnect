@@ -668,6 +668,26 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     daemonWs.close()
   })
 
+  it('rc/verify(webchat-token) names who the user is to the agent: its editor, or the owner who only views it', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
+
+    const editor = await verifyWebchat(base, token.token, 'pod-role-editor')
+    expect(editor.result.participants).toEqual([expect.objectContaining({ agentId: AGENT, callerRole: 'editor' })])
+    // Every dial re-reads the role: once the owner only views the agent, they are still the conversation's owner.
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
+      data: { role: 'viewer' }
+    })
+    const owner = await verifyWebchat(base, token.token, 'pod-role-owner')
+    expect(owner.result.participants).toEqual([expect.objectContaining({ agentId: AGENT, callerRole: 'owner' })])
+    editor.ws.close()
+    owner.ws.close()
+    daemonWs.close()
+  })
+
   // ── multi-agent conversations (webchat-multi-agents.md §3.1 / §6.2) ──
 
   it('POST …/webchat/conversations/token creates a multi-agent roster when every daemon is capable', async () => {
@@ -699,8 +719,8 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     const { ws, result } = await verifyWebchat(base, minted.token, 'pod-multi')
     expect(result.ok).toBe(true)
     expect(result.participants).toEqual([
-      { agentId: AGENT, daemonId: DAEMON, primary: true },
-      { agentId: AGENT_B, daemonId: DAEMON }
+      { agentId: AGENT, daemonId: DAEMON, primary: true, callerRole: 'editor' },
+      { agentId: AGENT_B, daemonId: DAEMON, callerRole: 'editor' }
     ])
     expect(result.remoteMcp).toBeUndefined()
     ws.close()
@@ -727,8 +747,8 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     // rc/verify resolves the same member for both participants.
     const { ws, result } = await verifyWebchat(base, minted.token, 'pod-pool-multi')
     expect(result.participants).toEqual([
-      { agentId: AGENT, daemonId: DAEMON, primary: true },
-      { agentId: AGENT_B, daemonId: DAEMON }
+      { agentId: AGENT, daemonId: DAEMON, primary: true, callerRole: 'editor' },
+      { agentId: AGENT_B, daemonId: DAEMON, callerRole: 'editor' }
     ])
     ws.close()
     memberWs.close()
@@ -1630,6 +1650,35 @@ describe('rc/verify(agent-chat-key)', () => {
       ok: false,
       reason: AGENT_CHAT_KEY_REFUSAL.agentNotFound
     })
+    ws.close()
+    daemonWs.close()
+  })
+
+  it("lets the key's owner decide its conversation's approvals where people in chat may approve, even one who only views", async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await addApi(AGENT)
+    const chat = await mintKey(app, { permission: 'agent:chat', agents: [AGENT] })
+    const full = await mintKey(app, {})
+    const level = (chatActions: string) =>
+      prisma.agent.update({ where: { id: AGENT }, data: { runtimeOverrides: { chatActions } } })
+    const { ws } = await openRelay(base, 'pod-key-level', 'wss://pod-key-level.example.test')
+
+    await level('talk')
+    expect((await verifyKey(ws, chat, AGENT)).callerApproves).toBe(false)
+    for (const at of ['approve', 'settings']) {
+      await level(at)
+      expect((await verifyKey(ws, chat, AGENT)).callerApproves).toBe(true)
+    }
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
+      data: { role: 'viewer' }
+    })
+    expect((await verifyKey(ws, chat, AGENT)).callerApproves).toBe(true)
+    // At talk a viewer answers nothing, whatever the key.
+    await level('talk')
+    expect((await verifyKey(ws, full, AGENT)).callerApproves).toBe(false)
     ws.close()
     daemonWs.close()
   })

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import {
   ErrorCode,
   RD_ACK_NOT_HOLDER,
+  type ChatCallerRole,
   type RdAck,
   type RdMsgWebchat,
   type RelayWebchatOp,
@@ -50,6 +51,24 @@ export interface WebchatParticipant {
   primary?: boolean
   /** This participant's own continuation target, set on a hook conversation's peers (#2500); wins over the binding's. */
   targetSessionId?: string
+  /** Who the verified user is to this participant: its editor, the conversation's owner, or another participant. */
+  callerRole?: ChatCallerRole
+}
+
+/** A turn or runtime change carries the author's verified role for its participant, never one the op arrived with. */
+function withCallerRole(payload: RelayWebchatOp, participant: WebchatParticipant | undefined): RelayWebchatOp {
+  switch (payload.op) {
+    case 'turn':
+    case 'set_model':
+    case 'set_effort':
+    case 'set_permission_mode':
+    case 'set_fast': {
+      const { callerRole: _unverified, ...op } = payload
+      return { ...op, ...(participant?.callerRole ? { callerRole: participant.callerRole } : {}) } as RelayWebchatOp
+    }
+    default:
+      return payload
+  }
 }
 
 /** The verdict-bound fields every rd/msg of one conversation carries; never browser or request input. */
@@ -105,7 +124,7 @@ export function webchatRdMsg(
     ...(targetSessionId ? { targetSessionId } : {}),
     ...(participant?.recordedDaemonId ? { recordedDaemonId: participant.recordedDaemonId } : {}),
     ...(binding.remoteMcp ? { remoteMcp: binding.remoteMcp } : {}),
-    payload
+    payload: withCallerRole(payload, participant)
   }
 }
 

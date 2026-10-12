@@ -8,7 +8,8 @@ import {
   type RcWebchatParticipant,
   type RegisterReq
 } from '@agentconnect.md/protocol'
-import { canView } from '../authorization/policy.js'
+import { canEdit, canView } from '../authorization/policy.js'
+import { chatCallerRole } from '../domain/chat-actions.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { servesSessionContent } from '../domain/session-content.js'
 import type { MemberSetRepo, OrgMemberRole, SessionContentStore, Shareable, ViewCtx } from '../persistence/ports.js'
@@ -31,7 +32,8 @@ export interface WebchatVerificationDeps {
       orgId: OrgId,
       conversationId: string
     ): Promise<Array<{ agentId: AgentId; role: 'primary' | 'member'; currentSessionId?: string | null }>>
-    target(conversationId: string): Promise<{ targetSessionId: string | null } | null>
+    /** Its continuation target, and who created it, absent where unknown. */
+    target(conversationId: string): Promise<{ targetSessionId: string | null; ownerUserId?: string } | null>
   }
   /** The primary agent's enabled chat APIs, which the relay's chat API is confined to (shared-bot-relay.md §10.4). */
   apiEntries: { listForAgent(agentId: AgentId): Promise<Array<{ protocol: string }>> }
@@ -101,6 +103,9 @@ export function webchatBinding(
     if (!conversation) return { ok: false, reason: 'unknown conversation' }
     const targetSessionId = conversation.targetSessionId
     const apiProtocols = (await deps.apiEntries.listForAgent(AgentId(claims.agentId))).map((e) => e.protocol)
+    // Who the user is to each participant, as "What people can do in chat" reads it; a continued session is never this conversation's own.
+    const owner = targetSessionId === null && conversation.ownerUserId === claims.userId
+    const roleFor = (member: Shareable | null) => chatCallerRole(member !== null && canEdit(member, opts.viewer), owner)
 
     const verifiedBase = {
       ok: true,
@@ -151,7 +156,10 @@ export function webchatBinding(
           : []
       return {
         ...verifiedBase,
-        participants: [{ agentId: claims.agentId, daemonId: agentDaemonId, primary: true }, ...peers],
+        participants: [
+          { agentId: claims.agentId, daemonId: agentDaemonId, primary: true, callerRole: roleFor(agent) },
+          ...peers
+        ],
         targetSessionId
       }
     }
@@ -174,7 +182,8 @@ export function webchatBinding(
           agentId: p.agentId,
           daemonId: agentDaemonId,
           ...(await recordedBy(p.currentSessionId)),
-          primary: true
+          primary: true,
+          callerRole: roleFor(agent)
         })
         continue
       }
@@ -188,11 +197,12 @@ export function webchatBinding(
         agentId: p.agentId,
         ...(memberDaemon?.state === 'READY' && memberDaemonId ? { daemonId: memberDaemonId } : {}),
         ...(await recordedBy(p.currentSessionId)),
-        ...(p.role === 'primary' ? { primary: true } : {})
+        ...(p.role === 'primary' ? { primary: true } : {}),
+        callerRole: roleFor(member && member.orgId === claims.orgId ? member : null)
       })
     }
     if (participants.length === 0) {
-      participants.push({ agentId: claims.agentId, daemonId: agentDaemonId, primary: true })
+      participants.push({ agentId: claims.agentId, daemonId: agentDaemonId, primary: true, callerRole: roleFor(agent) })
     }
 
     const verified: RcVerifyResult = { ...verifiedBase, participants }
@@ -252,7 +262,12 @@ async function hookConversationPeers(
     }
     const sharedStoreMembers = await deps.memberSets.sharedStoreMemberIdsOf(peer)
     if (!servesSessionContent({ recordedDaemonId: peer.daemonId, sharedStoreMembers }, daemonId)) continue
-    peers.push({ agentId: peer.agentId, daemonId, targetSessionId: claimed.sessionId })
+    peers.push({
+      agentId: peer.agentId,
+      daemonId,
+      targetSessionId: claimed.sessionId,
+      callerRole: chatCallerRole(canEdit(agent, viewer), false)
+    })
   }
   return peers
 }

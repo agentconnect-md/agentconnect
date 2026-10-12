@@ -343,6 +343,10 @@ export type ManagedSkillEntry = z.infer<typeof ManagedSkillEntry>
 export const ChatActions = z.enum(['talk', 'approve', 'settings'])
 export type ChatActions = z.infer<typeof ChatActions>
 
+/** Who a webchat author is to the agent, as the Control Plane verified it: one of its editors, the conversation's owner, or anyone else who may continue it. */
+export const ChatCallerRole = z.enum(['editor', 'owner', 'participant'])
+export type ChatCallerRole = z.infer<typeof ChatCallerRole>
+
 /**
  * The editable agent definition the CP owns and the daemon needs to run it:
  * prompt + runtime selection. The launch protocol carries this config and the
@@ -699,9 +703,21 @@ export const AgentPermissionRequestRecord = z.object({
 })
 export type AgentPermissionRequestRecord = z.infer<typeof AgentPermissionRequestRecord>
 
+/** Daemon narrows the approval queue to one conversation and refuses a decision bound to it for another's request; an older daemon would answer for every request of the agent. */
+export const CONVERSATION_PERMISSION_REQUESTS_FEATURE = 'conversation-permission-requests-v1'
+
+/** A decision bound to a conversation named a request of another conversation. */
+export const PERMISSION_REQUEST_NOT_IN_CONVERSATION = 'permission request is not in this conversation'
+
+/** A conversation by its session's outward id: its own requests and its background sub-sessions'. */
+export const AgentPermissionConversation = z.object({ sessionId: z.string().min(1).max(512) })
+export type AgentPermissionConversation = z.infer<typeof AgentPermissionConversation>
+
 export const AgentPermissionRequestList = z.object({
   agentId: z.string().uuid(),
-  limit: z.number().int().min(1).max(100).default(50)
+  limit: z.number().int().min(1).max(100).default(50),
+  // Only this conversation's requests; an older daemon ignores it.
+  conversation: AgentPermissionConversation.optional()
 })
 export type AgentPermissionRequestList = z.infer<typeof AgentPermissionRequestList>
 
@@ -719,7 +735,9 @@ export const AgentPermissionDecision = z.object({
   optionId: z.string().min(1).max(AGENT_PERMISSION_OPTION_ID_MAX).optional(),
   // CP-stamped decider (slack-approval-dm.md §6.2) — never client-supplied.
   decidedBy: z.string().min(1).optional(),
-  decidedByName: z.string().min(1).optional()
+  decidedByName: z.string().min(1).optional(),
+  // Decided from this conversation: a request of another is refused with PERMISSION_REQUEST_NOT_IN_CONVERSATION.
+  conversation: AgentPermissionConversation.optional()
 })
 export type AgentPermissionDecision = z.infer<typeof AgentPermissionDecision>
 

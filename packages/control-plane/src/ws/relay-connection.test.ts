@@ -222,7 +222,7 @@ function buildWebchatVerifier(
     establish?: WebchatVerificationDeps['remoteMcp']['establish']
     /** Conversation row (null = unknown conversation). Default: an ordinary
      *  (untargeted) row, preserving the legacy verification shape. */
-    conversationRow?: { targetSessionId: string | null } | null
+    conversationRow?: { targetSessionId: string | null; ownerUserId?: string } | null
     /** Target session row for the continuation branch. */
     sessionById?: Record<string, Awaited<ReturnType<WebchatVerificationDeps['sessions']['getUnscoped']>>>
     /** Members of a shared-store set, by set id (default: none). */
@@ -1067,8 +1067,14 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     const result = await h.verifier('browser-credential')
 
     expect(result.participants).toEqual([
-      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, recordedDaemonId: RECORDER, primary: true },
-      { agentId: MEMBER_AGENT_ID, daemonId: MEMBER_DAEMON_ID }
+      {
+        agentId: WEBCHAT_AGENT_ID,
+        daemonId: WEBCHAT_DAEMON_ID,
+        recordedDaemonId: RECORDER,
+        primary: true,
+        callerRole: 'editor'
+      },
+      { agentId: MEMBER_AGENT_ID, daemonId: MEMBER_DAEMON_ID, callerRole: 'editor' }
     ])
   })
 
@@ -1091,8 +1097,8 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
 
     expect(result.ok).toBe(true)
     expect(result.participants).toEqual([
-      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
-      { agentId: MEMBER_AGENT_ID, daemonId: MEMBER_DAEMON_ID }
+      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true, callerRole: 'editor' },
+      { agentId: MEMBER_AGENT_ID, daemonId: MEMBER_DAEMON_ID, callerRole: 'editor' }
     ])
     // Delegated administration is a single-participant privilege: even though
     // the primary's daemon advertises the remote-MCP capability, no
@@ -1120,8 +1126,8 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
 
     expect(result.ok).toBe(true)
     expect(result.participants).toEqual([
-      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
-      { agentId: MEMBER_AGENT_ID } // no daemonId ⇒ the relay refuses turns targeting it
+      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true, callerRole: 'editor' },
+      { agentId: MEMBER_AGENT_ID, callerRole: 'editor' } // no daemonId ⇒ the relay refuses turns targeting it
     ])
   })
 
@@ -1144,8 +1150,8 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
 
     expect(result.ok).toBe(true)
     expect(result.participants).toEqual([
-      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
-      { agentId: MEMBER_AGENT_ID }
+      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true, callerRole: 'editor' },
+      { agentId: MEMBER_AGENT_ID, callerRole: 'participant' }
     ])
 
     const vanished = buildWebchatVerifier({
@@ -1156,8 +1162,8 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     const gone = await vanished.verifier('browser-credential')
     expect(gone.ok).toBe(true)
     expect(gone.participants).toEqual([
-      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
-      { agentId: MEMBER_AGENT_ID }
+      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true, callerRole: 'editor' },
+      { agentId: MEMBER_AGENT_ID, callerRole: 'participant' }
     ])
   })
 })
@@ -1195,6 +1201,46 @@ describe('webchat verification re-reads the minter’s access on every dial', ()
       agentById: { [MEMBER_AGENT_ID]: agent(MEMBER_AGENT_ID, ['user-2']) }
     })
     await expect(h.verifier('t')).resolves.toEqual({ ok: false, reason: 'access revoked' })
+  })
+})
+
+describe('webchat verification names who the user is to each participant', () => {
+  const MEMBER_AGENT_ID = '77777777-7777-4777-8777-777777777777'
+  const placed = (id: string, over: Record<string, unknown> = {}) => ({
+    id,
+    orgId: 'org-1',
+    placementKind: 'daemon' as const,
+    setId: null,
+    daemonId: WEBCHAT_DAEMON_ID,
+    ...over
+  })
+  const roleOf = async (over: Parameters<typeof buildWebchatVerifier>[0]) =>
+    (await buildWebchatVerifier(over).verifier('t')).participants?.map((p) => p.callerRole)
+
+  it('an editor of the agent, the owner who only views it, and anyone else who holds the token', async () => {
+    const mine = { targetSessionId: null, ownerUserId: 'user-1' }
+    expect(await roleOf({ conversationRow: mine })).toEqual(['editor'])
+    expect(await roleOf({ conversationRow: mine, role: 'viewer' })).toEqual(['owner'])
+    expect(await roleOf({ conversationRow: { targetSessionId: null, ownerUserId: 'user-2' }, role: 'viewer' })).toEqual(
+      ['participant']
+    )
+  })
+
+  it('names the owner of a multi-agent conversation to every participant, and leaves a vanished one unedited', async () => {
+    const roster = [
+      { agentId: AgentId(WEBCHAT_AGENT_ID), role: 'primary' as const },
+      { agentId: AgentId(MEMBER_AGENT_ID), role: 'member' as const }
+    ]
+    const shared = { [MEMBER_AGENT_ID]: placed(MEMBER_AGENT_ID, { visibility: 'restricted', sharedWith: ['user-1'] }) }
+    const mine = { targetSessionId: null, ownerUserId: 'user-1' }
+    expect(await roleOf({ participants: roster, role: 'viewer', conversationRow: mine, agentById: shared })).toEqual([
+      'owner',
+      'owner'
+    ])
+    const theirs = { targetSessionId: null, ownerUserId: 'user-2' }
+    expect(
+      await roleOf({ participants: roster, conversationRow: theirs, agentById: { [MEMBER_AGENT_ID]: null } })
+    ).toEqual(['editor', 'participant'])
   })
 })
 
@@ -1365,7 +1411,9 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
         }
       )
       const result = await h.verifier('t')
-      expect(result.participants).toEqual([{ agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true }])
+      expect(result.participants).toEqual([
+        { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true, callerRole: 'editor' }
+      ])
     })
 
     it('keeps a private peer whose owner mint proved', async () => {

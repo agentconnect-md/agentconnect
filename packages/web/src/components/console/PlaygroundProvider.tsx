@@ -1588,6 +1588,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 post?: WebchatPost
                 initiator?: string
                 update?: WebchatImageUpdate
+                refused?: { op?: string; agentId?: string; reason?: string }
               }
               try {
                 m = JSON.parse(String(e.data))
@@ -1818,6 +1819,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 }
               } else if (m.type === 'ack' && m.ack?.accepted === false) {
                 rejectLane(m.ack.agentId, m.ack.turnId, m.ack.reason, m.ack.detail)
+              } else if (m.type === 'refused' && m.refused?.reason) {
+                // A runtime change the agent refused: only this browser is told, and the reason names who may make it.
+                pushStep(id, { kind: 'notice', text: `🔒 ${m.refused.reason}`, standing: true })
               } else if (m.type === 'error') {
                 // An error frame with nothing in flight (e.g. an older relay answering
                 // the attach probe with 'unrecognized frame') must not push a warning

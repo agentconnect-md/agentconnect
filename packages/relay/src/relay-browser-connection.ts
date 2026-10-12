@@ -470,6 +470,9 @@ export class RelayBrowserConnection implements ChatSink {
         this.send({ type: 'resumed', ack: browserAck })
       } else if (kind === 'attach') {
         this.send({ type: 'attached', ack: browserAck })
+      } else if (!ack.accepted && ack.reason && kind.startsWith('set_')) {
+        // A refused runtime change says why to this browser alone, so its author learns who may make it.
+        this.send({ type: 'refused', refused: { op: kind, agentId, reason: ack.reason } })
       }
     } catch (error) {
       // Lower layers may include the outbound frame in an error. Do not let the opaque

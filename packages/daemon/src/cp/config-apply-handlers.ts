@@ -52,7 +52,7 @@ import {
   type AgentMoveStageMetadata
 } from '../agents/write-agent.js'
 import type { LocalStore } from '../store/local-store.js'
-import { isPatrolCoordinate, isSubsessionCoordinate } from '../session/subsession-coordinate.js'
+import { inConversation, requestConversation } from '../permissions/request-conversation.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { WorkspaceManager, PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
 import { unauthorizedWorkspaceGitOrigin } from '../workspace/git-origin-policy.js'
@@ -791,27 +791,26 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
 
 export async function listAgentPermissionRequests(
   host: ConfigApplyCoreHost & Pick<ConfigApplyControlHost, 'pendingPermissionOptions'>,
-  { agentId, limit }: AgentPermissionRequestList
+  { agentId, limit, conversation }: AgentPermissionRequestList
 ): Promise<AgentPermissionRequestPage> {
+  const listed = await Promise.all(
+    (await host.store().listPermissionRequests(agentId, limit)).map(async (request) => ({
+      request,
+      // The console scopes approvals to the session it shows, by outward id (§1.1), and a sub-session's to its conversation too (assistant-mode.md §5.6).
+      where: await requestConversation(host.store(), request.agentId, request.sessionId, host.clock().now())
+    }))
+  )
   return {
     agentId,
-    requests: await Promise.all(
-      (await host.store().listPermissionRequests(agentId, limit)).map(async (request) => {
+    requests: listed
+      .filter(({ where }) => !conversation || inConversation(where, conversation.sessionId))
+      .map(({ request, where }) => {
         const options =
           request.status === 'pending' ? host.pendingPermissionOptions(request.agentId, request.id) : undefined
-        const slot = await host.store().getSessionByAcpIdForAgent(request.agentId, request.sessionId)
-        // A background sub-session's request is shown in the conversation it belongs to as well (assistant-mode.md §5.6).
-        const parentSessionId =
-          slot && isSubsessionCoordinate(slot.thread) && !isPatrolCoordinate(slot.thread)
-            ? (await host.store().assistantSubsessions.get(request.agentId, slot.key))?.parentSessionId
-            : undefined
         return {
           id: request.id,
           agentId: request.agentId,
-          // The console scopes approvals to the session it is showing, by the outward id it routed on (§1.1).
-          sessionId: slot
-            ? await host.store().ensureOutwardSessionId(slot.key, request.agentId, host.clock().now())
-            : request.sessionId,
+          sessionId: where.sessionId,
           createdAt: new Date(request.createdAt).toISOString(),
           requesterId: request.requesterId,
           requesterName: request.requesterName,
@@ -821,10 +820,9 @@ export async function listAgentPermissionRequests(
           resolvedBy: request.resolvedBy ?? null,
           resolvedByName: request.resolvedByName ?? null,
           ...(options ? { options } : {}),
-          ...(parentSessionId ? { parentSessionId } : {})
+          ...(where.parentSessionId ? { parentSessionId: where.parentSessionId } : {})
         }
       })
-    )
   }
 }
 

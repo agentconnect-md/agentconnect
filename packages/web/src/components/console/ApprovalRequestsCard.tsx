@@ -8,8 +8,10 @@ import {
   ApiError,
   decideAgentPermissionRequest,
   decideAssistantConversationProposal,
+  decideSessionPermissionRequest,
   fetchAgentPermissionRequests,
   fetchAssistantConversationProposals,
+  fetchSessionPermissionRequests,
   type AgentPermissionOptionDto,
   type AgentPermissionRequestDto,
   type AssistantConversationProposalDto
@@ -36,6 +38,7 @@ export function ApprovalRequestsCard({
   bare = false,
   className = '',
   permissions = true,
+  conversationPermissions = false,
   proposals = false
 }: {
   agentId: string
@@ -47,6 +50,8 @@ export function ApprovalRequestsCard({
   className?: string
   /** The agent's permission requests, which only its editors may answer. */
   permissions?: boolean
+  /** Read and decide them through the conversation instead, as its owner may where people in chat approve; needs `sessionId`. */
+  conversationPermissions?: boolean
   /** Also this webchat conversation's proposals (assistant-mode.md §5.10), for whoever may continue it and editors; needs `sessionId`. */
   proposals?: boolean
 }) {
@@ -54,15 +59,26 @@ export function ApprovalRequestsCard({
   const ta = useTranslations('Agents.detail.activity')
   const { activeOrg, orgPath } = useOrgs()
   const notifications = useOptionalNotifications()
-  const requestsKey = MOCK_MODE || !permissions ? null : consoleKeys.agentPermissionRequests(activeOrg?.id, agentId)
+  const conversation = conversationPermissions ? sessionId : undefined
+  const requestsKey =
+    MOCK_MODE || !permissions
+      ? null
+      : conversation
+        ? consoleKeys.sessionPermissionRequests(activeOrg?.id, conversation)
+        : consoleKeys.agentPermissionRequests(activeOrg?.id, agentId)
   const {
     data: allRequests,
     error,
     isLoading,
     mutate
-  } = useSWR<AgentPermissionRequestDto[]>(requestsKey, ([, , , id]) => fetchAgentPermissionRequests(id as string), {
-    refreshInterval: 3_000
-  })
+  } = useSWR<AgentPermissionRequestDto[]>(
+    requestsKey,
+    ([, , resource, id]) =>
+      resource === 'session-permission-requests'
+        ? fetchSessionPermissionRequests(id as string)
+        : fetchAgentPermissionRequests(id as string),
+    { refreshInterval: 3_000 }
+  )
   // SWR stops polling an errored key: a refusal ends it, the console's retry resumes it after a failed read.
   const proposalsKey =
     MOCK_MODE || !proposals || !sessionId
@@ -119,7 +135,8 @@ export function ApprovalRequestsCard({
     setBusy(`${request.id}:${optionId ?? decision}`)
     setDecisionError(null)
     try {
-      await decideAgentPermissionRequest(agentId, request.id, decision, optionId)
+      if (conversation) await decideSessionPermissionRequest(conversation, request.id, decision, optionId)
+      else await decideAgentPermissionRequest(agentId, request.id, decision, optionId)
       // A decision made here needs no bell item to say so (slack-approval-dm.md §7).
       if (request.sessionId) notifications?.markSourceRead(approvalSourceKey(request.sessionId))
       void mutate(

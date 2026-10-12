@@ -2661,6 +2661,7 @@
         "lowerLatency": "更低延迟",
         "imageBinaryMissing": "镜像中未安装此运行时",
         "readOnly": "当前聊天不允许修改 Runtime。",
+        "readOnlyOwner": "只有 Agent 的编辑者或此对话的所有者可以修改 Runtime。",
         "model": "模型",
         "decision": "Decision",
         "fallback": "兜底",

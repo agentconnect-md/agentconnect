@@ -42,6 +42,7 @@ import { codeHostDecisionRoutingRoutes } from './routes/code-host-decision-routi
 import { decisionRoutingEvaluationRoutes } from './routes/decision-routing-evaluations.js'
 import { agentModelEvaluationRoutes } from './routes/agent-model-evaluations.js'
 import { agentAssistantActivityRoutes } from './routes/agent-assistant-activity.js'
+import { sessionPermissionRequestRoutes } from './routes/session-permission-requests.js'
 import { decisionRoutingPreviewRoutes } from './routes/decision-routing-preview.js'
 import { integrationChannelDecisionRoutes } from './routes/integration-channel-decisions.js'
 import { providerKeyRoutes } from './routes/provider-keys.js'
@@ -384,6 +385,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(hookRoutes(deps))
           await scope.register(trustedActorRoutes(deps))
           await scope.register(sessionRoutes(deps))
+          await scope.register(sessionPermissionRequestRoutes(deps))
           await scope.register(streamRoutes(deps))
           await scope.register(githubRoutes(deps))
           await scope.register(gitlabRoutes(deps))

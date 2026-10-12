@@ -638,6 +638,8 @@ export interface SessionDetailDto {
    *  §6.5): whether THIS caller may continue the session from the console
    *  composer. Absent on a CP that predates the feature (⇒ read-only). */
   canContinue?: boolean | null
+  /** Whether THIS caller owns this webchat conversation; absent on an older Control Plane. */
+  ownsConversation?: boolean | null
   continuationUnavailableReason?:
     'unauthorized' | 'content_purged' | 'unsupported_platform' | 'agent_moved' | 'daemon_offline' | 'unavailable' | null
   externalProvider?: string | null
@@ -3841,6 +3843,27 @@ export async function decideAgentPermissionRequest(
 ): Promise<void> {
   await apiPost<{ ok: true }>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/permission-requests/${encodeURIComponent(requestId)}/decision`,
+    optionId ? { decision, optionId } : { decision }
+  )
+}
+
+/** One webchat conversation's requests and its sub-sessions', for its owner where people in chat may approve, and for editors. */
+export async function fetchSessionPermissionRequests(sessionId: string): Promise<AgentPermissionRequestDto[]> {
+  const page = await apiGet<{ requests: AgentPermissionRequestDto[] }>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/permission-requests`
+  )
+  return page.requests
+}
+
+/** Decide one of a conversation's requests, bound to that conversation; the first answer from any surface wins. */
+export async function decideSessionPermissionRequest(
+  sessionId: string,
+  requestId: string,
+  decision: 'allow' | 'deny',
+  optionId?: string
+): Promise<void> {
+  await apiPost<{ ok: true }>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/permission-requests/${encodeURIComponent(requestId)}/decision`,
     optionId ? { decision, optionId } : { decision }
   )
 }

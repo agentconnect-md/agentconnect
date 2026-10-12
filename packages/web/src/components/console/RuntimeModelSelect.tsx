@@ -103,7 +103,8 @@ export function RuntimeModelSelect({
   decision,
   allowRuntimeOnly = false,
   readsImage = false,
-  readOnly = false
+  readOnly = false,
+  readOnlyNote
 }: {
   value: DecisionRuntimeTarget
   onChange(value: DecisionRuntimeTarget): void
@@ -122,6 +123,8 @@ export function RuntimeModelSelect({
   /** Whether the agent's strategy starts the image's runtime install, so a profile's image-binary warning applies. */
   readsImage?: boolean
   readOnly?: boolean
+  /** Who may change it instead, when read-only says more than that changes are disabled here. */
+  readOnlyNote?: string
   decision?: RuntimeDecisionChoice
 }) {
   const t = useTranslations('Agents.dialog.runtimeModel')
@@ -340,7 +343,7 @@ export function RuntimeModelSelect({
         readOnly ? (
           <div className="flex items-center gap-2 px-3 py-[10px] font-sans text-[12px] leading-normal text-(--text-secondary)">
             <Icon name="lock" size={13} className="flex-none text-(--text-tertiary)" />
-            {t('readOnly')}
+            {readOnlyNote ?? t('readOnly')}
           </div>
         ) : (
           <div>

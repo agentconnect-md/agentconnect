@@ -1828,9 +1828,8 @@ export interface WebchatConversationRepo {
     binding: Omit<WebchatConversationBinding, 'conversationId'>,
     targetSessionId: string
   ): Promise<{ conversationId: string }>
-  /** The conversation's continuation target (null target = ordinary webchat
-   *  conversation; null return = unknown/foreign conversation). */
-  target(conversationId: string): Promise<{ targetSessionId: string | null } | null>
+  /** The conversation's continuation target (null for an ordinary conversation) and its owner; null for an unknown or foreign conversation. */
+  target(conversationId: string): Promise<{ targetSessionId: string | null; ownerUserId: string } | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -22,13 +22,20 @@ export function chatSettingsAllowed(agent: Pick<Agent, 'chatActions'> | undefine
   return agent?.chatActions === 'settings'
 }
 
-/** Playground can stage settings for its first turn; other chat surfaces need a live session. */
+/** Tool-call approvals are answered from chat when people there may also approve them. */
+export function chatApprovalsAllowed(agent: Pick<Agent, 'chatActions'> | undefined): boolean {
+  return agent?.chatActions === 'approve' || agent?.chatActions === 'settings'
+}
+
+/** Playground can stage settings for its first turn; other chat surfaces need a live session. Only the agent's editors and the conversation's owner change them; an unknown owner (an older Control Plane, or a conversation not yet sent) keeps the controls. */
 export function sessionRuntimeChangesEnabled(
-  agent: Pick<Agent, 'chatActions'> | undefined,
-  session: Pick<Session, 'platform' | 'realSessionId'>
+  agent: (Pick<Agent, 'chatActions'> & { canEdit?: boolean }) | undefined,
+  session: Pick<Session, 'platform' | 'realSessionId'>,
+  ownsConversation?: boolean | null
 ): boolean {
   return (
     chatSettingsAllowed(agent) &&
+    (agent?.canEdit === true || ownsConversation !== false) &&
     (session.platform === 'playground' || session.platform === 'webchat' || !!session.realSessionId)
   )
 }
