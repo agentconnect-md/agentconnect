@@ -52,6 +52,54 @@ This convention governs human Console access only. The independently configured
 agent-to-agent inbound and outbound policies may intentionally use **Selected**
 with an empty peer list to deny peer discovery or calls.
 
+## What people can do in chat
+
+People choose how they use the product, and no choice may make it harder to use than it
+must be. The product serves the experience first, and applies console permissions only where
+it can tell who someone is.
+
+Each agent has one setting, **What people can do in chat**. Each level includes the one
+before it:
+
+| Level                                               | People in a conversation may                                                                                                                                     |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Only talk to the agent**                          | Talk to the agent. A tool call that needs approval goes to the agent's editors, in the console or, where the platform supports it, in their own direct messages. |
+| **Also approve tool calls** (a new agent's default) | Also answer a tool call that the agent's permission policy asks about: allow it once, always allow that tool, or deny it.                                        |
+| **Also approve tool calls and change settings**     | Also change the agent's runtime settings from chat: model, effort, permission mode and fast mode.                                                                |
+
+Who counts as "people" depends on whether the product can tell who someone is:
+
+- **A platform whose permissions are synced with the console** (for example Slack with
+  session access sync on): only people whose console permissions allow the action, that is,
+  the agent's editors. Anyone else is told who can answer and where.
+- **A platform without that sync**: anyone who can talk to the agent in that conversation.
+- **Webchat** always knows who someone is: the agent's editors, and at the second and third
+  levels also the conversation's owner.
+
+Every level keeps these rules:
+
+- The setting never opens what a conversation keeps closed. A conversation switched off, or
+  admitted per message by a Decision, stays closed, and a bot never answers.
+- In a conversation shared with another organization, an approval goes to an internal member
+  instead, as an assistant-mode draft does.
+- On a platform with no interactive cards, the conversation gets a notice and the approval is
+  answered in the console.
+- The first answer from any surface decides, and the request is rewritten to say who answered
+  and how.
+- A refusal names who can answer instead, or where to go.
+- The setting does not change the agent's permission policy. Which tool calls need approval is
+  set in the console, and an agent that allows every tool call never asks.
+
+Two things are outside this setting:
+
+- An assistant-mode patrol's proposal. Approving it is the same as asking the agent there, so
+  whoever could ask there may approve it ("Assistant-mode proposals").
+- Stopping a turn or a sub-session, which follows the `!stop` sender rule.
+
+Existing agents keep their behavior. "Allow runtime changes in chat" switched off maps to the
+first level, and switched on maps to the third. On a platform whose permissions are synced,
+the third level narrows who may act to the agent's editors, as the rule above says.
+
 ## Public platform app descriptions
 
 Slack, Feishu/Lark, and Discord app or bot profiles use the fixed public description
