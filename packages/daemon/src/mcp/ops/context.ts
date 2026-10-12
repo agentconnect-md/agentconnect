@@ -92,6 +92,8 @@ export interface MessageGateway {
   /** Materialize a provider-native thread from a root message when that platform
    *  requires one before the post can own a follow-up session (Discord). */
   createThread?(channel: string, messageId: string, name: string): Promise<string | undefined>
+  /** The provider thread a just-posted root message landed in, where it is not the message id itself (Google Chat). */
+  threadOfPost?(postId: string): string | undefined
   /** `user` is the counterpart of a 1:1 direct conversation, where the platform names one. */
   getChannelInfo(
     channel: string

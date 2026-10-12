@@ -348,6 +348,40 @@ describe('creates and patches', () => {
       messageReplyOption: 'REPLY_MESSAGE_OR_FAIL'
     })
   })
+
+  it('remembers the thread a root post landed in, which its message name does not say', async () => {
+    const { conn } = harness(() =>
+      reply(200, { name: `${SPACE}/messages/T.root`, sender: { name: APP_USER }, thread: { name: THREAD } })
+    )
+    const name = await conn.postMessage(SPACE, 'hi')
+    expect(conn.threadOfPost(name!)).toBe(THREAD)
+    expect(conn.threadOfPost(`${SPACE}/messages/other`)).toBeUndefined()
+  })
+
+  it('posts a send-tool message rendered as a reply is, under a fresh client id, and answers its name', async () => {
+    const { conn, chatCalls } = harness(() => created(`${SPACE}/messages/T.sent`))
+    const name = await conn.postMessage(SPACE, '# Done\nSMS sent.', THREAD)
+    expect(name).toBe(`${SPACE}/messages/T.sent`)
+    const call = chatCalls()[0]!
+    expect(Object.fromEntries(call.url.searchParams)).toEqual({
+      messageId: 'client-req-fixed',
+      requestId: 'client-req-fixed',
+      messageReplyOption: 'REPLY_MESSAGE_OR_FAIL'
+    })
+    expect(JSON.parse(call.body!)).toEqual({
+      text: '**Done**\nSMS sent.',
+      markupSyntax: GOOGLE_CHAT_MARKUP,
+      thread: { name: THREAD }
+    })
+  })
+
+  it('posts a send-tool message into a DM without a thread, and sends nothing for blank text', async () => {
+    const { conn, chatCalls } = harness(() => created(`${DM}/messages/x.y`))
+    await conn.postMessage(DM, 'hello')
+    expect(chatCalls()[0]!.url.searchParams.has('messageReplyOption')).toBe(false)
+    expect(await conn.postMessage(DM, '  \n')).toBeUndefined()
+    expect(chatCalls()).toHaveLength(1)
+  })
 })
 
 describe('an ambiguous create reconciles by client id', () => {
@@ -365,6 +399,23 @@ describe('an ambiguous create reconciles by client id', () => {
     expect(posts).toBe(1)
     const read = chatCalls().find((c) => c.method === 'GET')!
     expect(read.url.pathname).toBe(`/v1/${SPACE}/messages/client-abc`)
+  })
+
+  it('keeps the thread a reconciled send-tool post landed in, so its session and later parts follow it', async () => {
+    const posts: Call[] = []
+    const { conn } = harness((call) => {
+      if (call.method === 'POST') {
+        posts.push(call)
+        if (posts.length === 1) throw new Error('socket hang up')
+        return created(`${SPACE}/messages/T.part`)
+      }
+      return reply(200, { name: `${SPACE}/messages/T.first`, text: 'x', thread: { name: THREAD } })
+    })
+    const name = await conn.postMessage(SPACE, `${'a'.repeat(20_000)}\n\n${'b'.repeat(20_000)}`)
+    expect(name).toBe(`${SPACE}/messages/T.first`)
+    expect(conn.threadOfPost(name!)).toBe(THREAD)
+    // The second part follows the first into the thread the read-back named.
+    expect(JSON.parse(posts[1]!.body!).thread).toEqual({ name: THREAD })
   })
 
   it('re-sends the identical request when the read-back proves nothing landed', async () => {

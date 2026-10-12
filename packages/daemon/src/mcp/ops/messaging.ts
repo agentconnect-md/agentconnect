@@ -459,7 +459,7 @@ export async function settlePost(
       ? threadKeyForUpdate(platform, channel, updateThread)
       : providerPostId === undefined
         ? undefined
-        : threadKeyForPost(platform, channel, providerPostId, isDmTarget)
+        : threadKeyForPost(platform, channel, gw.threadOfPost?.(providerPostId) ?? providerPostId, isDmTarget)
   const postedThread =
     updateThread !== undefined
       ? canonicalPostThread
