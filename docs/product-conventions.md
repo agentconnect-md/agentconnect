@@ -959,11 +959,15 @@ one at a time: a decision's Apply to all reaches only the rooms already enabled.
 is the same wherever a room is enabled, including a decision started from the organization's
 Bots list.
 
-A room or group DM is external when the platform says people from outside the organization
-are in it. On Slack that is a Slack Connect conversation, read from the membership listing and
-from every event Slack delivers from the conversation, or a guest or a member of another
-organization joining it, found with one user lookup per join. The lookup is made only for an
-agent in assistant mode; no other agent changes. A share is lifted once Slack no longer
+A room or group DM is external when the platform says people from outside the organization are
+in it. On Slack that is a Slack Connect conversation, read from the membership listing and from
+every event Slack delivers from the conversation, or a guest or a member of another organization
+joining it, found with one user lookup per join. Before posting something no message from the
+conversation prompted, such as a scheduled run and its opening message, a report from background
+work, a reminder, a post allowed from another conversation or an approval card, the agent asks
+Slack whether the conversation is shared now, at most once a minute per conversation; when Slack
+cannot answer, the post waits for approval as in an external place. These lookups are made only
+for an agent in assistant mode; no other agent changes. A share is lifted once Slack no longer
 reports it; a guest or an outside member never is. When an enabled place turns external, the
 reply already in progress there is stopped before it can post; messages waiting behind it or
 arriving while it stops, and everything the agent knows, are kept, and those messages are then
@@ -999,7 +1003,8 @@ of post wait for an internal member's approval instead:
 - **A reply in an external place.** In a conversation the platform reports as shared with
   another organization (a Slack Connect channel), the reply is drafted, not posted. The
   conversation sees no working indicator, no streaming and no tool progress: only a reaction
-  on the message that started the turn, where the platform has reactions, and never text.
+  on the message that started the turn, where the platform has reactions, and never text. A
+  scheduled run's opening message there is drafted too.
   Other platform writes there are refused; reads are unchanged.
 - **A post to another place.** `sendMessage` to another channel, a direct message, or a thread
   elsewhere is drafted instead of sent, and only to a conversation where the agent is enabled;

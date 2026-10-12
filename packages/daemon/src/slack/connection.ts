@@ -2580,9 +2580,7 @@ export class SlackConnection implements PlatformConnection {
     return channel
   }
 
-  async getChannelInfo(
-    channel: string
-  ): Promise<{ id: string; name?: string; isIm?: boolean; isMpim?: boolean; isPrivate?: boolean; user?: string }> {
+  async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
     const res = await this.app.client.conversations.info({ channel })
     const c = res.channel ?? {}
     // `user` is the DM counterpart — only set on im ("D…") conversations. `is_mpim`
@@ -2594,7 +2592,8 @@ export class SlackConnection implements PlatformConnection {
       isIm: c.is_im,
       isMpim: c.is_mpim,
       isPrivate: c.is_private,
-      user: c.user
+      user: c.user,
+      externalReason: slackExternalReason(c)
     }
   }
 

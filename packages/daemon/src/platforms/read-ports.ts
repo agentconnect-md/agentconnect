@@ -125,6 +125,8 @@ export interface PlatformReadPorts {
   readonly publicChannelReach?: boolean
   /** `listMemberIds` names every current member of a conversation, so a person's membership may be decided from it. */
   readonly authoritativeMembers?: boolean
+  /** `getChannelInfo` says whether a conversation is shared with another organization now (`externalReason`). */
+  readonly sharedConversations?: boolean
   /** `createCanvas` / `readCanvas` / `updateCanvas`: a platform-hosted rich-text page. */
   readonly canvas?: boolean
   /** `listBookmarks` / `addBookmark` / `removeBookmark`: the platform pins links in a channel. */
@@ -167,6 +169,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       publicMessageSearch: true,
       publicChannelReach: true,
       authoritativeMembers: true,
+      sharedConversations: true,
       scheduledMessages: true,
       canvas: true,
       bookmarks: true,
@@ -269,6 +272,11 @@ export function reachesPublicChannelsOnly(platform: string): boolean {
 /** Does `platform`'s member listing name every current member? Undeclared ⇒ no, so membership is never decided from it. */
 export function membersAuthoritative(platform: string): boolean {
   return READ_PORTS.get(platform)?.authoritativeMembers === true
+}
+
+/** Does `platform`'s channel lookup report a share with another organization? Undeclared ⇒ no, so enabled means trusted there. */
+export function reportsSharedConversations(platform: string): boolean {
+  return READ_PORTS.get(platform)?.sharedConversations === true
 }
 
 /** The DM-capable platforms, rendered for an error message ("Slack",
