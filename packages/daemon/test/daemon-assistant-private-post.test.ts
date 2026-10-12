@@ -2,10 +2,15 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
+import { APPROVAL_DM_ROUTE_V1_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type SessionContext } from '../src/mcp/ops.js'
+import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { SUBSESSION_COORDINATE_PREFIX } from '../src/session/subsession-coordinate.js'
 import type { AssistantDraft } from '../src/store/assistant-drafts.js'
+import { sessionKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const INT = 'int-bot-a'
@@ -214,4 +219,112 @@ describe('a post from a DM to another conversation, in either mode', () => {
       }
     })
   }
+})
+
+describe('a drafted post outside assistant mode, on a turn no one typed', () => {
+  const toShared = {
+    platform: 'slack',
+    integrationId: INT,
+    channel: 'C_SHARED',
+    text: 'The launch moves to Monday.',
+    directMessage: false
+  }
+
+  /** A live turn the write rule resolves to a person, at `thread` in C1; it is not run, so it is removed before shutdown. */
+  function liveTurn(d: any, thread: string, msg: Partial<NormalizedMessage>) {
+    const scope: string = d.transportScopeForIntegrationIds([INT])
+    const key = sessionKey('slack', 'C1', thread, 'bot-a', scope)
+    d.activeGateEntries.set(key, {
+      msg: {
+        msgId: `m-${thread}`,
+        traceId: `t-${thread}`,
+        source: 'agent',
+        platform: 'slack',
+        channel: 'C1',
+        thread: TS,
+        sender: { id: 'bot-a', isBot: true },
+        text: 'go',
+        mentionedBots: [],
+        isDm: false,
+        ...msg
+      },
+      integrationId: INT
+    })
+    const ctx: SessionContext = {
+      agentId: 'bot-a',
+      platform: 'slack',
+      integrationId: INT,
+      transportScope: scope,
+      isDm: false,
+      channel: 'C1',
+      thread,
+      deliveryThread: TS,
+      tools: []
+    }
+    return { key, ctx }
+  }
+
+  it("cards a person-backed schedule's post to that person's own direct message", async () => {
+    const h = await boot(false, [])
+    const d = h.daemon as any
+    const approvalRoute = vi.fn(async (req: { requestId: string; consoleUserId?: string }) => ({
+      requestId: req.requestId,
+      ...(req.consoleUserId === 'user-editor'
+        ? { target: { integrationId: INT, teamId: 'T_FAKE_TEAM', userId: 'U_EDITOR', consoleUserId: 'user-editor' } }
+        : {})
+    }))
+    const cronId = randomUUID()
+    const turn = liveTurn(d, 'cron-thread', {
+      source: 'cron',
+      cronRun: { cronId, firedAt: '2026-10-13T09:00:00.000Z' }
+    })
+    try {
+      d.cpCrons.upsert({
+        cronId,
+        agentId: 'bot-a',
+        schedule: '0 9 * * 1-5',
+        timezone: 'UTC',
+        trigger: 'post the update',
+        enabled: true,
+        askerUserId: 'user-editor'
+      })
+      d.cpClient = {
+        supportsServerFeature: (feature: string) => feature === APPROVAL_DM_ROUTE_V1_FEATURE,
+        approvalRoute,
+        stop: vi.fn(async () => {})
+      }
+      expect(await d.draftPost(turn.ctx, toShared)).toMatchObject({
+        handled: true,
+        result: { drafted: true, approver: 'the person who asked, in a direct message' }
+      })
+      expect(approvalRoute).toHaveBeenCalledWith(expect.objectContaining({ consoleUserId: 'user-editor' }), undefined)
+      expect(h.conn.postBlocks.mock.calls[0]![0]).toBe('D_U_EDITOR')
+      expect((await h.drafts())[0]).toMatchObject({ approver: { kind: 'member', userId: 'U_EDITOR' } })
+    } finally {
+      d.activeGateEntries.delete(turn.key)
+      d.cpClient = undefined
+      await h.close()
+    }
+  })
+
+  it("cards a sub-session's post to the person whose turn opened it", async () => {
+    const h = await boot(false, [])
+    const d = h.daemon as any
+    const turn = liveTurn(d, `${SUBSESSION_COORDINATE_PREFIX}d-1`, {})
+    try {
+      d.subsessionOpeners.set(turn.key, {
+        people: [{ kind: 'member', platform: 'slack', integrationId: INT, userId: 'U1' }],
+        nobody: false
+      })
+      expect(await d.draftPost(turn.ctx, toShared)).toMatchObject({
+        handled: true,
+        result: { drafted: true, approver: 'the person who asked, in a direct message' }
+      })
+      expect(h.conn.postBlocks.mock.calls[0]![0]).toBe('D1')
+      expect((await h.drafts())[0]).toMatchObject({ approver: { kind: 'member', userId: 'U1' } })
+    } finally {
+      d.activeGateEntries.delete(turn.key)
+      await h.close()
+    }
+  })
 })

@@ -8544,18 +8544,27 @@ export class Daemon {
       // A hook or cron run with no conversation, or an agent call's synthetic one, is in no place.
       place: (ctx.integrationId !== undefined || ctx.platform === 'webchat') && !isSyntheticA2aChannel(ctx.channel)
     }
-    return await this.drafts.interceptPost(ctx.agentId, source, post, this.assistantDraftAsker(ctx, live?.entry.msg))
+    const askers = await this.readAskersFor(ctx).catch(() => NOBODY)
+    return await this.drafts.interceptPost(ctx.agentId, source, post, this.draftAskerOf(ctx, askers, live?.entry.msg))
   }
 
-  /** The person whose message started the live turn, as a draft approver candidate; only an enabled assistant-mode place trusts everyone in it (§5.3). */
-  private assistantDraftAsker(ctx: SessionContext, msg: NormalizedMessage | undefined): DraftAsker | undefined {
-    if (!msg || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id) return undefined
-    if (msg.platform === 'webchat') return { consoleUserId: msg.sender.id, trusted: true }
-    if (!ctx.integrationId) return undefined
+  /** The person the write rule judged the turn by, as a draft approver candidate; only an enabled assistant-mode place trusts its own sender (§5.3). */
+  private draftAskerOf(
+    ctx: SessionContext,
+    askers: TurnAskers,
+    msg: NormalizedMessage | undefined
+  ): DraftAsker | undefined {
+    // The turn's own message comes first, so a schedule's, a sub-session's or an item's person stands in where no one typed.
+    const asker = askers.people[0]
+    if (!asker) return undefined
+    if (asker.kind === 'console') return { consoleUserId: asker.userId, trusted: true }
+    const spokeHere =
+      msg?.source === 'user' && msg.sender.id === asker.userId && asker.integrationId === ctx.integrationId
     const trusted =
+      spokeHere &&
       assistantModeOn(this.agents.get(ctx.agentId)) &&
       !this.assistantPlaceExternal(ctx.agentId, ctx.integrationId, ctx.channel)
-    return { integrationId: ctx.integrationId, userId: msg.sender.id, trusted }
+    return { integrationId: asker.integrationId, userId: asker.userId, trusted }
   }
 
   /** Draft the turn's reply in an external place (assistant-mode.md §5.5); contained, so it never fails the turn. */
