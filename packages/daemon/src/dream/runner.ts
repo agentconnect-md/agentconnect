@@ -142,7 +142,7 @@ export interface DreamStorePort {
    *  records a dream leaves behind — they outlive the session they point at. */
   getSessionByAcpIdForAgent(agentId: string, acpSessionId: string): Promise<{ key: string } | undefined>
   ensureOutwardSessionId(key: string, agentId?: string): Promise<string>
-  /** Newest-first addressable sessions for the agent (transcript sources); `skipPrivate` drops capture-excluded, DM and group-DM sessions and, with `places`, a place's session unless its conversation is open. */
+  /** Newest-first addressable sessions for the agent (transcript sources); `skipPrivate` drops capture-excluded, DM and group-DM sessions and, with `places`, a place's session unless its conversation uses the shared layer. */
   dreamSessionSources(
     agentId: string,
     limit: number,
@@ -205,7 +205,7 @@ export interface DreamRunnerDeps {
   /** The agent's dreaming policy, or undefined when dreaming is not enabled
    *  (missing binding, non-managed provider, or enabled:false). */
   dreamingPolicyFor(agentId: string): MemoryDreamingPolicy | undefined
-  /** For an agent whose dreams skip private sessions and places (assistant mode, assistant-mode.md §5.5), its places; undefined ⇒ it mines every session. */
+  /** The agent's places whose conversations use the shared layer, the only ones a dream mines; undefined ⇒ every session. */
   placesFor?(agentId: string): Promise<DreamPlaces | undefined> | DreamPlaces | undefined
   /** Omission is deliberately `blocked`. Production must never infer authority
    * from runtime configuration; deterministic tests opt in explicitly. */
@@ -539,7 +539,7 @@ export class DreamRunner {
     )
   }
 
-  /** Sessions active since the last successful dream (inclusive `>=`: duplicates possible, gaps never), newest first up to the cap, or a pinned newest-N window; private sessions and places stay out for an assistant-mode agent (memory-dreaming.md §4). */
+  /** Sessions active since the last successful dream (inclusive `>=`: duplicates possible, gaps never), newest first up to the cap, or a pinned newest-N window; only the shared layer's conversations (memory-dreaming.md §4). */
   private async selectSessionSources(
     agentId: string,
     explicitWindow?: number
@@ -616,7 +616,7 @@ export class DreamRunner {
     // and single-threaded, so no session write can interleave between here and
     // the query below.
     const createdAt = this.nowIso()
-    // Every session this agent took part in, private ones too unless it is in assistant mode (memory-dreaming.md §4).
+    // The sessions of conversations that use the shared layer, which is the only layer a dream rewrites (memory-dreaming.md §4).
     const sources = await this.selectSessionSources(agentId, explicitWindow)
 
     // Snapshot the live store — the digest is the adoption fence. Taken under

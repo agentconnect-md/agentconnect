@@ -228,10 +228,7 @@ export interface SessionContext {
     /** Provenance for the write ledger. Dream adoption's rebase classifies drift by
      *  this, so a distillation-triggered write must still say `distill`. */
     source: MemoryWriteSource
-    /** The store to act on. A synthetic session (distillation) has no real channel
-     *  coordinates, so it pins the ORIGINATING conversation's scope here — otherwise a
-     *  channel-scoped agent would distill into the wrong folder. A dream pins its
-     *  STAGED store the same way. */
+    /** The store to act on: a distillation pins its originating conversation's layer, a dream its staged store. */
     scope?: MemoryScope
     /** Constrain topic filenames beyond the store's own path rules. A dream keeps the
      *  lowercase-kebab shape its proposal format always enforced. */

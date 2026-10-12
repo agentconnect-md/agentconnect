@@ -295,6 +295,11 @@ export function reportsSharedConversations(platform: string): boolean {
   return READ_PORTS.get(platform)?.sharedConversations === true
 }
 
+/** Can `platform` confirm a public channel holds only the organization's members: it reports privacy, shares with another organization and guests? */
+export function confirmsInternalAudience(platform: string): boolean {
+  return reportsChannelPrivacy(platform) && reportsSharedConversations(platform) && tellsWorkspaceMembers(platform)
+}
+
 /** The DM-capable platforms, rendered for an error message ("Slack",
  *  "Slack or Telegram"). Empty when no platform declares the port. */
 export function directMessagePlatformList(): string {

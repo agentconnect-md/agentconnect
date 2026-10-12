@@ -323,6 +323,8 @@ describe('the console reads a control-plane home without waking the pod', () => 
       adminSurfaceForAgent: () => provider.adminSurface()
     })
     await provider.ensure({ agentId: AGENT, channelKey: 'c1', channel: 'C1' }, 'bot-a')
+    // A place layer is listed once it holds memory.
+    await provider.write({ agentId: AGENT, channelKey: 'c1', channel: 'C1' }, 'room.md', '- a place fact\n')
     await reader.write({ agentId: AGENT, path: 'notes.md', content: '- from the console\n' })
     expect((await reader.list({ agentId: AGENT })).entries.map((entry) => entry.name)).toContain('notes.md')
     expect((await reader.read({ agentId: AGENT, path: 'notes.md', offset: 0, limit: 100 })).content).toContain(

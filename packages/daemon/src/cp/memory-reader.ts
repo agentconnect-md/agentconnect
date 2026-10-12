@@ -49,6 +49,8 @@ import {
   writeMemoryFile,
   listChannelMemoryKeys,
   readChannelMemoryMeta,
+  CHANNEL_MEMORY_DIRNAME,
+  MEMORY_DIRNAME,
   MemoryPathError,
   MemoryTooLargeError,
   MemoryConflictError,
@@ -188,6 +190,8 @@ export function createMemoryReader(
       const keys = await listChannelMemoryKeys(dir)
       const channels = []
       for (const channelKey of keys) {
+        // A conversation's place layer is listed once it holds memory, not merely because the conversation met the agent.
+        if ((await dir.readdir(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}/${MEMORY_DIRNAME}`)).length === 0) continue
         const meta = await readChannelMemoryMeta(dir, channelKey)
         channels.push({
           channelKey,

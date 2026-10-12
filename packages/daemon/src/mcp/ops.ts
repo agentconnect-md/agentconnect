@@ -6,7 +6,6 @@ import {
   type DecisionDeps
 } from './ops/decisions.js'
 import {
-  memoryEntryWriteAsk,
   describeMemoryEntries,
   listMemoryEntries,
   getMemoryEntry,
@@ -26,7 +25,6 @@ import {
 } from '../memory/entries/tools.js'
 import { z, type ZodType } from 'zod'
 import type { AskDeps } from './ask.js'
-import { MEMORY_WRITE_CLOSED, MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../memory/tools.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
@@ -49,7 +47,6 @@ import {
   DELETE_MEMORY_ARGS,
   getMemory,
   GET_MEMORY_ARGS,
-  MEMORY_TOOL_ACCESS_MODES,
   readMemory,
   READ_MEMORY_ARGS,
   saveMemory,
@@ -464,30 +461,6 @@ async function executeRegisteredTool(
   args: Record<string, unknown>,
   deps: OpsDeps
 ): Promise<unknown> {
-  // The memory tools' session-isolation gate (#653), checked at CALL time so a policy change applies at once.
-  const memoryMode = MEMORY_TOOL_ACCESS_MODES[name]
-  if (memoryMode !== undefined) {
-    const decision = (await deps.memoryAccessDecision?.(ctx, memoryMode)) ?? 'allow'
-    if (decision === 'deny') throw new Error(MEMORY_WRITE_NO_APPROVER)
-    if (decision === 'closed') throw new Error(MEMORY_WRITE_CLOSED)
-    if (decision === 'ask') {
-      // The approval covers THIS call's payload and nothing else: it is awaited inline, never cached.
-      const verdict =
-        (await deps.requestMemoryWriteApproval?.(ctx, await memoryEntryWriteAsk(ctx, name, args, deps))) ??
-        'no_approver'
-      if (verdict === 'no_approver') throw new Error(MEMORY_WRITE_NO_APPROVER)
-      if (verdict !== 'allowed') throw new Error(MEMORY_WRITE_NOT_APPROVED)
-      // This call's approval survives service rechecks; a subsequent deny still wins.
-      const access = deps.memoryAccessDecision
-      deps = {
-        ...deps,
-        memoryAccessDecision: async (session, mode) => {
-          const current = (await access?.(session, mode)) ?? 'allow'
-          return mode === 'write' && current === 'ask' ? 'allow' : current
-        }
-      }
-    }
-  }
   // Assistant mode (assistant-mode.md §5.5): a post elsewhere is drafted and other writes stay here.
   const verdict = await assertAssistantPlaceAccess(ctx, name, args, deps)
   // Every agent's read of another conversation is judged by who is asking (§5.5).

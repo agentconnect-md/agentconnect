@@ -19,13 +19,14 @@ import type { DistillationTurn } from './distill.js'
 export type { MemoryEntry }
 export type MemoryRecord = CanonicalMemoryRecord
 
+/** A tool's `layer` argument: the shared layer, the asker's own person layer, or the layer this conversation writes. */
+export const MEMORY_LAYER_CHOICES = ['shared', 'person', 'here'] as const
+export type MemoryLayerChoice = (typeof MEMORY_LAYER_CHOICES)[number]
+
 /** The provider kind an agent is configured with (protocol `memory.provider`). */
 export type MemoryProviderKind = 'none' | 'native' | 'managed' | 'external'
 
-/** The context key every memory op carries. `managed` routes by `agentId`, and by
- *  `channelKey` when the agent's memory scope is `channel` (#653): reads overlay the
- *  agent-level base + the channel folder, writes/capture go to the channel folder.
- *  `userId`/`sessionId` are reserved for later providers. */
+/** Every memory op's context: the agent, and at most one layer beside its shared store (memory/layers.ts). */
 export interface MemoryScope {
   // Trusted daemon-minted source-turn identity, never selected by model arguments.
   sourceTurnId?: string
@@ -34,13 +35,18 @@ export interface MemoryScope {
    *  A dream binds its STAGED store here, so the same memory tools serve it without
    *  the provider needing to know what a dream is. */
   root?: MemoryFs
-  /** A filesystem-safe per-channel folder name (channel + transport scope), set by
-   *  the daemon only for channel-scoped agents. Absent ⇒ agent-level store. */
+  /** A filesystem-safe place-layer folder name (channel + transport scope), set only by the daemon. */
   channelKey?: string
   /** Raw source identity for the channel folder, recorded once so the console can
    *  render a name instead of the opaque key. Only meaningful with `channelKey`. */
   channel?: string
   transportScope?: string
+  /** A filesystem-safe person-layer folder name, set only by the daemon. */
+  personKey?: string
+  /** A shared place's own older folder: read beneath the shared store, never written. */
+  sharedPlace?: true
+  /** Read only the layer writes land in, without the overlay (a tool's `layer` argument). */
+  alone?: true
   userId?: string
   sessionId?: string
 }
@@ -65,8 +71,7 @@ export interface TurnRecord extends DistillationTurn {
   turnId?: string
   sessionId?: string
 }
-/** Runs one extraction turn. `scope` is the ORIGINATING conversation's memory scope,
- *  so a channel-scoped agent's distillation writes land in that channel's folder. */
+/** Runs one extraction turn in the ORIGINATING conversation's scope, so its writes land in that conversation's layer. */
 export type MemoryExtractor = (agentId: string, prompt: string, scope?: MemoryScope) => Promise<string>
 
 export interface RecallRequest {

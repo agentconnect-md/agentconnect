@@ -1499,35 +1499,51 @@ comparison or require user-token storage.
 A reconnect that proves a different provider account must not replace the linked identity;
 the console tells the user to reconnect with the linked account or unlink before switching.
 
-Making a session private hides its transcript immediately, but agent memory is shared
-across the whole agent, so the guarantee about memory is narrower and must be stated
-plainly wherever the change is offered: capture into shared memory stops once the owning
+Making a session private hides its transcript immediately, but the agent's shared memory
+layer is read in every conversation, so the guarantee about memory is narrower and must be
+stated plainly wherever the change is offered: capture into that layer stops once the owning
 daemon acknowledges the change (typically sub-second, surfaced as a pending state until
 then), and anything the agent already distilled while the session was org-visible is not
 retracted. Until a session's daemon has confirmed the current state, that daemon withholds
 capture rather than assuming the session is shareable.
 
-The block covers both ways a session reaches shared memory: the automatic post-turn
-distillation, and an explicit write by the agent itself. Distillation is simply withheld.
-An explicit write asks the human in the session first — the card names the target and a
-short summary of the content and offers Allow once, Allow for this session, and Deny —
-because that person owns the conversation and an explicit approval is consent to share it.
-The ask reaches the same surfaces a permission prompt does (the webchat card, the
-platform's own card, otherwise the Agent-editor queue); when nobody can be asked (a
-headless run, an agent-to-agent child) or the answer is no, the tool refuses with an
-explanation that says the memory is read-only here rather than failing silently. Reads
-stay available — recalling what the agent already knows is not a disclosure of the
-current conversation. Dreams consolidate the agent's own private transcripts too, under a
-policy that keeps a person's private conversation out of organization knowledge.
+## Memory layers
 
-An agent in assistant mode keeps private conversations out of its shared memory
-altogether, because whatever enters it can be recalled in every other place: direct
-messages, webchat, group DMs and channels the platform reports private. Their turns are
-not distilled, its dreams skip them, and an explicit write from one is refused with that
-explanation instead of asking, so Allow for this session is never offered on any of its
-conversations. A conversation counts as private until its platform has said it is not —
-also right after a restart, before that answer comes back — and a platform that cannot
-tell whether a channel is private says it is not.
+Every agent's managed memory is layered by audience, automatically; there is no setting
+for it. Each layer is a folder with its own `MEMORY.md`. A session reads, and is given at
+its start, the shared layer plus at most one more specific layer, and it writes only to
+the most specific one. Which one depends on who can see the conversation:
+
+| Conversation                                                                                                                                                                                                                          | Reads                                    | Writes             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ------------------ |
+| A public channel the product can confirm holds only the organization's members: today a Slack public channel not shared with another organization and with no known guest                                                             | the shared layer                         | the shared layer   |
+| A 1:1 DM, or a webchat or console conversation                                                                                                                                                                                        | the shared layer and that person's layer | the person's layer |
+| Anything else: a private channel, a group DM, a conversation with people from outside (shared with another organization, or with a known guest), and any group the platform cannot confirm (Telegram, Discord and Lark/Feishu groups) | the shared layer and that place's layer  | the place's layer  |
+
+A person's layer is keyed by their console account when they linked one, so their DMs on
+every linked platform and their console conversations share one layer; otherwise it is
+keyed by their platform identity. When someone links an account, a layer kept under their
+platform identity moves to the console-keyed one once, if that one does not exist yet; if
+both exist, the console-keyed one is kept and the other is no longer read, never merged.
+
+A run with no person behind it (a schedule, a hook, a patrol, a report round, a message
+from another agent) and a turn that folds several people's messages use the layer of the
+conversation they are in: output landing in someone's DM uses that person's layer, output
+in a channel uses the channel's. A code-host review or any other session that is not a
+conversation uses the shared layer. A conversation that cannot be described yet, as right
+after a restart before its platform answers, keeps a place layer of its own; a shared
+channel still reads its own earlier folder beneath the shared layer.
+
+Per-turn distillation and an explicit "remember this" write to the session's layer with no
+card. "Remember this for everyone" writes to the shared layer. A person may read their own
+layer with a memory tool from any conversation, as the one asking; it is injected only in
+their own DM or console conversation, and nobody else sees it in the console, editors
+included. Dreams consolidate the shared layer only, mining only the conversations that use
+it; person and place layers are not dreamed. External memory is the shared layer alone: it
+captures only from conversations that use the shared layer, has no person layer, and saves
+an explicit write from anywhere else only when the person asks to remember it for everyone.
+Guest detection runs only for agents in assistant mode today, so for any other agent a
+Slack public channel with a guest the product never detected still counts as shared.
 
 **Agents on native runtime memory are the exception, and the product must say so.** With
 that backend the runtime persists memory inside its own process for the whole agent, with

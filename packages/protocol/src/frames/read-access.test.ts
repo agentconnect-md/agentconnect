@@ -24,6 +24,13 @@ describe('agent/read-access frames', () => {
       )
       expect(decodeEnvelope(JSON.stringify(rep)).ok).toBe(true)
     }
+    const linked = buildEnvelope(
+      'agent/read-access/ok',
+      { asker: 'linked', visibleSessionIds: [], consoleUserId: 'user-1' },
+      { orgId: 'org-a' }
+    )
+    const decoded = decodeEnvelope(JSON.stringify(linked))
+    expect(decoded.ok && (decoded.frame.payload as { consoleUserId?: string }).consoleUserId).toBe('user-1')
     expect(READ_ACCESS_V1_FEATURE).toBe('read-access-v1')
   })
 

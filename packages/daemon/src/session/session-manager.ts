@@ -6,7 +6,13 @@ import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
-import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } from '../store/local-store.js'
+import {
+  LocalStore,
+  sessionKey,
+  transcriptChannelKey,
+  type SessionRecord,
+  type TranscriptEntry
+} from '../store/local-store.js'
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { effectiveSessionIsolation, WorkspaceManager } from '../workspace/workspace-manager.js'
@@ -215,10 +221,13 @@ export class SessionManager {
       /** The agent memory provider — seeds the memory dir and supplies the index
        *  injected at the start of a fresh session. */
       memory: MemoryProvider
-      /** Build the memory scope for this turn's agent + conversation — carries the
-       *  per-channel folder key for channel-scoped agents (#653). Absent ⇒ the
-       *  agent-level store (tests / chat CLI). */
-      memoryScopeFor?: (agentId: string, msg: NormalizedMessage, integrationId?: string) => MemoryScope
+      /** This conversation's memory scope (unified-memory-interface.md §6); absent ⇒ the agent-level store. */
+      memoryScopeFor?: (
+        agentId: string,
+        msg: NormalizedMessage,
+        integrationId?: string,
+        rec?: SessionRecord
+      ) => MemoryScope | Promise<MemoryScope>
       /** Fail-open recall diagnostics. Must never include query/record/plugin body text. */
       onMemoryRecallError?: (agentId: string, error: unknown) => void
       /** The agent's memory home was out of reach at session start: the session opened without standing context, and this is the warning. */
@@ -404,10 +413,10 @@ export class SessionManager {
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const memoryEnabled = this.deps.memoryEnabled !== false
     const currentMemoryProvider = memoryEnabled ? memoryKindOf(agent) : 'none'
-    // The memory scope for this turn — the per-channel folder for a channel-scoped
-    // agent, else the agent-level store (#653). Reused for seeding, injection, and
-    // recall so all three hit the same store.
-    const memScope = this.deps.memoryScopeFor?.(agentId, msg, integrationId) ?? { agentId }
+    // The conversation's memory layers, resolved once and only when a fresh session seeds and injects them.
+    let memScopeOnce: Promise<MemoryScope> | undefined
+    const memScope = (): Promise<MemoryScope> =>
+      (memScopeOnce ??= Promise.resolve(this.deps.memoryScopeFor?.(agentId, msg, integrationId, rec) ?? { agentId }))
     const { thread, ts: coordTs } = transcriptCoords(msg)
     // webchat's msgId is stable per-conversation, so transcriptCoords yields the SAME ts
     // for every turn — the transcript's (channel,thread,ts) unique index would then dedup
@@ -574,11 +583,7 @@ export class SessionManager {
     if (hostCold && this.deps.resolvePreparedWorkspace) {
       preparedCwd = await abortable(() => this.deps.resolvePreparedWorkspace!(agent), signal)
     }
-    // Agent memory INDEX (memory/provider.ts), read fresh. Applied only when THIS
-    // call creates a fresh session (a resumed session already carries it from its first
-    // turn). Every session may READ shared memory (#653): the index is injected whenever
-    // memory is enabled, regardless of session isolation. Only WRITES (the memory write
-    // tools + post-turn distillation) stay gated for private sessions.
+    // The memory indexes of the conversation's layers, read fresh, only when THIS call creates a fresh session.
     // Seeded HERE, after the host is up: a cluster agent's memory home is its sandbox
     // volume, reachable only once the pod is bound. Idempotent, so a resumed session pays
     // one cheap check.
@@ -588,8 +593,9 @@ export class SessionManager {
     let memoryIndex = ''
     if (memoryEnabled) {
       try {
-        await abortable(() => this.deps.memory.ensure(memScope, agent.name), signal)
-        memoryIndex = (await abortable(() => this.deps.memory.standingContextAtSessionStart(memScope), signal)).trim()
+        const scope = await abortable(memScope, signal)
+        await abortable(() => this.deps.memory.ensure(scope, agent.name), signal)
+        memoryIndex = (await abortable(() => this.deps.memory.standingContextAtSessionStart(scope), signal)).trim()
       } catch (err) {
         if (!(err instanceof MemoryHomeUnavailableError)) throw err
         this.deps.onMemoryHomeUnavailable?.(agentId, err)
@@ -620,7 +626,7 @@ export class SessionManager {
             const entries = await createMemoryEntryService({
               provider: this.deps.memory,
               store: this.deps.store,
-              scope: memScope,
+              scope: await memScope(),
               canRead: () => this.deps.agentById(agentId) !== undefined
             })
             return entries.context(request)
@@ -951,7 +957,8 @@ export class SessionManager {
     // deliberately reuses one msgId for the whole conversation, so use its
     // per-turn trace id instead.
     const turnId = stableTurnId(agentId, msg)
-    const recallScope = { ...memScope, sessionId: rec.acpSessionId! }
+    // Recall is the shared layer's alone: managed memory recalls nothing per turn, and external memory has no other layer.
+    const recallScope = { agentId, sessionId: rec.acpSessionId! }
     const recallPolicy = memoryEnabled ? this.deps.memory.recallPolicy(recallScope) : undefined
     if (captureInput && recallPolicy?.mode === 'auto') {
       const reference = await runTurnRecall({

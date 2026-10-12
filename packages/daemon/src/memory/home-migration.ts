@@ -1,9 +1,4 @@
-// The one-way memory home migration and the forced return (memory-evolution.md §3.2.1). A managed binding whose `home`
-// became `control-plane` carries the CP's `homeMigration: 'pending'` until the owning daemon has copied `memory/` and
-// `channels/` from the `daemon` home into the CP — the sidecars as change-log rows — and reported `memory/home/migrated`.
-// The copy is restartable by doing nothing clever: the source is frozen from the flip (no writer touches a `daemon` tree
-// once the home is `control-plane`) and the target is served to nobody until the CP holds the completion, so an
-// interrupted copy runs again from the start and overwrites by path. The source tree is never deleted.
+// The one-way, restartable memory home migration into the CP and the forced return (memory-evolution.md §3.2.1).
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
 import { WireError } from '@agentconnect.md/connection'
@@ -25,13 +20,12 @@ import {
   type MemoryHomeDeps
 } from './home.js'
 import {
-  CHANNEL_MEMORY_DIRNAME,
   MEMORY_BACKUPS_DIRNAME,
   MEMORY_DIRNAME,
   MEMORY_DREAMS_DIRNAME,
   MEMORY_HISTORY_FILENAME,
-  channelMemoryRoot,
-  listChannelMemoryKeys,
+  MEMORY_LAYER_DIRNAMES,
+  listMemoryLayerKeys,
   readMemoryHistoryHoldingLock,
   withMemoryDirLock,
   type MemoryHistoryRecord
@@ -118,9 +112,7 @@ async function sendStoreHistory(store: MemoryFs, root: string, opts: CopyMemoryT
   return records.length
 }
 
-// Copy `memory/` and `channels/` from one store to another by path, overwriting, then each store's change log — the
-// agent tree's and every channel store's, in the coordinates `CpMemoryFs` names. Held under the source's memory-dir
-// lock: the home has flipped, so no writer should be left, and the lock is cheap.
+// Copy `memory/` and the layer folders, then each store's change log, by path; held under the source's memory-dir lock.
 export async function copyMemoryTree(
   from: MemoryFs,
   to: MemoryFs,
@@ -129,15 +121,15 @@ export async function copyMemoryTree(
   const report: MemoryTreeCopyReport = { files: 0, bytes: 0, records: 0, skipped: 0 }
   await withMemoryDirLock(from, async () => {
     const present = new Set((await from.readdir('')).filter((entry) => entry.kind === 'dir').map((entry) => entry.name))
-    for (const dir of [MEMORY_DIRNAME, CHANNEL_MEMORY_DIRNAME]) {
+    for (const dir of [MEMORY_DIRNAME, ...MEMORY_LAYER_DIRNAMES]) {
       if (present.has(dir)) await copyDir(from, to, dir, report, opts)
     }
     report.records += await sendStoreHistory(from, CP_MEMORY_TREE_ROOT, opts)
-    for (const key of await listChannelMemoryKeys(from)) {
-      const store = channelMemoryRoot(from, key)
-      report.records += await withMemoryDirLock(store, () =>
-        sendStoreHistory(store, `${CHANNEL_MEMORY_DIRNAME}/${key}`, opts)
-      )
+    for (const dir of MEMORY_LAYER_DIRNAMES) {
+      for (const key of await listMemoryLayerKeys(from, dir)) {
+        const store = from.subdir(`${dir}/${key}`)
+        report.records += await withMemoryDirLock(store, () => sendStoreHistory(store, `${dir}/${key}`, opts))
+      }
     }
   })
   return report
@@ -190,13 +182,13 @@ async function renameAside(from: string, to: string): Promise<void> {
   }
 }
 
-// Move the live store aside — `memory/`, `channels/`, `memory-backups/` under `<agent dir>/memory-archive-<stamp>/` —
+// Move the live store aside — `memory/`, the layer folders, `memory-backups/` under `<agent dir>/memory-archive-<stamp>/` —
 // so the agent starts from an empty tree; `memory-dreams/` stays, since staging belongs to the host. Undefined when
 // there was nothing to move.
 export async function archiveMemoryTreeAside(agentDir: string, at: Date): Promise<string | undefined> {
   const archive = join(agentDir, memoryArchiveDirname(at))
   let moved = false
-  for (const name of [MEMORY_DIRNAME, CHANNEL_MEMORY_DIRNAME, MEMORY_BACKUPS_DIRNAME]) {
+  for (const name of [MEMORY_DIRNAME, ...MEMORY_LAYER_DIRNAMES, MEMORY_BACKUPS_DIRNAME]) {
     const source = join(agentDir, name)
     try {
       await fsp.lstat(source)

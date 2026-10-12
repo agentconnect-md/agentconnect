@@ -602,24 +602,15 @@ distilled into agent memory (including by dream sessions) and later surface —
 via memory reads or recall in someone else's session — to any user who can
 view the agent, bypassing every gate in the table above.
 
-> **Dream-path carve-out (#36 follow-up).** The two-layer gate below governs the
-> **per-turn capture path**. Offline **dreams** deliberately do NOT apply it:
-> a dream mines every session the owning agent itself participated in — channel,
-> DM, webchat, external (GitHub), A2A, and launched alike — because that agent
-> already saw that content and consolidating it into the same agent's own memory
-> adds no new audience. Peer isolation still holds structurally: the dream reads
-> only `agentId`-scoped sessions and, within them, only the rows this agent sent,
-> received, or was delivered, so a peer's private session never enters. The
-> residual bypass — a private one-to-one exchange becoming **shared organization
-> knowledge** — is contained by the dream policy prompt instead of a hard
-> pre-filter: the dreamer is instructed never to surface a person's private or
-> personal conversation as organization knowledge (org knowledge must be general,
-> reusable convention). This is an owner-accepted trade-off favoring dream
-> usefulness for DM/external-centric agents over the strict capture gate.
-> **Assistant-mode agents do not get the carve-out**
-> ([assistant-mode.md](assistant-mode.md) §5.5): their dreams skip every session
-> this gate excludes, and every session in a group DM or a private channel, which
-> their per-turn capture skips as well ([memory-dreaming.md](memory-dreaming.md) §4).
+> **Memory layers.** Managed memory is now layered by audience for every agent
+> ([product conventions](../product-conventions.md#memory-layers)): this gate
+> governs the **shared layer** only. A DM's or a webchat conversation's turns go
+> to that person's layer and a private place's to its own layer, which no other
+> conversation reads, so the exclusion below keeps a session out of the shared
+> layer without dropping what it says. Dreams rewrite only the shared layer and
+> mine only the sessions of conversations that use it, for every agent; the
+> earlier carve-out that mined every session and relied on the dream policy
+> prompt is retired ([memory-dreaming.md](memory-dreaming.md) §4).
 
 Origin inference alone cannot carry this: effective visibility can change, and
 a cross-daemon A2A child cannot infer its inherited privacy or external source
@@ -693,26 +684,13 @@ from `isDm`/webchat/launch-correlation alone. The gate therefore has two layers:
      acknowledgement, typically sub-second", not "at the moment of the API
      call".
 
-**The one exception to the write exclusion is an explicit approval in the
-session.** The human in a private session owns its content, so when the agent
-calls an explicit memory write tool (`writeMemory`, `saveMemory`,
-`updateMemory`, `deleteMemory`) from a capture-excluded session, the daemon does
-not refuse — it asks that human, through the same approval surfaces a runtime
-permission prompt uses (webchat's in-stream card, the platform's elicitation
-card where it has one, otherwise the Agent-editor approval queue). The card
-names the target file or record and a short content summary, and offers three
-choices: **Allow once** (exactly that call and payload), **Allow for this
-session** (later writes from the same session skip the ask; held in daemon
-memory and forgotten on restart), and **Deny**. A denied, dismissed, or
-cancelled ask returns a read-only refusal to the model. When there is no human
-to ask — a headless cron run, an A2A child, a suppressed or ended turn — the
-write is refused at once rather than left waiting. Reads, post-turn
-distillation, and dream capture are unchanged by this. An assistant-mode agent
-has no such exception ([assistant-mode.md](assistant-mode.md) §5.5): its write
-from a capture-excluded session, or from a session in a group DM or a private
-channel, is refused without a card, so **Allow for this session** is never offered
-on any of its sessions — its `append` long sessions included — and a grant held
-from before the switch no longer applies.
+**An explicit write needs no approval card.** An explicit memory write tool goes
+to the session's own layer, which only that audience reads, so the "Allow once /
+Allow for this session" card is retired for every agent. A write to the shared
+layer from a narrower conversation happens only when the tool names
+`layer: "shared"`, the person's request to remember it for everyone; external
+memory, which is the shared layer alone, refuses any other write from such a
+conversation.
 
 **Already-captured memory is not scrubbed.** Distilled memory cannot be
 reliably attributed back to source turns, so tightening a session stops
@@ -722,24 +700,18 @@ the guarantee is "private hides the transcript at CP commit and stops
 feeding shared memory once every affected daemon has acked (`applied`)",
 not retroactive amnesia.
 
-External-source (Slack/Feishu channel) sessions are **not** excluded from managed
-shared-memory capture merely for being external — they behave like any other
-channel (Discord/Telegram already did), so agents remember what happens in the
-channels they work in. Only an explicitly `private` session is excluded; the
-external audience is still tracked for console access and source-binding, but no
-longer forces a memory hard-deny. The product tradeoff (an external channel may
-seat non-org members whose words then enter agent-scoped memory) is accepted by
-default; set a session `private` to exclude it. DM / webchat / A2A-child /
-launch-correlated sessions stay excluded as before. The gate covers
+A conversation shared with another organization, or holding a known guest, uses a
+place layer of its own, never the shared one; so does any group whose platform
+cannot confirm it holds only the organization's members. The gate covers
 AgentConnect-managed and external memory paths; a runtime's own opaque/native
 memory cannot be isolated per session by AgentConnect and must not be presented as
 covered by this guarantee.
 
-Per-owner memory namespaces are a possible future relaxation, but the
-exclusion gate is the shipping requirement — the `private` tier's guarantee
-is dishonest without it. If it is deferred, the product docs must explicitly
-narrow the guarantee ("private hides the transcript, not what the agent
-learned from it"); silence is not an option.
+Per-person layers are how a private conversation is remembered without
+reaching the shared layer; the exclusion gate stays the shipping requirement for
+the shared one. Where an agent's memory cannot honor it (native memory), the
+product docs must narrow the guarantee ("private hides the transcript, not what
+the agent learned from it"); silence is not an option.
 
 ## 6. Web console
 
