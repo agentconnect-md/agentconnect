@@ -298,7 +298,7 @@ describe('a drafted post outside assistant mode, on a turn no one typed', () => 
         result: { drafted: true, approver: 'the person who asked, in a direct message' }
       })
       expect(approvalRoute).toHaveBeenCalledWith(expect.objectContaining({ consoleUserId: 'user-editor' }), undefined)
-      expect(h.conn.postBlocks.mock.calls[0]![0]).toBe('D_U_EDITOR')
+      expect((h.conn.postBlocks.mock.calls[0] as unknown as [string])[0]).toBe('D_U_EDITOR')
       expect((await h.drafts())[0]).toMatchObject({ approver: { kind: 'member', userId: 'U_EDITOR' } })
     } finally {
       d.activeGateEntries.delete(turn.key)
@@ -320,7 +320,7 @@ describe('a drafted post outside assistant mode, on a turn no one typed', () => 
         handled: true,
         result: { drafted: true, approver: 'the person who asked, in a direct message' }
       })
-      expect(h.conn.postBlocks.mock.calls[0]![0]).toBe('D1')
+      expect((h.conn.postBlocks.mock.calls[0] as unknown as [string])[0]).toBe('D1')
       expect((await h.drafts())[0]).toMatchObject({ approver: { kind: 'member', userId: 'U1' } })
     } finally {
       d.activeGateEntries.delete(turn.key)
