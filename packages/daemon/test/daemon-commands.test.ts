@@ -1254,6 +1254,69 @@ describe('Daemon in-conversation commands', () => {
     expect(blocked.prompts).toEqual([])
     await daemon.stop()
   })
+  it.each([
+    [
+      'admits each message by a Decision',
+      { bindRules: [{ match: { kind: 'dm' } }, { channel: 'C1', match: { kind: 'decision' } }] }
+    ],
+    ['is shared with another organization', { externalChannels: ['C1'] }]
+  ] as const)('changes no runtime setting from a conversation that %s', async (_how, core) => {
+    const host = { ...selectHost(), setSessionFastMode: vi.fn(async () => true) }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    const key = SESSION_KEY
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    const agent = (daemon as any).agents.get('bot-a')
+    agent.chatActions = 'settings'
+    Object.assign(agent.integrations[0].core, core)
+
+    await (daemon as any).onInboundOutcome(dm('200', '/models 2'))
+    expect(await store.getModelOverride(key)).toBeUndefined()
+    expect(conn.postMessage.mock.calls.at(-1)![1]).toContain('Agent editor')
+    await (daemon as any).onInboundOutcome(dm('210', '!fast on'))
+    expect(await store.getFastModeOverride(key)).toBeUndefined()
+
+    // The status-bar selects funnel through these, and the modal offers no control.
+    const commands = (daemon as any).commands
+    expect(await commands.setModelByKey(key, 'sonnet')).toBe(false)
+    expect(await commands.setPermissionModeByKey(key, 'plan')).toBe(false)
+    expect(await store.getPermissionModeOverride(key)).toBeUndefined()
+    const modal = await (daemon as any).statusInfoForKey(key)
+    expect(modal.info.models).toBeUndefined()
+    expect(modal.info.permissionModes).toEqual([])
+    await daemon.stop()
+  })
+
+  it('takes no runtime setting from a bot, and still takes one from a person', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => selectHost() as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    const store = (daemon as any).store
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
+    const select = (actor: { userId: string; isBot?: boolean }) =>
+      (daemon as any).commands.handleStatusAction({
+        kind: 'set-model',
+        sessionKey: SESSION_KEY,
+        model: 'sonnet',
+        actor
+      })
+    await select({ userId: 'B1', isBot: true })
+    expect(await store.getModelOverride(SESSION_KEY)).toBeUndefined()
+    await select({ userId: 'U1' })
+    expect(await store.getModelOverride(SESSION_KEY)).toBe('sonnet')
+    await daemon.stop()
+  })
 })
 
 /** A fake ACP host whose prompts complete immediately. */
@@ -2114,7 +2177,12 @@ describe('Slack interactive status bar', () => {
       sessionId: 'acp-1',
       params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
       evaluationParams: {},
-      chat: { conn: { updateBlocks, workspaceId: () => 'T1' }, channel: 'C1', ts: 'card-1' },
+      chat: {
+        conn: { updateBlocks, workspaceId: () => 'T1' },
+        channel: 'C1',
+        place: { integrationId: 'int-a', channel: 'C1' },
+        ts: 'card-1'
+      },
       resolve: permissionResolved
     })
     expect(

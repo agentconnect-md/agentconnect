@@ -104,7 +104,8 @@ function world(over: WorldOptions = {}) {
     sessionLink: (sessionId) => `https://console.example.test/sessions/${sessionId}`,
     slackConnFor: () => undefined,
     approvalDmIntegrations: () => [],
-    slackDmSessionTarget: () => 'encoded-target'
+    slackDmSessionTarget: () => 'encoded-target',
+    chatSurface: () => 'open'
   }
   const events = (): any[] => sink.output.mock.calls.map(([o]: any[]) => o.event)
   return { store, sink, events, enqueueApply, coordinator: new PermissionCoordinator(host), p }

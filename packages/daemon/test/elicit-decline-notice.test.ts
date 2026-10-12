@@ -117,6 +117,8 @@ function slackTurn(): { daemon: any; pending: any; notices: () => string[] } {
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
   const pending = installPending(daemon)
   pending.plan.platform = 'slack'
+  pending.plan.integrationId = 'int-1'
+  pending.entry = { msg: { source: 'user', sender: { id: 'U1', isBot: false } } }
   const conn = Object.create(SlackConnection.prototype)
   conn.postBlocks = async () => 'ts-1'
   conn.updateBlocks = async () => true
@@ -285,7 +287,7 @@ describe('an elicitation declined for want of a surface says so in the channel',
   it('says nothing for an MCP approval, which has its own notice on the editor path', async () => {
     const { daemon, notices } = slackTurn()
     // Chat approval enabled, so the request reaches the card path rather than the editor queue.
-    daemon.agents.set('agent-1', { chatActions: 'settings' })
+    daemon.agents.set('agent-1', { chatActions: 'settings', integrations: [{ id: 'int-1', platform: 'slack' }] })
     await expect(
       daemon.permissions.onAcpElicit(
         'agent-1',

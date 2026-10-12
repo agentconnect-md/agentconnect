@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { FakeClock } from '@agentconnect.md/connection'
 import { agentHostKey } from '../src/acp/host-key.js'
+import type { ChatSurface } from '../src/agents/chat-actions.js'
 import { REPORT_ANSWER_LANGUAGE } from '../src/collab/coordinator.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
 import { Daemon } from '../src/daemon.js'
@@ -88,6 +89,7 @@ async function world(
     route?: SubsessionApprovalRoute | undefined
     approver?: SubsessionApprover
     chatOn?: boolean
+    surface?: ChatSurface
     database?: DatabaseSync
   } = {}
 ) {
@@ -157,7 +159,8 @@ async function world(
     approvalDmIntegrations: () => ['int-1'],
     slackDmSessionTarget: (_p, integrationId) => `target:${integrationId}`,
     subsessionApprovalRoute,
-    assistantApprover
+    assistantApprover,
+    chatSurface: () => over.surface ?? 'open'
   }
   const coordinator = new PermissionCoordinator(host)
   /** The one request the sub-session has waiting, once it is listed. */
@@ -310,6 +313,32 @@ describe('a sub-session’s permission request in the conversation it belongs to
     // Nothing is left on the row for a sweep, and no editor is DMed about a request already decided.
     expect(await w.store.takeOrphanedSubsessionNotices('int-1')).toEqual([])
     expect(w.place.postBlocks).toHaveBeenCalledTimes(1)
+    await w.store.close()
+  })
+
+  it('leaves the notice and DMs an editor, not a card, where the conversation is closed', async () => {
+    const w = await world({ chatOn: true, surface: 'closed' })
+    void w.coordinator.onAcpPermission(OWNER, ACP, params())
+    await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    expect(blocksOf(w.place)).toContain('Ask an Agent editor')
+    expect(blocksOf(w.place)).not.toContain('"actions"')
+    expect((w.place.postBlocks.mock.calls[1] as unknown[])[0]).toBe('D-ed')
+    await w.store.close()
+  })
+
+  it('takes no click on a card whose conversation closed after it was posted', async () => {
+    const over: { chatOn: boolean; surface: ChatSurface } = { chatOn: true, surface: 'open' }
+    const w = await world(over)
+    const decided = vi.fn()
+    void w.coordinator.onAcpPermission(OWNER, ACP, params()).then(decided)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(1))
+    over.surface = 'closed'
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U9' } })
+    expect(decided).not.toHaveBeenCalled()
+    expect(w.coordinator.pendingSubsessionApprovals(AGENT)).toHaveLength(1)
+    expect((await rows(w.store))[0]).toMatchObject({ status: 'pending' })
     await w.store.close()
   })
 
