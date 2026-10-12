@@ -24,7 +24,7 @@ The first release should share list/get/create/update contracts and capability d
 | Console            | File browser/editor                                           | Record list/editor                                                               | Shared browse/search/detail shell, format-aware editor                     |
 | Identity           | Topic filename within a resolved root                         | Backend record ID within a bound connection and agent                            | Opaque entry reference bound to store and partition                        |
 | Content            | Up to 256,000 UTF-8 bytes; Markdown with optional YAML header | Canonical text and metadata; plugin-dependent bounds                             | Text plus format and explicit byte limits; no forced conversion            |
-| Scope              | Agent; channel overlay over shared agent base                 | Agent only in admitted v1 plugins                                                | Common resolved view, capability-gated scope availability                  |
+| Scope              | Shared layer plus one place or person layer, by audience      | Agent only in admitted v1 plugins                                                | Common resolved view, capability-gated scope availability                  |
 | Consistency        | Existing optional mtime precondition; controlled write path   | Optional backend version; no universal CAS guarantee                             | Advertise actual consistency; never pretend a version field guarantees CAS |
 | Dream              | Managed agent scope; staged tree and fenced adoption          | Unsupported                                                                      | Keep current restriction initially; define a separate draft capability     |
 
@@ -198,13 +198,28 @@ Descriptions and aliases remain bounded untrusted data, separate from user reque
 
 ## 6. Scope, overlays and access
 
-The service resolves a trusted view, conceptually `{bindingGeneration, readablePartitions, writablePartition, optionalDraftBinding}`. Models never submit agentId, connectionId, channelKey, root path or actor identity. Console selectors are authorized against the agent and allowed partitions before dispatch. Entry refs/cursors never expand that authority.
+The service resolves a trusted view, conceptually `{bindingGeneration, readablePartitions, writablePartition, optionalDraftBinding}`. Models never submit agentId, connectionId, channelKey, person key, root path or actor identity. Console selectors are authorized against the agent and allowed partitions before dispatch. Entry refs/cursors never expand that authority.
 
-Preserve today's rules: ordinary reads may use shared agent memory even in private/isolated sessions; shared-memory writes and post-turn capture obey the current privacy gate; Dream excludes private transcripts. Choosing external capture continues to require its existing egress opt-in. Unifying operation names does not consent to exporting conversations.
+### Layers by audience
 
-For managed channel mode, list/search/get see the existing overlay: channel topic shadows a base topic with the same key. Returned entries indicate actual origin. Base entries are readable but not directly writable from the channel view. New operations reject an update/delete of an inherited ref with a clear message; the user/model may explicitly create a channel-local entry instead. This removes the ambiguity where a displayed base file could be mistaken for the object being edited. Legacy writeMemory retains its documented channel-write behavior until retired. Deleting a channel override reveals the base again; hiding inherited content would require a distinct tombstone feature and is outside the first release.
+Managed memory is layered by the audience of the conversation, for every agent and with no setting ([product conventions](../product-conventions.md#memory-layers)). The shared layer is the agent's own store (`memory/`). Beside it each layer is a self-contained root with its own `MEMORY.md`: a place layer under `channels/<key>/` (the folder the retired Channel scope used, keyed by channel and transport scope) and a person layer under `people/<key>/`. A view reads the shared layer plus at most one more layer and writes only to the most specific one; `memory/layers.ts` decides which:
 
-External v1 remains agent-only. Do not encode channel IDs into its agent key and claim that channel memory is supported: this bypasses the reviewed scope contract and makes existing data routing ambiguous. Later channel support requires an explicit profile/binding revision, trusted partition-key derivation, backend conformance, overlay semantics, and a migration plan. Until then, scope controls explain why channel is unavailable for that connection.
+| Conversation                                                                                                                                                                                                               | Layer written | Roots read, written first                     |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | --------------------------------------------- |
+| A public channel whose platform confirms its audience is the organization (`channelPrivacy`, `sharedConversations` and `workspaceMembers` declared; not private, a listing or lookup confirmed not shared, no known guest) | shared        | shared, then the channel's own earlier folder |
+| A 1:1 DM, a webchat or console conversation                                                                                                                                                                                | person        | person, then shared                           |
+| Anything else, or a place that cannot be described yet                                                                                                                                                                     | place         | place, then shared                            |
+| A session that is no conversation (a code host's, a hook's)                                                                                                                                                                | shared        | shared                                        |
+
+A person key is `user:<consoleUserId>` when the chat member linked a console account, resolved through the Control Plane's `agent/read-access` mapping (its reply names the console user) and cached for ten minutes, the last answer standing while the Control Plane cannot be asked; otherwise `<platform>:<tenantScope>:<uid>`. Webchat is always `user:<id>`. The first time a console-keyed layer is used, a platform-keyed layer of the same person, else the DM's own earlier place folder, is moved onto it, once and only while the target does not exist; a second folder is never merged. A DM's person is whoever typed the message at hand, else whom the platform says the DM is with (`getChannelInfo().user`, kept once known), else whoever opened this or an earlier session there; a webchat conversation's is whoever opened it. An agent (a patrol's, a task's or another agent's message, whose sender is an agent UUID) or an automation trigger (`cron:…`, `hook:…`) is never taken for a person, and a conversation whose person cannot be told keeps a place layer. Runs with no person and turns that fold several senders use the layer of their conversation.
+
+Overlay rules: the written layer shadows the other per topic; each layer keeps its own `MEMORY.md`, which never falls through; only the shared store is seeded, so a layer starts with its first write. The session-start index is the shared index followed by the layer's, labeled for whom it is kept. Returned entries indicate actual origin: an entry of the root beneath is inherited, readable, and not writable from that view; an update/delete of an inherited ref is rejected with a clear message, and the model may create an entry in the written layer instead. Deleting an override reveals the inherited entry again.
+
+The memory read and write tools take one optional `layer` argument that names a single layer instead of the view: `shared`, `here` (the layer this conversation writes, alone), or `person` (the asker's own, honoured only when the whole turn is that one person, the way their reads are judged; it is never injected outside their own DM or console conversation). A distillation or dream binding pins its store and refuses `layer`. Writes need no approval card: the layer already keeps them to the audience that said them.
+
+Choosing external capture continues to require its existing egress opt-in. Unifying operation names does not consent to exporting conversations.
+
+External v1 remains the shared layer alone: it captures only from conversations that use the shared layer, refuses a default write from any other conversation (an explicit `layer: "shared"` is the person's call), and has no person or place layer. Do not encode channel or person ids into its agent key and claim that layered memory is supported: this bypasses the reviewed scope contract and makes existing data routing ambiguous. Later support requires an explicit profile/binding revision (a `user` scope maps naturally onto a backend's user id), trusted partition-key derivation, backend conformance, overlay semantics, and a migration plan.
 
 ## 7. Dream and capture
 
@@ -278,7 +293,7 @@ Add versioned request/reply frames for daemon-owned operations; bounded BFF resp
 | Search                 | Optional bounded lexical implementation; otherwise unavailable    | Existing recall/search operation; advertised actual search semantics |
 | Delete                 | After ledger/index/history-aware primitive lands                  | Declared delete                                                      |
 | Graph                  | Existing wiki links/backlinks                                     | Absent unless separately supported                                   |
-| Channel scope          | Existing managed overlay preserved                                | Unsupported                                                          |
+| Layers by audience     | Managed only: place and person layers over the shared one         | Unsupported                                                          |
 | Dream                  | Existing managed agent-only path                                  | Unsupported                                                          |
 | Automatic recall       | Existing bounded index                                            | Existing auto/tool-only policy                                       |
 | Automatic capture      | Existing opt-in distillation                                      | Existing manual/turn policy and receipts                             |
@@ -608,9 +623,9 @@ record search route remain for warm sessions and older peers.
 Managed memory now advertises `graph: true`. A unified `get` annotates the
 entry with one hop of the existing `[[name]]` graph: `links` and `backlinks`
 carry the neighbor's display label, whether it exists, and a ref minted from the
-current authorized view for a target inside that view. Under channel scope the
-walk crosses both overlay layers, so an edge from a channel topic to a shared
-base topic resolves to the layer the overlay would actually serve. A dangling
+current authorized view for a target inside that view. In a layered view the
+walk crosses both roots, so an edge from a place or person topic to a shared
+topic resolves to the layer the overlay would actually serve. A dangling
 link keeps its label with `exists: false` and no ref. Annotations are never
 spliced into `text`, stay bounded to 20 per direction, and are omitted (not
 truncated) when the catalog exceeds the enumeration scan budget. Summaries and
@@ -645,8 +660,8 @@ far written but never read from the daemon, now pages it back over the new
 feature, under the same serving-daemon and home checks as `memory/history/append`;
 until the CP advertises that feature the sink keeps no `list`, the adapter
 advertises no history, and the legacy console route keeps answering from the
-table directly. Under channel scope an inherited base entry pages the base
-store's log. External connections that declare `history` project their record
+table directly. In a layered view an inherited entry pages the log of the root
+beneath it. External connections that declare `history` project their record
 events in backend order with the event's record text as the bounded snapshot.
 
 The operation rides the `memory/entries/read/v1` frame behind the negotiated

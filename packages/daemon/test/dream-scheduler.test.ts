@@ -230,7 +230,7 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     expect(await fire(daemon, 'bot-a')).toBe(true)
   })
 
-  it('leaves the private sessions and places of an agent in assistant mode out of its dream sources (assistant-mode.md §5.5)', async () => {
+  it('leaves every agent’s sessions outside the shared layer out of its dream sources, assistant mode or not', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => ({}) as any, dreamOperationPolicy: 'test-only' })
     const inner = daemon as unknown as {
       agents: Map<string, object>
@@ -266,14 +266,18 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
       integrations: [{ id: 'int-1', platform: 'slack' }]
     }
     inner.agents.set('bot-a', agent)
-    expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(true)
+    expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
     inner.agents.set('bot-a', { ...agent, assistantMode: { enabled: true, responsibleUserId: 'user-1' } })
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
+    inner.agents.set('bot-a', agent)
     // Right after a restart nothing is known about G1 yet: still skipped, not counted as new activity.
     inner.channelSnapshots.clear()
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
-    // Only the listing reporting it public makes the channel a source.
-    inner.channelSnapshots.set('int-1', { channels: [{ id: 'G1', isPrivate: false }], authoritative: true })
+    // Only the listing reporting it public and not shared makes the channel a source.
+    inner.channelSnapshots.set('int-1', {
+      channels: [{ id: 'G1', isPrivate: false, externalReason: null }],
+      authoritative: true
+    })
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(true)
     await inner.store.close()
   })

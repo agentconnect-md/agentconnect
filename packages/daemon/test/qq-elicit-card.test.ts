@@ -7,7 +7,6 @@ import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { elicitForm } from '../src/slack/render.js'
 import { QQ_ELICIT_SURFACE, qqElicitChoice, qqElicitText } from '../src/platforms/qq/elicit-card.js'
-import type { MemoryWriteAsk } from '../src/mcp/ops/memory.js'
 
 function form(properties: Record<string, unknown>, required: string[] = []): CreateElicitationRequest {
   return {
@@ -20,7 +19,6 @@ function form(properties: Record<string, unknown>, required: string[] = []): Cre
 
 const BRANCH = { branch: { type: 'string', enum: ['main', 'develop'], title: 'Base branch' } }
 const CONVERSATION = 'dm:user-openid\u001fqq:app-1'
-const ASK: MemoryWriteAsk = { tool: 'writeMemory', target: 'deploys.md', summary: 'Content: "- ship on Fridays"' }
 
 function target() {
   return elicitForm(form(BRANCH, ['branch']), QQ_ELICIT_SURFACE)![0]!
@@ -154,15 +152,5 @@ describe('a QQ turn collects an elicitation answer from a quoted reply', () => {
     const req = form({ note: { type: 'string', title: 'Note' } }, ['note'])
     await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
     expect(h.cards).toEqual([])
-  })
-
-  it('lets a private chat grant a managed-memory write for the session without the console', async () => {
-    const h = qqTurn()
-    const outcome = h.daemon.permissions.askMemoryWriteApproval('agent-1', 's1', ASK)
-    await vi.waitFor(() => expect(h.cards).toHaveLength(1))
-    expect(h.cards[0]!.text).toContain('1. Allow once\n2. Allow for this session\n3. Deny')
-    await vi.waitFor(() => expect([...h.daemon.permissions.pendingElicits.values()][0]?.ts).toBe('card-1'))
-    expect(await h.daemon.permissions.claimElicitReply(reply('2', 'card-1'))).toBe(true)
-    await expect(outcome).resolves.toBe('allow_session')
   })
 })

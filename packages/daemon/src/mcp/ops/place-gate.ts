@@ -46,6 +46,8 @@ export interface PlaceSnapshotRow {
   kind?: 'channel' | 'im' | 'mpim'
   isPrivate?: boolean
   name?: string
+  /** The listing's word on a share with another organization; null when it found none. */
+  externalReason?: string | null
 }
 
 export interface PlaceAccessDeps extends GatewayDeps {
@@ -103,6 +105,7 @@ export async function describePlace(
   let kind = stricter(rowKind, snapshot?.kind ? SNAPSHOT_KINDS[snapshot.kind] : undefined)
   let isPrivate = snapshot?.isPrivate
   let name = snapshot?.name
+  let external = snapshot?.externalReason === undefined ? undefined : snapshot.externalReason !== null
   if (kind === undefined || (shared(kind) && isPrivate === undefined)) {
     const gw = integrationId ? deps.gatewayFor(integrationId) : undefined
     const info = gw ? await gw.getChannelInfo(place.channel).catch(() => undefined) : undefined
@@ -110,6 +113,8 @@ export async function describePlace(
       kind = stricter(kind, info.isIm ? 'dm' : info.isMpim ? 'group_dm' : 'channel')
       if (isPrivate === undefined && typeof info.isPrivate === 'boolean') isPrivate = info.isPrivate
       name ??= info.name
+      // The same answer says whether the conversation is shared with another organization.
+      if (info.externalReason !== undefined) external = external === true || info.externalReason !== null
     }
   }
   return {
@@ -117,7 +122,8 @@ export async function describePlace(
     channel: place.channel,
     ...(kind ? { kind } : {}),
     ...(shared(kind) && isPrivate !== undefined ? { private: isPrivate } : {}),
-    ...(name ? { name } : {})
+    ...(name ? { name } : {}),
+    ...(external !== undefined ? { external } : {})
   }
 }
 

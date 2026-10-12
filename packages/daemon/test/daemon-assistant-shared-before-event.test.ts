@@ -107,6 +107,11 @@ async function boot(assistant = true) {
   }
   const d = daemon as any
   d.connByIntegration.set(INT, conn)
+  // The membership listing describes the room, so every lookup counted below is a share check.
+  d.channelSnapshots.set(INT, {
+    channels: [{ id: 'C_ROOM', kind: 'channel', isPrivate: false, externalReason: null }],
+    authoritative: true
+  })
   const cron: CronDef = {
     id: 'cron-digest',
     schedule: '0 9 * * *',

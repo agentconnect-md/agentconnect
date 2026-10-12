@@ -11,100 +11,24 @@ import {
   requiredStringAllowEmpty
 } from './args.js'
 import type { MemoryProvider, MemoryScope } from '../../memory/provider.js'
+import { MEMORY_LAYER_CHOICES, type MemoryLayerChoice } from '../../memory/types.js'
 import type { MemoryWriteSource } from '../../memory/store.js'
 import { MemoryPathError, MemoryTooLargeError } from '../../memory/store.js'
 
-/** The memory-tool deps. The access gate itself is enforced pre-dispatch in `executeTool`. */
+/** The memory-tool deps. */
 export interface MemoryOpsDeps {
   /** The agent memory provider — backs the `readMemory`/`writeMemory` tools.
    *  Universal (every agent has memory), independent of the platform. */
   memoryEntryStore?: LocalStore
   memory: MemoryProvider
-  /** Session-isolation gate for the explicit memory-tool path, by operation (#653): agent memory is
-   *  shared across users, so every session may READ it but a private session's WRITE is `ask` — the
-   *  human in the session decides (or `deny` when nothing can ask). Post-turn capture and Dream
-   *  selection are gated at their own boundaries. Checked at CALL time; absent ⇒ allowed (fixtures). */
-  memoryAccessDecision?: (
-    ctx: SessionContext,
-    mode: 'read' | 'write'
-  ) => MemoryAccessDecision | Promise<MemoryAccessDecision>
-  /** Ask the human in the session to approve ONE pending write (the `ask` decision). Covers exactly
-   *  this call's payload; a session-wide grant is the daemon's to remember. Absent ⇒ nobody to ask. */
-  requestMemoryWriteApproval?: (ctx: SessionContext, ask: MemoryWriteAsk) => Promise<MemoryWriteVerdict>
-  /** Build the memory scope for a tool call — carries the per-channel folder key
-   *  for a channel-scoped agent so tools read/write that channel's memory (#653).
-   *  Absent ⇒ agent-level store (unit fixtures). */
-  memoryScope?: (ctx: SessionContext) => MemoryScope
+  /** One memory tool call's scope: the session's layers or the one `layer` names, rejecting one this turn may not use. */
+  memoryScope?: (ctx: SessionContext, call: MemoryToolCall) => MemoryScope | Promise<MemoryScope>
 }
 
-/** The gate's verdict for one memory-tool call: proceed, refuse (nobody to ask), ask the human first, or closed by the agent's own policy. */
-export type MemoryAccessDecision = 'allow' | 'deny' | 'ask' | 'closed'
-
-/** How an `ask` ended: approved, declined (or abandoned), or nobody could be asked at all. */
-export type MemoryWriteVerdict = 'allowed' | 'denied' | 'no_approver'
-
-/** What the approval card shows for one pending write: the tool, its target, and a bounded summary. */
-export interface MemoryWriteAsk {
-  tool: string
-  /** The memory file or record the write lands on. */
-  target: string
-  /** One line: the first ~200 chars of the content, or what an edit/delete does. */
-  summary: string
-}
-
-const ASK_SUMMARY_MAX = 200
-
-function clip(text: string, max = ASK_SUMMARY_MAX): string {
-  const one = text.replace(/\s+/g, ' ').trim()
-  return one.length > max ? `${one.slice(0, max - 1)}…` : one
-}
-
-const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
-
-/** Describe a pending memory write for the approval card, from the RAW arguments: total, never
- *  throws — a malformed call is refused by the handler's own parsing once (if) it is approved. */
-export function memoryWriteAsk(tool: string, args: Record<string, unknown>): MemoryWriteAsk {
-  switch (tool) {
-    case 'writeMemory': {
-      const target = str(args.path) ?? 'MEMORY.md'
-      const oldString = str(args.oldString)
-      const newString = str(args.newString)
-      if (oldString !== undefined || newString !== undefined) {
-        const summary = newString
-          ? `Replace "${clip(oldString ?? '', 80)}" with "${clip(newString, 120)}"`
-          : `Remove "${clip(oldString ?? '')}"`
-        return { tool, target, summary }
-      }
-      const content = str(args.content)
-      return { tool, target, summary: content ? `Content: "${clip(content)}"` : `Clear ${target} (empty write)` }
-    }
-    case 'createMemoryEntry':
-      return {
-        tool,
-        target: str(args.label) ?? 'a new memory entry',
-        summary: `Content: "${clip(str(args.text) ?? '')}"`
-      }
-    case 'updateMemoryEntry': {
-      const edit = args.edit && typeof args.edit === 'object' ? (args.edit as Record<string, unknown>) : undefined
-      return {
-        tool,
-        target: 'memory entry',
-        summary: edit
-          ? `Replace "${clip(str(edit.oldText) ?? '', 80)}" with "${clip(str(edit.newText) ?? '', 120)}"`
-          : `New content: "${clip(str(args.text) ?? '')}"`
-      }
-    }
-    case 'deleteMemoryEntry':
-      return { tool, target: 'memory entry', summary: 'Delete the selected memory entry' }
-    case 'saveMemory':
-      return { tool, target: 'a new memory record', summary: `Content: "${clip(str(args.text) ?? '')}"` }
-    case 'updateMemory':
-      return { tool, target: `record ${str(args.id) ?? '?'}`, summary: `New content: "${clip(str(args.text) ?? '')}"` }
-    case 'deleteMemory':
-      return { tool, target: `record ${str(args.id) ?? '?'}`, summary: `Delete record ${str(args.id) ?? '?'}` }
-    default:
-      return { tool, target: 'shared memory', summary: '' }
-  }
+/** What a memory tool call asks of the layers: whether it reads or writes, and the layer it names. */
+export interface MemoryToolCall {
+  mode: 'read' | 'write'
+  layer?: MemoryLayerChoice
 }
 
 /** A stray key here is almost always the sibling file tool's argument; refuse it by name (#1921). */
@@ -115,8 +39,12 @@ const unexpectedKeys: { error: z.core.$ZodErrorMap } = {
       : undefined
 }
 
+const layerArg = z
+  .enum(MEMORY_LAYER_CHOICES, { error: 'argument layer must be "shared", "person" or "here"' })
+  .optional()
+
 /** `readMemory` arguments; an omitted `path` reads the MEMORY.md index. */
-export const READ_MEMORY_ARGS = z.strictObject({ path: optionalString('path') }, unexpectedKeys)
+export const READ_MEMORY_ARGS = z.strictObject({ path: optionalString('path'), layer: layerArg }, unexpectedKeys)
 
 /** `writeMemory` arguments — the two modes are separated by the handler, not the schema. */
 export const WRITE_MEMORY_ARGS = z.strictObject(
@@ -124,7 +52,8 @@ export const WRITE_MEMORY_ARGS = z.strictObject(
     path: optionalString('path'),
     content: optionalString('content'),
     oldString: optionalString('oldString'),
-    newString: optionalString('newString')
+    newString: optionalString('newString'),
+    layer: layerArg
   },
   unexpectedKeys
 )
@@ -153,8 +82,7 @@ export const UPDATE_MEMORY_ARGS = z.object({
 /** `deleteMemory` arguments. */
 export const DELETE_MEMORY_ARGS = z.object({ id: requiredString('id'), version: optionalString('version') })
 
-/** Every memory tool's access mode, checked before dispatch: reads are universal, writes
- *  are refused for an isolated session (#653). */
+/** Every memory tool's access mode: what the layer rule and a read-only pass judge it by. */
 export const MEMORY_TOOL_ACCESS_MODES: Record<string, 'read' | 'write'> = {
   describeMemoryEntries: 'read',
   listMemoryEntries: 'read',
@@ -172,10 +100,20 @@ export const MEMORY_TOOL_ACCESS_MODES: Record<string, 'read' | 'write'> = {
   deleteMemory: 'write'
 }
 
-export function memoryScopeFor(ctx: SessionContext, deps: MemoryOpsDeps): MemoryScope {
-  // A pinned binding wins: a synthetic session's own coordinates would resolve to the
-  // wrong store for a channel-scoped agent.
-  return { ...(ctx.memoryBinding?.scope ?? deps.memoryScope?.(ctx) ?? { agentId: ctx.agentId }) }
+/** The scope of one memory tool call; a pinned binding (a distillation or a dream) is its own store and names no layer. */
+export async function memoryScopeFor(
+  ctx: SessionContext,
+  deps: MemoryOpsDeps,
+  call: MemoryToolCall
+): Promise<MemoryScope> {
+  if (ctx.memoryBinding && call.layer !== undefined)
+    throw new Error('argument layer is not available in this memory session')
+  return { ...(ctx.memoryBinding?.scope ?? (await deps.memoryScope?.(ctx, call)) ?? { agentId: ctx.agentId }) }
+}
+
+/** A raw `layer` argument, checked; the dispatch boundary validated it already, so this only narrows the type. */
+export function layerArgument(args: Record<string, unknown>): MemoryLayerChoice | undefined {
+  return layerArg.parse(args.layer)
 }
 
 /** Provenance for a write made through the shared tool surface. The ordinary
@@ -232,9 +170,10 @@ export async function readMemory(
   args: Record<string, unknown>,
   deps: MemoryOpsDeps
 ): Promise<unknown> {
-  const scope = memoryScopeFor(ctx, deps)
+  const parsed = parseArgs(READ_MEMORY_ARGS, args)
+  const scope = await memoryScopeFor(ctx, deps, { mode: 'read', ...(parsed.layer ? { layer: parsed.layer } : {}) })
   try {
-    const path = parseArgs(READ_MEMORY_ARGS, args).path ?? 'MEMORY.md'
+    const path = parsed.path ?? 'MEMORY.md'
     const result = await deps.memory.read(scope, path)
     // One hop of the `[[name]]` graph, returned as its OWN fields — never spliced into
     // `content`, which the agent may hand straight back to `writeMemory`.
@@ -255,14 +194,10 @@ export async function writeMemory(
   args: Record<string, unknown>,
   deps: MemoryOpsDeps
 ): Promise<unknown> {
-  const scope = memoryScopeFor(ctx, deps)
+  const parsed = parseArgs(WRITE_MEMORY_ARGS, args)
+  const scope = await memoryScopeFor(ctx, deps, { mode: 'write', ...(parsed.layer ? { layer: parsed.layer } : {}) })
   try {
-    // writeMemory — exactly one of two modes: full-write (`content`) OR targeted edit
-    // (`oldString` + `newString`). Validate the pair ATOMICALLY: either edit field present
-    // selects edit mode, and BOTH are then required (so a stray `newString` isn't silently
-    // ignored, and an omitted `newString` isn't silently treated as a deletion — deletion
-    // must be an explicit `newString: ""`).
-    const parsed = parseArgs(WRITE_MEMORY_ARGS, args)
+    // Exactly one mode: full write (`content`) or an edit, which needs both `oldString` and `newString`.
     const path = parsed.path ?? 'MEMORY.md'
     enforceBindingPolicy(ctx, path)
     const { oldString, newString, content } = parsed
@@ -305,10 +240,10 @@ export async function writeMemory(
  *  operate on canonical records instead of pretending the plugin has files. The current
  *  provider is re-resolved on EVERY call so a stale session tool cannot cross a provider or
  *  capability change. The trusted agent scope is always ctx.agentId. */
-function recordSurface(ctx: SessionContext, deps: MemoryOpsDeps) {
+async function recordSurface(ctx: SessionContext, deps: MemoryOpsDeps, mode: 'read' | 'write') {
   const surface = deps.memory.adminSurfaceForAgent?.(ctx.agentId) ?? deps.memory.adminSurface()
   if (!surface || surface.shape !== 'records') throw new Error('record memory is not available for this agent')
-  const scope = memoryScopeFor(ctx, deps)
+  const scope = await memoryScopeFor(ctx, deps, { mode })
   const requireCapability = (operation: 'recall' | 'create' | 'get' | 'update' | 'delete'): void => {
     if (!surface.capabilities.has(operation)) throw new Error(`record memory does not support ${operation}`)
   }
@@ -320,7 +255,7 @@ export async function searchMemory(
   args: Record<string, unknown>,
   deps: MemoryOpsDeps
 ): Promise<unknown> {
-  const { surface, scope, requireCapability } = recordSurface(ctx, deps)
+  const { surface, scope, requireCapability } = await recordSurface(ctx, deps, 'read')
   requireCapability('recall')
   const { query, topK, maxBytes } = parseArgs(SEARCH_MEMORY_ARGS, args)
   const records = await surface.search(scope, {
@@ -338,7 +273,7 @@ export async function saveMemory(
   args: Record<string, unknown>,
   deps: MemoryOpsDeps
 ): Promise<unknown> {
-  const { surface, scope, requireCapability } = recordSurface(ctx, deps)
+  const { surface, scope, requireCapability } = await recordSurface(ctx, deps, 'write')
   requireCapability('create')
   const { text, metadata } = parseArgs(SAVE_MEMORY_ARGS, args)
   const record = await surface.create(scope, {
@@ -354,7 +289,7 @@ export async function getMemory(
   args: Record<string, unknown>,
   deps: MemoryOpsDeps
 ): Promise<unknown> {
-  const { surface, scope, requireCapability } = recordSurface(ctx, deps)
+  const { surface, scope, requireCapability } = await recordSurface(ctx, deps, 'read')
   requireCapability('get')
   return { record: await surface.get(scope, parseArgs(GET_MEMORY_ARGS, args).id) }
 }
@@ -364,7 +299,7 @@ export async function updateMemory(
   args: Record<string, unknown>,
   deps: MemoryOpsDeps
 ): Promise<unknown> {
-  const { surface, scope, requireCapability } = recordSurface(ctx, deps)
+  const { surface, scope, requireCapability } = await recordSurface(ctx, deps, 'write')
   requireCapability('update')
   const { id, text, metadata, version } = parseArgs(UPDATE_MEMORY_ARGS, args)
   const record = await surface.update(scope, {
@@ -382,7 +317,7 @@ export async function deleteMemory(
   args: Record<string, unknown>,
   deps: MemoryOpsDeps
 ): Promise<unknown> {
-  const { surface, scope, requireCapability } = recordSurface(ctx, deps)
+  const { surface, scope, requireCapability } = await recordSurface(ctx, deps, 'write')
   requireCapability('delete')
   const { id, version } = parseArgs(DELETE_MEMORY_ARGS, args)
   return {

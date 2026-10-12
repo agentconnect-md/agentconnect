@@ -376,7 +376,17 @@ describe('ExternalMemoryProvider', () => {
       expect(receipt).toMatchObject({ state: 'completed', entry: { label: 'deploy safely', editable: true } })
       expect(h.client.create).toHaveBeenCalledWith(expect.objectContaining({ operationId: receipt.operationId }))
       await expect(
-        executeTool(ctx, 'createMemoryEntry', { text: 'x' }, { ...deps, memoryAccessDecision: () => 'deny' })
+        executeTool(
+          ctx,
+          'createMemoryEntry',
+          { text: 'x' },
+          {
+            ...deps,
+            memoryScope: () => {
+              throw new Error('shared layer only')
+            }
+          }
+        )
       ).rejects.toThrow()
       expect(h.client.create).toHaveBeenCalledTimes(1)
     } finally {

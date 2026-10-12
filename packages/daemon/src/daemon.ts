@@ -105,7 +105,6 @@ import {
   type TransferNetwork,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
-  effectiveManagedMemoryScope,
   RdSlackAction,
   WireFeishuCardActionEvent,
   WireGoogleChatCardAction,
@@ -261,7 +260,6 @@ import { attachmentMention, sniffImageMimeType } from './session/attachment-bloc
 import { McpControlServer } from './mcp/control-server.js'
 import { ADMIN_MCP_SERVER_NAME, RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { CodeHostEffectReq, SessionContext } from './mcp/ops.js'
-import type { MemoryAccessDecision, MemoryWriteAsk, MemoryWriteVerdict } from './mcp/ops/memory.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
@@ -331,7 +329,14 @@ import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { assistantSubsessionToolsFor, type SubsessionStopper } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
 import { askerOfFollower, PlaceMembers, turnAskers, type TurnMessage } from './assistant/place-members.js'
-import { NOBODY, type ConsoleVerdict, type ReadAsker, type TurnAskers } from './assistant/place-access.js'
+import {
+  NOBODY,
+  type ConsoleVerdict,
+  type PlaceKind,
+  type ReadAsker,
+  type SourcePlace,
+  type TurnAskers
+} from './assistant/place-access.js'
 import { personCouldActivate } from './assistant/place-askers.js'
 import { AssistantPatrols, PATROL_SWEEP_INTERVAL_MS, patrolTools, type PatrolParent } from './assistant/patrol.js'
 import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
@@ -345,7 +350,13 @@ import type {
 } from './store/assistant-drafts.js'
 import { settlePost, type PostOrigin } from './mcp/ops/messaging.js'
 import { slackDraftCardPort } from './platforms/slack/draft-card.js'
-import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
+import {
+  MEMORY_NO_PERSON_LAYER,
+  MEMORY_PERSON_LAYER_REFUSED,
+  MEMORY_SHARED_LAYER_ONLY,
+  MEMORY_TOOL_NAMES,
+  MEMORY_TOOLS
+} from './memory/tools.js'
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
@@ -358,8 +369,8 @@ import {
   type DreamOperationPolicy,
   type DreamPlaces
 } from './dream/runner.js'
-import { describePlace, kindFromRows, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
-import { PlaceTrust } from './assistant/place-trust.js'
+import { describePlace, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
+import { PLACE_SHARE_TTL_MS, PlaceTrust } from './assistant/place-trust.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
   conversationAdmitsAgent,
@@ -409,7 +420,12 @@ import { physicalThreadOf, registerThreadPromotion, threadPromotionFor } from '.
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { sessionLinkSourceFor } from './platforms/link-source.js'
 import { sessionThreadUrlFor } from './platforms/session-links.js'
-import { offersReadPort, platformLabel, reportsSharedConversations } from './platforms/read-ports.js'
+import {
+  confirmsInternalAudience,
+  offersReadPort,
+  platformLabel,
+  reportsSharedConversations
+} from './platforms/read-ports.js'
 import { registerObservedChannels } from './platforms/observed-channels.js'
 import { ObservedChannelsSync, type ObservedChannelsSyncHost } from './platforms/observed-channels-sync.js'
 import { discordObservedChannels } from './platforms/discord/observed-channels.js'
@@ -741,7 +757,14 @@ import {
   type MemoryScope,
   type PreparedExternalMemoryCapture
 } from './memory/provider.js'
-import { memoryChannelKey, MemoryHomeUnavailableError, type MemoryFs } from './memory/store.js'
+import { MemoryHomeUnavailableError, type MemoryFs } from './memory/store.js'
+import {
+  MemoryLayers,
+  memoryLayerFolder,
+  type MemoryLayerChoice,
+  type MemoryPlace,
+  type ResolvedMemoryLayer
+} from './memory/layers.js'
 import {
   memoryHomeOf,
   memoryHomeUnavailable,
@@ -3731,11 +3754,10 @@ export class Daemon {
         distill: async (agentId, turn) => {
           const agent = this.agents.get(agentId)
           if (!agent) throw new Error(`unknown agent ${agentId}`)
+          const scope = await this.memoryScopeForCapturedTurn(agentId, turn.sessionId ?? '')
+          if (!scope) return
           await this.memory.recordTurnForBinding(
-            {
-              ...(await this.memoryScopeForCapturedTurn(agentId, turn.sessionId ?? '')),
-              ...(turn.sessionId ? { sessionId: turn.sessionId } : {})
-            },
+            { ...scope, ...(turn.sessionId ? { sessionId: turn.sessionId } : {}) },
             {
               turnId: turn.turnId,
               ...(turn.sessionId ? { sessionId: turn.sessionId } : {}),
@@ -4131,11 +4153,6 @@ export class Daemon {
       codeHostEffect: (req) => this.runCodeHostEffect(req),
       memory: this.memory,
       memoryEntryStore: this.store,
-      // Every session may READ shared agent memory; a private session's WRITE asks the human in it
-      // first (#653; capture stays gated like post-turn distillation). Resolved from trusted session
-      // coords at call time so a policy change takes effect for an already-running ACP session.
-      memoryAccessDecision: (ctx, mode) => this.memoryAccessDecisionFor(ctx, mode),
-      requestMemoryWriteApproval: (ctx, ask) => this.requestMemoryWriteApprovalFor(ctx, ask),
       assistantItems: {
         ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantItems : undefined),
         askerFor: (ctx) => this.assistantAskerFor(ctx),
@@ -4181,12 +4198,8 @@ export class Daemon {
             .then((child) => (child ? this.store.assistantSubsessions.get(agentId, child.key) : undefined))),
         stopSession: (key, actor) => this.stopSessionByKey(key, actor)
       },
-      memoryScope: (ctx) => ({
-        ...this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
-        sourceTurnId: this.activeMemorySourceTurns.get(
-          sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-        )
-      }),
+      // Resolved from trusted session coordinates at call time, so a place that changes audience applies at once.
+      memoryScope: (ctx, call) => this.memoryToolScope(ctx, call),
       resolveAttachment: async (ctx, name) => {
         const found = await this.store.transcriptAttachmentByName(
           {
@@ -4390,12 +4403,21 @@ export class Daemon {
       // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
       // cwd against this filesystem — failing session create/load before the runtime call.
       workspaces: this.workspaces,
-      memoryScopeFor: (agentId, msg, integrationId) =>
-        this.memoryScope(
-          agentId,
-          msg.channel,
-          this.transportScopeForIntegrationIds(integrationId ? [integrationId] : [])
-        ),
+      memoryScopeFor: async (agentId, msg, integrationId, rec) =>
+        (
+          await this.memoryLayerFor(
+            this.memoryPlaceOf(
+              agentId,
+              {
+                platform: msg.platform,
+                channel: msg.channel,
+                transportScope: this.transportScopeForIntegrationIds(integrationId ? [integrationId] : [])
+              },
+              rec,
+              msg
+            )
+          )
+        ).scope,
       store: this.store,
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
@@ -7861,50 +7883,168 @@ export class Daemon {
     await Promise.all([...selected].map((lifecycle) => lifecycle.stop(0)))
   }
 
-  /** The memory-tool gate (#653): reads always pass; a private session's write asks unless it holds a session grant, or is closed in assistant mode. */
-  private async memoryAccessDecisionFor(ctx: SessionContext, mode: 'read' | 'write'): Promise<MemoryAccessDecision> {
-    if (mode === 'read') return 'allow'
-    // A daemon-minted binding (distillation) is never model-supplied and has no row for the gate to read.
-    if (ctx.memoryBinding) return 'allow'
-    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-    const excluded = await this.store.isCaptureExcluded(ctx.agentId, key)
-    // Assistant mode keeps private sessions and places out of shared memory: nobody is asked, no earlier grant applies (assistant-mode.md §5.5).
-    if (
-      assistantModeOn(this.agents.get(ctx.agentId)) &&
-      (excluded || (await this.sessionInPrivatePlace(ctx.agentId, key)))
-    )
-      return 'closed'
-    if (!excluded) return 'allow'
-    return this.memoryWriteGrants.has(key) ? 'allow' : 'ask'
+  /** Memory layered by audience, the same rule for every agent (unified-memory-interface.md §6). */
+  private readonly memoryLayers = new MemoryLayers({
+    chatPlatform: (platform) => this.placePlatforms().includes(platform),
+    integrationFor: (agentId, platform, transportScope) =>
+      this.integrationIdForTransportScope(agentId, platform, transportScope),
+    describe: (place, kind, integrationId) => this.describeMemoryPlace(place, kind, integrationId),
+    external: (agentId, integrationId, channel) => this.memoryPlaceExternal(agentId, integrationId, channel),
+    tenantScope: async (integrationId) => {
+      const integration = this.integrationConfigById(integrationId)
+      return integration ? await this.tenantScopeForIntegration(integration) : undefined
+    },
+    earlierSenders: async (place) =>
+      (await this.store.listSessions(place.agentId))
+        .filter(
+          (rec) =>
+            rec.platform === place.platform &&
+            rec.channel === place.channel &&
+            (rec.transportScope ?? null) === (place.transportScope ?? null)
+        )
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .flatMap((rec) => (rec.triggeredBy ? [rec.triggeredBy] : [])),
+    dmPeer: async (integrationId, channel) => {
+      const info = await this.gatewayForIntegration(integrationId)?.getChannelInfo(channel)
+      return info && 'user' in info && typeof info.user === 'string' ? info.user : undefined
+    },
+    linkedConsoleUser: (agentId, integrationId, memberId) => this.linkedConsoleUser(agentId, integrationId, memberId),
+    memoryTree: (agentId) => {
+      try {
+        return this.memoryHomePortsFor(agentId)?.live
+      } catch {
+        return undefined
+      }
+    },
+    now: () => this.clock.now(),
+    log: (message) => this.log.info(message)
+  })
+
+  /** The layer a conversation's memory uses and its scope; only managed memory keeps layers beside the shared one. */
+  private async memoryLayerFor(place: MemoryPlace): Promise<ResolvedMemoryLayer> {
+    const provider = this.agents.get(place.agentId)?.memory?.provider ?? 'managed'
+    if (provider === 'managed') return await this.memoryLayers.resolve(place)
+    const layer = provider === 'external' ? await this.memoryLayers.layerOf(place) : 'shared'
+    return { layer, scope: { agentId: place.agentId } }
   }
 
-  /** Whether a session sits in a place an assistant-mode agent must keep out of shared memory (assistant-mode.md §5.5); fails closed. */
-  private async sessionInPrivatePlace(agentId: string, key: string | undefined): Promise<boolean> {
-    const rec = key ? await this.store.getSession(key) : undefined
-    if (!rec) return true
-    return (
-      this.placePlatforms().includes(rec.platform) &&
-      !(await this.placeOpenForMemory(agentId, rec, [rec.conversationKind]))
-    )
-  }
-
-  /** Whether a place may feed shared memory: only a channel its platform explicitly reported not private; a DM, group DM, webchat or undetermined place may not. */
-  private async placeOpenForMemory(
+  /** A session's conversation as the layer rule reads it: its row, and the sender of the message at hand. */
+  private memoryPlaceOf(
     agentId: string,
     place: { platform: string; channel: string; transportScope?: string | null },
-    kinds: Iterable<string | null | undefined>
-  ): Promise<boolean> {
-    const rowKind = kindFromRows(place.platform, kinds)
-    if (rowKind !== undefined && rowKind !== 'channel') return false
-    // The recall rule's resolver: the snapshot row first, then the platform's own lookup.
-    const described = await describePlace(
-      { platform: place.platform, channel: place.channel },
-      rowKind,
-      this.integrationIdForTransportScope(agentId, place.platform, place.transportScope),
-      this.memoryPlaceDeps()
-    )
-    return described.kind === 'channel' && described.private === false
+    rec?: Pick<SessionRecord, 'conversationKind' | 'triggeredBy'>,
+    msg?: Pick<NormalizedMessage, 'source' | 'sender' | 'isDm' | 'isGroupDm' | 'headless'>
+  ): MemoryPlace {
+    // Only a message a person typed names a person; a patrol, a task, another agent or a schedule never does.
+    const speaker = msg && msg.source === 'user' && !msg.sender.isBot && !msg.headless ? msg.sender.id : undefined
+    const observed = msg?.isDm ? (msg.isGroupDm ? 'group_dm' : 'dm') : undefined
+    return {
+      agentId,
+      platform: place.platform,
+      channel: place.channel,
+      transportScope: place.transportScope ?? null,
+      kinds: [rec?.conversationKind, observed],
+      ...(speaker ? { speaker } : {}),
+      ...(rec?.triggeredBy ? { opener: rec.triggeredBy } : {})
+    }
   }
+
+  /** A memory tool call's scope: the session's own layers, or the one layer its `layer` argument names. */
+  private async memoryToolScope(
+    ctx: SessionContext,
+    call: { mode: 'read' | 'write'; layer?: MemoryLayerChoice }
+  ): Promise<MemoryScope> {
+    const key = this.sessionKeyOf(ctx)
+    const sourceTurnId = this.activeMemorySourceTurns.get(key)
+    const turn = sourceTurnId ? { sourceTurnId } : {}
+    const managed = (this.agents.get(ctx.agentId)?.memory?.provider ?? 'managed') === 'managed'
+    if (call.layer === 'shared') return { agentId: ctx.agentId, ...turn }
+    if (call.layer === 'person') {
+      if (!managed) throw new Error(MEMORY_NO_PERSON_LAYER)
+      // Only the person behind the whole turn reaches their own layer, the way their own reads are judged.
+      const askers = await this.readAskersFor(ctx)
+      const [asker] = askers.people
+      const scope =
+        !askers.nobody && askers.people.length === 1 && asker
+          ? await this.memoryLayers.personScope(ctx.agentId, asker)
+          : undefined
+      if (!scope) throw new Error(MEMORY_PERSON_LAYER_REFUSED)
+      return { ...scope, alone: true, ...turn }
+    }
+    const rec = await this.store.getSession(key)
+    const msg = this.liveTurn(ctx)?.msg
+    const { layer, scope } = await this.memoryLayerFor(this.memoryPlaceOf(ctx.agentId, ctx, rec, msg))
+    // External memory is the shared layer alone, so a conversation with a narrower audience writes there only when asked.
+    if (!managed && call.mode === 'write' && layer !== 'shared') throw new Error(MEMORY_SHARED_LAYER_ONLY)
+    return { ...scope, ...(call.layer === 'here' ? { alone: true } : {}), ...turn }
+  }
+
+  /** Whether the agent already holds a conversation external (a share or a guest detected); one it cannot place counts as such. */
+  private memoryPlaceExternal(agentId: string, integrationId: string | undefined, channel: string): boolean {
+    const int = integrationId ? this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId) : undefined
+    return int === undefined || conversationTrustLevel(int, channel) === 'external'
+  }
+
+  /** The console user a chat member linked, through the Control Plane mapping the read rule uses; rejects when it cannot be asked. */
+  private async linkedConsoleUser(
+    agentId: string,
+    integrationId: string,
+    memberId: string
+  ): Promise<string | undefined> {
+    const cp = this.cpClient
+    if (cp?.supportsServerFeature?.(READ_ACCESS_V1_FEATURE) !== true) throw new Error('read access unavailable')
+    const res = await cp.readAccess(
+      { agentId, asker: { integrationId, memberId }, sessionIds: [] },
+      this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+    )
+    return res.asker === 'linked' ? res.consoleUserId : undefined
+  }
+
+  /** A place for the layer rule; a lookup's answer on privacy is kept, so a place is asked once rather than every turn. */
+  private async describeMemoryPlace(
+    place: { platform: string; channel: string },
+    kind: PlaceKind | undefined,
+    integrationId: string | undefined
+  ): Promise<SourcePlace> {
+    const deps = this.memoryPlaceDeps()
+    const known = integrationId ? deps.placeSnapshot?.(integrationId, place.channel)?.isPrivate : undefined
+    const described = await describePlace(place, kind, integrationId, deps)
+    if (known === undefined && described.private !== undefined)
+      this.conversationPrivacy.set(place.channel, described.private)
+    // A public channel whose sharing nothing said yet is asked once more, on platforms that can confirm it.
+    if (
+      integrationId &&
+      described.kind === 'channel' &&
+      described.private === false &&
+      described.external === undefined &&
+      confirmsInternalAudience(place.platform)
+    ) {
+      const external = await this.memoryShareLookup(integrationId, place.channel)
+      if (external !== undefined) return { ...described, external }
+    }
+    return described
+  }
+
+  /** Whether the platform reports a conversation shared with another organization now; kept a minute, a failed lookup not at all. */
+  private async memoryShareLookup(integrationId: string, channel: string): Promise<boolean | undefined> {
+    const key = `${integrationId}\u001f${channel}`
+    const hit = this.memoryShares.get(key)
+    if (hit && this.clock.now() - hit.at < PLACE_SHARE_TTL_MS) return hit.external
+    const info = await this.gatewayForIntegration(integrationId)
+      ?.getChannelInfo(channel)
+      .catch(() => undefined)
+    const reason = info && 'externalReason' in info ? info.externalReason : undefined
+    if (reason === undefined) return undefined
+    const external = reason !== null
+    this.memoryShares.delete(key)
+    this.memoryShares.set(key, { at: this.clock.now(), external })
+    if (this.memoryShares.size > 512) {
+      const oldest = this.memoryShares.keys().next().value
+      if (oldest !== undefined) this.memoryShares.delete(oldest)
+    }
+    return external
+  }
+  private readonly memoryShares = new Map<string, { at: number; external: boolean }>()
 
   /** describePlace's inputs for memory: the snapshot row, plus the privacy a channel lookup cached; `isPrivate: true` from either wins. */
   private memoryPlaceDeps(): Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'> {
@@ -7914,14 +8054,17 @@ export class Daemon {
         const row = this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel)
         const looked = this.conversationPrivacy.get(channel)
         const isPrivate = row?.isPrivate === true || looked === true ? true : (row?.isPrivate ?? looked)
-        return { ...(row?.kind ? { kind: row.kind } : {}), ...(isPrivate !== undefined ? { isPrivate } : {}) }
+        return {
+          ...(row?.kind ? { kind: row.kind } : {}),
+          ...(isPrivate !== undefined ? { isPrivate } : {}),
+          ...(row?.externalReason !== undefined ? { externalReason: row.externalReason } : {})
+        }
       }
     }
   }
 
-  /** An assistant-mode agent's places for a dream's source query: the conversations of its sessions known open. */
-  private async dreamPlaces(agentId: string): Promise<DreamPlaces | undefined> {
-    if (!assistantModeOn(this.agents.get(agentId))) return undefined
+  /** Every agent's places for a dream's source query: the conversations of its sessions that use the shared layer. */
+  private async dreamPlaces(agentId: string): Promise<DreamPlaces> {
     const platforms = this.placePlatforms()
     const byPlace = new Map<string, { place: SessionRecord; kinds: (string | null | undefined)[] }>()
     for (const session of await this.store.listSessions(agentId)) {
@@ -7932,24 +8075,16 @@ export class Daemon {
       byPlace.set(id, entry)
     }
     const open: string[] = []
-    for (const { place, kinds } of byPlace.values())
-      if (await this.placeOpenForMemory(agentId, place, kinds)) open.push(place.channel)
+    for (const { place, kinds } of byPlace.values()) {
+      const layer = await this.memoryLayers.layerOf({ ...this.memoryPlaceOf(agentId, place), kinds })
+      if (layer === 'shared') open.push(place.channel)
+    }
     return { platforms, open }
   }
 
   /** The platforms whose sessions are places (assistant-mode.md §5.2): every chat platform's and webchat's; a code host's or a cron's is none. */
   private placePlatforms(): string[] {
     return [...platformIds(), 'webchat']
-  }
-
-  /** Ask the human behind the session's live turn about ONE write; "for this session" is remembered here. */
-  private async requestMemoryWriteApprovalFor(ctx: SessionContext, ask: MemoryWriteAsk): Promise<MemoryWriteVerdict> {
-    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-    const p = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
-    if (!p) return 'no_approver'
-    const outcome = await this.permissions.askMemoryWriteApproval(p.hostKey, p.acpSessionId, ask)
-    if (outcome === 'allow_session') this.memoryWriteGrants.add(key)
-    return outcome === 'allow_once' || outcome === 'allow_session' ? 'allowed' : outcome
   }
 
   /** Assistant-mode drafts (assistant-mode.md §5.5), built on first use over the live store. */
@@ -8759,27 +8894,26 @@ export class Daemon {
     return askerIdentity(msg, integration ? await this.tenantScopeForIntegration(integration) : undefined)
   }
 
-  /** Build the memory scope for an agent + conversation. For a `channel`-scoped
-   *  agent this carries the per-channel folder key (DM/webchat are special channels
-   *  keyed by their conversation); otherwise it is the agent-level store (#653). */
-  private memoryScope(agentId: string, channel: string | undefined, transportScope?: string | null): MemoryScope {
-    const agent = this.agents.get(agentId)
-    if (effectiveManagedMemoryScope(agent?.memory) !== 'channel' || !channel) return { agentId }
-    return {
-      agentId,
-      channelKey: memoryChannelKey(channel, transportScope ?? undefined),
-      channel,
-      ...(transportScope ? { transportScope } : {})
-    }
+  /** The layer a session's conversation uses and its scope, from the session row. */
+  private async memoryLayerOfSession(
+    agentId: string,
+    rec: SessionRecord | undefined,
+    msg?: NormalizedMessage
+  ): Promise<ResolvedMemoryLayer | undefined> {
+    return rec ? await this.memoryLayerFor(this.memoryPlaceOf(agentId, rec, rec, msg)) : undefined
   }
 
   // Memory scope of a captured turn on replay: the capture names its session outwardly (§1.1); a row
   // captured before that was named by the runtime's id, which is tried second.
-  private async memoryScopeForCapturedTurn(agentId: string, capturedSessionId: string): Promise<MemoryScope> {
+  private async memoryScopeForCapturedTurn(
+    agentId: string,
+    capturedSessionId: string
+  ): Promise<MemoryScope | undefined> {
     const rec =
       (await this.store.getSessionByOutwardId(capturedSessionId, agentId)) ??
       (await this.store.getSessionByAcpIdForAgent(agentId, capturedSessionId))
-    return this.memoryScope(agentId, rec?.channel, rec?.transportScope)
+    // A capture whose session is gone has no audience left to place it by, so it is dropped.
+    return (await this.memoryLayerOfSession(agentId, rec))?.scope
   }
 
   private async queueMemoryPostTurn(
@@ -8792,14 +8926,20 @@ export class Daemon {
     captureTarget?: PreparedExternalMemoryCapture,
     evaluationTurnId = turnId,
     // The logical session and its outward id: the gate is keyed by the former, the capture names the latter.
-    session?: { key: string; outwardSessionId: string }
+    session?: { key: string; outwardSessionId: string },
+    // The turn's message, which names the person when one typed it.
+    msg?: NormalizedMessage
   ): Promise<void> {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
-    // Shared memory never takes a capture-excluded turn, checked before distillation and the external outbox alike; fails closed.
-    if (await this.store.isCaptureExcluded(agentId, session?.key)) return
-    // Nor, in assistant mode, a turn in a place not known to be open (assistant-mode.md §5.5).
-    if (assistantModeOn(this.agents.get(agentId)) && (await this.sessionInPrivatePlace(agentId, session?.key))) return
+    // The turn goes to its conversation's layer (unified-memory-interface.md §6); a session with no row has none.
+    const rec = session ? await this.store.getSession(session.key) : undefined
+    const placed = await this.memoryLayerOfSession(agentId, rec, msg)
+    if (!placed) return
+    // The shared layer never takes a capture-excluded turn, checked before distillation and the external outbox alike.
+    if (placed.layer === 'shared' && (await this.store.isCaptureExcluded(agentId, session?.key))) return
+    // External memory is the shared layer alone.
+    if (binding?.provider === 'external' && placed.layer !== 'shared') return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -8813,10 +8953,9 @@ export class Daemon {
         })
       }
       try {
-        const rec = session ? await this.store.getSession(session.key) : undefined
         const capturedSessionId = session?.outwardSessionId ?? sessionId
         await this.memory.recordTurnForBinding(
-          { ...this.memoryScope(agentId, rec?.channel, rec?.transportScope), sessionId: capturedSessionId },
+          { ...placed.scope, sessionId: capturedSessionId },
           { turnId, sessionId: capturedSessionId, input, output },
           binding,
           captureTarget
@@ -8883,11 +9022,9 @@ export class Daemon {
     this.memoryPostTurnChains.set(agentId, next)
   }
 
-  /** Cache key for a distillation session: the agent AND the store it is bound to, so
-   *  a channel-scoped agent does not reuse the first channel's session (and its pinned
-   *  scope) for every later channel on the same warm host. */
+  /** A distillation session's cache key: the agent and its layer, so no layer reuses another's pinned scope. */
   private memoryExtractionKey(agentId: string, scope?: MemoryScope): string {
-    return `${agentId}\u0000${scope?.channelKey ?? ''}`
+    return `${agentId}\u0000${scope ? memoryLayerFolder(scope) : 'shared'}`
   }
 
   /** Run one of the daemon's own passes, holding the agent's shared host against the idle reaper from before the pass fetches it until it settles. */
@@ -15905,9 +16042,6 @@ export class Daemon {
           // conversation post, not an address — it must not defeat the response-choice
           // rule (webchat-multi-agents.md §5.2a).
           directAgentCall: plan.directAgentCall,
-          // Memory READS (index injection + auto-recall) are not session-gated — every session may
-          // use shared memory (#653). WRITES stay gated (memory write tools via memoryAccessDecision,
-          // which asks the human in a private session; post-turn distillation via isCaptureExcluded).
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
           ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
           ...(webchatIsolation ? { workspaceIsolation: webchatIsolation } : {}),
@@ -17557,7 +17691,8 @@ export class Daemon {
       agent.memory,
       memoryCaptureTarget,
       plan.evaluationTurnId,
-      { key, outwardSessionId: p.outwardSessionId }
+      { key, outwardSessionId: p.outwardSessionId },
+      msg
     )
     evaluation.finishEvaluation('turn.completed', {
       ...(stopReason ? { stopReason } : {}),
@@ -19708,11 +19843,6 @@ export class Daemon {
    * makes is a fresh call (hopCount 0, no inherited correlation).
    */
   private activeTurnCallMeta = new Map<string, CallMeta>()
-
-  /** Private sessions whose human chose "Allow for this session" on a memory write, by logical
-   *  sessionKey (session-visibility.md §5.1): later writes there skip the ask. In-memory on purpose —
-   *  a daemon restart forgets the grant — and dropped with the session row. */
-  private readonly memoryWriteGrants = new Set<string>()
 
   /** The active turn's trusted `shareFile` post target, by logical sessionKey — the
    *  coordinate + per-platform anchor the tool may NOT receive from the model
@@ -22984,7 +23114,6 @@ export class Daemon {
           await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })
         ) {
           removed += 1
-          this.memoryWriteGrants.delete(rec.key)
           this.sessionStrategies.delete(rec.key)
           this.expireAppCards({ sessionKey: rec.key })
           if (rec.acpSessionId)

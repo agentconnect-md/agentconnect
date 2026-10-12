@@ -240,52 +240,38 @@ interface DreamRecord {
    "duplicates possible, gaps never". A scheduled tick with no such session is
    skipped (nothing new to consolidate). An explicit `sessionWindow` (a per-run
    manual override, or a legacy configured policy value) instead pins a fixed
-   newest-N window. Every session the agent itself
-   participated in is eligible — channel, DM, webchat, external (GitHub), A2A, and
-   launched alike;
-   the per-turn capture-visibility gate is deliberately **not** applied here (see
-   session-visibility.md §5.1 dream-path carve-out). Peer isolation stays with the
+   newest-N window. A dream rewrites the shared memory layer only
+   ([product conventions](../product-conventions.md#memory-layers)), so it mines
+   only the sessions whose conversation uses that layer, for every agent: a public
+   channel the platform confirms holds only the organization's members, and a
+   session that is no conversation at all (a code host's, a hook's). A DM, a
+   webchat conversation, a group DM, a private channel, a conversation with
+   outsiders and a group the platform cannot confirm (Telegram, Discord,
+   Lark/Feishu) keep a person or place layer of their own, which is not dreamed;
+   neither is a session the capture gate excludes (the CP-confirmed `private` bit
+   once it has arrived, the daemon's local verdict — DM, webchat, A2A child,
+   launch-correlated — before that). The daemon decides each place with the same
+   resolver the read rule uses (`describePlace`): the session's own
+   classification, then the channel snapshot of the session's integration (the
+   platform-neutral `isPrivate` and conversation kind of membership listings and
+   observed conversations, joined by the `isPrivate` a channel lookup cached), and
+   only when that leaves it open a live `getChannelInfo`, whose answer is then
+   kept. `isPrivate: true` from either source wins. A place still undetermined —
+   right after a restart, before the membership listing reloads — is not mined.
+   A dream resolves each place of the agent's sessions once and filters in the
+   source query, before the cap, so a skipped session neither takes a slot nor
+   counts as new activity for a scheduled tick. Peer isolation stays with the
    source: sourcing is `agentId`-scoped and each transcript returns only the rows
    this agent sent, received, or was delivered, so a peer's private session never
-   enters. For memory consolidation only user/agent
-   text rows are used; when `mineSkills` is set, tool rows are included as
-   **titles plus truncated inputs** (command lines, file paths — enough to see
-   _what_ the agent did) while raw tool outputs stay excluded, both for
-   context-budget and for secret-hygiene reasons. Everything is clamped per
-   session and overall, newest first until the byte budget is spent. The dream
-   policy prompt — not a hard pre-filter — keeps a person's private/personal
-   conversation from becoming shared organization knowledge.
-
-   **Assistant-mode agents are the exception** ([assistant-mode.md](assistant-mode.md)
-   §5.5), and for them this is a deliberate retreat from the carve-out above: their
-   dreams skip every private session and every session in a private place, which
-   per-turn capture and explicit memory writes skip for them too. A session is
-   private by the gate capture reads — the CP-confirmed `private` bit once it has
-   arrived, the daemon's local verdict (DM, webchat, A2A child, launch-correlated)
-   before that, and excluded when neither is known. A place — a chat platform's
-   conversation or a webchat conversation — counts as private unless its
-   platform has explicitly reported it a channel that is not private; that is not
-   a session visibility (group DMs and channels are `org`). The daemon decides it
-   with the same resolver the recall rule uses (`describePlace`): the session's
-   own classification (a `dm` or `group_dm` conversation kind is private), then
-   the channel snapshot of the session's integration, built from the
-   platform-neutral `isPrivate` and conversation kind of membership listings
-   (`PlatformChannelRef`) and observed conversations (`ObservedChat`) and joined
-   by the `isPrivate` a channel lookup cached, and only when that leaves it open a
-   live `getChannelInfo` (`PlatformChannelInfo`). `isPrivate: true` from either
-   source wins over `false`, and a platform that cannot tell reports `isPrivate: false`
-   explicitly. A place still undetermined — right after a restart, before the
-   membership listing reloads or the chat is observed or looked up, or when the
-   lookup fails — fails closed: its turns are not captured, writes there are
-   refused, and a dream skips its sessions. A webchat conversation never comes
-   open. Sessions that are no place (a code host's, a cron's) follow the capture
-   gate alone. A dream resolves each place of the agent's sessions once and
-   filters in the source query, before the cap, so a skipped session neither
-   takes a slot nor counts as new activity for a scheduled tick. What a person
-   says to an assistant in a DM, a group DM or a private channel therefore never
-   reaches its shared memory, where every other place could recall it; the
-   per-person memory space (P1) is where such conversations will be remembered.
-   Other agents keep the behavior above.
+   enters. For memory consolidation only user/agent text rows are used; when
+   `mineSkills` is set, tool rows are included as **titles plus truncated inputs**
+   (command lines, file paths — enough to see _what_ the agent did) while raw tool
+   outputs stay excluded, both for context-budget and for secret-hygiene reasons.
+   Everything is clamped per session and overall, newest first until the byte
+   budget is spent. This replaces the earlier carve-out that mined every session
+   and left a person's private conversation to the dream policy prompt; that
+   prompt line stays as a second guard. Person and place layers are not dreamed
+   for now.
 
 3. **Dream.** Run an isolated ACP session on the agent's runtime host through
    the shared extraction-session helper (§8): cwd `input/`, a verified read-only

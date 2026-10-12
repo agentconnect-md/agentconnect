@@ -135,13 +135,17 @@ export function memoryDir(agentDir: string): string {
   return join(agentDir, MEMORY_DIRNAME)
 }
 
-/** Sibling of `memory/` that holds one self-contained memory subtree per channel
- *  when the agent's memory scope is `channel` (#653). */
+/** Sibling of `memory/` holding one self-contained memory subtree per place layer: a conversation's own memory. */
 export const CHANNEL_MEMORY_DIRNAME = 'channels'
+/** Sibling of `memory/` holding one self-contained memory subtree per person layer. */
+export const PERSON_MEMORY_DIRNAME = 'people'
+/** The layer folders beside the shared store, each a set of self-contained memory roots. */
+export const MEMORY_LAYER_DIRNAMES: readonly string[] = [CHANNEL_MEMORY_DIRNAME, PERSON_MEMORY_DIRNAME]
 /** The daemon-owned dirs directly under an agent dir that never hold `agent.json`; the archive dirs join by prefix. */
 export const DAEMON_OWNED_AGENT_DIRNAMES: readonly string[] = [
   MEMORY_DIRNAME,
   CHANNEL_MEMORY_DIRNAME,
+  PERSON_MEMORY_DIRNAME,
   MEMORY_BACKUPS_DIRNAME,
   MEMORY_DREAMS_DIRNAME
 ]
@@ -150,7 +154,15 @@ export const DAEMON_OWNED_AGENT_DIRNAMES: readonly string[] = [
  *  readable prefix and appends a short digest so distinct (transportScope, channel)
  *  pairs never collide after sanitization. */
 export function memoryChannelKey(channel: string, transportScope?: string): string {
-  const raw = transportScope ? `${transportScope}::${channel}` : channel
+  return memoryFolderKey(transportScope ? `${transportScope}::${channel}` : channel)
+}
+
+/** The folder name of one person's layer, from their identity (`user:<id>` or `<platform>:<scope>:<uid>`). */
+export function memoryPersonKey(identity: string): string {
+  return memoryFolderKey(identity)
+}
+
+function memoryFolderKey(raw: string): string {
   const digest = createHash('sha256').update(raw).digest('hex').slice(0, 12)
   const prefix = raw
     .replace(/[^A-Za-z0-9._-]/g, '-')
@@ -174,6 +186,23 @@ function assertChannelKey(channelKey: string): void {
 export function channelMemoryRoot(fs: MemoryFs, channelKey: string): MemoryFs {
   assertChannelKey(channelKey)
   return fs.subdir(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}`)
+}
+
+/** The self-contained memory root of one person's layer; `personKey` comes from {@link memoryPersonKey}. */
+export function personMemoryRoot(fs: MemoryFs, personKey: string): MemoryFs {
+  assertChannelKey(personKey)
+  return fs.subdir(`${PERSON_MEMORY_DIRNAME}/${personKey}`)
+}
+
+/** Move a layer folder that holds memory onto one that does not exist yet; true when it moved. */
+export async function adoptMemoryLayer(fs: MemoryFs, from: string, to: string): Promise<boolean> {
+  return await withMemoryDirLock(fs.subdir(from), () =>
+    withMemoryDirLock(fs.subdir(to), async () => {
+      if ((await fs.readdir(to)).length > 0) return false
+      if ((await fs.readdir(`${from}/${MEMORY_DIRNAME}`)).length === 0) return false
+      return await fs.rename(from, to)
+    })
+  )
 }
 
 /** Source identity of a channel memory folder, so the console can render a name
@@ -214,7 +243,12 @@ export async function readChannelMemoryMeta(fs: MemoryFs, channelKey: string): P
 /** List the channelKeys that have a memory subtree under an agent root (the folder
  *  names under `channels/`). Absent ⇒ none. */
 export async function listChannelMemoryKeys(fs: MemoryFs): Promise<string[]> {
-  const entries = await fs.readdir(CHANNEL_MEMORY_DIRNAME)
+  return await listMemoryLayerKeys(fs, CHANNEL_MEMORY_DIRNAME)
+}
+
+/** The folder names of one layer dir (`channels/` or `people/`); absent ⇒ none. */
+export async function listMemoryLayerKeys(fs: MemoryFs, dir: string): Promise<string[]> {
+  const entries = await fs.readdir(dir)
   return entries
     .filter((d) => d.kind === 'dir' && CHANNEL_KEY_RE.test(d.name))
     .map((d) => d.name)
