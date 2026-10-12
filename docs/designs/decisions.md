@@ -2043,7 +2043,7 @@ default, and a saved false Fast mode remains off.
 
 In the new-chat composer, an Agent with a binding starts on **By decision**. The
 picker's top row names the saved Decision; choosing a concrete provider/model is
-a manual override for that new session when chat runtime changes are allowed.
+a manual override for that new session when people in chat may change settings.
 Returning to By decision clears that staged pair. Merely displaying the fallback
 must not send a model override and accidentally bypass evaluation. Runtime choice
 is fixed after the session starts; existing supported in-session model, effort,

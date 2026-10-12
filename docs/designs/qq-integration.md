@@ -14,8 +14,8 @@ agent across multiple conversations. Members of the same group share a task
 session; different groups and individual DMs remain separate.
 
 The first contribution focuses on QQ adaptation through existing contracts.
-Shared group-history and chat-approval behavior require upstream-owned designs;
-QQ adopts those contracts once agreed and available.
+Shared group-history behavior requires an upstream-owned design; QQ adopts that
+contract once agreed and available. Chat approval has one, which QQ does not take (§4).
 
 | Capability            | Initial scope and boundary                                                                                                                          |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -24,7 +24,7 @@ QQ adopts those contracts once agreed and available.
 | Streaming             | Native DM streaming. Groups receive limited progress and final replies; QQ does not provide group streaming.                                        |
 | Attachments           | Receive images/files and send images. Non-image sending is conditional on the small common extension in section 4.                                  |
 | Interactive questions | A numbered text card through `ElicitCardFacet`, answered by quoting it. Single-choice and yes/no questions; other shapes keep the decline notice.   |
-| Tool approvals        | Existing Console approval; QQ-side approval awaits a common interface.                                                                              |
+| Tool approvals        | Existing Console approval, with a notice in the conversation; QQ has no approval card (§4).                                                         |
 | Feedback and results  | DM typing hints or brief group acknowledgement; retained results remain available in the Console if delivery fails. No native read-receipt promise. |
 
 QQ channels/guilds, dedicated audio/video support, multi-agent bot sharing,
@@ -183,20 +183,12 @@ context, not complete group discussion awareness.
 
 ### In-chat tool approvals
 
-**Need:** authorized users decide tool requests where the task originated.
-Ordinary questions have a platform interface, but tool approvals still contain
-Slack-specific connection, presentation, and resolver-identity logic.
-
-**Suggested direction:** upstream defines common presentation, decision
-submission, and actor identity. Core retains allowed decisions, authorization,
-audit, expiry/cancellation, and single settlement across Console/chat races,
-for both native permissions and tool approvals carried through elicitation.
-
-QQ displays the request and returns a button or explicit textual decision to
-core validation. An authorized agent editor must enable chat approval and
-identify approvers; group membership, group administration, or starting a task
-does not grant approval authority. Failure and stale controls never imply
-approval. The base contribution uses the Console.
+Tool approvals now have a common interface, the approval-card facet
+([integration-plugin-architecture.md](integration-plugin-architecture.md) §7.3),
+and who may answer is the agent's "What people can do in chat" setting
+([product-conventions.md](../product-conventions.md)). QQ does not implement it:
+its message buttons need a grant from QQ that a bot cannot count on. A QQ
+conversation gets a notice, and its approvals are answered in the Console.
 
 ### Non-image file sharing
 
@@ -228,9 +220,8 @@ then a real official bot for provider/client behavior:
 Quote identifiers, button access, stream limits, and reply windows require live
 validation; QQ's DM documentation gives inconsistent reply durations. Full-group
 events can be probed independently without building a QQ-only history system.
-Common-history and approval acceptance adds pre-mention context, visible gaps,
-unauthorized approvers, and competing decisions. These are separate from base
-adapter acceptance; this design does not claim live QQ validation.
+Common-history acceptance adds pre-mention context and visible gaps. It is
+separate from base adapter acceptance; this design does not claim live QQ validation.
 
 ## 6. References
 

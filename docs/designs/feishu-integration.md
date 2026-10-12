@@ -598,8 +598,9 @@ single field threaded end to end:
 
 1. Schema, DTOs, and web have no public `bot.feishuAppId` column. The checklist
    remains the group-installation path until an add-to-group link is required.
-2. The current integration supports **plain text plus text commands**;
-   interactive cards remain deferred.
+2. Replies, agent questions and tool approvals use interactive cards (§7.3,
+   [integration-plugin-architecture.md](integration-plugin-architecture.md) §7.3);
+   other session controls remain text commands.
 3. Determine whether `WSClient` reconnection needs an additional reconciliation
    fallback, or
    can it rely entirely on SDK internal reconnection? Decide after observing the

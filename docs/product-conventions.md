@@ -1037,9 +1037,8 @@ mode is switched off. A card shown before assistant mode was switched off or on 
 even when clicked later. Whether a post needs approval follows from its target, never from the
 model's judgment.
 
-Runtime permission requests in an external place get no card or notice in the conversation.
-Their approval DM goes to the person who asked when they are an internal member and "What people
-can do in chat" includes approving tool calls, and otherwise to an agent editor. Draft cards are
+Runtime permission requests in an external place get no card or notice in the conversation; who
+is asked instead is in "What people can do in chat". Draft cards are
 delivered on Slack; when no member or conversation can be reached the draft is kept until it
 expires, nothing is sent, and for a post it attempted the agent is told so.
 
