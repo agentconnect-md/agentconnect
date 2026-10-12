@@ -100,9 +100,11 @@ Two things are outside this setting:
   whoever could ask there may approve it ("Assistant-mode proposals").
 - Stopping a turn or a sub-session, which follows the `!stop` sender rule.
 
-Existing agents keep their behavior. "Allow runtime changes in chat" switched off maps to the
-first level, and switched on maps to the third. On a platform whose permissions are synced,
-the third level narrows who may act to the agent's editors, as the rule above says.
+Existing agents start where a new one does. An agent that had "Allow runtime changes in chat"
+switched off, or never set, moves to the second level, and one that had it switched on moves to
+the third. On a platform whose permissions are synced, both levels narrow who may act to the
+agent's editors, as the rule above says. An agent that should take no answers from chat, such as
+one in a public group, is set to the first level.
 
 ## Public platform app descriptions
 
