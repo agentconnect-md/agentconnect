@@ -15,6 +15,7 @@ import type { SubsessionApprovalRoute } from '../src/permissions/subsession-appr
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
+import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from '../src/telegram/render.js'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -407,27 +408,38 @@ describe('a refusal said within a limit', () => {
   const url = `https://console.example.test/${'a'.repeat(150)}/sessions/sid-1`
 
   it('keeps the link where it fits, and drops it whole where it does not', () => {
-    expect(approvalRefusalText('https://console.example.test/s', undefined, 200)).toBe(
+    expect(approvalRefusalText('closed', 'https://console.example.test/s', TELEGRAM_CALLBACK_ANSWER_LIMIT)).toBe(
       'Only an Agent editor can answer this request. They can answer it in the console: https://console.example.test/s'
     )
-    expect(approvalRefusalText(url, undefined, 200)).toBe(
+    expect(approvalRefusalText('closed', url, TELEGRAM_CALLBACK_ANSWER_LIMIT)).toBe(
       'Only an Agent editor can answer this request. They can answer it in the console.'
     )
-    expect(settingsRefusalText(url, undefined, 200)).toBe(
+    expect(settingsRefusalText(url, undefined, TELEGRAM_CALLBACK_ANSWER_LIMIT)).toBe(
       'Only an Agent editor can change runtime settings. They can change them in the console.'
     )
     // No limit, no change.
-    expect(approvalRefusalText(url)).toContain(url)
+    expect(approvalRefusalText('closed', url)).toContain(url)
   })
 
-  it('keeps the link hint where it fits, else drops it too', () => {
-    const roomy = approvalRefusalText(url, 'unlinked', 400)
+  it('keeps a settings refusal’s link hint where it fits, else drops it too', () => {
+    const roomy = settingsRefusalText(url, 'unlinked', 400)
     expect(roomy).not.toContain(url)
     expect(roomy).toContain(CHAT_LINK_HINT)
-    expect(approvalRefusalText(url, 'unlinked', 200)).toBe(
-      'Only an Agent editor can answer this request. They can answer it in the console.'
+    expect(settingsRefusalText(url, 'unlinked', TELEGRAM_CALLBACK_ANSWER_LIMIT)).toBe(
+      'Only an Agent editor can change runtime settings. They can change them in the console.'
     )
   })
+
+  it.each(['not-editor', 'unlinked', 'unavailable'] as const)(
+    'names no console link in a synced platform’s %s approval refusal, and fits a Telegram alert',
+    (why) => {
+      const told = approvalRefusalText(why, 'https://console.example.test/s', TELEGRAM_CALLBACK_ANSWER_LIMIT)
+      expect(told).not.toContain('in the console')
+      expect(told).not.toContain('console.example.test')
+      expect(told).not.toContain(CHAT_LINK_HINT)
+      expect(told.length).toBeLessThanOrEqual(TELEGRAM_CALLBACK_ANSWER_LIMIT)
+    }
+  )
 })
 
 describe('the approval-card facet', () => {

@@ -10,7 +10,6 @@ import {
 } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import { agentHostKey } from '../src/acp/host-key.js'
-import { CHAT_LINK_HINT } from '../src/agents/chat-actions.js'
 import { senderActor } from '../src/commands/handlers.js'
 import { Daemon } from '../src/daemon.js'
 import { pendingTurnKey, type Pending } from '../src/daemon/turn-types.js'
@@ -433,6 +432,11 @@ describe.each(['feishu', 'googlechat'] as const)('%s permission cards', (platfor
 })
 
 describe('synced Feishu/Lark takes chat actions only from the agent’s editors, by union_id', () => {
+  const NOT_EDITOR = 'Only an Agent editor can answer this request.'
+  const UNLINKED =
+    'Only an Agent editor can answer this request, from a chat account linked to their console account. If that is you, link this account under Sign-in methods in your console Profile and try again.'
+  const UNAVAILABLE =
+    "Who you are can't be checked right now, so this request can't be answered here. Try again in a moment."
   const synced = (level: 'approve' | 'settings' = 'approve') =>
     world('feishu', {
       level,
@@ -455,10 +459,9 @@ describe('synced Feishu/Lark takes chat actions only from the agent’s editors,
     const w = await synced()
     void w.permissions.onAcpPermission(AGENT, 's1', permission())
     await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
-    const member = await w.click(1, { userId: 'ou_member', memberId: 'on_member' })
-    expect(member).toContain('Only an Agent editor can answer this request')
-    expect(member).not.toContain(CHAT_LINK_HINT)
-    expect(await w.click(1, { userId: 'ou_stranger', memberId: 'on_stranger' })).toContain(CHAT_LINK_HINT)
+    // Neither is sent to a console page that shows this conversation only to the same people.
+    expect(await w.click(1, { userId: 'ou_member', memberId: 'on_member' })).toBe(NOT_EDITOR)
+    expect(await w.click(1, { userId: 'ou_stranger', memberId: 'on_stranger' })).toBe(UNLINKED)
     expect(w.permissions.pendingApprovals.size).toBe(1)
     expect(w.rewrites()).toEqual([])
     await w.store.close()
@@ -468,9 +471,7 @@ describe('synced Feishu/Lark takes chat actions only from the agent’s editors,
     const w = await synced()
     void w.permissions.onAcpPermission(AGENT, 's1', permission())
     await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
-    expect(await w.click(1, { userId: 'ou_editor', name: 'Ed' })).toContain(
-      'Only an Agent editor can answer this request'
-    )
+    expect(await w.click(1, { userId: 'ou_editor', name: 'Ed' })).toBe(UNAVAILABLE)
     expect(w.asked).toEqual([])
     expect(w.permissions.pendingApprovals.size).toBe(1)
     await w.store.close()

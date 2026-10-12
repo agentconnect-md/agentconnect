@@ -8,7 +8,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { APPROVAL_DM_ROUTE_V1_FEATURE, CHAT_ACTOR_V1_FEATURE } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
-import { CHAT_LINK_HINT } from '../src/agents/chat-actions.js'
 import { CHAT_ACTOR_ALLOW_TTL_MS, CHAT_ACTOR_DENY_TTL_MS, ChatActors } from '../src/agents/chat-actor.js'
 import { Daemon } from '../src/daemon.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'
@@ -29,6 +28,13 @@ const EDITORS = new Set(['U-EDITOR', 'U-EDITOR-2'])
 const MEMBER = 'U-MEMBER'
 /** A member linked to no console account. */
 const STRANGER = 'U-STRANGER'
+
+/** What a refused member is told where permissions are synced: no console link, since the console shows the conversation only to the same people. */
+const NOT_EDITOR = 'Only an Agent editor can answer this request.'
+const UNLINKED =
+  'Only an Agent editor can answer this request, from a chat account linked to their console account. If that is you, link this account under Sign-in methods in your console Profile and try again.'
+const UNAVAILABLE =
+  "Who you are can't be checked right now, so this request can't be answered here. Try again in a moment."
 
 const permission = {
   sessionId: 's1',
@@ -177,11 +183,9 @@ describe('where permissions are synced, only an Agent editor answers in chat', (
 
     await w.click(id, MEMBER)
     await w.click(id, STRANGER)
-    expect(w.toldTo(MEMBER)).toEqual([
-      'Only an Agent editor can answer this request. They can answer it in the console: https://console.example.test/sessions/sid-1?source=slack'
-    ])
-    // Someone linked to no console account also learns how to link one.
-    expect(w.toldTo(STRANGER)).toEqual([expect.stringContaining(`\n${CHAT_LINK_HINT}`)])
+    expect(w.toldTo(MEMBER)).toEqual([NOT_EDITOR])
+    // Someone linked to no console account learns how to link one instead.
+    expect(w.toldTo(STRANGER)).toEqual([UNLINKED])
     // The card stays as everyone else sees it, and nothing was decided.
     expect(w.conn.updateBlocks).not.toHaveBeenCalled()
     expect(decided).not.toHaveBeenCalled()
@@ -236,8 +240,7 @@ describe('where permissions are synced, only an Agent editor answers in chat', (
     await w.click(id, 'U-EDITOR-2')
     await w.click(id, 'U-EDITOR-2')
     expect(decided).not.toHaveBeenCalled()
-    expect(w.toldTo('U-EDITOR-2')).toHaveLength(2)
-    expect(w.toldTo('U-EDITOR-2')[0]).not.toContain(CHAT_LINK_HINT)
+    expect(w.toldTo('U-EDITOR-2')).toEqual([UNAVAILABLE, UNAVAILABLE])
     // An unanswered question is never remembered.
     expect(w.asked.length - before).toBe('cpDown' in over ? 2 : 0)
     await w.store.close()
@@ -270,11 +273,26 @@ describe('where permissions are synced, only an Agent editor answers in chat', (
     const tap = (userId: string) =>
       w.permissions.handleElicitChoice({ requestId: id, value: elicitOptionToken(0), actor: { userId } })
     await tap(STRANGER)
-    expect(w.toldTo(STRANGER)).toEqual([expect.stringContaining(CHAT_LINK_HINT)])
+    await tap(MEMBER)
+    expect(w.toldTo(STRANGER)).toEqual([UNLINKED])
+    expect(w.toldTo(MEMBER)).toEqual([NOT_EDITOR])
     expect(decided).not.toHaveBeenCalled()
     expect(w.permissions.pendingElicits.has(id)).toBe(true)
     await tap('U-EDITOR-2')
     await vi.waitFor(() => expect(decided).toHaveBeenCalledWith(expect.objectContaining({ action: 'accept' })))
+    await w.store.close()
+  })
+
+  it('still points a click to the console once approving in chat is turned off', async () => {
+    const w = await world()
+    void w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual(['C1', 'D-U-EDITOR']))
+    w.daemon.agents.get(AGENT).chatActions = 'talk'
+    await w.click(w.onlyRequest(), MEMBER)
+    expect(w.toldTo(MEMBER)).toEqual([
+      'Only an Agent editor can answer this request. They can answer it in the console: https://console.example.test/sessions/sid-1?source=slack'
+    ])
+    await w.permissions.releaseApprovals(AGENT, 's1')
     await w.store.close()
   })
 

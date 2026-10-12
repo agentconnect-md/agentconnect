@@ -127,6 +127,7 @@ import {
   approvalRefusalText,
   CHAT_APPROVALS_OFF,
   chatApprovalsAllowed,
+  type ApprovalRefusal,
   type ChatActorVerdict,
   type ChatSurface
 } from '../agents/chat-actions.js'
@@ -1397,14 +1398,14 @@ export class PermissionCoordinator {
     return await this.host.chatActor(agentId, place.integrationId, actor)
   }
 
-  /** What a refused chat-side answer on a card's surface is told: who can answer and where, and how to link an unlinked account, within its limit. */
+  /** What a refused chat-side answer on a card's surface is told, within its limit; a synced platform's refusal names no console link. */
   private chatRefusal(
     rec: { owner: HostKey; sessionId: string },
-    verdict: ChatActorVerdict | 'closed',
+    why: ApprovalRefusal,
     surface: { platform: string; privateTextLimit?: number }
   ): string {
-    const link = this.approvalConsoleLink(rec, surface.platform)
-    return approvalRefusalText(link, verdict === 'closed' ? undefined : verdict, surface.privateTextLimit)
+    const link = why === 'closed' ? this.approvalConsoleLink(rec, surface.platform) : undefined
+    return approvalRefusalText(why, link, surface.privateTextLimit)
   }
 
   /** §6.3 click-time checks, failing closed: actor equality, then the asker's place or the CP verify; `authoritative` marks a rights answer. */

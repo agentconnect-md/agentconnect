@@ -20,16 +20,28 @@ export const CHAT_APPROVALS_OFF = 'Approving in chat was turned off. An Agent ed
 /** How a person's chat action is judged past the level and the conversation: anyone where permissions are not synced, else only an Agent editor by their linked identity. */
 export type ChatActorVerdict = 'allowed' | 'not-editor' | 'unlinked' | 'unavailable'
 
-/** What a refused person whose chat account is linked to no console account is told as well. */
+/** What a refused settings change from a chat account linked to no console account is told as well. */
 export const CHAT_LINK_HINT =
   'If you are an Agent editor, link this account under Sign-in methods in your console Profile and try again. Otherwise, ask an Agent editor.'
 
-/** What only the person whose approval answer was refused is told: who can answer instead, and where, within `limit` characters. */
-export function approvalRefusalText(consoleUrl?: string, verdict?: ChatActorVerdict, limit?: number): string {
+/** Why an approval answer was refused: the level or the conversation closed it, else who the person is where permissions are synced. */
+export type ApprovalRefusal = Exclude<ChatActorVerdict, 'allowed'> | 'closed'
+
+/** A synced platform's approval refusals carry no console link: the console shows that conversation only to the same people. */
+const SYNCED_APPROVAL_REFUSALS: Record<Exclude<ApprovalRefusal, 'closed'>, string> = {
+  'not-editor': 'Only an Agent editor can answer this request.',
+  unlinked:
+    'Only an Agent editor can answer this request, from a chat account linked to their console account. If that is you, link this account under Sign-in methods in your console Profile and try again.',
+  unavailable: "Who you are can't be checked right now, so this request can't be answered here. Try again in a moment."
+}
+
+/** What only the person whose approval answer was refused is told, within `limit` characters; only a closed conversation points to the console. */
+export function approvalRefusalText(why: ApprovalRefusal, consoleUrl?: string, limit?: number): string {
+  if (why !== 'closed') return SYNCED_APPROVAL_REFUSALS[why]
   const where = (url?: string) => (url ? `in the console: ${url}` : 'in the console.')
   return fitRefusal((url) => `Only an Agent editor can answer this request. They can answer it ${where(url)}`, {
     consoleUrl,
-    verdict,
+    verdict: undefined,
     limit
   })
 }

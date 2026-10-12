@@ -74,16 +74,19 @@ Who counts as "people" depends on whether the product can tell who someone is:
   action, that is, the agent's editors, recognized by the account they linked under Sign-in
   methods in their console Profile: their Slack account in the app's workspace, or their
   Feishu/Lark account in the app's region. Anyone else, a guest or an editor who has not linked
-  included, is told privately who can answer and where, and someone linked to no console account
-  is also told how to link one; the card stays as it is. Where people may approve tool calls, a
+  included, is refused privately, and the card stays as it is. A refused approval says only an
+  Agent editor can answer it, and someone linked to no console account is told how to link one;
+  it gives no console link, since the console shows that conversation only to the same people. A
+  refused settings change also says where in the console an editor changes them, and tells
+  someone linked to no console account how to link one. Where people may approve tool calls, a
   permission request's card also goes to an Agent editor in a direct message unless the person
   who asked is one, so a request never waits on a conversation with no editor in it; the first
   answer decides. Today that direct message is sent through the agent's Slack integration: on
   Feishu/Lark, an agent without one leaves the request to an editor in the conversation or in the
   console. When who someone is cannot be checked, because the Control Plane cannot
   be reached, the agent has more than 200 editors, or a Feishu/Lark click does not say who made
-  it, the action is refused. Switching the sync changes who may act from then on; settings
-  already changed from chat stay.
+  it, the action is refused, and a refused approval says to try again in a moment. Switching the
+  sync changes who may act from then on; settings already changed from chat stay.
 - **A platform without that sync**: anyone who can talk to the agent in that conversation.
 - **Webchat** always knows who someone is: the agent's editors, and at the second and third
   levels also the conversation's owner, even one whose role only lets them view. The owner
