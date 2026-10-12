@@ -552,9 +552,10 @@ implements `tellPrivately` (Slack's ephemeral message, Google Chat's private mes
 otherwise core hands the words back to the interaction's own ingress, which answers it
 privately (Telegram's `answerCallbackQuery` alert, Discord's ephemeral follow-up,
 Feishu/Lark's card-action toast). Where permissions are synced, `chatActor` matches the
-clicker by the id the platform's daemon module names in `platforms/chat-member-key.ts`:
-the user id, or the cross-app `InteractionActor.memberId` its events carry beside it
-(Feishu/Lark's union_id), and an action without that id is refused.
+clicker by the id the platform's daemon module names (`DaemonPlatformModule.chatMemberKey`,
+§7.4), the user id when the module has no such member. Feishu/Lark's names the cross-app
+`InteractionActor.memberId` its events carry beside the app-scoped open_id (its union_id),
+and an action without one is refused.
 
 ### 7.4 Adapter strategy functions
 
@@ -574,6 +575,10 @@ platform with a shared reply connection keeps posting them through it; one
 whose connection is outside that set (Google Chat) posts them through
 `notice`, so core never branches on the platform. A surface without the member
 posts nothing, as before.
+
+`DaemonPlatformModule.chatMemberKey?` is the same kind of member: the id a
+synced organization matches a platform's chat member to a console account by,
+which only Feishu/Lark's module overrides (§7.3).
 
 The relay-ingress strategy is a member of the daemon platform contract rather
 than a core table keyed by platform name: `DaemonPlatformModule.relayIngress?`

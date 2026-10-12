@@ -815,7 +815,7 @@ import { parseTelegramElicit, telegramElicitCards } from './platforms/telegram/e
 import { parseTelegramApproval, telegramApprovalCards } from './platforms/telegram/approval-card.js'
 import { discordApprovalCards } from './platforms/discord/approval-card.js'
 import { feishuApprovalCards } from './platforms/feishu/approval-card.js'
-import { chatMemberKey } from './platforms/chat-member-key.js'
+import { feishuPlatformModule } from './platforms/feishu/module.js'
 import { slackApprovalCards } from './platforms/slack/approval-card.js'
 import type { ApprovalCardFacet } from './platforms/approval-card.js'
 import { discordElicitCards } from './platforms/discord/elicit-card.js'
@@ -8038,7 +8038,8 @@ export class Daemon {
     if (!actor || actor.isBot) return 'unavailable'
     // A platform that matches people by a cross-app id refuses an action that carries none.
     const platform = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)?.platform
-    const key = platform ? chatMemberKey(platform, actor) : undefined
+    const memberKey = platform ? this.platformModules.get(platform)?.chatMemberKey : undefined
+    const key = !platform ? undefined : memberKey ? memberKey(actor) : actor.userId
     if (!key) return 'unavailable'
     return await this.chatActors.judge(agentId, integrationId, key)
   }
@@ -11295,7 +11296,8 @@ export class Daemon {
   /** The per-platform daemon modules core looks up by platform id (§7.4), one line per platform. */
   private readonly platformModules = new PlatformModuleRegistry([
     linearPlatformModule(this.relayIngressHost((integrationId) => this.lnConnByIntegration.get(integrationId))),
-    googleChatPlatformModule(this.relayIngressHost((integrationId) => this.gcConnByIntegration.get(integrationId)))
+    googleChatPlatformModule(this.relayIngressHost((integrationId) => this.gcConnByIntegration.get(integrationId))),
+    feishuPlatformModule
   ])
 
   /** The one narrow port every relay-ingress strategy reaches the daemon through; only the connection accessor is per platform. */

@@ -387,7 +387,10 @@ minutes, a refusal thirty seconds, an unanswered question never). An unreachable
 agent over the editor cap refuses the click; it is told only to the clicker, with the console
 link and, for a member linked to no console account, how to link one, and the card stays live.
 Beside a permission request's card, the editor DM of §5 (a Slack DM) goes out too unless the
-turn owner is an editor, and the first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
+turn owner is an editor. It is routed over the agent's Slack integrations
+(`approvalDmIntegrations`), so on a synced Feishu/Lark integration of an agent with no Slack
+integration nobody is DMed, and the request waits for an editor in the conversation or the
+console; a Feishu/Lark approval DM is not built yet. The first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
 here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
 (§11.4); editors answer it there or in the console. A conversation shared with another
 organization takes the editor path instead of the asker's DM. A sub-session's card keeps the

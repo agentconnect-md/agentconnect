@@ -418,4 +418,6 @@ export interface DaemonPlatformModule {
   readonly platformId: string
   /** Absent ⇒ the shared relay `im` path, byte for byte. */
   readonly relayIngress?: RelayIngressStrategy
+  /** The id a synced organization matches this platform's chat member to a console account by; undefined refuses the action. Absent ⇒ the actor's `userId`. */
+  chatMemberKey?(actor: InteractionActor): string | undefined
 }

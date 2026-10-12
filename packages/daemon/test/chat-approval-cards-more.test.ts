@@ -2,7 +2,11 @@
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
-import { CHAT_ACTOR_V1_FEATURE, GOOGLE_CHAT_ELICIT_FUNCTION } from '@agentconnect.md/protocol'
+import {
+  APPROVAL_DM_ROUTE_V1_FEATURE,
+  CHAT_ACTOR_V1_FEATURE,
+  GOOGLE_CHAT_ELICIT_FUNCTION
+} from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import { agentHostKey } from '../src/acp/host-key.js'
 import { CHAT_LINK_HINT } from '../src/agents/chat-actions.js'
@@ -15,6 +19,8 @@ import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { PermissionCoordinator, type PermissionHost } from '../src/permissions/coordinator.js'
 import type { SubsessionApprovalRoute } from '../src/permissions/subsession-approval.js'
 import { applyGoogleChatAction, type GoogleChatTurnState } from '../src/platforms/googlechat/turn-output.js'
+import { applyQQAction, type QQTurnState } from '../src/platforms/qq/turn-output.js'
+import { SlackConnection } from '../src/slack/connection.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
@@ -139,14 +145,35 @@ function fakeConn(platform: Platform) {
 /** A daemon holding one live turn on `platform`, with every post, notice and control-plane question captured. */
 async function world(
   platform: Platform,
-  opts: { level: 'talk' | 'approve' | 'settings'; core?: Core; editors?: Set<string>; linked?: Set<string> }
+  opts: {
+    level: 'talk' | 'approve' | 'settings'
+    core?: Core
+    editors?: Set<string>
+    linked?: Set<string>
+    /** Whose message started the turn, by the union_id a Feishu message carries as its sender's id. */
+    asker?: string
+    /** The agent also has a Slack integration, through which the approval DM goes. */
+    slackDm?: boolean
+  }
 ) {
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
   daemon.cfg = { ...(daemon.cfg ?? {}), webAppUrl: 'https://console.example.test' }
   const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
   daemon.store = store
   const int = integration(platform, opts.core)
-  const agent = { id: AGENT, name: 'Butler', chatActions: opts.level, integrations: [int] }
+  const slack = { ...integration('feishu'), id: 'int-slack', platform: 'slack' }
+  const agent = {
+    id: AGENT,
+    name: 'Butler',
+    chatActions: opts.level,
+    integrations: opts.slackDm ? [int, slack] : [int]
+  }
+  const slackConn = Object.create(SlackConnection.prototype)
+  slackConn.openDirectMessage = vi.fn(async (user: string) => `D-${user}`)
+  slackConn.postBlocks = vi.fn(async () => 'dm-1')
+  slackConn.updateBlocks = vi.fn(async () => true)
+  slackConn.workspaceId = () => 'T1'
+  if (opts.slackDm) daemon.connByIntegration.set('int-slack', slackConn)
   daemon.agents.set(AGENT, agent)
   const fake = fakeConn(platform)
   if (platform === 'feishu') daemon.fsConnByIntegration.set(INT, fake.conn)
@@ -154,13 +181,20 @@ async function world(
   // The control plane's verify: an editor's linked union_id is allowed, a linked member is refused, anyone else is unlinked.
   const asked: string[] = []
   const approvalRoute = vi.fn(async (payload: { requestId: string; verify?: { userId: string } }) => {
-    const userId = payload.verify?.userId ?? ''
+    // The route form: the editor a DM goes to, over the agent's Slack integration.
+    if (!payload.verify)
+      return {
+        requestId: payload.requestId,
+        target: { integrationId: 'int-slack', teamId: 'T1', userId: 'U-ED', consoleUserId: 'cu-ed', displayName: 'Ed' }
+      }
+    const userId = payload.verify.userId
     asked.push(userId)
     return opts.editors?.has(userId)
       ? { requestId: payload.requestId, allowed: true, displayName: 'Ed Itor' }
       : { requestId: payload.requestId, allowed: false, linked: opts.linked?.has(userId) === true }
   })
-  daemon.cpClient = { supportsServerFeature: (f: string) => f === CHAT_ACTOR_V1_FEATURE, approvalRoute }
+  const features = new Set([CHAT_ACTOR_V1_FEATURE, APPROVAL_DM_ROUTE_V1_FEATURE])
+  daemon.cpClient = { supportsServerFeature: (f: string) => features.has(f), approvalRoute }
   const applied: any[] = []
   daemon.enqueueApply = (_p: unknown, action: unknown) => void applied.push(action)
   const { channel, thread } = PLACE[platform]
@@ -171,7 +205,7 @@ async function world(
       agentName: 'Butler',
       integrationId: INT,
       sessionKey: `${platform}:${channel}:${thread}:${AGENT}`,
-      requesterId: 'on_asker',
+      requesterId: opts.asker ?? 'on_asker',
       channel,
       thread,
       transcriptChannel: channel,
@@ -181,7 +215,13 @@ async function world(
       approvalSurfaceSuppressed: false,
       suppressReplyConn: false
     },
-    entry: { msg: { source: 'user', text: 'please write it', sender: { id: 'on_asker', isBot: false } } },
+    entry: {
+      msg: {
+        source: 'user',
+        text: 'please write it',
+        sender: { id: opts.asker ?? 'on_asker', isBot: false, ...(opts.asker ? { memberId: opts.asker } : {}) }
+      }
+    },
     // Feishu answers through its reply connection, Google Chat through the egress it leased.
     ...(platform === 'feishu' ? { conn: fake.conn } : { egress: fake.conn }),
     hostKey: AGENT,
@@ -249,7 +289,22 @@ async function world(
     expect(fake.privately()[0]!.to).toBe(ADA.userId)
     return fake.privately()[0]!.text
   }
-  return { daemon, store, agent, int, permissions, notices, onlyRequest, click, tap, toldPrivately, asked, ...fake }
+  return {
+    daemon,
+    store,
+    agent,
+    int,
+    permissions,
+    notices,
+    onlyRequest,
+    click,
+    tap,
+    toldPrivately,
+    asked,
+    slackConn,
+    approvalRoute,
+    ...fake
+  }
 }
 
 describe.each(['feishu', 'googlechat'] as const)('%s permission cards', (platform) => {
@@ -414,6 +469,47 @@ describe('synced Feishu/Lark takes chat actions only from the agent’s editors,
     expect(w.asked).toEqual([])
     expect(w.permissions.pendingApprovals.size).toBe(1)
     await w.store.close()
+  })
+
+  it('DMs an editor beside the card unless the person who asked is one, matched by their union_id', async () => {
+    const askedByMember = await world('feishu', {
+      level: 'approve',
+      core: { chatAuthority: 'editors' },
+      editors: new Set(['on_editor']),
+      asker: 'on_member',
+      slackDm: true
+    })
+    void askedByMember.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(askedByMember.slackConn.postBlocks).toHaveBeenCalledTimes(1))
+    expect(askedByMember.slackConn.postBlocks.mock.calls[0]![0]).toBe('D-U-ED')
+    expect(askedByMember.asked).toEqual(['on_member'])
+    await askedByMember.store.close()
+
+    const askedByEditor = await world('feishu', {
+      level: 'approve',
+      core: { chatAuthority: 'editors' },
+      editors: new Set(['on_editor']),
+      asker: 'on_editor',
+      slackDm: true
+    })
+    void askedByEditor.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(askedByEditor.asked).toEqual(['on_editor']))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(askedByEditor.slackConn.postBlocks).not.toHaveBeenCalled()
+    await askedByEditor.store.close()
+
+    // Without a Slack integration nobody is DMed: the request waits for an editor in the conversation or the console.
+    const feishuOnly = await world('feishu', {
+      level: 'approve',
+      core: { chatAuthority: 'editors' },
+      editors: new Set(['on_editor']),
+      asker: 'on_member'
+    })
+    void feishuOnly.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(feishuOnly.asked).toEqual(['on_member']))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(feishuOnly.approvalRoute.mock.calls.filter((call) => !(call[0] as { verify?: unknown }).verify)).toEqual([])
+    await feishuOnly.store.close()
   })
 
   it('judges a typed settings command by the union_id its message carried', async () => {
@@ -627,6 +723,72 @@ describe('Feishu/Lark card actions', () => {
     await expect(
       taken.conn.handleCardAction(event({ action: 'agentconnect_approval', request: 'req-1', option: '0' }))
     ).resolves.toBeUndefined()
+  })
+})
+
+describe('QQ notices', () => {
+  it('gets the approval notice through its egress, though it has no card', async () => {
+    const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
+    daemon.store = store
+    daemon.agents.set(AGENT, {
+      id: AGENT,
+      name: 'Butler',
+      chatActions: 'approve',
+      integrations: [{ ...integration('feishu'), platform: 'qq' }]
+    })
+    const applied: any[] = []
+    daemon.enqueueApply = (_p: unknown, action: unknown) => void applied.push(action)
+    const egress = { sendText: vi.fn(), sendCard: vi.fn(async () => 'q-1') }
+    daemon.pending.set(JSON.stringify([AGENT, 's1']), {
+      plan: {
+        platform: 'qq',
+        agentId: AGENT,
+        agentName: 'Butler',
+        integrationId: INT,
+        sessionKey: `qq:group-1:t-1:${AGENT}`,
+        requesterId: 'qq-user',
+        channel: 'group-1',
+        thread: 't-1',
+        transcriptChannel: 'group-1',
+        statusThread: 't-1',
+        sessionThread: 't-1',
+        isDm: false,
+        approvalSurfaceSuppressed: false,
+        suppressReplyConn: false
+      },
+      entry: { msg: { source: 'user', text: 'please write it', sender: { id: 'qq-user', isBot: false } } },
+      egress,
+      hostKey: AGENT,
+      outwardSessionId: 'sid-1',
+      chrome: {},
+      signals: { applyChain: Promise.resolve() },
+      approval: { waitMs: 0, depth: 0 },
+      builtinSystemToolCallIds: new Set<string>(),
+      conv: { onUpdate: () => [], hasBuffered: () => false }
+    })
+    void daemon.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() =>
+      expect(applied.filter((a) => a.kind === 'notice').map((a) => a.text)).toEqual([
+        expect.stringContaining('Ask an Agent editor')
+      ])
+    )
+    await store.close()
+  })
+
+  it('sends a core notice as one message on the turn’s reply anchor, and nothing without one', async () => {
+    const sendCard = vi.fn(async () => 'q-1')
+    const state = {
+      conn: { sendText: vi.fn(), sendCard },
+      channel: 'group-1',
+      replyId: 'msg-1'
+    } as unknown as QQTurnState
+    const record = vi.fn(async () => {})
+    await applyQQAction(state, { kind: 'notice', text: '🔒 Permission requested.' }, record)
+    expect(sendCard).toHaveBeenCalledWith('group-1', 'msg-1', '🔒 Permission requested.')
+    expect(record).not.toHaveBeenCalled()
+    await applyQQAction({ ...state, replyId: undefined } as QQTurnState, { kind: 'notice', text: 'x' }, record)
+    expect(sendCard).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -75,10 +75,12 @@ Who counts as "people" depends on whether the product can tell who someone is:
   methods in their console Profile: their Slack account in the app's workspace, or their
   Feishu/Lark account in the app's region. Anyone else, a guest or an editor who has not linked
   included, is told privately who can answer and where, and someone linked to no console account
-  is also told how to link one; the card stays as it is. On Slack, where people may approve tool
-  calls, a permission request's card also goes to an Agent editor in a direct message unless the
-  person who asked is one, so a request never waits on a conversation with no editor in it; the
-  first answer decides. When who someone is cannot be checked, because the Control Plane cannot
+  is also told how to link one; the card stays as it is. Where people may approve tool calls, a
+  permission request's card also goes to an Agent editor in a direct message unless the person
+  who asked is one, so a request never waits on a conversation with no editor in it; the first
+  answer decides. Today that direct message is sent through the agent's Slack integration: on
+  Feishu/Lark, an agent without one leaves the request to an editor in the conversation or in the
+  console. When who someone is cannot be checked, because the Control Plane cannot
   be reached, the agent has more than 200 editors, or a Feishu/Lark click does not say who made
   it, the action is refused. Switching the sync changes who may act from then on; settings
   already changed from chat stay.
@@ -107,7 +109,8 @@ Every level keeps these rules:
   "always allow" included where offered; a list longer than any card can show is declined with a
   notice, and nothing is allowed. Where no card is posted, the conversation gets a notice and the
   approval is answered in the console. QQ has no approval card, because its message buttons need
-  a grant from QQ that a bot cannot count on; its approvals wait in the console.
+  a grant from QQ that a bot cannot count on: its conversation gets the notice, in a group only
+  while QQ still allows a reply beside the answer, and its approvals are answered in the console.
 - The first answer from any surface decides, and the request is rewritten to say who answered
   and how.
 - A refusal names who can answer instead, or where to go. A refused click or tap is told only to
@@ -1123,8 +1126,8 @@ waits; its turn is not cancelled. A patrol never asks.
   do in chat" includes approving tool calls, an approval card is posted there, where its reports
   land: in the conversation's thread (on Telegram its topic or reply chain), or at its top level
   when it is one long conversation. Anyone there may answer it; where permissions are synced
-  (Slack, Feishu/Lark), only an Agent editor, and on Slack an editor also gets it in a direct
-  message. The card says a background sub-session is asking, names and links it, and offers the
+  (Slack, Feishu/Lark), only an Agent editor, and an editor also gets it in a direct message
+  through the agent's Slack integration, when it has one. The card says a background sub-session is asking, names and links it, and offers the
   runtime's own choices, "always allow" included where offered.
 - Where it does not, or the conversation is closed (switched off, admitted per message by a
   Decision, or routed), the conversation gets a notice that the sub-session is waiting, and an
