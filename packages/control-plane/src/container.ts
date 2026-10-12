@@ -1117,6 +1117,7 @@ export function buildContainer(
     repos.integrationChannel,
     repos.bot,
     platforms,
+    repos.session,
     {
       registry: connReg,
       sender,
@@ -1139,7 +1140,6 @@ export function buildContainer(
       // The duty half of the reconcile roster: pinned-to-me ∪ held-by-me.
       duties: repos.dutyGroup,
       placement: placementResolver,
-      chatAuthority: repos.session,
       log: { warn: (o, m) => http.log.warn(o, m) } // lazy over http.log (assigned below; called at reconcile time)
     }
   )

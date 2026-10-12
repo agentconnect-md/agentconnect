@@ -115,8 +115,8 @@ export interface AgentMoveDeps {
   platforms: CpPlatformRegistry
   /** Owns AgentSpec assembly (secret loading + icon bases) for the activation definition. */
   specs: AgentSpecAssembler
-  /** Whether each integration's platform has session access sync on; absent ⇒ no chat authority is projected. */
-  chatAuthority?: ChatAuthoritySource
+  /** Whether each integration's platform has session access sync on, for its chat authority. */
+  chatAuthority: ChatAuthoritySource
   crons: CronRepo
   /** The `duty/fetch` bundle's MCP and external-memory projections — the same
    *  optional seams `PlacementOrchDeps` carries, so the bundle and the reconnect
@@ -916,10 +916,25 @@ export class AgentMoveService {
         if (!bot) throw new AgentMoveConflict(`integration ${integration.id} has no bot`)
         if (!secret) throw new AgentMoveConflict(`integration ${integration.id} has no credentials`)
         const isHttp = bot.transport === 'http'
-        const policies = this.deps.chatAuthority
         const spec = isHttp
-          ? await httpIntegrationToSpec(this.deps.platforms, integration, bot, secret, channels, agent, policies)
-          : await integrationToSpec(this.deps.platforms, integration, bot, secret, channels, agent, policies)
+          ? await httpIntegrationToSpec(
+              this.deps.platforms,
+              this.deps.chatAuthority,
+              integration,
+              bot,
+              secret,
+              channels,
+              agent
+            )
+          : await integrationToSpec(
+              this.deps.platforms,
+              this.deps.chatAuthority,
+              integration,
+              bot,
+              secret,
+              channels,
+              agent
+            )
         // A provider-held credential that is gone is the same blocker as a missing secret row: the
         // move bundle is atomic, so it must not carry an integration the target cannot serve.
         if (!spec) throw new AgentMoveConflict(`integration ${integration.id} has no credentials`)

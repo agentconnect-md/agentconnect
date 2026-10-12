@@ -25,7 +25,7 @@ export async function pushBotConfig(
       deps.repos.agent.get(bot.orgId, integration.agentId)
     ])
     if (!owner) continue
-    const spec = await integrationToSpec(deps.platforms, integration, bot, secret, channels, owner, deps.repos.session)
+    const spec = await integrationToSpec(deps.platforms, deps.repos.session, integration, bot, secret, channels, owner)
     if (!spec) continue
     await deps.agentDelivery.integrationUpsert(owner, spec, (err, target) => {
       if (!(err instanceof NoConnection)) throw err

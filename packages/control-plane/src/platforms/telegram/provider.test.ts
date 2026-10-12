@@ -17,6 +17,7 @@ import type { BotProfileIconAgent } from '../../http/bot-profile-icon.js'
 import type { BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { IntegrationTelegramConfig } from '@agentconnect.md/protocol'
+import { NO_SESSION_SYNC } from '../../../test/fakes/no-session-sync.js'
 
 /** A restricted owner: the projection's gated arm. */
 const RESTRICTED: SpecOwner = { visibility: 'restricted' }
@@ -230,7 +231,7 @@ describe('telegram projection equivalence with the live integrationToSpec path',
   // GOLDEN: the literal payload the PRE-ADOPTION `integrationToSpec` telegram arm
   // emitted — one BotFather token, no appToken, no shareable/appId members.
   it('emits the byte-identical payload the pre-adoption telegram arm produced', async () => {
-    const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, [
+    const spec = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, BOT, SECRET, [
       channel('-100', 'any'),
       channel('-200', 'mention'),
       channel('-300', 'off')
@@ -252,7 +253,8 @@ describe('telegram projection equivalence with the live integrationToSpec path',
         gated: false,
         sessionModes: [],
         externalChannels: [],
-        decisions: { bindings: [], definitions: [] }
+        decisions: { bindings: [], definitions: [] },
+        chatAuthority: 'participants'
       },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
       // ride the core envelope, never the config payload.
@@ -266,6 +268,7 @@ describe('telegram projection equivalence with the live integrationToSpec path',
     it(`routes the live path through the telegram projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(
         PLATFORMS,
+        NO_SESSION_SYNC,
         INTEGRATION,
         BOT,
         SECRET,

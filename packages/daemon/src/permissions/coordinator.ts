@@ -415,6 +415,8 @@ interface DmNotice {
   valueKind?: ElicitKind
   /** Set on the asker's own card for an external place, whose click answers while chat approvals stay open there. */
   asker?: ChatPlace
+  /** Sent beside a card in the conversation that keeps the row's notify handle, so this DM's handle is the beside one. */
+  beside?: true
 }
 
 /** A permission request's in-conversation Slack card (§1's chat path); `ts` is set once its post returns. */
@@ -1069,7 +1071,8 @@ export class PermissionCoordinator {
     p: Pending,
     requesterName: string | null,
     subsession?: SubsessionApprovalRoute,
-    approver?: { target: DmTarget; channel: string; asker?: ChatPlace }
+    approver?: { target: DmTarget; channel: string; asker?: ChatPlace },
+    beside = false
   ): Promise<void> {
     const target = approver?.target ?? (await this.routeApprovalDm(requestId, agentId, p, subsession !== undefined))
     if (!target) return
@@ -1117,9 +1120,11 @@ export class PermissionCoordinator {
       }
     )
     if (!ts) return
-    const handleStored = await this.host
-      .store()
-      .setPermissionRequestNotify(agentId, requestId, target.integrationId, channel, ts)
+    // Beside a card that keeps the notify handle, the DM keeps its own, so a restart's sweep retires both.
+    const store = this.host.store()
+    const handleStored = beside
+      ? await store.setPermissionRequestBeside(agentId, requestId, target.integrationId, channel, ts)
+      : await store.setPermissionRequestNotify(agentId, requestId, target.integrationId, channel, ts)
     // Re-read AFTER the write: a decision landing inside that await saw no `notify`, so
     // it neither rewrote this card nor cleared the handle — both fall to us here.
     const live = this.pendingApprovals.get(requestId)
@@ -1130,11 +1135,7 @@ export class PermissionCoordinator {
           ? buildPermissionResolvedCard(rec.params, 'Already decided', undefined)
           : buildElicitationResolvedCard(rec.params, ':hourglass: Already decided')
       void conn.updateBlocks(channel, ts, [...intro, ...resolved], 'Permission resolved', true).catch(() => {})
-      if (handleStored)
-        void this.host
-          .store()
-          .clearPermissionRequestNotify(agentId, requestId)
-          .catch(() => {})
+      if (handleStored) void this.clearDmHandle(agentId, requestId, beside)
       return
     }
     const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params, SLACK_DM_ELICIT_SURFACE) : null
@@ -1145,8 +1146,19 @@ export class PermissionCoordinator {
       ts,
       intro,
       ...(elicit ? { propName: elicit.propName, valueKind: elicit.kind } : {}),
-      ...(approver?.asker ? { asker: approver.asker } : {})
+      ...(approver?.asker ? { asker: approver.asker } : {}),
+      ...(beside ? { beside: true as const } : {})
     }
+  }
+
+  /** Drop a DM card's stored handle once it says how its request ended; a DM beside a card keeps its own. */
+  private async clearDmHandle(agentId: string, requestId: string, beside: boolean | undefined): Promise<void> {
+    const store = this.host.store()
+    await (
+      beside
+        ? store.clearPermissionRequestBeside(agentId, requestId)
+        : store.clearPermissionRequestNotify(agentId, requestId)
+    ).catch(() => {})
   }
 
   /** The editor the CP's chain (§3) picks for a DM, or nobody; a sub-session's turn has no requester to start it from. */
@@ -1197,7 +1209,8 @@ export class PermissionCoordinator {
     route: SubsessionApprovalRoute,
     requesterName: string | null
   ): Promise<void> {
-    const editorDm = () => this.sendApprovalDm(requestId, agentId, p, requesterName, route)
+    const editorDm = (beside = false) =>
+      this.sendApprovalDm(requestId, agentId, p, requesterName, route, undefined, beside)
     const place = route.place
     if (place.kind !== 'slack') return await editorDm()
     let at: { integrationId: string; channel: string; thread?: string } = place
@@ -1269,8 +1282,8 @@ export class PermissionCoordinator {
       routedVia: at.integrationId,
       stored: { agentId, requestId }
     }
-    // Where only editors may answer the card, an editor is told in a DM too.
-    if (this.host.chatEditorsOnly(agentId, at.integrationId)) await editorDm()
+    // Where only editors may answer the card, an editor is told in a DM too, on a handle of its own.
+    if (this.host.chatEditorsOnly(agentId, at.integrationId)) await editorDm(true)
   }
 
   /** Hold the notice's handle until its request settles, on the row too; a request settled while it posted gets its settled line now. */
@@ -1472,10 +1485,7 @@ export class PermissionCoordinator {
     void rec.notify.conn
       .updateBlocks(rec.notify.channel, rec.notify.ts, [...rec.notify.intro, ...blocks], fallback, true)
       .catch(() => {})
-    void this.host
-      .store()
-      .clearPermissionRequestNotify(rec.agentId, id)
-      .catch(() => {})
+    void this.clearDmHandle(rec.agentId, id, rec.notify.beside)
   }
 
   /** The DM surface's authorization (§6.3); a rights refusal retires the DM card, an outage leaves it live. */

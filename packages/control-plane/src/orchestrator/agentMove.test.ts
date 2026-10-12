@@ -23,6 +23,7 @@ import { createSlackCpProvider } from '../platforms/slack/provider.js'
 import { createTelegramCpProvider } from '../platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../platforms/discord/provider.js'
 import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
+import { NO_SESSION_SYNC } from '../../test/fakes/no-session-sync.js'
 
 // §9: the move bundle's `IntegrationSpec.config` comes from the platform
 // provider. Offline stubs — the projectors reach no provider API.
@@ -356,6 +357,7 @@ function make(
       get: async () => ({ botToken: 'xoxb-test', appToken: 'xapp-test' })
     } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['botSecrets'],
     platforms: PLATFORMS,
+    chatAuthority: NO_SESSION_SYNC,
     // The real assembler over a fake store — exercises project()/secretsOf() as prod does.
     specs: new AgentSpecAssembler(
       {
@@ -882,6 +884,7 @@ describe('AgentMoveService.bundleFor — the duty/fetch install bundle', () => {
         typeof AgentMoveService
       >[0]['botSecrets'],
       platforms: PLATFORMS,
+      chatAuthority: NO_SESSION_SYNC,
       specs: new AgentSpecAssembler({
         get: async () => ({}),
         merge: async () => {},

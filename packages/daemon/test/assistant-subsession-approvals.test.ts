@@ -595,6 +595,42 @@ describe('a sub-session’s permission request in the conversation it belongs to
     await restarted.store.close()
   })
 
+  it('keeps both the card and the editor DM beside it on the row, so the sweep after a restart retires both', async () => {
+    const database = new DatabaseSync(':memory:')
+    const w = await world({ chatOn: true, editors: ['U-ed2'], database })
+    void w.coordinator.onAcpPermission(OWNER, ACP, params())
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    await vi.waitFor(async () =>
+      expect(
+        (await w.store.listPermissionRequests(AGENT)).length > 0 && w.coordinator.dmNotifiedVia(id, AGENT, 'int-1')
+      ).toBe(true)
+    )
+
+    // The process dies: the next one expires the request, and reconnecting the integration finds both cards.
+    const restarted = await world({ chatOn: true, editors: ['U-ed2'], database })
+    expect((await rows(restarted.store))[0]).toMatchObject({ id, status: 'expired' })
+    const orphans = await restarted.store.takeOrphanedPermissionNotices('int-1')
+    expect(orphans.map((o) => [o.notifyChannel, o.notifyTs]).sort()).toEqual([
+      ['C1', '200.1'],
+      ['D-ed', '200.2']
+    ])
+    // Each is retired once.
+    expect(await restarted.store.takeOrphanedPermissionNotices('int-1')).toEqual([])
+    await restarted.store.close()
+  })
+
+  it('clears both handles when the request settles while the process lives', async () => {
+    const w = await world({ chatOn: true, editors: ['U-ed2'] })
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP, params())
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U-ed2' } })
+    await decided
+    expect(await w.store.takeOrphanedPermissionNotices('int-1')).toEqual([])
+    await w.store.close()
+  })
+
   it('settles a notice a restart left behind once its integration reconnects', async () => {
     const database = new DatabaseSync(':memory:')
     const w = await world({ database })

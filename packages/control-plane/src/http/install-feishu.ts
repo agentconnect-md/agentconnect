@@ -112,7 +112,7 @@ export async function installNewFeishuBot(
   ])
   const spec =
     secret && botRow
-      ? await integrationToSpec(deps.platforms, integration, botRow, secret, channels, agent, deps.repos.session)
+      ? await integrationToSpec(deps.platforms, deps.repos.session, integration, botRow, secret, channels, agent)
       : null
   if (spec) {
     await deps.agentDelivery.integrationUpsert(agent, spec, (err, target) => {

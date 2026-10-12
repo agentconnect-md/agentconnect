@@ -137,7 +137,7 @@ export async function installNewBot(
     deps.repos.integrationChannel.listForIntegration(id)
   ])
   const spec = secret
-    ? await integrationToSpec(deps.platforms, integration, bot, secret, channels, agent, deps.repos.session)
+    ? await integrationToSpec(deps.platforms, deps.repos.session, integration, bot, secret, channels, agent)
     : null
   // No secret, or a provider with no deliverable payload: withhold the push and let the reconcile
   // roster carry (or prune) the row.

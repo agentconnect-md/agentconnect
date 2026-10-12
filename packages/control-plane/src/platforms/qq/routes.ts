@@ -49,12 +49,12 @@ export function QQCredentialRoutes(deps: HttpDeps): FastifyPluginAsync {
           const channels = await deps.repos.integrationChannel.listForIntegration(integration.id)
           const spec = await integrationToSpec(
             deps.platforms,
+            deps.repos.session,
             integration,
             bot,
             material,
             channels,
-            agent,
-            deps.repos.session
+            agent
           )
           if (spec)
             await deps.agentDelivery.integrationUpsert(agent, spec, () => {

@@ -100,7 +100,8 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
         gated: true,
         sessionModes: [],
         externalChannels: [],
-        decisions: { bindings: [], definitions: [] }
+        decisions: { bindings: [], definitions: [] },
+        chatAuthority: 'participants'
       })
       expect(configuredBotSelfId(int)).toBe(selfId)
       // The opaque config is the MODULE-VALIDATED parse (schema defaults applied),

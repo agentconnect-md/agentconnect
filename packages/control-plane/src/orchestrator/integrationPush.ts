@@ -21,8 +21,8 @@ export interface GatingPushDeps {
     bot: BotRepo
     botSecret: BotSecretStore
     integrationChannel: IntegrationChannelRepo
-    /** Whether the organization syncs a platform's session access; absent ⇒ no chat authority is projected. */
-    session?: Pick<SessionRepo, 'getExternalAccessPolicy'>
+    /** Whether the organization syncs a platform's session access, for each spec's chat authority. */
+    session: Pick<SessionRepo, 'getExternalAccessPolicy'>
   }
   agentDelivery: AgentDelivery
   httpBot: { syncBot(botId: string): Promise<void> }
@@ -117,7 +117,7 @@ async function convergeIntegration(
     // Every daemon serving the agent, not just its placement: a gating flip that
     // reaches only the placement leaves a holder admitting conversations the
     // agent's new visibility forbids.
-    const spec = await integrationToSpec(deps.platforms, i, bot, secret, channels, agent, deps.repos.session)
+    const spec = await integrationToSpec(deps.platforms, deps.repos.session, i, bot, secret, channels, agent)
     // No deliverable payload ⇒ nothing to converge; the reconcile roster prunes it, like a
     // missing secret. Pushing a config-less spec would only be refused and ignored by the daemon.
     if (!spec) return

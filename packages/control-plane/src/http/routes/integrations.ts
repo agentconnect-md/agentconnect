@@ -146,12 +146,12 @@ export function integrationRoutes(deps: HttpDeps) {
       if (!secret || !bot) return
       const spec = await integrationToSpec(
         deps.platforms,
+        deps.repos.session,
         i,
         bot,
         secret,
         channels,
-        owner ?? undefined,
-        deps.repos.session
+        owner ?? undefined
       )
       // The provider had no deliverable payload — same exit as a missing secret above.
       if (!spec) return

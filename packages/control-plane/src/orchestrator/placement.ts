@@ -115,8 +115,6 @@ export interface PlacementOrchDeps {
   placement?: Pick<PlacementResolver, 'resolveDirectory'>
   /** Optional structured logger for reconcile-time skips (no live relay). */
   log?: { warn(obj: object, msg: string): void }
-  /** Whether each integration's platform has session access sync on; absent ⇒ no chat authority is projected. */
-  chatAuthority?: ChatAuthoritySource
   // NOTE: icon URL bases moved into the AgentSpecAssembler (it owns spec assembly).
 }
 
@@ -311,7 +309,7 @@ function externalChannelIds(channels: IntegrationChannelRecord[]): string[] {
   return channels.filter((c) => c.externalReason).map((c) => c.channelId)
 }
 
-/** Where the projection reads whether the organization syncs a platform's session access; absent projects no chat authority. */
+/** Where the projection reads whether the organization syncs a platform's session access; every projection takes one. */
 export type ChatAuthoritySource = Pick<SessionRepo, 'getExternalAccessPolicy'>
 
 /** Who may take chat actions on an integration: its agent's editors while the organization syncs that platform's session access and its members can be checked. */
@@ -327,12 +325,12 @@ export async function chatAuthorityOf(
 /** The direct-mode {@link IntegrationSpec} (gating and session modes read off `owner`); `null` ⇒ nothing deliverable. Token-bearing: NEVER log. */
 export async function integrationToSpec(
   platforms: CpPlatformRegistry,
+  chatAuthority: ChatAuthoritySource,
   i: IntegrationRecord,
   bot: BotRecord,
   secret: BotSecretMaterial,
   channels: IntegrationChannelRecord[] = [],
-  owner?: SpecOwner,
-  chatAuthority?: ChatAuthoritySource
+  owner?: SpecOwner
 ): Promise<IntegrationSpec | null> {
   const gated = owner ? isGatedAgent(owner) : false
   // A 1:1 DM's On state is already covered by the unscoped dm default. A group DM
@@ -363,7 +361,7 @@ export async function integrationToSpec(
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels),
-    ...(chatAuthority ? { chatAuthority: await chatAuthorityOf(chatAuthority, i) } : {})
+    chatAuthority: await chatAuthorityOf(chatAuthority, i)
   }
   return projectSpec(platforms, i, bot, core, secret)
 }
@@ -371,12 +369,12 @@ export async function integrationToSpec(
 /** A shared bot member's send-only {@link IntegrationSpec}: a gated one's scoped rules and every one's Off channels back the relay at the daemon's last hop (§14.3). Token-bearing: NEVER log. */
 export async function httpIntegrationToSpec(
   platforms: CpPlatformRegistry,
+  chatAuthority: ChatAuthoritySource,
   i: IntegrationRecord,
   bot: BotRecord,
   secret: BotSecretMaterial,
   channels: IntegrationChannelRecord[] = [],
-  owner?: SpecOwner,
-  chatAuthority?: ChatAuthoritySource
+  owner?: SpecOwner
 ): Promise<IntegrationSpec | null> {
   const gated = owner ? isGatedAgent(owner) : false
   // §6.4 final shape (see integrationToSpec): envelope + opaque config only.
@@ -395,7 +393,7 @@ export async function httpIntegrationToSpec(
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels),
-    ...(chatAuthority ? { chatAuthority: await chatAuthorityOf(chatAuthority, i) } : {})
+    chatAuthority: await chatAuthorityOf(chatAuthority, i)
   }
   return projectSpec(platforms, i, bot, httpCore, secret)
 }
@@ -479,6 +477,8 @@ export class Placement implements ReconcileService {
      *  with the route-dep bundle, which does not exist yet when Placement is
      *  constructed); every read happens at reconcile time. */
     private readonly platforms: CpPlatformRegistry,
+    /** Whether each integration's platform has session access sync on, for its chat authority. */
+    private readonly chatAuthority: ChatAuthoritySource,
     orch?: PlacementOrchDeps
   ) {
     this.orch = orch
@@ -569,10 +569,9 @@ export class Placement implements ReconcileService {
           // reconciles it send-only (no Socket Mode). Socket bots reconcile as direct.
           // Both arms await the SAME provider projector; only the envelope differs.
           const owner = ownerById.get(i.agentId)
-          const policies = this.orch?.chatAuthority
           return bot.transport === 'http'
-            ? await httpIntegrationToSpec(this.platforms, i, bot, secret, channels, owner, policies)
-            : await integrationToSpec(this.platforms, i, bot, secret, channels, owner, policies)
+            ? await httpIntegrationToSpec(this.platforms, this.chatAuthority, i, bot, secret, channels, owner)
+            : await integrationToSpec(this.platforms, this.chatAuthority, i, bot, secret, channels, owner)
         })
       )
     ])

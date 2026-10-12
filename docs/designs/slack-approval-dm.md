@@ -384,9 +384,11 @@ link and, for a member linked to no console account, how to link one, and the ca
 Beside a permission request's card, the editor DM of §5 goes out too unless the turn owner is an
 editor, and the first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
 here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
-(§11.4); editors answer it there or in the console. A
-conversation shared with another organization takes the editor path instead of the asker's DM.
-§4.4 holds: the check is a forward scan from the console side, never a reverse index.
+(§11.4); editors answer it there or in the console. A conversation shared with another
+organization takes the editor path instead of the asker's DM. A sub-session's card keeps the
+row's `notify*` handle, so the DM beside it keeps its own (`besideIntegrationId`,
+`besideChannel`, `besideTs`), and the reconnect sweep of §5.4 retires both. §4.4 holds: the check
+is a forward scan from the console side, never a reverse index.
 
 ## 7. Console notification states
 

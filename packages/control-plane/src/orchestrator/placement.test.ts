@@ -22,6 +22,7 @@ import {
   IntegrationDiscordConfig,
   IntegrationFeishuConfig
 } from '@agentconnect.md/protocol'
+import { NO_SESSION_SYNC } from '../../test/fakes/no-session-sync.js'
 
 // The §9 projector seam: spec assembly now awaits the platform provider for the
 // opaque `config` payload, so every call needs the registry + the bot row. The
@@ -77,13 +78,21 @@ const ASSISTANT: SpecOwner = { visibility: 'org', assistantMode: { enabled: true
  *  cases below keep reading as the trigger→bindRules fold they are testing. */
 const specOf = async (
   i: IntegrationRecord,
-  secret: Parameters<typeof integrationToSpec>[3],
+  secret: Parameters<typeof integrationToSpec>[4],
   channels: IntegrationChannelRecord[] = [],
   owner?: SpecOwner
 ) => {
   // Every platform exercised here always has a deliverable payload; `null` is the
   // withheld-integration answer, pinned in its own suite below.
-  const spec = await integrationToSpec(PLATFORMS, i, bot({ platform: i.platform }), secret, channels, owner)
+  const spec = await integrationToSpec(
+    PLATFORMS,
+    NO_SESSION_SYNC,
+    i,
+    bot({ platform: i.platform }),
+    secret,
+    channels,
+    owner
+  )
   if (!spec) throw new Error('expected a deliverable spec')
   return spec
 }
@@ -145,9 +154,14 @@ describe('integrationToSpec sessionModes', () => {
   // The relay arbitrates activation for a shared bot, so its bindRules are empty — but
   // the daemon still owns session keying, which is why this rides its own field.
   it('ships for a relay-managed bot whose bindRules are empty', async () => {
-    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, [
-      channel('C1', 'mention', 'channel', 'append')
-    ])
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      [channel('C1', 'mention', 'channel', 'append')]
+    )
     expect(spec?.core.bindRules).toEqual([])
     expect(spec?.core.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
   })
@@ -210,6 +224,7 @@ describe('assistant-mode places', () => {
   it('forces the same on a relay-managed member spec', async () => {
     const spec = await httpIntegrationToSpec(
       PLATFORMS,
+      NO_SESSION_SYNC,
       INTEGRATION,
       bot({ transport: 'http' }),
       SECRET,
@@ -244,6 +259,7 @@ describe('assistant-mode places', () => {
     ])
     const spec = await httpIntegrationToSpec(
       linear,
+      NO_SESSION_SYNC,
       { ...INTEGRATION, platform: 'linear' },
       bot({ platform: 'linear', transport: 'http' }),
       SECRET,
@@ -268,7 +284,14 @@ describe('integrationToSpec externalChannels', () => {
   })
 
   it('ships for a relay-managed bot too', async () => {
-    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, [shared('C1')])
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      [shared('C1')]
+    )
     expect(spec?.core.externalChannels).toEqual(['C1'])
   })
 })
@@ -285,24 +308,14 @@ describe('integrationToSpec chatAuthority', () => {
   it.each(['enabling', 'enabled', 'degraded'] as const)(
     'names the agent’s editors while the platform’s sync is %s',
     async (state) => {
-      const spec = await integrationToSpec(
-        PLATFORMS,
-        INTEGRATION,
-        bot(),
-        SECRET,
-        [],
-        undefined,
-        policies({ slack: state })
-      )
+      const spec = await integrationToSpec(PLATFORMS, policies({ slack: state }), INTEGRATION, bot(), SECRET)
       expect(spec?.core.chatAuthority).toBe('editors')
       const http = await httpIntegrationToSpec(
         PLATFORMS,
+        policies({ slack: state }),
         INTEGRATION,
         bot({ transport: 'http' }),
-        SECRET,
-        [],
-        undefined,
-        policies({ slack: state })
+        SECRET
       )
       expect(http?.core.chatAuthority).toBe('editors')
     }
@@ -312,12 +325,10 @@ describe('integrationToSpec chatAuthority', () => {
     const feishu = { ...INTEGRATION, platform: 'feishu' as const }
     const spec = await integrationToSpec(
       PLATFORMS,
+      policies({ feishu: 'enabled' }),
       feishu,
       bot({ platform: 'feishu' }),
-      { botToken: 'secret', appToken: 'cli_a', signingSecret: null },
-      [],
-      undefined,
-      policies({ feishu: 'enabled' })
+      { botToken: 'secret', appToken: 'cli_a', signingSecret: null }
     )
     expect(spec?.core.chatAuthority).toBe('participants')
   })
@@ -325,13 +336,10 @@ describe('integrationToSpec chatAuthority', () => {
   it('names anyone in the conversation where the sync is off, never set, or on for another platform only', async () => {
     const cases: Array<Parameters<typeof policies>[0]> = [{ slack: 'disabled' }, {}, { feishu: 'enabled' }]
     for (const synced of cases) {
-      const spec = await integrationToSpec(PLATFORMS, INTEGRATION, bot(), SECRET, [], undefined, policies(synced))
+      const spec = await integrationToSpec(PLATFORMS, policies(synced), INTEGRATION, bot(), SECRET)
       expect(spec?.core.chatAuthority).toBe('participants')
     }
-  })
-
-  it('projects nothing without a policy source, which a daemon reads as anyone', async () => {
-    expect((await specOf(INTEGRATION, SECRET)).core.chatAuthority).toBeUndefined()
+    expect((await specOf(INTEGRATION, SECRET)).core.chatAuthority).toBe('participants')
   })
 })
 
@@ -541,7 +549,14 @@ describe('By decision projection (decisions.md §7.1)', () => {
   })
 
   it('ships the bundle on a relay-managed spec without bind rules, muting held conversations', async () => {
-    const shared = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows())
+    const shared = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      rows()
+    )
     expect(shared?.core.bindRules).toEqual([])
     expect(shared?.core.mutedChannels).toEqual(['C2'])
     expect(shared?.core.decisions.bindings.map((b) => [b.channel, b.enabled])).toEqual([
@@ -550,6 +565,7 @@ describe('By decision projection (decisions.md §7.1)', () => {
     ])
     const gated = await httpIntegrationToSpec(
       PLATFORMS,
+      NO_SESSION_SYNC,
       INTEGRATION,
       bot({ transport: 'http' }),
       SECRET,
@@ -574,7 +590,14 @@ describe('shared-bot router projection on member specs (decisions.md §7.1)', ()
   const rows = () => [routedRow('R1'), routedRow('R2', { decisionRouting: { ...routing, enabled: false } })]
 
   it('binds every member as a held candidate without the router config', async () => {
-    const shared = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows())
+    const shared = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      rows()
+    )
     expect(shared?.core.bindRules).toEqual([])
     expect(shared?.core.mutedChannels).toEqual(['R2'])
     expect(shared?.core.decisions).toEqual({
@@ -589,6 +612,7 @@ describe('shared-bot router projection on member specs (decisions.md §7.1)', ()
   it('gives a gated member a decision rule for an enabled routed channel only', async () => {
     const gated = await httpIntegrationToSpec(
       PLATFORMS,
+      NO_SESSION_SYNC,
       INTEGRATION,
       bot({ transport: 'http' }),
       SECRET,
@@ -608,22 +632,22 @@ describe('integrationToSpec platform fences (§9)', () => {
     ])
     // A SERVED id (slack) whose provider is simply not composed — the case that
     // reaches the provider fence rather than `toDbPlatform`'s served-set check.
-    await expect(integrationToSpec(withoutSlack, INTEGRATION, bot(), SECRET, [])).rejects.toThrow(
+    await expect(integrationToSpec(withoutSlack, NO_SESSION_SYNC, INTEGRATION, bot(), SECRET, [])).rejects.toThrow(
       /no control-plane platform provider registered for slack/
     )
   })
 
   it('refuses an id outside the served set at the provider fence', async () => {
-    await expect(integrationToSpec(PLATFORMS, foreign, bot({ platform: 'mastodon' }), SECRET, [])).rejects.toThrow(
-      /no control-plane platform provider registered for mastodon/
-    )
+    await expect(
+      integrationToSpec(PLATFORMS, NO_SESSION_SYNC, foreign, bot({ platform: 'mastodon' }), SECRET, [])
+    ).rejects.toThrow(/no control-plane platform provider registered for mastodon/)
   })
 
   it('refuses a session-identity id, which has no persisted integration at all', async () => {
     const webchat = { ...INTEGRATION, platform: 'webchat' }
-    await expect(integrationToSpec(PLATFORMS, webchat, bot({ platform: 'webchat' }), SECRET, [])).rejects.toThrow(
-      /no control-plane platform provider registered for webchat/
-    )
+    await expect(
+      integrationToSpec(PLATFORMS, NO_SESSION_SYNC, webchat, bot({ platform: 'webchat' }), SECRET, [])
+    ).rejects.toThrow(/no control-plane platform provider registered for webchat/)
   })
 })
 
@@ -653,11 +677,13 @@ describe('a provider with no deliverable payload withholds the integration', () 
   ])
 
   it('answers null from the direct (socket) assembler', async () => {
-    expect(await integrationToSpec(withheld, INTEGRATION, bot(), SECRET, [])).toBeNull()
+    expect(await integrationToSpec(withheld, NO_SESSION_SYNC, INTEGRATION, bot(), SECRET, [])).toBeNull()
   })
 
   it('answers null from the shared (http) assembler', async () => {
-    expect(await httpIntegrationToSpec(withheld, INTEGRATION, bot({ transport: 'http' }), SECRET, [])).toBeNull()
+    expect(
+      await httpIntegrationToSpec(withheld, NO_SESSION_SYNC, INTEGRATION, bot({ transport: 'http' }), SECRET, [])
+    ).toBeNull()
   })
 
   it('still emits a spec when the provider returns a payload, including a falsy one', async () => {
@@ -674,7 +700,7 @@ describe('a provider with no deliverable payload withholds the integration', () 
         projectIntegrationConfig: () => Promise.resolve({})
       }
     ])
-    expect(await integrationToSpec(empty, INTEGRATION, bot(), SECRET, [])).toMatchObject({
+    expect(await integrationToSpec(empty, NO_SESSION_SYNC, INTEGRATION, bot(), SECRET, [])).toMatchObject({
       integrationId: INTEGRATION.id,
       config: {}
     })
