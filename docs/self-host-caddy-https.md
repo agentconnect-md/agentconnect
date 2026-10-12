@@ -203,8 +203,11 @@ from it, so neither passes through the Control Plane. Signed URLs must be
 On every start, `object-store-setup` creates the `agentconnect` bucket, its
 lifecycle rules, and a CORS rule that admits only the console origin. The store
 starts with the access key pair from `.env`, and the Control Plane uses the same
-pair. The Control Plane signs URLs for that origin and reads the bucket
-through it. To trust Caddy's certificate, it uses the root certificate that
+pair. The Control Plane signs URLs for that public origin, but reads the bucket
+itself through `https://object-store.internal:9443`, a Caddy site reachable only
+on the Compose network. This keeps file transfer working when
+`AGENTCONNECT_HTTPS_HOST` is `localhost`, which inside a container names the
+container itself. To trust Caddy's certificate, it uses the root certificate that
 `caddy-ca` copies out of Caddy's data volume. The private key is not copied.
 For this reason Caddy starts before the AgentConnect services, and its routes
 answer `502` until those services are healthy.
