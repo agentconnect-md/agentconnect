@@ -55,6 +55,7 @@ vi.mock('next/link', () => ({
 }))
 
 import { ApprovalRequestsCard } from './ApprovalRequestsCard'
+import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let root: Root | undefined
@@ -69,6 +70,9 @@ afterEach(() => {
   mocks.proposals = []
   mocks.proposalsRefusal = null
 })
+
+// The console's own retry policy, so a failed read behaves here as it does in the app.
+const swrConfig = { ...CONSOLE_SWR_CONFIG, provider: () => new Map(), dedupingInterval: 0 }
 
 const request = (extra: Record<string, unknown> = {}) => ({
   id: 'request-1',
@@ -88,7 +92,7 @@ async function render(sessionId?: string) {
   root = createRoot(host)
   await act(async () => {
     root!.render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <SWRConfig value={swrConfig}>
         <ApprovalRequestsCard agentId="example-agent" bare {...(sessionId ? { sessionId } : {})} />
       </SWRConfig>
     )
@@ -171,7 +175,7 @@ async function renderStrip(permissions: boolean) {
   root = createRoot(host)
   await act(async () => {
     root!.render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <SWRConfig value={swrConfig}>
         <ApprovalRequestsCard
           agentId="example-agent"
           sessionId="sid-webchat"
@@ -273,6 +277,36 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     expect(host!.textContent).toContain('Bash: git push')
     expect(row('proposal-1')!.textContent).toContain('I want to rebase PR #12 because it conflicts with main.')
     expect(host!.textContent).toContain('2 pending')
+  })
+
+  it('picks up what arrives after a failed read without leaving the page', async () => {
+    vi.useFakeTimers()
+    try {
+      const offline = () => new mocks.ApiError('owning daemon is offline', 503, 'DAEMON_OFFLINE')
+      mocks.fetchRequests.mockRejectedValueOnce(offline())
+      mocks.fetchProposals.mockRejectedValueOnce(offline())
+      await renderStrip(true)
+      expect(host!.textContent).toBe('')
+      mocks.rows = [request({ sessionId: 'sid-webchat' })]
+      mocks.proposals = [proposal()]
+      await act(async () => vi.advanceTimersByTimeAsync(15_000))
+      expect(host!.textContent).toContain('Bash: git push')
+      expect(row('proposal-1')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops asking once the Control Plane refuses', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.proposalsRefusal = new mocks.ApiError('forbidden', 403)
+      await renderStrip(false)
+      await act(async () => vi.advanceTimersByTimeAsync(30_000))
+      expect(mocks.fetchProposals).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('shows nothing to someone the Control Plane refuses, and nothing when none waits', async () => {

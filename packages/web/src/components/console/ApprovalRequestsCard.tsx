@@ -61,10 +61,9 @@ export function ApprovalRequestsCard({
     isLoading,
     mutate
   } = useSWR<AgentPermissionRequestDto[]>(requestsKey, ([, , , id]) => fetchAgentPermissionRequests(id as string), {
-    refreshInterval: 3_000,
-    shouldRetryOnError: false
+    refreshInterval: 3_000
   })
-  // Who may not decide them is refused once, and SWR stops polling an errored key.
+  // SWR stops polling an errored key: a refusal ends it, the console's retry resumes it after a failed read.
   const proposalsKey =
     MOCK_MODE || !proposals || !sessionId
       ? null
@@ -76,7 +75,7 @@ export function ApprovalRequestsCard({
   } = useSWR(
     proposalsKey,
     ([, , , id, conversation]) => fetchAssistantConversationProposals(id as string, conversation as string),
-    { refreshInterval: 3_000, shouldRetryOnError: false }
+    { refreshInterval: 3_000 }
   )
   const [settledProposals, setSettledProposals] = useState<Record<string, SettledProposal>>({})
   // Decisions sent without an answer: still waiting they say so, gone they may have started.
