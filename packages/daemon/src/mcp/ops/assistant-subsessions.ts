@@ -49,7 +49,7 @@ export const STOP_SUBSESSION_TOOL: ToolDescriptor = {
   description:
     'Stop the current turn of a background sub-session that this conversation opened. What it already did is not ' +
     'undone, and a process its runtime started in the background (a build, a dev server) may keep running; the ' +
-    'result says so. Before stopping, confirm with the person in one sentence which sub-session they mean.',
+    'result says so. When it is not clear which sub-session the person means, ask them before stopping one.',
   inputSchema: obj(
     {
       sessionId: {

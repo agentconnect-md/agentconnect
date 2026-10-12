@@ -587,7 +587,8 @@ scheduled run is refused. The stop itself is the console's Stop: the same daemon
 with who asked. So it answers the same way: stopped, or not running, adding that a background
 process the runtime started may keep running. Stopping one's own sub-session moves no content, so
 a session marked by a per-asker read (§5.5) may still do it. The tool's description tells the
-agent to confirm in one sentence which sub-session the person means before it stops one.
+agent to ask which sub-session the person means only when that is not clear; a clear request is
+carried out at once.
 
 No new "stop everything". The sender rules for `!stop`, `!new` and pause are **unchanged and not
 narrowed** — effects at this level cannot be defended against, and the design does not pretend
