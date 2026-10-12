@@ -7970,10 +7970,6 @@ export class Daemon {
         }
       },
       gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
-      placeEnabled: (agentId, integrationId, channel) => {
-        const int = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)
-        return int !== undefined && conversationAdmitted(integrationRouting(int), channel)
-      },
       placeExternal: (agentId, integrationId, channel) => this.assistantPlaceExternal(agentId, integrationId, channel),
       cardPortFor: (integrationId) => {
         const conn = this.connByIntegration.get(integrationId)

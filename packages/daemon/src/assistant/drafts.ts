@@ -87,8 +87,6 @@ export interface AssistantDraftsHost {
       }
     | undefined
   gatewayFor(integrationId: string): MessageGateway | undefined
-  /** The agent is enabled in this conversation (conversation gating). */
-  placeEnabled(agentId: string, integrationId: string, channel: string): boolean
   placeExternal(agentId: string, integrationId: string, channel: string): boolean
   cardPortFor(integrationId: string): DraftCardPort | undefined
   /** The control plane's approval route; undefined without one. */
@@ -199,11 +197,6 @@ export class AssistantDrafts {
     post: InterceptedPost,
     asker: DraftAsker | undefined
   ): Promise<PostInterception> {
-    if (!this.host.placeEnabled(agentId, post.integrationId, post.channel)) {
-      throw new Error(
-        'sendMessage: this agent is not enabled in that conversation, so it cannot post there. Nothing was sent.'
-      )
-    }
     const target: AssistantDraftTarget = {
       platform: post.platform,
       integrationId: post.integrationId,
@@ -755,9 +748,6 @@ export class AssistantDrafts {
     const agent = this.host.agent(draft.agentId)
     if (!agent) return failed('the agent is no longer here')
     const { target } = draft
-    if (!this.host.placeEnabled(draft.agentId, target.integrationId, target.channel)) {
-      return failed('the agent is no longer enabled in that conversation')
-    }
     const gw = this.host.gatewayFor(target.integrationId)
     if (!gw) return failed('the conversation cannot be reached right now')
     try {

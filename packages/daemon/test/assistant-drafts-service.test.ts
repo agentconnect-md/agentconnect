@@ -80,7 +80,6 @@ function fakePort() {
 async function world(
   over: {
     policy?: Partial<AssistantModePolicy>
-    enabled?: string[]
     external?: string[]
     post?: MessageGateway['postMessage']
     route?: (req: Omit<AgentApprovalRoute, 'agentId'>) => Promise<unknown>
@@ -93,7 +92,6 @@ async function world(
   const port = fakePort()
   const gateway = { postMessage: vi.fn(over.post ?? (async () => '1700000000.000200')) }
   let now = 10_000
-  const enabled = new Set(over.enabled ?? ['D0ALICE', 'C0SUPPORT', 'C0SHARED', 'D0BOB'])
   const external = new Set(over.external ?? ['C0SHARED'])
   const route = vi.fn(
     over.route ??
@@ -131,7 +129,6 @@ async function world(
     log: { info: vi.fn(), warn: vi.fn() },
     agent: () => ({ name: 'Butler', assistantMode: policy, integrations: [{ id: INT }] }),
     gatewayFor: (id) => (id === INT ? (gateway as unknown as MessageGateway) : undefined),
-    placeEnabled: (_agent, id, channel) => id === INT && enabled.has(channel),
     placeExternal: (_agent, _id, channel) => external.has(channel),
     cardPortFor: (id) => (id === INT ? port : undefined),
     approvalRoute: async (_agent, req) => (await route(req)) as never,
@@ -163,7 +160,6 @@ async function world(
     decide,
     only,
     advance: (ms: number) => (now += ms),
-    enabled,
     askable,
     startTask,
     describeDestination,
@@ -214,11 +210,12 @@ describe('a post to another place', () => {
     expect(await w.only()).toMatchObject({ status: 'awaiting_review', cardTs: 'card-1' })
   })
 
-  it('stays refused when this agent is not enabled at the target', async () => {
+  it('is drafted, and posted once approved, whether or not the agent is enabled at the target', async () => {
     const w = await world()
-    await expect(w.post({ ...TO_SUPPORT, channel: 'C0RANDOM' })).rejects.toThrow(/not enabled in that conversation/)
-    expect(w.port.postCard).not.toHaveBeenCalled()
-    expect(w.gateway.postMessage).not.toHaveBeenCalled()
+    await w.post({ ...TO_SUPPORT, channel: 'C0RANDOM' })
+    expect(w.port.postCard).toHaveBeenCalledTimes(1)
+    await w.click((await w.only()).id, 'approve')
+    expect(w.gateway.postMessage).toHaveBeenCalledWith('C0RANDOM', 'The release is out.', undefined, expect.any(Object))
   })
 
   it('posts the text unchanged, once, on approval', async () => {
@@ -296,16 +293,6 @@ describe('a post to another place', () => {
     })
     await w.click(draft.id, 'approve')
     expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
-  })
-
-  it('fails without posting when the target is no longer enabled', async () => {
-    const w = await world()
-    await w.post()
-    const draft = await w.only()
-    w.enabled.delete('C0SUPPORT')
-    await w.click(draft.id, 'approve')
-    expect(await w.only()).toMatchObject({ status: 'failed', failure: expect.stringMatching(/no longer enabled/) })
-    expect(w.gateway.postMessage).not.toHaveBeenCalled()
   })
 
   it('ignores a click from anyone the card was not addressed to', async () => {
@@ -634,15 +621,6 @@ describe('a decision from the console', () => {
     })
     expect(await unsure.decide(draft.id, 'approve')).toMatchObject({ result: 'already-decided' })
     expect(unsure.gateway.postMessage).toHaveBeenCalledTimes(1)
-
-    const w = await world()
-    await w.post()
-    w.enabled.delete('C0SUPPORT')
-    expect(await w.decide((await w.only()).id, 'approve')).toMatchObject({
-      status: 'failed',
-      failure: expect.stringMatching(/no longer enabled/)
-    })
-    expect(w.gateway.postMessage).not.toHaveBeenCalled()
   })
 })
 
