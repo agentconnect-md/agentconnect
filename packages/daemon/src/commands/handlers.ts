@@ -41,6 +41,7 @@ import { loopGuardScope, loopGuardScopeFromCoords } from '../daemon/loop-guard-s
 import type { PlatformConnection } from '../platforms/connection-reconciler.js'
 import { parseTelegramSelect, telegramSelectButtons } from '../platforms/telegram/command-chrome.js'
 import type { TelegramCallback, TelegramConnection } from '../telegram/connection.js'
+import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from '../telegram/render.js'
 import type { ChatRefusal, InteractionActor } from '../platforms/contract.js'
 import type { StatusBarInfo } from '../slack/render.js'
 import { buildDiscordSelectComponents, type DiscordComponents } from '../discord/render.js'
@@ -404,10 +405,11 @@ export class CommandHandlers {
     return undefined
   }
 
-  /** What only the person behind a refused runtime-settings change is told; undefined when this conversation takes it from them. */
+  /** What only the person behind a refused runtime-settings change is told, within `limit` characters; undefined when this conversation takes it from them. */
   private async runtimeSettingsRefusal(
     key: string,
-    actor: InteractionActor | undefined
+    actor: InteractionActor | undefined,
+    limit?: number
   ): Promise<ChatRefusal | undefined> {
     const rec = await this.host.store().getSession(key)
     if (!rec) return undefined
@@ -415,7 +417,7 @@ export class CommandHandlers {
     const verdict = open ? await this.host.sessionChatActor(open, actor) : undefined
     if (verdict === 'allowed') return undefined
     return {
-      text: settingsRefusalText(this.host.agentLink(rec.agentId), verdict),
+      text: settingsRefusalText(this.host.agentLink(rec.agentId), verdict, limit),
       channel: rec.channel,
       thread: rec.thread
     }
@@ -1115,7 +1117,12 @@ export class CommandHandlers {
       void conn.answerCallback(cb.id, 'No active session here.')
       return
     }
-    const refusal = await this.runtimeSettingsRefusal(session.key, { userId: cb.userId })
+    // Told in the tap's own answer, so it is built to fit an alert rather than cut there.
+    const refusal = await this.runtimeSettingsRefusal(
+      session.key,
+      { userId: cb.userId },
+      TELEGRAM_CALLBACK_ANSWER_LIMIT
+    )
     if (refusal) {
       // Answered on the tap itself, which only its tapper sees.
       void conn.answerCallback(cb.id, refusal.text, { alert: true })

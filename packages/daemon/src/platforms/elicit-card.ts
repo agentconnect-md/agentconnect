@@ -209,6 +209,8 @@ export interface ElicitCardFacet {
   answerScope?(handle: ElicitCardHandle): string | undefined
   /** Tell only `userId`, beside the card, why their tap was not taken (Slack's ephemeral message). Absent ⇒ core hands the words back to the tap's own ingress, which answers it privately. */
   tellPrivately?(handle: ElicitCardHandle, userId: string, text: string): void
+  /** The most characters a refusal said only to the tapper can carry here, by either path; absent ⇒ no limit core must fit. */
+  readonly privateTextLimit?: number
   /** A tapping member's display name, for a tap that carried none (a relayed Slack click); undefined when unknown. */
   nameOf?(handle: ElicitCardHandle, userId: string): Promise<string | undefined>
 }

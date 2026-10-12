@@ -1392,13 +1392,14 @@ export class PermissionCoordinator {
     return await this.host.chatActor(agentId, place.integrationId, actor)
   }
 
-  /** What a refused chat-side answer on `platform` is told: who can answer and where, and how to link an unlinked account. */
+  /** What a refused chat-side answer on a card's surface is told: who can answer and where, and how to link an unlinked account, within its limit. */
   private chatRefusal(
     rec: { owner: HostKey; sessionId: string },
     verdict: ChatActorVerdict | 'closed',
-    platform: string
+    surface: { platform: string; privateTextLimit?: number }
   ): string {
-    return approvalRefusalText(this.approvalConsoleLink(rec, platform), verdict === 'closed' ? undefined : verdict)
+    const link = this.approvalConsoleLink(rec, surface.platform)
+    return approvalRefusalText(link, verdict === 'closed' ? undefined : verdict, surface.privateTextLimit)
   }
 
   /** §6.3 click-time checks, failing closed: actor equality, then the asker's place or the CP verify; `authoritative` marks a rights answer. */
@@ -1774,7 +1775,7 @@ export class PermissionCoordinator {
       this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, input.actor)
       if (!input.actor) return
       // Only the clicker is told; the card stays as everyone else sees it.
-      const text = this.chatRefusal(rec, verdict, chat.facet.platform)
+      const text = this.chatRefusal(rec, verdict, chat.facet)
       if (!chat.facet.tellPrivately) return text
       chat.facet.tellPrivately(chat, input.actor.userId, text)
       return
@@ -2895,7 +2896,7 @@ export class PermissionCoordinator {
       // Refused, so it decided nothing: only the clicker is told, and the card stays as everyone else sees it.
       this.host.logSessionAction('permission:elicit (refused)', rec.sessionId, a.actor)
       if (rec.surface !== 'chat' || !a.actor) return
-      const text = this.chatRefusal(rec, verdict, rec.facet.platform)
+      const text = this.chatRefusal(rec, verdict, rec.facet)
       // A surface that cannot reach the tapper from the card hands the words back to the tap's own ingress.
       if (!rec.facet.tellPrivately) return text
       rec.facet.tellPrivately(rec, a.actor.userId, text)
