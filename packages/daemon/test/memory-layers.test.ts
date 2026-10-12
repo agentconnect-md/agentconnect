@@ -267,4 +267,21 @@ describe('what a session reads and is injected with', () => {
     await mem.write({ agentId: AGENT, personKey: memoryPersonKey('user:user-1') }, 'prefs.md', '- likes tabs')
     expect((await reader.channels({ agentId: AGENT })).channels.map((c) => c.channelKey)).toEqual([held.channelKey])
   })
+
+  it("reads a console user's own layer alone for the console, and never beside a place layer", async () => {
+    const { fs, mem } = tree()
+    const reader = createMemoryReader(() => localMemoryHome(fs), { adminSurfaceForAgent: () => mem.adminSurface() })
+    await mem.ensure({ agentId: AGENT }, 'Butler')
+    await mem.write({ agentId: AGENT }, 'deploys.md', '- ship on Fridays')
+    await mem.write({ agentId: AGENT, personKey: memoryPersonKey('user:user-1') }, 'prefs.md', '- likes tabs')
+    expect((await reader.list({ agentId: AGENT, personUserId: 'user-1' })).entries.map((e) => e.name)).toEqual([
+      'prefs.md'
+    ])
+    const read = await reader.read({ agentId: AGENT, personUserId: 'user-1', path: 'prefs.md', offset: 0, limit: 100 })
+    expect(read.content).toBe('- likes tabs')
+    expect((await reader.list({ agentId: AGENT, personUserId: 'user-2' })).entries).toEqual([])
+    await expect(reader.list({ agentId: AGENT, personUserId: 'user-1', channelKey: 'C1-abc' })).rejects.toThrow(
+      'one layer'
+    )
+  })
 })

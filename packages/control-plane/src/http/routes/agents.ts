@@ -58,6 +58,7 @@ import {
   MAX_WORKSPACE_EDIT_BYTES,
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  MEMORY_PERSON_LAYER_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   FILE_TRANSFER_FEATURE,
@@ -213,6 +214,7 @@ import {
   MemoryFilesQueryDto,
   MemoryChannelsDto,
   MemoryFileQueryDto,
+  MyMemoryFileQueryDto,
   PutMemoryFileQueryDto,
   PutAgentMemoryBody,
   AgentMemoryWriteDto,
@@ -4438,6 +4440,115 @@ export function agentRoutes(deps: HttpDeps) {
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
           }
+          throw err
+        }
+      }
+    )
+
+    // The signed-in caller's own memory layer, named by who is asking and never by the request.
+    const myMemory = async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const agent = await getServingAgent(req, req.params.id)
+      if (!agent) {
+        await reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        return null
+      }
+      const userId = req.principal?.userId
+      if (!userId) {
+        await reply.code(401).send({ error: 'Unauthorized', statusCode: 401, message: 'sign in to read your memory' })
+        return null
+      }
+      // Only managed memory keeps a layer for one person.
+      if (agent.memory?.provider !== undefined && agent.memory.provider !== 'managed')
+        return { agentId: agent.id, daemonId: null, userId: null }
+      if (!agent.daemonId) {
+        await reply
+          .code(503)
+          .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        return null
+      }
+      // Version skew: a daemon that predates person layers would read the shared one instead.
+      const daemon = await deps.registry.getAvailable(agent.orgId, agent.daemonId)
+      if (!daemon?.capabilities.features.includes(MEMORY_PERSON_LAYER_FEATURE)) {
+        await reply.code(503).send({
+          error: 'Service Unavailable',
+          statusCode: 503,
+          message: "the agent's daemon cannot read your memory yet; update it"
+        })
+        return null
+      }
+      return { agentId: agent.id, daemonId: agent.daemonId, userId }
+    }
+    const myMemoryFailure = (reply: FastifyReply, err: unknown) => {
+      if (sendMemoryHomeUnavailable(reply, err)) return true
+      const unavailable = daemonEdgeFailure(err)
+      if (unavailable === null) return false
+      void reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+      return true
+    }
+
+    // List the files of the caller's own memory layer.
+    r.get(
+      '/agents/:id/memory/mine/files',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List your memory files',
+          description:
+            "List the files of the signed-in caller's own memory layer for this agent: what it keeps for that person from their DMs on linked platforms and their console conversations, live from the owning daemon. Only the caller's own layer can be read; nobody else's, editors included. Empty for an agent whose memory is not managed. 503 when unplaced, the daemon is offline or too old, or the memory home of the agent is not reachable right now; `code` says why.",
+          operationId: 'listMyAgentMemoryFiles',
+          params: IdParam,
+          response: { 200: MemoryFilesDto, 401: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const mine = await myMemory(req, reply)
+        if (!mine) return
+        if (!mine.userId || !mine.daemonId)
+          return toMemoryFilesDto({ agentId: mine.agentId, exists: false, entries: [] })
+        try {
+          const rep = await deps.control.memoryList(mine.daemonId, {
+            agentId: mine.agentId,
+            personUserId: mine.userId
+          })
+          return toMemoryFilesDto(rep)
+        } catch (err) {
+          if (myMemoryFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Read one file of the caller's own memory layer.
+    r.get(
+      '/agents/:id/memory/mine/file',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Read your memory file',
+          description:
+            "Proxy one byte slice of a file in the signed-in caller's own memory layer (?path defaults to MEMORY.md) live from the owning daemon; a missing file is data (exists:false). Only the caller's own layer can be read. 503 when unplaced, the daemon is offline or too old, or the memory home of the agent is not reachable right now; `code` says why.",
+          operationId: 'readMyAgentMemoryFile',
+          params: IdParam,
+          querystring: MyMemoryFileQueryDto,
+          response: { 200: AgentMemoryDto, 401: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const mine = await myMemory(req, reply)
+        if (!mine) return
+        const path = req.query.path ?? 'MEMORY.md'
+        if (!mine.userId || !mine.daemonId) return toAgentMemoryDto({ agentId: mine.agentId, path, exists: false })
+        try {
+          const rep = await deps.control.memoryRead(mine.daemonId, {
+            agentId: mine.agentId,
+            personUserId: mine.userId,
+            path,
+            offset: req.query.offset ?? 0,
+            limit: req.query.limit ?? 65536
+          })
+          return toAgentMemoryDto(rep)
+        } catch (err) {
+          if (myMemoryFailure(reply, err)) return
           throw err
         }
       }

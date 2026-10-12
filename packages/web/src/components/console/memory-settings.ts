@@ -1,4 +1,4 @@
-import type { AgentMemoryConfig, ManagedMemoryHome, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
+import type { AgentMemoryConfig, ManagedMemoryHome, MemoryDreamingConfig } from '@/lib/api'
 import { isIanaTimezone, isValidCron } from '@/lib/cron'
 import {
   DEFAULT_EXTERNAL_MEMORY_BINDING,
@@ -70,9 +70,6 @@ export const MEMORY_PROVIDER_OPTIONS: ReadonlyArray<{
 export interface MemorySettingsDraft {
   provider: MemoryProviderChoice
   autoDistill: boolean
-  /** Managed partitioning (#653). `channel` gives each channel its own memory and
-   *  disables dreaming (offline consolidation doesn't map onto per-channel folders). */
-  scope: ManagedMemoryScope
   /** Where the managed tree lives; every save sends it, so the CP's "absent keeps current" fallback is never relied on. */
   home: ManagedMemoryHome
   dreaming: DreamingDraft
@@ -110,7 +107,6 @@ function sameDreaming(a: DreamingDraft, b: DreamingDraft): boolean {
 export function memorySettingsDraft(input: {
   provider: string
   autoDistill: boolean
-  scope?: ManagedMemoryScope
   home?: ManagedMemoryHome
   dreaming?: MemoryDreamingConfig | null
   connectionId?: string
@@ -120,7 +116,6 @@ export function memorySettingsDraft(input: {
   return {
     provider: memoryProviderChoice(input.provider),
     autoDistill: input.autoDistill,
-    scope: input.scope === 'channel' ? 'channel' : 'agent',
     home: input.home === 'control-plane' ? 'control-plane' : DEFAULT_MEMORY_HOME,
     dreaming: input.dreaming
       ? {
@@ -157,10 +152,7 @@ function sameExternalSettings(a: ExternalMemoryBindingDraft, b: ExternalMemoryBi
 export function memorySettingsChanged(persisted: MemorySettingsDraft, draft: MemorySettingsDraft): boolean {
   if (persisted.provider !== draft.provider) return true
   if (draft.provider === 'managed') {
-    if (persisted.scope !== draft.scope) return true
     if (persisted.home !== draft.home) return true
-    // Under channel scope dreaming is hidden/disabled, so its draft fields don't count.
-    if (draft.scope === 'channel') return persisted.autoDistill !== draft.autoDistill
     return persisted.autoDistill !== draft.autoDistill || !sameDreaming(persisted.dreaming, draft.dreaming)
   }
   if (draft.provider === 'external') return !sameExternalSettings(persisted.external, draft.external)
@@ -208,11 +200,7 @@ export function memorySettingsBlocker(draft: MemorySettingsDraft): string | null
   if (draft.provider === 'external' && !draft.external.connectionId) {
     return 'Choose an external-memory connection before saving.'
   }
-  if (draft.provider === 'managed') {
-    // Channel scope has no dreaming, so a stale (hidden) dreaming draft must not
-    // block the save — mirror memoryConfigForDraft, which drops it entirely.
-    return draft.scope === 'channel' ? null : dreamingScheduleBlocker(draft.dreaming)
-  }
+  if (draft.provider === 'managed') return dreamingScheduleBlocker(draft.dreaming)
   return null
 }
 
@@ -227,11 +215,6 @@ export function memoryConfigForDraft(draft: MemorySettingsDraft): AgentMemoryCon
     }
   }
   if (draft.provider === 'managed') {
-    // Channel scope has no dreaming (offline consolidation doesn't map onto
-    // per-channel folders), so never serialize a dreaming policy with it.
-    if (draft.scope === 'channel') {
-      return { provider: 'managed', autoDistill: draft.autoDistill, scope: 'channel', home: draft.home }
-    }
     const dreaming = dreamingConfigForDraft(draft.dreaming)
     return {
       provider: 'managed',

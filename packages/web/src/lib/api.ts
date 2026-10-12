@@ -305,10 +305,6 @@ export interface MemoryDreamingConfig {
   autoAdopt?: boolean // adopt automatically without content review; absent defaults off
 }
 
-/** Managed-memory partitioning: `agent` (default) is one store per agent;
- *  `channel` gives each channel its own memory folder (#653). */
-export type ManagedMemoryScope = 'agent' | 'channel'
-
 /** Where the managed tree lives (memory-evolution.md §3.2.1); absent on a binding written before the field existed. */
 export type ManagedMemoryHome = 'daemon' | 'control-plane'
 
@@ -317,7 +313,6 @@ export type AgentMemoryConfig =
       provider: 'managed'
       autoDistill?: boolean
       dreaming?: MemoryDreamingConfig
-      scope?: ManagedMemoryScope
       home?: ManagedMemoryHome
       /** CP-owned and read-only: set by the `daemon` → `control-plane` switch, cleared by the owning daemon's completion report. */
       homeMigration?: 'pending'
@@ -2039,7 +2034,6 @@ export function agentFromDto(d: AgentDto): Agent {
     // Memory backend (unset ⇒ managed default).
     memoryProvider: d.memory?.provider ?? 'managed',
     memoryAutoDistill: d.memory?.provider === 'managed' ? (d.memory.autoDistill ?? false) : false,
-    ...(d.memory?.provider === 'managed' && d.memory.scope === 'channel' ? { memoryScope: 'channel' as const } : {}),
     ...(d.memory?.provider === 'managed' && d.memory.dreaming ? { memoryDreaming: d.memory.dreaming } : {}),
     ...(d.memory?.provider === 'managed' && d.memory.home ? { memoryHome: d.memory.home } : {}),
     ...(d.memory?.provider === 'managed' && d.memory.homeMigration
@@ -3019,7 +3013,7 @@ export interface MemoryFilesDto {
 }
 
 // List the files in the agent's memory dir (MEMORY.md index + topic files).
-/** A channel that has its own memory folder (channel-scoped agents, #653). */
+/** A conversation whose memory has a place layer of its own. */
 export interface MemoryChannelDto {
   channelKey: string
   channel: string | null
@@ -3034,9 +3028,38 @@ export async function fetchAgentAssistantModeAdmission(agentId: string): Promise
   return apiGet<AssistantModeAdmission>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/assistant-mode/admission`)
 }
 
-/** List the channels that have their own memory folder (empty for agent scope). */
+/** List the conversations whose memory has a place layer of its own. */
 export async function fetchAgentMemoryChannels(agentId: string): Promise<MemoryChannelsDto> {
   return apiGet<MemoryChannelsDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/channels`)
+}
+
+/** List the files of the signed-in user's own memory layer for this agent. */
+export async function listMyAgentMemory(agentId: string): Promise<MemoryFilesDto> {
+  return apiGet<MemoryFilesDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/mine/files`)
+}
+
+/** Read a file of the signed-in user's own memory layer whole, paging every slice. */
+export async function fetchMyAgentMemoryFull(
+  agentId: string,
+  path: string
+): Promise<{ exists: boolean; content: string; mtime: string | null }> {
+  let offset = 0
+  let content = ''
+  let exists = false
+  let mtime: string | null = null
+  for (let guard = 0; guard < 4096; guard++) {
+    const q = new URLSearchParams({ path, offset: String(offset) })
+    const slice = await apiGet<AgentMemoryDto>(
+      `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/mine/file?${q.toString()}`
+    )
+    exists = slice.exists
+    mtime = slice.mtime
+    if (!slice.exists) break
+    content += slice.content ?? ''
+    if (!slice.truncated || slice.nextOffset == null || slice.nextOffset <= offset) break
+    offset = slice.nextOffset
+  }
+  return { exists, content, mtime }
 }
 
 export async function listAgentMemory(agentId: string, channelKey?: string): Promise<MemoryFilesDto> {

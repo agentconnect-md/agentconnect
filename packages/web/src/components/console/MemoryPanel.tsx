@@ -14,13 +14,12 @@ import { UnifiedMemoryPanel } from '@/components/console/UnifiedMemoryPanel'
 // markdown or edited through the same inline file-browser surface as Workspace.
 // The CP enforces edit permission (a 403 surfaces as an error), matching the console.
 
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import {
   fetchAgentMemoryFull,
   fetchAgentMemoryChannels,
   type ManagedMemoryHome,
-  type ManagedMemoryScope,
   type MemoryChannelDto,
   type MemoryDreamingConfig
 } from '@/lib/api'
@@ -49,71 +48,10 @@ import {
 import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
+import { PersonalMemoryPanel } from '@/components/console/PersonalMemoryPanel'
 
-function MemoryScopeField({
-  scope,
-  canEdit,
-  onChange
-}: {
-  scope: ManagedMemoryScope
-  canEdit: boolean
-  onChange: (next: ManagedMemoryScope) => void
-}) {
-  const t = useTranslations('Agents.detail.memory')
-  const tooltipId = useId()
-  const options: Array<{ value: ManagedMemoryScope; label: string }> = [
-    { value: 'agent', label: t('agent') },
-    { value: 'channel', label: t('channel') }
-  ]
-
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-      <span className="font-sans text-[13px] font-semibold leading-normal">{t('scope')}</span>
-      <span className="group relative inline-flex items-center gap-1">
-        <span className="pillbar">
-          {options.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              disabled={!canEdit}
-              data-memory-scope={option.value}
-              aria-pressed={scope === option.value}
-              aria-describedby={tooltipId}
-              className={`pill ${scope === option.value ? 'on' : ''} px-2 py-1 text-[12px] ${canEdit ? 'cursor-pointer' : 'cursor-not-allowed'}`}
-              onClick={() => {
-                if (canEdit) onChange(option.value)
-              }}
-            >
-              {option.label}
-            </button>
-          ))}
-        </span>
-        <button
-          type="button"
-          className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-          aria-label={t('aboutScope')}
-          aria-describedby={tooltipId}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              event.preventDefault()
-              event.stopPropagation()
-              event.currentTarget.blur()
-            }
-          }}
-        >
-          <Icon name="info" size={13} />
-        </button>
-        <span
-          id={tooltipId}
-          role="tooltip"
-          className="pointer-events-none invisible absolute top-full left-0 z-30 mt-2 w-[280px] max-w-[calc(100vw-72px)] -translate-y-1 rounded-md border border-(--border-default) bg-(--surface-card) p-3 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-secondary) opacity-0 shadow-(--shadow-lg) transition-[opacity,transform,visibility] duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
-        >
-          {t('scopeHelp')}
-        </span>
-      </span>
-    </div>
-  )
-}
+// The layer picker's value for the signed-in user's own memory; a place layer's key never contains a colon.
+const YOUR_LAYER = ':yours'
 
 const HOME_SET_REASON = 'Agents on a group or the managed pool keep their memory in the Control Plane.'
 const HOME_PENDING_STATUS = 'Moving memory to the Control Plane…'
@@ -189,7 +127,6 @@ function MemoryHomeField({
 function settingsFromProps(input: {
   memoryProvider: string
   autoDistill: boolean
-  memoryScope?: ManagedMemoryScope
   memoryHome?: ManagedMemoryHome
   memberSetPlaced?: boolean
   memoryDreaming?: MemoryDreamingConfig
@@ -200,7 +137,6 @@ function settingsFromProps(input: {
   return memorySettingsDraft({
     provider: input.memoryProvider,
     autoDistill: input.autoDistill,
-    scope: input.memoryScope,
     // A member set refuses `daemon`, so a set-placed agent’s draft is pinned to the only home it may carry.
     home: input.memberSetPlaced ? 'control-plane' : input.memoryHome,
     dreaming: input.memoryDreaming,
@@ -215,7 +151,6 @@ export function MemoryPanel({
   canEdit,
   memoryProvider,
   autoDistill,
-  memoryScope,
   memoryHome,
   memoryHomeMigration,
   memoryDreaming,
@@ -232,7 +167,6 @@ export function MemoryPanel({
   canEdit: boolean
   memoryProvider: string
   autoDistill: boolean
-  memoryScope?: ManagedMemoryScope
   /** Where the managed tree lives; absent reads as `daemon`. */
   memoryHome?: ManagedMemoryHome
   /** Set while the owning daemon copies the tree into the Control Plane; the home control waits for it to clear. */
@@ -253,11 +187,10 @@ export function MemoryPanel({
 }) {
   const t = useTranslations('Agents.detail.memory')
   const { updateAgent } = useConsoleData()
-  // Channel memory viewer (#653): the channels with their own folder, and which one
-  // is being viewed. `undefined` = the shared agent-level base. Only meaningful when
-  // the persisted scope is `channel`.
+  // The layer being viewed: '' the shared layer, YOUR_LAYER the signed-in user's own, else a place layer's key.
   const [channels, setChannels] = useState<MemoryChannelDto[]>([])
-  const [selectedChannel, setSelectedChannel] = useState<string | undefined>(undefined)
+  const [layer, setLayer] = useState('')
+  const selectedChannel = layer && layer !== YOUR_LAYER ? layer : undefined
 
   // Existing-agent memory settings are one explicit draft. The content below
   // continues to reflect `persistedSettings` until Save succeeds, so selecting a
@@ -265,7 +198,6 @@ export function MemoryPanel({
   const initialSettings = settingsFromProps({
     memoryProvider,
     autoDistill,
-    memoryScope,
     memoryHome,
     memberSetPlaced,
     memoryDreaming,
@@ -302,7 +234,6 @@ export function MemoryPanel({
     const next = settingsFromProps({
       memoryProvider,
       autoDistill,
-      memoryScope,
       memoryHome,
       memberSetPlaced,
       memoryDreaming,
@@ -319,7 +250,6 @@ export function MemoryPanel({
     agentId,
     memoryProvider,
     autoDistill,
-    memoryScope,
     memoryHome,
     memberSetPlaced,
     memoryDreaming?.enabled,
@@ -427,19 +357,10 @@ export function MemoryPanel({
     setSettingsOpen(false)
   }
 
-  // One-line summary of the PERSISTED settings for the collapsed bar. Scope is
-  // always named. Channel scope has no dreaming, so those chips are dropped.
+  // One-line summary of the PERSISTED settings for the collapsed bar.
   const settingsSummary = (() => {
     switch (persistedProvider) {
       case 'managed': {
-        if (persistedSettings.scope === 'channel') {
-          return [
-            t('managedDirectory'),
-            memoryHomeLabel(persistedSettings.home),
-            t('autoDistill', { state: persistedSettings.autoDistill ? t('on') : t('off') }),
-            t('channelScope')
-          ].join(' · ')
-        }
         const dreaming = persistedSettings.dreaming
         const cadence = dreaming.schedule === '0 4 * * *' ? 'daily' : dreaming.schedule ? 'scheduled' : 'manual'
         return [
@@ -448,8 +369,7 @@ export function MemoryPanel({
           t('autoDistill', { state: persistedSettings.autoDistill ? t('on') : t('off') }),
           dreaming.enabled ? t('dreamingOn', { cadence: t(`dreamingCadence.${cadence}`) }) : t('dreamingOff'),
           ...(dreaming.enabled && dreaming.mineSkills === true ? [t('skillMiningOn')] : []),
-          t('autoAccept', { state: dreaming.autoAdopt ? t('on') : t('off') }),
-          t('agentScope')
+          t('autoAccept', { state: dreaming.autoAdopt ? t('on') : t('off') })
         ].join(' · ')
       }
       case 'native':
@@ -459,8 +379,7 @@ export function MemoryPanel({
         return [
           connectionId ? t('connectionNamed', { id: connectionId.slice(0, 8) }) : t('noConnection'),
           recall.mode === 'auto' ? t('recallEveryTurn') : t('recallToolOnly'),
-          captureMode === 'turn' ? t('captureEveryTurn') : t('captureManual'),
-          t('agentScope')
+          captureMode === 'turn' ? t('captureEveryTurn') : t('captureManual')
         ].join(' · ')
       }
       case 'none':
@@ -471,14 +390,10 @@ export function MemoryPanel({
   // Only a managed tree with a `daemon` home lives on the sandbox volume; a `control-plane` home is read through the
   // daemon's connection and a native/external/off backend reads nothing from a pod, so none of those wake it.
   const sandboxedMemory = sandboxed && persistedProvider === 'managed' && persistedSettings.home !== 'control-plane'
-  // A home change (the forward copy clearing, or the forced return) swaps the tree underneath, so nothing cached survives it.
-  // Under channel scope, load the list of channels that have their own memory folder
-  // so the viewer can offer a channel selector. Always reset the selection first —
-  // the component instance is reused across agent navigations, so a stale channelKey
-  // from another agent must never leak into this one's reads.
+  // A home change swaps the tree underneath, so nothing cached survives it; the selection resets first, never leaking across agents.
   useEffect(() => {
-    setSelectedChannel(undefined)
-    if (persistedProvider !== 'managed' || persistedSettings.scope !== 'channel') {
+    setLayer('')
+    if (persistedProvider !== 'managed') {
       setChannels([])
       return
     }
@@ -493,7 +408,7 @@ export function MemoryPanel({
     return () => {
       live = false
     }
-  }, [agentId, persistedProvider, persistedSettings.scope, persistedSettings.home, homeMigrationPending])
+  }, [agentId, persistedProvider, persistedSettings.home, homeMigrationPending])
 
   return (
     <div className="p-4 desktop:p-0">
@@ -569,17 +484,6 @@ export function MemoryPanel({
             </div>
 
             {provider === 'managed' ? (
-              <MemoryScopeField
-                scope={settings.scope}
-                canEdit={canEdit && !savingProvider}
-                onChange={(next) => {
-                  setSettings((current) => ({ ...current, scope: next }))
-                  setProviderError(null)
-                }}
-              />
-            ) : null}
-
-            {provider === 'managed' ? (
               <MemoryHomeField
                 home={settings.home}
                 persistedHome={persistedSettings.home}
@@ -608,13 +512,7 @@ export function MemoryPanel({
               </label>
             ) : null}
 
-            {provider === 'managed' && settings.scope === 'channel' ? (
-              <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                {t('channelScopeHint')}
-              </span>
-            ) : null}
-
-            {provider === 'managed' && settings.scope !== 'channel' ? (
+            {provider === 'managed' ? (
               <div className="flex flex-col gap-2">
                 <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
                   <input
@@ -820,36 +718,41 @@ export function MemoryPanel({
         </div>
       ) : (
         <>
-          {persistedProvider === 'managed' && persistedSettings.scope === 'channel' ? (
-            <div className="flex flex-wrap items-center gap-2 px-4 pt-3 font-sans text-[12px] leading-normal text-(--text-secondary)">
-              <span className="font-semibold">{t('channel')}</span>
-              <select
-                value={selectedChannel ?? ''}
-                onChange={(event) => setSelectedChannel(event.target.value || undefined)}
-                aria-label={t('channelMemoryFolder')}
-                className="rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] text-(--text-primary)"
-              >
-                <option value="">{t('agentShared')}</option>
-                {channels.map((entry) => (
-                  <option key={entry.channelKey} value={entry.channelKey}>
-                    {entry.channel ?? entry.channelKey}
-                  </option>
-                ))}
-              </select>
-              {channels.length === 0 ? <span className="text-(--text-tertiary)">{t('noChannelMemory')}</span> : null}
-            </div>
-          ) : null}
-          <UnifiedMemoryPanel
-            key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}:${selectedChannel}`}
-            agentId={agentId}
-            channelKey={selectedChannel}
-            canEdit={canEdit}
-            sandboxed={sandboxedMemory}
-            overview={{
-              read: () => fetchAgentMemoryFull(agentId, undefined, selectedChannel),
-              readTopic: (file) => fetchAgentMemoryFull(agentId, file, selectedChannel)
-            }}
-          />
+          <div className="flex flex-wrap items-center gap-2 pb-3 font-sans text-[12px] leading-normal text-(--text-secondary)">
+            <span className="font-semibold">{t('layer')}</span>
+            <select
+              value={layer}
+              onChange={(event) => setLayer(event.target.value)}
+              aria-label={t('layerPicker')}
+              className="rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] text-(--text-primary)"
+            >
+              <option value="">{t('sharedLayer')}</option>
+              <option value={YOUR_LAYER}>{t('yourMemory')}</option>
+              {channels.map((entry) => (
+                <option key={entry.channelKey} value={entry.channelKey}>
+                  {entry.channel ?? entry.channelKey}
+                </option>
+              ))}
+            </select>
+          </div>
+          {layer === YOUR_LAYER ? (
+            <PersonalMemoryPanel
+              key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}`}
+              agentId={agentId}
+            />
+          ) : (
+            <UnifiedMemoryPanel
+              key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}:${selectedChannel}`}
+              agentId={agentId}
+              channelKey={selectedChannel}
+              canEdit={canEdit}
+              sandboxed={sandboxedMemory}
+              overview={{
+                read: () => fetchAgentMemoryFull(agentId, undefined, selectedChannel),
+                readTopic: (file) => fetchAgentMemoryFull(agentId, file, selectedChannel)
+              }}
+            />
+          )}
           {/* Dreaming is managed-only and is secondary to the live memory
               content, so it sits below the browser. Only render it when the
               persisted policy is on; otherwise its trigger would be noise. */}

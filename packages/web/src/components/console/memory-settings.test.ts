@@ -134,35 +134,14 @@ describe('memory settings UX model', () => {
     })
   })
 
-  it('models channel scope: no dreaming in the config, and a change vs the agent default (#653)', () => {
-    const agent = memorySettingsDraft({ provider: 'managed', autoDistill: false })
-    expect(agent.scope).toBe('agent')
-
-    // Parsing a channel-scoped binding.
-    const channel = memorySettingsDraft({ provider: 'managed', autoDistill: false, scope: 'channel' })
-    expect(channel.scope).toBe('channel')
-    // Serializing channel scope never carries a dreaming policy.
-    expect(memoryConfigForDraft(channel)).toEqual({
-      provider: 'managed',
-      autoDistill: false,
-      scope: 'channel',
-      home: 'daemon'
-    })
-
-    // Switching agent → channel is a change (even though dreaming fields are equal).
-    expect(memorySettingsChanged(agent, { ...agent, scope: 'channel' })).toBe(true)
-    // Under channel scope, dreaming-field edits don't count as a change.
-    expect(memorySettingsChanged(channel, { ...channel, dreaming: { ...channel.dreaming, autoAdopt: false } })).toBe(
-      false
-    )
-
-    // A stale (hidden) invalid dreaming schedule must not block a channel-scope save.
-    const staleInvalidDream = {
-      ...channel,
-      dreaming: { ...channel.dreaming, enabled: true, schedule: 'not a cron' }
-    }
-    expect(memorySettingsBlocker({ ...staleInvalidDream, scope: 'agent' })).not.toBeNull()
-    expect(memorySettingsBlocker(staleInvalidDream)).toBeNull()
+  it('never sends the retired memory scope, so a save drops a stored Channel choice', () => {
+    const draft = memorySettingsDraft({ provider: 'managed', autoDistill: false })
+    expect(draft).not.toHaveProperty('scope')
+    expect(memoryConfigForDraft(draft)).not.toHaveProperty('scope')
+    // Dreaming applies to every managed agent, so an invalid schedule always blocks the save.
+    const invalid = { ...draft, dreaming: { ...draft.dreaming, enabled: true, schedule: 'not a cron' } }
+    expect(memorySettingsBlocker(invalid)).not.toBeNull()
+    expect(memorySettingsChanged(draft, { ...draft, dreaming: { ...draft.dreaming, autoAdopt: false } })).toBe(true)
   })
 
   it('preserves the full dreaming policy across a save, even fields the console does not edit', () => {
@@ -275,12 +254,6 @@ describe('memory home travels with the managed draft (memory-evolution.md §3.2.
     const moved = memorySettingsDraft({ provider: 'managed', autoDistill: false, home: 'control-plane' })
     expect(moved.home).toBe('control-plane')
     expect(memoryConfigForDraft(moved)).toEqual({ provider: 'managed', autoDistill: false, home: 'control-plane' })
-    expect(memoryConfigForDraft({ ...moved, scope: 'channel' })).toEqual({
-      provider: 'managed',
-      autoDistill: false,
-      scope: 'channel',
-      home: 'control-plane'
-    })
   })
 
   it('counts a home change as a change, and only daemon → control-plane as the forward move', () => {

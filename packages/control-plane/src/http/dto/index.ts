@@ -3690,6 +3690,8 @@ export const MemoryFileQueryDto = z.object({
   offset: z.coerce.number().int().nonnegative().optional(), // byte offset
   limit: z.coerce.number().int().positive().max(65536).optional() // byte count per slice
 })
+/** Query for reading one file of the caller's own memory layer: the same slice, and never a place layer. */
+export const MyMemoryFileQueryDto = MemoryFileQueryDto.omit({ channelKey: true })
 /** `GET /agents/:id/memory[/file]` — one byte slice of a memory file. A
  *  not-yet-created file is data (`exists:false`), not an error. Always utf8 text. */
 export const AgentMemoryDto = z.object({

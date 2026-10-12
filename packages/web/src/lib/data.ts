@@ -30,7 +30,6 @@ import type {
   ChannelDecisionView,
   DaemonSessionRetention,
   ManagedMemoryHome,
-  ManagedMemoryScope,
   MemoryDreamingConfig,
   PlanBody
 } from '@/lib/api'
@@ -581,8 +580,6 @@ export interface Agent {
   memoryProvider: string
   /** Opt-in managed-memory extraction after each completed turn. */
   memoryAutoDistill: boolean
-  /** Managed-memory partitioning; 'channel' ⇒ per-channel folders (#653). Absent ⇒ agent. */
-  memoryScope?: ManagedMemoryScope
   /** Managed-memory dreaming policy; present only when configured (managed provider). */
   memoryDreaming?: MemoryDreamingConfig
   /** Where the managed tree lives (memory-evolution.md §3.2.1); absent on a binding written before the field existed. */

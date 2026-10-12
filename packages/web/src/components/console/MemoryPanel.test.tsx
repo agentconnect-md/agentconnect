@@ -32,6 +32,10 @@ vi.mock('@/components/console/UnifiedMemoryPanel', async () => {
   }
 })
 
+vi.mock('@/components/console/PersonalMemoryPanel', () => ({
+  PersonalMemoryPanel: (props: { agentId: string }) => <div data-testid="your-memory-view" data-agent={props.agentId} />
+}))
+
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 
 vi.mock('@/lib/data-context', () => ({
@@ -300,7 +304,7 @@ describe('MemoryPanel settings draft', () => {
     expect(container.textContent).toContain('Dreaming daily')
     expect(container.textContent).toContain('Auto-accept on')
     expect(container.textContent).toContain('Skill mining on')
-    expect(container.textContent).toContain('Agent scope')
+    expect(container.textContent).not.toContain('scope')
     expect(container.querySelector('[data-testid="entries-memory-view"]')).not.toBeNull()
 
     await openSettings(container)
@@ -314,7 +318,7 @@ describe('MemoryPanel settings draft', () => {
     expect(container.querySelector('[data-memory-provider="managed"]')).toBeNull()
   })
 
-  it('offers an editable Agent/Channel scope; choosing Channel hides dreaming and saves the scope', async () => {
+  it('offers no memory scope: dreaming applies to every managed agent and a save sends no scope', async () => {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -331,32 +335,24 @@ describe('MemoryPanel settings draft', () => {
     })
 
     await openSettings(container)
-    const agentPill = container.querySelector<HTMLButtonElement>('[data-memory-scope="agent"]')
-    const channelPill = container.querySelector<HTMLButtonElement>('[data-memory-scope="channel"]')
-    // Both options are offered and editable; Agent is selected by default.
-    expect(agentPill?.textContent).toBe('Agent')
-    expect(channelPill?.textContent).toBe('Channel')
-    expect(agentPill?.disabled).toBe(false)
-    expect(agentPill?.getAttribute('aria-pressed')).toBe('true')
-
-    // Dreaming controls are visible under agent scope.
+    expect(container.querySelector('[data-memory-scope]')).toBeNull()
+    expect(container.textContent).toContain("a person's DMs stay theirs")
     expect(container.textContent).toContain('Enable dreaming')
 
-    await act(async () => channelPill?.click())
-    // Channel scope hides the dreaming controls and explains the tradeoff.
-    expect(container.textContent).not.toContain('Enable dreaming')
-    expect(container.textContent).toContain('Dreaming is unavailable')
-
+    const autoDistill = [...container.querySelectorAll<HTMLLabelElement>('label')].find((label) =>
+      label.textContent?.includes('distill')
+    )
+    await act(async () => autoDistill?.querySelector('input')?.click())
     const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Save memory settings'
     )
     await act(async () => save?.click())
     expect(mocks.updateAgent).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', {
-      memory: { provider: 'managed', autoDistill: false, scope: 'channel', home: 'daemon' }
+      memory: { provider: 'managed', autoDistill: true, home: 'daemon' }
     })
   })
 
-  it('channel scope: the viewer lists channels and reads the selected channel (#653)', async () => {
+  it('offers the shared layer, your own memory and every place layer that holds memory, for any managed agent', async () => {
     vi.mocked(fetchAgentMemoryChannels).mockResolvedValue({
       channels: [
         { channelKey: 'slack-C1-abc', channel: 'C1', transportScope: null },
@@ -373,27 +369,34 @@ describe('MemoryPanel settings draft', () => {
           agentId="22222222-2222-4222-8222-222222222222"
           canEdit
           memoryProvider="managed"
-          memoryScope="channel"
           autoDistill={false}
         />
       )
     })
-    // Let the channel-fetch effect resolve and re-render.
     await act(async () => {
       await Promise.resolve()
     })
 
-    const selector = container.querySelector<HTMLSelectElement>('[aria-label="Channel memory folder"]')
+    const selector = container.querySelector<HTMLSelectElement>('[aria-label="Memory layer"]')
     expect(selector).not.toBeNull()
-    expect([...selector!.options].map((o) => o.textContent)).toEqual(['Agent (shared)', 'C1', 'C2'])
+    expect([...selector!.options].map((o) => o.textContent)).toEqual(['Shared', 'Your memory', 'C1', 'C2'])
 
     await act(async () => {
       selector!.value = 'slack-C2-def'
       selector!.dispatchEvent(new Event('change', { bubbles: true }))
     })
-    // The entry browser is remounted on the selected channel's key.
-    const entries = container.querySelector('[data-testid="entries-memory-view"]')
-    expect(entries?.getAttribute('data-channel')).toBe('slack-C2-def')
+    // The entry browser is remounted on the selected place layer's key.
+    expect(container.querySelector('[data-testid="entries-memory-view"]')?.getAttribute('data-channel')).toBe(
+      'slack-C2-def'
+    )
+
+    await act(async () => {
+      selector!.value = selector!.options[1]!.value
+      selector!.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    // Your own layer opens in its own read-only view, never through the shared entry browser.
+    expect(container.querySelector('[data-testid="your-memory-view"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="entries-memory-view"]')).toBeNull()
   })
 
   it('hides the persisted memory session while a different backend is selected but unsaved', async () => {
@@ -833,7 +836,7 @@ describe('MemoryPanel memory home', () => {
   it('lists the channel folders again once a copy that refused the read has cleared', async () => {
     // During the copy the daemon refuses the channel read; the picker must not stay empty after completion.
     vi.mocked(fetchAgentMemoryChannels).mockRejectedValueOnce(new ApiError('memory unavailable', 503))
-    await mount({ memoryHome: 'control-plane', memoryHomeMigration: 'pending', memoryScope: 'channel' })
+    await mount({ memoryHome: 'control-plane', memoryHomeMigration: 'pending' })
     const before = vi.mocked(fetchAgentMemoryChannels).mock.calls.length
     vi.mocked(fetchAgentMemoryChannels).mockResolvedValueOnce({
       channels: [{ channelKey: 'slack:C1', channel: 'general', transportScope: null }]
@@ -846,7 +849,6 @@ describe('MemoryPanel memory home', () => {
           memoryProvider="managed"
           autoDistill={false}
           memoryHome="control-plane"
-          memoryScope="channel"
         />
       )
     })

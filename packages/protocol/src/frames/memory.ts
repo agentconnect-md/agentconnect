@@ -52,9 +52,13 @@ export const MemoryChannelKey = z
   .regex(/^[A-Za-z0-9._-]+$/)
 
 /** C→D REQ: list the files in the agent's memory dir (or one channel's overlay). */
+/** The console user whose own person layer a read names, set by the CP from the signed-in caller only; never beside a channel key. */
+const MemoryPersonUserId = z.string().min(1).max(256)
+
 export const MemoryListReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
-  channelKey: MemoryChannelKey.optional()
+  channelKey: MemoryChannelKey.optional(),
+  personUserId: MemoryPersonUserId.optional()
 })
 export type MemoryListReq = z.infer<typeof MemoryListReq>
 
@@ -91,6 +95,7 @@ export type MemoryListPage = z.infer<typeof MemoryListPage>
 export const MemoryReadReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
   channelKey: MemoryChannelKey.optional(),
+  personUserId: MemoryPersonUserId.optional(),
   path: z.string().default(MEMORY_INDEX), // memory-dir-relative POSIX path; default the index
   offset: z.number().int().nonnegative().default(0), // byte offset
   limit: z.number().int().positive().max(65536).default(65536) // byte count per slice (64 KiB, see docblock)
