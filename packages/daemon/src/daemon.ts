@@ -56,6 +56,7 @@ import {
   K8S_SUPERVISOR,
   AGENT_CONFIG_REVISION_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
+  CHAT_ACTOR_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
@@ -168,7 +169,14 @@ import { sessionRetentionMs, type Config, type RuntimeDef } from './config/confi
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
-import { chatApprovalsAllowed, chatSettingsAllowed, chatSurfaceOf, type ChatSurface } from './agents/chat-actions.js'
+import {
+  chatApprovalsAllowed,
+  chatSettingsAllowed,
+  chatSurfaceOf,
+  type ChatActorVerdict,
+  type ChatSurface
+} from './agents/chat-actions.js'
+import { ChatActors, type ChatActorAnswer } from './agents/chat-actor.js'
 import { diffAgents } from './reconciler/reconciler.js'
 import {
   resolveRoot,
@@ -1559,6 +1567,11 @@ export class Daemon {
   // Grant admission, install, and the platform convergence a duty change needs — the timing-critical
   // half of the lease path, with its own in-flight state (cp/duty-coordinator.ts).
   private readonly dutyCoordinator = new DutyCoordinator(this.dutyHost())
+  // Chat members' editor verdicts on synced integrations, asked of the CP and cached briefly (agents/chat-actor.ts).
+  private readonly chatActors = new ChatActors({
+    ask: async (agentId, integrationId, userId) => await this.askChatActor(agentId, integrationId, userId),
+    now: () => this.clock.now()
+  })
   // ACP permission + elicitation policy and its pending human-approval state (permissions/coordinator.ts).
   private readonly permissions = new PermissionCoordinator(this.permissionHost())
 
@@ -2381,7 +2394,14 @@ export class Daemon {
       },
       chatSurface: (agentId, integrationId, channel, externallyShared) =>
         this.chatSurface(agentId, integrationId, channel, externallyShared),
-      sessionChatSurfaceOpen: (rec) => this.sessionChatSurfaceOpen(rec)
+      sessionChatSurfaceOpen: (rec) => this.sessionChatSurfaceOpen(rec),
+      chatActor: async (agentId, integrationId, actor) => await this.chatActor(agentId, integrationId, actor),
+      sessionChatActor: async (rec, actor) =>
+        await this.chatActor(
+          rec.agentId,
+          this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope),
+          actor
+        )
     }
   }
 
@@ -5308,6 +5328,7 @@ export class Daemon {
       this.drainingAgents.add(id)
       await this.interruptAgentTurns(id, 'stop')
       this.agents.delete(id)
+      this.chatActors.forgetAgent(id)
       // A stage-out leaves the roster for exactly the reason a later refusal must explain, so the
       // recorded cause survives it. A genuine removal clears it where the tombstone is taken.
       if (!this.moveStagedAgents.has(id)) this.lastStartFailure.delete(id)
@@ -5336,6 +5357,8 @@ export class Daemon {
       const a = change.agent
       const previous = this.agents.get(a.id)
       const wasPaused = previous?.pause === true
+      // Who may act in chat is asked again once the agent or its integrations change.
+      this.chatActors.forgetAgent(a.id)
       // Crossing into or out of 'settings' clears session overrides; dropping below 'approve' retires in-chat approval cards.
       const settingsLeft = chatSettingsAllowed(previous) && !chatSettingsAllowed(a)
       if (chatSettingsAllowed(previous) !== chatSettingsAllowed(a)) await this.store.clearRuntimeConfigOverrides(a.id)
@@ -7987,6 +8010,39 @@ export class Daemon {
   ): ChatSurface {
     const int = integrationId ? this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId) : undefined
     return chatSurfaceOf(int, channel, externallyShared)
+  }
+
+  /** Whether chat actions on this integration are taken only from the agent's editors: its organization syncs the platform's permissions. */
+  private chatEditorsOnly(agentId: string, integrationId: string | undefined): boolean {
+    const int = integrationId ? this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId) : undefined
+    return int !== undefined && integrationCore(int).chatAuthority === 'editors'
+  }
+
+  /** Whether this person may act in chat past the level and the conversation: anyone, or where permissions are synced only a linked Agent editor; fails closed. */
+  private async chatActor(
+    agentId: string,
+    integrationId: string | undefined,
+    actor: InteractionActor | undefined
+  ): Promise<ChatActorVerdict> {
+    if (!integrationId || !this.chatEditorsOnly(agentId, integrationId)) return 'allowed'
+    if (!actor || actor.isBot) return 'unavailable'
+    return await this.chatActors.judge(agentId, integrationId, actor.userId)
+  }
+
+  /** Whether a chat member is one of the agent's editors, by their linked identity; undefined when the CP cannot be asked. */
+  private async askChatActor(
+    agentId: string,
+    integrationId: string,
+    userId: string
+  ): Promise<ChatActorAnswer | undefined> {
+    const cp = this.cpClient
+    if (cp?.supportsServerFeature?.(CHAT_ACTOR_V1_FEATURE) !== true) return undefined
+    const res = await cp.approvalRoute(
+      { agentId, requestId: randomUUID(), integrationIds: [integrationId], verify: { integrationId, userId } },
+      this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+    )
+    if (res.allowed === undefined) return undefined
+    return { allowed: res.allowed, ...(res.linked !== undefined ? { linked: res.linked } : {}) }
   }
 
   /** The same for a session's own conversation; a webchat session's settings are the console's, not a platform conversation's. */
@@ -13245,6 +13301,8 @@ export class Daemon {
       assistantApprover: (agentId, requestId) => this.drafts.cardApprover(agentId, requestId),
       chatSurface: (agentId, integrationId, channel, externallyShared) =>
         this.chatSurface(agentId, integrationId, channel, externallyShared),
+      chatEditorsOnly: (agentId, integrationId) => this.chatEditorsOnly(agentId, integrationId),
+      chatActor: async (agentId, integrationId, actor) => await this.chatActor(agentId, integrationId, actor),
       externalAskerDm: async (p) => {
         const msg = p.entry.msg
         // Only a person's own platform message names an asker; a webchat turn's sender is a console user.

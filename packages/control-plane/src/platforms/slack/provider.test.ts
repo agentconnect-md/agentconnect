@@ -704,7 +704,7 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     relayReg,
     { integrationUpsert: async () => {} } as never,
     { upsert: async () => {}, get: async () => null, listForBot: async () => [] } as unknown as ThreadAffinityStore,
-    { findThreadOwner: async () => null } as unknown as SessionRepo,
+    { findThreadOwner: async () => null, getExternalAccessPolicy: async () => null } as unknown as SessionRepo,
     { info() {}, warn() {}, debug() {} },
     PLATFORMS,
     // No duty ledger ⇒ the spec goes to the placement alone, as this fixture expects.

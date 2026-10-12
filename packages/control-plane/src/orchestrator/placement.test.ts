@@ -273,6 +273,68 @@ describe('integrationToSpec externalChannels', () => {
   })
 })
 
+describe('integrationToSpec chatAuthority', () => {
+  /** An organization whose session access sync is on (in any of its states) for exactly `synced` platforms. */
+  const policies = (synced: Record<string, 'enabling' | 'enabled' | 'degraded' | 'disabled'>) => ({
+    getExternalAccessPolicy: async (orgId: OrgId, provider: string) => {
+      const state = synced[provider]
+      return state ? { orgId, provider, state, currentRev: 1n, readFenceRev: null } : null
+    }
+  })
+
+  it.each(['enabling', 'enabled', 'degraded'] as const)(
+    'names the agent’s editors while the platform’s sync is %s',
+    async (state) => {
+      const spec = await integrationToSpec(
+        PLATFORMS,
+        INTEGRATION,
+        bot(),
+        SECRET,
+        [],
+        undefined,
+        policies({ slack: state })
+      )
+      expect(spec?.core.chatAuthority).toBe('editors')
+      const http = await httpIntegrationToSpec(
+        PLATFORMS,
+        INTEGRATION,
+        bot({ transport: 'http' }),
+        SECRET,
+        [],
+        undefined,
+        policies({ slack: state })
+      )
+      expect(http?.core.chatAuthority).toBe('editors')
+    }
+  )
+
+  it('names anyone in a conversation whose members cannot be checked yet, synced or not', async () => {
+    const feishu = { ...INTEGRATION, platform: 'feishu' as const }
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      feishu,
+      bot({ platform: 'feishu' }),
+      { botToken: 'secret', appToken: 'cli_a', signingSecret: null },
+      [],
+      undefined,
+      policies({ feishu: 'enabled' })
+    )
+    expect(spec?.core.chatAuthority).toBe('participants')
+  })
+
+  it('names anyone in the conversation where the sync is off, never set, or on for another platform only', async () => {
+    const cases: Array<Parameters<typeof policies>[0]> = [{ slack: 'disabled' }, {}, { feishu: 'enabled' }]
+    for (const synced of cases) {
+      const spec = await integrationToSpec(PLATFORMS, INTEGRATION, bot(), SECRET, [], undefined, policies(synced))
+      expect(spec?.core.chatAuthority).toBe('participants')
+    }
+  })
+
+  it('projects nothing without a policy source, which a daemon reads as anyone', async () => {
+    expect((await specOf(INTEGRATION, SECRET)).core.chatAuthority).toBeUndefined()
+  })
+})
+
 describe('integrationToSpec bindRules', () => {
   it('defaults to mention + dm with no channels', async () => {
     const spec = await specOf(INTEGRATION, SECRET)

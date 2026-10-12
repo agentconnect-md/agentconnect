@@ -43,12 +43,12 @@ function seedPending(daemon: Daemon, chatActions: 'talk' | 'approve' | 'settings
 }
 
 describe('chat-side session action audit', () => {
-  it('records a refused permission click as an attempt, never as the decision', () => {
+  it('records a refused permission click as an attempt, never as the decision', async () => {
     const { daemon, lines } = daemonWithLog()
     const postEphemeral = seedPending(daemon, 'talk') // chat authority withdrawn
 
-    ;(
-      daemon as never as { permissions: { handlePermissionChoice: (i: unknown) => void } }
+    await (
+      daemon as never as { permissions: { handlePermissionChoice: (i: unknown) => Promise<void> } }
     ).permissions.handlePermissionChoice({
       requestId: REQUEST,
       optionId: 'allow_once',

@@ -12,6 +12,7 @@ import {
   type RdMsgPlatformAction
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { CHAT_LINK_HINT } from '../src/agents/chat-actions.js'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { elicitOptionToken } from '../src/slack/render.js'
@@ -1315,6 +1316,73 @@ describe('Daemon in-conversation commands', () => {
     expect(await store.getModelOverride(SESSION_KEY)).toBeUndefined()
     await select({ userId: 'U1' })
     expect(await store.getModelOverride(SESSION_KEY)).toBe('sonnet')
+    await daemon.stop()
+  })
+
+  it('takes runtime settings only from a linked Agent editor where permissions are synced', async () => {
+    const host = { ...selectHost(), setSessionFastMode: vi.fn(async () => true) }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    const agent = (daemon as any).agents.get('bot-a')
+    agent.chatActions = 'settings'
+    agent.integrations[0].core.chatAuthority = 'editors'
+    // U-ED is linked to an editor, U1 to a member who cannot edit, and anyone else to nobody.
+    const asked: string[] = []
+    ;(daemon as any).askChatActor = vi.fn(async (_agentId: string, _integrationId: string, userId: string) => {
+      asked.push(userId)
+      return userId === 'U-ED' ? { allowed: true } : { allowed: false, linked: userId === 'U1' }
+    })
+    const from = (sender: string, ts: string, text: string) => ({
+      ...dm(ts, text),
+      sender: { id: sender, isBot: false }
+    })
+
+    await (daemon as any).onInboundOutcome(from('U1', '200', '/models 2'))
+    expect(await store.getModelOverride(SESSION_KEY)).toBeUndefined()
+    expect(conn.postMessage.mock.calls.at(-1)![1]).toBe(
+      'Runtime settings can only be changed by an Agent editor from the Agent page.'
+    )
+    await (daemon as any).onInboundOutcome(from('U-NEW', '210', '!fast on'))
+    expect(await store.getFastModeOverride(SESSION_KEY)).toBeUndefined()
+    expect(conn.postMessage.mock.calls.at(-1)![1]).toContain(CHAT_LINK_HINT)
+    await (daemon as any).onInboundOutcome(from('U-ED', '220', '!fast on'))
+    expect(await store.getFastModeOverride(SESSION_KEY)).toBe(true)
+
+    const select = (userId: string) =>
+      (daemon as any).commands.handleStatusAction({
+        kind: 'set-model',
+        sessionKey: SESSION_KEY,
+        model: 'sonnet',
+        actor: { userId }
+      })
+    await expect(select('U-NEW')).resolves.toMatchObject({ text: expect.stringContaining(CHAT_LINK_HINT) })
+    await expect(select('U1')).resolves.toMatchObject({
+      text: expect.stringContaining('Only an Agent editor can change runtime settings.')
+    })
+    expect(await store.getModelOverride(SESSION_KEY)).toBeUndefined()
+    await expect(select('U-ED')).resolves.toBeUndefined()
+    expect(await store.getModelOverride(SESSION_KEY)).toBe('sonnet')
+
+    // Where permissions are not synced, anyone in the conversation changes them, and no one is asked.
+    agent.integrations[0].core.chatAuthority = 'participants'
+    const before = asked.length
+    await expect(
+      (daemon as any).commands.handleStatusAction({
+        kind: 'set-model',
+        sessionKey: SESSION_KEY,
+        model: 'opus',
+        actor: { userId: 'U-NEW' }
+      })
+    ).resolves.toBeUndefined()
+    expect(await store.getModelOverride(SESSION_KEY)).toBe('opus')
+    expect(asked).toHaveLength(before)
     await daemon.stop()
   })
 })

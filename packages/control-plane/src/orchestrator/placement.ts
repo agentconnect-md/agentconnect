@@ -83,6 +83,7 @@ import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
 import { toDbPlatform } from '../persistence/platform.js'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import { buildCollabSnapshot } from './collabSnapshot.js'
+import { checksChatMembers } from './approvalRoute.js'
 import type { ConnectionRegistry, DaemonConnState } from '../ws/registry.js'
 import type { ControlSender } from './outbound.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
@@ -313,11 +314,12 @@ function externalChannelIds(channels: IntegrationChannelRecord[]): string[] {
 /** Where the projection reads whether the organization syncs a platform's session access; absent projects no chat authority. */
 export type ChatAuthoritySource = Pick<SessionRepo, 'getExternalAccessPolicy'>
 
-/** Who may take chat actions on an integration: its agent's editors while the organization syncs that platform's session access. */
+/** Who may take chat actions on an integration: its agent's editors while the organization syncs that platform's session access and its members can be checked. */
 export async function chatAuthorityOf(
   source: ChatAuthoritySource,
   i: Pick<IntegrationRecord, 'orgId' | 'platform'>
 ): Promise<ChatAuthority> {
+  if (!checksChatMembers(i.platform)) return 'participants'
   const policy = await source.getExternalAccessPolicy(i.orgId, i.platform)
   return policy && policy.state !== 'disabled' ? 'editors' : 'participants'
 }

@@ -13,6 +13,9 @@ import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { AUDIENCE_CONCURRENCY, MAX_AUDIENCE, mapLimited } from './linkedDm.js'
 import { canEdit } from '../authorization/policy.js'
 
+/** Whether a chat member's linked identity can be checked on this platform: Slack only, for linkedDm.ts's reason. */
+export const checksChatMembers = (platform: string): boolean => platform === 'slack'
+
 export interface ApprovalRouteDeps {
   agent: Pick<AgentRepo, 'getUnscoped'>
   session: Pick<SessionRepo, 'getUnscoped'>
@@ -44,7 +47,7 @@ export async function resolveApprovalRoute(
   if (editors.length === 0) return none
 
   const owned = await deps.integration.activeForAgents([req.agentId])
-  const slackOwned = new Map(owned.filter((i) => i.platform === 'slack').map((i) => [String(i.id), i]))
+  const slackOwned = new Map(owned.filter((i) => checksChatMembers(i.platform)).map((i) => [String(i.id), i]))
   // The integration's workspace anchor. `teamId` is written by platform-app installs only;
   // a token-installed (direct) bot carries the same fact as `workspaceId`, reported by the
   // owning daemon's auth.test — the provenance `ownerIdentity`'s transportScope already has,

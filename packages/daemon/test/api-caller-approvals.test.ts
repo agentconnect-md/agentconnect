@@ -91,7 +91,9 @@ function world(apiProtocol: string | undefined = 'ai-sdk-ui') {
     slackConnFor: () => undefined,
     approvalDmIntegrations: () => [],
     slackDmSessionTarget: () => 'encoded-target',
-    chatSurface: () => 'open'
+    chatSurface: () => 'open',
+    chatEditorsOnly: () => false,
+    chatActor: async () => 'allowed' as const
   }
   const events = (): any[] => sink.output.mock.calls.map(([o]: any[]) => o.event)
   return { store, events, timers, cancelTurn, coordinator: new PermissionCoordinator(host) }

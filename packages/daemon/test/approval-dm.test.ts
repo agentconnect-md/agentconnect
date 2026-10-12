@@ -109,7 +109,9 @@ async function world(over?: {
       integrationId === TARGET.integrationId && !over?.noChannel ? (conn as unknown as SlackConnection) : undefined,
     approvalDmIntegrations: () => ['int-1'],
     slackDmSessionTarget: () => 'encoded-target',
-    chatSurface: () => 'open'
+    chatSurface: () => 'open',
+    chatEditorsOnly: () => false,
+    chatActor: async () => 'allowed' as const
   }
   return { store, conn, route, host, coordinator: new PermissionCoordinator(host), p }
 }

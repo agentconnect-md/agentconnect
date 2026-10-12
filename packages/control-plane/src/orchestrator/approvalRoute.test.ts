@@ -365,3 +365,72 @@ describe('resolveApprovalRoute — verify form', () => {
     expect(routed.allowed).toBe(false)
   })
 })
+
+describe('resolveApprovalRoute — a chat member, named by no console user (chat-actor-v1)', () => {
+  const actorReq = (userId: string, teamId?: string) =>
+    routeReq({ verify: { integrationId: INTEGRATION_A, userId, ...(teamId ? { teamId } : {}) } })
+  const world: World = {
+    members: [
+      { userId: 'u-editor', displayName: 'Editor' },
+      { userId: 'u-viewer', role: 'viewer' }
+    ],
+    links: { 'u-editor': linked('U0EDITOR'), 'u-viewer': linked('U0VIEWER'), 'u-gone': linked('U0GONE') }
+  }
+
+  it('allows an editor’s linked pair in the integration’s own workspace, naming them', async () => {
+    await expect(resolveApprovalRoute(actorReq('U0EDITOR'), deps(world))).resolves.toEqual({
+      requestId: REQUEST_ID,
+      allowed: true,
+      displayName: 'Editor'
+    })
+    expect((await resolveApprovalRoute(actorReq('U0EDITOR', TEAM_A), deps(world))).allowed).toBe(true)
+    expect((await resolveApprovalRoute(actorReq('U0EDITOR', TEAM_B), deps(world))).allowed).toBe(false)
+  })
+
+  it('refuses anyone else, saying whether they are linked to a member at all', async () => {
+    await expect(resolveApprovalRoute(actorReq('U0VIEWER'), deps(world))).resolves.toEqual({
+      requestId: REQUEST_ID,
+      allowed: false,
+      linked: true
+    })
+    // Linked to someone who is no longer a member, or to no one: not linked as far as this organization knows.
+    for (const user of ['U0GONE', 'U0NOBODY'])
+      expect(await resolveApprovalRoute(actorReq(user), deps(world))).toEqual({
+        requestId: REQUEST_ID,
+        allowed: false,
+        linked: false
+      })
+    // A link in another workspace is not this pair.
+    const elsewhere = deps({ ...world, links: { 'u-editor': linked('U0EDITOR', TEAM_B) } })
+    expect((await resolveApprovalRoute(actorReq('U0EDITOR'), elsewhere)).allowed).toBe(false)
+  })
+
+  it('refuses over the editor cap, and leaves "linked" unsaid when only the editors could be scanned', async () => {
+    const editors = Array.from({ length: 201 }, (_, i) => ({ userId: `u-${i}` }))
+    const overCap = deps({ members: editors, links: { 'u-3': linked('U0THREE') } })
+    expect(await resolveApprovalRoute(actorReq('U0THREE'), overCap)).toEqual({ requestId: REQUEST_ID, allowed: false })
+    const viewers = Array.from({ length: 201 }, (_, i) => ({ userId: `v-${i}`, role: 'viewer' as const }))
+    const manyMembers = deps({
+      members: [{ userId: 'u-editor' }, ...viewers],
+      links: { 'u-editor': linked('U0EDITOR'), 'v-1': linked('U0VIEWER') }
+    })
+    expect((await resolveApprovalRoute(actorReq('U0EDITOR'), manyMembers)).allowed).toBe(true)
+    expect(await resolveApprovalRoute(actorReq('U0VIEWER'), manyMembers)).toEqual({
+      requestId: REQUEST_ID,
+      allowed: false
+    })
+  })
+
+  it('fails closed without sign-in or for an integration with no workspace', async () => {
+    expect((await resolveApprovalRoute(actorReq('U0EDITOR'), deps({ ...world, identityAbsent: true }))).allowed).toBe(
+      false
+    )
+    const unanchored = deps({ ...world, bots: { 'bot-a': { teamId: null, workspaceId: null } } })
+    expect((await resolveApprovalRoute(actorReq('U0EDITOR'), unanchored)).allowed).toBe(false)
+  })
+
+  it('still needs the workspace for a verify that names a console user', async () => {
+    const named = routeReq({ verify: { integrationId: INTEGRATION_A, userId: 'U0EDITOR', consoleUserId: 'u-editor' } })
+    expect((await resolveApprovalRoute(named, deps(world))).allowed).toBe(false)
+  })
+})

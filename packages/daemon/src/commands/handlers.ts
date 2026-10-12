@@ -45,7 +45,13 @@ import type { ChatRefusal, InteractionActor } from '../platforms/contract.js'
 import type { StatusBarInfo } from '../slack/render.js'
 import { buildDiscordSelectComponents, type DiscordComponents } from '../discord/render.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
-import { chatSettingsAllowed, settingsRefusalText, type ChatSurface } from '../agents/chat-actions.js'
+import {
+  CHAT_LINK_HINT,
+  chatSettingsAllowed,
+  settingsRefusalText,
+  type ChatActorVerdict,
+  type ChatSurface
+} from '../agents/chat-actions.js'
 import {
   pendingTurnKey,
   QueueFullError,
@@ -131,6 +137,14 @@ export interface CommandHost {
   ): ChatSurface
   /** The same for a session's own conversation. */
   sessionChatSurfaceOpen(rec: SessionRecord): boolean
+  /** Whether this person may act in chat past the level and the conversation; fails closed where permissions are synced. */
+  chatActor(
+    agentId: string,
+    integrationId: string | undefined,
+    actor: InteractionActor | undefined
+  ): Promise<ChatActorVerdict>
+  /** The same for a session's own conversation. */
+  sessionChatActor(rec: SessionRecord, actor: InteractionActor | undefined): Promise<ChatActorVerdict>
 }
 
 /** What a handled command did: a durable effect completed before returning, a reply or refusal with nothing durable to prove, or a `!queue` whose admission the caller awaits. */
@@ -366,7 +380,7 @@ export class CommandHandlers {
     // A bot never changes a setting; cancelling follows the stop rule instead.
     if (a.kind !== 'cancel' && a.actor?.isBot) return undefined
     const runtimeSetting = a.kind !== 'cancel' && a.kind !== 'set-output'
-    const refusal = runtimeSetting ? await this.runtimeSettingsRefusal(a.sessionKey) : undefined
+    const refusal = runtimeSetting ? await this.runtimeSettingsRefusal(a.sessionKey, a.actor) : undefined
     if (refusal) return refusal
     if (a.kind === 'cancel') applied = await this.cancelSessionByKey(a.sessionKey, a.actor)
     else if (a.kind === 'set-model') {
@@ -384,11 +398,21 @@ export class CommandHandlers {
     return undefined
   }
 
-  /** What only the person behind a refused runtime-settings change is told; undefined when this conversation takes it from chat. */
-  private async runtimeSettingsRefusal(key: string): Promise<ChatRefusal | undefined> {
+  /** What only the person behind a refused runtime-settings change is told; undefined when this conversation takes it from them. */
+  private async runtimeSettingsRefusal(
+    key: string,
+    actor: InteractionActor | undefined
+  ): Promise<ChatRefusal | undefined> {
     const rec = await this.host.store().getSession(key)
-    if (!rec || (await this.chatRuntimeSession(key))) return undefined
-    return { text: settingsRefusalText(this.host.agentLink(rec.agentId)), channel: rec.channel, thread: rec.thread }
+    if (!rec) return undefined
+    const open = await this.chatRuntimeSession(key)
+    const verdict = open ? await this.host.sessionChatActor(open, actor) : undefined
+    if (verdict === 'allowed') return undefined
+    return {
+      text: settingsRefusalText(this.host.agentLink(rec.agentId), verdict),
+      channel: rec.channel,
+      thread: rec.thread
+    }
   }
 
   /** A tapped Discord select-card button: the card redrawn on the value in force, a refusal's private `notice`, or undefined to leave it. */
@@ -401,7 +425,7 @@ export class CommandHandlers {
     if (a.actor?.isBot) return undefined
     const rec = await this.host.store().getSession(a.sessionKey)
     if (!rec) return undefined
-    const refusal = await this.runtimeSettingsRefusal(a.sessionKey)
+    const refusal = await this.runtimeSettingsRefusal(a.sessionKey, a.actor)
     if (refusal) return { notice: refusal.text }
     const info = await this.host.statusInfoFrom(rec.agentId, a.sessionKey, rec.acpSessionId ?? undefined)
     const { current, options } = selectOptions(a.kind, info)
@@ -660,14 +684,18 @@ export class CommandHandlers {
 
     const entry = this.registry[command.kind]
     // The Agent-level chat-changes guard, applied for every runtime-setting command before its handler runs; a closed conversation takes none.
-    if (
-      entry.runtimeChange &&
-      (!chatSettingsAllowed(this.host.agents().get(target.agentId)) ||
-        this.host.chatSurface(target.agentId, target.integrationId, msg.channel, msg.externallyShared === true) !==
-          'open')
-    ) {
-      reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
-      return 'consumed'
+    if (entry.runtimeChange) {
+      const verdict =
+        chatSettingsAllowed(this.host.agents().get(target.agentId)) &&
+        this.host.chatSurface(target.agentId, target.integrationId, msg.channel, msg.externallyShared === true) ===
+          'open'
+          ? await this.host.chatActor(target.agentId, target.integrationId, senderActor(msg))
+          : undefined
+      if (verdict !== 'allowed') {
+        const refused = 'Runtime settings can only be changed by an Agent editor from the Agent page.'
+        reply(verdict === 'unlinked' ? `${refused}\n${CHAT_LINK_HINT}` : refused)
+        return 'consumed'
+      }
     }
     // The entry is the one registered for this exact kind; the union-keyed index can't narrow that.
     return await (entry.run as (c: AgentCommand, x: CommandContext) => Promise<CommandEffect>)(command, ctx)
@@ -1081,9 +1109,10 @@ export class CommandHandlers {
       void conn.answerCallback(cb.id, 'No active session here.')
       return
     }
-    if (!(await this.chatRuntimeSession(session.key))) {
+    const refusal = await this.runtimeSettingsRefusal(session.key, { userId: cb.userId })
+    if (refusal) {
       // Answered on the tap itself, which only its tapper sees.
-      void conn.answerCallback(cb.id, settingsRefusalText(this.host.agentLink(session.agentId)), { alert: true })
+      void conn.answerCallback(cb.id, refusal.text, { alert: true })
       return
     }
     const info = await this.host.statusInfoFrom(session.agentId, session.key, session.acpSessionId)
