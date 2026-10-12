@@ -6,7 +6,6 @@ import {
   type DecisionDeps
 } from './ops/decisions.js'
 import {
-  memoryEntryWriteAsk,
   describeMemoryEntries,
   listMemoryEntries,
   getMemoryEntry,
@@ -26,7 +25,7 @@ import {
 } from '../memory/entries/tools.js'
 import { z, type ZodType } from 'zod'
 import type { AskDeps } from './ask.js'
-import { MEMORY_WRITE_CLOSED, MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../memory/tools.js'
+import type { InterceptedPost } from '../assistant/drafts.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
@@ -49,7 +48,6 @@ import {
   DELETE_MEMORY_ARGS,
   getMemory,
   GET_MEMORY_ARGS,
-  MEMORY_TOOL_ACCESS_MODES,
   readMemory,
   READ_MEMORY_ARGS,
   saveMemory,
@@ -150,7 +148,13 @@ import {
   type PlatformReadDeps
 } from './ops/platform-reads.js'
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
-import { assertAssistantPlaceAccess, assertPlaceRead, type PlaceAccessDeps } from './ops/place-gate.js'
+import {
+  assertPlaceRead,
+  assertShareHere,
+  isPlatformPost,
+  judgePlaceWrite,
+  type PlaceAccessDeps
+} from './ops/place-gate.js'
 import { recall, RECALL_ARGS } from './ops/recall.js'
 import { ASSISTANT_ITEM_ARG_SCHEMAS, ASSISTANT_ITEM_HANDLERS, type AssistantItemDeps } from './ops/assistant-items.js'
 import {
@@ -450,6 +454,18 @@ export async function executeTool(
   }
 }
 
+/** A handler's writes pass the write rule once their target is resolved; a platform post is drafted where the rule asks for approval. */
+function writeDeps(ctx: SessionContext, name: string, args: Record<string, unknown>, deps: OpsDeps): OpsDeps {
+  const judged: OpsDeps = { ...deps, judgeWrite: (target) => judgePlaceWrite(ctx, name, target, deps) }
+  if (name !== 'sendMessage' || !isPlatformPost(args)) return judged
+  const draft = deps.draftPost
+  return {
+    ...judged,
+    judgePost: (target) => judgePlaceWrite(ctx, name, { kind: 'conversation', ...target }, deps, true),
+    ...(draft ? { interceptPost: (post: InterceptedPost) => draft(ctx, post) } : {})
+  }
+}
+
 /** A private source's note rides first in the read's result, so a runtime that truncates it keeps the note. */
 function withPrivateSource(result: unknown, note: string): unknown {
   return result !== null && typeof result === 'object' && !Array.isArray(result)
@@ -464,42 +480,12 @@ async function executeRegisteredTool(
   args: Record<string, unknown>,
   deps: OpsDeps
 ): Promise<unknown> {
-  // The memory tools' session-isolation gate (#653), checked at CALL time so a policy change applies at once.
-  const memoryMode = MEMORY_TOOL_ACCESS_MODES[name]
-  if (memoryMode !== undefined) {
-    const decision = (await deps.memoryAccessDecision?.(ctx, memoryMode)) ?? 'allow'
-    if (decision === 'deny') throw new Error(MEMORY_WRITE_NO_APPROVER)
-    if (decision === 'closed') throw new Error(MEMORY_WRITE_CLOSED)
-    if (decision === 'ask') {
-      // The approval covers THIS call's payload and nothing else: it is awaited inline, never cached.
-      const verdict =
-        (await deps.requestMemoryWriteApproval?.(ctx, await memoryEntryWriteAsk(ctx, name, args, deps))) ??
-        'no_approver'
-      if (verdict === 'no_approver') throw new Error(MEMORY_WRITE_NO_APPROVER)
-      if (verdict !== 'allowed') throw new Error(MEMORY_WRITE_NOT_APPROVED)
-      // This call's approval survives service rechecks; a subsequent deny still wins.
-      const access = deps.memoryAccessDecision
-      deps = {
-        ...deps,
-        memoryAccessDecision: async (session, mode) => {
-          const current = (await access?.(session, mode)) ?? 'allow'
-          return mode === 'write' && current === 'ask' ? 'allow' : current
-        }
-      }
-    }
-  }
-  // Assistant mode (assistant-mode.md §5.5): a post elsewhere is drafted and other writes stay here.
-  const verdict = await assertAssistantPlaceAccess(ctx, name, args, deps)
-  // Every agent's read of another conversation is judged by who is asking (§5.5).
+  // Every agent's reads of another conversation and platform writes are judged by who is asking (§5.5).
+  await assertShareHere(ctx, name, deps)
   const privateSource = await assertPlaceRead(ctx, name, args, deps)
   const handler = HANDLERS.get(name)
-  const draftPost = verdict?.draft ? deps.assistantDraftPost : undefined
   if (handler) {
-    const result = await handler(
-      ctx,
-      args,
-      draftPost ? { ...deps, interceptPost: (post) => draftPost(ctx, post) } : deps
-    )
+    const result = await handler(ctx, args, writeDeps(ctx, name, args, deps))
     return privateSource ? withPrivateSource(result, privateSource) : result
   }
 

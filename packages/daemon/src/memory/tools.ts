@@ -1,18 +1,25 @@
-import { MEMORY_ENTRY_TOOLS, MEMORY_ENTRY_WRITE_TOOLS, memoryEntryTools } from './entries/tools.js'
+import {
+  MEMORY_ENTRY_TOOLS,
+  MEMORY_ENTRY_WRITE_TOOLS,
+  MEMORY_LAYER_PROPERTY,
+  MEMORY_READ_LAYER_SENTENCE,
+  MEMORY_WRITE_LAYER_SENTENCE,
+  memoryEntryTools
+} from './entries/tools.js'
 import type { MemoryPluginOperation } from '@agentconnect.md/protocol'
 import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
 
-const MEMORY_READ_ONLY_HERE = "This session is private, so the agent's shared memory is read-only here."
+/** Refusal when `layer: "person"` is asked on a turn that is not one person's alone. */
+export const MEMORY_PERSON_LAYER_REFUSED =
+  'layer "person" reaches only the memory of the one person asking, and this turn has more than one person or nobody behind it. Omit layer to use this conversation\'s memory.'
 
-/** Refusal surfaced to the model when the user declined (or never answered) a private session's write. */
-export const MEMORY_WRITE_NOT_APPROVED = `${MEMORY_READ_ONLY_HERE} The user did not approve saving this; keep the information in this conversation and do not retry.`
+/** Refusal when `layer: "person"` is asked of memory that keeps no person layers (an external memory). */
+export const MEMORY_NO_PERSON_LAYER =
+  'This agent\'s memory is shared with everyone it serves and keeps nothing for one person. Omit layer, or pass "shared".'
 
-/** Refusal surfaced to the model when a private session's write has nobody who could approve it. */
-export const MEMORY_WRITE_NO_APPROVER = `${MEMORY_READ_ONLY_HERE} No one could be asked to approve this write; keep the information in this conversation and do not retry.`
-
-/** Refusal surfaced to the model when its agent keeps private conversations out of shared memory (assistant mode). */
-export const MEMORY_WRITE_CLOSED =
-  "This conversation is private, so the agent's shared memory is read-only here: this agent never saves what is said in a direct message, a group DM or a private channel, and no one can approve it; keep the information in this conversation and do not retry."
+/** Refusal of a default write to an external memory from a conversation whose audience is narrower than everyone's. */
+export const MEMORY_SHARED_LAYER_ONLY =
+  'This agent\'s memory is shared with everyone it serves, and this conversation\'s audience is narrower, so nothing said here is saved by default. Save it only if the person asked you to remember it for everyone (pass layer: "shared"); otherwise keep it in this conversation and do not retry.'
 
 /** The agent's long-term memory tools, for EVERY agent: `<agent-root>/memory/` with a `MEMORY.md` index plus topic files. */
 export const MEMORY_TOOLS: ToolDescriptor[] = [
@@ -27,12 +34,14 @@ export const MEMORY_TOOLS: ToolDescriptor[] = [
       'do NOT need to read it first) — use this to pull the detail behind an index entry, or the current contents of ' +
       'a file before editing it. Also accepts a `[[name]]` link exactly as it appears in a memory body. The result ' +
       'carries `links` (memories this one points to) and `backlinks` (memories pointing at it), each with its ' +
-      'description — follow one by reading it. Those fields are NOT part of the file: never write them back.',
+      'description — follow one by reading it. Those fields are NOT part of the file: never write them back. ' +
+      MEMORY_READ_LAYER_SENTENCE,
     inputSchema: obj({
       path: {
         type: 'string',
         description: 'Memory file name (e.g. "deploys.md"), or a "[[name]]" link. Defaults to the MEMORY.md index.'
-      }
+      },
+      layer: MEMORY_LAYER_PROPERTY
     })
   },
   {
@@ -50,7 +59,8 @@ export const MEMORY_TOOLS: ToolDescriptor[] = [
       'it from surrounding session context (for example workspace or git status). It must occur exactly once; include ' +
       'enough file context to make it unique. If unsure, or retrying after a write or failed replace, call `readMemory` ' +
       'first. Pass `newString: ""` to delete. Prefer this mode for existing files so you do not resend the whole file. ' +
-      'Provide exactly one mode.',
+      'Provide exactly one mode. ' +
+      MEMORY_WRITE_LAYER_SENTENCE,
     inputSchema: obj({
       path: {
         type: 'string',
@@ -64,7 +74,8 @@ export const MEMORY_TOOLS: ToolDescriptor[] = [
         type: 'string',
         description: 'Edit mode: exact text to replace; must occur exactly once in the target memory file.'
       },
-      newString: { type: 'string', description: 'Edit mode: the replacement text ("" to delete the matched text).' }
+      newString: { type: 'string', description: 'Edit mode: the replacement text ("" to delete the matched text).' },
+      layer: MEMORY_LAYER_PROPERTY
     })
   }
 ]

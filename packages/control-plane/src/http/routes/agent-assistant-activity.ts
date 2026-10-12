@@ -9,7 +9,6 @@ import {
   ASSISTANT_ACTIVITY_SUBSESSIONS_MAX,
   AssistantActivityDraft,
   AssistantActivityErrorReason,
-  AssistantActivityGrant,
   AssistantActivityItem,
   AssistantActivityItemDetail,
   AssistantActivitySubsessionState,
@@ -39,15 +38,11 @@ import { makeSessionAccessResolver } from '../session-access.js'
 
 const IdParam = z.object({ id: z.string().uuid() })
 const ItemParam = IdParam.extend({ itemId: z.string().min(1).max(512) })
-const GrantParam = IdParam.extend({ grantId: z.string().regex(/^[0-9a-f]{32}$/) })
 const DraftParam = IdParam.extend({ draftId: z.string().min(1).max(512) })
-const DraftDecisionBody = z.object({ decision: z.enum(['approve', 'approve_always', 'discard']) })
-const DRAFT_CHOICE = { approve: 'approve', approve_always: 'always', discard: 'discard' } as const
+const DraftDecisionBody = z.object({ decision: z.enum(['approve', 'discard']) })
 const DraftDecisionDto = z.object({
   /** `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted and is never retried; an approved proposal answers `executing`. */
   status: AssistantDraftStatus,
-  /** This decision recorded "always allow from here to there". */
-  alwaysAllowed: z.boolean(),
   /** Why the post failed or is uncertain. */
   failure: z.string().nullable()
 })
@@ -81,7 +76,6 @@ const DraftsPageDto = z.object({
   /** Background sub-sessions' permission requests waiting on an answer, oldest first; empty from an agent version that does not list them. */
   permissionRequests: z.array(PermissionRequestDto)
 })
-const GrantsPageDto = z.object({ grants: z.array(AssistantActivityGrant), truncated: z.boolean() })
 const SubsessionDto = z.object({
   /** The sub-session's id, present only when the caller may open it. */
   sessionId: z.string().nullable(),
@@ -590,7 +584,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an assistant-mode agent’s pending drafts',
-          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it, whether its card offers "always allow from here to there" and when it expires. A proposal (\`kind: task\`) is what a scheduled check asks to do: its sentence, its reason and its item, with the task as its text; it runs in the conversation its item was taken in once approved. \`permissionRequests\` lists the runtime permission requests background sub-sessions are waiting on, oldest first: what each asks to run, when it is denied and its sub-session stops unless someone answers, and its options; the sub-session and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. This read changes nothing. Only callers who can edit the agent may read it.`,
+          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a scheduled check asks to do: its sentence, its reason and its item, with the task as its text; it runs in the conversation its item was taken in once approved. \`permissionRequests\` lists the runtime permission requests background sub-sessions are waiting on, oldest first: what each asks to run, when it is denied and its sub-session stops unless someone answers, and its options; the sub-session and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. This read changes nothing. Only callers who can edit the agent may read it.`,
           operationId: 'listAssistantDrafts',
           params: IdParam,
           response: { 200: DraftsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -640,7 +634,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Decide an assistant-mode agent’s pending draft',
           description:
-            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `approve_always` also lets later posts from the same conversation to the same target go out without asking, where the card offers that; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). A proposal is approved or denied the same way: approval starts its task in a background session and answers `executing`, and while the agent already runs as many sub-sessions as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. Only callers who can edit the agent may decide, and they are recorded as the decider.',
+            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). A proposal is approved or denied the same way: approval starts its task in a background session and answers `executing`, and while the agent already runs as many sub-sessions as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. Only callers who can edit the agent may decide, and they are recorded as the decider.',
           operationId: 'decideAssistantDraft',
           params: DraftParam,
           body: DraftDecisionBody,
@@ -660,7 +654,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
             agentId: admitted.agent.id,
             operation: 'decide-draft',
             draftId: req.params.draftId,
-            choice: DRAFT_CHOICE[req.body.decision],
+            choice: req.body.decision,
             decider: await actorOf(req)
           },
           assistantDraftDecisionFailure
@@ -672,7 +666,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         if (answer.result !== 'decided' || !answer.status) {
           return send(reply, DRAFT_REFUSED[answer.result === 'expired' ? 'expired' : 'already-decided'])
         }
-        return { status: answer.status, alwaysAllowed: answer.granted, failure: answer.failure }
+        return { status: answer.status, failure: answer.failure }
       }
     )
 
@@ -762,53 +756,6 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           return send(reply, PROPOSAL_REFUSED[answer.result === 'expired' ? 'expired' : 'already-decided'])
         }
         return { status: answer.status, failure: answer.failure }
-      }
-    )
-
-    r.get(
-      '/agents/:id/assistant/grants',
-      {
-        schema: {
-          tags: [Tag.Agents],
-          summary: 'List an assistant-mode agent’s post grants',
-          description:
-            'Lists the "always allow from here to there" grants that let the agent post from one conversation to another without asking, newest first. Only callers who can edit the agent may read them.',
-          operationId: 'listAssistantPostGrants',
-          params: IdParam,
-          response: { 200: GrantsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
-        }
-      },
-      async (req, reply) => {
-        const admitted = await admit(req, reply, true)
-        if (!admitted) return reply
-        const page = await readSection(reply, admitted.daemonId, { agentId: admitted.agent.id, operation: 'grants' })
-        return page ? { grants: page.grants, truncated: page.truncated } : reply
-      }
-    )
-
-    r.delete(
-      '/agents/:id/assistant/grants/:grantId',
-      {
-        schema: {
-          tags: [Tag.Agents],
-          summary: 'Revoke an assistant-mode agent’s post grant',
-          description:
-            'Revokes one "always allow from here to there" grant; the next post along that route waits for approval again. Only callers who can edit the agent may revoke a grant.',
-          operationId: 'revokeAssistantPostGrant',
-          params: GrantParam,
-          response: { 200: OkDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
-        }
-      },
-      async (req, reply) => {
-        const admitted = await admit(req, reply, true)
-        if (!admitted) return reply
-        const answer = await writeEdit(reply, admitted.daemonId, {
-          agentId: admitted.agent.id,
-          operation: 'revoke-grant',
-          grantId: req.params.grantId
-        })
-        if (!answer) return reply
-        return answer.found ? { ok: true as const } : send(reply, notFound('grant not found'))
       }
     )
   }

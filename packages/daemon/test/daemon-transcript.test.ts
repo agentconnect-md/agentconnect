@@ -247,8 +247,9 @@ describe('Daemon transcript records the agent reply', () => {
     await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce(), WAIT)
     // The capture names the session outwardly (§1.1): a runtime id can be shared by sibling session hosts.
     const outward = (await (daemon as any).store.getSessionByAcpIdForAgent('bot-a', 'acp-1')).sessionId as string
+    // A DM's turn goes to its person's layer, never into the shared one.
     expect(recordTurn).toHaveBeenCalledWith(
-      { agentId: 'bot-a', sessionId: outward },
+      { agentId: 'bot-a', personKey: expect.any(String), sessionId: outward },
       {
         turnId: stableTurnId('bot-a', dm('200', 'shared follow-up')),
         sessionId: outward,
@@ -528,7 +529,7 @@ describe('Daemon transcript records the agent reply', () => {
   // session-visibility.md §5.1: managed memory is agent-scoped and shared across
   // users, so a private conversation must never be distilled into it. A DM is
   // private from its first turn, with no CP round-trip.
-  it('never captures post-turn memory from a private DM session', async () => {
+  it("captures a private DM session's turn into its person's layer, never the shared one", async () => {
     const { factory } = replyingHost('here is my answer')
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
@@ -543,7 +544,10 @@ describe('Daemon transcript records the agent reply', () => {
     await (daemon as any).dispatch('bot-a', dm('100', 'question?'), 'int-a')
 
     expect(await (daemon as any).store.isCaptureExcluded('bot-a', await gateKeyOf(daemon))).toBe(true)
-    expect(recordTurn).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce(), WAIT)
+    const [scope] = recordTurn.mock.calls[0] as unknown as [Record<string, unknown>]
+    expect(scope.personKey).toEqual(expect.any(String))
+    expect(scope).not.toHaveProperty('sharedPlace')
     await daemon.stop()
   })
 

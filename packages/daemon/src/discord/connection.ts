@@ -948,11 +948,13 @@ export class DiscordConnection implements PlatformConnection {
     parentName?: string
     spaceId?: string
     spaceName?: string
+    user?: string
   }> {
     const ch = await this.client.channels.fetch(channel).catch(() => null)
     const c = ch as
       | (Channel & {
           name?: string
+          recipientId?: string
           isDMBased?: () => boolean
           isThread?: () => boolean
           parentId?: string | null
@@ -979,6 +981,8 @@ export class DiscordConnection implements PlatformConnection {
       ...(spaceId ? { spaceId } : {}),
       ...(spaceName ? { spaceName } : {}),
       isIm,
+      // A 1:1 DM names the person it is with.
+      ...(isIm && c?.recipientId ? { user: c.recipientId } : {}),
       ...(isIm ? {} : privacyOf(ch as DiscordViewable | null))
     }
   }

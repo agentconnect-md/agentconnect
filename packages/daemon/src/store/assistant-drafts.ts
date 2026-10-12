@@ -1,4 +1,4 @@
-// Assistant-mode drafts (assistant-mode.md §5.5, §5.10): approval records for a post or a patrol's proposed task, and "always allow" grants.
+// Drafts (assistant-mode.md §5.5, §5.10): approval records for a post or a patrol's proposed task.
 import { createHash, randomUUID } from 'node:crypto'
 import {
   ASSISTANT_PROPOSAL_SENTENCE_MAX,
@@ -48,7 +48,7 @@ export interface AssistantDraftDestination {
   threadLink: string | null
 }
 
-/** The session a draft was written from: its lineage for the post's bookkeeping, and the source of a grant. */
+/** The session a draft was written from: its lineage for the post's bookkeeping. */
 export interface AssistantDraftSource {
   platform: string
   /** Absent for webchat, which has no platform integration. */
@@ -60,7 +60,7 @@ export interface AssistantDraftSource {
   sessionKey: string | null
   /** The session's outward id, for the console link on the card. */
   sessionId: string | null
-  /** The conversation is a place a grant may name; false for a hook, a cron run or an agent call's synthetic one. */
+  /** The session is in a conversation people are in; false for a hook, a cron run or an agent call's synthetic one. */
   place: boolean
 }
 
@@ -91,7 +91,7 @@ export interface AssistantDraft {
   action: AssistantDraftAction
   kind: AssistantDraftKind
   target: AssistantDraftTarget
-  /** The target is itself an external place: one approval covers it, and no grant ever does. */
+  /** The target is itself an external place, which the card says. */
   targetExternal: boolean
   /** The target is a direct message, which the card names as such. */
   targetDm: boolean
@@ -105,10 +105,6 @@ export interface AssistantDraft {
   cardTs: string | null
   /** The status the card was posted or last rewritten with; null for a card from before it was recorded. */
   cardShows: AssistantDraftStatus | null
-  /** The card offers "always allow from here to there". */
-  offerAlways: boolean
-  /** The agent's grant generation when the draft was written; a grant from an older one is never honored. */
-  grantEpoch: number
   status: AssistantDraftStatus
   /** Binds the action, the target and the text (a task: the task, the agent and the item's version); checked again before it runs. */
   hash: string
@@ -135,7 +131,6 @@ export interface AssistantDraftCreate {
   text: string
   source?: AssistantDraftSource | null
   approver?: AssistantDraftApprover | null
-  offerAlways?: boolean
   now?: number
 }
 
@@ -158,28 +153,6 @@ export interface AssistantTaskCreate {
 
 /** How an executing task ended: it reported back, it ended without reporting, or a restart cut it (§5.7 step 1). */
 export type AssistantTaskOutcome = 'succeeded' | 'failed' | 'outcome_unknown'
-
-/** A grant's two ends: the place a post is written from and the place it goes to. */
-export interface AssistantGrantPlace {
-  platform: string
-  integrationId: string | null
-  channel: string
-}
-
-/** One "always allow from here to there" grant as listed; `id` digests its pair of places. */
-export interface AssistantPostGrant {
-  id: string
-  source: AssistantGrantPlace
-  target: AssistantGrantPlace
-  grantedBy: string | null
-  grantedAt: number
-}
-
-/** A grant's stable name: a digest of its pair of places, the same key the table is unique on. */
-export function assistantGrantId(source: AssistantGrantPlace, target: AssistantGrantPlace): string {
-  const parts = [source, target].flatMap((place) => [place.platform, place.integrationId ?? '', place.channel])
-  return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32)
-}
 
 export const ASSISTANT_DRAFT_SCHEMA = `
       CREATE TABLE IF NOT EXISTS assistant_draft (
@@ -212,6 +185,7 @@ export const ASSISTANT_DRAFT_SCHEMA = `
         approverTeamId TEXT,
         approverConsoleUserId TEXT,
         cardTs TEXT,
+        -- Unread since post grants were removed, and kept so an older daemon can still write them.
         offerAlways INTEGER NOT NULL DEFAULT 0,
         grantEpoch INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL CHECK (status IN ('awaiting_review', 'executing', 'succeeded', 'failed',
@@ -234,24 +208,6 @@ export const ASSISTANT_DRAFT_SCHEMA = `
       );
       CREATE INDEX IF NOT EXISTS assistant_draft_by_status ON assistant_draft (agentId, status, expiresAt);
       CREATE INDEX IF NOT EXISTS assistant_draft_by_subsession ON assistant_draft (agentId, subsessionKey);
-      CREATE TABLE IF NOT EXISTS assistant_post_grant (
-        agentId TEXT NOT NULL,
-        sourcePlatform TEXT NOT NULL,
-        sourceIntegrationId TEXT NOT NULL DEFAULT '',
-        sourceChannel TEXT NOT NULL,
-        targetPlatform TEXT NOT NULL,
-        targetIntegrationId TEXT NOT NULL,
-        targetChannel TEXT NOT NULL,
-        grantedBy TEXT,
-        grantedAt INTEGER NOT NULL,
-        grantEpoch INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (agentId, sourcePlatform, sourceIntegrationId, sourceChannel, targetPlatform, targetIntegrationId,
-          targetChannel)
-      );
-      CREATE TABLE IF NOT EXISTS assistant_grant_epoch (
-        agentId TEXT PRIMARY KEY,
-        grantEpoch INTEGER NOT NULL
-      );
 `
 
 /** What the ledger needs from the store. */
@@ -329,8 +285,6 @@ function draftOf(row: Row): AssistantDraft {
         : null,
     cardTs: str(row.cardTs),
     cardShows: (str(row.cardShows) as AssistantDraftStatus | null) ?? null,
-    offerAlways: Number(row.offerAlways) === 1,
-    grantEpoch: Number(row.grantEpoch),
     status: row.status as AssistantDraftStatus,
     hash: String(row.hash),
     createdAt: Number(row.createdAt),
@@ -342,26 +296,6 @@ function draftOf(row: Row): AssistantDraft {
     messageId: str(row.messageId),
     failure: str(row.failure),
     subsessionKey: str(row.subsessionKey)
-  }
-}
-
-function grantOf(row: Row): AssistantPostGrant {
-  const source = {
-    platform: String(row.sourcePlatform),
-    integrationId: str(row.sourceIntegrationId) || null,
-    channel: String(row.sourceChannel)
-  }
-  const target = {
-    platform: String(row.targetPlatform),
-    integrationId: str(row.targetIntegrationId) || null,
-    channel: String(row.targetChannel)
-  }
-  return {
-    id: assistantGrantId(source, target),
-    source,
-    target,
-    grantedBy: str(row.grantedBy),
-    grantedAt: Number(row.grantedAt)
   }
 }
 
@@ -411,8 +345,6 @@ export class AssistantDraftLedger {
       approverUserId: approver?.userId ?? null,
       approverTeamId: approver?.teamId ?? null,
       approverConsoleUserId: approver?.consoleUserId ?? null,
-      offerAlways: input.offerAlways ? 1 : 0,
-      grantEpoch: await this.grantEpoch(input.agentId),
       status: 'awaiting_review',
       hash: assistantDraftHash(target, text),
       createdAt: now,
@@ -466,8 +398,6 @@ export class AssistantDraftLedger {
       approverUserId: approver?.userId ?? null,
       approverTeamId: approver?.teamId ?? null,
       approverConsoleUserId: approver?.consoleUserId ?? null,
-      offerAlways: 0,
-      grantEpoch: await this.grantEpoch(input.agentId),
       status: 'awaiting_review',
       hash: assistantTaskHash(input.agentId, input.itemId, input.itemVersion, task),
       createdAt: now,
@@ -693,74 +623,7 @@ export class AssistantDraftLedger {
   }
 
   async deleteForAgent(agentId: string): Promise<number> {
-    await this.db.query('DELETE FROM assistant_post_grant WHERE agentId = ?', [agentId])
-    await this.db.query('DELETE FROM assistant_grant_epoch WHERE agentId = ?', [agentId])
     return (await this.db.query('DELETE FROM assistant_draft WHERE agentId = ?', [agentId])).changes
-  }
-
-  /** The agent's grant generation: bumped by every reset, so a grant from an older one is never honored. */
-  async grantEpoch(agentId: string): Promise<number> {
-    const row = (await this.db.query('SELECT grantEpoch FROM assistant_grant_epoch WHERE agentId = ?', [agentId]))
-      .rows[0] as Row | undefined
-    return row ? Number(row.grantEpoch) : 0
-  }
-
-  /** "Always allow from here to there", keyed by the pair of places and stamped with the generation it was offered in. */
-  async grant(
-    agentId: string,
-    source: AssistantGrantPlace,
-    target: AssistantGrantPlace,
-    by: string | null,
-    epoch: number,
-    now = Date.now()
-  ): Promise<boolean> {
-    // A card from before a reset grants nothing; one racing a reset is written stale and never honored.
-    if ((await this.grantEpoch(agentId)) !== epoch) return false
-    const { changes } = await this.db.query(
-      `INSERT INTO assistant_post_grant (agentId, sourcePlatform, sourceIntegrationId, sourceChannel, targetPlatform,
-         targetIntegrationId, targetChannel, grantedBy, grantedAt, grantEpoch)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (agentId, sourcePlatform, sourceIntegrationId, sourceChannel, targetPlatform, targetIntegrationId,
-         targetChannel)
-       DO UPDATE SET grantedBy = excluded.grantedBy, grantedAt = excluded.grantedAt, grantEpoch = excluded.grantEpoch
-       WHERE assistant_post_grant.grantEpoch <> excluded.grantEpoch`,
-      [
-        agentId,
-        source.platform,
-        source.integrationId ?? '',
-        source.channel,
-        target.platform,
-        target.integrationId ?? '',
-        target.channel,
-        by,
-        now,
-        epoch
-      ]
-    )
-    return changes > 0
-  }
-
-  /** Whether a grant of the current generation covers this pair. */
-  async granted(agentId: string, source: AssistantGrantPlace, target: AssistantGrantPlace): Promise<boolean> {
-    const rows = (
-      await this.db.query(
-        `SELECT 1 AS hit FROM assistant_post_grant g WHERE g.agentId = ? AND g.sourcePlatform = ?
-           AND g.sourceIntegrationId = ? AND g.sourceChannel = ? AND g.targetPlatform = ? AND g.targetIntegrationId = ?
-           AND g.targetChannel = ?
-           AND g.grantEpoch = COALESCE((SELECT e.grantEpoch FROM assistant_grant_epoch e WHERE e.agentId = ?), 0)`,
-        [
-          agentId,
-          source.platform,
-          source.integrationId ?? '',
-          source.channel,
-          target.platform,
-          target.integrationId ?? '',
-          target.channel,
-          agentId
-        ]
-      )
-    ).rows
-    return rows.length > 0
   }
 
   /** Drafts still awaiting review and not yet due, the soonest to lapse first; proposals only when asked, and with `place` only the proposals whose item lives there. */
@@ -784,58 +647,6 @@ export class AssistantDraftLedger {
       )
     ).rows as Row[]
     return rows.map(draftOf)
-  }
-
-  /** The grants of the current generation, newest first; an older one is never honored, so it is not listed. */
-  async listGrants(agentId: string, limit: number): Promise<AssistantPostGrant[]> {
-    const rows = (
-      await this.db.query(
-        `SELECT g.sourcePlatform, g.sourceIntegrationId, g.sourceChannel, g.targetPlatform, g.targetIntegrationId,
-           g.targetChannel, g.grantedBy, g.grantedAt
-         FROM assistant_post_grant g WHERE g.agentId = ?
-           AND g.grantEpoch = COALESCE((SELECT e.grantEpoch FROM assistant_grant_epoch e WHERE e.agentId = ?), 0)
-         ORDER BY g.grantedAt DESC, g.sourceChannel, g.targetChannel LIMIT ?`,
-        [agentId, agentId, limit]
-      )
-    ).rows as Row[]
-    return rows.map(grantOf)
-  }
-
-  /** Revoke the grant this digest names, whatever its generation; false when there is none. */
-  async revokeGrant(agentId: string, grantId: string): Promise<boolean> {
-    const rows = (
-      await this.db.query(
-        `SELECT sourcePlatform, sourceIntegrationId, sourceChannel, targetPlatform, targetIntegrationId, targetChannel,
-           grantedBy, grantedAt FROM assistant_post_grant WHERE agentId = ?`,
-        [agentId]
-      )
-    ).rows as Row[]
-    const grant = rows.map(grantOf).find((g) => g.id === grantId)
-    if (!grant) return false
-    const { changes } = await this.db.query(
-      `DELETE FROM assistant_post_grant WHERE agentId = ? AND sourcePlatform = ? AND sourceIntegrationId = ?
-         AND sourceChannel = ? AND targetPlatform = ? AND targetIntegrationId = ? AND targetChannel = ?`,
-      [
-        agentId,
-        grant.source.platform,
-        grant.source.integrationId ?? '',
-        grant.source.channel,
-        grant.target.platform,
-        grant.target.integrationId ?? '',
-        grant.target.channel
-      ]
-    )
-    return changes > 0
-  }
-
-  /** Grants end whenever assistant mode is switched off or on: the generation moves on, so no pending card can grant again. */
-  async resetGrants(agentId: string): Promise<number> {
-    await this.db.query(
-      `INSERT INTO assistant_grant_epoch (agentId, grantEpoch) VALUES (?, 1)
-       ON CONFLICT (agentId) DO UPDATE SET grantEpoch = assistant_grant_epoch.grantEpoch + 1`,
-      [agentId]
-    )
-    return (await this.db.query('DELETE FROM assistant_post_grant WHERE agentId = ?', [agentId])).changes
   }
 
   private async select(agentIds: readonly string[], where: string, params: unknown[]): Promise<AssistantDraft[]> {

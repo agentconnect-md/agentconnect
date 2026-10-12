@@ -169,9 +169,7 @@ describe('openapi plane', () => {
           'post',
           'decideAssistantConversationProposal',
           /continue that conversation, or who can edit the agent/
-        ],
-        ['/grants', 'get', 'listAssistantPostGrants', true],
-        ['/grants/{grantId}', 'delete', 'revokeAssistantPostGrant', true]
+        ]
       ]
       for (const [path, method, operationId, editorOnly] of expected) {
         const op = doc.paths?.[`${base}${path}`]?.[method]

@@ -1,0 +1,510 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { NOBODY, type ConsoleVerdict, type ReadAsker, type TurnAskers } from '../src/assistant/place-access.js'
+import { PlaceMembers, turnAskers, type TurnMessage } from '../src/assistant/place-members.js'
+import type { PostInterception } from '../src/assistant/drafts.js'
+import { executeTool, type MessageGateway, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
+import type { PlaceSnapshotRow, PlaceStore } from '../src/mcp/ops/place-gate.js'
+import type { NormalizedMessage } from '../src/messages/normalized.js'
+import type { PlatformDocumentReach } from '../src/platforms/contract.js'
+import type { LocalStore, SessionRecord } from '../src/store/local-store.js'
+import { openTestStore } from './store-support.js'
+
+const AGENT = 'agent-a'
+const P = 'U_P'
+const GUEST = 'U_GUEST'
+const NOT_POSTED = "I can't post there from here."
+
+const integrations = [
+  { id: 'int-slack', platform: 'slack' },
+  { id: 'int-tg', platform: 'telegram' }
+]
+
+function session(
+  key: string,
+  platform: string,
+  channel: string,
+  kind: SessionRecord['conversationKind']
+): SessionRecord {
+  return {
+    key,
+    agentId: AGENT,
+    platform,
+    channel,
+    thread: `append:${key}`,
+    transportScope: `scope-${platform}`,
+    acpSessionId: `acp-${key}`,
+    sessionId: `out-${key}`,
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: 0,
+    conversationKind: kind
+  }
+}
+
+const SESSIONS = [
+  session('s-deploy', 'slack', 'C_DEPLOY', 'channel'),
+  session('s-priv', 'slack', 'C_PRIV', 'channel'),
+  session('s-shared', 'slack', 'C_SHARED', 'channel'),
+  session('s-mpim', 'slack', 'G_MPIM', 'group_dm'),
+  session('s-dm-p', 'slack', 'D_P', 'dm'),
+  session('s-dm-q', 'slack', 'D_Q', 'dm'),
+  session('s-tg', 'telegram', '-1001', 'channel')
+]
+
+const placeStore: PlaceStore = {
+  listSessions: async () => SESSIONS,
+  latestSession: async (_agent, channel) => SESSIONS.find((s) => s.channel === channel),
+  transcriptPageForAgent: async () => ({ rows: [], hasMore: false }),
+  getDisplayNames: async () => new Map()
+}
+
+const SNAPSHOT: Record<string, PlaceSnapshotRow> = {
+  C_DEPLOY: { isPrivate: false },
+  C_SHARED: { isPrivate: false },
+  C_PRIV: { isPrivate: true },
+  G_MPIM: { kind: 'mpim' },
+  D_P: { kind: 'im' },
+  D_Q: { kind: 'im' }
+}
+
+function slackGateway(members: Record<string, string[]>, fullMembers: string[], documents: Record<string, unknown>) {
+  const gw = {
+    postMessage: vi.fn(async () => 'ts-1'),
+    openDirectMessage: vi.fn(async (user: string) => `D_${user}`),
+    getChannelInfo: vi.fn(async (id: string) => ({
+      id,
+      ...(id.startsWith('D') ? { isIm: true } : {}),
+      ...(id.startsWith('G') ? { isMpim: true } : {}),
+      isPrivate: id === 'C_PRIV' || id.startsWith('D') || id.startsWith('G')
+    })),
+    listMembers: vi.fn(async () => []),
+    listMemberIds: vi.fn(async (channel: string) => members[channel] ?? []),
+    isFullMember: vi.fn(async (user: string) => fullMembers.includes(user)),
+    listChannels: vi.fn(async () => []),
+    getUserProfile: vi.fn(async (u: string) => ({ id: u })),
+    downloadFile: vi.fn(async () => null),
+    getChannelHistory: vi.fn(async () => ({ messages: [], hasMore: false })),
+    getThreadReplies: vi.fn(async (_c: string, thread: string) => [
+      { ts: thread, sender: 'U1', text: 'root', isBot: false, chrome: false, attachments: [] }
+    ]),
+    scheduleMessage: vi.fn(async (channel: string, _text: string, postAt: number) => ({ id: 'q1', channel, postAt })),
+    addReaction: vi.fn(async () => {}),
+    deleteMessage: vi.fn(async () => true),
+    addBookmark: vi.fn(async (_c: string, spec: { title: string }) => ({ id: 'b1', title: spec.title })),
+    removeBookmark: vi.fn(async () => {}),
+    createConversation: vi.fn(async () => ({ id: 'C_NEW' })),
+    createCanvas: vi.fn(async () => ({ id: 'F_NEW', title: 't' })),
+    updateCanvas: vi.fn(async () => {}),
+    addListItem: vi.fn(async () => ({ id: 'row-1', fields: {} })),
+    documentReach: vi.fn(async (id: string) => {
+      const reach = documents[id]
+      if (!reach) throw new Error('file_not_found')
+      return reach as PlatformDocumentReach
+    })
+  } satisfies MessageGateway
+  return gw as typeof gw & Pick<MessageGateway, 'uploadFile'>
+}
+
+function ctxAt(platform: string, channel: string, over: Partial<SessionContext> = {}): SessionContext {
+  return {
+    agentId: AGENT,
+    platform,
+    ...(platform === 'slack' ? { integrationId: 'int-slack', transportScope: 'scope-slack' } : {}),
+    isDm: channel.startsWith('D') || platform === 'webchat',
+    channel,
+    thread: 'append:1',
+    deliveryThread: '1.1',
+    tools: [],
+    integrations,
+    ...over
+  }
+}
+
+const inDmOfP = ctxAt('slack', 'D_P')
+const inShared = ctxAt('slack', 'C_SHARED')
+
+/** A person's message on the agent's Slack bot. */
+function said(userId: string, channel = 'D_P'): TurnMessage {
+  const msg = {
+    msgId: `m-${userId}`,
+    traceId: 't',
+    source: 'user',
+    platform: 'slack',
+    channel,
+    sender: { id: userId, isBot: false },
+    text: 'please',
+    mentionedBots: [],
+    isDm: channel.startsWith('D')
+  } as NormalizedMessage
+  return { msg, integrationId: 'int-slack' }
+}
+
+const consoleVerdict = (asker: ReadAsker, sessions: readonly string[]): ConsoleVerdict =>
+  asker.kind === 'console' && asker.userId === 'user-p'
+    ? { asker: 'linked', visible: new Set(sessions.filter((id) => id === 'out-s-priv')) }
+    : { asker: 'unidentifiable' }
+
+const drafted = { handled: true as const, result: { drafted: true, draftId: 'd-1' } }
+
+function harness(
+  opts: {
+    assistant?: boolean
+    members?: Record<string, string[]>
+    fullMembers?: string[]
+    external?: string[]
+    documents?: Record<string, PlatformDocumentReach>
+    draft?: boolean
+  } = {}
+) {
+  const members = {
+    C_PRIV: [P, 'U_ALICE'],
+    G_MPIM: [P, 'U_BOB'],
+    C_SHARED: [P, 'U_EXT'],
+    D_P: [P, 'B_BOT'],
+    D_Q: ['U_Q', 'B_BOT'],
+    ...opts.members
+  }
+  const gw = slackGateway(members, opts.fullMembers ?? [P, 'U_ALICE', 'U_BOB', 'U_Q'], opts.documents ?? {})
+  const tg = slackGateway({}, [], {})
+  const placeMembers = new PlaceMembers({
+    now: () => 0,
+    gatewayFor: (id) => (id === 'int-slack' ? gw : undefined),
+    readAccess: async (_agent, asker, sessions) => consoleVerdict(asker, sessions)
+  })
+  let live: { messages?: TurnMessage[]; askers?: TurnAskers } = { messages: [said(P)] }
+  const external = new Set(opts.external ?? ['C_SHARED'])
+  const draftPost = vi.fn(async () => drafted as PostInterception)
+  const deps: OpsDeps = {
+    gatewayFor: (id) => (id === 'int-slack' ? gw : id === 'int-tg' ? tg : undefined),
+    channelAgents: async () => ({ platform: 'slack', agents: [] }),
+    messageAgent: vi.fn(async (req) => ({ delivered: true, targetSession: `stub:${req.toAgentId}` })),
+    replyToSession: vi.fn(async () => ({ delivered: true, targetSession: 'stub' })),
+    startOrchestration: async () => ({ orchestrationId: 'o', delivered: [], failed: [] }),
+    getOrchestration: async () => null,
+    cancelOrchestration: async () => false,
+    memory: {} as OpsDeps['memory'],
+    recordOutbound: async () => {},
+    now: () => 1000,
+    assistantModeFor: () => opts.assistant === true,
+    placeIntegrationFor: (_agent, platform) => (platform === 'slack' ? 'int-slack' : 'int-tg'),
+    placeSnapshot: (integrationId, channel) => (integrationId === 'int-slack' ? SNAPSHOT[channel] : undefined),
+    placeStore,
+    placeExternal: (ctx) => external.has(ctx.channel),
+    targetExternal: async (_agent, _integration, channel) => external.has(channel),
+    ...(opts.draft === false ? {} : { draftPost }),
+    readAskers: async (ctx) => live.askers ?? (live.messages ? turnAskers(live.messages, ctx.integrationId) : NOBODY),
+    readLookups: (agentId) => placeMembers.lookupsFor(agentId)
+  }
+  return {
+    deps,
+    gw,
+    draftPost,
+    /** The live turn answers these messages, in order: the first is its own, the rest were folded in. */
+    asks: (...messages: TurnMessage[]) => {
+      live = { messages }
+    },
+    nobody: () => {
+      live = { askers: NOBODY }
+    }
+  }
+}
+
+const later = () => new Date(Date.now() + 3_600_000).toISOString()
+
+describe('every agent posts wherever the people asking could post', () => {
+  for (const assistant of [false, true]) {
+    const mode = assistant ? 'in assistant mode' : 'outside assistant mode'
+
+    it(`posts into a private channel the asker is in, and refuses a non-member opaquely (${mode})`, async () => {
+      const member = harness({ assistant })
+      await executeTool(inDmOfP, 'sendMessage', { channel: 'C_PRIV', message: 'for the team' }, member.deps)
+      await executeTool(inDmOfP, 'sendMessage', { channel: 'G_MPIM', thread: '7.7', message: 'update' }, member.deps)
+      expect(member.gw.postMessage).toHaveBeenCalledWith('C_PRIV', 'for the team', undefined, expect.anything())
+      expect(member.gw.postMessage).toHaveBeenCalledWith('G_MPIM', 'update', '7.7', expect.anything())
+      expect(member.draftPost).not.toHaveBeenCalled()
+
+      const outsider = harness({ assistant, members: { C_PRIV: ['U_ALICE'], G_MPIM: ['U_BOB'] } })
+      await expect(
+        executeTool(inDmOfP, 'sendMessage', { channel: 'C_PRIV', message: 'hi' }, outsider.deps)
+      ).rejects.toThrow(NOT_POSTED)
+      await expect(
+        executeTool(inDmOfP, 'sendMessage', { channel: 'G_MPIM', thread: '7.7', message: 'hi' }, outsider.deps)
+      ).rejects.toThrow(NOT_POSTED)
+      // Refused before anything reads the target, so no error can tell a closed place from a missing one.
+      expect(outsider.gw.getThreadReplies).not.toHaveBeenCalled()
+      expect(outsider.gw.postMessage).not.toHaveBeenCalled()
+      expect(outsider.draftPost).not.toHaveBeenCalled()
+    })
+
+    it(`opens a public channel to a full member and refuses a guest (${mode})`, async () => {
+      const { deps, gw, asks } = harness({ assistant })
+      await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'shipped' }, deps)
+      expect(gw.postMessage).toHaveBeenCalledTimes(1)
+      asks(said(GUEST, 'D_GUEST'))
+      await expect(
+        executeTool(ctxAt('slack', 'D_GUEST'), 'sendMessage', { channel: 'C_DEPLOY', message: 'hi' }, deps)
+      ).rejects.toThrow(NOT_POSTED)
+      expect(gw.postMessage).toHaveBeenCalledTimes(1)
+    })
+
+    it(`sends a direct message to a full member of the organization only (${mode})`, async () => {
+      const { deps, gw, draftPost } = harness({ assistant })
+      await executeTool(inDmOfP, 'sendMessage', { toUser: 'U_Q', message: 'psst' }, deps)
+      expect(gw.postMessage).toHaveBeenCalledWith('D_U_Q', 'psst', undefined, expect.anything())
+      for (const user of [GUEST, 'U_OUTSIDE']) {
+        await expect(executeTool(inDmOfP, 'sendMessage', { toUser: user, message: 'hi' }, deps)).rejects.toThrow(
+          /a direct message goes only to a member of your organization/
+        )
+      }
+      expect(gw.postMessage).toHaveBeenCalledTimes(1)
+      expect(draftPost).not.toHaveBeenCalled()
+    })
+
+    it(`judges scheduleMessage, reactions, deletion and bookmarks by the same rule (${mode})`, async () => {
+      const writes: [string, Record<string, unknown>][] = [
+        ['scheduleMessage', { channel: 'C_PRIV', message: 'later', postAt: later() }],
+        ['addReaction', { channel: 'C_PRIV', messageTs: '1.1', emoji: 'eyes' }],
+        ['deleteMessage', { channel: 'C_PRIV', messageTs: '1.1' }],
+        ['addBookmark', { channel: 'C_PRIV', title: 'Runbook', link: 'https://docs.example.test/runbook' }],
+        ['removeBookmark', { channel: 'C_PRIV', bookmarkId: 'b1' }]
+      ]
+      const outsider = harness({ assistant, members: { C_PRIV: ['U_ALICE'] } })
+      for (const [tool, args] of writes) {
+        await expect(executeTool(inDmOfP, tool, args, outsider.deps), tool).rejects.toThrow(NOT_POSTED)
+      }
+      expect(outsider.gw.scheduleMessage).not.toHaveBeenCalled()
+      expect(outsider.gw.addReaction).not.toHaveBeenCalled()
+      expect(outsider.gw.deleteMessage).not.toHaveBeenCalled()
+      expect(outsider.gw.addBookmark).not.toHaveBeenCalled()
+      expect(outsider.gw.removeBookmark).not.toHaveBeenCalled()
+
+      const member = harness({ assistant })
+      for (const [tool, args] of writes) await executeTool(inDmOfP, tool, args, member.deps)
+      expect(member.gw.scheduleMessage).toHaveBeenCalledWith('C_PRIV', 'later', expect.any(Number))
+      expect(member.gw.addReaction).toHaveBeenCalledWith('C_PRIV', '1.1', 'eyes')
+      expect(member.gw.deleteMessage).toHaveBeenCalledWith('C_PRIV', '1.1')
+      expect(member.gw.addBookmark).toHaveBeenCalledTimes(1)
+      expect(member.gw.removeBookmark).toHaveBeenCalledWith('C_PRIV', 'b1')
+    })
+
+    it(`refuses a write when one of the senders folded into the turn lacks access (${mode})`, async () => {
+      const { deps, gw, asks } = harness({ assistant })
+      const shared = ctxAt('slack', 'C_DEPLOY')
+      asks(said(P, 'C_DEPLOY'), said('U_ALICE', 'C_DEPLOY'))
+      await executeTool(shared, 'sendMessage', { channel: 'C_PRIV', message: 'both of us are in' }, deps)
+      asks(said(P, 'C_DEPLOY'), said('U_BOB', 'C_DEPLOY'))
+      await expect(
+        executeTool(shared, 'sendMessage', { channel: 'C_PRIV', message: 'one of us is not' }, deps)
+      ).rejects.toThrow(NOT_POSTED)
+      await expect(
+        executeTool(shared, 'addReaction', { channel: 'C_PRIV', messageTs: '1.1', emoji: 'eyes' }, deps)
+      ).rejects.toThrow(NOT_POSTED)
+      expect(gw.postMessage).toHaveBeenCalledTimes(1)
+      expect(gw.addReaction).not.toHaveBeenCalled()
+    })
+
+    it(`creates a conversation only with members of the organization, for a full member (${mode})`, async () => {
+      const { deps, gw, asks } = harness({ assistant })
+      await executeTool(inDmOfP, 'createConversation', { users: ['U_Q', 'U_ALICE'] }, deps)
+      await executeTool(inDmOfP, 'createConversation', { name: 'launch', isPrivate: true, users: ['U_Q'] }, deps)
+      await expect(executeTool(inDmOfP, 'createConversation', { users: ['U_Q', GUEST] }, deps)).rejects.toThrow(
+        /opened only with members of your organization/
+      )
+      asks(said(GUEST, 'D_GUEST'))
+      await expect(
+        executeTool(ctxAt('slack', 'D_GUEST'), 'createConversation', { name: 'guest-room' }, deps)
+      ).rejects.toThrow(/full members of this workspace/)
+      expect(gw.createConversation).toHaveBeenCalledTimes(2)
+    })
+
+    it(`writes a canvas or a list for every conversation it is in (${mode})`, async () => {
+      const documents: Record<string, PlatformDocumentReach> = {
+        F_PRIV: { conversations: ['C_PRIV'], workspace: false, complete: true },
+        F_HERE: { conversations: ['D_P'], workspace: false, complete: true },
+        F_PARTIAL: { conversations: ['D_P'], workspace: false, complete: false }
+      }
+      const edits = [{ operation: 'replace', markdown: '# plan' }]
+      const fields = [{ columnId: 'c1', type: 'rich_text', value: [] }]
+      const member = harness({ assistant, documents })
+      await executeTool(inDmOfP, 'updateCanvas', { canvasId: 'F_PRIV', edits }, member.deps)
+      await executeTool(inDmOfP, 'addListItem', { listId: 'F_HERE', fields }, member.deps)
+      await executeTool(inDmOfP, 'createCanvas', { title: 'Plan', markdown: '# plan', channel: 'C_PRIV' }, member.deps)
+      expect(member.gw.updateCanvas).toHaveBeenCalledTimes(1)
+      expect(member.gw.addListItem).toHaveBeenCalledTimes(1)
+      expect(member.gw.createCanvas).toHaveBeenCalledTimes(1)
+
+      const outsider = harness({ assistant, documents, members: { C_PRIV: ['U_ALICE'] } })
+      await expect(executeTool(inDmOfP, 'updateCanvas', { canvasId: 'F_PRIV', edits }, outsider.deps)).rejects.toThrow(
+        NOT_POSTED
+      )
+      await expect(
+        executeTool(inDmOfP, 'createCanvas', { title: 'Plan', markdown: '# x', channel: 'C_PRIV' }, outsider.deps)
+      ).rejects.toThrow(NOT_POSTED)
+      for (const canvasId of ['F_PARTIAL', 'F_MISSING']) {
+        await expect(
+          executeTool(inDmOfP, 'updateCanvas', { canvasId, edits }, outsider.deps),
+          canvasId
+        ).rejects.toThrow(/could not be confirmed/)
+      }
+      expect(outsider.gw.updateCanvas).not.toHaveBeenCalled()
+      expect(outsider.gw.createCanvas).not.toHaveBeenCalled()
+    })
+
+    it(`leaves the agent-to-agent forms and the parent-session reply alone (${mode})`, async () => {
+      const { deps, draftPost } = harness({ assistant })
+      await executeTool(inDmOfP, 'sendMessage', { toAgent: 'peer-1', message: 'hi' }, deps)
+      await executeTool(inDmOfP, 'sendMessage', { sessionId: 'parent-1', message: 'done' }, deps)
+      expect(deps.messageAgent).toHaveBeenCalledTimes(1)
+      expect(deps.replyToSession).toHaveBeenCalledTimes(1)
+      expect(draftPost).not.toHaveBeenCalled()
+    })
+  }
+})
+
+describe('a conversation shared with another organization', () => {
+  for (const assistant of [false, true]) {
+    const mode = assistant ? 'in assistant mode' : 'outside assistant mode'
+
+    it(`drafts a post into it from elsewhere for approval and refuses any other write there (${mode})`, async () => {
+      const { deps, gw, draftPost } = harness({ assistant })
+      expect(await executeTool(inDmOfP, 'sendMessage', { channel: 'C_SHARED', message: 'hello' }, deps)).toEqual(
+        drafted.result
+      )
+      expect(draftPost.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+        { platform: 'slack', integrationId: 'int-slack', channel: 'C_SHARED', text: 'hello', directMessage: false }
+      ])
+      await expect(
+        executeTool(inDmOfP, 'addReaction', { channel: 'C_SHARED', messageTs: '1.1', emoji: 'eyes' }, deps)
+      ).rejects.toThrow(/shared with another organization/)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+      expect(gw.addReaction).not.toHaveBeenCalled()
+    })
+
+    it(`refuses the post where no draft can be made, and a file in any case (${mode})`, async () => {
+      const undraftable = harness({ assistant, draft: false })
+      await expect(
+        executeTool(inDmOfP, 'sendMessage', { channel: 'C_SHARED', message: 'hello' }, undraftable.deps)
+      ).rejects.toThrow(/shared with another organization/)
+      const withFile = harness({ assistant })
+      withFile.gw.uploadFile = vi.fn(async () => ({ ok: true as const }))
+      const deps = {
+        ...withFile.deps,
+        resolveAttachment: vi.fn(async () => ({ bytes: Buffer.from('x'), name: 'a.png', mimeType: 'image/png' }))
+      }
+      await expect(
+        executeTool(inDmOfP, 'sendMessage', { channel: 'C_SHARED', attachment: 'a.png', message: 'see' }, deps)
+      ).rejects.toThrow(/a file cannot be sent for approval/)
+      expect(withFile.gw.uploadFile).not.toHaveBeenCalled()
+      expect(undraftable.gw.postMessage).not.toHaveBeenCalled()
+    })
+  }
+
+  it('still refuses every write inside it but the drafted reply, in assistant mode (unchanged)', async () => {
+    const { deps, gw, asks, draftPost } = harness({ assistant: true })
+    asks(said(P, 'C_SHARED'))
+    const here: [string, Record<string, unknown>][] = [
+      ['sendMessage', { channel: 'C_SHARED', message: 'hi' }],
+      ['addReaction', { messageTs: '1.1', emoji: 'eyes' }],
+      ['scheduleMessage', { message: 'later', postAt: later() }],
+      ['shareFile', { path: 'chart.png' }],
+      ['shareFile', { path: 'chart.png', integrationId: 'int-elsewhere' }]
+    ]
+    for (const [tool, args] of here) {
+      await expect(executeTool(inShared, tool, args, deps), tool).rejects.toThrow(/shared with another organization/)
+    }
+    expect(gw.postMessage).not.toHaveBeenCalled()
+    expect(gw.addReaction).not.toHaveBeenCalled()
+    expect(gw.scheduleMessage).not.toHaveBeenCalled()
+    expect(draftPost).not.toHaveBeenCalled()
+    // Outside assistant mode an external conversation's own writes are unchanged.
+    const plain = harness()
+    plain.asks(said(P, 'C_SHARED'))
+    await executeTool(inShared, 'addReaction', { messageTs: '1.1', emoji: 'eyes' }, plain.deps)
+    expect(plain.gw.addReaction).toHaveBeenCalledWith('C_SHARED', '1.1', 'eyes')
+  })
+})
+
+describe('a turn no person is behind', () => {
+  it('writes to its own conversation, which is an anchored hook or schedule target', async () => {
+    for (const assistant of [false, true]) {
+      const { deps, gw, nobody } = harness({ assistant })
+      nobody()
+      const anchored = ctxAt('slack', 'C_DEPLOY')
+      await executeTool(anchored, 'sendMessage', { channel: 'C_DEPLOY', message: 'nightly report' }, deps)
+      await executeTool(anchored, 'scheduleMessage', { message: 'reminder', postAt: later() }, deps)
+      expect(gw.postMessage).toHaveBeenCalledTimes(1)
+      expect(gw.scheduleMessage).toHaveBeenCalledWith('C_DEPLOY', 'reminder', expect.any(Number))
+    }
+  })
+
+  it('drafts a post anywhere else in assistant mode, and refuses every other write', async () => {
+    const { deps, gw, draftPost, nobody } = harness({ assistant: true })
+    nobody()
+    expect(await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'status' }, deps)).toEqual(
+      drafted.result
+    )
+    await executeTool(inDmOfP, 'sendMessage', { toUser: 'U_Q', message: 'status' }, deps)
+    expect(draftPost).toHaveBeenCalledTimes(2)
+    await expect(
+      executeTool(inDmOfP, 'addReaction', { channel: 'C_DEPLOY', messageTs: '1.1', emoji: 'eyes' }, deps)
+    ).rejects.toThrow(/no person started this run/)
+    await expect(executeTool(inDmOfP, 'createConversation', { name: 'room' }, deps)).rejects.toThrow(
+      /no person started this run/
+    )
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('refuses a post anywhere else outside assistant mode', async () => {
+    const { deps, gw, draftPost, nobody } = harness()
+    nobody()
+    for (const args of [
+      { channel: 'C_DEPLOY', message: 'status' },
+      { toUser: 'U_Q', message: 'status' }
+    ]) {
+      await expect(executeTool(inDmOfP, 'sendMessage', args, deps)).rejects.toThrow(/no person started this run/)
+    }
+    expect(gw.postMessage).not.toHaveBeenCalled()
+    expect(draftPost).not.toHaveBeenCalled()
+  })
+})
+
+describe('assistant mode no longer drafts an internal post or bars a 1:1 conversation that read a private place', () => {
+  let store: LocalStore | undefined
+  afterEach(async () => {
+    await store?.close()
+    store = undefined
+  })
+
+  it('posts to an internal conversation directly', async () => {
+    const { deps, gw, draftPost } = harness({ assistant: true })
+    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'shipped' }, deps)
+    await executeTool(inDmOfP, 'addReaction', { channel: 'C_DEPLOY', messageTs: '1.1', emoji: 'eyes' }, deps)
+    expect(gw.postMessage).toHaveBeenCalledTimes(1)
+    expect(gw.addReaction).toHaveBeenCalledTimes(1)
+    expect(draftPost).not.toHaveBeenCalled()
+  })
+
+  it('lets a DM that read a private channel post elsewhere, change items and send to another agent', async () => {
+    store = await openTestStore()
+    const ledger = store.assistantItems
+    const { deps: base, gw, draftPost } = harness({ assistant: true })
+    const deps: OpsDeps = {
+      ...base,
+      assistantItems: { ledgerFor: () => ledger, askerFor: async () => `slack:T1:${P}` }
+    }
+    await executeTool(inDmOfP, 'getChannelHistory', { channel: 'C_PRIV' }, deps)
+    expect(gw.getChannelHistory).toHaveBeenCalledWith('C_PRIV', {})
+    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'for the team' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_PRIV', message: 'for leadership' }, deps)
+    const taken = (await executeTool(inDmOfP, 'takeItem', { title: 'Ship it', doneWhen: 'shipped' }, deps)) as {
+      item: { id: string; version: number }
+    }
+    await executeTool(inDmOfP, 'updateItem', { itemId: taken.item.id, version: taken.item.version, summary: 'x' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { toAgent: 'peer-1', message: 'look into it' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { toAgent: AGENT, message: 'work on it' }, deps)
+    expect(gw.postMessage).toHaveBeenCalledTimes(2)
+    expect(deps.messageAgent).toHaveBeenCalledTimes(2)
+    expect(draftPost).not.toHaveBeenCalled()
+    expect((await ledger.get(AGENT, taken.item.id))?.summary).toBe('x')
+  })
+})

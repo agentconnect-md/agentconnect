@@ -20,14 +20,15 @@ export class AgentMemoryTransactionService {
     } catch {
       return { operation: 'error', code: 'INVALID_ARGUMENT', message: 'invalid memory root' }
     }
+    // The shared store, or one layer beside it: a place's (`channels/<key>`) or a person's (`people/<key>`).
     if (
       !(parts.length === 1 && parts[0] === 'memory') &&
-      !(parts.length === 3 && parts[0] === 'channels' && parts[2] === 'memory')
+      !(parts.length === 3 && (parts[0] === 'channels' || parts[0] === 'people') && parts[2] === 'memory')
     )
       return {
         operation: 'error',
         code: 'INVALID_ARGUMENT',
-        message: 'transaction must name an agent or channel memory root'
+        message: 'transaction must name an agent or memory layer root'
       }
     return this.repo.apply(agent.id, agent.orgId, { ...request, root: parts.join('/') }, new Date(this.clock.now()))
   }

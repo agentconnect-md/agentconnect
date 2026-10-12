@@ -161,15 +161,19 @@ describe('cross-room counting referee (§10.2)', () => {
  *
  * So the §10.2 handoff is still not expressible against this destination: the
  * thread it names exists in no room the bridge can reach, and the only send the
- * product accepts is exactly the one §10.2 scores as incorrect. This test pins
- * that boundary as a MEASUREMENT — the origin segment
- * plays out fully and the game stalls at the handoff, on the product's refusal,
- * with the bridge's own turn carrying the reason. It is deliberately not an
- * expected-fail: nothing here is broken, the milestone is blocked on a product
- * capability that does not exist.
+ * product accepts is exactly the one §10.2 scores as incorrect. It is now refused
+ * one step earlier, by the write rule (assistant-mode.md §5.5 "Writes"): the
+ * bridge posts for the referee who ordered it, a Discord member, and a Slack room
+ * is another platform, writable only where the console shows that person the
+ * agent's sessions there; the Arena has no console, so the post is refused before
+ * the thread is looked up. This test pins that boundary as a MEASUREMENT — the
+ * origin segment plays out fully and the game stalls at the handoff, on the
+ * product's refusal, with the bridge's own turn carrying the reason. It is
+ * deliberately not an expected-fail: nothing here is broken, the milestone is
+ * blocked on a product capability that does not exist.
  */
 describe('cross-room counting end to end — the §10.2 handoff against the landed sendMessage', () => {
-  it('counts the origin segment, then stalls because a fully-addressed handoff is refused (#503 §2.4)', async () => {
+  it('counts the origin segment, then stalls because a fully-addressed handoff is refused (#503 §2.4, #2979)', async () => {
     const artifactDir = join(scratch(), 'run')
     const result = await runCrossRoomCounting({ seed: 42, boundary: 6, target: 12, artifactDir, timeoutMs: 150_000 })
     expect(result.error).toBeUndefined()
@@ -206,9 +210,8 @@ describe('cross-room counting end to end — the §10.2 handoff against the land
     expect(worldEvents.find((event) => event.type === 'handoff')).toBeUndefined()
     expect(worldEvents.find((event) => event.type === 'completion_report')).toBeUndefined()
 
-    // The refusal is the product's, surfaced through the bridge's own turn: the
-    // order carried `thread`, which the channel target accepts only for a thread
-    // that already exists at the destination (§2.4) — and none does.
+    // The refusal is the product's, surfaced through the bridge's own turn: the person behind the order may not post
+    // into the Slack room as far as anything can tell, so the write rule refuses it before the thread is read.
     const order = worldEvents.find(
       (event) => event.type === 'referee.room_event' && String(event.text).includes('ORDER assignee=bridge-x')
     )
@@ -217,6 +220,6 @@ describe('cross-room counting end to end — the §10.2 handoff against the land
       (event) => event.type === 'outbound.delivered' && String(event.text).startsWith('order failed:')
     )
     expect(refusal.agentAlias).toBe('bridge-x')
-    expect(String(refusal.text)).toContain('is not a thread root')
+    expect(String(refusal.text)).toContain("I can't post there from here.")
   }, 180_000)
 })

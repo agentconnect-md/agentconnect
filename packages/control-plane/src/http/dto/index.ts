@@ -3667,8 +3667,7 @@ export const MemoryFilesDto = z.object({
   exists: z.boolean(), // false ⇒ the memory dir does not exist yet
   files: z.array(MemoryFileEntryDto)
 })
-/** A channel memory folder's key; selects the channel layer for a channel-scoped
- *  agent (#653). Absent ⇒ the agent-level store. */
+/** A place layer's folder key; absent ⇒ the shared layer. */
 const MemoryChannelKeyQuery = z
   .string()
   .min(1)

@@ -50,6 +50,7 @@ import type {
   InteractionActor,
   PlatformCanvas,
   PlatformCanvasEdit,
+  PlatformDocumentReach,
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
   PlatformChannelInfo,
@@ -888,6 +889,19 @@ const SLACK_API_TIMEOUT_MS = 30_000
  *  raw material (`missing_scope` payloads, stable error codes); this only names them. */
 /** The `files.info` share record, keyed by channel id (docs: `shares.public|private`). */
 type SlackFileShares = Record<string, { ts?: string }[] | undefined>
+
+/** The `files.info` fields that say which conversations a canvas or a list is in. */
+interface SlackDocumentShares {
+  channels?: string[]
+  groups?: string[]
+  ims?: string[]
+  linked_channel_id?: string
+  shares?: { public?: SlackFileShares; private?: SlackFileShares }
+  org_or_workspace_access?: string
+  has_more_shares?: boolean
+  skipped_shares?: boolean
+  private_channels_with_file_access_count?: number
+}
 
 /**
  * Completion outcomes that do NOT prove the share was refused. Slack documents both as
@@ -3143,6 +3157,30 @@ export class SlackConnection implements PlatformConnection {
       ...(file.permalink ? { url: file.permalink } : {}),
       ...(bytes ? { markdown: bytes.toString('utf8') } : {}),
       ...(sections ? { sections } : {})
+    }
+  }
+
+  /** Who a canvas or a list reaches (`files.info`): every conversation it is in, and whether the workspace may open it; a share Slack did not list makes it incomplete. */
+  async documentReach(documentId: string): Promise<PlatformDocumentReach> {
+    let file: SlackDocumentShares
+    try {
+      file = ((await this.app.client.files.info({ file: documentId })).file ?? {}) as SlackDocumentShares
+    } catch (err) {
+      throw this.toolFailure(err, 'reading who a document reaches')
+    }
+    const privateShares = new Set([...(file.groups ?? []), ...Object.keys(file.shares?.private ?? {})])
+    const conversations = new Set([
+      ...(file.channels ?? []),
+      ...(file.ims ?? []),
+      ...privateShares,
+      ...Object.keys(file.shares?.public ?? {}),
+      ...(file.linked_channel_id ? [file.linked_channel_id] : [])
+    ])
+    const unlisted = (file.private_channels_with_file_access_count ?? 0) > privateShares.size
+    return {
+      conversations: [...conversations],
+      workspace: file.org_or_workspace_access !== undefined && file.org_or_workspace_access !== 'none',
+      complete: file.has_more_shares !== true && file.skipped_shares !== true && !unlisted
     }
   }
 

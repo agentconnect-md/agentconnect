@@ -120,11 +120,26 @@ describe('Daemon evaluation surface', () => {
       provider.recordTurn(args[0], args[1])
     )
     vi.spyOn((daemon as any).store, 'isCaptureExcluded').mockResolvedValue(false)
-    const enqueue = vi.spyOn((daemon as any).memoryOutbox, 'enqueue').mockResolvedValue({ status: 'inserted' })
-    await (daemon as any).queueMemoryPostTurn(AGENT_ID, 'source-session', 'source-turn', 'input', 'output', {
-      provider: 'managed',
-      home: 'control-plane'
+    // A hook session: no conversation, so its turn goes to the shared layer.
+    vi.spyOn((daemon as any).store, 'getSession').mockResolvedValue({
+      key: 'source-key',
+      agentId: AGENT_ID,
+      platform: 'hook',
+      channel: 'hook-source',
+      thread: 'run-1'
     })
+    const enqueue = vi.spyOn((daemon as any).memoryOutbox, 'enqueue').mockResolvedValue({ status: 'inserted' })
+    await (daemon as any).queueMemoryPostTurn(
+      AGENT_ID,
+      'source-session',
+      'source-turn',
+      'input',
+      'output',
+      { provider: 'managed', home: 'control-plane' },
+      undefined,
+      'source-turn',
+      { key: 'source-key', outwardSessionId: 'source-session' }
+    )
     await Promise.all((daemon as any).memoryPostTurnChains.values())
     expect(enqueue).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: AGENT_ID, turnId: 'source-turn', input: 'input', output: 'output' })
@@ -769,10 +784,10 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
       const context: any = [...(daemon as any).mcp.sessions.values()].find(
         (ctx: any) => ctx.memoryBinding?.source === 'distill'
       )
-      const before = memoryScopeFor(context, (daemon as any).mcp.deps).sourceTurnId!
+      const before = (await memoryScopeFor(context, (daemon as any).mcp.deps, { mode: 'write' })).sourceTurnId!
       observed.push(before)
       if (before === 'first') await barrier
-      expect(memoryScopeFor(context, (daemon as any).mcp.deps).sourceTurnId).toBe(before)
+      expect((await memoryScopeFor(context, (daemon as any).mcp.deps, { mode: 'write' })).sourceTurnId).toBe(before)
       return { stopReason: 'end_turn', usage: { totalTokens: 5, inputTokens: 4, outputTokens: 1 } }
     })
     const first = (daemon as any).runMemoryExtraction(AGENT_ID, 'extract', { agentId: AGENT_ID, sourceTurnId: 'first' })
@@ -797,12 +812,12 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     let context: any
     host.prompt.mockImplementation(async () => {
       context = [...(daemon as any).mcp.sessions.values()].find((ctx: any) => ctx.memoryBinding?.source === 'distill')
-      scopes.push(memoryScopeFor(context, (daemon as any).mcp.deps))
+      scopes.push(await memoryScopeFor(context, (daemon as any).mcp.deps, { mode: 'write' }))
       return { stopReason: 'end_turn', usage: { totalTokens: 5, inputTokens: 4, outputTokens: 1 } }
     })
     for (const sourceTurnId of ['first', 'second']) {
       await (daemon as any).runMemoryExtraction(AGENT_ID, 'extract', { agentId: AGENT_ID, sourceTurnId })
-      expect(() => memoryScopeFor(context, (daemon as any).mcp.deps)).toThrow('not active')
+      await expect(memoryScopeFor(context, (daemon as any).mcp.deps, { mode: 'write' })).rejects.toThrow('not active')
     }
     expect(host.newSession).toHaveBeenCalledOnce()
     expect(scopes.map((scope) => scope.sourceTurnId)).toEqual(['first', 'second'])

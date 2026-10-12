@@ -1,4 +1,4 @@
-// The read rule (assistant-mode.md §5.5): every agent's read of another conversation is judged by who is asking.
+// The read and write rules (assistant-mode.md §5.5): every agent's reach into another conversation is judged by who is asking.
 import { metrics } from '@opentelemetry/api'
 import { membersAuthoritative, reportsChannelPrivacy, tellsWorkspaceMembers } from '../platforms/read-ports.js'
 
@@ -18,6 +18,8 @@ export interface SourcePlace extends PlaceRef {
   private?: boolean
   /** Its display name, which the private-source note gives the model. */
   name?: string
+  /** Shared with another organization, as the listing or a lookup said; undefined when neither said. */
+  external?: boolean
   /** The agent's sessions there by outward id, newest first: what a cross-platform read is judged by. */
   sessions?: readonly string[]
 }
@@ -161,6 +163,16 @@ export const NOT_SHARED_HERE =
 /** The same answer for an asker with no linked console account, who may be told how a cross-platform read opens. */
 export const NOT_SHARED_UNLINKED =
   `${NOT_SHARED_HERE} You may add that reading a conversation on another platform or bot needs their account ` +
+  'linked under Sign-in methods in their console Profile.'
+
+/** The one answer for a write aimed at a conversation the people asking cannot reach; it never says that it exists. */
+export const NOT_POSTED_HERE =
+  'Nothing was sent or changed: that cannot be done from here. Do not say whether that conversation exists or who ' +
+  'is in it; answer: "I can\'t post there from here."'
+
+/** The same answer for an asker with no linked console account, who may be told how a cross-platform write opens. */
+export const NOT_POSTED_UNLINKED =
+  `${NOT_POSTED_HERE} You may add that writing to a conversation on another platform or bot needs their account ` +
   'linked under Sign-in methods in their console Profile.'
 
 const SOURCE_WORDS: Record<PlaceKind, string> = {

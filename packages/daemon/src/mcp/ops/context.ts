@@ -9,6 +9,7 @@ import type {
   PlatformChannelInfo,
   PlatformConversationSpec,
   PlatformBookmark,
+  PlatformDocumentReach,
   PlatformListFieldWrite,
   PlatformListItem,
   PlatformListPage,
@@ -148,6 +149,8 @@ export interface MessageGateway {
   createCanvas?(title: string, markdown: string, channel?: string): Promise<PlatformCanvas>
   readCanvas?(canvasId: string): Promise<PlatformCanvas>
   updateCanvas?(canvasId: string, edits: PlatformCanvasEdit[]): Promise<void>
+  /** Who a canvas or a list reaches: the conversations it is in, and the whole workspace. */
+  documentReach?(documentId: string): Promise<PlatformDocumentReach>
   /** Download an auth-gated file (Slack url_private / Telegram file_id) with the
    *  bot credentials; null on failure / over-cap. Backs the `read*File` tools so
    *  the agent can read attachments without ever holding the token. */
@@ -228,10 +231,7 @@ export interface SessionContext {
     /** Provenance for the write ledger. Dream adoption's rebase classifies drift by
      *  this, so a distillation-triggered write must still say `distill`. */
     source: MemoryWriteSource
-    /** The store to act on. A synthetic session (distillation) has no real channel
-     *  coordinates, so it pins the ORIGINATING conversation's scope here — otherwise a
-     *  channel-scoped agent would distill into the wrong folder. A dream pins its
-     *  STAGED store the same way. */
+    /** The store to act on: a distillation pins its originating conversation's layer, a dream its staged store. */
     scope?: MemoryScope
     /** Constrain topic filenames beyond the store's own path rules. A dream keeps the
      *  lowercase-kebab shape its proposal format always enforced. */

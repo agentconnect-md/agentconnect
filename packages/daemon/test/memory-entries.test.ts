@@ -428,8 +428,18 @@ it('projects bounded entry reads through MCP without changing legacy file tools'
   await expect(executeTool(ctx, 'listMemoryEntries', { agentId: 'other' }, deps)).rejects.toThrow()
   await expect(executeTool(ctx, 'getMemoryEntry', { id: 'topic-00.md' }, deps)).rejects.toThrow()
   await expect(
-    executeTool(ctx, 'listMemoryEntries', {}, { ...deps, memoryAccessDecision: () => 'deny' })
-  ).rejects.toThrow()
+    executeTool(
+      ctx,
+      'listMemoryEntries',
+      { layer: 'person' },
+      {
+        ...deps,
+        memoryScope: () => {
+          throw new Error('not this turn')
+        }
+      }
+    )
+  ).rejects.toThrow('not this turn')
   await expect(
     executeTool({ ...ctx, agentId: 'other' }, 'getMemoryEntry', { ref: page.entries[0]!.ref }, deps)
   ).rejects.toMatchObject({ code: 'STALE_BINDING' })
@@ -688,7 +698,7 @@ describe('unified search', () => {
       hits: [{ entry: { label: 'deploy' }, snippet: 'Deploy on Fridays.' }]
     })
     await expect(
-      executeTool(ctx, 'searchMemoryEntries', { query: 'fridays' }, { ...deps, memoryAccessDecision: () => 'deny' })
+      executeTool(ctx, 'searchMemoryEntries', { query: 'fridays', layer: 'nowhere' }, deps)
     ).rejects.toThrow()
     const { createMemoryEntriesReader } = await import('../src/cp/memory-entries.js')
     const read = createMemoryEntriesReader(f.provider, f.db, (id) => id === 'a')

@@ -277,6 +277,7 @@ describe('TelegramConnection gateway', () => {
       id: '42',
       name: 'Ada Lovelace',
       isIm: true,
+      user: '42',
       isPrivate: true
     })
   })

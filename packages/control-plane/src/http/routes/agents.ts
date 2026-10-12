@@ -4443,7 +4443,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // List the channels that have their own memory folder (channel-scoped agents).
+    // List the conversations whose memory has a place layer of its own.
     r.get(
       '/agents/:id/memory/channels',
       {
@@ -4451,7 +4451,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List agent channel memory folders',
           description:
-            'List the channels that have their own memory folder for a channel-scoped agent, live from the owning daemon (empty for agent-scoped agents). 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
+            "List the conversations whose memory has a place layer of its own (a private channel, a group DM, a conversation shared with another organization or one the platform cannot confirm internal), live from the owning daemon. A person's layer is never listed. Empty for an agent whose memory is not managed. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'listAgentMemoryChannels',
           params: IdParam,
           response: { 200: MemoryChannelsDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }

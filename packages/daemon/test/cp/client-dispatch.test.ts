@@ -1289,7 +1289,7 @@ describe('CpClient dispatch', () => {
   it('answers the Activity view’s reads and edits from its seam, only for the agent’s own organization', async () => {
     const agentId = CRON_AGENT_ID
     const assistantActivity = {
-      read: vi.fn(async () => ({ operation: 'grants' as const, grants: [], truncated: false })),
+      read: vi.fn(async () => ({ operation: 'drafts' as const, drafts: [], truncated: false })),
       write: vi.fn(async () => ({ operation: 'delete-item' as const, found: true }))
     }
     const { client, t } = await readyClient({ assistantActivity, orgForAgent: () => 'example-org' }, [], 'frame')
@@ -1303,16 +1303,16 @@ describe('CpClient dispatch', () => {
       expect(assistantActivity.write).not.toHaveBeenCalled()
 
       const read = JSON.parse(
-        frame('assistant/activity/read', { agentId, operation: 'grants' }, { orgId: 'example-org' })
+        frame('assistant/activity/read', { agentId, operation: 'drafts', limit: 5 }, { orgId: 'example-org' })
       )
       t.pushInbound(JSON.stringify(read))
       await tick()
-      expect(assistantActivity.read).toHaveBeenCalledWith({ agentId, operation: 'grants' })
+      expect(assistantActivity.read).toHaveBeenCalledWith({ agentId, operation: 'drafts', limit: 5 })
       expect(t.lastSent()).toMatchObject({
         type: 'assistant/activity/read/result',
         corr: read.id,
         orgId: 'example-org',
-        payload: { operation: 'grants', grants: [], truncated: false }
+        payload: { operation: 'drafts', drafts: [], truncated: false }
       })
 
       t.pushInbound(
@@ -1333,15 +1333,15 @@ describe('CpClient dispatch', () => {
     const agentId = CRON_AGENT_ID
     const decision = { operation: 'decide-draft' as const, result: 'decided' as const, status: 'succeeded' as const }
     const assistantActivity = {
-      read: vi.fn(async () => ({ operation: 'grants' as const, grants: [], truncated: false })),
-      write: vi.fn(async () => ({ ...decision, granted: true, failure: null }))
+      read: vi.fn(async () => ({ operation: 'drafts' as const, drafts: [], truncated: false })),
+      write: vi.fn(async () => ({ ...decision, failure: null }))
     }
     const { client, t } = await readyClient({ assistantActivity, orgForAgent: () => 'example-org' }, [], 'frame')
     const req = {
       agentId,
       operation: 'decide-draft',
       draftId: 'draft-1',
-      choice: 'always',
+      choice: 'approve',
       decider: { userId: 'usr-editor', name: 'Grace' }
     }
     try {
@@ -1357,7 +1357,7 @@ describe('CpClient dispatch', () => {
       expect(t.lastSent()).toMatchObject({
         type: 'assistant/activity/write/result',
         corr: write.id,
-        payload: { ...decision, granted: true, failure: null }
+        payload: { ...decision, failure: null }
       })
     } finally {
       await client.stop()
@@ -1382,7 +1382,7 @@ describe('CpClient dispatch', () => {
       type: 'error',
       payload: { code: 'BAD_PAYLOAD', details: { reason: 'assistant-mode-off' } }
     })
-    t.pushInbound(frame('assistant/activity/write', { agentId, operation: 'revoke-grant', grantId: 'a'.repeat(32) }))
+    t.pushInbound(frame('assistant/activity/write', { agentId, operation: 'delete-item', itemId: 'i1' }))
     await tick()
     expect(t.lastSent()).toMatchObject({
       type: 'error',
@@ -1390,7 +1390,7 @@ describe('CpClient dispatch', () => {
     })
 
     const bare = await readyClient()
-    bare.t.pushInbound(frame('assistant/activity/read', { agentId, operation: 'grants' }))
+    bare.t.pushInbound(frame('assistant/activity/read', { agentId, operation: 'drafts', limit: 5 }))
     await tick()
     expect(bare.t.lastSent()).toMatchObject({
       type: 'error',

@@ -4,7 +4,6 @@ import {
   AgentMemoryBinding,
   DEFAULT_MEMORY_DREAMING_POLICY,
   effectiveMemoryDreamingPolicy,
-  effectiveManagedMemoryScope,
   MemoryDreamingPolicy
 } from './memory-connection.js'
 import { DreamInfo, DreamStartReq, DreamFileReadReq, DreamAdoptReq } from './memory.js'
@@ -77,13 +76,12 @@ describe('memory dreaming policy (agent binding)', () => {
     expect(effectiveMemoryDreamingPolicy({ provider: 'none' })).toBeUndefined()
   })
 
-  it('resolves the managed memory scope and disables dreaming under channel scope (#653)', () => {
-    expect(effectiveManagedMemoryScope(undefined)).toBe('agent')
-    expect(effectiveManagedMemoryScope({ provider: 'managed', home: 'daemon' })).toBe('agent')
-    expect(effectiveManagedMemoryScope({ provider: 'managed', scope: 'channel', home: 'daemon' })).toBe('channel')
-    // A channel-scoped agent has no dreaming policy (offline consolidation does not
-    // map onto per-channel folders); the console hides the controls.
-    expect(effectiveMemoryDreamingPolicy({ provider: 'managed', scope: 'channel', home: 'daemon' })).toBeUndefined()
+  it('ignores a stored memory scope: every managed agent dreams its shared layer', () => {
+    // The retired Agent/Channel choice still parses, so a stored binding stays valid, but no longer turns dreaming off.
+    expect(AgentMemoryBinding.safeParse({ provider: 'managed', scope: 'channel' }).success).toBe(true)
+    expect(effectiveMemoryDreamingPolicy({ provider: 'managed', scope: 'channel', home: 'daemon' })).toEqual(
+      effectiveMemoryDreamingPolicy({ provider: 'managed', home: 'daemon' })
+    )
     expect(
       effectiveMemoryDreamingPolicy({
         provider: 'managed',
@@ -91,8 +89,7 @@ describe('memory dreaming policy (agent binding)', () => {
         dreaming: { enabled: true },
         home: 'daemon'
       })
-    ).toBeUndefined()
-    // The binding still validates: scope requires the managed provider.
+    ).toEqual({ enabled: true, autoAdopt: true, mineSkills: true })
     expect(AgentMemoryBinding.safeParse({ provider: 'native', scope: 'channel' }).success).toBe(false)
   })
 })

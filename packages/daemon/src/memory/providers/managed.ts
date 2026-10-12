@@ -13,6 +13,7 @@ import {
   listMemory,
   listMemoryHistory,
   channelMemoryRoot,
+  personMemoryRoot,
   writeChannelMemoryMeta,
   MEMORY_INDEX,
   type MemoryFile,
@@ -22,6 +23,7 @@ import {
 } from '../store.js'
 import { sidecarMemoryHistory, type MemoryHomePorts } from '../home.js'
 import { buildDistillationPrompt } from '../distill.js'
+import { memoryRefToTopic } from '../frontmatter.js'
 import type {
   FileMemoryAdmin,
   MemoryExtractor,
@@ -57,24 +59,38 @@ export class ManagedMemoryProvider implements MemoryProvider {
     return ports
   }
 
-  // The store every WRITE (tools + distillation) targets — the channel folder when channel-scoped, else the agent base,
-  // so a channel's content never lands in another channel or the shared base (#653) — and the sink its change log goes
-  // to. An explicit store is a dream's staging, kept beside the extraction host and never in the CP, so it logs to the
-  // sidecar inside it; otherwise the home decides both.
-  private activeStore(scope: MemoryScope): { store: MemoryFs; history: MemoryHistorySink } {
-    if (scope.root) return { store: scope.root, history: sidecarMemoryHistory(scope.root) }
+  // Where writes land, the root a read overlays beneath it, and the shared store; a dream's staged store stands alone.
+  private layers(scope: MemoryScope): {
+    active: MemoryFs
+    under?: MemoryFs
+    base: MemoryFs
+    history: MemoryHistorySink
+  } {
+    if (scope.root) return { active: scope.root, base: scope.root, history: sidecarMemoryHistory(scope.root) }
+    if (scope.channelKey && scope.personKey) throw new Error('a memory scope names one layer beside the shared store')
     const ports = this.portsFor(scope.agentId)
-    const store = scope.channelKey ? channelMemoryRoot(ports.live, scope.channelKey) : ports.live
-    return { store, history: ports.historyFor(store) }
+    const base = ports.live
+    const own = scope.channelKey
+      ? channelMemoryRoot(base, scope.channelKey)
+      : scope.personKey
+        ? personMemoryRoot(base, scope.personKey)
+        : undefined
+    // A shared place's older folder is read beneath the shared store, which takes its writes.
+    const active = own && !scope.sharedPlace ? own : base
+    const under = scope.alone ? undefined : active === base ? own : base
+    return { active, ...(under ? { under } : {}), base, history: ports.historyFor(active) }
   }
 
-  // The read overlay roots, most-specific first — `[channel, base]` when channel-scoped so the channel layer shadows the
-  // shared base per file; `[base]` otherwise. An explicit store stands alone: a dream's staged proposal must not read
-  // through to the live store, or a reviewer would see files the proposal does not contain.
+  // The store every WRITE (tools + distillation) targets and the sink its change log goes to.
+  private activeStore(scope: MemoryScope): { store: MemoryFs; history: MemoryHistorySink } {
+    const { active, history } = this.layers(scope)
+    return { store: active, history }
+  }
+
+  // The read overlay roots, most-specific first: the written layer shadows the one beneath it per file.
   private readRoots(scope: MemoryScope): MemoryFs[] {
-    if (scope.root) return [scope.root]
-    const base = this.portsFor(scope.agentId).live
-    return scope.channelKey ? [channelMemoryRoot(base, scope.channelKey), base] : [base]
+    const { active, under } = this.layers(scope)
+    return under ? [active, under] : [active]
   }
 
   // Managed keeps a single store: turn OFF any verified runtime-owned memory so
@@ -97,10 +113,10 @@ export class ManagedMemoryProvider implements MemoryProvider {
   }
 
   async ensure(scope: MemoryScope, agentName: string): Promise<void> {
-    await ensureMemory(this.activeStore(scope).store, agentName)
-    // Record the source identity of a channel folder once, so the console can name
-    // it. Best-effort and off the critical path — a failure never blocks memory.
-    if (scope.channelKey && scope.channel) {
+    // Only the shared store is seeded; a layer beside it starts with its first write.
+    await ensureMemory(this.layers(scope).base, agentName)
+    // Record the source identity of a place folder once, so the console can name it; best-effort, never blocking.
+    if (scope.channelKey && scope.channel && !scope.sharedPlace && !scope.root) {
       void writeChannelMemoryMeta(this.portsFor(scope.agentId).live, scope.channelKey, {
         channel: scope.channel,
         ...(scope.transportScope ? { transportScope: scope.transportScope } : {})
@@ -109,13 +125,18 @@ export class ManagedMemoryProvider implements MemoryProvider {
   }
 
   async standingContextAtSessionStart(scope: MemoryScope): Promise<string> {
-    // Overlay: inject the shared base index first, then the channel index, so the
-    // agent sees "shared knowledge + this channel" as one memory (#653).
-    const ordered = [...this.readRoots(scope)].reverse() // [base] or [base, channel]
+    // The shared index first, then the other layer's, so the agent sees one memory.
+    const { active, under, base } = this.layers(scope)
+    const roots = under ? [active, under] : [active]
+    const label = scope.personKey
+      ? 'Only for this person:'
+      : scope.channelKey
+        ? 'Only for this conversation:'
+        : undefined
     const parts: string[] = []
-    for (const root of ordered) {
+    for (const root of [...roots.filter((r) => r === base), ...roots.filter((r) => r !== base)]) {
       const index = (await readIndex(root)).trim()
-      if (index) parts.push(index)
+      if (index) parts.push(root !== base && label ? `${label}\n${index}` : index)
     }
     return parts.join('\n\n')
   }
@@ -130,8 +151,7 @@ export class ManagedMemoryProvider implements MemoryProvider {
 
   async recordTurn(scope: MemoryScope, turn: TurnRecord): Promise<void> {
     if (!this.autoDistillFor(scope.agentId) || !this.extract) return
-    // Per-turn distillation is a WRITE: it goes to the active (channel) folder so a
-    // channel's turns never distill into the shared base or another channel (#653).
+    // Per-turn distillation is a WRITE: it goes to the scope's layer, never into another conversation's.
     const { store } = this.activeStore(scope)
     // The extraction session holds the same memory tools as any other trigger and
     // writes through them itself (#41), so there is nothing to parse or apply here.
@@ -163,10 +183,14 @@ export class ManagedMemoryProvider implements MemoryProvider {
   async list(scope: MemoryScope): Promise<MemoryEntry[]> {
     const roots = this.readRoots(scope)
     if (roots.length === 1) return listMemory(roots[0]!)
-    // Union base + channel, channel shadowing the base by name, MEMORY.md first.
+    // Union of both layers, the written one shadowing the other by name, MEMORY.md first.
     const byName = new Map<string, MemoryFile>()
     for (const root of [...roots].reverse()) {
-      for (const file of await listMemory(root)) byName.set(file.name, file)
+      for (const file of await listMemory(root)) {
+        // Each layer keeps its own index, so the written layer's is the only one listed.
+        if (file.name !== MEMORY_INDEX || root === roots[0]) byName.set(file.name, file)
+        else byName.delete(file.name)
+      }
     }
     return [...byName.values()].sort((a, b) =>
       a.name === MEMORY_INDEX ? -1 : b.name === MEMORY_INDEX ? 1 : a.name.localeCompare(b.name)
@@ -174,22 +198,19 @@ export class ManagedMemoryProvider implements MemoryProvider {
   }
 
   async read(scope: MemoryScope, path: string): Promise<MemoryReadResult> {
-    // Channel layer shadows the base: return the first root that HAS the file.
-    // Existence (not emptiness) decides — an intentionally-empty channel file must
-    // still shadow a non-empty base file rather than fall through.
-    for (const root of this.readRoots(scope)) {
+    // The written layer shadows the other: the first root that HAS the file wins, even an intentionally empty one.
+    const roots = this.readRoots(scope)
+    // Each layer keeps its own index, so MEMORY.md never falls through to the layer beneath.
+    for (const root of memoryRefToTopic(path) === MEMORY_INDEX ? roots.slice(0, 1) : roots) {
       const content = await readMemoryFileIfPresent(root, path)
       if (content !== null) return { path, content }
     }
     return { path, content: '' }
   }
 
-  /** One hop of the `[[name]]` graph, from the layer that actually holds the file:
-   *  under channel scope that is the channel folder, with the shared base as fallback. */
+  /** One hop of the `[[name]]` graph, from the layer that actually holds the file, the other layer as fallback. */
   async neighbors(scope: MemoryScope, path: string): Promise<MemoryNeighborsResult> {
-    // Pass the whole overlay: an edge may cross layers (a channel memory linking to a
-    // shared base one, or vice versa), so scanning only the file's own layer would
-    // drop those edges and could describe a shadowed file instead of the live one.
+    // The whole overlay: an edge may cross layers, and scanning one layer could describe a shadowed file.
     return memoryNeighbors(this.readRoots(scope), path)
   }
 

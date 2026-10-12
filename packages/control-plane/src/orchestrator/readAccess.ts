@@ -49,7 +49,7 @@ export async function resolveReadAccess(
   const visibleSessionIds = req.sessionIds.length
     ? await deps.sessionsVisible(viewer, req.agentId, req.sessionIds, req.ownerOnly === true)
     : []
-  return { asker: 'linked', visibleSessionIds }
+  return { asker: 'linked', visibleSessionIds, consoleUserId: viewer.userId }
 }
 
 /** The console user behind the asker: a current member named directly, or the one member who linked that chat identity. */

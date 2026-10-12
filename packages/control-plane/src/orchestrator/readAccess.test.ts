@@ -68,7 +68,8 @@ describe('resolveReadAccess', () => {
     const { deps: d, sessionsVisible } = deps()
     expect(await resolveReadAccess(ask({ consoleUserId: 'user-r' }), d, ORG)).toEqual({
       asker: 'linked',
-      visibleSessionIds: ['visible-1']
+      visibleSessionIds: ['visible-1'],
+      consoleUserId: 'user-r'
     })
     expect(sessionsVisible).toHaveBeenCalledWith(
       { orgId: ORG, userId: 'user-r', role: 'viewer' },
@@ -94,13 +95,15 @@ describe('resolveReadAccess', () => {
     const { deps: d, sessionsVisible } = deps()
     expect(await resolveReadAccess(ask({ integrationId: SLACK, memberId: 'U_P' }), d, ORG)).toEqual({
       asker: 'linked',
-      visibleSessionIds: ['visible-1']
+      visibleSessionIds: ['visible-1'],
+      consoleUserId: 'user-p'
     })
     expect(sessionsVisible.mock.calls[0]![0]).toEqual({ orgId: ORG, userId: 'user-p', role: 'collaborator' })
-    // An empty session list only asks who the asker is.
+    // An empty session list only asks who the asker is, which keys their memory layer.
     expect(await resolveReadAccess(ask({ integrationId: SLACK, memberId: 'U_P' }, []), d, ORG)).toEqual({
       asker: 'linked',
-      visibleSessionIds: []
+      visibleSessionIds: [],
+      consoleUserId: 'user-p'
     })
   })
 

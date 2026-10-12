@@ -137,9 +137,6 @@ reaches the agent as a prompt, and the instruction is repeated.
 
 The card supports single-choice and yes/no questions, which one reply answers
 whole. Typed, multi-select, and multi-field requests keep the decline notice.
-This is also the private-session managed-memory write approval (Allow once,
-Allow for this session, Deny), so a DM user decides it in the chat rather than
-waiting on the Console.
 
 QQ turns post through a leased egress rather than a reply connection, so core
 offers a card to a turn with either transport. A card and its follow-ups are

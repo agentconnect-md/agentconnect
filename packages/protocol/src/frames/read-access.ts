@@ -25,6 +25,8 @@ export type ReadAccessAskerState = z.infer<typeof ReadAccessAskerState>
 // `agent/read-access/ok` (C→D REP): the session-visibility verdict the console itself would give that user.
 export const AgentReadAccessOk = z.object({
   asker: ReadAccessAskerState,
-  visibleSessionIds: z.array(z.string().min(1).max(256)).max(8)
+  visibleSessionIds: z.array(z.string().min(1).max(256)).max(8),
+  // The console user a `linked` asker resolved to, which keys their memory layer; absent from an older Control Plane.
+  consoleUserId: z.string().min(1).max(256).optional()
 })
 export type AgentReadAccessOk = z.infer<typeof AgentReadAccessOk>
