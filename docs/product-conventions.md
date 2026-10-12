@@ -943,7 +943,9 @@ An agent in assistant mode answers only where an editor enabled it, whatever its
 visibility: its conversations are gated exactly like a Restricted agent's. Turning the
 mode on resets no conversation — every conversation already enabled, DMs included, stays enabled
 — and new conversations start Off. Switching it off restores the agent's ordinary
-defaults.
+defaults. The console's `assistant-mode` flag decides only whether the mode can be switched on: an
+agent already in assistant mode keeps the switch, so it can be switched off, and keeps its Activity
+tab, Sub-sessions tab and proposals in the console whatever the flag says.
 
 Turning the mode on also sets the agent's permission mode, so background work nobody is watching
 does not stop to wait for approval: a mode that asks for approval or only reads, or no mode at
@@ -1110,8 +1112,8 @@ tells a sub-session which language they use; a patrol or an approved task, which
 their messages, goes by its item's title and summary. The conversation then answers them in their
 language whatever language a report arrived in. Fixed text on cards is not translated.
 
-While the console's `assistant-mode` flag is on, the session page of a conversation that
-opened sub-sessions has a Sub-sessions tab in its side panel; no other conversation shows it.
+The session page of a conversation that opened sub-sessions has a Sub-sessions tab in its side
+panel; no other conversation shows it.
 It lists the sub-sessions that conversation opened, newest first and a page at a time, each
 with its state and start. A title and a link to its own session appear only to someone who may
 view that session, as in the Activity view. A delegated sub-session is titled by its task, as its
@@ -1215,13 +1217,14 @@ requests". "What people can do in chat" makes no difference to proposals. A conv
 with another organization, one gated By decision, one the card definitely could not be posted in,
 and conversations on other platforms get the card where drafts go instead: the agent's responsible
 user in a direct message, otherwise its fallback conversation. A post that timed out may still land,
-so it is never sent a second time elsewhere. In a webchat conversation there is no card: the
-proposal waits among the conversation's pending requests above the composer, and is not sent to the
-responsible user. Whoever may continue that conversation may approve or deny it there after a
-confirmation, and so may the agent's editors. The row leads with the sentence, folds the reason and
-the task, and shows the item and when it expires; once decided it says what happened until
-dismissed. An editor may decide any proposal from the Activity view, including one no one could be
-reached for, and the first answer decides it.
+so it is never sent a second time elsewhere. In a webchat conversation, the live Playground
+included, there is no card: the proposal waits among the conversation's pending requests above the
+composer, and is not sent to the responsible user. Whoever may continue that conversation may
+approve or deny it there after a confirmation, and so may the agent's editors, who also find it in
+the conversation's Requests popover. The row leads with the sentence, folds the reason and the task,
+and shows the item and when it expires; once decided it says what happened until dismissed. An
+editor may decide any proposal from the Activity view, including one no one could be reached for,
+and the first answer decides it.
 
 The card leads with the sentence, shows the reason and the task, and offers Approve and Deny; there
 is no "always allow". Once decided it is rewritten in place: approved by whom and running, denied by
@@ -1271,10 +1274,9 @@ the local zone is unknown. An agent outside assistant mode is told nothing.
 
 ## Assistant-mode Activity
 
-The page of an agent in assistant mode has an Activity tab, offered while the console's
-`assistant-mode` flag is on. No other agent shows it, and a link to it opens Integrations
-instead. It is read from the agent's daemon when it is shown and kept nowhere else; each list
-shows the most recent entries, up to a limit, and says when more exist.
+The page of an agent in assistant mode has an Activity tab. No other agent shows it, and a link to
+it opens Integrations instead. It is read from the agent's daemon when it is shown and kept nowhere
+else; each list shows the most recent entries, up to a limit, and says when more exist.
 
 - **Items** are visible to everyone who can view the agent: the active and waiting ones, most
   recently updated first, each with what counts as done, its next check (when a patrol looks at it

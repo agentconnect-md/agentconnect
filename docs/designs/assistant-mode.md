@@ -15,7 +15,8 @@ tool set for AI tools. That design gives an agent tools to administer the platfo
 describes how an agent behaves.
 
 **Console:** the switch is offered behind the `assistant-mode` flag (`features.assistantMode` in
-the chart, off by default) until it changes behavior; an agent already switched on keeps it shown.
+the chart, off by default) until it changes behavior. The flag gates only switching the mode on: an
+agent already switched on keeps the switch, Activity, the Sub-sessions tab and proposals.
 
 **Builds on:** [resource-visibility.md](resource-visibility.md) §14 (conversation gating:
 authorize places), [session-visibility.md](session-visibility.md) (session visibility, the
