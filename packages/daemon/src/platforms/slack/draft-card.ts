@@ -48,7 +48,7 @@ export function slackDraftCardPort(conn: DraftCardConnection, integrationId: str
         integrationId,
         sessionKey: card.sessionKey ?? `assistant-draft:${card.draftId}`
       })
-      const blocks = buildAssistantDraftCard(card.draftId, card.view, { offerAlways: card.offerAlways, routingTarget })
+      const blocks = buildAssistantDraftCard(card.draftId, card.view, { routingTarget })
       return await conn.postBlocks(channel, blocks, fallbackText(card.view), thread, {
         username: card.view.agentName,
         chrome: true
@@ -70,7 +70,6 @@ export function slackDraftCardPort(conn: DraftCardConnection, integrationId: str
         sessionKey: card.sessionKey ?? `assistant-draft:${card.draftId}`
       })
       const blocks = buildAssistantDraftCard(card.draftId, card.view, {
-        offerAlways: card.offerAlways,
         routingTarget,
         ...(card.notice ? { notice: card.notice } : {})
       })

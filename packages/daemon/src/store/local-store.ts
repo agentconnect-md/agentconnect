@@ -10,7 +10,6 @@ import { ASSISTANT_PATROL_SCHEMA, AssistantPatrolLedger } from './assistant-patr
 import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
 import { ASSISTANT_TIME_ZONE_SCHEMA, AssistantPlaceTimeZones } from './assistant-time-zones.js'
-import { ASSISTANT_WIDENED_SCHEMA, AssistantWidenedSessions } from './assistant-widened.js'
 import {
   APPEND_COORDINATE_PREFIX,
   appendCoordinate,
@@ -2121,8 +2120,6 @@ export class LocalStore {
   readonly assistantSubsessions: AssistantSubsessionIndex
   /** Per-item patrol state (assistant-mode.md §5.9). */
   readonly assistantPatrols: AssistantPatrolLedger
-  /** Sessions that read a private place through the asker's membership (assistant-mode.md §5.5). */
-  readonly assistantWidened: AssistantWidenedSessions
   /** Reminders the daemon posts at their time with no model turn (assistant-mode.md §5.9). */
   readonly assistantReminders: AssistantReminderLedger
   /** The time zone last seen from a person in each place, for turns no person started (assistant-mode.md §5.4). */
@@ -2160,7 +2157,6 @@ export class LocalStore {
       transaction: (fn) => this.transaction(fn)
     })
     this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
-    this.assistantWidened = new AssistantWidenedSessions({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantTimeZones = new AssistantPlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
   }
@@ -2226,7 +2222,6 @@ export class LocalStore {
       ${ASSISTANT_ITEM_SCHEMA}
       ${ASSISTANT_DRAFT_SCHEMA}
       ${ASSISTANT_SUBSESSION_SCHEMA}
-      ${ASSISTANT_WIDENED_SCHEMA}
       ${ASSISTANT_PATROL_SCHEMA}
       ${ASSISTANT_REMINDER_SCHEMA}
       ${ASSISTANT_TIME_ZONE_SCHEMA}
@@ -3875,12 +3870,7 @@ export class LocalStore {
          WHERE key = ? AND acpSessionId IS ?`
       )
       .run(cursorTs, at, key, expectAcpSessionId ?? null)
-    if (Number(res.changes) === 0) return false
-    // A cleared context no longer holds what a per-asker read brought in; its place keeps the lifted row (assistant-mode.md §5.5).
-    await this.db
-      .prepare('UPDATE assistant_widened_session SET liftedAt = ? WHERE sessionKey = ? AND liftedAt IS NULL')
-      .run(at, key)
-    return true
+    return Number(res.changes) > 0
   }
 
   /** Drop a conversation's reservation, but only while it still names `coordinate` — a
@@ -4732,12 +4722,6 @@ export class LocalStore {
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
-      // A purged session's mark is lifted; its place keeps the row, since the platform keeps its history (assistant-mode.md §5.5).
-      await tx
-        .prepare(
-          'UPDATE assistant_widened_session SET liftedAt = ? WHERE agentId = ? AND sessionKey = ? AND liftedAt IS NULL'
-        )
-        .run(Date.now(), rec.agentId, key)
       // A purged sub-session leaves its parent's index (assistant-mode.md §5.6).
       if (isSubsessionCoordinate(rec.thread))
         await tx

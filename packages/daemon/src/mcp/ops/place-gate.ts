@@ -1,4 +1,4 @@
-// The place rules on the bridge (assistant-mode.md §5.5): every agent's cross-place reads pass the read rule; assistant mode's writes stay here.
+// The place rules on the bridge (assistant-mode.md §5.5): every agent's cross-place reads and platform writes are judged by who is asking.
 import {
   askerMayRead,
   askerUnlinked,
@@ -6,22 +6,25 @@ import {
   CLOSED_LOOKUPS,
   isPrivateSource,
   NOBODY,
+  NOT_POSTED_HERE,
+  NOT_POSTED_UNLINKED,
   NOT_SHARED_HERE,
   NOT_SHARED_UNLINKED,
   placeReadMetrics,
   privateSourceNote,
   samePlace,
-  sourceClass,
   type PlaceKind,
   type PlaceReadMetrics,
   type PlaceReadTool,
   type PlaceRef,
   type PlaceRefusal,
+  type ReadAsker,
   type ReadLookups,
   type SourcePlace,
   type TurnAskers
 } from '../../assistant/place-access.js'
 import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
+import { tellsWorkspaceMembers } from '../../platforms/read-ports.js'
 import type { SessionRecord, TranscriptRow, TranscriptSessionScope } from '../../store/local-store.js'
 import type { SessionContext } from './context.js'
 import { knownIntegrations, type GatewayDeps } from './gateway.js'
@@ -55,38 +58,15 @@ export interface PlaceAccessDeps extends GatewayDeps {
   placeStore?: PlaceStore
   /** Whether the session's own conversation is an external place (assistant-mode.md §5.3). */
   placeExternal?: (ctx: SessionContext) => boolean
-  /** Drafts a post to another place for approval, or lets a granted one through; absent ⇒ such a post is refused. */
-  assistantDraftPost?: (ctx: SessionContext, post: InterceptedPost) => Promise<PostInterception>
+  /** Whether a write's target is shared with another organization; in assistant mode the platform is asked first (§5.3). */
+  targetExternal?: (agentId: string, integrationId: string, channel: string, dm: boolean) => Promise<boolean>
+  /** Drafts a post for an internal member's approval; absent ⇒ a post that needs one is refused. */
+  draftPost?: (ctx: SessionContext, post: InterceptedPost) => Promise<PostInterception>
   /** Who is asking on the session's live turn; absent ⇒ nobody, so only public sources are read. */
   readAskers?: (ctx: SessionContext) => Promise<TurnAskers>
   /** The live lookups the read rule asks for one agent; absent ⇒ none confirms anything. */
   readLookups?: (agentId: string) => ReadLookups
-  /** The session's durable mark for a private channel or group DM an assistant-mode 1:1 conversation read (§5.5); it ends when the session is retired. */
-  widenedSession?: {
-    mark(ctx: SessionContext): Promise<boolean>
-    marked(ctx: SessionContext): Promise<boolean>
-    /** Whether any session of the agent in this session's place was ever marked, retired ones included. */
-    placeMarked(ctx: SessionContext): Promise<boolean>
-  }
 }
-
-/** Whether this session carries the widened-read mark; a mark that cannot be read counts as set. */
-async function widenedHere(ctx: SessionContext, deps: PlaceAccessDeps): Promise<boolean> {
-  return deps.widenedSession ? await deps.widenedSession.marked(ctx).catch(() => true) : false
-}
-
-/** A read of the session's own place takes on the place's mark first (§5.5), so earlier history cannot leave it unmarked; fails closed. */
-export async function carryPlaceMark(ctx: SessionContext, tool: string, deps: PlaceAccessDeps): Promise<void> {
-  const widened = deps.widenedSession
-  if (!widened) return
-  const marked = await widened.placeMarked(ctx).catch(() => undefined)
-  if (marked === false) return
-  if (marked === true && (await widened.mark(ctx).catch(() => false))) return
-  throw new Error(`${tool}: this conversation's history could not be read right now. Nothing was read; retry.`)
-}
-
-/** The gate's word on a call it lets through: `draft` sends the post through approval (§5.5). */
-export type PlaceVerdict = { draft?: true } | undefined
 
 const KIND_STRICTNESS: Record<PlaceKind, number> = { channel: 1, group_dm: 2, dm: 3, webchat: 3 }
 const SNAPSHOT_KINDS: Record<NonNullable<PlaceSnapshotRow['kind']>, PlaceKind> = {
@@ -141,15 +121,24 @@ export async function describePlace(
   }
 }
 
-/** The ledger writes a widened session may not make. */
-const LEDGER_WRITES = new Set(['takeItem', 'updateItem', 'followItem'])
+/** Another conversation as the rules judge it: described, with the agent's newest session there, which a read off the asker's own bot is judged by. */
+async function describeConversation(
+  ctx: SessionContext,
+  place: PlaceRef,
+  bot: string | undefined,
+  deps: PlaceAccessDeps
+): Promise<SourcePlace> {
+  const row = await deps.placeStore?.latestSession(ctx.agentId, place.channel)
+  const own = row?.platform === place.platform ? row : undefined
+  const rowKind = own ? kindFromRows(place.platform, [own.conversationKind]) : undefined
+  return { ...(await describePlace(place, rowKind, bot, deps)), sessions: own?.sessionId ? [own.sessionId] : [] }
+}
 
-/** What a session that made a widened read may no longer do (§5.5): change the ledger, send to any agent, or write elsewhere. */
-function barredAfterWidenedRead(ctx: SessionContext, name: string, args: Record<string, unknown>): boolean {
-  if (LEDGER_WRITES.has(name)) return true
-  // Every agent-to-agent form: a direct call (self-delegation among them), a channel-root post with `toAgent`, a session reply.
-  if (name === 'sendMessage' && (!absent(args.toAgent) || !absent(args.sessionId))) return true
-  return writeElsewhere(ctx, name, args) !== undefined
+/** One of the agent's own bots on that platform, from the trusted session snapshot; undefined for any other id. */
+function ownBot(ctx: SessionContext, platform: string, integrationId: unknown): string | undefined {
+  return knownIntegrations(ctx).some((i) => i.id === integrationId && i.platform === platform)
+    ? (integrationId as string)
+    : undefined
 }
 
 /** The channel-addressed platform reads that pass the place rule. */
@@ -161,70 +150,6 @@ const PLACE_READS: ReadonlyMap<string, PlaceReadTool> = new Map<string, PlaceRea
 ])
 
 const absent = (value: unknown): boolean => value === undefined || value === null
-
-/** Does a platform write land in the current place: this session's bot, platform and conversation? */
-function targetsHere(ctx: SessionContext, platform: unknown, integrationId: unknown, channel: unknown): boolean {
-  if (ctx.integrationId === undefined) return false
-  return (
-    (absent(platform) ? ctx.platform : platform) === ctx.platform &&
-    (absent(integrationId) ? ctx.integrationId : integrationId) === ctx.integrationId &&
-    channel === ctx.channel
-  )
-}
-
-const ANOTHER_CONVERSATION = 'another conversation'
-
-/** The platform writes; the agent-to-agent forms and the parent-session reply of sendMessage are not among them. */
-const PLATFORM_WRITES = new Set([
-  'sendMessage',
-  'shareFile',
-  'scheduleMessage',
-  'addReaction',
-  'deleteMessage',
-  'addBookmark',
-  'removeBookmark',
-  'createCanvas',
-  'createConversation',
-  'updateCanvas',
-  'addListItem',
-  'updateListItem'
-])
-
-function isPlatformWrite(name: string, args: Record<string, unknown>): boolean {
-  if (name === 'sendMessage') return absent(args.sessionId) && absent(args.toAgent)
-  return PLATFORM_WRITES.has(name)
-}
-
-/** What a platform write targets outside the current place; undefined when it stays here or is no platform write. */
-export function writeElsewhere(ctx: SessionContext, name: string, args: Record<string, unknown>): string | undefined {
-  switch (name) {
-    case 'sendMessage':
-      // A parent-session reply posts nothing, and the agent-to-agent forms are out of this rule for now.
-      if (!absent(args.sessionId) || !absent(args.toAgent)) return undefined
-      if (absent(args.channel)) return absent(args.toUser) ? undefined : 'a direct message'
-      return targetsHere(ctx, args.platform, args.integrationId, args.channel) ? undefined : ANOTHER_CONVERSATION
-    case 'scheduleMessage':
-    case 'addReaction':
-    case 'deleteMessage':
-    case 'addBookmark':
-    case 'removeBookmark':
-      return targetsHere(ctx, undefined, args.integrationId, absent(args.channel) ? ctx.channel : args.channel)
-        ? undefined
-        : ANOTHER_CONVERSATION
-    case 'createCanvas':
-      return !absent(args.channel) && targetsHere(ctx, undefined, args.integrationId, args.channel)
-        ? undefined
-        : 'a canvas outside this conversation (pass this conversation as `channel`)'
-    case 'createConversation':
-      return 'a new conversation'
-    case 'updateCanvas':
-    case 'addListItem':
-    case 'updateListItem':
-      return 'a document whose conversation cannot be confirmed'
-    default:
-      return undefined
-  }
-}
 
 /** A refused read, `unlinked` when an asker may be told how cross-platform reads open; or one let through with a private source's note. */
 export type ReadVerdict =
@@ -239,12 +164,8 @@ export async function judgePlaceRead(
   deps: PlaceAccessDeps,
   recorder: PlaceReadMetrics = placeReadMetrics
 ): Promise<ReadVerdict> {
-  const assistant = deps.assistantModeFor?.(ctx.agentId) === true
   const current: PlaceRef = { platform: ctx.platform, channel: ctx.channel }
-  if (samePlace(current, source)) {
-    if (assistant) await carryPlaceMark(ctx, tool, deps)
-    return {}
-  }
+  if (samePlace(current, source)) return {}
   const askers = deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
   const lookups = deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS
   const ownBot = source.platform === ctx.platform && bot !== undefined && bot === ctx.integrationId
@@ -259,15 +180,7 @@ export async function judgePlaceRead(
   )
   if (refusal)
     return { refused: refusal, ...((await askerUnlinked(askers, lookups)) ? { unlinked: true as const } : {}) }
-  if (!isPrivateSource(source)) return {}
-  // An assistant-mode 1:1 conversation that reads a private channel or group DM writes only there until `!new` (§5.5); no mark, no read.
-  if (assistant && ctx.isDm && sourceClass(source) === 'members') {
-    if (!(await deps.widenedSession?.mark(ctx).catch(() => false))) {
-      recorder.refused(tool, 'private')
-      return { refused: 'private' }
-    }
-  }
-  return { privateSource: privateSourceNote(source) }
+  return isPrivateSource(source) ? { privateSource: privateSourceNote(source) } : {}
 }
 
 /** A channel-addressed platform read passes the read rule; returns the private-source note for its result. */
@@ -285,53 +198,161 @@ export async function assertPlaceRead(
     channel: typeof args.channel === 'string' ? args.channel : ctx.channel
   }
   const named = typeof args.integrationId === 'string' ? args.integrationId : ctx.integrationId
-  const bot = knownIntegrations(ctx).some((i) => i.id === named && i.platform === ctx.platform) ? named : undefined
-  let described: SourcePlace = source
-  if (!samePlace({ platform: ctx.platform, channel: ctx.channel }, source)) {
-    const row = await deps.placeStore?.latestSession(ctx.agentId, source.channel)
-    const own = row?.platform === ctx.platform ? row : undefined
-    const rowKind = own ? kindFromRows(ctx.platform, [own.conversationKind]) : undefined
-    // A read off the asker's own bot is judged by the console's view of the agent's newest session there.
-    described = {
-      ...(await describePlace(source, rowKind, bot, deps)),
-      sessions: own?.sessionId ? [own.sessionId] : []
-    }
-  }
+  const bot = ownBot(ctx, ctx.platform, named)
+  const here = samePlace({ platform: ctx.platform, channel: ctx.channel }, source)
+  // A read off the asker's own bot is judged by the console's view of the agent's newest session there.
+  const described = here ? source : await describeConversation(ctx, source, bot, deps)
   const verdict = await judgePlaceRead(ctx, tool, described, bot, deps)
   if (verdict.refused) throw new Error(`${tool}: ${verdict.unlinked ? NOT_SHARED_UNLINKED : NOT_SHARED_HERE}`)
   return verdict.privateSource
 }
 
-/** The assistant-mode gate before every bridge tool: a post elsewhere is drafted and other writes stay here. */
-export async function assertAssistantPlaceAccess(
+/** Where a platform write lands: a conversation (a direct message by its recipient), something new with these people, or a hosted document. */
+export type WriteTarget =
+  | { kind: 'conversation'; platform: string; integrationId?: string; channel: string; recipient?: string }
+  | { kind: 'new'; platform: string; integrationId?: string; users: readonly string[] }
+  | { kind: 'document'; platform: string; integrationId?: string; documentId: string }
+
+/** What the write rule lets through: `post` goes out now, `draft` waits for an internal member's approval. */
+export type WriteVerdict = 'post' | 'draft'
+
+const NOBODY_WRITES =
+  'no person started this run, so it writes only to its own conversation. Nothing was sent or changed.'
+const DM_OUTSIDE =
+  'a direct message goes only to a member of your organization, and this person could not be confirmed as one. ' +
+  'Nothing was sent.'
+const NEW_OUTSIDE =
+  'a new conversation is opened only with members of your organization, and someone named could not be confirmed ' +
+  'as one. Nothing was created.'
+const EXTERNAL_TARGET =
+  'that conversation is shared with another organization, so only a post can go there, and only once an internal ' +
+  'member approves it. Nothing was changed.'
+const EXTERNAL_HERE =
+  'this conversation is shared with another organization, so your reply here goes to an internal member for ' +
+  'approval and other writes here are refused. Nothing was changed. Put it in your reply instead.'
+const NEW_NOT_MEMBER =
+  'something new is made only for full members of this workspace, and not everyone asking could be confirmed as ' +
+  'one. Nothing was created or changed.'
+const DOCUMENT_UNKNOWN =
+  'the conversations this document is in could not be confirmed, so it was not changed. Nothing was changed.'
+
+const refused = (tool: string, why: string): Error => new Error(`${tool}: ${why}`)
+
+/** A person the platform counts in the organization: a full member of the bot's workspace where it can tell; fails closed. */
+async function inOrganization(
+  platform: string,
+  bot: string | undefined,
+  user: string,
+  lookups: ReadLookups
+): Promise<boolean> {
+  if (!tellsWorkspaceMembers(platform)) return true
+  const id = /^<@([^>]+)>$/.exec(user)?.[1] ?? user
+  return bot !== undefined && (await lookups.fullMember(bot, id).catch(() => false))
+}
+
+/** Whether an asker could make something new in that bot's workspace: its own full member, where the platform can tell. */
+async function workspaceMember(
+  asker: ReadAsker,
+  platform: string,
+  bot: string | undefined,
+  lookups: ReadLookups
+): Promise<boolean> {
+  if (asker.kind !== 'member' || asker.platform !== platform || bot === undefined || asker.integrationId !== bot)
+    return false
+  return !tellsWorkspaceMembers(platform) || (await lookups.fullMember(bot, asker.userId).catch(() => false))
+}
+
+/**
+ * The one choke point every platform write passes, for every agent: the current conversation always, anything else
+ * only where every person asking may go; a post that needs approval comes back `draft`, and any other refusal throws.
+ */
+export async function judgePlaceWrite(
   ctx: SessionContext,
-  name: string,
-  args: Record<string, unknown>,
+  tool: string,
+  target: WriteTarget,
+  deps: PlaceAccessDeps,
+  post = false
+): Promise<WriteVerdict> {
+  const assistant = deps.assistantModeFor?.(ctx.agentId) === true
+  if (target.kind === 'conversation' && samePlace({ platform: ctx.platform, channel: ctx.channel }, target)) {
+    // An assistant-mode reply in an external place is drafted, and nothing else is written there.
+    if (assistant && deps.placeExternal?.(ctx)) throw refused(tool, EXTERNAL_HERE)
+    return 'post'
+  }
+  const lookups = deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS
+  const bot = ownBot(ctx, target.platform, target.integrationId)
+  if (target.kind === 'document') return await judgeDocument(ctx, tool, target, bot, lookups, deps)
+  const people = target.kind === 'new' ? target.users : target.recipient !== undefined ? [target.recipient] : []
+  for (const user of people) {
+    if (!(await inOrganization(target.platform, bot, user, lookups)))
+      throw refused(tool, target.kind === 'new' ? NEW_OUTSIDE : DM_OUTSIDE)
+  }
+  const askers = deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
+  // A run no person started writes only to its own conversation, which is an anchored hook's or schedule's target.
+  if (askers.nobody || askers.people.length === 0) {
+    if (post && assistant && deps.draftPost) return 'draft'
+    throw refused(tool, NOBODY_WRITES)
+  }
+  if (target.kind === 'new') {
+    for (const asker of askers.people)
+      if (!(await workspaceMember(asker, target.platform, bot, lookups))) throw refused(tool, NEW_NOT_MEMBER)
+    return 'post'
+  }
+  // A direct message reaches anyone in the organization; any other conversation, those every asker may see.
+  if (target.recipient === undefined) {
+    const place = await describeConversation(ctx, target, bot, deps)
+    for (const asker of askers.people)
+      if (!(await askerMayRead(asker, place, bot, lookups).catch(() => false)))
+        throw await closed(tool, askers, lookups)
+  }
+  const external =
+    bot !== undefined &&
+    (await (
+      deps.targetExternal?.(ctx.agentId, bot, target.channel, target.recipient !== undefined) ?? Promise.resolve(false)
+    ).catch(() => true))
+  if (!external) return 'post'
+  if (post && deps.draftPost) return 'draft'
+  throw refused(tool, EXTERNAL_TARGET)
+}
+
+/** The opaque refusal, with the sign-in hint for an asker who linked no console account. */
+async function closed(tool: string, askers: TurnAskers, lookups: ReadLookups): Promise<Error> {
+  return refused(tool, (await askerUnlinked(askers, lookups)) ? NOT_POSTED_UNLINKED : NOT_POSTED_HERE)
+}
+
+/** A canvas or a list is written for every conversation it is in, and for the whole workspace where it is open to it. */
+async function judgeDocument(
+  ctx: SessionContext,
+  tool: string,
+  target: Extract<WriteTarget, { kind: 'document' }>,
+  bot: string | undefined,
+  lookups: ReadLookups,
   deps: PlaceAccessDeps
-): Promise<PlaceVerdict> {
-  if (!deps.assistantModeFor?.(ctx.agentId)) return undefined
-  // Every turn of a marked session, whoever started it.
-  if (barredAfterWidenedRead(ctx, name, args) && (await widenedHere(ctx, deps))) {
-    throw new Error(
-      `${name}: this conversation has read a conversation that only the person here may see, so it now writes only ` +
-        'here: no item changes, nothing sent to an agent, and nothing posted or drafted elsewhere. Nothing was changed. ' +
-        'Answer here instead, and tell the person that starting a new conversation with `!new` lifts this.'
+): Promise<WriteVerdict> {
+  const gw = bot ? deps.gatewayFor(bot) : undefined
+  const reach = gw?.documentReach ? await gw.documentReach(target.documentId).catch(() => undefined) : undefined
+  if (!reach?.complete) throw refused(tool, DOCUMENT_UNKNOWN)
+  for (const channel of reach.conversations)
+    await judgePlaceWrite(
+      ctx,
+      tool,
+      { kind: 'conversation', platform: target.platform, integrationId: bot, channel },
+      deps
     )
-  }
-  const elsewhere = writeElsewhere(ctx, name, args)
-  // Whether a post needs approval follows from its target, never from the model's judgment (§5.5).
-  if (elsewhere && name === 'sendMessage' && deps.assistantDraftPost) return { draft: true }
-  if (elsewhere) {
-    throw new Error(
-      `${name}: in assistant mode you write only to the conversation you are in, and this targets ${elsewhere}. ` +
-        'Nothing was changed. Say it in your reply here instead.'
-    )
-  }
-  if (isPlatformWrite(name, args) && deps.placeExternal?.(ctx)) {
-    throw new Error(
-      `${name}: this conversation is shared with another organization, so your reply here goes to an internal ` +
-        'member for approval and other writes here are refused. Nothing was changed. Put it in your reply instead.'
-    )
-  }
-  return undefined
+  // A document in no conversation is new to everyone but its maker, so it is judged as making something new.
+  if (reach.workspace || reach.conversations.length === 0)
+    await judgePlaceWrite(ctx, tool, { kind: 'new', platform: target.platform, integrationId: bot, users: [] }, deps)
+  return 'post'
+}
+
+/** A file shared into the current conversation passes the write rule too: an assistant-mode agent shares nothing into an external place. */
+export async function assertShareHere(ctx: SessionContext, name: string, deps: PlaceAccessDeps): Promise<void> {
+  if (name !== 'shareFile') return
+  const here: WriteTarget = { kind: 'conversation', platform: ctx.platform, channel: ctx.channel }
+  await judgePlaceWrite(ctx, name, ctx.integrationId ? { ...here, integrationId: ctx.integrationId } : here, deps)
+}
+
+/** Whether `sendMessage` is a platform post: not an agent-to-agent form, and not the parent-session reply. */
+export function isPlatformPost(args: Record<string, unknown>): boolean {
+  return absent(args.sessionId) && absent(args.toAgent)
 }

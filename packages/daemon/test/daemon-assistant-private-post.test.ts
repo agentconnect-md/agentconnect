@@ -1,4 +1,4 @@
-// An assistant-mode post from a DM to a private place the agent is enabled in (assistant-mode.md §5.5): drafted, not refused by the reach rule.
+// A post from a DM to another conversation (assistant-mode.md §5.5): it goes where the asker could post, and a shared conversation's is drafted.
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,7 +10,7 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const INT = 'int-bot-a'
 const TS = '1700000000.000100'
-const REACH_REFUSAL = /C1 is a private Slack conversation, and this session was not started there/
+const NOT_POSTED = "I can't post there from here."
 
 function scaffold(assistant: boolean): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-private-post-'))
@@ -36,13 +36,15 @@ function scaffold(assistant: boolean): string {
         {
           id: INT,
           platform: 'slack',
-          // Enabled in the asker's DM and the private channel C1; never in the private channel G1.
+          // Enabled in the asker's DM, the private channel C1 and C_SHARED, a channel shared with another organization.
           core: {
             gated: true,
             bindRules: [
               { match: { kind: 'auto' }, channel: 'D1' },
-              { match: { kind: 'auto' }, channel: 'C1' }
-            ]
+              { match: { kind: 'auto' }, channel: 'C1' },
+              { match: { kind: 'auto' }, channel: 'C_SHARED' }
+            ],
+            externalChannels: ['C_SHARED']
           },
           config: { botToken: 'xoxb', appToken: 'xapp' }
         }
@@ -95,10 +97,14 @@ async function boot(assistant: boolean, sends: Record<string, unknown>[]) {
     updateMessage: vi.fn(async () => true),
     openDirectMessage: vi.fn(async (user: string) => (user === 'U1' ? 'D1' : `D_${user}`)),
     isFullMember: vi.fn(async () => true),
+    // U1 is in the private channel C1 and the shared one, never in the private channel G1.
+    listMemberIds: vi.fn(async (id: string) =>
+      id === 'C1' || id === 'C_SHARED' ? ['U1', 'U2'] : id === 'G1' ? ['U2'] : ['U1']
+    ),
     getChannelInfo: vi.fn(async (id: string) => ({
       id,
       name: id === 'C1' ? 'leadership' : id,
-      isPrivate: id === 'C1' || id === 'G1',
+      isPrivate: id === 'C1' || id === 'G1' || id === 'C_SHARED',
       ...(id.startsWith('D') ? { isIm: true } : {})
     }))
   }
@@ -125,19 +131,11 @@ async function boot(assistant: boolean, sends: Record<string, unknown>[]) {
     const rows = (await store.assistantDrafts.db.query('SELECT id FROM assistant_draft', [])).rows as { id: string }[]
     return Promise.all(rows.map(async (row) => (await store.assistantDrafts.get(row.id)) as AssistantDraft))
   }
-  // "Always allow from here to there", as a person's earlier click would have recorded it.
-  const grant = async (channel: string) => {
-    const ledger = (daemon as any).store.assistantDrafts
-    const here = { platform: 'slack', integrationId: INT, channel: 'D1' }
-    const there = { platform: 'slack', integrationId: INT, channel }
-    await ledger.grant('bot-a', here, there, 'T_FAKE_TEAM:U1', await ledger.grantEpoch('bot-a'), Date.now())
-  }
   return {
     daemon,
     conn,
     ask,
     drafts,
-    grant,
     results,
     async close() {
       await daemon.stop()
@@ -146,85 +144,74 @@ async function boot(assistant: boolean, sends: Record<string, unknown>[]) {
   }
 }
 
-describe('an assistant-mode post from a DM to a private place', () => {
-  it('is drafted to the asker when the agent is enabled there, and posts into it once approved', async () => {
-    const h = await boot(true, [{ channel: 'C1', message: 'The launch moves to Monday.' }])
-    try {
-      await h.ask()
-      expect(h.results[0]).not.toBeInstanceOf(Error)
-      expect(h.results[0]).toMatchObject({ drafted: true, approver: 'the person who asked, in a direct message' })
-      const [draft] = await h.drafts()
-      expect(draft).toMatchObject({
-        kind: 'elsewhere',
-        status: 'awaiting_review',
-        target: { platform: 'slack', integrationId: INT, channel: 'C1', thread: null },
-        text: 'The launch moves to Monday.',
-        approver: { kind: 'member', channel: 'D1', userId: 'U1' }
-      })
-      expect(h.conn.postMessage).not.toHaveBeenCalledWith('C1', expect.anything(), undefined, expect.anything())
-      const [cardChannel, blocks] = h.conn.postBlocks.mock.calls[0] as unknown as [string, unknown[]]
-      expect(cardChannel).toBe('D1')
-      expect(JSON.stringify(blocks)).toContain('The launch moves to Monday.')
+describe('a post from a DM to another conversation, in either mode', () => {
+  for (const assistant of [false, true]) {
+    const mode = assistant ? 'in assistant mode' : 'outside assistant mode'
 
-      await (h.daemon as any).routePermissionChoice({
-        requestId: draft!.id,
-        optionId: 'approve',
-        actor: { userId: 'U1' }
-      })
-      expect(h.conn.postMessage).toHaveBeenCalledWith(
-        'C1',
-        'The launch moves to Monday.',
-        undefined,
-        expect.objectContaining({ agentAuthorId: 'bot-a' })
-      )
-      expect((await h.drafts())[0]).toMatchObject({ status: 'succeeded', messageId: 'posted-1' })
-    } finally {
-      await h.close()
-    }
-  })
+    it(`posts straight into a private channel the asker is in, with no draft (${mode})`, async () => {
+      const h = await boot(assistant, [{ channel: 'C1', message: 'The launch moves to Monday.' }])
+      try {
+        await h.ask()
+        expect(h.results[0]).not.toBeInstanceOf(Error)
+        expect(h.conn.postMessage).toHaveBeenCalledWith(
+          'C1',
+          'The launch moves to Monday.',
+          undefined,
+          expect.objectContaining({ agentAuthorId: 'bot-a' })
+        )
+        expect(await h.drafts()).toEqual([])
+        expect(h.conn.postBlocks).not.toHaveBeenCalled()
+      } finally {
+        await h.close()
+      }
+    })
 
-  it('posts directly under a person’s earlier grant for that pair of places', async () => {
-    const h = await boot(true, [{ channel: 'C1', message: 'The launch moves to Monday.' }])
-    try {
-      await h.grant('C1')
-      await h.ask()
-      expect(h.results[0]).not.toBeInstanceOf(Error)
-      expect(await h.drafts()).toEqual([])
-      expect(h.conn.postMessage).toHaveBeenCalledWith(
-        'C1',
-        'The launch moves to Monday.',
-        undefined,
-        expect.objectContaining({ agentAuthorId: 'bot-a' })
-      )
-    } finally {
-      await h.close()
-    }
-  })
+    it(`refuses a private channel the asker is not in, opaquely, and drafts nothing (${mode})`, async () => {
+      const h = await boot(assistant, [{ channel: 'G1', message: 'The launch moves to Monday.' }])
+      try {
+        await h.ask()
+        expect(h.results[0]).toBeInstanceOf(Error)
+        expect((h.results[0] as Error).message).toContain(NOT_POSTED)
+        expect(await h.drafts()).toEqual([])
+        expect(h.conn.postMessage).not.toHaveBeenCalledWith('G1', expect.anything(), undefined, expect.anything())
+      } finally {
+        await h.close()
+      }
+    })
 
-  it('is refused where the agent is not enabled, even under a grant, and nothing is drafted or posted', async () => {
-    const h = await boot(true, [{ channel: 'G1', message: 'The launch moves to Monday.' }])
-    try {
-      await h.grant('G1')
-      await h.ask()
-      expect(h.results[0]).toBeInstanceOf(Error)
-      expect((h.results[0] as Error).message).toMatch(/this agent is not enabled in that conversation/)
-      expect(await h.drafts()).toEqual([])
-      expect(h.conn.postMessage).not.toHaveBeenCalledWith('G1', expect.anything(), undefined, expect.anything())
-    } finally {
-      await h.close()
-    }
-  })
+    it(`drafts a post into a shared conversation to the asker, and posts it once approved (${mode})`, async () => {
+      const h = await boot(assistant, [{ channel: 'C_SHARED', message: 'The launch moves to Monday.' }])
+      try {
+        await h.ask()
+        expect(h.results[0]).toMatchObject({ drafted: true, approver: 'the person who asked, in a direct message' })
+        const [draft] = await h.drafts()
+        expect(draft).toMatchObject({
+          kind: 'elsewhere',
+          status: 'awaiting_review',
+          target: { platform: 'slack', integrationId: INT, channel: 'C_SHARED', thread: null },
+          targetExternal: true,
+          approver: { kind: 'member', channel: 'D1', userId: 'U1' }
+        })
+        expect(h.conn.postMessage).not.toHaveBeenCalledWith('C_SHARED', expect.anything(), undefined, expect.anything())
+        const [cardChannel, blocks] = h.conn.postBlocks.mock.calls[0] as unknown as [string, unknown[]]
+        expect(cardChannel).toBe('D1')
+        expect(JSON.stringify(blocks)).not.toContain('Always allow')
 
-  it('is still refused by the reach rule for an agent outside assistant mode', async () => {
-    const h = await boot(false, [{ channel: 'C1', message: 'The launch moves to Monday.' }])
-    try {
-      await h.ask()
-      expect(h.results[0]).toBeInstanceOf(Error)
-      expect((h.results[0] as Error).message).toMatch(REACH_REFUSAL)
-      expect(await h.drafts()).toEqual([])
-      expect(h.conn.postMessage).not.toHaveBeenCalledWith('C1', expect.anything(), undefined, expect.anything())
-    } finally {
-      await h.close()
-    }
-  })
+        await (h.daemon as any).routePermissionChoice({
+          requestId: draft!.id,
+          optionId: 'approve',
+          actor: { userId: 'U1' }
+        })
+        expect(h.conn.postMessage).toHaveBeenCalledWith(
+          'C_SHARED',
+          'The launch moves to Monday.',
+          undefined,
+          expect.objectContaining({ agentAuthorId: 'bot-a' })
+        )
+        expect((await h.drafts())[0]).toMatchObject({ status: 'succeeded', messageId: 'posted-1' })
+      } finally {
+        await h.close()
+      }
+    })
+  }
 })

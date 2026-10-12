@@ -18,7 +18,7 @@ import {
   type AssistantActivityDeps
 } from '../src/cp/assistant-activity.js'
 import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
-import { ASSISTANT_DRAFT_TTL_MS, assistantGrantId } from '../src/store/assistant-drafts.js'
+import { ASSISTANT_DRAFT_TTL_MS } from '../src/store/assistant-drafts.js'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
 import { openTestStore } from './store-support.js'
 
@@ -60,7 +60,6 @@ async function setup() {
     async (_input: Parameters<AssistantActivityDeps['decideDraft']>[0]): Promise<DraftDecision> => ({
       result: 'decided',
       status: 'succeeded',
-      granted: false,
       failure: null
     })
   )
@@ -367,7 +366,7 @@ describe('the Activity view: stopping a sub-session', () => {
   })
 })
 
-describe('the Activity view: drafts and grants', () => {
+describe('the Activity view: drafts', () => {
   it('lists the drafts awaiting approval with the exact text, the target, the approver and the expiry', async () => {
     const { s, a, b, activity } = await setup()
     await s.setDisplayName('U0ALICE', 'Alice', 1_000)
@@ -410,7 +409,6 @@ describe('the Activity view: drafts and grants', () => {
             external: false
           },
           text,
-          offerAlways: false,
           approver: {
             kind: 'member',
             integrationId: 'int-a',
@@ -439,53 +437,6 @@ describe('the Activity view: drafts and grants', () => {
       permissions: []
     })
     expect(pendingPermissions.mock.calls).toEqual([[a], [b]])
-  })
-
-  it('lists the agent’s grants with who granted them, and revokes one by its id', async () => {
-    const { s, a, b, activity } = await setup()
-    await s.setDisplayName('U0ALICE', 'Alice', 1_000)
-    const here = { platform: 'slack', integrationId: 'int-a', channel: 'D0ALICE' }
-    const there = { platform: 'slack', integrationId: 'int-a', channel: 'C0SUPPORT' }
-    const webchat = { platform: 'webchat', integrationId: null, channel: 'conv-1' }
-    await s.assistantDrafts.grant(a, here, there, 'T0EXAMPLE:U0ALICE', 0, 1_000)
-    await s.assistantDrafts.grant(a, webchat, there, null, 0, 2_000)
-    await s.assistantDrafts.grant(b, here, there, null, 0, 1_000)
-
-    const page = await read(activity, { agentId: a, operation: 'grants' })
-    expect(page).toEqual({
-      operation: 'grants',
-      grants: [
-        {
-          id: assistantGrantId(webchat, there),
-          source: webchat,
-          target: there,
-          grantedByName: null,
-          grantedAt: '1970-01-01T00:00:02.000Z'
-        },
-        {
-          id: assistantGrantId(here, there),
-          source: here,
-          target: there,
-          grantedByName: 'Alice',
-          grantedAt: '1970-01-01T00:00:01.000Z'
-        }
-      ],
-      truncated: false
-    })
-
-    const id = assistantGrantId(here, there)
-    expect(
-      await activity.write({ agentId: b, operation: 'revoke-grant', grantId: assistantGrantId(webchat, there) })
-    ).toEqual({ operation: 'revoke-grant', found: false })
-    expect(await activity.write({ agentId: a, operation: 'revoke-grant', grantId: id })).toEqual({
-      operation: 'revoke-grant',
-      found: true
-    })
-    expect(await s.assistantDrafts.granted(a, here, there)).toBe(false)
-    expect(await s.assistantDrafts.granted(b, here, there)).toBe(true)
-    expect((await read(activity, { agentId: a, operation: 'grants' })).grants.map((g) => g.id)).toEqual([
-      assistantGrantId(webchat, there)
-    ])
   })
 })
 
@@ -584,7 +535,6 @@ describe('the Activity view: one webchat conversation’s proposals', () => {
         operation: 'decide-draft',
         result: 'not-found',
         status: null,
-        granted: false,
         failure: null
       })
     }
@@ -593,36 +543,28 @@ describe('the Activity view: one webchat conversation’s proposals', () => {
 })
 
 describe('the Activity view: deciding a draft', () => {
-  it('hands the decision to the draft path, names the console decider for grant listings, and bounds the failure', async () => {
-    const { s, a, activity, decideDraft } = await setup()
-    decideDraft.mockResolvedValueOnce({
-      result: 'decided',
-      status: 'failed',
-      granted: false,
-      failure: '😀'.repeat(3_000)
-    })
+  it('hands the decision to the draft path and bounds the failure', async () => {
+    const { a, activity, decideDraft } = await setup()
+    decideDraft.mockResolvedValueOnce({ result: 'decided', status: 'failed', failure: '😀'.repeat(3_000) })
     const req = {
       agentId: a,
       operation: 'decide-draft' as const,
       draftId: 'draft-1',
-      choice: 'always' as const,
+      choice: 'approve' as const,
       decider: { userId: 'usr-2', name: 'Grace' }
     }
     const answer = await activity.write(req)
     expect(decideDraft).toHaveBeenCalledWith(req)
-    expect(answer).toMatchObject({ operation: 'decide-draft', result: 'decided', status: 'failed', granted: false })
+    expect(answer).toMatchObject({ operation: 'decide-draft', result: 'decided', status: 'failed' })
     expect(AssistantActivityWriteResult.safeParse(answer).success).toBe(true)
-    expect((await s.getDisplayNames(['usr-2'])).get('usr-2')).toBe('Grace')
 
-    decideDraft.mockResolvedValueOnce({ result: 'expired', status: 'expired', granted: false, failure: null })
+    decideDraft.mockResolvedValueOnce({ result: 'expired', status: 'expired', failure: null })
     expect(await activity.write({ ...req, choice: 'discard', decider: { userId: 'usr-3', name: null } })).toEqual({
       operation: 'decide-draft',
       result: 'expired',
       status: 'expired',
-      granted: false,
       failure: null
     })
-    expect((await s.getDisplayNames(['usr-3'])).size).toBe(0)
   })
 
   it('never reaches the draft path for an agent it does not hold or one outside assistant mode', async () => {
@@ -655,15 +597,14 @@ describe('the Activity view: who it answers', () => {
       return (err as AssistantActivityViolationError).reason
     }
     const unknown = randomUUID()
-    expect(await refusal(() => activity.read({ agentId: unknown, operation: 'grants' }))).toBe('unknown-agent')
+    expect(await refusal(() => activity.read({ agentId: unknown, operation: 'drafts', limit: 10 }))).toBe(
+      'unknown-agent'
+    )
     expect(await refusal(() => activity.write({ agentId: unknown, operation: 'delete-item', itemId: item.id }))).toBe(
       'unknown-agent'
     )
-    for (const operation of ['grants', 'drafts', 'subsessions'] as const) {
-      const req = (operation === 'grants'
-        ? { agentId: off, operation }
-        : { agentId: off, operation, limit: 10 }) as unknown as AssistantActivityReadReq
-      expect(await refusal(() => activity.read(req))).toBe('assistant-mode-off')
+    for (const operation of ['drafts', 'subsessions'] as const) {
+      expect(await refusal(() => activity.read({ agentId: off, operation, limit: 10 }))).toBe('assistant-mode-off')
     }
     expect(await refusal(() => activity.read({ agentId: off, operation: 'items', section: 'open', limit: 10 }))).toBe(
       'assistant-mode-off'

@@ -300,9 +300,11 @@ function buildSendMessageTool(platforms: string[], options: { assistantMode?: bo
       'posts inside that conversation rather than at the root. This is how a status update reaches a discussion ' +
       'you are not answering, such as the other channels the same request was crossposted to. Everyone already in ' +
       'that thread hears it. Never use it for the thread you are in now — that is your ordinary reply.\n' +
-      'On Slack, `channel` may name any PUBLIC channel (the bot joins it on first use, unless an operator switched ' +
-      'that off for this bot); a private channel is reachable only as the conversation you were invoked in, and ' +
-      'this refuses any other.\n' +
+      'A post reaches only where the people asking you could post themselves: a conversation they are in, a public ' +
+      'channel of their own workspace, or a direct message to a member of their organization; anything else is ' +
+      'refused. On Slack the bot joins a public channel on first use, unless an operator switched that off for this ' +
+      'bot. A post into a conversation shared with another organization comes back as a draft waiting for an ' +
+      'internal member’s approval: say so, and do not send it again.\n' +
       '- attachment (with `toUser` or `channel`) — forward an image this conversation received: ' +
       '`{"channel":"<channel id>","attachment":"<file name>","message":"..."}`. The name is the one in the ' +
       '`[attached: …]` marker. This is the only way a RECEIVED image reaches another platform; for an image you ' +

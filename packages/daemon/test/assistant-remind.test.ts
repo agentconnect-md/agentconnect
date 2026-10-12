@@ -246,19 +246,6 @@ describe('listReminders and cancelReminder stay in their conversation', () => {
   })
 })
 
-describe('a DM conversation marked by a per-asker read', () => {
-  it('still sets, lists and cancels reminders, which land only in that DM', async () => {
-    const widened = { mark: vi.fn(async () => true), marked: vi.fn(async () => true), placeMarked: async () => true }
-    const { call, store: s } = await tools({ deps: { assistantModeFor: () => true, widenedSession: widened } })
-    // The mark is in force: a ledger write is refused.
-    await expect(call(ALICE_DM, 'takeItem', { title: 'x', doneWhen: 'y' })).rejects.toThrow(/`!new`/)
-    const { id } = await call(ALICE_DM, 'remind', { at: at(T0 + HOUR), message: 'Check the merger memo.' })
-    expect((await call(ALICE_DM, 'listReminders', {})).reminders.map((r: any) => r.id)).toEqual([id])
-    expect(await s.assistantReminders.get(AGENT, id)).toMatchObject({ place: placeOf(ALICE_DM), targetDm: true })
-    expect(await call(ALICE_DM, 'cancelReminder', { id })).toMatchObject({ cancelled: true })
-  })
-})
-
 /** The delivery service over a real ledger, with the platform and the place faked. */
 async function delivery(options: { external?: string[]; enabled?: boolean } = {}) {
   store = await openTestStore()
