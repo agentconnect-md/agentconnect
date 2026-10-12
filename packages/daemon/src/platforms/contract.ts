@@ -47,6 +47,8 @@ export interface InteractionActor {
   isBot?: boolean
   /** Provider-observed display label. Presentation only — never an identity or auth input. */
   name?: string
+  /** The cross-app id a synced platform matches this person to a console account by, where it is not `userId` (Feishu/Lark's union_id). */
+  memberId?: string
 }
 
 /** A refused chat action, said only to whoever acted; `channel`/`thread` locate its session for a surface that answers by posting. */
@@ -416,4 +418,6 @@ export interface DaemonPlatformModule {
   readonly platformId: string
   /** Absent ⇒ the shared relay `im` path, byte for byte. */
   readonly relayIngress?: RelayIngressStrategy
+  /** The id a synced organization matches this platform's chat member to a console account by; undefined refuses the action. Absent ⇒ the actor's `userId`. */
+  chatMemberKey?(actor: InteractionActor): string | undefined
 }

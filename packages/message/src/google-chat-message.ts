@@ -133,6 +133,8 @@ export interface GoogleChatInteraction {
   message?: string
   /** The clicking user's `users/…` name. */
   user: string
+  /** The clicking user's display name, when the event carried one. Presentation only. */
+  userName?: string
   /** Full `spaces/…` resource name. */
   space: string
   /** The `spaces/…/threads/…` resource the card sits in, when the event names one. */
@@ -311,14 +313,18 @@ function eventCoordinates(parts: Parts, space: string): { message?: string; thre
 }
 
 // The acting `chat.user` of a click or a command, under the sender checks a message gets.
-function humanActor(parts: Parts, context: GoogleChatNormalizeContext): { user: string } | Skip | Invalid {
+function humanActor(
+  parts: Parts,
+  context: GoogleChatNormalizeContext
+): { user: string; userName?: string } | Skip | Invalid {
   const user = obj(parts.chat.user) ?? {}
   const userName = str(user.name)
   if (!userName || !USER_NAME.test(userName)) return { invalid: 'malformed' }
   if (user.type === 'BOT' || userName === context.appUserName)
     return { skip: { kind: 'ignored', reason: 'app_authored' } }
   if (user.type !== 'HUMAN') return { skip: { kind: 'unsupported', reason: 'sender_type' } }
-  return { user: userName }
+  const displayName = str(user.displayName)?.trim()
+  return { user: userName, ...(displayName ? { userName: displayName } : {}) }
 }
 
 // A button click: the card's message and thread pass the Space checks a message does, the clicker the sender checks.
@@ -343,6 +349,7 @@ function normalizeInteraction(
       formInputs: interactionFormInputs(parts.common),
       ...(coordinates.message ? { message: coordinates.message } : {}),
       user: actor.user,
+      ...(actor.userName ? { userName: actor.userName } : {}),
       space,
       ...(coordinates.thread ? { thread: coordinates.thread } : {}),
       isDm

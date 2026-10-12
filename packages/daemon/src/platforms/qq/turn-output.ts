@@ -136,6 +136,12 @@ export async function applyQQAction(
   record: (text: string) => Promise<void>
 ): Promise<void> {
   if (!action.text) return
+  // A core notice (an approval waiting on an Agent editor) is one message of its own, sent only while a group keeps a reply for the answer.
+  if (action.kind === 'notice') {
+    if (!action.recordOnly && state.conn?.sendCard && state.replyId)
+      await state.conn.sendCard(state.channel, state.replyId, action.text).catch(() => undefined)
+    return
+  }
   if (action.kind === 'qq-progress') {
     if (!action.recordOnly && state.conn?.sendProgress && state.replyId) {
       const sent = await state.conn.sendProgress(state.channel, state.replyId, action.text, state.outputAbort?.signal)

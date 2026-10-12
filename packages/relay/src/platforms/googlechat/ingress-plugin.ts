@@ -72,7 +72,8 @@ async function forwardElicitClick(
     function: interaction.function,
     parameters: interaction.parameters,
     formInputs: interaction.formInputs,
-    ...(interaction.message ? { message: interaction.message } : {})
+    ...(interaction.message ? { message: interaction.message } : {}),
+    ...(interaction.userName ? { userName: interaction.userName } : {})
   }
   const rd: RdMsgPlatformAction = {
     source: 'platform_action',

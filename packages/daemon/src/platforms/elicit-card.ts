@@ -85,13 +85,14 @@ export interface ElicitCardSettlement {
   readonly fallback?: string
 }
 
-/** The turn, as an elicitation-card facet sees it: where the card goes and the identity it goes
- *  out under. Deliberately narrow — a facet may not reach core turn machinery. `Pending`
- *  satisfies it structurally, the same boundary Telegram's applier takes its turn through. */
+/** The turn as a card facet sees it: where the card goes and who sends it, narrow so a facet reaches no core machinery; `Pending` satisfies it. */
 export interface ElicitCardTurn {
   conn?: unknown
   plan: {
     platform: string
+    agentId: string
+    /** The integration the turn speaks through; absent for one with none. */
+    integrationId?: string
     channel: string
     thread?: string
     statusThread: string

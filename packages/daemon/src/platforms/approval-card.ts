@@ -26,6 +26,8 @@ export interface ApprovalCardAsk {
   readonly params: RequestPermissionRequest
   /** The opaque target a relay-forwarded click carries back to this daemon; ignored where ingress is the daemon's own. */
   readonly sessionTarget?: string
+  /** The agent and integration the card is posted through, for a surface whose relay routes a click by the target it names. */
+  readonly via?: { readonly agentId: string; readonly integrationId: string }
   /** Set when a background sub-session asks: the card names and links it above the request. */
   readonly subsession?: SubsessionAsker
 }
@@ -74,8 +76,8 @@ export interface ApprovalCardFacet {
   readonly platform: string
   /** The most options one card offers whole: at most the cap every surface and the console share (#1969). */
   readonly maxOptions: number
-  /** The live card, or null when it cannot offer every option. */
-  build(ask: ApprovalCardAsk): ApprovalCardDraft | null
+  /** The live card for the connection it will be posted on, or null when it cannot offer every option there. */
+  build(ask: ApprovalCardAsk, conn?: unknown): ApprovalCardDraft | null
   /** The card once it takes no answer, its buttons gone. */
   settled(card: ApprovalCardSettlement): ApprovalCardDraft
   /** A sub-session's notice where nobody there may answer: it is waiting, and an Agent editor answers in the console. */

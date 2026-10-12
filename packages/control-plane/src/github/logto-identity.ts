@@ -161,6 +161,15 @@ export interface FeishuIdentity {
   unionId: string
 }
 
+/** One chat identity a console user linked: the platform, the tenant its member id is scoped to, and that id. */
+export interface LinkedChatIdentity {
+  platform: string
+  /** Slack's workspace (`T…`), Feishu/Lark's region. */
+  tenant: string
+  /** Slack's user id, Feishu/Lark's union_id. */
+  memberId: string
+}
+
 // Slack namespaces its non-standard OIDC claims. `sub` carries the same user id
 // as `https://slack.com/user_id`; team_name/team_domain are best-effort (Slack's
 // published claim list guarantees only the two ids).
@@ -316,6 +325,16 @@ export class LogtoIdentityService {
   /** Linked Feishu/Lark identities, keyed by the provider's cross-app union_id. */
   async feishuIdentitiesFor(sub: string): Promise<FeishuIdentity[]> {
     return feishuIdentitiesOf(await this.logtoUser(sub, this.identityTtlMs))
+  }
+
+  /** Every chat identity the user linked, as chat members are matched by: a Slack pair, and each Feishu/Lark union_id by region. */
+  async chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> {
+    const user = await this.logtoUser(sub, this.identityTtlMs)
+    const slack = slackIdentityOf(user)
+    return [
+      ...(slack ? [{ platform: 'slack', tenant: slack.teamId, memberId: slack.userId }] : []),
+      ...feishuIdentitiesOf(user).map((f) => ({ platform: 'feishu', tenant: f.region, memberId: f.unionId }))
+    ]
   }
 
   /** The linked Google identity's provider user id, which a Google Chat `users/{id}` names; `fresh` skips the cache. */

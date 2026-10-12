@@ -83,7 +83,6 @@ import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
 import { toDbPlatform } from '../persistence/platform.js'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import { buildCollabSnapshot } from './collabSnapshot.js'
-import { checksChatMembers } from './approvalRoute.js'
 import type { ConnectionRegistry, DaemonConnState } from '../ws/registry.js'
 import type { ControlSender } from './outbound.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
@@ -312,12 +311,13 @@ function externalChannelIds(channels: IntegrationChannelRecord[]): string[] {
 /** Where the projection reads whether the organization syncs a platform's session access; every projection takes one. */
 export type ChatAuthoritySource = Pick<SessionRepo, 'getExternalAccessPolicy'>
 
-/** Who may take chat actions on an integration: its agent's editors while the organization syncs that platform's session access and its members can be checked. */
+/** Who may take chat actions on an integration: its agent's editors while the organization syncs that platform's session access and its provider can match chat members. */
 export async function chatAuthorityOf(
+  platforms: CpPlatformRegistry,
   source: ChatAuthoritySource,
   i: Pick<IntegrationRecord, 'orgId' | 'platform'>
 ): Promise<ChatAuthority> {
-  if (!checksChatMembers(i.platform)) return 'participants'
+  if (!platforms.get(i.platform)?.chatMemberTenant) return 'participants'
   const policy = await source.getExternalAccessPolicy(i.orgId, i.platform)
   return policy && policy.state !== 'disabled' ? 'editors' : 'participants'
 }
@@ -361,7 +361,7 @@ export async function integrationToSpec(
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels),
-    chatAuthority: await chatAuthorityOf(chatAuthority, i)
+    chatAuthority: await chatAuthorityOf(platforms, chatAuthority, i)
   }
   return projectSpec(platforms, i, bot, core, secret)
 }
@@ -393,7 +393,7 @@ export async function httpIntegrationToSpec(
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels),
-    chatAuthority: await chatAuthorityOf(chatAuthority, i)
+    chatAuthority: await chatAuthorityOf(platforms, chatAuthority, i)
   }
   return projectSpec(platforms, i, bot, httpCore, secret)
 }

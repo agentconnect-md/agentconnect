@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentApprovalRoute } from '@agentconnect.md/protocol'
-import type { SlackIdentity } from '../github/logto-identity.js'
+import type { FeishuIdentity, LinkedChatIdentity, SlackIdentity } from '../github/logto-identity.js'
+import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
+import { buildCpPlatformRegistry } from '../platforms/registry.js'
+import { createSlackCpProvider } from '../platforms/slack/provider.js'
 import type {
   AgentRecord,
   BotRecord,
@@ -18,6 +21,8 @@ const ORG = 'org-1'
 const TEAM_A = 'T0AAA'
 const TEAM_B = 'T0BBB'
 
+const PLATFORMS = buildCpPlatformRegistry([createSlackCpProvider({}), createFeishuCpProvider({})])
+
 interface World {
   agent?: Partial<AgentRecord>
   members?: Array<Partial<OrgMemberRecord> & { userId: string }>
@@ -27,6 +32,8 @@ interface World {
   integrations?: Array<{ id: string; botId: string; platform?: string }>
   bots?: Record<string, Partial<BotRecord>>
   identityAbsent?: boolean
+  // consoleUserId → linked Feishu/Lark identities
+  feishuLinks?: Record<string, FeishuIdentity[]>
 }
 
 function deps(world: World): ApprovalRouteDeps {
@@ -64,10 +71,21 @@ function deps(world: World): ApprovalRouteDeps {
       listMembers: async () => members,
       getOidcSubject: async (userId) => `sub:${userId}`
     },
+    platforms: PLATFORMS,
     ...(world.identityAbsent
       ? {}
-      : { identity: { slackIdentityFor: async (sub) => world.links?.[sub.slice(4)] ?? null } })
+      : { identity: { chatIdentitiesFor: async (sub: string) => chatIdentities(world, sub) } })
   }
+}
+
+/** A member's linked chat identities, as the sign-in provider reports them: the world's Slack link and Feishu links. */
+function chatIdentities(world: World, sub: string): LinkedChatIdentity[] {
+  const slack = world.links?.[sub.slice(4)]
+  const feishu = world.feishuLinks?.[sub.slice(4)] ?? []
+  return [
+    ...(slack ? [{ platform: 'slack', tenant: slack.teamId, memberId: slack.userId }] : []),
+    ...feishu.map((f) => ({ platform: 'feishu', tenant: f.region, memberId: f.unionId }))
+  ]
 }
 
 function routeReq(over: Partial<AgentApprovalRoute> = {}): AgentApprovalRoute {
@@ -432,5 +450,83 @@ describe('resolveApprovalRoute — a chat member, named by no console user (chat
   it('still needs the workspace for a verify that names a console user', async () => {
     const named = routeReq({ verify: { integrationId: INTEGRATION_A, userId: 'U0EDITOR', consoleUserId: 'u-editor' } })
     expect((await resolveApprovalRoute(named, deps(world))).allowed).toBe(false)
+  })
+})
+
+describe('resolveApprovalRoute — a Feishu/Lark chat member, matched by union_id (chat-actor-v1)', () => {
+  const actorReq = (unionId: string) => routeReq({ verify: { integrationId: INTEGRATION_A, userId: unionId } })
+  const feishuWorld = (over: Partial<World> = {}): World => ({
+    integrations: [{ id: INTEGRATION_A, botId: 'bot-f', platform: 'feishu' }],
+    bots: { 'bot-f': { platform: 'feishu', feishuRegion: 'feishu', teamId: null, revokedAt: null } },
+    members: [
+      { userId: 'u-editor', displayName: 'Editor' },
+      { userId: 'u-viewer', role: 'viewer' }
+    ],
+    feishuLinks: {
+      'u-editor': [{ region: 'feishu', unionId: 'on_editor' }],
+      'u-viewer': [{ region: 'feishu', unionId: 'on_viewer' }]
+    },
+    ...over
+  })
+
+  it('allows an editor whose linked union_id is the clicker’s, naming them', async () => {
+    await expect(resolveApprovalRoute(actorReq('on_editor'), deps(feishuWorld()))).resolves.toEqual({
+      requestId: REQUEST_ID,
+      allowed: true,
+      displayName: 'Editor'
+    })
+  })
+
+  it('refuses a linked member who is not an editor, and says whether anyone is linked at all', async () => {
+    expect(await resolveApprovalRoute(actorReq('on_viewer'), deps(feishuWorld()))).toEqual({
+      requestId: REQUEST_ID,
+      allowed: false,
+      linked: true
+    })
+    expect(await resolveApprovalRoute(actorReq('on_nobody'), deps(feishuWorld()))).toEqual({
+      requestId: REQUEST_ID,
+      allowed: false,
+      linked: false
+    })
+  })
+
+  it('matches only within the bot’s region', async () => {
+    const lark = feishuWorld({ feishuLinks: { 'u-editor': [{ region: 'lark', unionId: 'on_editor' }] } })
+    expect(await resolveApprovalRoute(actorReq('on_editor'), deps(lark))).toEqual({
+      requestId: REQUEST_ID,
+      allowed: false,
+      linked: false
+    })
+    const larkBot = feishuWorld({
+      bots: { 'bot-f': { platform: 'feishu', feishuRegion: 'lark', teamId: null, revokedAt: null } },
+      feishuLinks: { 'u-editor': [{ region: 'lark', unionId: 'on_editor' }] }
+    })
+    expect((await resolveApprovalRoute(actorReq('on_editor'), deps(larkBot))).allowed).toBe(true)
+  })
+
+  it('fails closed over the editor cap, without sign-in, and for a revoked bot', async () => {
+    const editors = Array.from({ length: 201 }, (_, i) => ({ userId: `u-${i}` }))
+    const overCap = feishuWorld({
+      members: editors,
+      feishuLinks: { 'u-3': [{ region: 'feishu', unionId: 'on_three' }] }
+    })
+    expect(await resolveApprovalRoute(actorReq('on_three'), deps(overCap))).toEqual({
+      requestId: REQUEST_ID,
+      allowed: false
+    })
+    expect(
+      (await resolveApprovalRoute(actorReq('on_editor'), deps(feishuWorld({ identityAbsent: true })))).allowed
+    ).toBe(false)
+    const revoked = feishuWorld({
+      bots: { 'bot-f': { platform: 'feishu', feishuRegion: 'feishu', revokedAt: new Date() } }
+    })
+    expect((await resolveApprovalRoute(actorReq('on_editor'), deps(revoked))).allowed).toBe(false)
+  })
+
+  it('never matches a Slack link against a Feishu member, or a platform its provider cannot match', async () => {
+    const slackOnly = feishuWorld({ feishuLinks: {}, links: { 'u-editor': linked('on_editor') } })
+    expect((await resolveApprovalRoute(actorReq('on_editor'), deps(slackOnly))).allowed).toBe(false)
+    const telegram = feishuWorld({ integrations: [{ id: INTEGRATION_A, botId: 'bot-f', platform: 'telegram' }] })
+    expect((await resolveApprovalRoute(actorReq('on_editor'), deps(telegram))).allowed).toBe(false)
   })
 })

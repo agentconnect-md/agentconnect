@@ -374,17 +374,23 @@ identical interactive DMs; the two runtimes must not diverge here.
 
 ### 6.5 The in-conversation card where session access is synced
 
-Where the organization syncs Slack's session access, "What people can do in chat" admits only
-the agent's editors (product-conventions.md). The CP projects `chatAuthority: 'editors'` onto
-each Slack integration spec while the sync is on, and re-pushes the platform's integrations when
-it is switched. A click on the in-conversation card, approval elicitations and sub-session cards
-included, is then honored only when the clicker's pair is an editor's linked identity, asked with
-the anonymous verify of §4.2 and cached on the daemon (an editor two minutes, a refusal thirty
-seconds, an unanswered question never). An unreachable CP, one without `chat-actor-v1`, or an
+Where the organization syncs a platform's session access and that platform's provider can match
+chat members (`chatMemberTenant`, integration-plugin-architecture.md §9: Slack and Feishu/Lark),
+"What people can do in chat" admits only the agent's editors (product-conventions.md). The CP
+projects `chatAuthority: 'editors'` onto each such integration spec while the sync is on, and
+re-pushes the platform's integrations when it is switched. A click on the in-conversation card,
+approval elicitations and sub-session cards included, is then honored only when the clicker is an
+editor's linked identity: on Slack the pair in the bot's workspace, on Feishu/Lark the union_id
+in the bot's region, which the daemon carries as `InteractionActor.memberId` and refuses a click
+without. It is asked with the anonymous verify of §4.2 and cached on the daemon (an editor two
+minutes, a refusal thirty seconds, an unanswered question never). An unreachable CP, one without `chat-actor-v1`, or an
 agent over the editor cap refuses the click; it is told only to the clicker, with the console
 link and, for a member linked to no console account, how to link one, and the card stays live.
-Beside a permission request's card, the editor DM of §5 goes out too unless the turn owner is an
-editor, and the first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
+Beside a permission request's card, the editor DM of §5 (a Slack DM) goes out too unless the
+turn owner is an editor. It is routed over the agent's Slack integrations
+(`approvalDmIntegrations`), so on a synced Feishu/Lark integration of an agent with no Slack
+integration nobody is DMed, and the request waits for an editor in the conversation or the
+console; a Feishu/Lark approval DM is not built yet. The first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
 here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
 (§11.4); editors answer it there or in the console. A conversation shared with another
 organization takes the editor path instead of the asker's DM. A sub-session's card keeps the

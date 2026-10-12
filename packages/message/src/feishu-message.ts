@@ -236,7 +236,12 @@ export function normalizeFeishuMessage(
     platform: 'feishu',
     channel: message.chatId,
     thread: isDm ? message.chatId : (message.rootId ?? message.messageId),
-    sender: { id: message.senderUnionId, isBot: message.senderIsBot ?? false },
+    // The union_id is both the sender's id here and the id a synced organization matches them by.
+    sender: {
+      id: message.senderUnionId,
+      isBot: message.senderIsBot ?? false,
+      ...(message.senderUnionId ? { memberId: message.senderUnionId } : {})
+    },
     text: extractFeishuMessageText(message.messageType, message.content, message.mentions),
     mentionedBots: (message.mentions ?? [])
       .map((mention) => mention?.id?.open_id)

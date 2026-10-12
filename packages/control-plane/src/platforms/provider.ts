@@ -513,6 +513,9 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /** Normalize the provider realm used to fence bot-agnostic SessionMeta thread fallback. */
   threadFallbackRealm?(bot: BotRecord): string | null
 
+  /** The tenant this bot's chat members are matched to console accounts under (Slack's workspace, Feishu/Lark's region), against the identities a user linked at sign-in; null when the bot asserts none. Pure. Absent ⇒ this platform's chat members cannot be matched, so anyone in a conversation takes chat actions there even while its session access is synced. */
+  chatMemberTenant?(bot: BotRecord): string | null
+
   /** A relay's `rc/bot-tenant` for this bot (google-chat-integration.md §10.3), decided under the row lock from its current identity. Pure. Absent ⇒ every report refused. */
   learnTenant?(bot: BotRecord, current: BotIdentitySnapshot, tenantId: string): CpTenantLearning
 

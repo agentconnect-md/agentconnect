@@ -29,6 +29,8 @@ export type GoogleChatAction =
   | { kind: 'post'; text: string; recordOnly?: boolean; attributed?: boolean }
   // The turn ends silently on purpose (the no-response marker), so its placeholder is withdrawn.
   | { kind: 'gchat-silent' }
+  // A core notice (an approval waiting on an Agent editor): its own message, never part of the reply's stream.
+  | { kind: 'notice'; text: string }
 
 /** `client-` plus 48 lowercase hex chars: inside Google's alphabet and 63-char cap, and distinct per (delivery, block, segment). */
 export function googleChatClientId(deliveryId: string, block: number, segment: number): string {
@@ -381,6 +383,19 @@ export async function applyGoogleChatAction<TTurn extends GoogleChatTurn>(
     return
   }
   if (!action.text) return
+  if (action.kind === 'notice') {
+    if (!state.conn) return
+    const clientId = `client-${createHash('sha256').update(`notice\u001f${state.deliveryId}\u001f${action.text}`).digest('hex').slice(0, 48)}`
+    await state.conn
+      .createMessage({
+        space: state.space,
+        ...(state.thread ? { thread: state.thread } : {}),
+        clientId,
+        text: action.text
+      })
+      .catch((err: unknown) => host.warn(`googlechat: a notice into ${state.space} failed (${describeFailure(err)})`))
+    return
+  }
   if (action.kind === 'gchat-stream') {
     if (!state.conn) return
     state.stream ??= openStream(state, state.conn)
