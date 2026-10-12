@@ -894,6 +894,11 @@ Switching Everyone → Restricted closes every known direct row before the gated
 configuration is pushed. Switching back keeps the stored choices; the rows stay visible
 and configurable.
 
+Who sees a DM's session in the console follows the same test as "What people can do in
+chat": where the platform's permissions are synced with the console, only the person in
+the DM; elsewhere, every member of the organization, so the session never goes unseen.
+That person can still make it private once the console recognizes them.
+
 ## Group direct messages
 
 A Slack multi-person DM is a conversation between people that the agent happens to sit

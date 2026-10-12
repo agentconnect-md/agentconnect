@@ -66,6 +66,7 @@ import type { SlackSessionAccessService } from '../http/slack-session-access.js'
 import type { SessionAccessWarmer } from '../http/session-access-warmer.js'
 import type { SessionPullRequestFeedbackService } from '../codehost/session-pull-request-feedback.service.js'
 import type { CodeHostFeedbackService } from '../codehost/feedback.service.js'
+import type { CpPlatformRegistry } from '../platforms/provider.js'
 
 /** The two CP facts an `integration/revoked` report needs beyond the repositories. */
 export interface SocketBotRevocation {
@@ -113,6 +114,8 @@ export interface DaemonWsDeps {
   launch?: LaunchRepo
   /** Tells a service-account owner apart for the same classification; absent ⇒ every owner reads as a person. */
   user?: Pick<UserRepo, 'isServiceAccount'>
+  /** Tells whether a DM's platform can name its people (§4.2); absent ⇒ every DM stays private to its sender. */
+  platforms?: CpPlatformRegistry
   /** Pushes the CP-confirmed capture gate to the owning daemon (§5.1); absent ⇒
    *  daemons converge on their next register snapshot instead. */
   visibilityPush?: SessionVisibilityPushService
