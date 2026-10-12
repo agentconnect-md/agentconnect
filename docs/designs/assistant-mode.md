@@ -302,9 +302,13 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
 - **The downgrade transition (internal → external) changes the output path, not the context.**
   On a downgrade — a detected share, a guest or outside member joining — the daemon
   interrupts the place's in-flight turn, whose reply would otherwise post unapproved; from the
-  next turn on, replies are drafts. The long session and its sub-sessions keep their context:
-  what they know was never the risk, what they post is. An upgrade (external → internal) needs no
-  transition; drafts already pending stay approvable.
+  next turn on, replies are drafts. The interrupt is scoped to the place. Unlike `!stop`, it
+  raises no agent-wide hold on new messages, so the agent's other places keep their turns, their
+  queued messages and whatever arrives there. In the place itself, a message that is queued or
+  arrives while the cut turn winds down is kept and never steered into that turn; it runs after
+  it, under the new trust, so its reply is a draft. The long session and its sub-sessions keep
+  their context: what they know was never the risk, what they post is. An upgrade (external →
+  internal) needs no transition; drafts already pending stay approvable.
 - Joining a public Slack channel on demand (`joiningOnRefusal`) does not create a place: an off
   row is not a place, and no filtering of self-initiated joins is attempted.
 

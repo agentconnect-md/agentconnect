@@ -17739,7 +17739,7 @@ export class Daemon {
     }
   }
 
-  /** The downgrade transition (assistant-mode.md §5.3): cut the in-flight turn posting into the place; queued messages run next. */
+  /** The downgrade transition (assistant-mode.md §5.3): cut the place's in-flight turns and nothing else; what waits or arrives there runs next, as external. */
   private async interruptPlaceTurns(integrationId: string, channel: string): Promise<void> {
     // Only a turn delivering into the place is cut; a headless run posts nothing there.
     const inPlace = [...this.activeGateEntries].filter(
@@ -17749,13 +17749,15 @@ export class Daemon {
         !entry.msg.headless &&
         assistantModeOn(this.agents.get(entry.agentId))
     )
-    for (const [key, entry] of inPlace) {
-      await this.interruptTurn(entry.agentId, key, 'place turned external', undefined, {
-        integrationId,
-        preserveQueued: true,
-        allowSameKeyAdmissions: true
-      })
-    }
+    await Promise.all(
+      inPlace.map(([key, entry]) =>
+        this.interruptTurn(entry.agentId, key, 'place turned external', undefined, {
+          integrationId,
+          preserveQueued: true,
+          keepAdmission: true
+        })
+      )
+    )
   }
 
   // ── §7.3 force-cancel backstop ──────────────────────────────────────────────
@@ -17772,6 +17774,8 @@ export class Daemon {
       integrationId?: string
       allowSameKeyAdmissions?: boolean
       allowReviewLane?: string
+      /** Raise no admission gate: the agent keeps taking messages everywhere, and this key's followers wait on its serial gate. */
+      keepAdmission?: boolean
       /** Duty handoff: stop running the work here, but leave its durable rows for the successor. */
       handoffInbox?: boolean
       /** The human who raised it, when one did — recorded in the transcript. */
@@ -17793,7 +17797,7 @@ export class Daemon {
         (activeEntry !== undefined && this.activeGateEntries.get(key) === activeEntry))
     // A scoped removal must never cancel a retained head or a successor that reuses its ACP id.
     if (opts.only && !exact()) return
-    if (opts.integrationId === undefined || activeEntry) {
+    if (!opts.keepAdmission && (opts.integrationId === undefined || activeEntry)) {
       this.beginSafetyDrain(
         agentId,
         reason,

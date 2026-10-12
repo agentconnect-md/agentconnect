@@ -174,7 +174,7 @@ describe('the daemon downgrade transition', () => {
     expect(daemon.interruptTurn).toHaveBeenCalledWith('bot-a', 'a-c1', 'place turned external', undefined, {
       integrationId: 'int-a',
       preserveQueued: true,
-      allowSameKeyAdmissions: true
+      keepAdmission: true
     })
     expect(daemon.cpClient.emitIntegrationChannels).toHaveBeenCalledTimes(1)
     expect(daemon.cpClient.emitIntegrationChannels).toHaveBeenCalledWith({
