@@ -1054,8 +1054,8 @@ sub-session. An agent whose daemon cannot list one conversation's sub-sessions s
 it.
 
 A person can also ask the conversation that opened a sub-session to stop it, on any platform:
-"stop the one writing the release notes". The agent first confirms in one sentence which one is
-meant, then stops it the way the console's Stop does, with the same answer: stopped, or nothing
+"stop the one writing the release notes". The agent asks which one is meant only when that is not
+clear, then stops it the way the console's Stop does, with the same answer: stopped, or nothing
 was running, and that a process it started in the background may keep running. Its transcript
 names the person who asked. Only that conversation can stop it, only on a turn a person there
 started, and only for someone `!stop` accepts there; in webchat, anyone who may continue the
