@@ -229,6 +229,14 @@ export interface PlatformListPage {
   nextCursor?: string
 }
 
+/** Who a hosted document (a canvas or a list) reaches: the conversations it is in, and whether the whole workspace may open it. */
+export interface PlatformDocumentReach {
+  conversations: string[]
+  workspace: boolean
+  /** False when the platform said it listed only some of them. */
+  complete: boolean
+}
+
 /** A value to write into one column, in the provider's type-keyed shape. */
 export interface PlatformListFieldWrite {
   columnId: string
@@ -399,6 +407,8 @@ export interface PlatformConnection {
   readCanvas?(canvasId: string): Promise<PlatformCanvas>
   /** Apply edits to one. */
   updateCanvas?(canvasId: string, edits: PlatformCanvasEdit[]): Promise<void>
+  /** Who a canvas or a list reaches, so a write to it is judged by the conversations it is in. */
+  documentReach?(documentId: string): Promise<PlatformDocumentReach>
 }
 
 /** §7.4 relay-ingress strategy: how one platform shapes a relay-delivered `im` once core's gates have passed it. */

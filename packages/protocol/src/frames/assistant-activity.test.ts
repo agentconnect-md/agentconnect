@@ -44,7 +44,6 @@ describe('assistant/activity frames', () => {
     expect(decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'item', itemId: 'item-1' })).toBe(true)
     expect(decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'subsessions', limit: 50 })).toBe(true)
     expect(decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'drafts', limit: 50 })).toBe(true)
-    expect(decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'grants' })).toBe(true)
 
     expect(decodes('assistant/activity/read/result', { operation: 'items', items: [item], truncated: false })).toBe(
       true
@@ -91,31 +90,13 @@ describe('assistant/activity frames', () => {
         truncated: false
       })
     ).toBe(true)
-    expect(
-      decodes('assistant/activity/read/result', {
-        operation: 'grants',
-        grants: [
-          {
-            id: 'a'.repeat(32),
-            source: { platform: 'webchat', integrationId: null, channel: 'conv-1' },
-            target: { platform: 'slack', integrationId: 'int-1', channel: 'C0SUPPORT' },
-            grantedByName: null,
-            grantedAt: '2026-10-09T09:00:00.000Z'
-          }
-        ],
-        truncated: false
-      })
-    ).toBe(true)
   })
 
-  it('round-trips both edits and their answer', () => {
+  it('round-trips an item deletion and its answer', () => {
     expect(decodes('assistant/activity/write', { agentId: AGENT_ID, operation: 'delete-item', itemId: 'item-1' })).toBe(
       true
     )
-    expect(
-      decodes('assistant/activity/write', { agentId: AGENT_ID, operation: 'revoke-grant', grantId: 'b'.repeat(32) })
-    ).toBe(true)
-    expect(decodes('assistant/activity/write/result', { operation: 'revoke-grant', found: false })).toBe(true)
+    expect(decodes('assistant/activity/write/result', { operation: 'delete-item', found: false })).toBe(true)
   })
 
   it('round-trips one conversation’s sub-session page and a stop', () => {
@@ -158,41 +139,18 @@ describe('assistant/activity frames', () => {
       agentId: AGENT_ID,
       operation: 'decide-draft',
       draftId: 'draft-1',
-      choice: 'always',
+      choice: 'approve',
       decider: { userId: 'usr-1', name: 'Grace' }
     }
     expect(decodes('assistant/activity/write', decide)).toBe(true)
     expect(decodes('assistant/activity/write', { ...decide, decider: { userId: 'usr-1', name: null } })).toBe(true)
-    expect(decodes('assistant/activity/write', { ...decide, choice: 'allow_once' })).toBe(false)
+    expect(decodes('assistant/activity/write', { ...decide, choice: 'always' })).toBe(false)
     expect(decodes('assistant/activity/write', { ...decide, decider: undefined })).toBe(false)
-    const outcome = { operation: 'decide-draft', result: 'decided', status: 'succeeded', granted: true, failure: null }
+    const outcome = { operation: 'decide-draft', result: 'decided', status: 'succeeded', failure: null }
     expect(decodes('assistant/activity/write/result', outcome)).toBe(true)
-    expect(
-      decodes('assistant/activity/write/result', { ...outcome, result: 'not-found', status: null, granted: false })
-    ).toBe(true)
+    expect(decodes('assistant/activity/write/result', { ...outcome, result: 'not-found', status: null })).toBe(true)
     expect(decodes('assistant/activity/write/result', { ...outcome, result: 'maybe' })).toBe(false)
     expect(decodes('assistant/activity/write/result', { ...outcome, failure: 'x'.repeat(2_001) })).toBe(false)
-
-    const draft = {
-      id: 'draft-1',
-      kind: 'elsewhere',
-      target: {
-        platform: 'slack',
-        integrationId: 'int-1',
-        channel: 'C0',
-        thread: null,
-        name: null,
-        dm: false,
-        external: false
-      },
-      text: 'Hi.',
-      approver: null,
-      createdAt: '2026-10-09T09:00:00.000Z',
-      expiresAt: '2026-10-10T09:00:00.000Z'
-    }
-    const parsed = AssistantActivityDraft.parse(draft)
-    expect(parsed.offerAlways).toBe(false)
-    expect(AssistantActivityDraft.parse({ ...draft, offerAlways: true }).offerAlways).toBe(true)
   })
 
   it('round-trips a proposal beside the drafts, and a decision that leaves it waiting', () => {
@@ -233,7 +191,6 @@ describe('assistant/activity frames', () => {
         operation: 'decide-draft',
         result: 'busy',
         status: 'awaiting_review',
-        granted: false,
         failure: 'The agent already has 3 sub-sessions running.'
       })
     ).toBe(true)
@@ -324,10 +281,7 @@ describe('assistant/activity frames', () => {
     expect(
       decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'items', section: 'all', limit: 5 })
     ).toBe(false)
-    expect(decodes('assistant/activity/read', { agentId: 'not-a-uuid', operation: 'grants' })).toBe(false)
-    expect(decodes('assistant/activity/write', { agentId: AGENT_ID, operation: 'revoke-grant', grantId: 'xyz' })).toBe(
-      false
-    )
+    expect(decodes('assistant/activity/read', { agentId: 'not-a-uuid', operation: 'drafts', limit: 5 })).toBe(false)
     expect(decodes('assistant/activity/write', { agentId: AGENT_ID, operation: 'drop-everything' })).toBe(false)
     expect(
       decodes('assistant/activity/read/result', {

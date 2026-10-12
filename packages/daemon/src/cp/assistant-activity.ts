@@ -1,12 +1,10 @@
 // The console's Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11), answered from this daemon's store.
 import {
-  ASSISTANT_ACTIVITY_GRANTS_MAX,
   ASSISTANT_ACTIVITY_OBSERVATIONS_MAX,
   ASSISTANT_ACTIVITY_PLACES_MAX,
   ASSISTANT_ACTIVITY_RESULT_BYTES,
   type AssistantActivityDraft,
   type AssistantActivityErrorReason,
-  type AssistantActivityGrant,
   type AssistantActivityItem,
   type AssistantActivityPermission,
   type AssistantActivityPlace,
@@ -45,12 +43,11 @@ export class AssistantActivityViolationError extends Error {
 /** What the view reads and edits; every query is scoped by the agent the request names. */
 export interface AssistantActivityStore {
   assistantItems: Pick<AssistantItemLedger, 'list' | 'get' | 'delete'>
-  assistantDrafts: Pick<AssistantDraftLedger, 'listPending' | 'listGrants' | 'revokeGrant'>
+  assistantDrafts: Pick<AssistantDraftLedger, 'listPending'>
   assistantSubsessions: Pick<AssistantSubsessionIndex, 'list' | 'listForParent' | 'get'>
   getSession(key: string): Promise<SessionRecord | undefined>
   getSessionByOutwardId(sessionId: string, agentId?: string): Promise<SessionRecord | undefined>
   getDisplayNames(ids: string[]): Promise<Map<string, string>>
-  setDisplayName(id: string, name: string, updatedAt: number): Promise<void>
 }
 
 export interface AssistantActivityDeps {
@@ -189,19 +186,6 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
             ...(permissions ? { permissions } : {})
           }
         }
-        case 'grants': {
-          const rows = await store.assistantDrafts.listGrants(req.agentId, ASSISTANT_ACTIVITY_GRANTS_MAX + 1)
-          const page = rows.slice(0, ASSISTANT_ACTIVITY_GRANTS_MAX)
-          const names = await store.getDisplayNames(page.flatMap((g) => (g.grantedBy ? [deciderId(g.grantedBy)] : [])))
-          const grants: AssistantActivityGrant[] = page.map((grant) => ({
-            id: grant.id,
-            source: grant.source,
-            target: grant.target,
-            grantedByName: grant.grantedBy ? clip(names.get(deciderId(grant.grantedBy)) ?? null) : null,
-            grantedAt: iso(grant.grantedAt)
-          }))
-          return { operation: 'grants', grants, truncated: rows.length > ASSISTANT_ACTIVITY_GRANTS_MAX }
-        }
       }
     },
 
@@ -211,20 +195,12 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
       switch (req.operation) {
         case 'delete-item':
           return { operation: 'delete-item', found: await store.assistantItems.delete(req.agentId, req.itemId) }
-        case 'revoke-grant':
-          return {
-            operation: 'revoke-grant',
-            found: await store.assistantDrafts.revokeGrant(req.agentId, req.grantId)
-          }
         case 'decide-draft': {
           // Bound to one webchat conversation: a session that is not one has no proposal to decide.
           const { conversation: bound, ...decide } = req
           const conversation = bound ? await webchatConversation(store, req.agentId, bound.sessionId) : undefined
           if (bound && !conversation)
-            return { operation: 'decide-draft', result: 'not-found', status: null, granted: false, failure: null }
-          const { userId, name } = req.decider
-          // Names the decider wherever a grant they made is listed; best effort, like every name-cache write.
-          if (name) await store.setDisplayName(userId, name, deps.now()).catch(() => undefined)
+            return { operation: 'decide-draft', result: 'not-found', status: null, failure: null }
           const decision = await deps.decideDraft({ ...decide, ...(conversation ? { conversation } : {}) })
           return { operation: 'decide-draft', ...decision, failure: clipText(decision.failure, 1_000) }
         }
@@ -325,7 +301,6 @@ function draftOf(
       external: draft.targetExternal
     },
     text: draft.text,
-    offerAlways: draft.offerAlways,
     approver: approver
       ? {
           // A proposal carded in its own place is approved by people there, which the wire names as a conversation.
@@ -352,9 +327,6 @@ function draftOf(
     expiresAt: iso(draft.expiresAt)
   }
 }
-
-/** A decider is `<workspace>:<user>` where the platform has workspaces, or `user:<id>` from the console; names are cached by the id. */
-const deciderId = (by: string): string => by.slice(by.lastIndexOf(':') + 1)
 
 /** Keeps entries in order while the answer stays inside the wire budget. */
 function withinBudget<T>(entries: readonly T[]): { kept: T[]; trimmed: boolean } {

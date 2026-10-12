@@ -460,8 +460,9 @@ told `missing_scope` rather than handed a silent success.
 The optional facets an AGENT can reach are declared per platform in
 `platforms/read-ports.ts`, the same pre-connection registry that decides which attachment tool
 to inject: `channelHistory`, `threadHistory`, `reactions`, `messageDelete`, `conversationCreate`,
-`publicMessageSearch`, `scheduledMessages`, `canvas`, `bookmarks`, `lists`, one that gates where `sendMessage`
-REACHES rather than a tool: `publicChannelReach` (daemon-detailed-design.md §9.4 "Channel reach"), and three
+`publicMessageSearch`, `scheduledMessages`, `canvas`, `bookmarks`, `lists`, one that gates where the agent-to-agent
+channel form of `sendMessage` REACHES rather than a tool: `publicChannelReach` (daemon-detailed-design.md §9.4 "Channel
+reach"), and three
 the read rule asks of a source's own platform: `channelPrivacy` (its `isPrivate` confirms a public channel),
 `authoritativeMembers` (`listMemberIds` names every member) and `workspaceMembers` (`isFullMember` tells a guest
 apart; daemon-detailed-design.md §9.4 "The read rule"). A declaration gates tool INJECTION

@@ -714,7 +714,7 @@ export interface AssistantDraftCardView {
 }
 
 /** The draft card's buttons; values ride `ac_perm` so both Slack transports already route the click. */
-export const ASSISTANT_DRAFT_CHOICES = { approve: 'approve', discard: 'discard', always: 'always' } as const
+export const ASSISTANT_DRAFT_CHOICES = { approve: 'approve', discard: 'discard' } as const
 export type AssistantDraftChoice = keyof typeof ASSISTANT_DRAFT_CHOICES
 
 /** How much of a draft one card shows; the markdown block holds 12,000 characters. */
@@ -802,11 +802,11 @@ function proposalBody(view: AssistantDraftCardView): unknown[] {
   return blocks
 }
 
-/** A pending draft: the sentence, the exact text, and approve / discard (plus "always allow" for another place); a proposal offers approve / deny. */
+/** A pending draft: the sentence, the exact text, and approve / discard; a proposal offers approve / deny. */
 export function buildAssistantDraftCard(
   draftId: string,
   view: AssistantDraftCardView,
-  options: { offerAlways: boolean; routingTarget?: string; notice?: string }
+  options: { routingTarget?: string; notice?: string }
 ): unknown[] {
   const button = (choice: AssistantDraftChoice, index: number, text: string, style?: 'primary' | 'danger') => ({
     type: 'button',
@@ -818,8 +818,7 @@ export function buildAssistantDraftCard(
   const task = view.kind === 'task'
   const elements = [
     button('approve', 0, 'Approve', 'primary'),
-    button('discard', 1, task ? 'Deny' : 'Discard', 'danger'),
-    ...(options.offerAlways && !task ? [button('always', 2, 'Always allow from here to there')] : [])
+    button('discard', 1, task ? 'Deny' : 'Discard', 'danger')
   ]
   return [
     { type: 'section', text: { type: 'mrkdwn', text: draftSentence(view) } },

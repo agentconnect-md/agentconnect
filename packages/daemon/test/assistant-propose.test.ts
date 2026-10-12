@@ -190,7 +190,7 @@ async function boot(root: string) {
   }
   const deps = { ...d.mcp.deps, canRun: () => true }
   const activity = buildCpClientDeps(d.cpClientDepsHost(root, 'wss://cp.example.test', () => {})).assistantActivity!
-  const decide = (draftId: string, choice: 'approve' | 'discard' | 'always' = 'approve') =>
+  const decide = (draftId: string, choice: 'approve' | 'discard' = 'approve') =>
     activity.write({
       agentId: 'bot-a',
       operation: 'decide-draft',
@@ -318,7 +318,6 @@ describe('a patrol proposes', () => {
       proposal: { sentence: SENTENCE, why: 'The check found a merge conflict.', itemId: item.id, itemVersion: 1 },
       source: { sessionKey: patrolKey, place: false },
       approver: { kind: 'place', integrationId: INT_A, channel: 'C1' },
-      offerAlways: false,
       cardTs: 'card-1'
     })
     expect(record.hash).toBe(assistantTaskHash('bot-a', item.id, 1, TASK))
@@ -363,7 +362,6 @@ describe('a patrol proposes', () => {
         id: record.id,
         kind: 'task',
         text: TASK,
-        offerAlways: false,
         target: expect.objectContaining({ integrationId: INT_A, channel: 'C1', name: 'general' }),
         proposal: {
           sentence: SENTENCE,
@@ -894,7 +892,7 @@ describe('the user’s sub-session limit', () => {
     })
 
     const refused = await h.decide(record.id)
-    expect(refused).toMatchObject({ result: 'busy', status: 'awaiting_review', granted: false })
+    expect(refused).toMatchObject({ result: 'busy', status: 'awaiting_review' })
     expect(refused.failure).toContain('already has 1 sub-sessions running')
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({
       status: 'awaiting_review',

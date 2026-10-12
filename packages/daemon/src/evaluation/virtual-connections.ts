@@ -595,6 +595,10 @@ export class VirtualSlackConnection implements PlatformConnection {
     this.unmodelled('canvases')
   }
 
+  async documentReach(): Promise<never> {
+    this.unmodelled('canvases')
+  }
+
   /** The Arena world hosts no files, so a forward is recorded for the ONE part of it a
    *  participant can see: the caption, as an ordinary reply. It reports delivery but no
    *  `messageId`, because the real Slack share answers with the file and no message ts — a

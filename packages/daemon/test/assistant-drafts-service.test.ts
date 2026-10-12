@@ -80,7 +80,6 @@ function fakePort() {
 async function world(
   over: {
     policy?: Partial<AssistantModePolicy>
-    enabled?: string[]
     external?: string[]
     post?: MessageGateway['postMessage']
     route?: (req: Omit<AgentApprovalRoute, 'agentId'>) => Promise<unknown>
@@ -93,7 +92,6 @@ async function world(
   const port = fakePort()
   const gateway = { postMessage: vi.fn(over.post ?? (async () => '1700000000.000200')) }
   let now = 10_000
-  const enabled = new Set(over.enabled ?? ['D0ALICE', 'C0SUPPORT', 'C0SHARED', 'D0BOB'])
   const external = new Set(over.external ?? ['C0SHARED'])
   const route = vi.fn(
     over.route ??
@@ -131,7 +129,6 @@ async function world(
     log: { info: vi.fn(), warn: vi.fn() },
     agent: () => ({ name: 'Butler', assistantMode: policy, integrations: [{ id: INT }] }),
     gatewayFor: (id) => (id === INT ? (gateway as unknown as MessageGateway) : undefined),
-    placeEnabled: (_agent, id, channel) => id === INT && enabled.has(channel),
     placeExternal: (_agent, _id, channel) => external.has(channel),
     cardPortFor: (id) => (id === INT ? port : undefined),
     approvalRoute: async (_agent, req) => (await route(req)) as never,
@@ -146,7 +143,7 @@ async function world(
   const click = (requestId: string, optionId: string, userId = 'U0ALICE') =>
     drafts.handleChoice({ requestId, optionId, actor: { userId, name: userId.toLowerCase() } })
   // An editor in the console; the control plane has already checked they may edit the agent.
-  const decide = (draftId: string, choice: 'approve' | 'always' | 'discard', agentId = AGENT) =>
+  const decide = (draftId: string, choice: 'approve' | 'discard', agentId = AGENT) =>
     drafts.decideFromConsole({ agentId, draftId, choice, decider: { userId: 'usr-editor', name: 'Grace' } })
   const only = async () => {
     const rows = (await s.assistantDrafts['db'].query('SELECT id FROM assistant_draft', [])).rows as { id: string }[]
@@ -163,7 +160,6 @@ async function world(
     decide,
     only,
     advance: (ms: number) => (now += ms),
-    enabled,
     askable,
     startTask,
     describeDestination,
@@ -182,11 +178,6 @@ async function world(
         source: PATROL,
         ...(place ? { place } : {})
       }),
-    /** Switch assistant mode as the daemon does: the live policy, then a new grant generation. */
-    switchMode: async (on: boolean) => {
-      policy.enabled = on
-      await s.assistantDrafts.resetGrants(AGENT)
-    },
     // `null` stands for no asker: an explicit undefined would take the default.
     post: (post: InterceptedPost = TO_SUPPORT, source: AssistantDraftSource = HERE, asker: DraftAsker | null = ALICE) =>
       drafts.interceptPost(AGENT, source, post, asker ?? undefined)
@@ -208,7 +199,6 @@ describe('a post to another place', () => {
     expect(card).toMatchObject({
       agentId: AGENT,
       sessionKey: 'key-dm',
-      offerAlways: true,
       view: {
         agentName: 'Butler',
         kind: 'elsewhere',
@@ -220,11 +210,12 @@ describe('a post to another place', () => {
     expect(await w.only()).toMatchObject({ status: 'awaiting_review', cardTs: 'card-1' })
   })
 
-  it('stays refused when this agent is not enabled at the target', async () => {
+  it('is drafted, and posted once approved, whether or not the agent is enabled at the target', async () => {
     const w = await world()
-    await expect(w.post({ ...TO_SUPPORT, channel: 'C0RANDOM' })).rejects.toThrow(/not enabled in that conversation/)
-    expect(w.port.postCard).not.toHaveBeenCalled()
-    expect(w.gateway.postMessage).not.toHaveBeenCalled()
+    await w.post({ ...TO_SUPPORT, channel: 'C0RANDOM' })
+    expect(w.port.postCard).toHaveBeenCalledTimes(1)
+    await w.click((await w.only()).id, 'approve')
+    expect(w.gateway.postMessage).toHaveBeenCalledWith('C0RANDOM', 'The release is out.', undefined, expect.any(Object))
   })
 
   it('posts the text unchanged, once, on approval', async () => {
@@ -304,16 +295,6 @@ describe('a post to another place', () => {
     expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
   })
 
-  it('fails without posting when the target is no longer enabled', async () => {
-    const w = await world()
-    await w.post()
-    const draft = await w.only()
-    w.enabled.delete('C0SUPPORT')
-    await w.click(draft.id, 'approve')
-    expect(await w.only()).toMatchObject({ status: 'failed', failure: expect.stringMatching(/no longer enabled/) })
-    expect(w.gateway.postMessage).not.toHaveBeenCalled()
-  })
-
   it('ignores a click from anyone the card was not addressed to', async () => {
     const w = await world()
     await w.post()
@@ -389,92 +370,36 @@ describe('the approver', () => {
     expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
   })
 
+  it('outside assistant mode, is the asker only when a full member, and the post is refused otherwise', async () => {
+    const w = await world({
+      policy: { enabled: false, fallbackConversation: { integrationId: INT, channelId: 'C0X' } }
+    })
+    w.port.isFullMember.mockImplementation(async (user: string) => user === 'U0ALICE')
+    const toShared = { ...TO_SUPPORT, channel: 'C0SHARED' }
+    expect(await w.post(toShared, HERE, { integrationId: INT, userId: 'U0ALICE', trusted: false })).toMatchObject({
+      handled: true,
+      result: { drafted: true, approver: 'the person who asked, in a direct message' }
+    })
+    expect(w.port.postCard.mock.calls[0]![0]).toBe('D_U0ALICE')
+    expect((await w.only()).approver).toMatchObject({ kind: 'member', userId: 'U0ALICE' })
+    // No responsible user or fallback conversation stands in: a guest's or a run's post is refused, and no record kept.
+    for (const asker of [{ integrationId: INT, userId: 'U0GUEST', trusted: false }, null]) {
+      await expect(w.post(toShared, asker ? HERE : PLACELESS, asker)).rejects.toThrow(
+        /needs the approval of an internal member/
+      )
+    }
+    expect(w.route).not.toHaveBeenCalledWith(expect.objectContaining({ consoleUserId: RESPONSIBLE }))
+    expect(w.port.postCard).toHaveBeenCalledTimes(1)
+    await w.click((await w.only()).id, 'approve')
+    expect(w.gateway.postMessage).toHaveBeenCalledWith('C0SHARED', 'The release is out.', undefined, expect.any(Object))
+  })
+
   it('is nobody when nothing can be reached: the draft waits, and the model is told nothing was sent', async () => {
     const w = await world({ route: async (req) => ({ requestId: req.requestId }) })
     const result = await w.post(TO_SUPPORT, PLACELESS, null)
     expect(result).toMatchObject({ handled: true, result: { drafted: true, approver: null } })
     expect(w.port.postCard).not.toHaveBeenCalled()
     expect((await w.only()).approver).toBeNull()
-  })
-})
-
-describe('"always allow from here to there"', () => {
-  it('lets a later post from here to there go out without a card, and nothing else', async () => {
-    const w = await world()
-    await w.post()
-    await w.click((await w.only()).id, 'always')
-    expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
-    expect(w.port.updateCard.mock.calls.at(-1)![2]).toMatchObject({
-      outcome: expect.stringContaining('without asking')
-    })
-    expect(await w.post()).toEqual({ handled: false })
-    expect(w.port.postCard).toHaveBeenCalledTimes(1)
-
-    // Another source place, or another target, still asks.
-    const fromBob = await w.post(TO_SUPPORT, { ...HERE, channel: 'D0BOB', sessionKey: 'key-bob' })
-    expect(fromBob).toMatchObject({ handled: true })
-    const elsewhere = await w.post({ ...TO_SUPPORT, channel: 'D0BOB', directMessage: true })
-    expect(elsewhere).toMatchObject({ handled: true })
-
-    // Switching assistant mode off ends the grant.
-    await w.switchMode(false)
-    await w.switchMode(true)
-    expect(await w.post()).toMatchObject({ handled: true })
-  })
-
-  it('is never offered, nor honored, for an external target or a placeless session', async () => {
-    const w = await world()
-    await w.post({ ...TO_SUPPORT, channel: 'C0SHARED' })
-    expect(w.port.postCard.mock.calls[0]![1]).toMatchObject({
-      offerAlways: false,
-      view: { target: { external: true } }
-    })
-    const external = (await w.store.assistantDrafts['db'].query('SELECT id FROM assistant_draft', [])).rows[0] as {
-      id: string
-    }
-    await w.click(external.id, 'always')
-    expect(await w.store.assistantDrafts.granted(AGENT, HERE, { ...HERE, channel: 'C0SHARED' })).toBe(false)
-
-    await w.post(TO_SUPPORT, PLACELESS, ALICE)
-    expect(w.port.postCard.mock.calls[1]![1]).toMatchObject({ offerAlways: false })
-  })
-})
-
-describe('"always allow" across a mode switch', () => {
-  it('grants nothing from a card offered before assistant mode was switched off, even once it is on again', async () => {
-    const w = await world()
-    await w.post()
-    const old = await w.only()
-    await w.switchMode(false)
-    await w.click(old.id, 'always')
-    // The click still approves this one post, but it grants nothing and says nothing about a grant.
-    expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
-    expect(await w.store.assistantDrafts.granted(AGENT, HERE, { ...HERE, channel: 'C0SUPPORT' })).toBe(false)
-    expect(w.port.updateCard.mock.calls.at(-1)![2]).toMatchObject({
-      outcome: expect.not.stringContaining('without asking')
-    })
-    await w.switchMode(true)
-    expect(await w.post()).toMatchObject({ handled: true })
-  })
-
-  it('grants nothing when a switch lands between the card and the click, whatever the live view still says', async () => {
-    const w = await world()
-    await w.post()
-    const card = await w.only()
-    // The store moved to a new generation while this daemon still sees the mode on: the race a disable can win.
-    await w.store.assistantDrafts.resetGrants(AGENT)
-    await w.click(card.id, 'always')
-    expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
-    expect(await w.post()).toMatchObject({ handled: true })
-  })
-
-  it('grants from a card of the current generation', async () => {
-    const w = await world()
-    await w.switchMode(false)
-    await w.switchMode(true)
-    await w.post()
-    await w.click((await w.only()).id, 'always')
-    expect(await w.post()).toEqual({ handled: false })
   })
 })
 
@@ -544,7 +469,7 @@ describe('after an approved post', () => {
 })
 
 describe('an external place reply', () => {
-  it('drafts the reply for the same thread, never offering "always allow"', async () => {
+  it('drafts the reply for the same thread', async () => {
     const w = await world()
     w.port.isFullMember.mockResolvedValue(true)
     const draft = await w.drafts.draftReply({
@@ -555,8 +480,8 @@ describe('an external place reply', () => {
       source: { ...HERE, channel: 'C0SHARED', sessionKey: 'key-shared' },
       asker: { integrationId: INT, userId: 'U0ALICE', trusted: false }
     })
-    expect(draft).toMatchObject({ kind: 'reply', targetExternal: true, offerAlways: false, status: 'awaiting_review' })
-    expect(w.port.postCard.mock.calls[0]![1]).toMatchObject({ view: { kind: 'reply' }, offerAlways: false })
+    expect(draft).toMatchObject({ kind: 'reply', targetExternal: true, status: 'awaiting_review' })
+    expect(w.port.postCard.mock.calls[0]![1]).toMatchObject({ view: { kind: 'reply' } })
     await w.click(draft.id, 'approve')
     expect(w.gateway.postMessage).toHaveBeenCalledWith(
       'C0SHARED',
@@ -575,7 +500,6 @@ describe('a decision from the console', () => {
     expect(await w.decide(draft.id, 'approve')).toEqual({
       result: 'decided',
       status: 'succeeded',
-      granted: false,
       failure: null
     })
     expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
@@ -604,29 +528,6 @@ describe('a decision from the console', () => {
     expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
   })
 
-  it('grants "always allow" only where the card offered it, under the live mode and the card’s generation', async () => {
-    const w = await world()
-    await w.post()
-    expect(await w.decide((await w.only()).id, 'always')).toMatchObject({ status: 'succeeded', granted: true })
-    expect(w.port.updateCard.mock.calls.at(-1)![2]).toMatchObject({
-      outcome: expect.stringContaining('without asking')
-    })
-    expect(await w.post()).toEqual({ handled: false })
-    expect((await w.store.assistantDrafts.listGrants(AGENT, 10))[0]).toMatchObject({ grantedBy: 'user:usr-editor' })
-
-    await w.store.assistantDrafts.deleteForAgent(AGENT)
-    await w.post({ ...TO_SUPPORT, channel: 'C0SHARED' })
-    expect(await w.decide((await w.only()).id, 'always')).toMatchObject({ status: 'succeeded', granted: false })
-
-    await w.store.assistantDrafts.deleteForAgent(AGENT)
-    await w.post()
-    const old = await w.only()
-    await w.switchMode(false)
-    await w.switchMode(true)
-    expect(await w.decide(old.id, 'always')).toMatchObject({ status: 'succeeded', granted: false })
-    expect(await w.post()).toMatchObject({ handled: true })
-  })
-
   it('discards: nothing is posted and the card says who discarded it', async () => {
     const w = await world()
     await w.post()
@@ -634,7 +535,6 @@ describe('a decision from the console', () => {
     expect(await w.decide(draft.id, 'discard')).toEqual({
       result: 'decided',
       status: 'denied',
-      granted: false,
       failure: null
     })
     expect(w.port.updateCard.mock.calls.at(-1)![2]).toMatchObject({
@@ -652,7 +552,6 @@ describe('a decision from the console', () => {
     expect(await w.decide(draft.id, 'discard')).toEqual({
       result: 'expired',
       status: 'expired',
-      granted: false,
       failure: null
     })
     expect(w.port.updateCard.mock.calls.at(-1)![2]).toMatchObject({ outcome: expect.stringContaining('Expired') })
@@ -697,7 +596,6 @@ describe('a decision from the console', () => {
     expect(await w.decide(draft.id, 'approve', 'agent-b')).toEqual({
       result: 'not-found',
       status: null,
-      granted: false,
       failure: null
     })
     expect(await w.decide('no-such-draft', 'discard')).toMatchObject({ result: 'not-found' })
@@ -723,15 +621,6 @@ describe('a decision from the console', () => {
     })
     expect(await unsure.decide(draft.id, 'approve')).toMatchObject({ result: 'already-decided' })
     expect(unsure.gateway.postMessage).toHaveBeenCalledTimes(1)
-
-    const w = await world()
-    await w.post()
-    w.enabled.delete('C0SUPPORT')
-    expect(await w.decide((await w.only()).id, 'approve')).toMatchObject({
-      status: 'failed',
-      failure: expect.stringMatching(/no longer enabled/)
-    })
-    expect(w.gateway.postMessage).not.toHaveBeenCalled()
   })
 })
 
@@ -826,8 +715,7 @@ describe('the Slack draft card', () => {
     platformName,
     text: 'The release is out.'
   })
-  const text = (v: AssistantDraftCardView): string =>
-    JSON.stringify(buildAssistantDraftCard('d-1', v, { offerAlways: true }))
+  const text = (v: AssistantDraftCardView): string => JSON.stringify(buildAssistantDraftCard('d-1', v, {}))
 
   it('names a channel by name and id, and a thread by its link', () => {
     const card = text(
