@@ -393,13 +393,17 @@ export default function AddAgentModal({
   const strategySource =
     daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : effectiveExecution)
   const savedCredentials = placement?.kind !== 'pool' && modelProvider !== null
-  const modelSource = useSavedModelSource(strategySource, savedCredentials)
+  const {
+    source: modelSource,
+    status: modelSourceStatus,
+    retry: retryModelSource
+  } = useSavedModelSource(strategySource, savedCredentials)
   // The pool's pod, not the strategy, is what encloses a session there.
   const isolationLabel = sessionIsolationLabel({ pool: placement?.kind === 'pool', execution: effectiveExecution })
   const isolationMode = isolationLabel.mode === 'Session isolation' ? t('sessionIsolation') : t('worktree')
   // A selected daemon's reported profiles are authoritative, including an empty list.
   const runtimeIds = savedCredentials
-    ? selectableRuntimeIds(modelSource!, runtime)
+    ? selectableRuntimeIds(modelSource ?? { runtimeModels: [] }, runtime)
     : daemon
       ? selectableRuntimeIds(daemon, runtime)
       : FALLBACK_RUNTIME_IDS
@@ -1060,6 +1064,8 @@ export default function AddAgentModal({
                 fastMode
               }}
               source={modelSource}
+              sourceStatus={modelSourceStatus}
+              onRetrySource={retryModelSource}
               runtimes={runtimeIds}
               readsImage={readsImage}
               requireAvailableModel={savedCredentials}

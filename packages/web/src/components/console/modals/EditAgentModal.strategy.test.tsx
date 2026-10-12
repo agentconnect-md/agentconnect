@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { Agent, DaemonRow } from '@/lib/data'
+import { fetchProviderKeys } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -142,7 +143,7 @@ async function openEditor(dto: Record<string, unknown>) {
   root = createRoot(host)
   await act(async () =>
     root!.render(
-      <SWRConfig value={{ provider: () => new Map() }}>
+      <SWRConfig value={{ provider: () => new Map(), shouldRetryOnError: false }}>
         <EditAgentModal agent={agent} onClose={vi.fn()} />
       </SWRConfig>
     )
@@ -236,6 +237,65 @@ it('refuses to save with no matching saved key, including an existing unsupporte
   expect(mocks.updateAgent).not.toHaveBeenCalled()
   await chooseCredentials(false)
   expect(saveButton().disabled).toBe(false)
+})
+
+it.each([false, true])('waits for saved credentials without a false model error (Decision: %s)', async (decision) => {
+  let resolve!: (value: Awaited<ReturnType<typeof fetchProviderKeys>>) => void
+  const pending = new Promise<Awaited<ReturnType<typeof fetchProviderKeys>>>((done) => {
+    resolve = done
+  })
+  vi.mocked(fetchProviderKeys).mockReturnValueOnce(pending)
+  await openEditor({
+    model: 'model-host',
+    ...(decision
+      ? {
+          modelSelection: {
+            decisionId: DECISION,
+            rules: [{ when: { type: 'score', min: 0, max: 2 }, runtime: 'claude', model: 'model-host' }]
+          }
+        }
+      : {})
+  })
+  await chooseCredentials(true)
+  expect(button('Credentials').textContent).toBe('Use saved credential (Beta)')
+  expect(host!.querySelector('[role="status"]')?.textContent).toBe('Loading saved credentials…')
+  expect(host!.querySelector('[role="alert"]')).toBeNull()
+  expect(host!.textContent).toContain('model-host')
+  expect(saveButton().disabled).toBe(true)
+  await act(async () =>
+    resolve([
+      {
+        provider: 'anthropic',
+        name: 'Anthropic',
+        defaultEndpoint: null,
+        endpointRequired: false,
+        endpoint: null,
+        headerNames: [],
+        configured: true,
+        updatedAt: null
+      }
+    ])
+  )
+  await vi.waitFor(() => expect(saveButton().disabled).toBe(false))
+  expect(host!.querySelector('[role="status"]')).toBeNull()
+  expect(host!.querySelector('[role="alert"]')).toBeNull()
+  await act(async () => saveButton().click())
+  expect(mocks.updateAgent).toHaveBeenLastCalledWith('agent-1', { modelProvider: 'auto' })
+})
+
+it('keeps saved credentials selected after a lookup failure and retries before allowing Save', async () => {
+  vi.mocked(fetchProviderKeys).mockRejectedValueOnce(new Error('unavailable'))
+  await openEditor({ model: 'model-host' })
+  await chooseCredentials(true)
+  await vi.waitFor(() => expect(host!.textContent).toContain('Could not load saved credentials.'))
+  expect(host!.textContent).not.toContain('Choose a model with a key configured in Providers.')
+  expect(button('Credentials').textContent).toBe('Use saved credential (Beta)')
+  expect(saveButton().disabled).toBe(true)
+  mocks.providers = ['anthropic']
+  await act(async () => [...host!.querySelectorAll('button')].find((entry) => entry.textContent === 'Retry')!.click())
+  await vi.waitFor(() => expect(saveButton().disabled).toBe(false))
+  expect(host!.querySelector('[role="alert"]')).toBeNull()
+  expect(button('Credentials').textContent).toBe('Use saved credential (Beta)')
 })
 
 it('shows the saved level of what people can do in chat and saves a new one', async () => {
