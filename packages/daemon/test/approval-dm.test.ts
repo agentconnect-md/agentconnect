@@ -96,6 +96,8 @@ async function world(over?: {
     postCardSerialized: vi.fn(async () => undefined),
     // The approval DM is its own surface; no in-channel elicitation card is posted from here.
     elicitCardFacet: () => undefined,
+    approvalCardFacet: () => undefined,
+    chatCardsAt: () => undefined,
     httpSlackSessionTarget: () => undefined,
     maskAgentSecrets: (_agentId, payload) => payload,
     logSessionAction: vi.fn(),

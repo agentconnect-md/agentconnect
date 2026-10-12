@@ -470,7 +470,6 @@ import { ClusterSkillCoordinator, clusterSkillSupportRequired } from './skills/c
 import {
   OutputConverger,
   renderStatusBar,
-  buildApprovalOrphanCard,
   buildStatusBlocks,
   buildAttributionBlocks,
   type SlackAction,
@@ -813,6 +812,10 @@ import {
   type TelegramTurnState
 } from './platforms/telegram/turn-output.js'
 import { parseTelegramElicit, telegramElicitCards } from './platforms/telegram/elicit-card.js'
+import { parseTelegramApproval, telegramApprovalCards } from './platforms/telegram/approval-card.js'
+import { discordApprovalCards } from './platforms/discord/approval-card.js'
+import { slackApprovalCards } from './platforms/slack/approval-card.js'
+import type { ApprovalCardFacet } from './platforms/approval-card.js'
 import { discordElicitCards } from './platforms/discord/elicit-card.js'
 import { feishuElicitCards } from './platforms/feishu/elicit-card.js'
 import { applyDiscordAction as applyDiscordActionExternal } from './platforms/discord/turn-output.js'
@@ -1432,6 +1435,7 @@ export class Daemon {
       const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
         platform: 'slack',
         elicitCards: slackElicitCards,
+        approvalCards: slackApprovalCards,
         createConverger: (ctx) =>
           new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? [], ctx.resolveFileLink),
         initialTurnState: (ctx): SlackTurnState => {
@@ -1476,6 +1480,7 @@ export class Daemon {
       registry.register({
         platform: 'telegram',
         elicitCards: telegramElicitCards,
+        approvalCards: telegramApprovalCards,
         // The continue-the-topic hint only earns its space in a group, where the
         // reply chain is the ONLY way back into this session; a DM already has one
         // implicit thread. Gated on showFooter, the delivery-chrome switch.
@@ -1490,6 +1495,7 @@ export class Daemon {
       registry.register({
         platform: 'discord',
         elicitCards: discordElicitCards,
+        approvalCards: discordApprovalCards,
         createConverger: (ctx) => new DiscordConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: () => ({}),
         apply: (p, action) => this.applyDiscordAction(p, action as DiscordAction)
@@ -2434,12 +2440,19 @@ export class Daemon {
       }),
       bindSlack: (integrationId, conn, botUserId) => {
         this.bind(this.connByIntegration, integrationId, conn, botUserId)
-        this.sweepOrphanedApprovalCards(integrationId, conn)
+        this.sweepOrphanedApprovalCards(integrationId)
+        void this.drafts
+          .retireStaleCards(integrationId)
+          .catch((err) => this.log.warn(`stale draft card sweep failed for "${integrationId}": ${formatErr(err)}`))
       },
-      bindTelegram: (integrationId, conn, botUsername) =>
-        this.bind(this.tgConnByIntegration, integrationId, conn, botUsername),
-      bindDiscord: (integrationId, conn, botUserId) =>
-        this.bind(this.dcConnByIntegration, integrationId, conn, botUserId),
+      bindTelegram: (integrationId, conn, botUsername) => {
+        this.bind(this.tgConnByIntegration, integrationId, conn, botUsername)
+        this.sweepOrphanedApprovalCards(integrationId)
+      },
+      bindDiscord: (integrationId, conn, botUserId) => {
+        this.bind(this.dcConnByIntegration, integrationId, conn, botUserId)
+        this.sweepOrphanedApprovalCards(integrationId)
+      },
       bindFeishu: (integrationId, conn, botOpenId) =>
         this.bind(this.fsConnByIntegration, integrationId, conn, botOpenId),
       bindQQ: (id, conn, botId) => this.bind(this.QQConnByIntegration, id, conn, botId),
@@ -2476,12 +2489,17 @@ export class Daemon {
       statusInfoForKey: (key) => this.statusInfoForKey(key),
       handlePermissionChoice: (a) =>
         void this.routePermissionChoice(a).catch((err) => this.log.warn(`permission choice failed: ${formatErr(err)}`)),
-      handleElicitChoice: (a) => this.permissions.handleElicitChoice(a),
+      handleElicitChoice: async (a) => {
+        await this.permissions.handleElicitChoice(a)
+      },
       handleElicitFormSubmit: (a) => void this.permissions.submitElicitForm(a),
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
       openElicitEditor: (a) => this.permissions.openElicitEditor(a.requestId),
       handleElicitCardTap: async (a) => await this.permissions.handleElicitCardTap(a),
-      submitElicitEditor: async (a) => await this.permissions.submitElicitEditor(a),
+      handlePermissionPick: async (a) => await this.permissions.handlePermissionChoice(a),
+      submitElicitEditor: async (a) => {
+        await this.permissions.submitElicitEditor(a)
+      },
       handleTelegramCallback: (cb, conn) => this.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
         this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
@@ -2494,31 +2512,15 @@ export class Daemon {
   }
 
   /** Retire the approval cards and sub-session notices whose rows settled while no connection could edit them (slack-approval-dm.md §5.4). */
-  private sweepOrphanedApprovalCards(integrationId: string, conn: SlackConnection): void {
-    void this.store
-      .takeOrphanedPermissionNotices(integrationId)
-      .then((rows) => {
-        for (const row of rows) {
-          void conn
-            .updateBlocks(
-              row.notifyChannel,
-              row.notifyTs,
-              buildApprovalOrphanCard(row.command, row.status, row.resolvedByName),
-              'Permission resolved',
-              true
-            )
-            .catch(() => {})
-        }
-      })
+  private sweepOrphanedApprovalCards(integrationId: string): void {
+    void this.permissions
+      .retireOrphanedCards(integrationId)
       .catch((err) => this.log.warn(`orphaned approval-card sweep failed for "${integrationId}": ${formatErr(err)}`))
     void this.permissions
-      .retireOrphanedSubsessionNotices(integrationId, conn)
+      .retireOrphanedSubsessionNotices(integrationId)
       .catch((err) =>
         this.log.warn(`orphaned sub-session notice sweep failed for "${integrationId}": ${formatErr(err)}`)
       )
-    void this.drafts
-      .retireStaleCards(integrationId)
-      .catch((err) => this.log.warn(`stale draft card sweep failed for "${integrationId}": ${formatErr(err)}`))
   }
 
   /** Point an integration at a live connection: one platform's binding map plus the bot
@@ -13276,6 +13278,8 @@ export class Daemon {
       enqueueApply: (p, action) => this.enqueueApply(p, action),
       postCardSerialized: (p, post) => this.postCardSerialized(p, post),
       elicitCardFacet: (platform) => this.turnSurfaces.exact(platform)?.elicitCards,
+      approvalCardFacet: (platform) => this.turnSurfaces.exact(platform)?.approvalCards,
+      chatCardsAt: (integrationId) => this.chatCardsAt(integrationId),
       httpSlackSessionTarget: (p) => this.httpSlackSessionTarget(p),
       maskAgentSecrets: <T>(agentId: string, payload: T): T => this.maskAgentSecrets(agentId, payload),
       logSessionAction: (verb, sessionKey, actor) => this.commands.logSessionAction(verb, sessionKey, actor),
@@ -13331,16 +13335,16 @@ export class Daemon {
       waitHours: agent?.assistantMode?.limits?.permissionWaitHours ?? DEFAULT_PERMISSION_WAIT_HOURS
     }
     const integrationId =
-      parent?.platform === 'slack'
+      parent && this.turnSurfaces.exact(parent.platform)?.approvalCards
         ? this.integrationIdForSessionTransport(agentId, parent.platform, parent.transportScope)
         : undefined
-    // Webchat, and every platform without an in-chat card, has the console's own request list.
+    // Webchat, and every platform without an approval card, has the console's own request list.
     if (!parent || !integrationId) return { ...route, place: { kind: 'console' } }
     const thread = platformThread(parent.thread)
     return {
       ...route,
       place: {
-        kind: 'slack',
+        kind: 'chat',
         integrationId,
         channel: parent.channel,
         ...(thread ? { thread } : {}),
@@ -19549,28 +19553,33 @@ export class Daemon {
     return result
   }
 
-  /**
-   * Route one tapped Telegram inline-keyboard button. Two schemes share the keyboard: an
-   * elicitation card's `ac_el:<requestId>:<token>` and the session-control cards' `<kind>:<index>`,
-   * so this tries the elicitation codec first and falls through — the two are disjoint by prefix,
-   * and neither decoder ever sees data the other minted.
-   *
-   * Anyone who can see a card may answer it, so there is no per-person gate here; the tap is
-   * acked either way, or the client's spinner never clears. An answer the card refuses says so
-   * in the chat through the coordinator's own notice, exactly as a Slack tap's does.
-   */
+  /** Route one tapped inline-keyboard button: a permission card's (`ac_pm`), an elicitation card's (`ac_el`), else a session-control card's; a refusal is answered on the tap, which only its tapper sees. */
   private async handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): Promise<void> {
-    const tap = parseTelegramElicit(cb.data)
-    if (!tap) return await this.commands.handleTelegramCallback(cb, conn)
-    void conn.answerCallback(cb.id)
-    await this.permissions.handleElicitCardTap({
-      requestId: tap.requestId,
-      token: tap.token,
-      // The card the button was on, so a fold can redraw it even when the post that carried it
-      // has not returned its own id yet — a reader can tap the moment Telegram shows the keyboard.
-      ts: String(cb.messageId),
-      actor: { userId: cb.userId }
-    })
+    const pick = parseTelegramApproval(cb.data)
+    const tap = pick ? null : parseTelegramElicit(cb.data)
+    if (!pick && !tap) return await this.commands.handleTelegramCallback(cb, conn)
+    const actor: InteractionActor = {
+      userId: cb.userId,
+      ...(cb.isBot !== undefined ? { isBot: cb.isBot } : {}),
+      ...(cb.name ? { name: cb.name } : {})
+    }
+    // The card the button was on, so a tap that beats its post's return still finds it.
+    const ts = String(cb.messageId)
+    let refusal: string | undefined
+    try {
+      if (pick)
+        refusal = await this.permissions.handlePermissionChoice({
+          requestId: pick.requestId,
+          option: pick.option,
+          ts,
+          actor
+        })
+      else if (tap)
+        refusal = await this.permissions.handleElicitCardTap({ requestId: tap.requestId, token: tap.token, ts, actor })
+    } finally {
+      // Acked either way, or the client's spinner never clears.
+      void conn.answerCallback(cb.id, refusal, refusal ? { alert: true } : {})
+    }
   }
 
   private async postCardSerialized(
@@ -20426,6 +20435,14 @@ export class Daemon {
    *  host — the session arrives later, from the daemon's own ingress — so the
    *  provenance has to be parked here and consumed once. */
   private readonly pendingLaunchCorrelation = new Map<string, string>()
+
+  /** One integration's approval-card facet and live connection, for a card or notice posted outside a turn. */
+  private chatCardsAt(integrationId: string): { facet: ApprovalCardFacet; conn: unknown } | undefined {
+    const platform = this.integrationConfigById(integrationId)?.platform
+    const facet = platform ? this.turnSurfaces.exact(platform)?.approvalCards : undefined
+    const conn = this.connForIntegration(integrationId)
+    return facet && conn ? { facet, conn } : undefined
+  }
 
   /** The integration config backing `integrationId`, across all local agents. */
   private integrationConfigById(integrationId: string): Integration | undefined {

@@ -24,7 +24,9 @@ tool approval onto `elicitation/create`), the daemon's
 `PermissionCoordinator` resolves it on one of two paths:
 
 - **Chat path** — only when the agent lets people in chat approve tool
-  calls (`chatActions` at `approve` or `settings`) _and_ the session lives on Slack: an
+  calls (`chatActions` at `approve` or `settings`) _and_ the session's platform has
+  an approval card (Slack, Telegram, Discord — the `approvalCards` facet,
+  integration-plugin-architecture.md §7.3): an
   interactive card with one button per ACP option is posted **into the
   session's own conversation** (`awaitChatPermission`,
   `packages/daemon/src/permissions/coordinator.ts`). Anyone who can see the
@@ -572,4 +574,6 @@ rather than from core.
    choice, form, typed reply and URL consent) onto `settle`, collapse the
    elicitation map into the same record, and replace the
    `instanceof SlackConnection` gates on chat approval with a surface
-   capability.
+   capability. The in-conversation card's gate is replaced: it is the
+   `approvalCards` facet (integration-plugin-architecture.md §7.3), which
+   Telegram and Discord implement too.

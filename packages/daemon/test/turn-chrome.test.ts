@@ -7,7 +7,6 @@ describe('turn chrome facet', () => {
       statusSurface: 'turn-bar',
       attributionFooter: true,
       sessionTitle: true,
-      chatInputCards: true,
       chromeMarkedNotices: true,
       noticeMarkup: 'markdown'
     })
@@ -28,7 +27,6 @@ describe('turn chrome facet', () => {
     for (const p of ['telegram', 'discord', 'feishu', 'googlechat']) {
       expect(turnChromeFor(p).statusSurface).toBe('on-demand')
       expect(turnChromeFor(p).attributionFooter).toBeUndefined()
-      expect(turnChromeFor(p).chatInputCards).toBeUndefined()
     }
   })
 

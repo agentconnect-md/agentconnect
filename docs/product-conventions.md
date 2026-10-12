@@ -101,12 +101,17 @@ Every level keeps these rules:
   asked, in their own direct message, when they are a full member of the installing workspace;
   otherwise the agent's editors. Where permissions are synced it goes to an Agent editor's
   direct message, the person who asked first when they are one.
-- On a platform with no interactive cards, the conversation gets a notice and the approval is
-  answered in the console.
+- Slack, Telegram and Discord post the approval card in the conversation the request came from:
+  in its thread, its Telegram topic or reply chain, or at its top level when it is one long
+  conversation. The card offers the runtime's own choices, "always allow" included where
+  offered; a list longer than any card can show is declined with a notice, and nothing is
+  allowed. On a platform with no approval card yet (Feishu/Lark, Google Chat, QQ), the
+  conversation gets a notice and the approval is answered in the console.
 - The first answer from any surface decides, and the request is rewritten to say who answered
   and how.
 - A refusal names who can answer instead, or where to go. A refused click or tap is told only to
-  the person who made it, and leaves the card as everyone else sees it.
+  the person who made it, and leaves the card as everyone else sees it: on Slack and Discord in a
+  message only they see, on Telegram in an alert on the tap.
 - The setting does not change the agent's permission policy. Which tool calls need approval is
   set in the console, and an agent that allows every tool call never asks.
 
@@ -1112,14 +1117,18 @@ When a background sub-session needs permission to run a tool, whether delegated 
 proposal's task, the request goes to the conversation the work belongs to, and the sub-session
 waits; its turn is not cancelled. A patrol never asks.
 
-- In a Slack conversation where "What people can do in chat" includes approving tool calls, an
-  approval card is posted there, in the conversation's thread or at its top level when it is one long conversation, and
-  anyone there may answer it; where permissions are synced, only an Agent editor, and an editor
-  also gets it in a direct message. The card says a background sub-session is asking, names and links
-  it, and offers the runtime's own choices, "always allow" included where offered.
+- In a Slack, Telegram or Discord conversation where "What people can do in chat" includes
+  approving tool calls, an approval card is posted there, where its reports land: in the
+  conversation's thread (on Telegram its topic or reply chain), or at its top level when it is one
+  long conversation. Anyone there may answer it; where permissions are synced (Slack), only an
+  Agent editor, and an editor also gets it in a direct message. The card says a background
+  sub-session is asking, names and links it, and offers the runtime's own choices, "always allow"
+  included where offered.
 - Where it does not, or the conversation is closed (switched off, admitted per message by a
   Decision, or routed), the conversation gets a notice that the sub-session is waiting, and an
   Agent editor gets the request in a direct message, as for any other request.
+- A conversation on a platform with no approval card yet (Feishu/Lark, Google Chat, QQ) gets
+  neither: an Agent editor answers the request in the console or in a direct message.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
   marked as from a background sub-session.
 - A conversation shared with another organization gets no card. It goes to the agent's

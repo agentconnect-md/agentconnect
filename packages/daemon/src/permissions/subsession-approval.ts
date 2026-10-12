@@ -7,9 +7,9 @@ import { isSubsessionCoordinate } from '../session/subsession-coordinate.js'
 /** How long a sub-session's request waits when the policy sets no `permissionWaitHours`. */
 export const DEFAULT_PERMISSION_WAIT_HOURS = 12
 
-/** Where the request is shown besides the console: a Slack conversation, or the console alone (webchat and the rest). */
+/** Where the request is shown besides the console: a conversation on a platform with approval cards, or the console alone (webchat and the rest). */
 export type SubsessionApprovalPlace =
-  { kind: 'slack'; integrationId: string; channel: string; thread?: string; external: boolean } | { kind: 'console' }
+  { kind: 'chat'; integrationId: string; channel: string; thread?: string; external: boolean } | { kind: 'console' }
 
 /** What a sub-session's request needs to reach its conversation. */
 export interface SubsessionApprovalRoute {

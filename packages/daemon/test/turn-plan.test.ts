@@ -5,6 +5,7 @@ import { QQAnswerDelivery } from '../src/platforms/qq/turn-output.js'
 import { AGENT_CALL_HOP_LIMIT_NOTICE } from '../src/daemon/constants.js'
 import { transcriptChannelKey } from '../src/store/local-store.js'
 import { TurnOutputRegistry, type TurnOutputSurface } from '../src/platforms/turn-output.js'
+import { slackApprovalCards } from '../src/platforms/slack/approval-card.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { CallMeta, DaemonConverger, DaemonRenderAction, Pending, QueueEntry } from '../src/daemon/turn-types.js'
 import type { WebchatTurnContext } from '../src/webchat/types.js'
@@ -24,9 +25,11 @@ const surfaceFor = (platform: string): Surface =>
     apply: async () => {}
   }) as unknown as Surface
 
-const surfaces = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>(
-  surfaceFor('slack')
-)
+// Slack's surface carries its approval-card facet, as the daemon's does.
+const surfaces = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
+  ...surfaceFor('slack'),
+  approvalCards: slackApprovalCards
+})
 for (const platform of ['telegram', 'discord', 'feishu']) surfaces.register(surfaceFor(platform))
 surfaces.register({ ...surfaceFor('qq'), answerDelivery: QQAnswerDelivery })
 

@@ -53,7 +53,7 @@ import {
 
 /** One `actions` row holds five buttons and a message holds five rows, so a one-tap card offers
  *  24 options and keeps its Dismiss. A longer list is declined whole, never trimmed to fit. */
-const DISCORD_ELICIT_MAX_BUTTONS = 24
+export const DISCORD_ELICIT_MAX_BUTTONS = 24
 
 /** A select menu's own cap on `options` — the bound every FORM field is held to, whatever its
  *  arity, because one control is what a select is for both. */
@@ -71,10 +71,10 @@ const DISCORD_LABEL_CAP = 45
 const DISCORD_LABEL_DESCRIPTION_CAP = 100
 const DISCORD_OPTION_LABEL_CAP = 100
 /** A `custom_id` anywhere in the component tree. */
-const DISCORD_CUSTOM_ID_CAP = 100
+export const DISCORD_CUSTOM_ID_CAP = 100
 /** What one text input accepts, and what a button's label holds. */
 const DISCORD_TEXT_INPUT_CAP = 4000
-const DISCORD_BUTTON_LABEL_CAP = 80
+export const DISCORD_BUTTON_LABEL_CAP = 80
 
 const DISCORD_ELICIT_PREFIX = 'ac_el'
 

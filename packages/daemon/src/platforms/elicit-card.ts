@@ -207,7 +207,7 @@ export interface ElicitCardFacet {
    *  resolver so it is globally unique. Absent where the surface's user ids already are — a
    *  Telegram user id names one account across every chat, a Slack one only within its workspace. */
   answerScope?(handle: ElicitCardHandle): string | undefined
-  /** Tell only `userId`, beside the card, why their tap was not taken (Slack's ephemeral message). Absent ⇒ nothing is said. */
+  /** Tell only `userId`, beside the card, why their tap was not taken (Slack's ephemeral message). Absent ⇒ core hands the words back to the tap's own ingress, which answers it privately. */
   tellPrivately?(handle: ElicitCardHandle, userId: string, text: string): void
   /** A tapping member's display name, for a tap that carried none (a relayed Slack click); undefined when unknown. */
   nameOf?(handle: ElicitCardHandle, userId: string): Promise<string | undefined>
