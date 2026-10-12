@@ -4,7 +4,7 @@
  * agent's chat authority was withdrawn, a cancel with no turn in flight — must never
  * read as though that user approved a tool call or stopped a run.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 
 const AGENT = 'agent-1'
@@ -22,28 +22,30 @@ function daemonWithLog(): { daemon: Daemon; lines: string[] } {
   return { daemon, lines }
 }
 
-/** A pending chat permission with no `ts`, so no card update is attempted. */
-function seedPending(daemon: Daemon, chatActions: 'talk' | 'approve' | 'settings'): void {
+/** A pending chat permission with no `ts`, so no card update is attempted; returns its private-notice spy. */
+function seedPending(daemon: Daemon, chatActions: 'talk' | 'approve' | 'settings'): ReturnType<typeof vi.fn> {
   const inner = daemon as never as {
     agents: Map<string, unknown>
     permissions: { pendingApprovals: Map<string, unknown> }
   }
   inner.agents.set(AGENT, { id: AGENT, chatActions })
+  const postEphemeral = vi.fn(async () => true)
   inner.permissions.pendingApprovals.set(REQUEST, {
     kind: 'permission',
     agentId: AGENT,
     sessionId: 'acp-1',
     params: { options: [{ optionId: 'allow_once', kind: 'allow_once', name: 'Allow' }] },
     evaluationParams: {},
-    chat: { conn: {}, channel: 'C1' },
+    chat: { conn: { postEphemeral }, channel: 'C1' },
     resolve: () => {}
   })
+  return postEphemeral
 }
 
 describe('chat-side session action audit', () => {
   it('records a refused permission click as an attempt, never as the decision', () => {
     const { daemon, lines } = daemonWithLog()
-    seedPending(daemon, 'talk') // chat authority withdrawn
+    const postEphemeral = seedPending(daemon, 'talk') // chat authority withdrawn
 
     ;(
       daemon as never as { permissions: { handlePermissionChoice: (i: unknown) => void } }
@@ -63,6 +65,8 @@ describe('chat-side session action audit', () => {
     expect(
       (daemon as never as { permissions: { pendingApprovals: Map<string, unknown> } }).permissions.pendingApprovals.size
     ).toBe(1)
+    // Only the clicker is told why, with who can answer instead.
+    expect(postEphemeral).toHaveBeenCalledWith('C1', 'U-MALLORY', expect.stringContaining('Agent editor'), undefined)
   })
 
   it('does not record a cancel that had no turn to stop', () => {

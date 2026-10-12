@@ -579,11 +579,15 @@ export class TelegramConnection implements PlatformConnection {
     })
   }
 
-  /** Acknowledge an inline-keyboard tap (clears the client's loading spinner; the
-   *  optional `text` shows as a transient toast). Not queued — a quick standalone ack. */
-  async answerCallback(callbackId: string, text?: string): Promise<void> {
+  /** Acknowledge an inline-keyboard tap; `text` shows as a toast, or a dialog with `alert`, to the tapper alone. */
+  async answerCallback(callbackId: string, text?: string, opts: { alert?: boolean } = {}): Promise<void> {
+    // Telegram refuses an answer past 200 characters, so a longer one is cut rather than lost.
+    const shown = text && text.length > 200 ? `${text.slice(0, 199)}…` : text
     try {
-      await this.bot.api.answerCallbackQuery(callbackId, text ? { text } : undefined)
+      await this.bot.api.answerCallbackQuery(
+        callbackId,
+        shown ? { text: shown, ...(opts.alert ? { show_alert: true } : {}) } : undefined
+      )
     } catch (err) {
       this.deps.log?.debug(`telegram: answerCallbackQuery failed: ${(err as Error).message}`)
     }

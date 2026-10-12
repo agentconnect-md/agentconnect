@@ -688,6 +688,29 @@ describe('session-control cards (/models tappable buttons)', () => {
     expect(lines.filter((l) => l.includes('select:model'))).toEqual([])
   })
 
+  it('answers a refused tap only to its tapper, saying who can change it and where', async () => {
+    const daemon = await boot()
+    ;(daemon as any).agents.get('bot-a').chatActions = 'approve'
+    const conn = makeTelegramRoutable(daemon)
+    injectHost(daemon)
+    const key = await seedSession(daemon, '-100', 'tg:100')
+
+    await (daemon as any).commands.handleTelegramCallback(
+      { id: 'cb-r', data: 'm:1', channel: '-100', messageId: 55, userId: 'U-DANA' },
+      conn
+    )
+    // The callback's own answer, shown as a dialog to the tapper alone — never a group message.
+    expect(conn.answerCallback).toHaveBeenCalledWith(
+      'cb-r',
+      expect.stringContaining('Only an Agent editor can change runtime settings.'),
+      { alert: true }
+    )
+    expect((conn.answerCallback.mock.calls.at(-1) as unknown[])[1]).toContain('/agents/bot-a')
+    expect(conn.postMessage).not.toHaveBeenCalled()
+    expect(conn.editCard).not.toHaveBeenCalled()
+    expect(await (daemon as any).store.getModelOverride(key)).toBeUndefined()
+  })
+
   it('applies a callback only to a session owned by the bot that delivered the tap', async () => {
     const daemon = await boot()
     const { agentA, agentB, connB } = makeScopedTelegramPair(daemon)

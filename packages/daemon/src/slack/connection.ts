@@ -46,6 +46,7 @@ import {
   type StatusModalIdentity
 } from './render.js'
 import type {
+  ChatRefusal,
   InteractionActor,
   PlatformCanvas,
   PlatformCanvasEdit,
@@ -434,10 +435,7 @@ export interface SlackDeps {
   onPlaceExternal?: (channel: string, reason: PlaceExternalReason) => void
   /** Fired when Slack explicitly revokes this install's bot token over the socket (`app_uninstalled`, or `tokens_revoked` naming a bot). */
   onCredentialRevoked?: (revocation: CredentialRevocation) => void
-  /** Fired when a user interacts with the status modal's selects, or raises a cancel —
-   *  Slack's native Stop, or a status row posted while the overflow still rendered one.
-   *  `sessionKey` comes from the modal's `private_metadata`; payload fields are present
-   *  only for their matching action. */
+  /** A controls-modal select or a cancel (Slack's native Stop); a refused settings change returns what only its actor is told. */
   onStatusAction?: (a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
@@ -449,7 +447,7 @@ export interface SlackDeps {
     permissionMode?: string
     fastMode?: boolean
     outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
-  }) => void
+  }) => void | Promise<ChatRefusal | undefined>
   /** Synchronous getter into the daemon (source of truth) for a session's agent identity,
    *  current status snapshot, and deep link — used to build the Configure controls modal on
    *  demand. Undefined for an unknown/closed session key. */
@@ -589,6 +587,7 @@ export type AppLike = {
     }
     chat: {
       postMessage: (a: unknown) => Promise<{ ts?: string }>
+      postEphemeral: (a: unknown) => Promise<unknown>
       getPermalink: (a: unknown) => Promise<{ permalink?: string }>
       update: (a: unknown) => Promise<{ ts?: string }>
       delete: (a: unknown) => Promise<unknown>
@@ -1248,28 +1247,33 @@ export class SlackConnection implements PlatformConnection {
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const model = action.selected_option?.value
       if (sessionKey && model)
-        this.deps.onStatusAction?.({ kind: 'set-model', sessionKey, model, actor: actorOf(body) })
+        await this.changeSetting(body, { kind: 'set-model', sessionKey, model, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setEffort, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const effort = action.selected_option?.value
       if (sessionKey && effort)
-        this.deps.onStatusAction?.({ kind: 'set-effort', sessionKey, effort, actor: actorOf(body) })
+        await this.changeSetting(body, { kind: 'set-effort', sessionKey, effort, actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setPermissionMode, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const permissionMode = action.selected_option?.value
       if (sessionKey && permissionMode)
-        this.deps.onStatusAction?.({ kind: 'set-permission-mode', sessionKey, permissionMode, actor: actorOf(body) })
+        await this.changeSetting(body, {
+          kind: 'set-permission-mode',
+          sessionKey,
+          permissionMode,
+          actor: actorOf(body)
+        })
     })
     this.app.action(STATUS_ACTION.setFast, async ({ ack, action, body }) => {
       await ack()
       const sessionKey = body?.view?.private_metadata ?? action.block_id
       const value = action.selected_option?.value
       if (sessionKey && value)
-        this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: value === 'on', actor: actorOf(body) })
+        await this.changeSetting(body, { kind: 'set-fast', sessionKey, fastMode: value === 'on', actor: actorOf(body) })
     })
     this.app.action(STATUS_ACTION.setOutput, async ({ ack, action, body }) => {
       await ack()
@@ -1329,6 +1333,16 @@ export class SlackConnection implements PlatformConnection {
     log?.debug('slack: app.start → opening Socket Mode WebSocket (wss://…slack.com)…')
     await this.app.start()
     log?.debug('slack: app.start resolved → socket established')
+  }
+
+  /** Apply one runtime-settings change; a refused one is told only to whoever made it, in its session's conversation. */
+  private async changeSetting(
+    body: BlockActionArgs['body'],
+    change: Parameters<NonNullable<SlackDeps['onStatusAction']>>[0]
+  ): Promise<void> {
+    const refusal = await this.deps.onStatusAction?.(change)
+    const user = body?.user?.id
+    if (refusal && user) await this.postEphemeral(refusal.channel, user, refusal.text, refusal.thread)
   }
 
   /** Open the existing per-session controls modal. Direct bots call this from their
@@ -1696,6 +1710,21 @@ export class SlackConnection implements PlatformConnection {
       )
       return res?.ts
     })
+  }
+
+  /** Say something only `user` sees, in a conversation (and Slack thread) they are in; best effort, false when Slack refused it. */
+  async postEphemeral(channel: string, user: string, text: string, threadTs?: string): Promise<boolean> {
+    // A session coordinate that is not a Slack message ts (an appending conversation's) is no thread here.
+    const thread = threadTs && /^\d+\.\d+$/.test(threadTs) ? threadTs : undefined
+    try {
+      return await this.queue.enqueue(async () => {
+        await this.app.client.chat.postEphemeral({ channel, user, text, ...(thread ? { thread_ts: thread } : {}) })
+        return true
+      })
+    } catch (err) {
+      this.deps.log?.debug(`slack: chat.postEphemeral failed (ch=${channel}): ${(err as Error).message}`)
+      return false
+    }
   }
 
   /**
@@ -2703,6 +2732,12 @@ export class SlackConnection implements PlatformConnection {
       avatarUrl: u.profile?.image_72 ?? u.profile?.image_48,
       ...(timeZone ? { timeZone } : {})
     }
+  }
+
+  /** A member's display name, real name else handle, for a click that carried none; undefined when Slack cannot say. */
+  async memberName(user: string): Promise<string | undefined> {
+    const profile = await this.getUserProfile(user).catch(() => undefined)
+    return profile?.realName?.trim() || profile?.name?.trim() || undefined
   }
 
   /** A full member of this workspace: not a guest, not from another organization (assistant-mode.md §5.5); fails closed. */

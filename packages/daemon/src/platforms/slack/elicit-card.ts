@@ -87,5 +87,13 @@ export const slackElicitCards: ElicitCardFacet = {
 
   answerScope(handle: ElicitCardHandle): string | undefined {
     return (handle.conn as SlackConnection).workspaceId()
+  },
+
+  tellPrivately(handle: ElicitCardHandle, userId: string, text: string): void {
+    void (handle.conn as SlackConnection).postEphemeral(handle.channel, userId, text, handle.thread)
+  },
+
+  nameOf(handle: ElicitCardHandle, userId: string): Promise<string | undefined> {
+    return (handle.conn as SlackConnection).memberName(userId)
   }
 }

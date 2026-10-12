@@ -5,8 +5,9 @@
  * answerable — and that a payload without a user degrades to an absent actor
  * rather than a fabricated one.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { SlackConnection } from '../src/slack/connection.js'
+import { appendCoordinate } from '../src/session/append-coordinate.js'
 import {
   STATUS_ACTION,
   ELICIT_CONFIRM_ACTION,
@@ -34,7 +35,7 @@ type ActionArgs = {
 type Handler = (args: ActionArgs) => Promise<void> | void
 
 /** A Bolt stand-in: enough surface for `start()` to reach handler registration. */
-function fakeApp(actions: Map<string, Handler>) {
+function fakeApp(actions: Map<string, Handler>, chat: Record<string, unknown> = {}) {
   return {
     init: async () => {},
     message: () => {},
@@ -43,11 +44,14 @@ function fakeApp(actions: Map<string, Handler>) {
     shortcut: () => {},
     start: async () => {},
     stop: async () => {},
-    client: { auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BBOT', url: 'https://x.slack.test/' }) } }
+    client: { auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BBOT', url: 'https://x.slack.test/' }) }, chat }
   } as never
 }
 
-async function connect(deps: Record<string, unknown>): Promise<Map<string, Handler>> {
+async function connect(
+  deps: Record<string, unknown>,
+  chat: Record<string, unknown> = {}
+): Promise<Map<string, Handler>> {
   const actions = new Map<string, Handler>()
   const conn = new SlackConnection(
     {
@@ -57,7 +61,7 @@ async function connect(deps: Record<string, unknown>): Promise<Map<string, Handl
       sendIntervalMs: 0,
       ...deps
     } as never,
-    () => fakeApp(actions)
+    () => fakeApp(actions, chat)
   )
   await conn.start()
   return actions
@@ -137,6 +141,40 @@ describe('slack status actions carry the acting user', () => {
       { requestId: 'elicit-9', fields: { [elicitFormBlockId(0)]: [] }, actor: { userId: 'U-ERIN' } },
       { requestId: 'elicit-9', fields: {} }
     ])
+  })
+
+  it("answers a refused settings change only to whoever made it, in its session's conversation", async () => {
+    const postEphemeral = vi.fn(async () => ({}))
+    const refusal = {
+      text: 'Only an Agent editor can change runtime settings.',
+      channel: 'C1',
+      thread: '1700000000.000100'
+    }
+    const actions = await connect({ onStatusAction: async () => refusal }, { postEphemeral })
+
+    // A select inside the controls modal: the payload names no conversation, so the session's is used.
+    await actions.get(STATUS_ACTION.setModel)!({
+      ack,
+      action: { selected_option: { value: 'opus' } },
+      body: { view: { private_metadata: 'slack:C1:1700000000.000100:bot-a' }, user: { id: 'U-ALICE' } }
+    })
+    expect(postEphemeral).toHaveBeenCalledWith({
+      channel: 'C1',
+      user: 'U-ALICE',
+      text: refusal.text,
+      thread_ts: '1700000000.000100'
+    })
+
+    // An appending conversation's session coordinate is no Slack thread, so the notice goes to the channel.
+    postEphemeral.mockClear()
+    const appending = { ...refusal, thread: appendCoordinate(1_700_000_000_000) }
+    const appendActions = await connect({ onStatusAction: async () => appending }, { postEphemeral })
+    await appendActions.get(STATUS_ACTION.setFast)!({
+      ack,
+      action: { selected_option: { value: 'on' } },
+      body: { view: { private_metadata: `slack:C1:${appending.thread}:bot-a` }, user: { id: 'U-ALICE' } }
+    })
+    expect(postEphemeral).toHaveBeenCalledWith({ channel: 'C1', user: 'U-ALICE', text: refusal.text })
   })
 
   it('leaves the actor absent when the payload names no user', async () => {

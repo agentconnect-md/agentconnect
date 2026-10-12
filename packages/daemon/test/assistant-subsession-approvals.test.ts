@@ -40,7 +40,8 @@ function fakeSlack(dm = 'D-ed') {
     postBlocks: vi.fn(async () => `200.${++n}`),
     updateBlocks: vi.fn(async () => undefined),
     workspaceUrl: 'https://w.slack.example.test',
-    workspaceId: () => 'T1'
+    workspaceId: () => 'T1',
+    memberName: vi.fn(async () => 'Ada Example' as string | undefined)
   }
 }
 type FakeSlack = ReturnType<typeof fakeSlack>
@@ -199,11 +200,16 @@ describe('a sub-session’s permission request in the conversation it belongs to
 
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-always', actor: { userId: 'U9' } })
     await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-always' } })
-    expect((await rows(w.store))[0]).toMatchObject({ status: 'allowed', resolvedBy: 'slack:T1:U9' })
+    // A relayed click carries only the member's id, so the decider is named by a lookup.
+    expect((await rows(w.store))[0]).toMatchObject({
+      status: 'allowed',
+      resolvedBy: 'slack:T1:U9',
+      resolvedByName: 'Ada Example'
+    })
     // The rewrite keeps who was asking, and the card's handle leaves the row with it.
     const rewritten = JSON.stringify((w.place.updateBlocks.mock.calls[0] as unknown[])[2])
     expect(rewritten).toContain('background sub-session')
-    expect(rewritten).toContain('Always allow')
+    expect(rewritten).toContain('Always allow — Ada Example')
     expect(await w.store.takeOrphanedPermissionNotices('int-1')).toEqual([])
 
     // A second click, and the wait it no longer has, change nothing.
