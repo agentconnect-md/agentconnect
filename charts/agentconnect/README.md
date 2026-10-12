@@ -115,11 +115,11 @@ precedence over the bundled store.
 
 ### Bundled store
 
-`sourceCache.store` (on by default) runs one MinIO pod on a PersistentVolumeClaim. The
-image is built from the MinIO commit CI tests the signer against
-([`docker/minio.Dockerfile`](../../docker/minio.Dockerfile)), because MinIO no longer
-publishes images. Presigned URLs must be `https://`, so the store is reached through the
-Gateway on its own host:
+`sourceCache.store` (on by default) runs one [RustFS](https://rustfs.com) pod, an
+S3-compatible store, on a PersistentVolumeClaim. It uses the upstream `rustfs/rustfs`
+image. Presigned URLs must be `https://`, so the store is reached through the Gateway on its
+own host. `publicUrl` is required, because the store admits only that origin for browser
+CORS:
 
 ```yaml
 publicUrl: https://console.example.test
@@ -133,17 +133,15 @@ members, the Control Plane, sandbox pods and browsers all use `https://<host>`. 
 must pass request bodies up to `limits.maxBundleBytes` and must keep the `Host` header,
 because every signature covers it.
 
-The chart generates two Secrets and reuses their values on upgrade:
+The chart generates the store's key pair in the Secret `<release>-source-cache-store` and
+reuses it on upgrade. RustFS starts with it, and members and the Control Plane mount it as
+their bucket credentials. RustFS offers no simple way to create a narrower user, so these
+are the store's root keys. The store holds nothing but this release's cache and transfers.
 
-- `<release>-source-cache-store-root` holds the MinIO root user. Only MinIO and the setup
-  Job read it.
-- `<release>-source-cache-store-client` holds a client limited to the grants listed
-  below. Members and the Control Plane mount it as their bucket credentials.
-
-A post-install and post-upgrade Job creates the bucket, applies the
-[lifecycle rules](#bucket-lifecycle-rules), creates the client and attaches its policy.
-It is safe to run repeatedly. MinIO admits the `publicUrl` origin for browser CORS.
-Members check the lifecycle rules at start. A member that started before the Job's first
+A post-install and post-upgrade Job runs
+[`files/object-store-setup.sh`](files/object-store-setup.sh). It creates the bucket, applies
+the [lifecycle rules](#bucket-lifecycle-rules), and sets the browser CORS rule. It is safe
+to run repeatedly. Members check the lifecycle rules at start. A member that started before the Job's first
 run writes no bundles until its next check, up to 6 hours later. Restart the pool after the
 first install to start writing at once.
 
@@ -201,10 +199,9 @@ Credentials come from one of two sources:
         name: agentconnect-source-cache
   ```
 
-Set `forcePathStyle: true` for MinIO and most self-hosted stores. A dotted bucket name or
-an IP-address endpoint uses path-style addressing anyway. MinIO's community edition is
-archived, so the bundled store suits single-cluster installs rather than large production
-fleets. AWS S3 has not yet been verified against this signer (design §14).
+Set `forcePathStyle: true` for MinIO, RustFS and most self-hosted stores. A dotted bucket
+name or an IP-address endpoint uses path-style addressing anyway. AWS S3 has not yet been
+verified against this signer (design §14).
 
 | Value                        | Default | Meaning                                                   |
 | ---------------------------- | ------- | --------------------------------------------------------- |

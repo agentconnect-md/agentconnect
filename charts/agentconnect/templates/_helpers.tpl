@@ -202,7 +202,7 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 {{- end }}
 
-{{/* The effective sourceCache values as JSON: the values themselves, or the bundled store's bucket, endpoint and client Secret. */}}
+{{/* The effective sourceCache values as JSON: the values themselves, or the bundled store's bucket, endpoint and key pair Secret. */}}
 {{- define "agentconnect.sourceCache" -}}
 {{- $sourceCache := deepCopy (.Values.sourceCache | default dict) }}
 {{- if include "agentconnect.sourceCacheStore" . }}
@@ -213,7 +213,7 @@ app.kubernetes.io/component: {{ .component }}
 {{- $_ := set $sourceCache "region" "us-east-1" }}
 {{- $_ := set $sourceCache "bucket" $store.bucket }}
 {{- $_ := set $sourceCache "forcePathStyle" true }}
-{{- $secret := dict "name" (printf "%s-source-cache-store-client" (include "agentconnect.fullname" .)) "accessKeyIdKey" "AWS_ACCESS_KEY_ID" "secretAccessKeyKey" "AWS_SECRET_ACCESS_KEY" }}
+{{- $secret := dict "name" (printf "%s-source-cache-store" (include "agentconnect.fullname" .)) "accessKeyIdKey" "AWS_ACCESS_KEY_ID" "secretAccessKeyKey" "AWS_SECRET_ACCESS_KEY" }}
 {{- $_ := set $sourceCache "credentials" (dict "source" "secret" "secret" $secret) }}
 {{- end }}
 {{- toJson $sourceCache }}

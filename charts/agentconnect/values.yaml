@@ -810,14 +810,13 @@ objectStore:
 sourceCache:
   # An external bucket, configured by the values below; true takes precedence over `store`.
   enabled: false
-  # Bundled single-node MinIO with its bucket, lifecycle rules and a client scoped to <prefix>/src/ (chart README "Bundled store").
+  # Bundled single-node RustFS with its bucket, lifecycle rules and browser CORS for publicUrl (chart README "Bundled store").
   store:
     enabled: true
     # Public hostname the Gateway routes to the store; the endpoint is https://<host>. Needs DNS, edge TLS and a listener, like apiHost. Empty => no store, Source Cache off.
     host: ''
-    # Image under image.registry, built by docker/minio.Dockerfile and pushed by hand under this tag.
-    image: minio
-    tag: RELEASE.2025-10-15T17-29-55Z
+    image: docker.io/rustfs/rustfs
+    tag: 1.0.1
     bucket: agentconnect-source-cache
     persistence:
       size: 50Gi

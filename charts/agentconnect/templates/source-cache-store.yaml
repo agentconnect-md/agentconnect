@@ -1,44 +1,40 @@
-{{- /* Bundled Source Cache store (chart README "Bundled store"): MinIO, its setup Job, the client and root Secrets, and the https route. */ -}}
+{{- /* Bundled Source Cache store (chart README "Bundled store"): RustFS, its setup Job, the key pair Secret, and the https route. */ -}}
 {{- if include "agentconnect.sourceCacheStore" . }}
-{{- $fullname := include "agentconnect.fullname" . }}
 {{- $sourceCache := .Values.sourceCache }}
 {{- $store := $sourceCache.store }}
-{{- $name := printf "%s-source-cache-store" $fullname }}
-{{- $image := printf "%s/%s:%s" .Values.image.registry $store.image $store.tag }}
-{{- $rootSecret := printf "%s-root" $name }}
-{{- $clientSecret := printf "%s-client" $name }}
-{{- /* Generated once and read back on upgrade, so the keys stay stable across releases. */}}
-{{- $rootPassword := randAlphaNum 40 }}
-{{- with lookup "v1" "Secret" .Release.Namespace $rootSecret }}
-{{- $rootPassword = index .data "MINIO_ROOT_PASSWORD" | b64dec }}
-{{- end }}
-{{- $clientKey := randAlphaNum 40 }}
-{{- with lookup "v1" "Secret" .Release.Namespace $clientSecret }}
-{{- $clientKey = index .data "AWS_SECRET_ACCESS_KEY" | b64dec }}
+{{- $name := printf "%s-source-cache-store" (include "agentconnect.fullname" .) }}
+{{- $image := printf "%s:%s" $store.image $store.tag }}
+{{- /* Generated once and read back on upgrade, so the key pair stays stable across releases. */}}
+{{- $secretKey := randAlphaNum 40 }}
+{{- with lookup "v1" "Secret" .Release.Namespace $name }}
+{{- $secretKey = index .data "AWS_SECRET_ACCESS_KEY" | b64dec }}
 {{- end }}
 apiVersion: v1
 kind: Secret
 metadata:
-  name: {{ $rootSecret }}
-  labels:
-    {{- include "agentconnect.labels" . | nindent 4 }}
-    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store") | nindent 4 }}
-type: Opaque
-data:
-  MINIO_ROOT_USER: {{ "agentconnect-admin" | b64enc | quote }}
-  MINIO_ROOT_PASSWORD: {{ $rootPassword | b64enc | quote }}
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ $clientSecret }}
+  name: {{ $name }}
   labels:
     {{- include "agentconnect.labels" . | nindent 4 }}
     {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store") | nindent 4 }}
 type: Opaque
 data:
   AWS_ACCESS_KEY_ID: {{ "agentconnect-source-cache" | b64enc | quote }}
-  AWS_SECRET_ACCESS_KEY: {{ $clientKey | b64enc | quote }}
+  AWS_SECRET_ACCESS_KEY: {{ $secretKey | b64enc | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-setup
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store-setup") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  object-store-setup.sh: |-
+    {{- .Files.Get "files/object-store-setup.sh" | nindent 4 }}
 ---
 apiVersion: v1
 kind: Service
@@ -74,8 +70,8 @@ spec:
         {{- include "agentconnect.labels" . | nindent 8 }}
         {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store") | nindent 8 }}
       annotations:
-        # A rotated root password only takes effect when MinIO restarts.
-        checksum/root: {{ $rootPassword | sha256sum }}
+        # A changed key pair only takes effect when RustFS restarts.
+        checksum/keys: {{ $secretKey | sha256sum }}
     spec:
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
@@ -88,34 +84,35 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
       containers:
-        - name: minio
+        - name: rustfs
           image: {{ $image | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ['minio', 'server', '/data']
+          imagePullPolicy: IfNotPresent
           ports:
             - name: s3
               containerPort: 9000
-          envFrom:
-            - secretRef:
-                name: {{ $rootSecret }}
           env:
-            # Browsers PUT and GET signed URLs straight from the console origin.
-            - name: MINIO_API_CORS_ALLOW_ORIGIN
-              value: {{ .Values.publicUrl | trimSuffix "/" | default "*" | quote }}
-            - name: MINIO_BROWSER
-              value: 'off'
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $name }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $name }}
+                  key: AWS_SECRET_ACCESS_KEY
           readinessProbe:
             httpGet:
-              path: /minio/health/ready
+              path: /health
               port: s3
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /minio/health/live
+              path: /health
               port: s3
             initialDelaySeconds: 10
             periodSeconds: 20
@@ -169,16 +166,17 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
+        runAsUser: 10001
+        runAsGroup: 10001
+      volumes:
+        - name: setup
+          configMap:
+            name: {{ $name }}-setup
       containers:
         - name: setup
           image: {{ $image | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ['ac-object-store-setup']
-          envFrom:
-            - secretRef:
-                name: {{ $rootSecret }}
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '/setup/object-store-setup.sh']
           env:
             - name: AC_STORE_URL
               value: {{ printf "http://%s:9000" $name | quote }}
@@ -186,16 +184,22 @@ spec:
               value: {{ $store.bucket | quote }}
             - name: AC_STORE_PREFIX
               value: {{ $sourceCache.prefix | default "" | quote }}
-            - name: AC_STORE_CLIENT_ACCESS_KEY
+            - name: AC_STORE_CORS_ORIGIN
+              value: {{ required "publicUrl is required for the bundled Source Cache store's browser CORS" .Values.publicUrl | trimSuffix "/" | quote }}
+            - name: RUSTFS_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ $clientSecret }}
+                  name: {{ $name }}
                   key: AWS_ACCESS_KEY_ID
-            - name: AC_STORE_CLIENT_SECRET_KEY
+            - name: RUSTFS_SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ $clientSecret }}
+                  name: {{ $name }}
                   key: AWS_SECRET_ACCESS_KEY
+          volumeMounts:
+            - name: setup
+              mountPath: /setup
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

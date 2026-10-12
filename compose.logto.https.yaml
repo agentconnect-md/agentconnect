@@ -72,22 +72,14 @@ services:
       ADMIN_ENDPOINT: 'http://localhost:${AGENTCONNECT_LOGTO_ADMIN_PORT:-3002}'
       TRUST_PROXY_HEADER: 'true'
 
-  # S3-compatible store for console file transfers. Reachable only through Caddy's HTTPS origin, because signed URLs must be https://.
+  # RustFS, an S3-compatible store for console file transfers. Reachable only through Caddy's HTTPS origin, because signed URLs must be https://.
   object-store:
-    image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/minio:${AGENTCONNECT_MINIO_VERSION:-RELEASE.2025-10-15T17-29-55Z}
-    platform: linux/amd64
-    pull_policy: missing
-    build:
-      context: .
-      dockerfile: docker/minio.Dockerfile
+    image: rustfs/rustfs:${AGENTCONNECT_RUSTFS_VERSION:-1.0.1}
     environment:
-      MINIO_ROOT_USER: agentconnect-admin
-      MINIO_ROOT_PASSWORD: '${AGENTCONNECT_OBJECT_STORE_ROOT_PASSWORD:?set AGENTCONNECT_OBJECT_STORE_ROOT_PASSWORD before enabling HTTPS}'
-      # Browsers PUT and GET signed URLs straight from the console origin.
-      MINIO_API_CORS_ALLOW_ORIGIN: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
-      MINIO_BROWSER: 'off'
+      RUSTFS_ACCESS_KEY: '${AGENTCONNECT_OBJECT_STORE_ACCESS_KEY:?set AGENTCONNECT_OBJECT_STORE_ACCESS_KEY before enabling HTTPS}'
+      RUSTFS_SECRET_KEY: '${AGENTCONNECT_OBJECT_STORE_SECRET_KEY:?set AGENTCONNECT_OBJECT_STORE_SECRET_KEY before enabling HTTPS}'
     healthcheck:
-      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:9000/minio/health/ready']
+      test: ['CMD', 'curl', '-fsS', '-o', '/dev/null', 'http://127.0.0.1:9000/health']
       interval: 5s
       timeout: 3s
       retries: 20
@@ -95,22 +87,22 @@ services:
       - object-store-data:/data
     restart: unless-stopped
 
-  # Creates the bucket, its lifecycle rules and the Control Plane's scoped client; safe to rerun on every start.
+  # Creates the bucket, its lifecycle rules and browser CORS; safe to rerun on every start.
   object-store-setup:
-    image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/minio:${AGENTCONNECT_MINIO_VERSION:-RELEASE.2025-10-15T17-29-55Z}
-    platform: linux/amd64
-    pull_policy: missing
-    command: ['ac-object-store-setup']
+    image: rustfs/rustfs:${AGENTCONNECT_RUSTFS_VERSION:-1.0.1}
+    entrypoint: ['sh', '/object-store-setup.sh']
     depends_on:
       object-store:
         condition: service_healthy
     environment:
       AC_STORE_URL: http://object-store:9000
       AC_STORE_BUCKET: agentconnect
-      MINIO_ROOT_USER: agentconnect-admin
-      MINIO_ROOT_PASSWORD: '${AGENTCONNECT_OBJECT_STORE_ROOT_PASSWORD:?set AGENTCONNECT_OBJECT_STORE_ROOT_PASSWORD before enabling HTTPS}'
-      AC_STORE_CLIENT_ACCESS_KEY: '${AGENTCONNECT_OBJECT_STORE_ACCESS_KEY:?set AGENTCONNECT_OBJECT_STORE_ACCESS_KEY before enabling HTTPS}'
-      AC_STORE_CLIENT_SECRET_KEY: '${AGENTCONNECT_OBJECT_STORE_SECRET_KEY:?set AGENTCONNECT_OBJECT_STORE_SECRET_KEY before enabling HTTPS}'
+      AC_STORE_CORS_ORIGIN: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
+      RUSTFS_ACCESS_KEY: '${AGENTCONNECT_OBJECT_STORE_ACCESS_KEY:?set AGENTCONNECT_OBJECT_STORE_ACCESS_KEY before enabling HTTPS}'
+      RUSTFS_SECRET_KEY: '${AGENTCONNECT_OBJECT_STORE_SECRET_KEY:?set AGENTCONNECT_OBJECT_STORE_SECRET_KEY before enabling HTTPS}'
+    configs:
+      - source: object-store-setup
+        target: /object-store-setup.sh
     restart: 'no'
 
   # Publishes Caddy's internal root certificate, and never its key, for the Control Plane to trust at process start.
@@ -160,6 +152,9 @@ services:
       - admin
 
 configs:
+  # One setup script for Compose and the chart.
+  object-store-setup:
+    file: ./charts/agentconnect/files/object-store-setup.sh
   caddyfile:
     content: |
       {

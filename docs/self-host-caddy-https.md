@@ -55,8 +55,7 @@ LOGTO_POSTGRES_PASSWORD=<random-url-safe-password>
 AGENTCONNECT_API_KEY_PEPPER=<random-32+-character-value>
 AGENTCONNECT_RELAY_TOKEN=<random-token>
 
-AGENTCONNECT_OBJECT_STORE_ROOT_PASSWORD=<random-password>
-AGENTCONNECT_OBJECT_STORE_ACCESS_KEY=agentconnect-control-plane
+AGENTCONNECT_OBJECT_STORE_ACCESS_KEY=agentconnect-store
 AGENTCONNECT_OBJECT_STORE_SECRET_KEY=<random-password>
 ```
 
@@ -169,7 +168,7 @@ docker compose \
 curl -k https://192.0.2.10:1443/cp/readyz
 curl -k https://192.0.2.10:1443/relay/readyz
 curl -k https://192.0.2.10:1444/oidc/.well-known/openid-configuration
-curl -k https://192.0.2.10:1445/minio/health/ready
+curl -k https://192.0.2.10:1445/health
 ```
 
 The endpoints should return HTTP 200. Only Caddy should show host port
@@ -194,17 +193,17 @@ gateway root.
 
 ## Object store and file transfer
 
-The overlay runs a MinIO object store for console file transfers
+The overlay runs a [RustFS](https://rustfs.com) object store for console file transfers
 ([design](designs/source-cache-file-transfer.md)). Webchat attachments upload
 straight from the browser into the store, and large workspace files download
 from it, so neither passes through the Control Plane. Signed URLs must be
 `https://`, so browsers and daemons reach the store only through Caddy on
 `AGENTCONNECT_OBJECT_STORE_HTTPS_PORT`.
 
-On every start, `object-store-setup` creates the `agentconnect` bucket and its
-lifecycle rules, and limits the Control Plane's access key to the bucket's
-`src/` prefix. The root password is used only by the store and that setup
-container. The Control Plane signs URLs for that origin and reads the bucket
+On every start, `object-store-setup` creates the `agentconnect` bucket, its
+lifecycle rules, and a CORS rule that admits only the console origin. The store
+starts with the access key pair from `.env`, and the Control Plane uses the same
+pair. The Control Plane signs URLs for that origin and reads the bucket
 through it. To trust Caddy's certificate, it uses the root certificate that
 `caddy-ca` copies out of Caddy's data volume. The private key is not copied.
 For this reason Caddy starts before the AgentConnect services, and its routes
@@ -212,9 +211,7 @@ answer `502` until those services are healthy.
 
 Clients that download a file follow a link to the store's origin. Browsers and
 daemons must therefore trust the Caddy CA for that port as well as for the
-console. The store image is built from
-[`docker/minio.Dockerfile`](../docker/minio.Dockerfile). Compose builds it locally
-when the pinned tag cannot be pulled.
+console.
 
 The Source Cache for Git bundles is a feature of the Kubernetes daemon pool.
 Compose runs no pool members, so this overlay enables file transfer only.
