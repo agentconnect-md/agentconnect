@@ -21550,7 +21550,8 @@ export class Daemon {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
       const routing = integrationRouting(int)
-      if (!routing.gated) continue
+      // An ungated integration speaks only where nobody decided its Off (§14.9); an operator's Off stays silent.
+      if (!routing.gated && !routing.pendingChannels.includes(msg.channel)) continue
       // An ENABLED conversation never gets a report/notice — this guard makes the
       // helper safe from the pre-command call site, which sees every DM. A thread of an
       // enabled channel is enabled too (the rule is scoped to the enclosing channel).

@@ -737,7 +737,8 @@ visibility.
 - **Org-visible agents keep the same routing defaults.** Unscoped mention
   default everywhere, DMs open to the whole workspace, per-channel "All
   messages" opt-in. Observed direct conversations now have rows so an editor
-  can explicitly turn those defaults Off.
+  can explicitly turn those defaults Off. A place the platform marks external
+  is the exception: it starts Off (§14.9).
 - **Restricted agents are gated: every conversation defaults to Off.** When
   the bot is invited to a channel, the channel appears on the integration card
   in a pending/Off state. An **editor must enable it in the Console**, choosing
@@ -1109,3 +1110,52 @@ so the very first message of a brand-new DM is still refused with the §14.3
 notice; the conversation is open from the next message on. Closing that gap
 means shipping the authorized member ids to the edge in the integration spec,
 which is a separate change with its own recompute-and-push triggers.
+
+### 14.9 External places start closed
+
+**Status:** Implemented.
+
+**Rule.** "Everyone" means everyone in the organization, and a place the platform marks
+as shared with people outside it is not that audience. A NEW conversation row whose
+report already carries an external reason (`externalReason`, the detection
+[assistant-mode.md](assistant-mode.md) §5.3 defines; Slack Connect today) is seeded Off
+for an ungated agent too, with `triggerChosen = false`. Nothing else changes: existing
+rows keep their trigger even when they turn external later, a gated agent keeps §14.2's
+seeding, and enabling the row in the Console works as for any row and records the choice.
+There is no setting and no new column.
+
+**One seed, every path.** The open default — Off for an external place, otherwise On for
+a 1:1 DM and Mention for a room — is one function the repository applies on both create
+paths: `replaceSnapshot` (the socket bot's `integration/channels` and the shared bot's
+membership snapshot) and `upsertConversation` (the shared bot's `rc/bot-conversation`).
+A caller with a stricter seed (a gated install's Off, §14.8's opened DM) still passes it
+and wins.
+
+**Pending, not chosen.** Off already fences every path, because it is `mutedChannels` on
+both arbiters (thread affinity, explicit targets and agent-authored recipients included),
+so the change adds no fence. What it adds is which Off still answers. An external Off that
+nobody chose behaves like the gate: an addressed message (an @-mention or a DM) gets the
+§14.3 one-time notice through the existing notice paths. An Off an editor chose stays
+silent. The edge learns the difference from a subset of the muted set:
+
+- **Daemon:** `IntegrationSpec.core.pendingChannels`, emitted only when non-empty, on an
+  ungated integration's direct and send-only specs. `maybeGatedNotice` speaks for a
+  listed conversation as it does for a gated integration.
+- **Relay:** the existing `gatedOffChannels` set also carries these conversations, read
+  conversation-wide (any row's choice, any row's detection), and the relay posts the notice
+  for a listed conversation even on a bot with no gated member.
+
+Pending also requires the place to still be marked external: an Off from before
+`triggerChosen` existed reads as unchosen and may well be an operator's, so an internal one
+stays silent. The Console lists the row Off, as it does a gated agent's undecided row.
+An older daemon drops the field and an older relay notices only on a bot with a gated
+member, so either falls back to a silent Off.
+
+**Push.** Seeding such a row changes routing, so it pushes exactly as enabling one does.
+On the socket path a new external row always changes the detected set, which already
+re-converges the agent's integrations; the shared-bot paths re-sync routes and send-only
+specs after every report.
+
+**Known edge.** Between the bot entering a place and the membership report landing, an
+ungated agent still has its unscoped defaults there, so a mention in that window can be
+answered.

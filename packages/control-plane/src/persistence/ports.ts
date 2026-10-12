@@ -5504,22 +5504,7 @@ export interface ReportedChannel {
  * both internal trust domains (§4).
  */
 export interface IntegrationChannelRepo {
-  /**
-   * Converge to the daemon's channel report (latest-wins): upsert every reported
-   * conversation (refreshing name/isPrivate, PRESERVING the stored trigger).
-   * Authoritative membership snapshots delete kind='channel' rows the bot is no
-   * longer a member of; non-authoritative observed-conversation reports retain
-   * missing rows because platforms such as Telegram cannot enumerate all chats.
-   * Direct rows are always retained. `defaultTrigger` seeds NEW rows only ('off'
-   * for a gated integration); otherwise a 1:1 DM starts On and a room starts on
-   * Mention. Existing rows keep their trigger.
-   *
-   * `removed` names conversations to DELETE outright, whatever the report's kind.
-   * It is how a non-authoritative reporter retires a row at all — its omissions
-   * mean nothing — and it deletes DM rows too, since it states a fact about the
-   * conversation rather than inferring one from an incomplete listing. Applied
-   * after the upsert, so a conversation in both lists ends up deleted.
-   */
+  /** Converge to a channel report: known rows keep their trigger, new ones take `defaultTrigger` or the open default (§14.9); an authoritative snapshot drops absent channel rows, `removed` deletes outright. */
   replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
@@ -5537,9 +5522,7 @@ export interface IntegrationChannelRepo {
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */
   deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean>
   listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]>
-  /** Incremental conversation upsert (§14.3, direct rows): create the row (kind,
-   *  name, `defaultTrigger`) when absent; when it exists refresh metadata while
-   *  preserving the operator-owned trigger. */
+  /** Incremental conversation upsert (§14.3): a new row takes `defaultTrigger` or the open default (§14.9), a known one keeps its trigger. */
   upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,

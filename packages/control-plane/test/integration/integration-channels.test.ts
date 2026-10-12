@@ -34,6 +34,7 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { handleIntegrationChannels } from '../../src/ws/handlers/index.js'
+import { convergeIntegrationGating } from '../../src/orchestrator/integrationPush.js'
 import { IntegrationId } from '../../src/domain/ids.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
@@ -2413,5 +2414,106 @@ describe('detected external places', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(spy.upserts.at(-1)!.u.core.externalChannels).toEqual(['C1'])
+  })
+})
+
+// resource-visibility.md §14.9: "Everyone" is the organization, so a place the platform marks external starts closed.
+describe('external places start closed', () => {
+  const rowsOf = async (id: string) =>
+    new Map(
+      (await new PgIntegrationChannelRepo(prisma).listForIntegration(IntegrationId(id))).map((r) => [r.channelId, r])
+    )
+
+  /** A report through the real handler whose re-converge is the production push, so the spec it sends is observable. */
+  async function setUp(opts: { restricted?: boolean } = {}) {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const app = running
+    const id = await install(app)
+    if (opts.restricted) {
+      const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+      await prisma.agent.update({
+        where: { id: integration.agentId },
+        data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+      })
+    }
+    spy.upserts.length = 0
+    const converge = (agent: unknown) => convergeIntegrationGating(app.deps as never, agent as never)
+    const send = (channels: IntegrationChannel[]) =>
+      report(DAEMON, id, channels, undefined, undefined, undefined, undefined, undefined, converge)
+    return { spy, id, send }
+  }
+
+  it('seeds an external channel Off, undecided, and pushes the spec that fences it and keeps its notice', async () => {
+    const { spy, id, send } = await setUp()
+    await send([
+      { id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C_INT', name: 'deploys', externalReason: null }
+    ])
+    const rows = await rowsOf(id)
+    expect(rows.get('C_EXT')).toMatchObject({ trigger: 'off', triggerChosen: false })
+    expect(rows.get('C_INT')).toMatchObject({ trigger: 'mention', triggerChosen: false })
+    const core = spy.upserts.at(-1)!.u.core
+    expect(core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(core.mutedChannels).toEqual(['C_EXT'])
+    expect(core.pendingChannels).toEqual(['C_EXT'])
+  })
+
+  it('leaves an internal report on the ordinary defaults and pushes nothing', async () => {
+    const { spy, id, send } = await setUp()
+    await send([
+      { id: 'C_INT', name: 'deploys', externalReason: null },
+      { id: 'D1', name: '@alice', kind: 'im' }
+    ])
+    const rows = await rowsOf(id)
+    expect(rows.get('C_INT')?.trigger).toBe('mention')
+    expect(rows.get('D1')?.trigger).toBe('any')
+    expect(spy.upserts).toHaveLength(0)
+  })
+
+  it("keeps a restricted agent's own gate, which needs no pending list", async () => {
+    const { spy, id, send } = await setUp({ restricted: true })
+    await send([{ id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' }])
+    expect((await rowsOf(id)).get('C_EXT')?.trigger).toBe('off')
+    const core = spy.upserts.at(-1)!.u.core
+    expect(core.gated).toBe(true)
+    expect(core.bindRules).toEqual([])
+    expect(core).not.toHaveProperty('pendingChannels')
+  })
+
+  it('never touches an existing row that turns external later', async () => {
+    const { id, send } = await setUp()
+    await send([{ id: 'C1', name: 'deploys', externalReason: null }])
+    await send([{ id: 'C1', name: 'deploys', externalReason: 'externallyShared' }])
+    expect((await rowsOf(id)).get('C1')).toMatchObject({ trigger: 'mention', externalReason: 'externallyShared' })
+  })
+
+  it('enabling the row records the choice and clears pending; an Off chosen afterwards stays silent', async () => {
+    const { spy, id, send } = await setUp()
+    await send([{ id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' }])
+    const patch = (trigger: string) =>
+      running!.app.inject({ method: 'PATCH', url: `${ORG}/integrations/${id}/channels/C_EXT`, payload: { trigger } })
+
+    expect((await patch('mention')).statusCode).toBe(200)
+    expect((await rowsOf(id)).get('C_EXT')).toMatchObject({ trigger: 'mention', triggerChosen: true })
+    let core = spy.upserts.at(-1)!.u.core
+    expect(core.mutedChannels).toEqual([])
+    expect(core).not.toHaveProperty('pendingChannels')
+
+    expect((await patch('off')).statusCode).toBe(200)
+    core = spy.upserts.at(-1)!.u.core
+    expect(core.mutedChannels).toEqual(['C_EXT'])
+    expect(core).not.toHaveProperty('pendingChannels')
+  })
+
+  it('seeds an external conversation Off on the incremental path and keeps the detection', async () => {
+    const id = (await setUp()).id
+    const row = await new PgIntegrationChannelRepo(prisma).upsertConversation(IntegrationId(id), {
+      id: 'G_EXT',
+      kind: 'mpim',
+      externalReason: 'externallyShared'
+    })
+    expect(row).toMatchObject({ trigger: 'off', triggerChosen: false, externalReason: 'externallyShared' })
   })
 })
