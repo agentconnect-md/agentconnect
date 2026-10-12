@@ -219,7 +219,11 @@ the `x-amz-checksum-sha256` and `x-amz-tagging` headers (chart README).
 ## 8. Limitations
 
 - **No steering with files.** A steered turn carries only the attachment marker, so the
-  console never steers a turn that has files; it queues it instead.
+  console never steers a turn that has files, and the daemon refuses to: a message with an
+  upload queues behind the live turn, and a steer-only one is refused `busy`.
+- **Peers see the marker only.** In a multi-agent conversation the relay gives the
+  participants a turn does not address the `[attached: …]` marker in their context copy,
+  never the upload itself.
 - **A long-held request.** A workspace transfer holds the HTTP request open while the
   daemon uploads, and a CP failover mid-upload loses the reply.
   - An ingress idle timeout shorter than the upload fails the request.
