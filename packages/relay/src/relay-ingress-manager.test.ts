@@ -559,6 +559,59 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
     })
   })
 
+  it('routes a permission or elicitation click on a shared app to the integration its card names, and drops one naming none', async () => {
+    const accept = async (msg: RdMsgPlatformAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true })
+    const first = vi.fn(accept)
+    const second = vi.fn(accept)
+    const daemons: Record<string, RelayDaemonConnection> = {
+      [DAEMON_ID]: { sendMsg: first } as unknown as RelayDaemonConnection,
+      [OTHER_DAEMON_ID]: { sendMsg: second } as unknown as RelayDaemonConnection
+    }
+    const manager = new RelayIngressManager(deps({ getDaemon: (daemonId) => daemons[daemonId] }))
+    const internals = internalsOf(manager)
+    internals.router.upsert({
+      botId: BOT_ID,
+      platform: 'feishu',
+      secrets: { verificationToken: 'verify-token' },
+      apiAppId: 'cli_http_app',
+      members: [
+        { daemonId: DAEMON_ID, agentIds: [AGENT_ID] },
+        { daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] }
+      ],
+      agents: [
+        { agentId: AGENT_ID, name: 'Agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID },
+        {
+          agentId: OTHER_AGENT_ID,
+          name: 'Review Agent',
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID
+        }
+      ],
+      routes: []
+    })
+    const target = { v: 1, agentId: OTHER_AGENT_ID, integrationId: OTHER_INTEGRATION_ID }
+    const click = (value: Record<string, unknown>): WireFeishuCardActionEvent => ({
+      context: { open_message_id: 'om_card', open_chat_id: 'oc_chat' },
+      operator: { open_id: 'ou_human', union_id: 'on_human' },
+      action: { tag: 'button', value }
+    })
+    const permission = { action: 'agentconnect_approval', request: 'req-1', option: '0' }
+    const elicitation = { action: 'agentconnect_elicit', request: 'req-2', token: 'ok' }
+
+    for (const value of [permission, elicitation])
+      await forwardFeishuCardAction(internals.ingressHost, BOT_ID, click({ ...value, target }), `evt-${value.request}`)
+    expect(first).not.toHaveBeenCalled()
+    expect(second.mock.calls.map(([msg]) => [msg.agentId, msg.integrationId])).toEqual([
+      [OTHER_AGENT_ID, OTHER_INTEGRATION_ID],
+      [OTHER_AGENT_ID, OTHER_INTEGRATION_ID]
+    ])
+
+    // Without a target the shared app has no sole integration, so the click reaches nobody.
+    await forwardFeishuCardAction(internals.ingressHost, BOT_ID, click(permission), 'evt-untargeted')
+    expect(first).not.toHaveBeenCalled()
+    expect(second).toHaveBeenCalledTimes(2)
+  })
+
   it('ignores the RETIRED Feishu-named ack slot — the generic response is the one answer', async () => {
     // S1b cleanup: the named slot left RdAck one release after every fleet daemon
     // began filling `response` (#521). An ack carrying only the stale key (which

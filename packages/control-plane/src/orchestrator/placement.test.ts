@@ -321,7 +321,7 @@ describe('integrationToSpec chatAuthority', () => {
     }
   )
 
-  it('names anyone in a conversation whose members cannot be checked yet, synced or not', async () => {
+  it('names the agent’s editors on synced Feishu/Lark, whose members are matched by union_id', async () => {
     const feishu = { ...INTEGRATION, platform: 'feishu' as const }
     const spec = await integrationToSpec(
       PLATFORMS,
@@ -329,6 +329,18 @@ describe('integrationToSpec chatAuthority', () => {
       feishu,
       bot({ platform: 'feishu' }),
       { botToken: 'secret', appToken: 'cli_a', signingSecret: null }
+    )
+    expect(spec?.core.chatAuthority).toBe('editors')
+  })
+
+  it('names anyone in a conversation whose members its platform cannot match, synced or not', async () => {
+    const telegram = { ...INTEGRATION, platform: 'telegram' as const }
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      policies({ telegram: 'enabled' }),
+      telegram,
+      bot({ platform: 'telegram' }),
+      { botToken: '123:abc', appToken: null, signingSecret: null }
     )
     expect(spec?.core.chatAuthority).toBe('participants')
   })

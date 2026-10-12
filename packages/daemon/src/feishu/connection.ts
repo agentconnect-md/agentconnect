@@ -10,6 +10,7 @@ import type {
   WireFeishuCardActionTarget
 } from '@agentconnect.md/protocol'
 import { parseFeishuElicit } from '../platforms/feishu/elicit-card.js'
+import { parseFeishuApproval } from '../platforms/feishu/approval-card.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
@@ -117,8 +118,19 @@ export interface FeishuDeps {
   /** Fired when a user selects Cancel run from an active reply card's overflow menu.
    * The connection resolves the callback message id to the turn's local session key. */
   onStatusAction?: (a: { kind: 'cancel'; sessionKey: string; actor?: InteractionActor }) => void
-  /** A tapped elicitation option, or Dismiss (`token` null) — §7.3. */
-  onElicitChoice?: (a: { requestId: string; token: string | null; actor?: InteractionActor }) => Promise<void>
+  /** A tapped elicitation option, or Dismiss (`token` null) — §7.3; a refusal only the tapper is told comes back. */
+  onElicitChoice?: (a: {
+    requestId: string
+    token: string | null
+    actor?: InteractionActor
+  }) => Promise<string | undefined>
+  /** A clicked permission-card option, by position; a refusal only the clicker is told comes back. */
+  onApprovalChoice?: (a: {
+    requestId: string
+    option: number
+    ts?: string
+    actor?: InteractionActor
+  }) => Promise<string | undefined>
   /** One submitted elicitation form: every named control's value, as CardKit reports them. */
   onElicitSubmit?: (a: {
     requestId: string
@@ -129,6 +141,14 @@ export interface FeishuDeps {
   log?: Logger
   /** Min spacing (ms) between outbound writes (serialized send-queue). Tests pass 0. */
   sendIntervalMs?: number
+}
+
+/** Who clicked a card: the app-scoped open_id they act under, their union_id a synced organization matches them by, and their name. */
+function cardActor(event: WireFeishuCardActionEvent, actorId: string | undefined): InteractionActor | undefined {
+  if (!actorId) return undefined
+  const unionId = event.operator?.union_id
+  const name = event.operator?.name?.trim()
+  return { userId: actorId, ...(unionId ? { memberId: unionId } : {}), ...(name ? { name } : {}) }
 }
 
 /** The raw `card.action.trigger` body delivered by the Lark WSClient. CardKit v2
@@ -244,7 +264,9 @@ export interface FeishuClientHandle {
    * interactions. Resolves once the first handshake succeeds. */
   startWs(
     onEvent: (event: FeishuRawEvent) => void,
-    onCardAction: (event: FeishuRawCardActionEvent) => FeishuCardActionResponse | undefined
+    onCardAction: (
+      event: FeishuRawCardActionEvent
+    ) => FeishuCardActionResponse | undefined | Promise<FeishuCardActionResponse | undefined>
   ): Promise<void>
   /** Close the WSClient (there is NO WSClient.stop()). */
   close(): void
@@ -764,16 +786,27 @@ export class FeishuConnection implements PlatformConnection {
   /** Resolve an active reply's overflow selection and acknowledge it within Lark's
    * callback deadline. The daemon owns the actual cancellation and resulting card
    * lifecycle; removing the mapping first makes redelivered clicks idempotent. */
-  handleCardAction(event: FeishuRawCardActionEvent): FeishuCardActionResponse | undefined {
+  async handleCardAction(event: FeishuRawCardActionEvent): Promise<FeishuCardActionResponse | undefined> {
     const messageId = event.context?.open_message_id ?? event.open_message_id
     const channel = event.context?.open_chat_id ?? event.open_chat_id
     const actorId = event.operator?.open_id ?? event.operator?.user_id
     const value = asRecord(event.action?.value)
+    // A permission card carries its request in its own payload too; a refusal is answered in the toast only the clicker sees.
+    const approval = parseFeishuApproval(value)
+    if (approval) {
+      const actor = cardActor(event, actorId)
+      const refusal = await this.deps.onApprovalChoice?.({
+        ...approval,
+        ...(messageId ? { ts: messageId } : {}),
+        ...(actor ? { actor } : {})
+      })
+      return refusal ? { toast: { type: 'warning', content: refusal } } : undefined
+    }
     // An elicitation card carries the request in its OWN payload, so it needs no message-to-session
     // registry and is matched before the session-control card below. Anyone who can see it may
     // answer it, which is the same rule its buttons follow on every other surface.
     const elicit = parseFeishuElicit(value)
-    if (elicit) return this.onElicitCardAction(event, elicit, actorId)
+    if (elicit) return await this.onElicitCardAction(event, elicit, actorId)
     if (
       !messageId ||
       !actorId ||
@@ -797,12 +830,12 @@ export class FeishuConnection implements PlatformConnection {
   /** Route one interaction on an elicitation card: a Confirm carries every named control at once
    *  in `form_value`, and every other control is a whole answer in itself. The toast is what tells
    *  the reader the tap landed — a CardKit callback that answers nothing shows them nothing. */
-  private onElicitCardAction(
+  private async onElicitCardAction(
     event: FeishuRawCardActionEvent,
     elicit: { requestId: string; token: string | null },
     actorId?: string
-  ): FeishuCardActionResponse | undefined {
-    const actor: InteractionActor | undefined = actorId ? { userId: actorId } : undefined
+  ): Promise<FeishuCardActionResponse | undefined> {
+    const actor = cardActor(event, actorId)
     const form = event.action?.form_value
     if (form && this.deps.onElicitSubmit) {
       const values: Record<string, string | string[]> = {}
@@ -816,8 +849,13 @@ export class FeishuConnection implements PlatformConnection {
       return undefined
     }
     if (!this.deps.onElicitChoice) return undefined
-    void this.deps.onElicitChoice({ requestId: elicit.requestId, token: elicit.token, ...(actor ? { actor } : {}) })
-    return undefined
+    const refusal = await this.deps.onElicitChoice({
+      requestId: elicit.requestId,
+      token: elicit.token,
+      ...(actor ? { actor } : {})
+    })
+    // Only the tapper sees a toast, and the card stays as everyone else sees it.
+    return refusal ? { toast: { type: 'warning', content: refusal } } : undefined
   }
 
   /** Send one chunk: reply INTO the topic thread when `anchor` is a message id (the

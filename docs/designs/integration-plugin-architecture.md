@@ -532,21 +532,34 @@ looked up exactly, so webchat, hook and dream turns inherit neither:
 - `approvalCards` (`platforms/approval-card.ts`) draws a permission request
   (`session/request_permission`) as a card of the runtime's own choices. It replaced
   turn-chrome's `chatInputCards` flag and the coordinator's `instanceof SlackConnection`
-  arm; Slack, Telegram and Discord implement it, and its presence is what tells core a
-  surface takes approvals in chat at all. A surface builds the live card, its settled
+  arm; Slack, Telegram, Discord, Feishu/Lark and Google Chat implement it, and its
+  presence is what tells core a surface takes approvals in chat at all. QQ does not: its
+  message buttons need a provider grant a bot cannot count on. A card is built for the
+  connection it is posted on, the turn's reply connection or, for a surface that posts
+  through a leased egress (Google Chat), that egress. A surface builds the live card, its settled
   form, a background sub-session's card and notice, and the form a restart's sweep
   rewrites; it posts on the turn's apply chain (`send`) or into another conversation of
   the platform (`post`, for a sub-session's request), and rewrites in place. `maxOptions`
   never exceeds the cap every surface and the console share (#1969). A button carries
   the option's id where the payload allows (Slack) and its position where it is capped
-  (Telegram's 64-byte `callback_data`); core resolves either against the request.
+  (Telegram's 64-byte `callback_data`, and Discord's, Feishu/Lark's and Google Chat's
+  for uniformity); core resolves either against the request. Core also hands the card
+  the agent and integration it is posted through (`via`): Feishu/Lark's callbacks, its
+  elicitation cards' included, name them as its reply cards do, so the relay routes a
+  click on an app shared by several agents to that integration rather than to a sole one.
+  A Google Chat app serves one agent, so its relay needs no such target.
 
 Core judges every click the same way (the level, then the conversation's
 `chatSurface`, then `chatActor`) and records the clicker as an `InteractionActor`. A
 refusal is said only to the clicker: a surface that can reach them from the card alone
-implements `tellPrivately` (Slack's ephemeral message); otherwise core hands the words
-back to the interaction's own ingress, which answers it privately (Telegram's
-`answerCallbackQuery` alert, Discord's ephemeral follow-up).
+implements `tellPrivately` (Slack's ephemeral message, Google Chat's private message);
+otherwise core hands the words back to the interaction's own ingress, which answers it
+privately (Telegram's `answerCallbackQuery` alert, Discord's ephemeral follow-up,
+Feishu/Lark's card-action toast). Where permissions are synced, `chatActor` matches the
+clicker by the id the platform's daemon module names (`DaemonPlatformModule.chatMemberKey`,
+§7.4), the user id when the module has no such member. Feishu/Lark's names the cross-app
+`InteractionActor.memberId` its events carry beside the app-scoped open_id (its union_id),
+and an action without one is refused.
 
 ### 7.4 Adapter strategy functions
 
@@ -566,6 +579,10 @@ platform with a shared reply connection keeps posting them through it; one
 whose connection is outside that set (Google Chat) posts them through
 `notice`, so core never branches on the platform. A surface without the member
 posts nothing, as before.
+
+`DaemonPlatformModule.chatMemberKey?` is the same kind of member: the id a
+synced organization matches a platform's chat member to a console account by,
+which only Feishu/Lark's module overrides (§7.3).
 
 The relay-ingress strategy is a member of the daemon platform contract rather
 than a core table keyed by platform name: `DaemonPlatformModule.relayIngress?`
@@ -802,6 +819,18 @@ Consequences the slot must own:
   core only composes `canView(agent)` with those results. Preset default-binding
   remains a documented core→plugin reference (preset provisioning names a
   platform's install machinery).
+- **Who may take chat actions on a synced platform** is a provider member,
+  `chatMemberTenant(bot)`: the tenant a bot's chat members are matched to
+  console accounts under (Slack's workspace, Feishu/Lark's region), read off the
+  bot row the provider already projects. Its presence is the whole platform
+  fact the spec projection reads: an integration projects `chatAuthority:
+'editors'` only while the organization syncs that platform's session access
+  and its provider has the member. The anonymous `chat-actor-v1` verify uses the
+  same member, comparing the clicker's id with the ones an editor linked under
+  that tenant (`LogtoIdentityService.chatIdentitiesFor`). It is not viewer-identity
+  composition, which stays with the session-access plugins: it projects nothing
+  about who may view a session, and needs none of their audience caches or API
+  clients.
 
 ## 10. Web Slot
 

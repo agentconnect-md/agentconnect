@@ -20,7 +20,7 @@
  * already treats as an ask nobody could answer.
  */
 import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
-import { elicitFormBlockId } from '@agentconnect.md/protocol'
+import { elicitFormBlockId, type WireFeishuCardActionTarget } from '@agentconnect.md/protocol'
 import type {
   ElicitCardAsk,
   ElicitCardDraft,
@@ -34,7 +34,7 @@ import type {
   ElicitCardTurn
 } from '../elicit-card.js'
 import type { FeishuConnection } from '../../feishu/connection.js'
-import { FEISHU_MESSAGE_LIMIT } from '../../feishu/render.js'
+import { FEISHU_MESSAGE_LIMIT, feishuCardTarget } from '../../feishu/render.js'
 import {
   clampTo,
   elicitFormFieldHint,
@@ -49,11 +49,11 @@ import {
 /** Our own cap on how many options one card offers. Feishu publishes no number this code can
  *  check, so this is Slack's button cap re-used deliberately rather than a platform limit dressed
  *  up as one: a list past it is declined whole, never trimmed to fit. */
-const FEISHU_ELICIT_MAX_OPTIONS = 24
+export const FEISHU_ELICIT_MAX_OPTIONS = 24
 
 /** Our own cap on one label, for the same reason — the 75 characters a reduced option label
  *  already clamps to. */
-const FEISHU_LABEL_CAP = 75
+export const FEISHU_LABEL_CAP = 75
 
 /** How much of the answer a settled card echoes back. What the READER sees is clamped; what the
  *  AGENT receives is not (#1844), because the accepted content is built from the raw answer. */
@@ -97,11 +97,13 @@ export const FEISHU_ELICIT_SURFACE: ElicitSurface = {
   }
 }
 
-/** The payload one of this card's controls carries back, as CardKit hands it to us: an object,
- *  not a string, so the request and the token ride as their own fields rather than being parsed
- *  out of one. Pure. */
-export function feishuElicitValue(requestId: string, token: string): Record<string, string> {
-  return { action: FEISHU_ELICIT_ACTION, request: requestId, token }
+/** One control's callback payload: the request, the token, and the integration the relay routes it to. Pure. */
+export function feishuElicitValue(
+  requestId: string,
+  token: string,
+  target?: WireFeishuCardActionTarget
+): Record<string, unknown> {
+  return { action: FEISHU_ELICIT_ACTION, request: requestId, token, ...(target ? { target } : {}) }
 }
 
 /** The request and the token one card callback names — null for a payload this scheme did not
@@ -123,14 +125,14 @@ export function feishuElicitText(message: string): string {
 }
 
 /** A `plain_text` div for text quoting the agent or the reader: a `markdown` element would honour their `[label](url)`. */
-function feishuPlainText(content: string): Record<string, unknown> {
+export function feishuPlainText(content: string): Record<string, unknown> {
   return { tag: 'div', text: { tag: 'plain_text', content } }
 }
 
 /** A row of buttons, as CardKit 2.0 spells one: buttons live directly in `elements`, and a
  *  `column_set` is what puts several on one line — the same layout this repo's own reply card
  *  already uses. JSON 2.0 has no `tag: 'action'` wrapper at all. Pure. */
-function feishuButtonRow(buttons: Record<string, unknown>[]): Record<string, unknown> {
+export function feishuButtonRow(buttons: Record<string, unknown>[]): Record<string, unknown> {
   return {
     tag: 'column_set',
     flex_mode: 'flow',
@@ -139,22 +141,21 @@ function feishuButtonRow(buttons: Record<string, unknown>[]): Record<string, unk
   }
 }
 
-function feishuDismissButton(requestId: string): Record<string, unknown> {
+function feishuDismissButton(requestId: string, target?: WireFeishuCardActionTarget): Record<string, unknown> {
   return {
     tag: 'button',
     text: { tag: 'plain_text', content: 'Dismiss' },
     type: 'default',
-    behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, FEISHU_ELICIT_DISMISS) }]
+    behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, FEISHU_ELICIT_DISMISS, target) }]
   }
 }
 
-/** The ONE-TAP card: one button per option plus Dismiss, each carrying its option's POSITION and
- *  never its own value — the rule every surface shares (#1844), so an enum of paths or ids can be
- *  offered at all. Pure. */
+/** The one-tap card: a button per option carrying its position, never its value (#1844), plus Dismiss. Pure. */
 export function buildFeishuElicitButtons(
   requestId: string,
   message: string,
-  options: readonly { label: string }[]
+  options: readonly { label: string }[],
+  target?: WireFeishuCardActionTarget
 ): Record<string, unknown> {
   return feishuCard([
     feishuPlainText(feishuElicitText(message)),
@@ -163,29 +164,19 @@ export function buildFeishuElicitButtons(
         tag: 'button',
         text: { tag: 'plain_text', content: clampTo(o.label, FEISHU_LABEL_CAP) },
         type: 'default',
-        behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, elicitOptionToken(i)) }]
+        behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, elicitOptionToken(i), target) }]
       })),
-      feishuDismissButton(requestId)
+      feishuDismissButton(requestId, target)
     ])
   ])
 }
 
-/**
- * The FORM card: one named control per field inside a CardKit `form`, the single Confirm that
- * submits the lot, and a Dismiss OUTSIDE the container — a form button is submit or reset, and a
- * submit validates the required fields, which is exactly the state a refusal has to work in.
- *
- * Every control is named by the same {@link elicitFormBlockId} a Slack Confirm submits under, and
- * every option carries its POSITION — so what comes back out of this form is validated by core's
- * one re-derivation (#1815) with nothing Feishu-shaped left in it.
- *
- * Null when a field has no control here: an option list past what this card offers. Declined
- * whole, never trimmed, for the same reason every other surface declines one. Pure.
- */
+/** The form card: a control per field named as a Slack Confirm's (#1815), one Confirm, Dismiss outside; null past the option cap. Pure. */
 export function buildFeishuElicitForm(
   requestId: string,
   params: CreateElicitationRequest,
-  form: readonly ElicitTarget[]
+  form: readonly ElicitTarget[],
+  target?: WireFeishuCardActionTarget
 ): Record<string, unknown> | null {
   if (!form.length) return null
   const required = new Set(elicitRequiredProps(params))
@@ -235,14 +226,12 @@ export function buildFeishuElicitForm(
           type: 'primary',
           form_action_type: 'submit',
           name: `${FEISHU_ELICIT_FORM_ID}_submit`,
-          behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, FEISHU_ELICIT_CONFIRM) }]
+          behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, FEISHU_ELICIT_CONFIRM, target) }]
         }
       ]
     },
-    // Dismiss stands OUTSIDE the form, and has to: a form button is submit or reset, and submit
-    // validates the required fields. The reader's one explicit refusal must work precisely when
-    // those fields are empty, which is the case a submit would refuse.
-    feishuButtonRow([feishuDismissButton(requestId)])
+    // Dismiss stays outside the form: a submit validates required fields, and a refusal must work while they are empty.
+    feishuButtonRow([feishuDismissButton(requestId, target)])
   ])
 }
 
@@ -252,7 +241,7 @@ export function buildFeishuElicitSettled(message: string, decision: string): Rec
 }
 
 /** The CardKit 2.0 envelope every card here shares. */
-function feishuCard(elements: Record<string, unknown>[]): Record<string, unknown> {
+export function feishuCard(elements: Record<string, unknown>[]): Record<string, unknown> {
   return { schema: '2.0', config: { update_multi: true }, body: { elements } }
 }
 
@@ -272,16 +261,17 @@ export const feishuElicitCards: ElicitCardFacet = {
   platform: 'feishu',
   reduction: FEISHU_ELICIT_SURFACE,
 
-  build(_host: ElicitCardHost, _turn: ElicitCardTurn, ask: ElicitCardAsk): ElicitCardDraft | null {
-    // No consent control: a CardKit link button opens the page but reports nothing back, so the
-    // daemon would never learn the reader consented — and consent is all that seam decides.
+  build(_host: ElicitCardHost, turn: ElicitCardTurn, ask: ElicitCardAsk): ElicitCardDraft | null {
+    // No consent control: a CardKit link button reports nothing back, so the daemon could never learn of consent.
     if (ask.url || !ask.form?.length) return null
+    const route = feishuCardTarget(turn.plan.agentId, turn.plan.integrationId)
     if (!feishuUsesForm(ask.form)) {
       const target = ask.form[0]!
       if (target.options.length > FEISHU_ELICIT_MAX_OPTIONS) return null
-      return { card: buildFeishuElicitButtons(ask.requestId, ask.message, target.options) } satisfies FeishuElicitDraft
+      const card = buildFeishuElicitButtons(ask.requestId, ask.message, target.options, route)
+      return { card } satisfies FeishuElicitDraft
     }
-    const card = buildFeishuElicitForm(ask.requestId, ask.params, ask.form)
+    const card = buildFeishuElicitForm(ask.requestId, ask.params, ask.form, route)
     return card ? ({ card } satisfies FeishuElicitDraft) : null
   },
 

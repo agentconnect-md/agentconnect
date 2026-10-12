@@ -234,6 +234,11 @@ function surfaceActorId(rec: PendingElicitSurface & { surface: 'chat' }, userId:
   return scope ? `${rec.facet.platform}:${scope}:${userId}` : `${rec.facet.platform}:${userId}`
 }
 
+/** The connection a turn's chat output goes through: its reply connection, else the egress it leased (Google Chat), unless its output is suppressed. */
+function chatOut(p: Pending): unknown {
+  return p.conn ?? (p.plan.suppressReplyConn ? undefined : p.egress)
+}
+
 /** The requester a background sub-session's request is recorded under: the agent itself. */
 const agentAsker = (p: Pending): { id: null; name: string } => ({ id: null, name: p.plan.agentName })
 
@@ -671,7 +676,8 @@ export class PermissionCoordinator {
       // surface owns that notice where it has one — Linear's feed has no chat transport at all,
       // so without this the gate would be invisible until the session went stale.
       if (!p.webchat || p.webchat.continuation) {
-        if (!this.host.approvalGateOpened(p, id, request) && p.conn) this.host.enqueueApply(p, { kind: 'notice', text })
+        if (!this.host.approvalGateOpened(p, id, request) && chatOut(p))
+          this.host.enqueueApply(p, { kind: 'notice', text })
       }
     } catch (err) {
       // The durable editor request is authoritative. A best-effort chat notice
@@ -937,7 +943,7 @@ export class PermissionCoordinator {
     const thread = p.plan.thread ? { thread: p.plan.thread } : {}
     const chat: ChatPermissionCard = {
       facet,
-      conn: p.conn,
+      conn: chatOut(p),
       // Where the card lands, which is not always the turn's channel (a Discord thread).
       channel: facet.cardChannel?.({ channel: p.plan.channel, ...thread }) ?? p.plan.channel,
       ...thread,
@@ -976,7 +982,11 @@ export class PermissionCoordinator {
     this.recordedWrites.delete(requestId)
     // Settled while the row was being written: never post a card for a request already resolved.
     if (!this.pendingApprovals.has(requestId)) return await result
-    const draft = facet.build({ requestId, params, sessionTarget: this.host.httpSlackSessionTarget(p) })
+    const via = p.plan.integrationId ? { via: { agentId, integrationId: p.plan.integrationId } } : {}
+    const draft = facet.build(
+      { requestId, params, sessionTarget: this.host.httpSlackSessionTarget(p), ...via },
+      chat.conn
+    )
     // The gate above admits only a list this card can offer whole; a null card is treated as never posting, not trusted away.
     const ts = draft ? await facet.send(this.elicitCardHost, p, draft) : undefined
     const live = this.pendingApprovals.get(requestId)
@@ -1006,7 +1016,11 @@ export class PermissionCoordinator {
   /** Where only editors may answer a card, an editor is also told in a DM unless the person who asked is one; the first answer decides. */
   private async dmEditorBeside(requestId: string, agentId: string, p: Pending, requesterName: string | null) {
     const asker = p.plan.requesterId
-    if (asker && (await this.host.chatActor(agentId, p.plan.integrationId, { userId: asker })) === 'allowed') return
+    // The asker as their own message named them, with the cross-app id a synced platform matches by.
+    const sender = p.entry.msg.sender
+    const memberId = sender?.id === asker ? sender.memberId : undefined
+    const actor = asker ? { userId: asker, ...(memberId ? { memberId } : {}) } : undefined
+    if (actor && (await this.host.chatActor(agentId, p.plan.integrationId, actor)) === 'allowed') return
     if (!this.pendingApprovals.has(requestId)) return
     await this.sendApprovalDm(requestId, agentId, p, requesterName)
   }
@@ -1028,7 +1042,7 @@ export class PermissionCoordinator {
           event: { kind: 'message', text: notice('markdown') }
         })
       }
-      if ((!p.webchat || p.webchat.continuation) && p.conn)
+      if ((!p.webchat || p.webchat.continuation) && chatOut(p))
         this.host.enqueueApply(p, { kind: 'notice', text: notice(turnChromeFor(p.plan.platform).noticeMarkup) })
     } catch (err) {
       this.host.log().warn(`permission option notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
@@ -1248,12 +1262,16 @@ export class PermissionCoordinator {
     // The card goes where the conversation is, outside the sub-session, so its click comes home through this integration.
     const draft =
       chatOn && permission && permission.params.options.length <= facet.maxOptions
-        ? facet.build({
-            requestId,
-            params: permission.params,
-            sessionTarget: this.host.slackDmSessionTarget(p, at.integrationId),
-            subsession: asker
-          })
+        ? facet.build(
+            {
+              requestId,
+              params: permission.params,
+              sessionTarget: this.host.slackDmSessionTarget(p, at.integrationId),
+              via: { agentId, integrationId: at.integrationId },
+              subsession: asker
+            },
+            conn
+          )
         : null
     if (!permission || !draft) {
       const ts = await post(facet.notice(asker))
@@ -2025,7 +2043,7 @@ export class PermissionCoordinator {
       return { to: this.host.chatEditorsOnly(agentId, p.plan.integrationId) ? 'none' : 'asker' }
     // A list longer than this card holds goes to the console, which offers it whole.
     const fits = options === undefined || options <= facet.maxOptions
-    return surface === 'open' && p.conn && fits ? { to: 'card', facet } : { to: 'none' }
+    return surface === 'open' && chatOut(p) && fits ? { to: 'card', facet } : { to: 'none' }
   }
 
   /** Whether `p` is still the session's live, unsuppressed turn after an await. */

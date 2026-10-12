@@ -125,6 +125,8 @@ export const NormalizedPlatformMessageSchema = z.object({
     isBot: z.boolean(),
     /** Provider-observed public display label. Presentation only; never an identity or auth input. */
     name: z.string().optional(),
+    /** The cross-app id a synced platform matches this person to a console account by, where it differs per platform (Feishu/Lark's union_id). */
+    memberId: z.string().min(1).max(256).optional(),
     appId: z.string().optional(),
     /** Public provider-hosted profile image. Auth-gated file URLs must not be exposed here. */
     avatarUrl: z.string().url().optional()

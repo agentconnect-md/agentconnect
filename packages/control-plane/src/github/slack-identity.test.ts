@@ -225,6 +225,24 @@ describe('LogtoIdentityService.feishuIdentitiesFor', () => {
   })
 })
 
+describe('LogtoIdentityService.chatIdentitiesFor', () => {
+  it('lists the Slack pair and each Feishu/Lark union_id by region, as chat members are matched', async () => {
+    const slack = slackUser(SLACK_RAW)
+    const { fetchImpl } = fakeLogto({
+      'sub-1': {
+        identities: {
+          ...slack.identities,
+          lark: { details: { rawData: { data: { union_id: 'on_lark', tenant_key: 'tenant_lark' } } } }
+        }
+      }
+    })
+    await expect(svcOf(fetchImpl).chatIdentitiesFor('sub-1')).resolves.toEqual([
+      { platform: 'slack', tenant: 'T0EXAMPLE1', memberId: 'U0EXAMPLE1' },
+      { platform: 'feishu', tenant: 'lark', memberId: 'on_lark' }
+    ])
+  })
+})
+
 /**
  * The invalidation fence. `slackIdentityFor` feeds the session-visibility
  * identity set, so invalidation must be final: a lookup that BEGAN before an

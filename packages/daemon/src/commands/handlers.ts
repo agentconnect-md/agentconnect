@@ -164,10 +164,16 @@ export interface QueueAdmission {
   onDispatched?: (turn: Promise<unknown>) => void
 }
 
-/** The human behind a chat command, in the same shape a Block Kit click reports. */
-function senderActor(msg: NormalizedMessage): InteractionActor {
+/** The human behind a chat command, in the shape a click reports: with the cross-app id a synced platform matches by. */
+export function senderActor(msg: NormalizedMessage): InteractionActor {
   const name = msg.sender.name?.trim()
-  return { userId: msg.sender.id, isBot: msg.sender.isBot, ...(name ? { name } : {}) }
+  const memberId = msg.sender.memberId
+  return {
+    userId: msg.sender.id,
+    isBot: msg.sender.isBot,
+    ...(name ? { name } : {}),
+    ...(memberId ? { memberId } : {})
+  }
 }
 
 interface CommandContext {
