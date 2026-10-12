@@ -381,8 +381,13 @@ it is switched. A click on the in-conversation card, approval elicitations and s
 included, is then honored only when the clicker's pair is an editor's linked identity, asked with
 the anonymous verify of §4.2 and cached on the daemon (an editor two minutes, a refusal thirty
 seconds, an unanswered question never). An unreachable CP, one without `chat-actor-v1`, or an
-agent over the editor cap refuses the click; it is told only to the clicker, with the console
-link and, for a member linked to no console account, how to link one, and the card stays live.
+agent over the editor cap refuses the click too. A refusal is told only to the clicker and the
+card stays live: it says only an Agent editor can answer, tells a member linked to no console
+account how to link one, or, when the check could not run, says to try again in a moment. It
+carries no console link: the session is `external` (session-visibility.md §1), so its page
+opens only to linked members with access to the same conversation, with no editor override, and
+an editor linked from another workspace would get a 404. A click in a closed conversation still
+gets the console link, as on any platform.
 Beside a permission request's card, the editor DM of §5 goes out too unless the turn owner is an
 editor, and the first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
 here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
