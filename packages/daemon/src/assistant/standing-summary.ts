@@ -60,7 +60,10 @@ export async function runningSubsessionsBlock(
 ): Promise<{ shown: string; text?: string }> {
   const { rows, total } = await store.assistantSubsessions.listOpenForParent(agentId, parent, RUNNING_SUBSESSIONS_LIMIT)
   const shown = `${total}:${rows.map((row) => row.childSessionKey).join(',')}`
-  if (opts.refresh ? total === 0 : shown === (opts.last ?? NONE_SHOWN)) return { shown }
+  // An empty list is said only when a list was shown before, a refresh included, so it is never left standing.
+  if (total === 0)
+    return (opts.last ?? NONE_SHOWN) === NONE_SHOWN ? { shown } : { shown, text: renderRunningSubsessions([], 0) }
+  if (!opts.refresh && shown === opts.last) return { shown }
   const running = await Promise.all(
     rows.map(async (row) => ({
       id: row.childSessionKey,

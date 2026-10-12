@@ -3,7 +3,12 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { renderStandingSummary, STANDING_SUMMARY_LIMIT, standingSummaryFor } from '../src/assistant/standing-summary.js'
+import {
+  renderStandingSummary,
+  runningSubsessionsBlock,
+  STANDING_SUMMARY_LIMIT,
+  standingSummaryFor
+} from '../src/assistant/standing-summary.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
@@ -304,5 +309,22 @@ describe('a main conversation’s running sub-sessions in the standing summary',
       await store?.close()
       store = undefined
     }
+  })
+
+  it('says the list emptied on a refresh too, and only once', async () => {
+    const empty = {
+      assistantSubsessions: { listOpenForParent: async () => ({ rows: [], total: 0 }) },
+      getSession: async () => undefined
+    }
+    const parent = { sessionId: 'sess-1', key: DM_KEY }
+    for (const refresh of [true, false]) {
+      const after = await runningSubsessionsBlock(empty, 'bot-a', parent, { last: '1:child-key', refresh })
+      expect(after).toEqual({ shown: '0:', text: NONE })
+      const next = await runningSubsessionsBlock(empty, 'bot-a', parent, { last: after.shown, refresh })
+      expect(next).toEqual({ shown: '0:' })
+    }
+    expect(await runningSubsessionsBlock(empty, 'bot-a', parent, { last: undefined, refresh: true })).toEqual({
+      shown: '0:'
+    })
   })
 })
