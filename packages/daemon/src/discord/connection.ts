@@ -1,9 +1,11 @@
 import {
+  ChannelType,
   Client,
   GatewayIntentBits,
   Partials,
   Events,
   MessageFlags,
+  PermissionFlagsBits,
   type Message,
   type Channel,
   type ChatInputCommandInteraction,
@@ -27,7 +29,9 @@ import {
   type DiscordSelectKind
 } from './render.js'
 import { DISCORD_ELICIT_MODAL, DISCORD_ELICIT_OPEN, parseDiscordElicit } from '../platforms/discord/elicit-card.js'
+import { parseDiscordApproval } from '../platforms/discord/approval-card.js'
 import type {
+  ChatRefusal,
   InteractionActor,
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
@@ -88,33 +92,39 @@ export function consolidateDiscord(agents: Agent[]): Map<string, ConsolidatedDis
 export interface DiscordDeps {
   group: ConsolidatedDiscordGroup
   onMessage: (msg: NormalizedMessage) => void
-  /** Fired when a user taps a status-bar button (message component). `sessionKey`
-   *  is resolved by the connection from the button's message (channel+message_id →
-   *  session key, registered when the status bar was posted). */
+  /** A status-bar button tap, its session found by the button's message; a refused change returns what only the tapper is told. */
   onStatusAction?: (a: {
     kind: 'cancel' | 'set-fast'
     sessionKey: string
     fastMode?: boolean
     /** Who tapped it, so the daemon can record the operator behind a session change. */
     actor?: InteractionActor
-  }) => void
-  /** Fired when a user taps a select-card button (`/models` `/effort` `/permission`).
-   *  Applies the choice for `sessionKey` and returns the re-rendered card so the
-   *  connection edits the tapped message in place (the current option now flagged).
-   *  Returns undefined to leave the card unchanged (no session / stale option). */
+  }) => void | Promise<ChatRefusal | undefined>
+  /** A select-card tap: the card to redraw in place, a `notice` only the tapper is told, or undefined to leave it. */
   onSelectAction?: (a: {
     kind: DiscordSelectKind
     index: number
     sessionKey: string
     actor?: InteractionActor
-  }) => Promise<{ text: string; components: DiscordComponents } | undefined>
+  }) => Promise<{ text: string; components: DiscordComponents } | { notice: string } | undefined>
   /** The DIALOG one elicitation card's Answer button opens (§7.3) — Discord's modal, built by
    *  core from the card's own params. Undefined ⇒ nothing to open, and the tap is merely acked.
    *  Synchronous by necessity: a modal must be the interaction's FIRST response, and Discord
    *  allows three seconds for it, so there is no room to go and ask. */
   onElicitOpen?: (a: { requestId: string; actor?: InteractionActor }) => unknown | undefined
-  /** A tapped elicitation option, or Dismiss (`token` null). */
-  onElicitChoice?: (a: { requestId: string; token: string | null; actor?: InteractionActor }) => Promise<void>
+  /** A tapped elicitation option, or Dismiss (`token` null); a refusal only the tapper is told comes back. */
+  onElicitChoice?: (a: {
+    requestId: string
+    token: string | null
+    actor?: InteractionActor
+  }) => Promise<string | undefined>
+  /** A clicked permission-card option, by position; a refusal only the clicker is told comes back. */
+  onApprovalChoice?: (a: {
+    requestId: string
+    option: number
+    ts: string
+    actor?: InteractionActor
+  }) => Promise<string | undefined>
   /** One submitted elicitation dialog: every field's value under the id its component carried. */
   onElicitSubmit?: (a: {
     requestId: string
@@ -189,6 +199,12 @@ function discordErrorCode(err: unknown): number | undefined {
   return Number.isSafeInteger(code) && code >= 0 ? code : undefined
 }
 
+/** Who clicked a card: their id, the bot flag, and the name the settled card says answered. */
+function cardActor(interaction: ButtonInteraction): InteractionActor {
+  const name = interaction.user.globalName ?? interaction.user.username
+  return { userId: interaction.user.id, isBot: interaction.user.bot, ...(name ? { name } : {}) }
+}
+
 /** The discord.js message-send payload we use (content + optional components). */
 type SendPayload = {
   content?: string
@@ -202,6 +218,22 @@ type Sendable = Channel & {
   send: (payload: SendPayload) => Promise<Message>
   sendTyping?: () => Promise<void>
   messages?: { fetch: (id: string) => Promise<Message> }
+}
+
+/** What a guild channel exposes for deciding who may view it. */
+interface DiscordViewable {
+  type?: ChannelType
+  guild?: { roles?: { everyone?: unknown } } | null
+  permissionsFor?: (role: never) => { has(flag: bigint): boolean } | null
+}
+
+/** A guild channel is public when `@everyone` may view it and a private thread never is; nothing when that cannot be read. */
+export function privacyOf(c: DiscordViewable | null | undefined): { isPrivate?: boolean } {
+  if (!c) return {}
+  if (c.type === ChannelType.PrivateThread) return { isPrivate: true }
+  const everyone = c.guild?.roles?.everyone
+  const perms = everyone && typeof c.permissionsFor === 'function' ? c.permissionsFor(everyone as never) : null
+  return perms ? { isPrivate: !perms.has(PermissionFlagsBits.ViewChannel) } : {}
 }
 
 export class DiscordConnection implements PlatformConnection {
@@ -282,6 +314,11 @@ export class DiscordConnection implements PlatformConnection {
         return
       }
       if (!interaction.isButton()) return
+      const approval = parseDiscordApproval(interaction.customId)
+      if (approval) {
+        await this.onApprovalInteraction(interaction, approval)
+        return
+      }
       // Elicitation components are routed BEFORE the ack: opening a modal must be the
       // interaction's FIRST response, and a deferred update has already spent it. They are also
       // routed before the status-key lookup, since an elicitation card is not a status card — its
@@ -291,25 +328,7 @@ export class DiscordConnection implements PlatformConnection {
         await this.onElicitInteraction(interaction, elicit)
         return
       }
-      void interaction.deferUpdate().catch(() => {})
-      const channel = interaction.channelId
-      const sessionKey = this.statusKeys.get(`${channel}:${interaction.message.id}`)
-      if (!sessionKey) return
-      const actor: InteractionActor = { userId: interaction.user.id, isBot: interaction.user.bot }
-      // Status-bar verbs (Cancel / Fast) — fire-and-forget onto the session.
-      const status = parseDiscordCallback(interaction.customId)
-      if (status) {
-        if (status.kind === 'cancel') this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, actor })
-        else this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: status.fastMode, actor })
-        return
-      }
-      // Select-card taps (model / effort / permission): apply + re-render the card in place.
-      const sel = parseDiscordSelect(interaction.customId)
-      if (sel && this.deps.onSelectAction) {
-        const rendered = await this.deps.onSelectAction({ kind: sel.kind, index: sel.index, sessionKey, actor })
-        if (rendered)
-          void this.updateMessage(channel, interaction.message.id, rendered.text, { keyboard: rendered.components })
-      }
+      await this.onStatusButton(interaction)
     })
 
     client.on(Events.Error, (err) => log?.debug(`discord: client error: ${err.message}`))
@@ -349,6 +368,59 @@ export class DiscordConnection implements PlatformConnection {
     }
   }
 
+  /** Route one status-bar or select-card tap onto its session; a refused change is told only to the tapper, ephemerally. */
+  private async onStatusButton(interaction: ButtonInteraction): Promise<void> {
+    const deferred = interaction.deferUpdate().catch(() => {})
+    const tell = async (text: string) => {
+      await deferred
+      await interaction.followUp({ content: text, flags: MessageFlags.Ephemeral }).catch(() => {})
+    }
+    const channel = interaction.channelId
+    const sessionKey = this.statusKeys.get(`${channel}:${interaction.message.id}`)
+    if (!sessionKey) return
+    const actor: InteractionActor = { userId: interaction.user.id, isBot: interaction.user.bot }
+    // Status-bar verbs (Cancel / Fast) onto the session; only a settings change can be refused.
+    const status = parseDiscordCallback(interaction.customId)
+    if (status?.kind === 'cancel') {
+      void this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, actor })
+      return
+    }
+    if (status) {
+      const refusal = await this.deps.onStatusAction?.({
+        kind: 'set-fast',
+        sessionKey,
+        fastMode: status.fastMode,
+        actor
+      })
+      if (refusal) await tell(refusal.text)
+      return
+    }
+    // Select-card taps (model / effort / permission): apply + re-render the card in place.
+    const sel = parseDiscordSelect(interaction.customId)
+    if (sel && this.deps.onSelectAction) {
+      const rendered = await this.deps.onSelectAction({ kind: sel.kind, index: sel.index, sessionKey, actor })
+      if (rendered && 'notice' in rendered) await tell(rendered.notice)
+      else if (rendered)
+        void this.updateMessage(channel, interaction.message.id, rendered.text, { keyboard: rendered.components })
+    }
+  }
+
+  /** Route one click on a permission card: acked first, and a refusal told to the clicker alone. */
+  private async onApprovalInteraction(
+    interaction: ButtonInteraction,
+    approval: { requestId: string; option: number }
+  ): Promise<void> {
+    const deferred = interaction.deferUpdate().catch(() => {})
+    const refusal = await this.deps.onApprovalChoice?.({
+      ...approval,
+      ts: interaction.message.id,
+      actor: cardActor(interaction)
+    })
+    if (!refusal) return
+    await deferred
+    await interaction.followUp({ content: refusal, flags: MessageFlags.Ephemeral }).catch(() => {})
+  }
+
   /**
    * A native slash-command invocation. Ack within Discord's 3s window (an ephemeral
    * echo, seen only by the invoker), then reconstruct the `/text` form and feed it
@@ -363,7 +435,7 @@ export class DiscordConnection implements PlatformConnection {
     interaction: ButtonInteraction,
     elicit: { requestId: string; token: string | null }
   ): Promise<void> {
-    const actor: InteractionActor = { userId: interaction.user.id, isBot: interaction.user.bot }
+    const actor = cardActor(interaction)
     if (elicit.token === DISCORD_ELICIT_OPEN) {
       const modal = this.deps.onElicitOpen?.({ requestId: elicit.requestId, actor })
       // Nothing to open — a settled card, or one this surface answers with a tap — so the tap is
@@ -379,8 +451,12 @@ export class DiscordConnection implements PlatformConnection {
         .catch((err: Error) => this.deps.log?.debug(`discord: showModal failed: ${err.message}`))
       return
     }
-    void interaction.deferUpdate().catch(() => {})
-    await this.deps.onElicitChoice?.({ requestId: elicit.requestId, token: elicit.token, actor })
+    const deferred = interaction.deferUpdate().catch(() => {})
+    const refusal = await this.deps.onElicitChoice?.({ requestId: elicit.requestId, token: elicit.token, actor })
+    if (!refusal) return
+    // Only the tapper sees it, and the card stays as everyone else sees it.
+    await deferred
+    await interaction.followUp({ content: refusal, flags: MessageFlags.Ephemeral }).catch(() => {})
   }
 
   /** Read one submitted dialog: every field under the id its component carried, a list where the
@@ -903,9 +979,7 @@ export class DiscordConnection implements PlatformConnection {
       ...(spaceId ? { spaceId } : {}),
       ...(spaceName ? { spaceName } : {}),
       isIm,
-      // A guild channel's visibility depends on role overwrites we don't resolve here;
-      // treat non-DM guild channels as non-private best-effort.
-      isPrivate: false
+      ...(isIm ? {} : privacyOf(ch as DiscordViewable | null))
     }
   }
 
@@ -944,7 +1018,7 @@ export class DiscordConnection implements PlatformConnection {
       for (const guild of this.client.guilds.cache.values()) {
         for (const ch of guild.channels.cache.values()) {
           if (!ch.isTextBased()) continue
-          out.push({ id: ch.id, name: ch.name, isPrivate: false })
+          out.push({ id: ch.id, name: ch.name, ...privacyOf(ch as DiscordViewable) })
           if (out.length >= CHANNEL_CAP) return out
         }
       }

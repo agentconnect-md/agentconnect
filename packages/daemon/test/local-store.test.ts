@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import pgDriver from 'pg'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,6 +16,7 @@ import {
   transcriptPromptText
 } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
+import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
 import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
 
 /** The admission a session-internal row (tool / plan / card) always carries — its own sender's
@@ -708,6 +711,7 @@ describe('LocalStore', () => {
     // Without that marker a re-observation must never rewrite an existing row.
     await s.appendTranscript(row('100.4', 'stale replay'))
     expect(await texts()).toEqual(['1', '3', '7 (complete)'])
+    await s.close()
   })
 
   it('upserts and reads back a session record', async () => {
@@ -1147,6 +1151,95 @@ describe('LocalStore', () => {
       { id: 'request-2', status: 'expired', notifyChannel: 'D222' }
     ])
     await reopened.clearPermissionRequestNotify('bot-a', 'request-2')
+    await reopened.close()
+  })
+
+  it('keeps the editor DM beside a card on its own handle and hands each orphan out exactly once', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-beside-dm-')), 'local.sqlite')
+    const s = await reopen(path)
+    const request = (id: string) => ({
+      id,
+      agentId: 'bot-a',
+      sessionId: 'acp-sub-1',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: 'Butler',
+      command: 'Write src/app.ts',
+      status: 'pending' as const,
+      resolvedAt: null
+    })
+    await s.createPermissionRequest(request('request-1'))
+    await s.createPermissionRequest(request('request-2'))
+
+    // The card in the conversation and the DM beside it each keep a handle, and only while pending.
+    expect(await s.setPermissionRequestNotify('bot-a', 'request-1', 'int-1', 'C1', '1.100')).toBe(true)
+    expect(await s.setPermissionRequestBeside('bot-a', 'request-1', 'int-1', 'D111', '1.200')).toBe(true)
+    expect(await s.setPermissionRequestNotify('bot-a', 'request-2', 'int-1', 'C1', '2.100')).toBe(true)
+    expect(await s.setPermissionRequestBeside('bot-a', 'request-2', 'int-1', 'D222', '2.200')).toBe(true)
+    expect(await s.resolvePermissionRequest('bot-a', 'request-1', 'allowed', 250)).toBe(true)
+    expect(await s.setPermissionRequestBeside('bot-a', 'request-1', 'int-1', 'D111', '1.300')).toBe(false)
+    expect(await s.takeOrphanedPermissionNotices('int-2')).toEqual([])
+    const orphans = await s.takeOrphanedPermissionNotices('int-1')
+    expect(orphans.map((o) => [o.id, o.notifyChannel, o.notifyTs]).sort()).toEqual([
+      ['request-1', 'C1', '1.100'],
+      ['request-1', 'D111', '1.200']
+    ])
+    expect(await s.takeOrphanedPermissionNotices('int-1')).toEqual([])
+
+    // A cleared DM handle leaves the card's to the sweep; a restart expires the row.
+    await s.clearPermissionRequestBeside('bot-a', 'request-2')
+    await s.close()
+    const reopened = await reopen(path)
+    expect(await reopened.takeOrphanedPermissionNotices('int-1')).toMatchObject([
+      { id: 'request-2', status: 'expired', notifyChannel: 'C1', notifyTs: '2.100' }
+    ])
+    await reopened.close()
+  })
+
+  it('keeps a sub-session notice handle beside the DM card’s and hands an orphan out exactly once', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-subsession-notice-')), 'local.sqlite')
+    const s = await reopen(path)
+    const request = (id: string) => ({
+      id,
+      agentId: 'bot-a',
+      sessionId: 'acp-sub-1',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: 'Butler',
+      command: 'Write src/app.ts',
+      status: 'pending' as const,
+      resolvedAt: null
+    })
+    await s.createPermissionRequest(request('request-1'))
+    await s.createPermissionRequest(request('request-2'))
+
+    // The notice and the editor DM each keep their own handle, and only while the row is pending.
+    expect(await s.setPermissionRequestNotice('bot-a', 'request-1', 'int-1', 'C1', '1.100')).toBe(true)
+    expect(await s.setPermissionRequestNotify('bot-a', 'request-1', 'int-1', 'D111', '1.200')).toBe(true)
+    expect(await s.resolvePermissionRequest('bot-a', 'request-1', 'allowed', 250)).toBe(true)
+    expect(await s.setPermissionRequestNotice('bot-a', 'request-1', 'int-1', 'C1', '1.300')).toBe(false)
+    expect(await s.setPermissionRequestNotice('bot-a', 'request-2', 'int-1', 'C1', '2.100')).toBe(true)
+    expect(await s.takeOrphanedSubsessionNotices('int-2')).toEqual([])
+    expect(await s.takeOrphanedSubsessionNotices('int-1')).toMatchObject([
+      {
+        id: 'request-1',
+        agentId: 'bot-a',
+        sessionId: 'acp-sub-1',
+        status: 'allowed',
+        noticeChannel: 'C1',
+        noticeTs: '1.100'
+      }
+    ])
+    expect(await s.takeOrphanedSubsessionNotices('int-1')).toEqual([])
+    // Taking the notice leaves the DM card's handle to its own sweep.
+    expect(await s.takeOrphanedPermissionNotices('int-1')).toMatchObject([{ id: 'request-1', notifyTs: '1.200' }])
+
+    // A restart expires the pending row and its notice becomes the orphan.
+    await s.close()
+    const reopened = await reopen(path)
+    expect(await reopened.takeOrphanedSubsessionNotices('int-1')).toMatchObject([
+      { id: 'request-2', status: 'expired', noticeTs: '2.100' }
+    ])
     await reopened.close()
   })
 
@@ -2292,6 +2385,7 @@ describe('LocalStore pool-wide runtime probe claim', () => {
       payload: '{"table":{},"results":[]}',
       probedAt: 2_000
     })
+    await s.close()
   })
 
   it('lets another member retake a claim whose holder went away', async () => {
@@ -2301,6 +2395,7 @@ describe('LocalStore pool-wide runtime probe claim', () => {
     expect(
       await s.claimRuntimeImageProbe({ imageRef: 'runtime:v1', memberId: 'next', now: 9_000, staleBefore: 5_000 })
     ).toBe(true)
+    await s.close()
   })
 
   it('keys the answer on the image, so a template bump is a different question', async () => {
@@ -2313,6 +2408,7 @@ describe('LocalStore pool-wide runtime probe claim', () => {
     // And publishing the new image leaves the old row alone.
     await s.publishRuntimeImageProbe({ imageRef: 'runtime:v2', payload: '{"v":2}', now: 2 })
     expect((await s.readRuntimeImageProbe('runtime:v1'))?.payload).toBe('{"v":1}')
+    await s.close()
   })
 
   it('drops answers for images the pool stopped running long ago', async () => {
@@ -2323,6 +2419,7 @@ describe('LocalStore pool-wide runtime probe claim', () => {
     await s.publishRuntimeImageProbe({ imageRef: 'runtime:current', payload: '{"v":1}', now: year })
     expect(await s.readRuntimeImageProbe('runtime:ancient')).toBeUndefined()
     expect((await s.readRuntimeImageProbe('runtime:current'))?.payload).toBe('{"v":1}')
+    await s.close()
   })
 })
 
@@ -2349,6 +2446,7 @@ describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)'
     expect((await s.getRuntimeCatalogMeta('copilot'))?.defaultPermissionMode).toBe('agent')
     await s.recordRuntimeCatalogMeta(meta('claude', 'fp-1'))
     expect(await s.getRuntimeCatalogMeta('claude')).not.toHaveProperty('defaultPermissionMode')
+    await s.close()
   })
 
   it('round-trips catalog meta and per-model capability rows', async () => {
@@ -2593,6 +2691,7 @@ describe('LocalStore webchat MCP grant ledger', () => {
     })
     const after = (await s.transcriptSince(readScope('C1', 'T', 'bot-a'), null))[0] as { eventTimeUs?: number }
     expect(after.eventTimeUs).toBe(1_754_123_458_000_000)
+    await s.close()
   })
 
   it('a later append with the fetched image upgrades the observer-written row', async () => {
@@ -3901,7 +4000,7 @@ describe.skipIf(pg)('decision table migrations', () => {
   }
 
   it('creates the decision tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(43)
+    expect(SCHEMA_VERSION).toBe(47)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual([
@@ -4290,5 +4389,92 @@ describe('the cron report outbox', () => {
     expect((await b.pendingCronReports(10, ['agent-b'])).map((row) => row.agentId)).toEqual(['agent-b'])
     expect(await b.pendingCronReports(10, [])).toEqual([])
     await a.close()
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v46 → v47 beside handle on SQLite', () => {
+  it('adds the columns to a v46 store and stamps the current version', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-beside-v46-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    for (const column of ['besideIntegrationId', 'besideChannel', 'besideTs'])
+      old.exec(`ALTER TABLE permission_requests DROP COLUMN ${column}`)
+    old.exec('PRAGMA user_version = 46')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    await upgraded.createPermissionRequest({
+      id: 'request-1',
+      agentId: 'bot-a',
+      sessionId: 'acp-1',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: 'Butler',
+      command: 'Write src/app.ts',
+      status: 'pending',
+      resolvedAt: null
+    })
+    expect(await upgraded.setPermissionRequestBeside('bot-a', 'request-1', 'int-1', 'D111', '1.200')).toBe(true)
+    await upgraded.close()
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v46 → v47 beside handle on PostgreSQL', () => {
+  it('adds the columns and keeps the rows already there', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pgDriver.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    const request = (id: string) => ({
+      id,
+      agentId: 'bot-a',
+      sessionId: 'acp-1',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: 'Butler',
+      command: 'Write src/app.ts',
+      status: 'pending' as const,
+      resolvedAt: null
+    })
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      const first = await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })
+      await first.createPermissionRequest(request('request-1'))
+      await first.close()
+
+      await admin.query(`SET search_path TO ${schema}`)
+      for (const column of ['besideIntegrationId', 'besideChannel', 'besideTs'])
+        await admin.query(`ALTER TABLE permission_requests DROP COLUMN ${column}`)
+      await admin.query('UPDATE _local_store_schema_version SET version = 46 WHERE singleton = true')
+
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        await upgraded.createPermissionRequest(request('request-2'))
+        expect(await upgraded.setPermissionRequestBeside('bot-a', 'request-2', 'int-1', 'D222', '2.200')).toBe(true)
+        expect(await upgraded.resolvePermissionRequest('bot-a', 'request-2', 'denied', 300)).toBe(true)
+        expect(await upgraded.takeOrphanedPermissionNotices('int-1')).toMatchObject([
+          { id: 'request-2', notifyChannel: 'D222', notifyTs: '2.200' }
+        ])
+        expect((await upgraded.listPermissionRequests('bot-a')).map((r) => r.id).sort()).toEqual([
+          'request-1',
+          'request-2'
+        ])
+      } finally {
+        await upgraded.close()
+      }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
   })
 })

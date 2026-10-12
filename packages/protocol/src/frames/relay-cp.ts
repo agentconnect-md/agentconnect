@@ -22,6 +22,7 @@ import {
 } from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { PullRequestFeedbackSignal } from './session.js'
+import { ChatCallerRole } from './agent.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
 /**
@@ -192,7 +193,9 @@ export const RcWebchatParticipant = z.object({
   recordedDaemonId: z.string().uuid().optional(),
   primary: z.boolean().optional(),
   // This participant's own CP-selected continuation target, stamped on its rd/msg only; set on the peers a hook target's conversation brings (#2500).
-  targetSessionId: z.string().min(1).optional()
+  targetSessionId: z.string().min(1).optional(),
+  // Who the token's user is to this participant; the relay stamps it on the turns and runtime changes it sends there.
+  callerRole: ChatCallerRole.optional()
 })
 export type RcWebchatParticipant = z.infer<typeof RcWebchatParticipant>
 
@@ -991,12 +994,7 @@ export const RcBotAssign = z.object({
   // target at all. Bot-scoped, matching how an HTTP bot's channels converge on one
   // owner, and how the trigger is replicated across its membership rows. Defaults empty.
   mutedChannels: z.array(z.string()).default([]),
-  // The muted channels whose owner is a GATED agent. Their Off is §14's fail-closed
-  // default for a conversation nobody has enabled yet, so they keep the one-time
-  // notice; a channel an OPERATOR switched off is silent instead. The two share a
-  // trigger value and are indistinguishable at the relay without this — hence a
-  // second list rather than a flag the relay could derive. Subset of
-  // `mutedChannels`. Defaults empty.
+  // The muted channels nobody enabled (a gated owner's, or §14.9's external one at its default): they keep the one-time notice, an operator's Off is silent.
   gatedOffChannels: z.array(z.string()).default([]),
   // §14.3 one-time gating notice, CHANNEL conversations: the relayId
   // DETERMINISTICALLY responsible for posting it for this bot. A channel mention

@@ -54,6 +54,8 @@ import type {
   TransferSignReq,
   AgentApprovalRoute,
   AgentApprovalRouted,
+  AgentReadAccess,
+  AgentReadAccessOk,
   GithubReviewResultReport,
   GithubReviewResultOk,
   CodeHostNoteResult,
@@ -1050,6 +1052,16 @@ export class CpClient {
     return rep.payload as AgentApprovalRouted
   }
 
+  /** Which of an agent's sessions the console user behind an asker could see, for the read rule (assistant-mode.md §5.5). */
+  async readAccess(payload: AgentReadAccess, orgId?: string): Promise<AgentReadAccessOk> {
+    this.requireReady('agent/read-access')
+    const rep = await this.request('agent/read-access', payload, orgId)
+    if (rep.type !== 'agent/read-access/ok') {
+      throw new WireError('INTERNAL', `expected agent/read-access/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as AgentReadAccessOk
+  }
+
   /** Immediate body-free outcome; HookReport repeats it for lost-reply recovery. */
   async reportGithubReviewResult(payload: GithubReviewResultReport, orgId?: string): Promise<GithubReviewResultOk> {
     this.requireReady('github/review-result')
@@ -1827,6 +1839,7 @@ export class CpClient {
         (value): value is string => typeof value === 'string'
       )
       if (agentId) orgId = this.deps.orgForAgent?.(agentId)
+      else if (typeof p.integrationId === 'string') orgId = this.deps.orgForIntegration?.(p.integrationId)
     }
     if (this.organizationMode === 'frame' && !orgId) {
       throw new WireError('SCOPE_DENIED', `cannot resolve organization for ${type}`, false)

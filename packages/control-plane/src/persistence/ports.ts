@@ -11,7 +11,9 @@
  */
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
+  AgentModelProvider,
   AgentApiGates,
+  ChatActions,
   AgentApiProtocol,
   AuthReq,
   ProviderKeyProvider,
@@ -732,17 +734,17 @@ export interface CreateAgentInput {
    *  create route still requires a runtime — only preset provisioning defers. */
   runtime?: string
   model?: string
+  modelProvider?: AgentModelProvider
   reasoningEffort?: string
   outputMode?: string // platform output verbosity: low | medium | high
   showFooter?: boolean // render platform attribution/session footers (default true)
   showStatusBar?: boolean // render Slack's persistent session status row (default false)
   fastMode?: boolean // runtime fast mode toggle
   permissionMode?: string // runtime permission/approval mode
-  allowRuntimeChangesInChat?: boolean // explicit opt-in; default false
+  chatActions?: ChatActions // what people can do in chat; absent ⇒ 'approve'
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
-  runInSandbox?: boolean // #642: request an OS sandbox (absent ⇒ DB default false)
-  execution?: string | null // the strategy slug, kept in step with runInSandbox; null ⇒ sandboxed, backend not yet reported (absent ⇒ host unless runInSandbox)
+  execution?: string // the strategy slug sessions run in (session-executors.md §5); absent ⇒ DB default host
   env?: Record<string, string> // extra env injected into the runtime (AgentSpec.env)
   // NOTE: write-only secret env vars are NOT part of the agent row — they live behind
   // the AgentSecretStore seam (routes write them there after create).
@@ -786,17 +788,17 @@ export interface UpdateAgentInput {
   runtime?: string
   capabilities?: string[]
   model?: string | null
+  modelProvider?: AgentModelProvider | null
   reasoningEffort?: string | null
   outputMode?: string | null
   showFooter?: boolean
   showStatusBar?: boolean
   fastMode?: boolean | null
   permissionMode?: string | null
-  allowRuntimeChangesInChat?: boolean
+  chatActions?: ChatActions
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
-  runInSandbox?: boolean // #642: request an OS sandbox for this agent
-  execution?: string | null // written together with runInSandbox by the route that resolves them
+  execution?: string // the strategy slug, resolved by the route against the placement's table
   /** Widen an existing App-backed GitHub workspace from read to write. */
   gitAccess?: 'write'
   /** GitHub workspace-relative ACP cwd; null restores repository root. */
@@ -840,13 +842,14 @@ export interface AgentRecord {
   description: string | null
   runtime: string | null // null ⇒ deferred exec config (unplaced preset; set at placement)
   model: string | null // from runtimeOverrides.model
+  modelProvider?: AgentModelProvider | null
   reasoningEffort: string | null // from runtimeOverrides.reasoningEffort
   outputMode: string | null // from runtimeOverrides.outputMode
   showFooter: boolean // from runtimeOverrides.showFooter (default true)
   showStatusBar: boolean // from runtimeOverrides.showStatusBar (default false)
   fastMode: boolean | null // from runtimeOverrides.fastMode (null ⇒ runtime default)
   permissionMode: string | null // from runtimeOverrides.permissionMode (null ⇒ runtime default)
-  allowRuntimeChangesInChat: boolean // from runtimeOverrides (default false)
+  chatActions: ChatActions // from runtimeOverrides (absent ⇒ 'talk')
   pause: boolean | null // from runtimeOverrides.pause (null ⇒ not paused) (#288)
   env: Record<string, string> // from runtimeOverrides.env ({} when unset)
   // NOTE: write-only secret env vars are deliberately NOT on the record (accidental-
@@ -889,8 +892,7 @@ export interface AgentRecord {
   outboundPolicy: AgentCallPolicy
   allowedTargetAgentIds: string[] // agent.id set; meaningful only when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join (default false)
-  runInSandbox: boolean // #642: persisted per-agent sandbox preference (default false)
-  execution: string | null // the strategy slug sessions run in (session-executors.md §5); null ⇒ sandboxed, backend not yet reported
+  execution: string // the strategy slug sessions run in (session-executors.md §5)
   lastModifiedAt: Date // last human edit (create/PATCH); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
   /**
@@ -1049,7 +1051,6 @@ export interface AgentRepo {
     byUserId?: string
   ): Promise<AgentRecord>
   /** The one-time `execution` migration (session-executors.md §5): null sandboxed rows placed on this daemon or its set, each bumping configRevision. */
-  migrateExecution(daemonId: DaemonId, execution: string): Promise<AgentId[]>
   /** Serialize on the Agent row. A real placement change atomically revokes all
    *  active webchat MCP delegations; a same-placement write does not. */
   setPlacement(agentId: AgentId, target: PlacementTarget): Promise<void>
@@ -1788,16 +1789,19 @@ export interface WebchatConversationRepo {
   ensure(binding: WebchatConversationBinding, apiKeyId: string): Promise<void>
   /** The name of the API key that opened each of these conversations through the agent chat API, org-fenced; console conversations are absent. */
   apiKeyNames(orgId: OrgId, conversationIds: readonly string[]): Promise<Map<string, string>>
-  /** The conversation's full roster (primary first, then pick order). Empty
-   *  for an unknown conversation — callers fail closed. Org-fenced
-   *  (org-scoped-data-layer.md §3): a cross-org conversation id yields the same
-   *  empty roster as an unknown one, so it fails closed identically. */
+  /** The live roster (primary first, removed members excluded); empty for an unknown or cross-org conversation, so callers fail closed. */
   participants(orgId: OrgId, conversationId: string): Promise<WebchatParticipant[]>
-  /** Append one member to an existing conversation's roster (mid-conversation
-   *  join, webchat-multi-agents.md §3.1). Idempotent — re-adding an existing
-   *  participant is a no-op. Authorization (owner, canView, capability, cap)
-   *  belongs to the caller. */
+  /** Idempotently append a member (§3.1); a removed member is restored at the roster's end. Authorization belongs to the caller. */
   addParticipant(orgId: OrgId, conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void>
+  /** Whether the conversation ever lost a member, so a shrunk singleton roster is still reported explicitly. */
+  hasRemovedParticipants(orgId: OrgId, conversationId: string): Promise<boolean>
+  /** Soft-remove one member (webchat-multi-agents.md §3.1a); the primary and the last participant are refused. Authorization belongs to the caller. */
+  removeParticipant(
+    orgId: OrgId,
+    conversationId: string,
+    agentId: AgentId,
+    removedByUserId: string
+  ): Promise<'removed' | 'absent' | 'primary'>
   /** The owning console user of a conversation, for session-visibility ingest
    *  (§4.2). Scoped to a PARTICIPANT agent (any roster role); unknown and
    *  foreign bindings both return null (the caller fails closed). */
@@ -1824,9 +1828,8 @@ export interface WebchatConversationRepo {
     binding: Omit<WebchatConversationBinding, 'conversationId'>,
     targetSessionId: string
   ): Promise<{ conversationId: string }>
-  /** The conversation's continuation target (null target = ordinary webchat
-   *  conversation; null return = unknown/foreign conversation). */
-  target(conversationId: string): Promise<{ targetSessionId: string | null } | null>
+  /** The conversation's continuation target (null for an ordinary conversation) and its owner; null for an unknown or foreign conversation. */
+  target(conversationId: string): Promise<{ targetSessionId: string | null; ownerUserId: string } | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -5501,22 +5504,7 @@ export interface ReportedChannel {
  * both internal trust domains (§4).
  */
 export interface IntegrationChannelRepo {
-  /**
-   * Converge to the daemon's channel report (latest-wins): upsert every reported
-   * conversation (refreshing name/isPrivate, PRESERVING the stored trigger).
-   * Authoritative membership snapshots delete kind='channel' rows the bot is no
-   * longer a member of; non-authoritative observed-conversation reports retain
-   * missing rows because platforms such as Telegram cannot enumerate all chats.
-   * Direct rows are always retained. `defaultTrigger` seeds NEW rows only ('off'
-   * for a gated integration); otherwise a 1:1 DM starts On and a room starts on
-   * Mention. Existing rows keep their trigger.
-   *
-   * `removed` names conversations to DELETE outright, whatever the report's kind.
-   * It is how a non-authoritative reporter retires a row at all — its omissions
-   * mean nothing — and it deletes DM rows too, since it states a fact about the
-   * conversation rather than inferring one from an incomplete listing. Applied
-   * after the upsert, so a conversation in both lists ends up deleted.
-   */
+  /** Converge to a channel report: known rows keep their trigger, new ones take `defaultTrigger` or the open default (§14.9); an authoritative snapshot drops absent channel rows, `removed` deletes outright. */
   replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
@@ -5534,9 +5522,7 @@ export interface IntegrationChannelRepo {
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */
   deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean>
   listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]>
-  /** Incremental conversation upsert (§14.3, direct rows): create the row (kind,
-   *  name, `defaultTrigger`) when absent; when it exists refresh metadata while
-   *  preserving the operator-owned trigger. */
+  /** Incremental conversation upsert (§14.3): a new row takes `defaultTrigger` or the open default (§14.9), a known one keeps its trigger. */
   upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,

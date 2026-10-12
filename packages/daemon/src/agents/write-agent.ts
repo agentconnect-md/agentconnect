@@ -752,6 +752,10 @@ export function applySpecFields(
   // null ⇒ clear (revert to runtime default), a value ⇒ set, absent ⇒ leave alone.
   // Clearing must delete the key so a runtime switch drops the old runtime's override
   // instead of leaving it stale (model handled below, inside runtimeOverrides).
+  if (spec.modelProvider !== undefined) {
+    if (spec.modelProvider === null) delete raw.modelProvider
+    else raw.modelProvider = spec.modelProvider
+  }
   if (spec.reasoningEffort !== undefined) {
     if (spec.reasoningEffort === null) delete raw.reasoningEffort
     else raw.reasoningEffort = spec.reasoningEffort
@@ -762,9 +766,7 @@ export function applySpecFields(
     if (spec.permissionMode === null) delete raw.permissionMode
     else raw.permissionMode = spec.permissionMode
   }
-  if (spec.allowRuntimeChangesInChat !== undefined) {
-    raw.allowRuntimeChangesInChat = spec.allowRuntimeChangesInChat
-  }
+  if (spec.chatActions !== undefined) raw.chatActions = spec.chatActions
   if (spec.pause !== undefined) raw.pause = spec.pause
   if (spec.mcpServers !== undefined) raw.mcpServers = spec.mcpServers
   // Skill sources are CP-owned and self-contained (design: shared-skills.md); mirror
@@ -795,9 +797,7 @@ export function applySpecFields(
   if (spec.allowedTargetAgentIds !== undefined) raw.allowedTargetAgentIds = spec.allowedTargetAgentIds
   // Self-introduce-on-join (#536): absent ⇒ leave the on-disk value alone (like pause/fastMode).
   if (spec.introduceOnJoin !== undefined) raw.introduceOnJoin = spec.introduceOnJoin
-  // Sandbox toggle (#312): the CP always ships it (definite column); absent ⇒ leave alone.
-  if (spec.runInSandbox !== undefined) raw.runInSandbox = spec.runInSandbox
-  // Strategy (session-executors.md §5): absent ⇒ not migrated yet, so the on-disk value is left alone.
+  // Strategy (session-executors.md §5): the CP always ships it; absent ⇒ leave the on-disk value alone.
   if (spec.execution !== undefined) raw.execution = spec.execution
   // Preset marker (preset-agents.md §3.1): the CP always ships it (definite record
   // field), so a flip replicates; absent (older CP) ⇒ leave the on-disk value alone.

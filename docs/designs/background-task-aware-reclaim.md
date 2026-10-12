@@ -112,7 +112,12 @@ human-facing turn with a quiescent runtime.
 guards:
 
 1. An idle session older than `agentIdleTimeoutMs` is closed only when its lease
-   is quiescent.
+   is quiescent. A closed session on the agent's shared host is also ended there
+   with ACP `session/close` when the runtime advertises it, so its runtime child
+   exits while the host stays warm for its other sessions; the history stays
+   loadable, so a later turn resumes it with `session/load`. A session-bound host
+   is stopped instead. The retention purge and the worktree cleanup close the
+   same way before they drop a session.
 2. An ACP host older than the idle window is reclaimed only when it has no
    foreground prompt, no internal pass of the daemon's own (distillation, the
    commit-message wand) and no live SDK work. The agent's shared host measures
@@ -128,16 +133,23 @@ guards:
 The defaults in
 [`config-schema.ts`](../../packages/daemon/src/config/config-schema.ts) are:
 
-| Setting              |    Default | Purpose                                                        |
-| -------------------- | ---------: | -------------------------------------------------------------- |
-| `agentIdleTimeoutMs` | 15 minutes | Close inactive sessions and reclaim genuinely idle hosts.      |
-| `agentMaxLifetimeMs` |    6 hours | Bound lease- and pass-based reclaim deferral for an idle host. |
-| `idleSweepMs`        | 60 seconds | Re-evaluate session and host eligibility.                      |
+| Setting              |    Default | Purpose                                                                                                                                                               |
+| -------------------- | ---------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agentIdleTimeoutMs` | 15 minutes | Close inactive sessions and reclaim genuinely idle hosts.                                                                                                             |
+| `agentMaxLifetimeMs` |    6 hours | Bound lease- and pass-based reclaim deferral for an idle host, and a turn's wait on an unanswered card ([daemon-detailed-design.md](daemon-detailed-design.md) §7.3). |
+| `idleSweepMs`        | 60 seconds | Re-evaluate session and host eligibility.                                                                                                                             |
 
 The maximum lifetime does not preempt an active foreground prompt: the pending
 turn guard runs before the lifetime check. When the daemon does choose to stop a
 host, normal ACP child teardown applies and outstanding background work may be
 terminated.
+
+A host the sweep still keeps four idle windows after its last activity has the
+reason logged at info, once an hour: a turn still running or queued, a turn
+waiting on a human answer to a permission or question, a stop in flight, or a
+draining agent. A turn that waits on a human holds its host until the answer, or
+until the turn watchdog stops it past `agentMaxLifetimeMs`
+([daemon-detailed-design.md](daemon-detailed-design.md) §7.3).
 
 The same pending-turn and live-lease checks protect idle removal of materialized
 config-file secrets. Once the agent is quiet, those files may be removed after

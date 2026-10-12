@@ -307,6 +307,7 @@ function AgentDetail() {
   const decisions = useMemo(() => decisionsPrototype?.decisions ?? [], [decisionsPrototype])
   const permissionT = useTranslations('Common.permissionModes')
   const strategyT = useTranslations('Common.executionStrategy')
+  const chatActionsT = useTranslations('Common.chatActions')
   const strategyNames = useStrategyNames()
   const { orgPath, activeOrg, myRole } = useOrgs()
   const { me } = useProfile()
@@ -940,8 +941,8 @@ function AgentDetail() {
       </div>
     )
   }
-  // Activity exists only for an assistant-mode agent, behind the flag; a link to it otherwise lands on Integrations.
-  const activityShown = featureFlagEnabled('assistant-mode') && da.assistantMode?.enabled === true
+  // Activity exists only for an assistant-mode agent, whatever the flag (which gates only switching it on); a link to it otherwise lands on Integrations.
+  const activityShown = da.assistantMode?.enabled === true
   const tab: DetailTab = requestedTab === 'activity' && !activityShown ? 'integrations' : requestedTab
   // The owning daemon (if placed in the live fleet). Gates the agent's "online" —
   // an agent can't be online when its daemon is offline — and names the daemon.
@@ -1527,16 +1528,16 @@ function AgentDetail() {
                 )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    {t('runtime.changeInChat')}
+                    {chatActionsT('label')}
                   </span>
                   <span
                     className={
-                      da.allowRuntimeChangesInChat
-                        ? 'badge bg-(--brand-soft) text-(--brand-soft-text) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
-                        : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
+                      da.chatActions === 'talk'
+                        ? 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
+                        : 'badge bg-(--brand-soft) text-(--brand-soft-text) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
                     }
                   >
-                    {da.allowRuntimeChangesInChat ? t('runtime.allowed') : t('off')}
+                    {chatActionsT(`option.${da.chatActions}`)}
                   </span>
                 </div>
                 {/* A pool agent has no strategy to show: its boundary is the pod. */}
@@ -2879,6 +2880,7 @@ function AgentDetail() {
           sandboxed={isPoolPlacementKind(da.placementKind)}
           memberSetPlaced={isSetPlacementKind(da.placementKind)}
           besideSettings={
+            // The flag offers switching the mode on; an agent already on keeps the panel, so it can be switched off.
             (featureFlagEnabled('assistant-mode') || da.assistantMode?.enabled) && (
               <AssistantModePanel
                 agentId={id}
@@ -2887,6 +2889,7 @@ function AgentDetail() {
                 runtime={da.runtime}
                 memoryProvider={da.memoryProvider}
                 placement={`${da.placementKind ?? 'daemon'}:${da.setId ?? da.daemon}`}
+                permissionMode={da.permissionMode}
                 askEveryTime={
                   (da.permissionMode ||
                     capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog

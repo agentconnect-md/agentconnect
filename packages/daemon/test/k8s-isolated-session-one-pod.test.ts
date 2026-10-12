@@ -381,7 +381,6 @@ function poolAgent(dir: string, autoDistill = false, isolation: 'shared' | 'sess
     name: AGENT,
     status: 'active',
     runtime: 'claude',
-    runInSandbox: false,
     dir,
     memory: { provider: 'managed', home: 'control-plane', autoDistill },
     skills: [],

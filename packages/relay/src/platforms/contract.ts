@@ -133,12 +133,8 @@ export interface RelayIngressSidecar {
   searchActionToken?: string
 }
 
-/** Core's verdict on one forwarded message. `refused` is the TERMINAL
- *  `grant-withdrawn` result of linear-integration.md §6.2 — the channel's default
- *  moved off the gated agent that holds this session, so nothing was forwarded and
- *  nothing below the affinity rung was consulted. `accepted` means core handled the
- *  message; it does not promise a daemon took it (delivery is bounded loss). */
-export type RelayForwardOutcome = 'accepted' | 'refused'
+/** Core's verdict on one forwarded message: `accepted` (a daemon took it, or a deliberate gate consumed it), `retry` (no daemon took it and a resend can still land), or the terminal §6.2 `refused` (linear-integration.md: the session's grant was withdrawn). */
+export type RelayForwardOutcome = 'accepted' | 'retry' | 'refused'
 
 /** Core's strict verdict on one forwarded message, in the `rd/route/ack` vocabulary: `admitted` (a daemon durably took it, or a receipt settles the duplicate), `retry` (a transient refusal a resend can outlive), or `rejected` (a deliberate gate, consumed with no work promised; or `unsupported`: a daemon predating `im-admission-v1`, or an ack with no verdict because the platform has no relay-ingress strategy). */
 export type RelayAdmission = Pick<RdRouteAck, 'disposition' | 'reason'>
@@ -156,10 +152,7 @@ export type RelayCredentialCheck =
   { result: 'ok'; observedAtMs: number } | { result: 'rejected'; code: string; observedAtMs: number }
 
 export interface RelayIngressHost {
-  /** Forward one NORMALIZED inbound message. Core owns arbitration: it resolves
-   *  the owning agent/daemon and constructs the pre-addressed `rd/msg` — the
-   *  plugin supplies conversation content, never target identity. The promise
-   *  is the delivery attempt's completion (drop counting rides it). */
+  /** Forward one NORMALIZED inbound message; core arbitrates the target and builds the pre-addressed `rd/msg`, and the promise settles with the attempt's outcome (drop counting rides it). */
   forward(botId: string, message: WireNormalizedMessage, sidecar?: RelayIngressSidecar): Promise<RelayForwardOutcome>
   /** {@link forward} for a platform whose HTTP answer depends on admission: the same arbitration, then the daemon's strict `rd/ack` verdict mapped as the routed leg maps it; a target without `im-admission-v1` is never sent to (`rejected`/`unsupported`), an `accepted` with no verdict (the shared path: the platform supplies no strategy) is `rejected`/`unsupported` too, a withdrawn grant is `rejected`, and over a fan-out one admission wins, else one retry, else the first rejection. */
   forwardStrict(botId: string, message: WireNormalizedMessage, sidecar?: RelayIngressSidecar): Promise<RelayAdmission>

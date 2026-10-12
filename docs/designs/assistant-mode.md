@@ -15,7 +15,8 @@ tool set for AI tools. That design gives an agent tools to administer the platfo
 describes how an agent behaves.
 
 **Console:** the switch is offered behind the `assistant-mode` flag (`features.assistantMode` in
-the chart, off by default) until it changes behavior; an agent already switched on keeps it shown.
+the chart, off by default) until it changes behavior. The flag gates only switching the mode on: an
+agent already switched on keeps the switch, Activity, the Sub-sessions tab and proposals.
 
 **Builds on:** [resource-visibility.md](resource-visibility.md) §14 (conversation gating:
 authorize places), [session-visibility.md](session-visibility.md) (session visibility, the
@@ -25,9 +26,10 @@ long sessions), [agent-collaboration-implementation.md](agent-collaboration-impl
 per-agent built-in switch and the dream host), [slack-approval-dm.md](slack-approval-dm.md) (the
 two in-chat approval paths), [webchat-side-panels.md](webchat-side-panels.md) (the console dock).
 
-**Principle:** the simplest thing that works. Assistant mode leaves the agent's permission
-policy, workspace isolation and command permissions alone, reuses an existing mechanism wherever
-one exists, and does not pretend to defend against effects it cannot defend against.
+**Principle:** the simplest thing that works. Assistant mode sets a default permission mode once,
+as it is switched on (§1.8), and otherwise leaves the agent's permission policy, workspace
+isolation and command permissions alone, reuses an existing mechanism wherever one exists, and
+does not pretend to defend against effects it cannot defend against.
 
 ---
 
@@ -42,8 +44,9 @@ one exists, and does not pretend to defend against effects it cannot defend agai
   discussion in an internal channel can be recalled when you ask about it in a DM.
 - **It speaks for the room.** It writes directly only to the place it is in. To post anywhere
   else — another channel, a conversation on another platform — it shows you the target and the
-  exact text, and posts once you approve. Nobody can get at another person's DM; when something
-  cannot be said here, it says "ask me in a DM".
+  exact text, and posts once you approve. It reads another conversation only for someone who may see
+  it, and leaves it to that person whether to share what it finds; nobody can get at another
+  person's DM, and when something cannot be shared it says "I can't share that here".
 - **Shared with another organization.** In a place the platform reports as external (a Slack
   Connect channel) it still knows everything, but every reply is a draft that an internal member
   approves in a DM before it is posted.
@@ -52,8 +55,8 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 
 - Ask as you would a colleague. It restates its understanding — what to do, what counts as done,
   when to check next — and on your confirmation the item enters its ledger.
-- The ledger is visible to the team. An item born in a DM records who asked for what, never the
-  DM's wording; it says so when it takes the item.
+- The ledger is visible to the team. An item born in a DM or a private channel records who asked
+  for what, never that conversation's wording or details; it says so when it takes the item.
 - **It reports to whoever asked, in the place they asked.**
 - When two people ask for the same thing in different places, it asks "attach this to X's item?"
   when restating, and both receive the report after you confirm.
@@ -66,8 +69,8 @@ one exists, and does not pretend to defend against effects it cannot defend agai
   PR". Ordinary conversation stays in the main conversation.
 - In an IM: the main conversation says "started", then reports the result with a console link.
   Nothing extra appears on the platform.
-- Steering and stopping go through the main conversation: "change the PR task to X", "stop the
-  PR one".
+- Stopping goes through the main conversation: "stop the PR one". Steering ("change the PR task
+  to X") is deferred (§7).
 - In webchat: the sub-sessions a conversation opened are visible — watch, talk to one directly,
   stop one.
 - The workspace is whatever the agent's other sessions get: a worktree each under session
@@ -82,9 +85,10 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 
 - "Stop" in the main conversation interrupts only that conversation's current turn — **not the
   work already delegated**, and it does not mute the conversation.
-- To stop one piece of work, name it in the main conversation or stop it in webchat. That
-  interrupts its current turn; a background process the runtime started itself (a build, a dev
-  server) may keep running and is marked as such.
+- To stop one piece of work, name it in the main conversation that opened it, or stop it in
+  webchat. The agent first confirms in one sentence which one you mean. Stopping interrupts its
+  current turn; a background process the runtime started itself (a build, a dev server) may keep
+  running, and the answer says so.
 - To stop everything, **pause the agent** in the console (today's pause): main conversations,
   sub-sessions and patrols stop until resumed. Patrols missed meanwhile are not replayed; items
   whose check is overdue are each checked once on the next patrol.
@@ -105,10 +109,14 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 
 ### 1.6 Approval
 
-- The card lands in the item's place of origin; for an external place, in the approver's DM
-  instead (§5.5). Who may approve follows the existing in-chat
-  approval rules: with "allow runtime changes in chat" switched on, anyone who sees the card can
-  click; otherwise the console and the editor DM path. The card offers "always allow this tool".
+- A proposal's card lands in the item's place of origin; for an external place, in the approver's
+  DM instead (§5.5). Whoever could ask the agent there may approve it: in a DM, that person; in a
+  channel, anyone whose own message would start a turn of the agent there; in webchat, whoever may
+  continue the conversation, from its pending requests. Approving runs the task with the agent's
+  own permissions, which is what asking there gets, so it grants nothing more.
+- A runtime permission request inside the task follows the existing in-chat approval rules: where
+  "What people can do in chat" includes approving tool calls, anyone who sees the card can click;
+  otherwise the console and the editor DM path. That card offers "always allow this tool".
 - The card leads with one plain sentence; the raw arguments are folded underneath.
 - It acts only after approval and reports back. An uncertain outcome is reported as "not sure this
   went through, please look" — never retried. An expired card is never executed.
@@ -123,9 +131,17 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 ### 1.8 Enabling
 
 - Switch assistant mode on in the agent's settings. The agent must pass admission (§4.1); an
-  agent that does not gets a locked switch with the reason. An agent whose permission policy is
-  "ask every time" gets a warning: background work will wait for approval often; consider
-  auto-approving workspace-local operations.
+  agent that does not gets a locked switch with the reason.
+- Background work nobody watches should not stop for approval, so switching it on sets the
+  agent's permission mode to the runtime's auto mode (Claude Code's `auto`, Codex's `agent`,
+  which it calls "Auto review"), or to its full-access mode where it has no auto mode. Only an
+  unset mode or one that asks for approval or only reads is changed: an auto or full-access
+  mode, Claude Code's `dontAsk` (it refuses what is not pre-approved rather than asking), a mode
+  set in the same edit, and every mode of a runtime with neither (OpenCode) are kept. The
+  Control Plane applies it on every edit that switches the mode on, from the console or the
+  API. It is a default, never an admission check: an editor may change the mode afterwards and
+  the choice sticks while the mode stays on. While it is on, an agent whose mode asks every time
+  gets a warning: background work will wait for approval often.
 - Once on, the agent is off everywhere; an editor enables places one by one. Enabling a place
   trusts it as _internal_ unless the platform detects it as _external_ (§5.3); the enable flow
   warns "everyone here will be able to get the content of its other places out of it;
@@ -166,7 +182,7 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 | Read-only modes                 | Matched by **name** (`read-only`, else `plan`). Claude Code has `plan`; **OpenCode's `read-only` is a daemon-authored agent injected only on the credential-less dream host**, a normal host has native `plan` with bash allowed; **Codex's `read-only` profile opens the network when the managed credential channel is enabled**, so a "read-only" session can run write calls through that channel with no permission request — both are credential problems, not filesystem ones. Dreams use a credential-less host; **per-turn distillation uses the agent's own host** |
 | Runtime versions                | Managed Codex follows a floating release channel (`version: ''`); only probed versions are known                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Workspace isolation             | `isolation: session` applies to git mode only; **scratch is always `shared`, on the pool too**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| In-chat approval                | The in-conversation card does no per-user authorization, hence off by default behind `allowRuntimeChangesInChat`; otherwise the editor path. Both the card and the editor DM **exist on Slack only**, and both bind to a pending ACP request                                                                                                                                                                                                                                                                                                                                 |
+| In-chat approval                | The in-conversation card checks who clicks only where permissions are synced (an editor's linked account, slack-approval-dm.md §6.5), hence behind `chatActions` at `approve` or above; otherwise the editor path. The card **exists on Slack, Telegram, Discord, Feishu/Lark and Google Chat** and the editor DM **on Slack only**, and both bind to a pending ACP request                                                                                                                                                                                                  |
 | Context size                    | The daemon has `contextUsed` (usage snapshots) and infers compaction from it; the reminder path `shouldRemind` already handles first turn, restart and compaction                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Slack auto-join                 | `joiningOnRefusal` joins public channels on demand; the join fires `member_joined_channel` and re-reports from the authoritative snapshot                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Pending cards                   | `OrganizationSuggestion`'s card component is reusable; its review route is owner-only and is not                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -187,9 +203,9 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 | One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                             |
 
 Not admission criteria: platform (all allowed; enabling a place trusts it, §5.3), channel trigger mode
-(user configuration), workspace mode and isolation (§5.6), sandboxing, permission policy (`ask`
-only warns), a linked identity for the responsible user (a fallback conversation is required when
-no DM can be reached).
+(user configuration), workspace mode and isolation (§5.6), sandboxing, permission policy (switching
+on sets a default, §1.8; an asking mode only warns), a linked identity for the responsible user (a
+fallback conversation is required when no DM can be reached).
 
 ### 4.2 Prerequisites (independent of assistant mode, done first)
 
@@ -240,8 +256,10 @@ On enable: §4.1 is checked; the agent enters conversation gating (`gated` deriv
 "restricted **or** assistant mode"); already-enabled rows keep their state and, like any enabled
 place, count as internal unless the platform detects them as external (§5.3), so the switch shows
 the enable warning for them; DMs auto-enabled by §14.8 for `sharedWith` members count as internal
-(that person is an organization member). The agent's permission policy and workspace isolation
-are untouched.
+(that person is an organization member). In the same row-locked write, an unset, asking or
+read-only permission mode becomes the runtime's auto mode, else its full-access mode, unless the
+edit sets a mode itself (§1.8); which mode is which comes from a per-runtime map kept beside the
+admission list. Workspace isolation is untouched.
 
 ### 5.2 Places and long conversations
 
@@ -279,6 +297,18 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
 - For assistant-mode agents only, a member joining is looked up once (`users.info`): a guest
   (`is_restricted` / `is_ultra_restricted`) or a member from another organization makes the place
   external, and that detection is never lifted by a later listing.
+- **Output no event triggered asks first.** A place learns of a share from its next event, so
+  before a post no event from that place triggered — a scheduled or hook run and its anchor
+  message, a report round, a post a grant lets through from another place, a reminder, a
+  sub-session's permission card, a patrol's proposal card — the daemon asks the platform whether
+  the place is shared now, for assistant-mode agents only: on Slack the share flags of
+  `conversations.info`, read through the channel lookup a platform module declares
+  (`sharedConversations`). The answer is cached per place for a minute, the bound the membership
+  read in §5.5 uses: repeated posts cost one lookup, and a share made after an answer goes unseen
+  for at most that minute. A 1:1 DM is never asked. A share found this way is the downgrade below,
+  and the post is drafted like any other in an external place. A lookup that fails drafts the
+  post too, without marking the place: posting as internal on no answer could reach another
+  organization, while a needless draft costs one approval. No event subscription is added.
 - Telegram groups, Discord channels, Feishu groups: no detection; enabled means trusted.
 - DM: enabling it is trusting that person as a member. Webchat is internal by construction.
 - A sub-session's place is its parent's: one born in an external place reports through that
@@ -286,9 +316,13 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
 - **The downgrade transition (internal → external) changes the output path, not the context.**
   On a downgrade — a detected share, a guest or outside member joining — the daemon
   interrupts the place's in-flight turn, whose reply would otherwise post unapproved; from the
-  next turn on, replies are drafts. The long session and its sub-sessions keep their context:
-  what they know was never the risk, what they post is. An upgrade (external → internal) needs no
-  transition; drafts already pending stay approvable.
+  next turn on, replies are drafts. The interrupt is scoped to the place. Unlike `!stop`, it
+  raises no agent-wide hold on new messages, so the agent's other places keep their turns, their
+  queued messages and whatever arrives there. In the place itself, a message that is queued or
+  arrives while the cut turn winds down is kept and never steered into that turn; it runs after
+  it, under the new trust, so its reply is a draft. The long session and its sub-sessions keep
+  their context: what they know was never the risk, what they post is. An upgrade (external →
+  internal) needs no transition; drafts already pending stay approvable.
 - Joining a public Slack channel on demand (`joiningOnRefusal`) does not create a place: an off
   row is not a place, and no filtering of self-initiated joins is attempted.
 
@@ -302,7 +336,8 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
   origin: place, summary, observations: [...], subsessions: [...], proposals: [...], version }
 ```
 
-- Item summaries are visible to organization members; the wording stays in the source session.
+- Item summaries are visible to organization members; the wording, and any detail from a DM or a
+  private place, stays in the source session. This is an instruction to the model, not a filter.
   Observations written by patrols are bound by standing instructions: team-visible, no quotes,
   source content framed as untrusted data.
 - The ledger does not pass through the shared-memory exclusion gate — it is its own store, not
@@ -318,32 +353,48 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
 **② The standing summary**: `id`, title, status and followers' places of active and waiting
 items; capped at 30; injected through the existing reminder path (`shouldRemind`, which already
 handles first turn, restart and compaction); every place receives the same summary. Incremental injection (`lastInjectedVersion`) is not in P0.
+A main conversation's summary also lists the sub-sessions that conversation opened which are
+running now, each by its id and label, at most 10 and then a count. The block is omitted when
+none runs. It rides the same points and is re-injected on the next turn after one starts or
+ends, so the list the model holds stays current (§5.8); after the last one ends, that turn says
+none is running.
 
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
 another place, under §5.5.
 
+**④ The people's local time**: unlike the summary, this rides every turn of an assistant-mode
+agent — main conversations, sub-sessions, patrols, tasks and report rounds — as one line in the
+turn prelude, current at that turn: `Now: 2026-10-12 Mon 04:20 (Asia/Shanghai, UTC+08:00).` The
+zone is the one the person who started the turn reported: on Slack their profile's (`users.info`
+`tz`, else `tz_offset`), read from the profile lookup their message already starts and cached per
+user; in webchat the browser's, sent with the turn. A turn no person started, or whose person
+reported none, takes the zone last seen from a person in its place, which the daemon store keeps
+per agent and place; with none, the line says UTC and that the local zone is unknown. Other
+platforms report no zone. The runtime host's clock is never presented as the people's time. The
+line is context, not an instruction; no tool's parameters change, and instants the agent writes
+(`nextCheck`, `remind`) still carry their own offset.
+
 ### 5.5 Permission rules
 
-> **Read**: any place may recall any non-private channel; a private channel or group DM only from
-> itself — and, from P1, on a turn its member started in their own DM (see below); a DM only from
-> that person's own DM or webchat. Another person's DM, never.
+> **Read**: judged by who is asking, for every agent (§5.5 "Reads"): a source is readable when the
+> person behind the request may see it, and whether to bring it into this conversation is that
+> person's call. A turn no person is behind reads only public channels on its own bot.
 > **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
 > act directly only on **the current place**; a post to another place is a draft the asker
 > approves (below). Item and report traffic across places goes through §5.7 as structured fields.
 > The agent-to-agent forms of `sendMessage` are unchanged, except in a session marked by a
-> per-asker read (below).
+> private read in a 1:1 conversation (below).
 > **External**: an external place reads like an internal one; what it posts is a draft.
 
-| Current place                | Recallable sources                                                                                         | Memory / knowledge | Output                                                |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------- |
-| P's DM                       | P's own DM and webchat, every non-private channel; on P's own turns, the private places P belongs to (P1)² | all¹               | posted                                                |
-| Internal channel or group DM | itself, every non-private channel                                                                          | all¹               | posted                                                |
-| External channel or group DM | itself, every non-private channel                                                                          | all¹               | **drafted**: posted after an internal member approves |
-| Webchat                      | as a DM, by the conversation's owner                                                                       | all¹               | posted                                                |
+| Current place                | Readable sources                                             | Memory / knowledge | Output                                                |
+| ---------------------------- | ------------------------------------------------------------ | ------------------ | ----------------------------------------------------- |
+| P's DM                       | itself, and whatever P may see (§5.5 "Reads")                | all¹               | posted                                                |
+| Internal channel or group DM | itself, and whatever every person asking on the turn may see | all¹               | posted                                                |
+| External channel or group DM | itself, and whatever every person asking on the turn may see | all¹               | **drafted**: posted after an internal member approves |
+| Webchat                      | itself, and whatever the console shows its console user      | all¹               | posted                                                |
 
 ¹ Shared memory never holds content from DMs, webchat or private places (the memory bypass
 below), so opening it everywhere does not reopen what the read rule closes.
-² Per-asker widening, bound to the turn rather than the place; see "Private places" below.
 
 **Drafts in an external place:**
 
@@ -376,62 +427,66 @@ below), so opening it everywhere does not reopen what the read rule closes.
 - A session with no place of its own (a hook, a cron run) drafts every platform post, approved by
   the responsible user or in the fallback conversation.
 
-**Private places — scoped per place now, per asker later:**
+**Reads — judged by who is asking (issue #2979, item B3):**
 
-- A **private place** is a channel or group DM the platform reports as private through the
-  daemon's platform-neutral `isPrivate` facet (`PlatformChannelInfo` / `ObservedChat`). A platform
-  that cannot tell reports not private — notably Discord, whose permission-restricted channels
-  read as open.
-- The target is **per-asker scoping in the asker's own DM**: a private place's content reaches
-  only its members, and only where the asker is the whole audience. An answer in a shared place
-  is read by everyone present, so scoping by what the asker alone may see is rejected there.
-- **Until then (P0a) a private place is read only from itself**: no other place, not even a
-  member's DM, can recall it; the place itself still recalls every non-private channel.
-  Per-asker scoping only widens this, so nothing that works in P0a stops working later.
-- **P1 widens it on the asker's own turns in their DM.** In a person P's 1:1 DM with the agent, on a
-  turn started by P's own message, a private place is readable, when it is named, if P is a member
-  of it right now — checked live at read time (cached for at most about a minute), on the same
-  platform and workspace, and only where the daemon's platform adapter declares its member listing
-  authoritative. A membership that cannot be confirmed is refused as opaquely as any other private
-  place. Recall's listing never shows a private place, even to a member: the agent lists places on
-  its own, before it knows what it needs, so only an actual read widens. Channels, group DMs,
-  webchat and external places keep the P0a rule; webchat waits for identity links.
-- **The widening is bound to the turn, not the place.** Turns in P's DM session that P did not
-  start — a report round, a patrol's or a sub-session's report, a cron run, a later `handoff` — and
-  every sub-session or patrol get the P0a source set.
-- **A session that read a private place this way writes only to P's DM.** The recalled content
-  stays in the DM's long-session context, so the restriction follows the session, not the turn:
-  from the first widened read until that session is retired (`!new`, or a rollover that starts a
-  fresh context), every turn in it — P's own, a report round or a cron run alike — is refused
-  ledger writes (taking, updating or following an item: item summaries and observations are
-  team-visible and feed every place's standing summary), self-delegation, posts or drafts aimed
-  at any other place, and every agent-to-agent send — a direct `toAgent` call, a `toAgent` +
-  `channel` post at a channel root, and a reply into another session through `sessionId` — since
-  each carries the content into a session or place P does not alone see. The mark is stored with
-  the session so it survives a restart or handover, and the refusal tells P that starting a new
-  conversation lifts it. The restriction follows the content, not only the session: the DM's own
-  history still holds the earlier answers, so any session that reads it back — through `recall` or
-  a history read of the DM — once any session there was marked, a retired one included, is marked
-  too, a sub-session or patrol included. This is a refusal by tool, not an output filter; writes
-  that leave through other tools are an open question (§9).
-- **Memory**: DMs are already outside shared memory. When the per-person memory space lands,
-  anything it captures from such a session is injected only where P is the whole audience.
-- **Revocation**: after P leaves the place, excerpts already in P's DM context stay there; like
-  the downgrade rule, the context was never the risk — new reads are refused, and the session's
-  mark still keeps anything from leaving P's DM.
-- **The error metric**: "outside the allowed set" now depends on the place, whether the turn is
-  P's own, and live membership, and is evaluated with all three.
-- No place sees a private place in recall's listing, and a refused read answers as
-  opaquely as the DM rule: "I can't share that here", never where the content lives.
-
-- Webchat ↔ IM recognition depends on identity links (P1); in P0 webchat recalls only itself and
-  channels.
-- **"Ask me in a DM"**: asked in place B for something only the asker may see, B's session
-  neither reads nor answers; it says "ask me in a DM". P1 adds `handoff`: a row through §5.7 to the asker's DM carrying the original
-  question, answered there by the DM session under its own permissions (the human-reaching
-  `sendMessage` only sends already-generated text and starts no turn in the DM, so it is not used).
-- No output filter; one zero-cost assertion: a source read during a turn that is outside the
-  current place's allowed set raises an error metric.
+- **The change.** Until B3 a private place was read only from itself, except in its member's own 1:1
+  DM, and only in assistant mode; agents outside it had a Slack-only reach rule and nothing on the
+  other platforms. Now one rule serves every agent, and the person decides whether to share: the
+  machine checks only whether the person asking has access to the source. An answer in a shared
+  place is read by everyone present, but so is anything that person could paste there themselves;
+  refusing them only made the agent less useful than the person's own copy and paste. The rule
+  itself is in [product-conventions.md](../product-conventions.md), "Reading other conversations".
+- **One choke point.** `judgePlaceRead` in `mcp/ops/place-gate.ts` passes every cross-place read:
+  `getChannelHistory`, `getThreadHistory`, `getReactions`, `listBookmarks` (through the bridge
+  dispatcher, before the handler) and `recall`. The decision is `readRefusal` in
+  `assistant/place-access.ts`; refusals are counted with the existing metric, labelled by the closed
+  tool and reason sets.
+- **On the asker's own platform and bot** the platform decides, from read-port declarations
+  (`platforms/read-ports.ts`), never a platform name: `channelPrivacy` (a channel the platform reports
+  not private is confirmed public: Slack, Discord by the `@everyone` view permission, Feishu/Lark by
+  `chat_type`, Telegram by a public @username), `authoritativeMembers` (Slack, Feishu/Lark by
+  union_id) and `workspaceMembers` (Slack's `isFullMember`, which tells a guest or an outsider from
+  a full member). A 1:1 DM's only member besides the bot is its person, so membership decides a DM
+  too. Lookups are cached for a minute (`assistant/place-members.ts`) and fail closed.
+- **Anywhere else**, and for every console user, the read is judged by the console's own
+  session-visibility predicate ([session-visibility.md](session-visibility.md)), asked of the
+  Control Plane through `agent/read-access` (feature `read-access-v1`): the CP resolves a chat member
+  to the one organization member who linked that identity, or takes a console user directly, and
+  answers which of the agent's sessions there that user could see. Every session the read would
+  show must be visible; `recall` reads at most the place's eight newest sessions, the ones it checks.
+  For a DM, a webchat conversation or an undescribed place the rule is stricter than the console:
+  the daemon asks `ownerOnly`, and the CP counts only sessions whose recorded owner is that user
+  (a webchat session always), so a DM the console shows every member stays its owner's alone. A CP
+  that is unreachable, or lacks the feature, refuses the read.
+- **Who is asking** on a turn: the senders of its message and of every message coalesced or steered
+  into it, recorded before the runtime sees them; the console user in webchat and a console
+  continuation; a sub-session's opener (kept in memory, so a restart reads it as no one); a patrol's
+  or a task's item asker (the item's first follower); a schedule's last human editor, else its
+  creator (`CronUpsert.askerUserId`). Hook runs, report rounds, schedules that record no person and
+  agent-to-agent messages are no one: the agent-to-agent frame carries no originating person and was
+  not given one.
+- **The answer** to a refusal is one opaque "I can't share that here"; a chat member with no linked
+  console account is also told how linking opens reads across platforms and bots, on every refusal,
+  so the hint never tells a closed place from a missing one. A read of a private source carries a
+  `privateSource` note naming it, and the model is asked to mention the source in one short clause.
+- **A 1:1 conversation that read a private channel or group DM in assistant mode writes only to
+  itself.** The trigger and scope are those of the earlier per-asker widening (P's DM; a webchat
+  conversation, the console's 1:1, alike), and B3 does not extend it to shared conversations; its
+  future belongs to B1. The recalled content stays in the long-session context, so the restriction
+  follows the session, not the turn: from the first such read until the session is retired (`!new`,
+  or a rollover that starts a fresh context), every turn in it is refused ledger writes (taking,
+  updating or following an item: item summaries and observations are team-visible and feed every
+  place's standing summary), self-delegation, posts or drafts aimed at any other place, and every
+  agent-to-agent send. The mark is stored with the session so it survives a restart or handover,
+  and the refusal tells P that starting a new conversation lifts it. Any session that reads the
+  DM's own history back while a session there was marked is marked too, a sub-session or patrol
+  included. This is a refusal by tool, not an output filter; writes that leave through other tools
+  are an open question (§9).
+- **Revocation**: after P leaves a place, excerpts already in a conversation's context stay there;
+  new reads are refused once the cached membership expires.
+- **"Ask me in a DM"** is retired: a DM is readable from anywhere by its own person, and nothing
+  tells anyone else that it exists. `handoff` (P1) remains the way to answer a question in the
+  asker's DM under that session's permissions.
 - **Memory bypass**: in P0, per-turn capture, dreams and explicit memory writes skip `private`
   sessions (filtered by the CP-confirmed bit) and the sessions of private places (by `isPrivate`)
   for assistant-mode agents; "allow for this session" is removed on their `append` sessions. P1 adds the per-person memory space. This is a retreat from today's dream
@@ -443,10 +498,10 @@ below), so opening it everywhere does not reopen what the read rule closes.
 **P0b ships the minimal form**: self-delegation as below, a failure report the daemon sends when a
 sub-session ends without reporting (§5.7), and a concurrency cap that refuses beyond
 `maxConcurrentSubsessions` (default 3). Reports use the existing parent-report path
-(`replyToSession`). The persistent outbox, the recovery order, listing / steering / stopping, the
-daily budget and queueing over the cap are deferred until use shows they are needed; the rest of
-this section and §5.7 describe that target. Permission-request routing and its wait cap (items 2
-and 3 below) have shipped.
+(`replyToSession`). The persistent outbox, the recovery order, listing / steering, the daily
+budget and queueing over the cap are deferred until use shows they are needed; the rest of this
+section and §5.7 describe that target. Permission-request routing and its wait cap (items 2 and 3
+below) have shipped, and so has stopping from the main conversation (§5.8).
 
 - **Opening**: self-delegation without a post — the direct form of `sendMessage({ toAgent })`
   accepts a self target (both admission checks exempt it; `targetSessionCoordinate` is skipped),
@@ -460,7 +515,8 @@ and 3 below) have shipped.
   there today.
 - **Relation to the main conversation**: the main conversation can list, steer (reuse
   "re-delegate into the same child") and stop a sub-session; listing needs a **persistent
-  parent–child index** (`childSessionLinks` is in memory).
+  parent–child index** (`childSessionLinks` is in memory). Stopping has shipped (§5.8). Listing
+  is the running block of the standing summary (§5.4); a listing tool and steering stay deferred.
 - **Runtime permission requests** (far more common than `propose`):
   1. Standing prompt: finish the work in the workspace; the outward step (push, open the PR) goes
      through `propose`.
@@ -468,14 +524,15 @@ and 3 below) have shipped.
      DM, §5.5) as a card through the existing two approval paths and listed in Activity; the card
      offers "always allow this tool". **Shipped**, for delegated and `task` sub-sessions (a patrol
      still refuses, §5.9), as the one pending request every surface settles (slack-approval-dm.md
-     §11): a Slack place gets the in-chat card where `allowRuntimeChangesInChat` lets anyone there
-     answer, otherwise a neutral notice plus the editor DM; the card names the sub-session, links
-     it and says how long it waits. It goes to the parent's own thread, or to the conversation's
+     §11): a Slack, Telegram, Discord, Feishu/Lark or Google Chat place gets the in-chat card where `chatActions` (`approve` or above) lets people
+     there answer (only editors where permissions are synced), otherwise a neutral notice plus the editor DM, the notice rewritten in place to how
+     the request settled; the card names the sub-session (its title, else its task), links it
+     and says how long it waits. It goes to the parent's own thread, or to the conversation's
      root for an `append` conversation, where reports land too. A webchat place has the console:
      the request carries its conversation (`parentSessionId`), whose page lists it among its own.
      An external place's card goes where drafts route theirs: the responsible user's DM (a click is
      verified like any approval DM), else the fallback conversation. Approval elicitations take the
-     notice and editor path, since a Slack chat card for them needs a live turn's surface.
+     notice and editor path, since a chat card for them needs a live turn's surface.
   3. **Waiting is waiting**: the ACP request stays open and the turn is not cancelled — the card
      and both approval paths are bound to that pending request; cancelling it expires the card,
      and a later "continue" grants nothing to the re-triggered request. Host and concurrency slot
@@ -488,9 +545,11 @@ and 3 below) have shipped.
      `cancelled`, so the turn ends stopped and the existing failure report tells the parent. The
      timer lives in memory: a restart ends the turn, the store expires every request no process
      holds a resolver for, a stale card's click or console decision finds nothing pending, and the
-     card's handle on the row lets the reconnect sweep retire it.
-  4. The user's permission policy is never changed; an `ask`-policy agent gets the warning in
-     §1.8.
+     card's and the notice's handles on the row let the reconnect sweep retire them.
+  4. Switching assistant mode on moves an asking mode to the runtime's auto mode, else its
+     full-access mode (§1.8), so requests come only from what that mode still escalates or from
+     an asking mode an editor picks afterwards (asking every time gets the warning in §1.8).
+     Nothing else changes the permission mode.
 - **Webchat**: the session-detail dock's Sub-sessions panel (#2885) lists the sub-sessions a
   conversation opened (patrols included) and stops a running one; who may stop is whoever may
   continue that session today. A sub-session's own page is read-only (#2893): talking to one
@@ -509,8 +568,20 @@ and 3 below) have shipped.
 
 In P0b a sub-session reports through the existing parent-report path, and when it ends without a
 report — an error, `!stop`, pause, the stall watchdog — the daemon sends one short failure report
-instead, never two; an interruption that will be replayed sends none. The outbox below is the
-deferred target.
+instead, never two; an interruption that will be replayed sends none. When that replay never runs
+the turn — a same-process replay finds its message already carried by the prompt that was cut, or a
+purge drops the kept delivery — no turn end reports it, and its `open` row would hold a slot under
+the cap for good. So the minute sweep reports it ended, as no longer running, once it has seen
+nothing run for it for ten minutes: no live or queued turn, no delivery left in the inbox, no
+background task owing it a wake, and the agent not paused. An approved task is left to its own
+recovery (§5.10). The failure report waits on the sub-session's index row as `reporting` until it
+is admitted: a refused admission is retried on the minute sweep, three attempts in all, a drain or
+restart leaves it to be re-sent on the next start, and a fixed delivery id with the inbox's
+receipt keeps a re-send from arriving twice. Like patrol and task reports, it goes to the current
+session of the parent's place (after `!new`, the new conversation), else the recorded parent. Every
+report the daemon sends ends by telling that session to answer its people in their language,
+since its framing is English; patrols and tasks are asked to write their report in it, and a
+delegating conversation tells its sub-session which it is. The outbox below is the deferred target.
 
 Implemented as a **persistent per-place outbox** (a table shaped like `orchestration_subtask`:
 agent-owned, CAS-claimed, duty-gated, re-armed on `agentsGained`):
@@ -547,11 +618,25 @@ agent-owned, CAS-claimed, duty-gated, re-armed on `agentsGained`):
 
 ### 5.8 Stopping
 
-| Action                                        | Effect                                                                                                          | Who                                                     |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                | today's `!stop` rules                                   |
-| Stop one piece of work (named, or in webchat) | Interrupts that sub-session's current turn                                                                      | same / whoever may continue that session in the console |
-| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission                               |
+| Action                                        | Effect                                                                                                          | Who                                                                                   |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                | today's `!stop` rules                                                                 |
+| Stop one piece of work (named, or in webchat) | Interrupts that sub-session's current turn                                                                      | same, for whoever started the turn / whoever may continue that session in the console |
+| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission                                                             |
+
+**Stopping a named piece of work** is the `stopSubsession` tool, given the sub-session's id. Only
+an assistant-mode agent's main conversations are offered it: never a sub-session, patrol, task,
+hook or cron run. It stops only a sub-session whose parent in the persistent index is the calling
+conversation. Any other id is refused with the same words as an unknown one, so nothing about
+another conversation is revealed. The turn must have been started by a person's own message, and
+that person must pass today's `!stop` sender rule there; in webchat, the Control Plane admitted
+the message only from someone who may continue the conversation. A report round, a reminder or a
+scheduled run is refused. The stop itself is the console's Stop: the same daemon core, logged
+with who asked. So it answers the same way: stopped, or not running, adding that a background
+process the runtime started may keep running. Stopping one's own sub-session moves no content, so
+a session marked by a private read (§5.5) may still do it. The tool's description tells the
+agent to ask which sub-session the person means only when that is not clear; a clear request is
+carried out at once.
 
 No new "stop everything". The sender rules for `!stop`, `!new` and pause are **unchanged and not
 narrowed** — effects at this level cannot be defended against, and the design does not pretend
@@ -582,7 +667,9 @@ killed sub-sessions do not restart. Stopping never undoes completed effects.
   defaults to 50.
 - **Recovery**: a patrol replayed after a restart or handover settles from state stored with the
   running patrol (its observation baseline and any held report), so an empty replay still counts
-  as a failure. Stopping a patrol from the dock ends it silently with its check done.
+  as a failure. A run's reports are admitted before it settles, each under a stable id the inbox
+  deduplicates, so a run whose turn ended before it settled is settled on the next replay without
+  a second report. Stopping a patrol from the dock ends it silently with its check done.
 
 Shipped in #2887; `propose` from patrols in #2895. The rest of this section is the target.
 
@@ -646,7 +733,7 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
     less than 24 hours late posts late and an older one expires. An agent holds at most 100
     pending reminders, a fixed limit with no setting. Settled rows stay, like the other assistant
     tables' settled rows, until the agent is removed.
-  - A session marked by a per-asker read (§5.5) may set reminders: they land only in its own DM.
+  - A session marked by a private read (§5.5) may set reminders: they land only in its own DM.
 - **Budget and backoff**: `dailyPatrolBudget`; after a failure the next attempt backs off by
   `min(60, 2ⁿ)` minutes, and five consecutive failures pause that item's patrols.
 - **Start condition**: not before each runtime has been tested for exactly the residual stated
@@ -661,16 +748,21 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   createdAt, expiresAt = createdAt + 30min }
 ```
 
-- The card is delivered through §5.7 to the item's place of origin, or for an external place to
-  the approver's DM (§5.5).
+- The card is posted in the item's place of origin, where the place's own replies land: its root,
+  or the thread its long session lives in. An external place's card, or one the place cannot take,
+  goes where a draft with no asker goes instead (§5.5): the responsible user's DM, else the
+  fallback conversation.
 - **Drafts are the record's first use** (P0a): action "post" — into an external place or into
   another place (§5.5) — executed by the daemon. General
   `propose` actions come with P1.
-- **Approvers follow the existing two paths** (`allowRuntimeChangesInChat` on ⇒ any participant
-  of the conversation may click; off ⇒ the editor path); for an external place, the internal
-  member of §5.5. Only the policy is reused: both existing
-  paths bind to a pending ACP request, so a `propose` record that outlives a turn is a new
-  mechanism; the chat card and the editor DM exist on Slack only, other platforms use the console.
+- **Approvers of a proposal are whoever could ask the agent in its place**: a DM's own person; in
+  a channel, a person whose own message would start a turn of the agent there, judged at the click
+  by the place's live admission and trigger; never a bot. Approving runs the task with the agent's
+  own permissions, which is what asking there gets, so it grants nothing more. For an external
+  place, the internal member of §5.5; editors always, in Activity. A draft's approvers stay as
+  §5.5 says. `chatActions` is not read: it guards runtime approval controls and runtime-setting
+  changes in chat, a different decision. Cards exist on Slack only; other platforms use
+  the console.
 - Approval ⇒ CAS to `executing`, record the sub-session id and write the marked inbox row in one
   transaction ⇒ open a normal-permission sub-session.
 - An uncertain outcome ⇒ `outcome_unknown`, never retried automatically; on restart or handover
@@ -692,9 +784,17 @@ places:
 3. **The item version is in the hash but does not cancel an approval**: a later update to the
    item would otherwise void every proposal; a closed or deleted item is still refused, and the
    task's prompt shows both versions and says to check the current state first.
-4. **Approvers** are the responsible user or the fallback conversation through the draft card,
-   plus the agent's editors in the console's Activity view, not the in-place card under the in-chat
-   approval rule.
+4. **Approvers** are the people who could ask the agent in the item's place, through the draft card
+   posted there, plus the agent's editors in the console's Activity view; the first answer from any
+   surface wins. The responsible user's DM or the fallback conversation gets the card only when the
+   place cannot: an external place, a post that definitely failed, a place gated by a decision's
+   verdict, a platform with no card. A timed-out post may still land, so it is never carded twice:
+   the place keeps it. The card's handle and the status it last showed are on the record, so a reconnect
+   rewrites a card a restart left behind. A webchat place has no card: the proposal waits in its
+   conversation's pending-requests strip. Whoever may continue that conversation in the console may
+   decide it there, and so may the agent's editors. The strip reads and decides through routes of
+   its own, which pass the conversation to the daemon. The daemon lists only that conversation's
+   proposals and refuses a decision on any other. The responsible user is not asked.
 
 A cut execution settles from the sub-session's durable end: reported ⇒ `succeeded`, failure report
 already sent ⇒ `failed`, otherwise `outcome_unknown` with one "please check" report.
@@ -748,14 +848,14 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                                                                                                                  |
-| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, list / steer / stop, the daily budget, queueing over the cap                                                                                                                                                                             |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), sub-session permission requests routed to their conversation under the wait cap (§5.6). Next: the target patrol (after per-runtime tests) on the credential-less host; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions**                                                                                                                                                                                                              |
+| **P0b — background work**         | Minimal: direct self-delegation (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a sub-session ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, list / steer (the standing summary names the running ones; stop has shipped, §5.8), the daily budget, queueing over the cap                                                                                                                                                                          |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat sub-session panel and read-only sub-session pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), sub-session permission requests routed to their conversation under the wait cap (§5.6), stopping a sub-session from the main conversation that opened it (§5.8). Next: the target patrol (after per-runtime tests) on the credential-less host; `handoff`; the per-person memory space; identity links pushed to the daemon |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ---
 
@@ -763,8 +863,8 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 
 - The personal form; one shared context; an output filter as a defense; member enumeration as a
   precondition for recall;
-- a dedicated sub-session workspace, changing the agent's isolation, changing the user's
-  permission policy;
+- a dedicated sub-session workspace, changing the agent's isolation, changing the permission mode
+  other than by the default when the mode is switched on;
 - automatic retry of an uncertain external write; cancelling a waiting permission request to free
   a slot (P0);
 - delegation / report / status tools parallel to `sendMessage`; restoring the orchestration tool
@@ -796,7 +896,7 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 7. **Wording of item summaries**: the restatement when an item is taken is the only review point
    for what becomes team-visible.
 8. Whether distillation on a normal OpenCode host runs under `plan` (live, unverified).
-9. **Other writes from a session marked by a per-asker read**: code-host comments and issues, MCP
+9. **Other writes from a session marked by a private read**: code-host comments and issues, MCP
    tools and a shell with network access are not refused, so recalled content can still leave
    P's DM through them, on P's request or in a later turn. Closing them means a restricted tool
    set for marked sessions, which would leave the DM little more than read-only until `!new`.
@@ -926,3 +1026,99 @@ latched before the runtime hears the answer, and the existing failure report tel
 cap is an in-memory timer, which a restart cannot turn into a later grant: the turn ends, the
 request expires, and its card is retired by the reconnect sweep. Approval elicitations take the
 notice and editor path; patrols still refuse.
+
+**Fifteenth revision (2026-10-10)**: quiet hours are dropped from P1 and the per-person form from
+P3. A teammate keeps no office hours of its own, and a person who wants quiet mutes notifications
+in their own chat client; nothing in the design depended on a delivery window.
+
+**Sixteenth revision (2026-10-10)**: a sub-session's failure report is no longer lost to a drain, a
+refused admission or a restart. It is held as `reporting` until admitted, retried on the sweep up to
+three times, re-sent after a restart and deduplicated by a fixed delivery id, and it reaches the
+parent place's current session through the one delivery path the daemon's patrol and task reports
+already use (§5.7).
+
+**Seventeenth revision (2026-10-12)**: the ledger's no-quote rule covers private channels and group
+conversations as well as DMs. In a test, an item taken in a private channel carried a figure said
+there into its done-when, and another place read it back from the ledger although recalling the
+channel itself was refused. The item tools' descriptions now forbid quoting or paraphrasing any of
+these conversations, down to a figure or a detail, and have the agent tell the person, as it takes
+such an item, that the item is visible to the whole organization. The rule stays an instruction
+rather than a per-place filter on the ledger.
+
+**Eighteenth revision (2026-10-12)**: a patrol's proposal is carded in the conversation its item
+belongs to. In a test, the card went to the responsible user's DM or the fallback conversation,
+and the place that asked saw nothing: not the proposal, not its denial, not its expiry. Now the
+card is posted there and rewritten in place as it is approved, denied or expires, and again when
+the task ends. Whoever could ask the agent there may approve it: in a DM, that person; in a
+channel, anyone whose own message would start a turn of the agent, judged at the click by the
+place's live admission and trigger. This grants nothing new. An approved proposal runs a task with
+the agent's own permissions, which is exactly what a person there gets by typing the request, and
+runtime permission requests inside the task still take the normal path. So the approval does not
+read `chatActions`, which guards runtime approval controls and runtime-setting changes in chat, a
+different kind of decision, and it adds no setting. The first version kept
+proposals off the in-place card because that card was bound to an ACP request of the
+conversation's own turn. Since #2913 a conversation shows cards for requests its own turn did not
+raise, so that reason no longer holds. The responsible user and the fallback conversation are now
+the fallback only, used when the place cannot take the card. The first answer from any surface
+still wins. Webchat places keep Activity for now (§5.10).
+
+**Nineteenth revision (2026-10-12)**: a patrol's proposal for an item taken in a webchat
+conversation now shows in that conversation's pending-requests strip. Until now only editors saw
+it, in Activity, and the conversation itself showed nothing. Whoever may continue the conversation
+in the console may approve or deny it there, the same check that lets them stop its sub-sessions.
+The agent's editors may too, there and in Activity. This matches Slack, where the card goes to
+whoever could ask the agent in the item's conversation, and it grants nothing new. The proposal is
+no longer carded to the responsible user or the fallback conversation. Two new routes list and
+decide one conversation's proposals, and the daemon refuses a decision for a proposal of any other
+conversation. The first answer from any surface still wins.
+
+**Twentieth revision (2026-10-12)**: the main conversation can stop a sub-session it opened. In
+a test, a person asked in a Slack DM to stop one, and the agent answered that it had no tool for
+it; only the console could. Now the main conversation of a place has `stopSubsession` (§5.8). It
+stops only a sub-session that conversation opened, on a turn a person there started, under the
+`!stop` sender rule; in webchat, the person may continue the conversation. It runs the console's
+own Stop, so the effect and the answer are the same. The agent confirms which sub-session is
+meant before it stops one. To name one, the standing summary of a main conversation lists the
+sub-sessions it opened that are running now (§5.4). That block is re-injected on the next turn
+after one starts or ends. Stop leaves P0b's deferred list; listing as a tool and steering stay
+deferred.
+
+**Twenty-first revision (2026-10-12)**: a sub-session that nothing will run again is reported
+ended. A sub-session turn cut for a handover or a runtime respawn and replayed in the same process
+was folded away, its message already carried by the cut prompt, so neither a replayed turn nor a
+failure report settled its row, and the row held one of the agent's concurrent slots for good.
+Now the minute sweep reports such a sub-session ended once nothing has run for it for ten minutes
+(§5.7), through the existing failure report, which also frees the slot. Why the same-process replay
+folds the turn away is not changed here.
+
+**Twenty-second revision (2026-10-12)**: assistant-mode turns are told the people's local time. In
+a test, an agent in a Slack DM with a person in UTC+8, at 04:20 on a Monday, said today was Sunday
+and called that same Monday "tomorrow". The times it scheduled carried the right offset, but its
+sense of today followed the runtime host's clock, which is UTC. Now every turn of an assistant-mode
+agent opens with one line naming the current local date, weekday, time, zone and offset (§5.4 ④).
+The zone is the sender's Slack profile zone or the console browser's; a turn no person started
+takes the zone last seen from a person in its place; otherwise the line says UTC and that the local
+zone is unknown. No tool changes, and an agent outside assistant mode gets no line.
+
+**Twenty-third revision (2026-10-12)**: switching assistant mode on sets a default permission mode.
+In a test, nearly every background task stopped to wait for approval of a file write, and nobody
+was watching. Now the edit that switches the mode on, from the console or the API, moves an unset,
+asking or read-only mode to the runtime's auto mode, or to its full-access mode where the runtime
+has no auto mode (§1.8). Which mode is which is a per-runtime map beside the admission list: Claude
+Code gets `auto` and Codex gets `agent`, its "Auto review"; OpenCode has neither and keeps its
+mode. An auto or full-access mode, Claude Code's `dontAsk` and a mode set in the same edit are
+kept. It is a default, not an admission check: an editor may pick another mode afterwards, the
+choice sticks while the mode stays on, and the ask-every-time warning returns for it. Switching
+the mode off and on again applies the default again.
+
+**Twenty-fourth revision (2026-10-12)**: reads are judged by who is asking, for every agent (issue
+#2979, item B3; §5.5 "Reads"). The per-place rule refused a member their own private channel from
+any shared conversation, and agents outside assistant mode had no rule at all off Slack: a Discord
+or Feishu chat the bot was in was readable from anywhere. The product owner's principle settles both:
+the machine checks whether the person behind the request has access, and that person decides
+whether to share. On the asker's own platform and bot the platform's membership decides; anywhere
+else, and for every console user, the console's own session-visibility predicate does, asked of the
+Control Plane, so no second rule exists to drift from it. Runs a person started read as that person:
+a sub-session as its opener, a patrol or a task as its item's asker, a schedule as its last editor.
+The 1:1 write bar keeps its trigger and is not extended to shared conversations; writes, memory and
+the item ledger are unchanged.

@@ -1,4 +1,10 @@
-import type { KeyProvider } from '@agentconnect.md/protocol'
+import {
+  PROVIDER_KEY_PROFILES,
+  type AgentModelProvider,
+  type AgentModelKeyProvider,
+  type ProviderCredential,
+  type KeyProvider
+} from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
@@ -288,4 +294,58 @@ export function applyConfiguredModelProviders(
   const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
   config.enabled_providers ??= Object.keys(record(config.provider, 'OPENCODE_CONFIG_CONTENT.provider'))
   env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config)
+}
+
+export function organizationModelProvider(
+  provider: AgentModelProvider,
+  target: ModelProviderTarget | undefined
+): AgentModelKeyProvider {
+  if (
+    !target ||
+    (target.provider !== 'anthropic' && target.provider !== 'openai') ||
+    (provider !== 'auto' && target.provider !== provider) ||
+    (target.runtime === 'opencode' && target.opencodeProvider !== target.provider)
+  )
+    throw new Error(`Selected ${provider} credentials do not match this runtime and model`)
+  return target.provider
+}
+
+// The model's provider supplies the whole connection; ambient auth must never change its billing or endpoint.
+export function applyOrganizationModelCredential(
+  selection: AgentModelProvider,
+  target: ModelProviderTarget | undefined,
+  env: Record<string, string>,
+  credential: ProviderCredential
+): void {
+  const provider = organizationModelProvider(selection, target)
+  const baseUrl = credential.endpoint ?? PROVIDER_KEY_PROFILES[provider].defaultEndpoint!
+  applyModelCredential(target!, env, { key: credential.apiKey, baseUrl })
+  if (target?.runtime === 'claude') {
+    for (const name of [
+      'ANTHROPIC_AUTH_TOKEN',
+      'ANTHROPIC_IDENTITY_TOKEN',
+      'ANTHROPIC_IDENTITY_TOKEN_FILE',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
+      'CLAUDE_CODE_USE_BEDROCK',
+      'CLAUDE_CODE_USE_VERTEX',
+      'CLAUDE_CODE_USE_FOUNDRY'
+    ])
+      env[name] = ''
+    env.ANTHROPIC_CUSTOM_HEADERS = Object.entries(credential.headers)
+      .map(([name, value]) => `${name}: ${value}`)
+      .join('\n')
+  } else if (target?.runtime === 'codex') {
+    env.DEFAULT_AUTH_REQUEST = codexGatewayAuthRequest(baseUrl, credential.apiKey, credential.headers)
+  } else if (target?.runtime === 'opencode') {
+    const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
+    const providers = record(config.provider, 'OPENCODE_CONFIG_CONTENT.provider')
+    const entry = record(providers[provider], 'OPENCODE_CONFIG_CONTENT.provider')
+    const options = record(entry.options, 'OPENCODE_CONFIG_CONTENT.provider.options')
+    env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+      ...config,
+      enabled_providers: [provider],
+      provider: { [provider]: { ...entry, options: { ...options, headers: credential.headers } } }
+    })
+  }
 }

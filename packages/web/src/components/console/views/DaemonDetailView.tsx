@@ -52,8 +52,8 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import {
   agentStrategyValue,
+  HOST_ONLY_TABLE,
   HOST_STRATEGY,
-  LEGACY_SANDBOX,
   sortStrategies,
   strategyRuntimeModels
 } from '@/lib/execution-strategy'
@@ -137,34 +137,19 @@ export default function DaemonDetailView() {
   const canUpgrade = canRestart && daemon.availableVersions.some((v) => v !== daemon.version)
 
   const hosted = agents.filter((a) => a.daemon === daemon.daemonId)
-  // One tab per strategy in the daemon's own table; one that predates the table keeps Host / Sandbox, and the pool its image alone.
-  const table = daemon.pool ? undefined : daemon.caps.strategies
-  const sandboxRequired = daemon.pool || daemon.caps.features.includes('sandbox-required')
-  const sandboxSupported = daemon.pool || daemon.caps.features.includes('sandbox')
-  const runtimeTabs = table
-    ? sortStrategies(Object.keys(table))
-    : sandboxRequired
-      ? [LEGACY_SANDBOX]
-      : [HOST_STRATEGY, LEGACY_SANDBOX]
+  // One tab per strategy in the daemon's own table; the pool has no tabs, since its pod is every agent's boundary.
+  const table = daemon.pool ? undefined : (daemon.caps.strategies ?? HOST_ONLY_TABLE)
+  const runtimeTabs = table ? sortStrategies(Object.keys(table)) : []
   const runtimeStrategy = runtimeTabs.includes(runtimeTab) ? runtimeTab : (runtimeTabs[0] ?? HOST_STRATEGY)
-  const runtimeAgents = hosted.filter((a) =>
-    table
-      ? agentStrategyValue(a) === runtimeStrategy
-      : (sandboxRequired || (sandboxSupported && a.runInSandbox)) === (runtimeStrategy === LEGACY_SANDBOX)
-  )
-  const runtimeModels = strategyRuntimeModels(daemon.runtimeModels, runtimeStrategy)
-  // A strategy the daemon cannot run lists no runtimes; a legacy daemon whose sandbox is down reports the capability AND the reason.
+  const runtimeAgents = table ? hosted.filter((a) => agentStrategyValue(a) === runtimeStrategy) : hosted
+  // The pool's runtimes stay as the pod reports them; elsewhere each runtime reads as the tab's strategy starts it.
+  const runtimeModels = table ? strategyRuntimeModels(daemon.runtimeModels, runtimeStrategy) : daemon.runtimeModels
+  // A strategy the daemon cannot run lists no runtimes, only its probe's reason.
   const tableEntry = table?.[runtimeStrategy]
-  const strategyDownReason = table
-    ? tableEntry && !tableEntry.available
-      ? tableEntry.reason
-      : undefined
-    : runtimeStrategy === LEGACY_SANDBOX
-      ? daemon.caps.sandboxUnavailable
-      : undefined
-  const strategyDown = !!strategyDownReason || (!table && runtimeStrategy === LEGACY_SANDBOX && !sandboxSupported)
+  const strategyDownReason = tableEntry && !tableEntry.available ? tableEntry.reason : undefined
+  const strategyDown = !!strategyDownReason
   const hostMissingIds =
-    runtimeStrategy !== HOST_STRATEGY && !daemon.pool && !strategyDown
+    table && runtimeStrategy !== HOST_STRATEGY && !strategyDown
       ? imageOnlyRuntimeIds([{ runtimeModels }])
       : new Set<string>()
   const runtimes: FleetRuntime[] = strategyDown

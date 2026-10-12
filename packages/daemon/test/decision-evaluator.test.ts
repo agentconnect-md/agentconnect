@@ -23,7 +23,7 @@ const answer = (value: unknown) =>
   Response.json({ model: 'jev-example', answers: { decision: value }, usage: { input_tokens: 10, output_tokens: 2 } })
 const booleanAnswer = () => answer({ type: 'noul', noul: 0.75 })
 
-function setup(over: { configured?: boolean; timeoutMs?: number; now?: () => number } = {}) {
+function setup(over: { configured?: boolean; managed?: boolean; timeoutMs?: number; now?: () => number } = {}) {
   const credentials = vi.fn(async (): Promise<ProviderCredentialsReply> => ({
     credentials: over.configured === false ? null : byok
   }))
@@ -38,7 +38,9 @@ function setup(over: { configured?: boolean; timeoutMs?: number; now?: () => num
     orgForAgent: () => 'example-org',
     credentials,
     keyServer: () => issuer,
-    cloudBaseUrl: 'https://cloud.example.test/typesafe',
+    cloudEndpoints: over.managed
+      ? { typesafe: 'https://cloud.example.test/typesafe', openai: 'https://cloud.example.test/openai/v1' }
+      : undefined,
     fetch: providerFetch,
     timeoutMs: over.timeoutMs,
     now: over.now
@@ -48,7 +50,7 @@ function setup(over: { configured?: boolean; timeoutMs?: number; now?: () => num
 
 describe('daemon Decision evaluator', () => {
   it('projects supported models and Cloud availability without requesting keys or calling a provider', () => {
-    const { evaluator, credentials, providerFetch, issuerFetch } = setup()
+    const { evaluator, credentials, providerFetch, issuerFetch } = setup({ managed: true })
     expect(evaluator.catalog()).toMatchObject({
       providers: [
         {
@@ -56,7 +58,7 @@ describe('daemon Decision evaluator', () => {
           cloudAvailable: true,
           models: [{ id: 'jev-1.13.0' }, { id: 'jev-latest' }, { id: 'jev-preview' }]
         },
-        { id: 'openai', cloudAvailable: false, models: [{ id: 'gpt-6-luna' }] }
+        { id: 'openai', cloudAvailable: true, models: [{ id: 'gpt-6-luna' }] }
       ]
     })
     expect(credentials).not.toHaveBeenCalled()
@@ -92,10 +94,10 @@ describe('daemon Decision evaluator', () => {
     expect(issuerFetch).not.toHaveBeenCalled()
   })
 
-  it('uses the existing IssueKey/RevokeKey contract for Cloud only after confirmed absence', async () => {
-    const { evaluator, credentials, providerFetch, issuerFetch } = setup()
-    credentials.mockResolvedValueOnce({ credentials: null })
+  it('uses the managed gateway with an IssueKey/RevokeKey grant and never reads BYOK', async () => {
+    const { evaluator, credentials, providerFetch, issuerFetch } = setup({ managed: true })
     expect((await evaluator.evaluate(input)).status).toBe('answered')
+    expect(credentials).not.toHaveBeenCalled()
     expect(JSON.parse(issuerFetch.mock.calls[0]![1]!.body as string)).toEqual({
       orgId: 'example-org',
       agentId,
@@ -107,28 +109,35 @@ describe('daemon Decision evaluator', () => {
     expect(new Headers(providerFetch.mock.calls[0]![1]!.headers).get('authorization')).toBe(
       'Bearer example-cloud-token'
     )
+    expect(new Headers(providerFetch.mock.calls[0]![1]!.headers).get('x-extra')).toBeNull()
     expect(String(issuerFetch.mock.calls[1]![0])).toBe('https://issuer.example.test/v1/revoke-key')
     expect(JSON.parse(issuerFetch.mock.calls[1]![1]!.body as string)).toEqual({ keyId: 'example-grant' })
   })
 
-  it('does not switch to credits after a BYOK read or provider authentication failure', async () => {
-    const { evaluator, credentials, providerFetch, issuerFetch } = setup()
-    credentials.mockRejectedValueOnce(new Error('example-secret'))
-    expect(await evaluator.evaluate(input)).toEqual({ status: 'unavailable', reason: 'credentials' })
-    expect(providerFetch).not.toHaveBeenCalled()
-    providerFetch.mockResolvedValueOnce(new Response('example-secret', { status: 401 }))
-    expect(await evaluator.evaluate(input)).toEqual({ status: 'unavailable', reason: 'credentials' })
+  it('falls back to BYOK for a provider the managed gateway does not serve', async () => {
+    const credentials = vi.fn(async (): Promise<ProviderCredentialsReply> => ({ credentials: byok }))
+    const providerFetch = vi.fn<typeof fetch>(async () => booleanAnswer())
+    const issuerFetch = vi.fn<typeof fetch>()
+    const evaluator = new DecisionEvaluator({
+      orgForAgent: () => 'example-org',
+      credentials,
+      keyServer: () => new KeyServerClient('https://issuer.example.test', { fetch: issuerFetch }),
+      cloudEndpoints: { openai: 'https://cloud.example.test/openai/v1' },
+      fetch: providerFetch
+    })
+    expect((await evaluator.evaluate(input)).status).toBe('answered')
+    expect(String(providerFetch.mock.calls[0]![0])).toBe('https://gateway.example.test/typesafe/v1/systemone')
     expect(issuerFetch).not.toHaveBeenCalled()
   })
 
   it('requires both a configured issuer and gateway for Cloud and fails closed on issuer denial', async () => {
     const fetcher = vi.fn<typeof fetch>()
-    for (const cloudBaseUrl of [undefined, 'file:///tmp/gateway']) {
+    for (const typesafe of [undefined, 'file:///tmp/gateway']) {
       const evaluator = new DecisionEvaluator({
         orgForAgent: () => 'example-org',
         credentials: async () => ({ credentials: null }),
         keyServer: () => new KeyServerClient('https://issuer.example.test', { fetch: fetcher }),
-        cloudBaseUrl,
+        cloudEndpoints: { typesafe },
         fetch: fetcher
       })
       expect(await evaluator.evaluate(input)).toEqual({ status: 'unavailable', reason: 'credentials' })
@@ -137,12 +146,12 @@ describe('daemon Decision evaluator', () => {
       orgForAgent: () => 'example-org',
       credentials: async () => ({ credentials: null }),
       keyServer: () => undefined,
-      cloudBaseUrl: 'https://cloud.example.test/typesafe',
+      cloudEndpoints: { typesafe: 'https://cloud.example.test/typesafe' },
       fetch: fetcher
     })
     expect(await noIssuer.evaluate(input)).toEqual({ status: 'unavailable', reason: 'credentials' })
     expect(fetcher).not.toHaveBeenCalled()
-    const { evaluator, providerFetch, issuerFetch } = setup({ configured: false })
+    const { evaluator, providerFetch, issuerFetch } = setup({ managed: true })
     issuerFetch.mockResolvedValueOnce(
       Response.json({ error: { code: 'quota_denied', message: 'example-sensitive-details' } }, { status: 403 })
     )

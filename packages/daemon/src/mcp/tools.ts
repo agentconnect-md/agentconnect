@@ -14,6 +14,7 @@ import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 import { RECALL_TOOL } from './recall-tool.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from './ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
+import { STOP_SUBSESSION_TOOL } from './ops/assistant-subsessions.js'
 
 /**
  * The single unified send tool (session-concept §3). It merges the former
@@ -431,12 +432,16 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
             name: 'getChannelHistory',
             description:
               'Read one bounded page of messages from a channel on this platform: the channel bound to this ' +
-              'conversation by default, or the one `channel` names. On Slack any PUBLIC channel can be read — the ' +
-              'bot joins it on first use, unless an operator switched that off for this bot — while a private ' +
-              'channel or DM is readable only as the conversation you ' +
-              'were invoked in. Results are newest-first; pass nextCursor as cursor to continue with older ' +
-              'messages. This returns channel messages, not replies inside a thread: each carries `threadTs` and ' +
-              '`replyCount`, and `getThreadHistory` opens one.',
+              'conversation by default, or the one `channel` names. Another conversation is readable only when ' +
+              'the person asking may see it: a public channel (the bot joins it on first use, unless an operator ' +
+              'switched that off for this bot), a private channel or group DM they are in, or their own direct ' +
+              'message with you; through another of your bots, only what the console shows that person. A run no ' +
+              'person started reads only public channels. Anything else is refused ' +
+              'with one answer that never says whether it exists. A result from a private conversation carries ' +
+              '`privateSource`: when you use it, say where it came from in one short clause. Results are ' +
+              'newest-first; pass nextCursor as cursor to continue with older messages. This returns channel ' +
+              'messages, not replies inside a thread: each carries `threadTs` and `replyCount`, and ' +
+              '`getThreadHistory` opens one.',
             inputSchema: obj({
               integrationId: sameBotSelector,
               channel: targetChannel,
@@ -535,9 +540,10 @@ function buildThreadHistoryTool(offered: boolean, integrationId: SchemaProp): To
       description:
         'Read one thread in full — its root message and every reply. Use it to catch up on a discussion you are not ' +
         'part of: `getChannelHistory` reports each message’s `threadTs` and `replyCount`, and this opens one of ' +
-        'them. `thread` is the root message’s id (Slack thread_ts). Any PUBLIC channel is readable (the bot joins ' +
-        'it on first use, unless an operator switched that off for this bot); a private channel or DM only as the ' +
-        'conversation you were invoked in. Results are ' +
+        'them. `thread` is the root message’s id (Slack thread_ts). A thread in another conversation is readable ' +
+        'under the same rule as `getChannelHistory`: only when the person asking may see that conversation (the ' +
+        'bot joins a public channel on first use, unless an operator switched that off for this bot), with ' +
+        '`privateSource` on a result from a private one. Results are ' +
         'oldest-first; `truncated` is true when the thread is longer than `limit`. Your own status chrome is ' +
         'filtered out.',
       inputSchema: obj(
@@ -772,9 +778,9 @@ function buildSearchTool(enabled: boolean): ToolDescriptor[] {
         'its channel, author, text, timestamp and permalink. ' +
         'The name is the first limit: private channels and DMs are never searched, INCLUDING the conversation you ' +
         'are in right now, so this cannot look through the discussion you are having. Two more follow from it. ' +
-        'Hits may sit in channels you were never added to — they are public, so `getThreadHistory` opens any of ' +
-        'them (the bot joins the channel on first use, unless an operator switched that off; then answer from the ' +
-        'hit’s own text and permalink). And the ' +
+        'Hits may sit in channels you were never added to — they are public, so `getThreadHistory` opens them for ' +
+        'whoever may see that channel (the bot joins the channel on first use, unless an operator switched that ' +
+        'off; then answer from the hit’s own text and permalink). And the ' +
         'search is authorized by the message that started this turn, so a scheduled run, a turn another agent ' +
         'woke, or a channel message that did not address you cannot search, and will say so. Page with `cursor`. ' +
         'Slack does not permit these results to be stored or copied, so AgentConnect keeps none of them in ' +
@@ -1433,7 +1439,8 @@ export const ALL_TOOL_NAMES = [
       RECALL_TOOL,
       ...ASSISTANT_ITEM_TOOLS,
       PROPOSE_TOOL,
-      ...ASSISTANT_REMINDER_TOOLS
+      ...ASSISTANT_REMINDER_TOOLS,
+      STOP_SUBSESSION_TOOL
     ]
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.

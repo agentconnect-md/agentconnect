@@ -10,7 +10,9 @@ import {
   modelSelectionDecisionIds,
   type AgentApiGates,
   type AgentModelSelection,
+  type AgentModelProvider,
   type AgentRepositorySelector,
+  type ChatActions,
   isCodeHostProvider,
   redactGitUrlSecrets,
   type CodeHostProvider
@@ -59,7 +61,11 @@ import {
   resolveMemoryBindingOnUpdate
 } from '../../agent-memory/home.js'
 import { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './agent-memory.repo.js'
-import { assertAssistantModeDefinition, assistantModeEditNeedsAdmission } from '../../agents/assistant-mode.js'
+import {
+  assertAssistantModeDefinition,
+  assistantModeEditNeedsAdmission,
+  assistantModePermissionModeForEdit
+} from '../../agents/assistant-mode.js'
 import { PgHookRepo } from './hook.repo.js'
 import { joinGiteaBindingFence } from './gitea-binding-fence.js'
 import { lockAgentPlacement, settlePlacementChange } from './agent-placement.js'
@@ -183,13 +189,14 @@ async function assertWorkspaceIntegrationCompatible(
 // spawn (flattened into the wire AgentSpec by agentRecordToSpec).
 type RuntimeOverrides = {
   model?: string
+  modelProvider?: AgentModelProvider
   reasoningEffort?: string
   outputMode?: string
   showFooter?: boolean
   showStatusBar?: boolean
   fastMode?: boolean
   permissionMode?: string
-  allowRuntimeChangesInChat?: boolean
+  chatActions?: ChatActions
   // Operational message-processing toggle (#288). Stored in the overrides bag for
   // consistency with the sibling boolean toggles; the daemon skips all turn dispatch
   // for a paused agent. Absent ⇒ not paused.
@@ -322,13 +329,14 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     description: a.description,
     runtime: a.runtime,
     model: ov.model ?? null,
+    modelProvider: ov.modelProvider ?? null,
     reasoningEffort: ov.reasoningEffort ?? null,
     outputMode: ov.outputMode ?? null,
     showFooter: ov.showFooter ?? true,
     showStatusBar: ov.showStatusBar ?? false,
     fastMode: ov.fastMode ?? null,
     permissionMode: ov.permissionMode ?? null,
-    allowRuntimeChangesInChat: ov.allowRuntimeChangesInChat ?? false,
+    chatActions: ov.chatActions ?? 'talk',
     pause: ov.pause ?? null,
     env: ov.env ?? {},
     mcpServers: ov.mcpServers ?? [],
@@ -360,7 +368,6 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     outboundPolicy: a.outboundPolicy as AgentCallPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
-    runInSandbox: a.runInSandbox,
     execution: a.execution,
     lastModifiedAt: a.lastModifiedAt,
     lastModifiedBy: a.lastModifiedBy
@@ -450,43 +457,25 @@ export class PgAgentRepo implements AgentRepo {
           ...placementCreateColumns(input),
           ...(input.managedSkills ? { managedSkills: input.managedSkills } : {}),
           ...(input.repositorySelector ? repositorySelectorColumns(input.repositorySelector) : {}),
-          ...(input.model ||
-          input.reasoningEffort ||
-          input.outputMode ||
-          input.showFooter !== undefined ||
-          input.showStatusBar !== undefined ||
-          input.fastMode !== undefined ||
-          input.permissionMode ||
-          input.allowRuntimeChangesInChat !== undefined ||
-          input.pause !== undefined ||
-          input.env ||
-          input.mcpServers ||
-          input.skills ||
-          input.decisionIds ||
-          input.modelSelection ||
-          input.memory
-            ? {
-                runtimeOverrides: {
-                  ...(input.model ? { model: input.model } : {}),
-                  ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
-                  ...(input.outputMode ? { outputMode: input.outputMode } : {}),
-                  ...(input.showFooter !== undefined ? { showFooter: input.showFooter } : {}),
-                  ...(input.showStatusBar !== undefined ? { showStatusBar: input.showStatusBar } : {}),
-                  ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),
-                  ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
-                  ...(input.allowRuntimeChangesInChat !== undefined
-                    ? { allowRuntimeChangesInChat: input.allowRuntimeChangesInChat }
-                    : {}),
-                  ...(input.pause !== undefined ? { pause: input.pause } : {}),
-                  ...(input.env ? { env: input.env } : {}),
-                  ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
-                  ...(input.skills ? { skills: input.skills } : {}),
-                  ...(input.decisionIds ? { decisionIds: input.decisionIds } : {}),
-                  ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-                  ...(input.memory ? { memory: input.memory } : {})
-                }
-              }
-            : {}),
+          // A new agent's default chat level is 'approve', so every created row carries the bag.
+          runtimeOverrides: {
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
+            ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+            ...(input.outputMode ? { outputMode: input.outputMode } : {}),
+            ...(input.showFooter !== undefined ? { showFooter: input.showFooter } : {}),
+            ...(input.showStatusBar !== undefined ? { showStatusBar: input.showStatusBar } : {}),
+            ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),
+            ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+            chatActions: input.chatActions ?? 'approve',
+            ...(input.pause !== undefined ? { pause: input.pause } : {}),
+            ...(input.env ? { env: input.env } : {}),
+            ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+            ...(input.skills ? { skills: input.skills } : {}),
+            ...(input.decisionIds ? { decisionIds: input.decisionIds } : {}),
+            ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+            ...(input.memory ? { memory: input.memory } : {})
+          },
           // A user-created agent's first "last modification" is its creation, by the
           // same principal — stamp both so the audit pair is coherent from row one.
           ...(input.createdByUserId
@@ -497,10 +486,8 @@ export class PgAgentRepo implements AgentRepo {
           capabilities: input.capabilities ?? [],
           // #536 self-introduce-on-join (dedicated column; absent ⇒ DB default false).
           ...(input.introduceOnJoin !== undefined ? { introduceOnJoin: input.introduceOnJoin } : {}),
-          // #642 sandbox preference (dedicated column; absent ⇒ DB default false).
-          ...(input.runInSandbox !== undefined ? { runInSandbox: input.runInSandbox } : {}),
-          // An agent that is not sandboxed runs on `host`; a sandboxed one names its strategy or stays null until its daemon reports.
-          execution: input.execution !== undefined ? input.execution : input.runInSandbox ? null : 'host',
+          // The strategy sessions run in (session-executors.md §5); absent ⇒ DB default `host`.
+          ...(input.execution !== undefined ? { execution: input.execution } : {}),
           // Initial visibility (absent ⇒ DB default 'org'). sharedWith only bites
           // when restricted; a stray set under 'org' is inert (the predicate ignores it).
           ...(input.visibility ? { visibility: input.visibility } : {}),
@@ -609,13 +596,14 @@ export class PgAgentRepo implements AgentRepo {
     let overrides: RuntimeOverrides | typeof undefined
     if (
       patch.model !== undefined ||
+      patch.modelProvider !== undefined ||
       patch.reasoningEffort !== undefined ||
       patch.outputMode !== undefined ||
       patch.showFooter !== undefined ||
       patch.showStatusBar !== undefined ||
       patch.fastMode !== undefined ||
       patch.permissionMode !== undefined ||
-      patch.allowRuntimeChangesInChat !== undefined ||
+      patch.chatActions !== undefined ||
       patch.pause !== undefined ||
       patch.env !== undefined ||
       patch.mcpServers !== undefined ||
@@ -678,6 +666,10 @@ export class PgAgentRepo implements AgentRepo {
         if (patch.model === null) delete next.model
         else next.model = patch.model
       }
+      if (patch.modelProvider !== undefined) {
+        if (patch.modelProvider === null) delete next.modelProvider
+        else next.modelProvider = patch.modelProvider
+      }
       if (patch.reasoningEffort !== undefined) {
         if (patch.reasoningEffort === null) delete next.reasoningEffort
         else next.reasoningEffort = patch.reasoningEffort
@@ -696,9 +688,7 @@ export class PgAgentRepo implements AgentRepo {
         if (patch.permissionMode === null) delete next.permissionMode
         else next.permissionMode = patch.permissionMode
       }
-      if (patch.allowRuntimeChangesInChat !== undefined) {
-        next.allowRuntimeChangesInChat = patch.allowRuntimeChangesInChat
-      }
+      if (patch.chatActions !== undefined) next.chatActions = patch.chatActions
       if (patch.pause !== undefined) {
         if (patch.pause === null) delete next.pause
         else next.pause = patch.pause
@@ -755,7 +745,7 @@ export class PgAgentRepo implements AgentRepo {
       }
       overrides = next
     }
-    // Assistant mode admission (assistant-mode.md §4.1), decided against the locked row: a concurrent runtime or memory edit cannot slip past it.
+    // Assistant mode admission (assistant-mode.md §4.1) and permission default (§1.8), against the locked row so no concurrent edit slips past.
     if (patch.assistantMode !== undefined || patch.runtime !== undefined || overrides !== undefined) {
       const rows = await tx.$queryRaw<
         Array<{ runtime: string | null; runtimeOverrides: unknown; assistantMode: unknown }>
@@ -774,6 +764,14 @@ export class PgAgentRepo implements AgentRepo {
         if (assistantModeEditNeedsAdmission(before, after, changesDefinition)) {
           assertAssistantModeDefinition({ runtime, memory })
         }
+        const base = overrides ?? (row.runtimeOverrides as RuntimeOverrides | null) ?? {}
+        const permissionMode = assistantModePermissionModeForEdit(
+          before,
+          after,
+          { runtime, permissionMode: base.permissionMode },
+          patch.permissionMode !== undefined
+        )
+        if (permissionMode) overrides = { ...base, permissionMode }
       }
     }
     const a = await tx.agent.update({
@@ -788,7 +786,6 @@ export class PgAgentRepo implements AgentRepo {
         ...(patch.runtime !== undefined ? { runtime: patch.runtime } : {}),
         ...(patch.capabilities !== undefined ? { capabilities: patch.capabilities } : {}),
         ...(patch.introduceOnJoin !== undefined ? { introduceOnJoin: patch.introduceOnJoin } : {}),
-        ...(patch.runInSandbox !== undefined ? { runInSandbox: patch.runInSandbox } : {}),
         ...(patch.execution !== undefined ? { execution: patch.execution } : {}),
         ...(patch.gitAccess !== undefined ? { gitAccess: patch.gitAccess } : {}),
         ...(patch.agentDir !== undefined ? { agentDir: patch.agentDir } : {}),
@@ -1121,19 +1118,6 @@ export class PgAgentRepo implements AgentRepo {
       include: withUsers
     })
     return toRecord(a)
-  }
-
-  async migrateExecution(daemonId: DaemonId, execution: string): Promise<AgentId[]> {
-    // A set placement is the daemon's own set; the membership invariants already keep both arms inside its org.
-    const rows = await this.db.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      UPDATE "agent" SET "execution" = ${execution}, "configRevision" = "configRevision" + 1
-      WHERE "execution" IS NULL AND "runInSandbox" AND (
-        ("placementKind" = 'daemon' AND "daemonId" = ${daemonId}::uuid)
-        OR ("placementKind" = 'set' AND "setId" = (SELECT "setId" FROM "member_set_member" WHERE "daemonId" = ${daemonId}::uuid))
-      )
-      RETURNING "id"
-    `)
-    return rows.map((r) => AgentId(r.id))
   }
 
   async setPlacement(agentId: AgentId, target: PlacementTarget): Promise<void> {

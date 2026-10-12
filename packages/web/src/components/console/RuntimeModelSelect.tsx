@@ -102,8 +102,9 @@ export function RuntimeModelSelect({
   pending = false,
   decision,
   allowRuntimeOnly = false,
-  runInSandbox = false,
-  readOnly = false
+  readsImage = false,
+  readOnly = false,
+  readOnlyNote
 }: {
   value: DecisionRuntimeTarget
   onChange(value: DecisionRuntimeTarget): void
@@ -119,8 +120,11 @@ export function RuntimeModelSelect({
   settings?: RunSettingsControls
   pending?: boolean
   allowRuntimeOnly?: boolean
-  runInSandbox?: boolean
+  /** Whether the agent's strategy starts the image's runtime install, so a profile's image-binary warning applies. */
+  readsImage?: boolean
   readOnly?: boolean
+  /** Who may change it instead, when read-only says more than that changes are disabled here. */
+  readOnlyNote?: string
   decision?: RuntimeDecisionChoice
 }) {
   const t = useTranslations('Agents.dialog.runtimeModel')
@@ -157,7 +161,7 @@ export function RuntimeModelSelect({
         profile &&
         runtimeWarning({
           authRequired: profile.authRequired,
-          unavailableReason: runInSandbox ? profile.unavailableReason : undefined
+          unavailableReason: readsImage ? profile.unavailableReason : undefined
         })
       return { runtime, profile, warning, options: modelOptionsFor(source, runtime, profile?.models ?? []) }
     })
@@ -270,7 +274,7 @@ export function RuntimeModelSelect({
                 ? 'inline-flex h-7 w-full max-w-[400px] cursor-pointer items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal hover:bg-(--surface-hover)'
                 : dense
                   ? `inp h-[30px] min-h-0 w-full cursor-pointer gap-2 px-[9px] py-0 text-left text-[12px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
-                  : `inp h-8 min-h-0 w-full cursor-pointer gap-2 px-[10px] py-0 text-left text-[12.5px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
+                  : `inp w-full cursor-pointer gap-2 text-left hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`
             }
             aria-label={ariaLabel ?? t('title')}
             aria-haspopup="dialog"
@@ -279,7 +283,7 @@ export function RuntimeModelSelect({
             {...hover.triggerProps}
             onClick={() => {
               hover.hide()
-              setProvider(value.runtime)
+              setProvider(ids.includes(value.runtime) ? value.runtime : (ids[0] ?? ''))
               setSearch('')
               toggle()
             }}
@@ -339,7 +343,7 @@ export function RuntimeModelSelect({
         readOnly ? (
           <div className="flex items-center gap-2 px-3 py-[10px] font-sans text-[12px] leading-normal text-(--text-secondary)">
             <Icon name="lock" size={13} className="flex-none text-(--text-tertiary)" />
-            {t('readOnly')}
+            {readOnlyNote ?? t('readOnly')}
           </div>
         ) : (
           <div>

@@ -360,16 +360,13 @@ export function isSlackStatusBarText(text: string): boolean {
   return text.startsWith(':bar_chart:') || text.startsWith('📊')
 }
 
-/** Best-effort adoption path for sessions that already have an older status bar in
- *  the thread but no persisted ts — re-anchor onto our own bar rather than posting a
- *  second one. Provenance-filtered: only a row this bot authored, marked as chrome,
- *  and owned by this agent qualifies. */
+/** Adopt this agent's own chrome-marked status bar already in the thread when no ts was persisted, rather than post a second. */
 async function findExistingSlackStatusBarTs(conn: SlackConnection, p: SlackTurn): Promise<string | undefined> {
   const getThreadReplies = (conn as { getThreadReplies?: SlackConnection['getThreadReplies'] }).getThreadReplies
-  if (!getThreadReplies) return undefined
+  if (!getThreadReplies || !p.plan.thread) return undefined
   const own = new Set([conn.botId, conn.botUserId].filter(Boolean))
   if (own.size === 0) return undefined
-  const replies = await getThreadReplies.call(conn, p.plan.channel, p.plan.statusThread)
+  const replies = await getThreadReplies.call(conn, p.plan.channel, p.plan.thread)
   return replies.find(
     (m) =>
       m.isBot &&
@@ -428,13 +425,12 @@ async function postSlackReply<TTurn extends SlackTurn>(
   return ts
 }
 
-/** Push the turn's stored session title once its thread is a registered agent session — the
- *  status/stream write that just landed is what registered it (an earlier rename is refused). */
+/** Push the stored session title once the status or stream write that just landed registered the thread (an earlier rename is refused). */
 async function flushSessionTitle(conn: SlackConnection, p: SlackTurn): Promise<void> {
   const title = p.chrome.sessionTitleToPush
-  if (!title || !p.plan.statusThread) return
+  if (!title || !p.plan.thread) return
   p.chrome.sessionTitleToPush = undefined
-  await conn.setTitle(p.plan.channel, p.plan.statusThread, title)
+  await conn.setTitle(p.plan.channel, p.plan.thread, title)
 }
 
 /** The single in-place tool-activity message: post once, then edit. Shared by the legacy
@@ -494,10 +490,10 @@ export async function applySlackAction<TTurn extends SlackTurn>(
   const chromeOptions: SlackPostOptions = { ...(identity ?? {}), chrome: true }
   switch (action.kind) {
     case 'set-status':
-      if (p.plan.statusThread) {
+      if (p.plan.thread) {
         await conn.setStatus(
           p.plan.channel,
-          p.plan.statusThread,
+          p.plan.thread,
           action.text,
           slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl, p.plan.sessionKey)
         )
@@ -507,7 +503,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     case 'set-title':
       // A live runtime title supersedes any stored title still waiting on its first status.
       p.chrome.sessionTitleToPush = undefined
-      if (p.plan.statusThread) await conn.setTitle(p.plan.channel, p.plan.statusThread, action.text)
+      if (p.plan.thread) await conn.setTitle(p.plan.channel, p.plan.thread, action.text)
       return
     case 'post': {
       const trackReply = action.attributed !== false

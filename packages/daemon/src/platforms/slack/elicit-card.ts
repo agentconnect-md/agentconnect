@@ -66,13 +66,10 @@ export const slackElicitCards: ElicitCardFacet = {
     draft: ElicitCardDraft
   ): Promise<string | undefined> {
     return await host.postCardSerialized(turn, (conn) =>
-      (conn as SlackConnection).postBlocks(
-        turn.plan.channel,
-        draft as unknown[],
-        ask.fallback,
-        turn.plan.statusThread,
-        { ...(slackAgentIdentityOptions(turn.plan) ?? {}), chrome: true }
-      )
+      (conn as SlackConnection).postBlocks(turn.plan.channel, draft as unknown[], ask.fallback, turn.plan.thread, {
+        ...(slackAgentIdentityOptions(turn.plan) ?? {}),
+        chrome: true
+      })
     )
   },
 
@@ -90,5 +87,13 @@ export const slackElicitCards: ElicitCardFacet = {
 
   answerScope(handle: ElicitCardHandle): string | undefined {
     return (handle.conn as SlackConnection).workspaceId()
+  },
+
+  tellPrivately(handle: ElicitCardHandle, userId: string, text: string): void {
+    void (handle.conn as SlackConnection).postEphemeral(handle.channel, userId, text, handle.thread)
+  },
+
+  nameOf(handle: ElicitCardHandle, userId: string): Promise<string | undefined> {
+    return (handle.conn as SlackConnection).memberName(userId)
   }
 }

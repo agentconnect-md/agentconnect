@@ -8,16 +8,24 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { FakeClock } from '@agentconnect.md/connection'
 import { agentHostKey } from '../src/acp/host-key.js'
+import type { ChatSurface } from '../src/agents/chat-actions.js'
+import { REPORT_ANSWER_LANGUAGE } from '../src/collab/coordinator.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
 import { Daemon } from '../src/daemon.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { PermissionCoordinator, type PermissionHost } from '../src/permissions/coordinator.js'
-import type { SubsessionApprovalRoute, SubsessionApprover } from '../src/permissions/subsession-approval.js'
+import {
+  subsessionLabel,
+  type SubsessionApprovalRoute,
+  type SubsessionApprover
+} from '../src/permissions/subsession-approval.js'
 import { patrolCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import type { SlackConnection } from '../src/slack/connection.js'
-import { LocalStore, sessionKey } from '../src/store/local-store.js'
+import { buildSubsessionApprovalNotice } from '../src/slack/render.js'
+import { LocalStore, SCHEMA_VERSION, sessionKey } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { pendingTurnKey, type Pending } from '../src/daemon/turn-types.js'
+import { slackApprovalCards } from '../src/platforms/slack/approval-card.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -33,8 +41,10 @@ function fakeSlack(dm = 'D-ed') {
     openDirectMessage: vi.fn(async () => dm),
     postBlocks: vi.fn(async () => `200.${++n}`),
     updateBlocks: vi.fn(async () => undefined),
+    postEphemeral: vi.fn(async () => true),
     workspaceUrl: 'https://w.slack.example.test',
-    workspaceId: () => 'T1'
+    workspaceId: () => 'T1',
+    memberName: vi.fn(async () => 'Ada Example' as string | undefined)
   }
 }
 type FakeSlack = ReturnType<typeof fakeSlack>
@@ -60,8 +70,8 @@ const approvalElicitation = (): CreateElicitationRequest =>
     _meta: { codex_approval_kind: 'mcp_tool_call' }
   }) as unknown as CreateElicitationRequest
 
-const slackPlace = (over: Partial<Extract<SubsessionApprovalRoute['place'], { kind: 'slack' }>> = {}) => ({
-  kind: 'slack' as const,
+const slackPlace = (over: Partial<Extract<SubsessionApprovalRoute['place'], { kind: 'chat' }>> = {}) => ({
+  kind: 'chat' as const,
   integrationId: 'int-1',
   channel: 'C1',
   thread: '100.1',
@@ -82,7 +92,10 @@ async function world(
     route?: SubsessionApprovalRoute | undefined
     approver?: SubsessionApprover
     chatOn?: boolean
+    surface?: ChatSurface
     database?: DatabaseSync
+    /** Only the agent's editors may answer in chat: these members are its linked editors. */
+    editors?: string[]
   } = {}
 ) {
   const store = await LocalStore.open({
@@ -128,7 +141,10 @@ async function world(
     clock: () => clock,
     cancelTurn,
     store: () => store,
-    agents: () => new Map([[AGENT, { id: AGENT, allowRuntimeChangesInChat: over.chatOn === true } as never]]),
+    agents: () =>
+      new Map([
+        [AGENT, { id: AGENT, name: 'Butler', chatActions: over.chatOn === true ? 'approve' : 'talk' } as never]
+      ]),
     pending: () => pending,
     evalHooks: () => ({ emit: vi.fn() }) as never,
     memoryExtraction: () => undefined,
@@ -145,10 +161,19 @@ async function world(
     orgForAgent: () => 'org-1',
     sessionLink: (sessionId) => `https://console.example.test/sessions/${sessionId}`,
     slackConnFor: (integrationId) => conns[integrationId] as unknown as SlackConnection | undefined,
+    approvalCardFacet: () => slackApprovalCards,
+    chatCardsAt: (integrationId) => {
+      const conn = conns[integrationId]
+      return conn ? { facet: slackApprovalCards, conn } : undefined
+    },
     approvalDmIntegrations: () => ['int-1'],
     slackDmSessionTarget: (_p, integrationId) => `target:${integrationId}`,
     subsessionApprovalRoute,
-    assistantApprover
+    assistantApprover,
+    chatSurface: () => over.surface ?? 'open',
+    chatEditorsOnly: () => over.editors !== undefined,
+    chatActor: async (_agentId, _integrationId, actor) =>
+      !over.editors || over.editors.includes(actor?.userId ?? '') ? 'allowed' : 'not-editor'
   }
   const coordinator = new PermissionCoordinator(host)
   /** The one request the sub-session has waiting, once it is listed. */
@@ -161,6 +186,11 @@ async function world(
 
 const blocksOf = (conn: FakeSlack, call = 0) => JSON.stringify((conn.postBlocks.mock.calls[call] as unknown[])[1])
 const rows = async (store: LocalStore) => await store.listPermissionRequests(AGENT)
+/** Every rewrite of the message posted as `ts`, as text. */
+const rewritesOf = (conn: FakeSlack, ts: string) =>
+  conn.updateBlocks.mock.calls
+    .filter((call) => (call as unknown[])[1] === ts)
+    .map((call) => JSON.stringify((call as unknown[])[2]))
 
 describe('a sub-session’s permission request in the conversation it belongs to', () => {
   it('posts the in-chat card into the conversation’s thread where anyone there may answer, and settles once', async () => {
@@ -185,11 +215,16 @@ describe('a sub-session’s permission request in the conversation it belongs to
 
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-always', actor: { userId: 'U9' } })
     await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-always' } })
-    expect((await rows(w.store))[0]).toMatchObject({ status: 'allowed', resolvedBy: 'slack:T1:U9' })
+    // A relayed click carries only the member's id, so the decider is named by a lookup.
+    expect((await rows(w.store))[0]).toMatchObject({
+      status: 'allowed',
+      resolvedBy: 'slack:T1:U9',
+      resolvedByName: 'Ada Example'
+    })
     // The rewrite keeps who was asking, and the card's handle leaves the row with it.
     const rewritten = JSON.stringify((w.place.updateBlocks.mock.calls[0] as unknown[])[2])
     expect(rewritten).toContain('background sub-session')
-    expect(rewritten).toContain('Always allow')
+    expect(rewritten).toContain('Always allow — Ada Example')
     expect(await w.store.takeOrphanedPermissionNotices('int-1')).toEqual([])
 
     // A second click, and the wait it no longer has, change nothing.
@@ -229,6 +264,99 @@ describe('a sub-session’s permission request in the conversation it belongs to
     await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
     // The agent asked, so it is the requester the console shows.
     expect((await rows(w.store))[0]).toMatchObject({ status: 'allowed', requesterName: 'Butler', requesterId: null })
+    // The notice says in place how it settled, still naming no tool, and its handle leaves the row.
+    const [settled, ...more] = rewritesOf(w.place, '200.1')
+    expect(more).toEqual([])
+    expect(settled).toContain('“Fix the flaky test” got permission from Grace.')
+    expect(settled).toContain('https://console.example.test/sessions/sid-sub')
+    expect(settled).not.toContain('Write src/app.ts')
+    expect(settled).not.toContain('waiting for permission')
+    expect(rewritesOf(w.place, '200.2')).toHaveLength(1)
+    expect(await w.store.takeOrphanedSubsessionNotices('int-1')).toEqual([])
+    await w.store.close()
+  })
+
+  it.each([
+    ['denied from the console', 'was denied permission by Grace.'],
+    ['left unanswered past its wait', 'got no answer within 2 hours, so it was denied and stopped.'],
+    ['released because its turn ended', 'no longer needs permission.']
+  ] as const)('rewrites the notice when the request is %s', async (how, line) => {
+    const w = await world({ route: routeTo(slackPlace(), 2) })
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP, params())
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    expect(rewritesOf(w.place, '200.1')).toEqual([])
+
+    if (how === 'denied from the console') {
+      const ack = await w.coordinator.decideEditorPermission({
+        agentId: AGENT,
+        requestId: id,
+        decision: 'deny',
+        optionId: 'o-deny',
+        decidedByName: 'Grace'
+      })
+      expect(ack).toEqual({ ok: true })
+    } else if (how === 'left unanswered past its wait') w.clock.advance(2 * HOUR)
+    else await w.coordinator.releaseApprovals(OWNER, ACP)
+    await decided
+
+    const [settled, ...more] = rewritesOf(w.place, '200.1')
+    expect(more).toEqual([])
+    expect(settled).toContain(`*Butler*’s background sub-session “Fix the flaky test” ${line}`)
+    expect(settled).toContain('Open the sub-session')
+    expect(settled).not.toContain('Write src/app.ts')
+    expect(await w.store.takeOrphanedSubsessionNotices('int-1')).toEqual([])
+    await w.store.close()
+  })
+
+  it('rewrites a notice whose request was decided while it was being posted', async () => {
+    const w = await world()
+    let posted!: (ts: string) => void
+    w.place.postBlocks.mockImplementationOnce(() => new Promise<string>((resolve) => (posted = resolve)))
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP, params())
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(1))
+    await w.coordinator.decideEditorPermission({
+      agentId: AGENT,
+      requestId: id,
+      decision: 'allow',
+      optionId: 'o-allow',
+      decidedByName: 'Grace'
+    })
+    await decided
+
+    posted('300.1')
+    await vi.waitFor(() => expect(rewritesOf(w.place, '300.1')).toHaveLength(1))
+    expect(rewritesOf(w.place, '300.1')[0]).toContain('got permission from Grace.')
+    // Nothing is left on the row for a sweep, and no editor is DMed about a request already decided.
+    expect(await w.store.takeOrphanedSubsessionNotices('int-1')).toEqual([])
+    expect(w.place.postBlocks).toHaveBeenCalledTimes(1)
+    await w.store.close()
+  })
+
+  it('leaves the notice and DMs an editor, not a card, where the conversation is closed', async () => {
+    const w = await world({ chatOn: true, surface: 'closed' })
+    void w.coordinator.onAcpPermission(OWNER, ACP, params())
+    await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    expect(blocksOf(w.place)).toContain('Ask an Agent editor')
+    expect(blocksOf(w.place)).not.toContain('"actions"')
+    expect((w.place.postBlocks.mock.calls[1] as unknown[])[0]).toBe('D-ed')
+    await w.store.close()
+  })
+
+  it('takes no click on a card whose conversation closed after it was posted', async () => {
+    const over: { chatOn: boolean; surface: ChatSurface } = { chatOn: true, surface: 'open' }
+    const w = await world(over)
+    const decided = vi.fn()
+    void w.coordinator.onAcpPermission(OWNER, ACP, params()).then(decided)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(1))
+    over.surface = 'closed'
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U9' } })
+    expect(decided).not.toHaveBeenCalled()
+    expect(w.coordinator.pendingSubsessionApprovals(AGENT)).toHaveLength(1)
+    expect((await rows(w.store))[0]).toMatchObject({ status: 'pending' })
     await w.store.close()
   })
 
@@ -308,6 +436,64 @@ describe('a sub-session’s permission request in the conversation it belongs to
     await w.store.close()
   })
 
+  it('where only editors may answer, DMs an editor beside the card and takes only an editor’s click', async () => {
+    const w = await world({ chatOn: true, editors: ['U-ed2'] })
+    const decided = vi.fn()
+    void w.coordinator.onAcpPermission(OWNER, ACP, params()).then(decided)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    expect((w.place.postBlocks.mock.calls[0] as unknown[])[0]).toBe('C1')
+    expect(blocksOf(w.place)).toContain('"actions"')
+    expect((w.place.postBlocks.mock.calls[1] as unknown[])[0]).toBe('D-ed')
+
+    // Anyone else is told privately who can answer, and the card stays live.
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U9' } })
+    expect(w.place.postEphemeral).toHaveBeenCalledWith(
+      'C1',
+      'U9',
+      expect.stringContaining('Only an Agent editor can answer this request.'),
+      '100.1'
+    )
+    expect(w.place.updateBlocks).not.toHaveBeenCalled()
+    expect(decided).not.toHaveBeenCalled()
+
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U-ed2' } })
+    await vi.waitFor(() =>
+      expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
+    )
+    expect((await rows(w.store))[0]).toMatchObject({ status: 'allowed', resolvedBy: 'slack:T1:U-ed2' })
+    // The card and the DM both say how it settled.
+    expect(rewritesOf(w.place, '200.1')).toHaveLength(1)
+    expect(rewritesOf(w.place, '200.2')).toHaveLength(1)
+    await w.store.close()
+  })
+
+  it('takes only an editor’s click on a card in the fallback conversation where only editors may answer', async () => {
+    const w = await world({
+      chatOn: true,
+      editors: ['U-ed2'],
+      route: routeTo(slackPlace({ external: true })),
+      approver: { kind: 'conversation', integrationId: 'int-2', channel: 'C-fallback' }
+    })
+    const decided = vi.fn()
+    void w.coordinator.onAcpPermission(OWNER, ACP, params()).then(decided)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.other.postBlocks).toHaveBeenCalledTimes(1))
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U9' } })
+    expect(w.other.postEphemeral).toHaveBeenCalledWith(
+      'C-fallback',
+      'U9',
+      expect.stringContaining('Only an Agent editor'),
+      undefined
+    )
+    expect(decided).not.toHaveBeenCalled()
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U-ed2' } })
+    await vi.waitFor(() =>
+      expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
+    )
+    await w.store.close()
+  })
+
   it('denies after the wait cap, records why, and stops the sub-session', async () => {
     const w = await world({ chatOn: true, route: routeTo(slackPlace(), 2) })
     const decided = w.coordinator.onAcpPermission(OWNER, ACP, params())
@@ -319,6 +505,8 @@ describe('a sub-session’s permission request in the conversation it belongs to
       tool: 'Write src/app.ts',
       expiresAt: new Date(1_000_000 + 2 * HOUR).toISOString()
     })
+    // Its own cap, so the turn watchdog's shorter answer window leaves it alone.
+    expect(w.coordinator.hasOwnWaitCap(OWNER, ACP)).toBe(true)
 
     w.clock.advance(2 * HOUR - 1)
     expect(w.cancelTurn).not.toHaveBeenCalled()
@@ -413,6 +601,84 @@ describe('a sub-session’s permission request in the conversation it belongs to
     await restarted.store.close()
   })
 
+  it('keeps both the card and the editor DM beside it on the row, so the sweep after a restart retires both', async () => {
+    const database = new DatabaseSync(':memory:')
+    const w = await world({ chatOn: true, editors: ['U-ed2'], database })
+    void w.coordinator.onAcpPermission(OWNER, ACP, params())
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    await vi.waitFor(async () =>
+      expect(
+        (await w.store.listPermissionRequests(AGENT)).length > 0 && w.coordinator.dmNotifiedVia(id, AGENT, 'int-1')
+      ).toBe(true)
+    )
+
+    // The process dies: the next one expires the request, and reconnecting the integration finds both cards.
+    const restarted = await world({ chatOn: true, editors: ['U-ed2'], database })
+    expect((await rows(restarted.store))[0]).toMatchObject({ id, status: 'expired' })
+    const orphans = await restarted.store.takeOrphanedPermissionNotices('int-1')
+    expect(orphans.map((o) => [o.notifyChannel, o.notifyTs]).sort()).toEqual([
+      ['C1', '200.1'],
+      ['D-ed', '200.2']
+    ])
+    // Each is retired once.
+    expect(await restarted.store.takeOrphanedPermissionNotices('int-1')).toEqual([])
+    await restarted.store.close()
+  })
+
+  it('clears both handles when the request settles while the process lives', async () => {
+    const w = await world({ chatOn: true, editors: ['U-ed2'] })
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP, params())
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U-ed2' } })
+    await decided
+    expect(await w.store.takeOrphanedPermissionNotices('int-1')).toEqual([])
+    await w.store.close()
+  })
+
+  it('settles a notice a restart left behind once its integration reconnects', async () => {
+    const database = new DatabaseSync(':memory:')
+    const w = await world({ database })
+    await w.store.upsertSession({
+      key: w.p.plan.sessionKey,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: w.p.plan.sessionThread,
+      acpSessionId: ACP,
+      sessionId: 'sid-sub',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await w.store.setSessionTitle(
+      w.p.plan.sessionKey,
+      'From your own main conversation, as a background sub-session: fix it'
+    )
+    void w.coordinator.onAcpPermission(OWNER, ACP, params())
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+
+    // The process dies; the next one expires the request, and reconnecting the integration settles the notice once.
+    const restarted = await world({ database })
+    await restarted.coordinator.retireOrphanedSubsessionNotices('int-2')
+    expect(restarted.place.updateBlocks).not.toHaveBeenCalled()
+    await restarted.coordinator.retireOrphanedSubsessionNotices('int-1')
+    await restarted.coordinator.retireOrphanedSubsessionNotices('int-1')
+    expect(restarted.place.updateBlocks).toHaveBeenCalledTimes(1)
+    const [channel, ts, blocks] = restarted.place.updateBlocks.mock.calls[0] as unknown[]
+    expect([channel, ts]).toEqual(['C1', '200.1'])
+    const settled = JSON.stringify(blocks)
+    expect(settled).toContain('*Butler*’s background sub-session “fix it” no longer needs permission.')
+    expect(settled).toContain('https://console.example.test/sessions/sid-sub')
+    // The editor DM's card is still its own sweep's to retire.
+    expect(await restarted.store.takeOrphanedPermissionNotices('int-1')).toMatchObject([
+      { id, notifyChannel: 'D-ed', notifyTs: '200.2', status: 'expired' }
+    ])
+    await restarted.store.close()
+  })
+
   it('never asks from a patrol, which refuses instead', async () => {
     const w = await world({ chatOn: true, thread: patrolCoordinate('600.6') })
     await expect(w.coordinator.onAcpPermission(OWNER, ACP, params())).resolves.toEqual({
@@ -435,6 +701,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     expect(blocksOf(main.place)).not.toContain('background sub-session')
     expect(main.coordinator.pendingSubsessionApprovals(AGENT)).toEqual([])
     expect(main.clock.pending).toBe(0)
+    expect(main.coordinator.hasOwnWaitCap(OWNER, ACP)).toBe(false)
     await main.coordinator.releaseApprovals(OWNER, ACP)
     await main.store.close()
 
@@ -524,6 +791,66 @@ describe('the approval queue names the conversation a sub-session asks from', ()
   })
 })
 
+describe('the name a sub-session’s cards give it', () => {
+  const wrapped = 'From your own main conversation, as a background sub-session: '
+
+  it('uses the title, else the task without the delegation wrapper, truncated, else none', () => {
+    expect(subsessionLabel('Fix the flaky test', `${wrapped}anything`)).toBe('Fix the flaky test')
+    // The first-message title a sub-session is born with is the wrapper, so its task is read from the message.
+    expect(subsessionLabel(`${wrapped}fix the f…`, `${wrapped}fix the flaky test and open a PR`)).toBe(
+      'fix the flaky test and open a PR'
+    )
+    expect(subsessionLabel(`${wrapped}fix the f…`, undefined)).toBe('fix the f…')
+    expect(subsessionLabel(null, `${wrapped}${'x'.repeat(200)}\nmore`)).toBe(`${'x'.repeat(80)}…`)
+    expect(subsessionLabel(null, `${wrapped}  `)).toBeNull()
+    expect(subsessionLabel(`  ${wrapped.trim()}  `, undefined)).toBeNull()
+    expect(subsessionLabel(undefined, undefined)).toBeNull()
+  })
+
+  it('calls one with no name a background task', () => {
+    const notice = JSON.stringify(
+      buildSubsessionApprovalNotice({
+        agentName: 'Butler',
+        title: null,
+        sessionUrl: 'https://console.example.test/sessions/sid-sub',
+        waitHours: 12
+      })
+    )
+    expect(notice).toContain('*Butler*’s background task is waiting for permission.')
+    expect(notice).not.toContain('“')
+  })
+})
+
+describe('the v44 → v45 notice handle on SQLite', () => {
+  it('adds the notice columns to a v44 store and stamps the current version', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-subperm-v44-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    for (const column of ['noticeIntegrationId', 'noticeChannel', 'noticeTs'])
+      old.exec(`ALTER TABLE permission_requests DROP COLUMN ${column}`)
+    old.exec('PRAGMA user_version = 44')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    await upgraded.createPermissionRequest({
+      id: 'request-1',
+      agentId: AGENT,
+      sessionId: ACP,
+      createdAt: 100,
+      requesterId: null,
+      requesterName: 'Butler',
+      command: 'Write src/app.ts',
+      status: 'pending',
+      resolvedAt: null
+    })
+    expect(await upgraded.setPermissionRequestNotice(AGENT, 'request-1', 'int-1', 'C1', '1.100')).toBe(true)
+    await upgraded.close()
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
 const ORG = '00000000-0000-0000-0000-0000000000a1'
 
 /** One Slack assistant-mode agent appending in `C1`, beside one that is not in assistant mode. */
@@ -557,7 +884,7 @@ function scaffold(): string {
           }
         ],
         output: { mode: 'low' },
-        allowRuntimeChangesInChat: true,
+        chatActions: 'settings',
         ...(id === 'bot-a'
           ? { assistantMode: { enabled: true, responsibleUserId: 'user-1', limits: { permissionWaitHours: 1 } } }
           : {})
@@ -651,6 +978,9 @@ describe('through the daemon', () => {
     expect([channel, thread]).toEqual(['C1', undefined])
     expect(JSON.stringify(blocks)).toContain('background sub-session')
     expect(JSON.stringify(blocks)).toContain('within 1 hour,')
+    // Named by its task, not by the wrapper its first message carries.
+    expect(JSON.stringify(blocks)).toContain('“fix the flaky test and open a PR”')
+    expect(JSON.stringify(blocks)).not.toContain('From your own main conversation')
     expect(d.permissions.pendingSubsessionApprovals('bot-a')).toMatchObject([
       { parentSessionId: 'sid-parent-1', tool: 'Write src/app.ts' }
     ])
@@ -663,7 +993,7 @@ describe('through the daemon', () => {
     await vi.waitFor(() => expect(reports).toHaveLength(1), WAIT)
     expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }])
     expect(reports[0]!.text).toBe(
-      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). It sent no result; delegate again if the work is still needed.`
+      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     expect((await d.store.listPermissionRequests('bot-a'))[0]).toMatchObject({
       status: 'denied',

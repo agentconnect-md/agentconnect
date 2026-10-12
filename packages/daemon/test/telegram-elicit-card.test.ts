@@ -97,7 +97,9 @@ describe('what Telegram declares it can collect, and what it declines', () => {
 
   it('builds nothing for a URL consent or an optionless field', () => {
     const host = { postCardSerialized: async () => undefined, sessionTarget: () => undefined, turnState: () => ({}) }
-    const turn = { plan: { platform: 'telegram', channel: '-100', statusThread: 'T', agentName: 'a' } }
+    const turn = {
+      plan: { platform: 'telegram', agentId: 'agent-1', channel: '-100', statusThread: 'T', agentName: 'a' }
+    }
     const ask = { requestId: REQUEST_ID, params: form(BRANCH), message: 'q', fallback: 'q' }
     // URL mode: an inline `url` button fires no callback_query, so a consent could never be recorded.
     expect(

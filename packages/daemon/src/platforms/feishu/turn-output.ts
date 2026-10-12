@@ -15,7 +15,7 @@
  * is built. Everything else is Feishu's.
  */
 import type { FeishuConnection, FeishuStreamingCard } from '../../feishu/connection.js'
-import type { FeishuAction } from '../../feishu/render.js'
+import { feishuCardTarget, type FeishuAction } from '../../feishu/render.js'
 
 /** Feishu's opaque per-turn state (§7.3) — its CardKit reply entity and the
  *  flush timer that streams elements into it. */
@@ -90,17 +90,17 @@ export async function applyFeishuAction<TTurn extends FeishuTurn>(
   const conn = turn.conn as FeishuConnection | undefined
   if (!conn) return
   switch (action.kind) {
-    case 'card-start':
+    case 'card-start': {
       if (state.cardAttempted) return
       state.cardAttempted = true
+      const target = feishuCardTarget(turn.plan.agentId, turn.plan.integrationId)
       state.card = await conn.startStreamingCard(turn.plan.channel, turn.plan.thread, {
         sessionKey: turn.plan.sessionKey,
         sessionUrl: host.sessionUrl(turn),
-        ...(turn.plan.integrationId
-          ? { target: { v: 1, agentId: turn.plan.agentId, integrationId: turn.plan.integrationId } as const }
-          : {})
+        ...(target ? { target } : {})
       })
       return
+    }
     case 'card-stream':
       if (state.card) await conn.updateStreamingCard(turn.plan.channel, state.card, action.text)
       return

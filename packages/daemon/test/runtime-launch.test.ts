@@ -70,6 +70,33 @@ const PLACED = sessionHostKey('bot-a', 'slack:C1:placed')
 const PLACED_HOME = `/srv/agentconnect/sessions/${hostKeyDirName(PLACED)}/home`
 
 describe('prepareRuntimeLaunch', () => {
+  it('uses organization credentials without reading or migrating a host login', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const loginDir = join(hostHome, '.claude')
+    mkdirSync(loginDir)
+    const login = join(loginDir, '.credentials.json')
+    writeFileSync(login, 'example-local-login')
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'node', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd,
+      daemonRoot: dirname(scopeDir),
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      inheritRuntimeCredentials: false,
+      explicitEnv: { ANTHROPIC_API_KEY: 'organization-key' },
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+    expect(launch.env.ANTHROPIC_API_KEY).toBe('organization-key')
+    expect(launch.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined()
+    expect(readFileSync(login, 'utf8')).toBe('example-local-login')
+    expect(lstatSync(login).isSymbolicLink()).toBe(false)
+    expect(existsSync(join(launch.runtimeHome!, '.claude', '.credentials.json'))).toBe(false)
+    rmSync(dirname(scopeDir), { recursive: true, force: true })
+  })
+
   // The grant only exists in the child's argv otherwise; a spawn log line reads it from here.
   it('reports the Git metadata it reopened, on every launch shape', () => {
     const { scopeDir, cwd, hostHome } = fixture()

@@ -91,6 +91,13 @@ export interface PlatformActionSink {
   handleDiscordSelect: NonNullable<DiscordDeps['onSelectAction']>
   openElicitEditor: NonNullable<DiscordDeps['onElicitOpen']>
   handleElicitCardTap: NonNullable<DiscordDeps['onElicitChoice']>
+  /** A permission card's option clicked by position, where its button payload cannot carry the option's id. */
+  handlePermissionPick(a: {
+    requestId: string
+    option: number
+    ts?: string
+    actor?: InteractionActor
+  }): Promise<string | undefined>
   submitElicitEditor: NonNullable<DiscordDeps['onElicitSubmit']>
   handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): Promise<void>
   slackShortcutSession(
@@ -805,6 +812,7 @@ export class ConnectionReconciler {
         onElicitOpen: (a) => this.host.openElicitEditor(a),
         onElicitChoice: (a) => this.host.handleElicitCardTap(a),
         onElicitSubmit: (a) => this.host.submitElicitEditor(a),
+        onApprovalChoice: (a) => this.host.handlePermissionPick(a),
         log: this.log
       })
       try {
@@ -879,6 +887,7 @@ export class ConnectionReconciler {
         onStatusAction: (a) => this.host.handleStatusAction(a),
         onElicitChoice: (a) => this.host.handleElicitCardTap(a),
         onElicitSubmit: (a) => this.host.submitElicitEditor(a),
+        onApprovalChoice: (a) => this.host.handlePermissionPick(a),
         log: this.log
       })
       try {

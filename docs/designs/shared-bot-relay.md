@@ -108,9 +108,11 @@ the configured secret-store seam.
 6. **No relay-to-relay forwarding.** Public ingress must land on a relay that
    already has the target daemon connection. The baseline unsharded roster
    achieves this through daemon-to-pool connectivity.
-7. **Delivery is bounded-loss.** Slack must receive a fast HTTP response.
-   Successful HTTP acknowledgement does not mean a daemon durably accepted the
-   event. Offline or unreachable targets are dropped and counted.
+7. **Delivery is bounded-loss.** Slack must receive an HTTP response within
+   three seconds. A Slack event no daemon took for a transient reason is answered
+   503 so Slack redelivers it; HTTP acknowledgement still does not mean a daemon
+   durably accepted the event. Targets that stay unreachable past Slack's last
+   redelivery, and Lark / Feishu targets, are dropped and counted.
 8. **No content persistence.** A durable broker or inbox would change the
    privacy and delivery model and requires a separate design decision.
 
@@ -645,7 +647,7 @@ route reads nothing else from its request. The webchat token route is the
 console's alone: a key admitted only for `agent:chat` cannot mint a token, so the
 browser socket's other operations, runtime and permission changes, per-turn
 overrides, `targets`, `mentions`, and MCP App calls, are out of the key holder's
-reach. The daemon's `allowRuntimeChangesInChat` gate is unaffected.
+reach. The daemon's `chatActions` gate is unaffected.
 
 | `rd/chat` output            | UI message stream                                                           | AG-UI                                                     |
 | --------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------- |
@@ -685,10 +687,12 @@ code. The daemon marks the turn with its `origin` and treats a protocol in
   selects the runtime's narrowest reject option (an MCP approval declines) and
   no editor ever sees it, so a public client that refuses every approval in
   code never reaches the editors. An allow takes the narrowest allow option when
-  the key's owner could decide the request in the console, a `full` key whose
-  owner may write in the org and edit the agent, which the CP returns as
-  `callerApproves`. Any other allow becomes an ordinary editor request, with its
-  notice on the caller's stream, and the turn waits for that decision.
+  the key's owner could decide the request in the console: a `full` key whose
+  owner may write in the org and edit the agent, or any key while the agent lets
+  people in chat approve tool calls, since its owner owns the conversation. The
+  CP returns this as `callerApproves`. Any other allow becomes an ordinary
+  editor request, with its notice on the caller's stream, and the turn waits for
+  that decision.
 
 Each tool call's `providerMetadata.agentconnect` names the turn and the output
 index it was handed out at, and the AI SDK returns it on the part. A request
@@ -876,9 +880,10 @@ Slack and Lark / Feishu event handling follows the providers' short response win
 1. The relay parses the raw request with a bounded body size.
 2. It resolves a bot assignment and authenticates the callback with that
    platform's assigned verification material.
-3. It locally deduplicates `event_id`, returns HTTP 200, and processes the
-   event asynchronously.
-4. It normalizes, arbitrates, and sends `rd/msg` to the selected daemon.
+3. It checks the local `event_id` table; a settled repeat is answered 200 and
+   forwarded nowhere.
+4. It normalizes, arbitrates, and sends `rd/msg` to the selected daemon, then
+   answers Slack from the outcome (below).
 
 Slack's URL-verification challenge is the bootstrap exception: the relay echoes
 the non-secret challenge before an assignment exists. Every operational event
@@ -896,6 +901,21 @@ and dropped. There is no offline inbox. The provider may retry a request that
 did not receive a successful HTTP response, but it cannot repair a failure
 after the relay has already returned 200. Duplicate deliveries that reach
 different instances are absorbed by daemon-side idempotency.
+
+A Slack event therefore waits for its forward, bounded at two seconds, and
+the answer reports it. When no target took the message and a resend can still
+land — no socket to the target on this relay (a relay that turned READY before
+the daemon pool redialed it), a thread lookup with the CP down, a daemon's
+transient refusal or an unplaceable `not_holder` — the relay answers 503, leaves
+the `event_id` unmarked, and Slack redelivers immediately, after one minute and
+after five. An outcome still unknown at the deadline is answered 503 as well.
+One target taking a fan-out settles it, so a resend never reaches a daemon that
+already took the message; a copy that does arrive twice carries the same
+`msgId` and is absorbed by the daemon's acknowledgement cache. Slack's last
+redelivery (`x-slack-retry-num` 3) is answered 200 whatever the outcome: a 503
+could no longer save it, and answering 200 keeps a long daemon outage below
+Slack's threshold for disabling the app's event subscriptions. Lark / Feishu
+keep the 200-then-forward path.
 
 Slack interactions are also HMAC-verified. Handlers that must return options in
 the HTTP response complete before the 200 response. Rendered controls are
@@ -946,13 +966,13 @@ daemon routes ([readiness rules](high-availability.md#owner-failure-and-database
 Those changes are prerequisites, not existing
 guarantees. Relay crash-delivery and replay guarantees remain unchanged.
 
-| Failure                             | HTTP bot ingress                                                                                               | Hook ingress                                                     | Webchat                                                            | Agent API egress                              |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------- |
-| CP unavailable                      | Cached assignments and existing daemon sockets continue; affinity misses and new authentication fail closed    | Cached rules continue; metadata reports may wait or fail visibly | Established sessions continue; new verification is unavailable     | Continues directly from online daemons        |
-| Relay instance unavailable          | Other healthy instances continue receiving public callbacks; daemons reconnect according to the updated roster | Other healthy instances continue                                 | Browser reconnects and resumes from the daemon replay window       | Unaffected                                    |
-| Entire relay pool unavailable       | HTTP bot callbacks cannot be processed                                                                         | Public hook ingress is unavailable                               | Browser sessions are unavailable                                   | Existing daemons can still call platform APIs |
-| Target daemon unavailable           | Selected messages are dropped and counted; unrelated daemons continue                                          | Target delivery fails visibly                                    | Target session cannot start or continue                            | That daemon cannot send                       |
-| Partial daemon-to-pool connectivity | A callback landing without its target socket is dropped and counted                                            | Same bounded-loss outcome                                        | A browser must reconnect to an instance with the target connection | Unaffected                                    |
+| Failure                             | HTTP bot ingress                                                                                                                                                                        | Hook ingress                                                     | Webchat                                                            | Agent API egress                              |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------- |
+| CP unavailable                      | Cached assignments and existing daemon sockets continue; affinity misses and new authentication fail closed                                                                             | Cached rules continue; metadata reports may wait or fail visibly | Established sessions continue; new verification is unavailable     | Continues directly from online daemons        |
+| Relay instance unavailable          | Other healthy instances continue receiving public callbacks; daemons reconnect according to the updated roster                                                                          | Other healthy instances continue                                 | Browser reconnects and resumes from the daemon replay window       | Unaffected                                    |
+| Entire relay pool unavailable       | HTTP bot callbacks cannot be processed                                                                                                                                                  | Public hook ingress is unavailable                               | Browser sessions are unavailable                                   | Existing daemons can still call platform APIs |
+| Target daemon unavailable           | Slack redelivers its messages until its last attempt (about six minutes), then they are dropped and counted; Lark / Feishu messages are dropped and counted; unrelated daemons continue | Target delivery fails visibly                                    | Target session cannot start or continue                            | That daemon cannot send                       |
+| Partial daemon-to-pool connectivity | A Slack callback landing without its target socket is answered 503 and redelivered, possibly to another instance; a Lark / Feishu one is dropped and counted                            | Same bounded-loss outcome                                        | A browser must reconnect to an instance with the target connection | Unaffected                                    |
 
 Direct integrations do not depend on relay availability.
 

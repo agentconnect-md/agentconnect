@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AgentModelProvider } from '../provider-key.js'
 import { AgentDecisionIds, AgentModelSelection, AgentRepositorySelector, HookRoutingProjection } from '../decision.js'
 import { AgentApiGateProjections } from '../agent-api.js'
 import { CodeHostProviderString } from '../code-host.js'
@@ -338,6 +339,14 @@ export const ManagedSkillEntry = z
   .strict()
 export type ManagedSkillEntry = z.infer<typeof ManagedSkillEntry>
 
+/** What people can do in chat: talk only, also approve tool calls, or also change runtime settings; each level includes the one before. */
+export const ChatActions = z.enum(['talk', 'approve', 'settings'])
+export type ChatActions = z.infer<typeof ChatActions>
+
+/** Who a webchat author is to the agent, as the Control Plane verified it: one of its editors, the conversation's owner, or anyone else who may continue it. */
+export const ChatCallerRole = z.enum(['editor', 'owner', 'participant'])
+export type ChatCallerRole = z.infer<typeof ChatCallerRole>
+
 /**
  * The editable agent definition the CP owns and the daemon needs to run it:
  * prompt + runtime selection. The launch protocol carries this config and the
@@ -373,6 +382,7 @@ export const AgentSpec = z.object({
   //   string ⇒ set it
   // The CP's agentRecordToSpec always ships these (value or null) so a clear replicates.
   model: z.string().nullable().optional(), // runtime model, e.g. "opus"
+  modelProvider: AgentModelProvider.nullable().optional(),
   reasoningEffort: z.string().nullable().optional(),
   executionMode: z.string().optional(), // e.g. "byoc"
   outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(), // platform output verbosity → agent.json output.mode ('none' = session-only, nothing to the IM)
@@ -380,10 +390,8 @@ export const AgentSpec = z.object({
   showStatusBar: z.boolean().optional(), // render Slack's persistent session status row; absent ⇒ leave agent.json unchanged
   fastMode: z.boolean().optional(), // runtime fast mode (ACP `model_config` toggle); absent ⇒ leave runtime default
   permissionMode: z.string().nullable().optional(), // runtime permission/approval mode (ACP `mode` selector); absent ⇒ leave alone, null ⇒ clear
-  // Explicit opt-in: when false, conversation participants cannot change runtime
-  // settings (model, effort, permission mode, fast mode) or answer approval
-  // requests. Agent editors decide pending requests from the console instead.
-  allowRuntimeChangesInChat: z.boolean().optional(),
+  // What people can do in chat (product-conventions.md); absent ⇒ leave agent.json unchanged, and an agent.json without it reads as 'talk'.
+  chatActions: ChatActions.optional(),
   // Operational message-processing toggle (orthogonal to placement). When true the
   // agent stays placed/connected but the daemon skips ALL turn dispatch (platform,
   // webchat, cron). Optional (not defaulted) so an absent value leaves the on-disk
@@ -476,12 +484,7 @@ export const AgentSpec = z.object({
   // → messageAgent) so they can record it in memory. Replicated CP→daemon. Optional
   // (absent ⇒ leave the on-disk agent.json value alone — same contract as pause/fastMode).
   introduceOnJoin: z.boolean().optional(),
-  // Per-agent OS sandbox preference (issue #642). It is effective only when the
-  // host has bwrap/sandbox-exec; daemon `security.requireSandbox` forces it on and
-  // prevents daemon startup when no mechanism exists. Optional means leave the
-  // on-disk agent.json value alone; a brand-new agent defaults to false.
-  runInSandbox: z.boolean().optional(),
-  // The strategy this agent's sessions run in (session-executors.md §5), kept beside `runInSandbox`; absent ⇒ not yet migrated, and the daemon reads the boolean.
+  // The strategy this agent's sessions run in (session-executors.md §5). A current CP always ships it; absent ⇒ leave the on-disk value alone, which reads as `host`.
   execution: ExecutorStrategyName.optional(),
   // True when this agent is an org built-in preset (preset-agents.md §3.1): a
   // `preset_agent` row references it. Replicated so the daemon can gate preset-only
@@ -700,9 +703,21 @@ export const AgentPermissionRequestRecord = z.object({
 })
 export type AgentPermissionRequestRecord = z.infer<typeof AgentPermissionRequestRecord>
 
+/** Daemon narrows the approval queue to one conversation and refuses a decision bound to it for another's request; an older daemon would answer for every request of the agent. */
+export const CONVERSATION_PERMISSION_REQUESTS_FEATURE = 'conversation-permission-requests-v1'
+
+/** A decision bound to a conversation named a request of another conversation. */
+export const PERMISSION_REQUEST_NOT_IN_CONVERSATION = 'permission request is not in this conversation'
+
+/** A conversation by its session's outward id: its own requests and its background sub-sessions'. */
+export const AgentPermissionConversation = z.object({ sessionId: z.string().min(1).max(512) })
+export type AgentPermissionConversation = z.infer<typeof AgentPermissionConversation>
+
 export const AgentPermissionRequestList = z.object({
   agentId: z.string().uuid(),
-  limit: z.number().int().min(1).max(100).default(50)
+  limit: z.number().int().min(1).max(100).default(50),
+  // Only this conversation's requests; an older daemon ignores it.
+  conversation: AgentPermissionConversation.optional()
 })
 export type AgentPermissionRequestList = z.infer<typeof AgentPermissionRequestList>
 
@@ -720,7 +735,9 @@ export const AgentPermissionDecision = z.object({
   optionId: z.string().min(1).max(AGENT_PERMISSION_OPTION_ID_MAX).optional(),
   // CP-stamped decider (slack-approval-dm.md §6.2) — never client-supplied.
   decidedBy: z.string().min(1).optional(),
-  decidedByName: z.string().min(1).optional()
+  decidedByName: z.string().min(1).optional(),
+  // Decided from this conversation: a request of another is refused with PERMISSION_REQUEST_NOT_IN_CONVERSATION.
+  conversation: AgentPermissionConversation.optional()
 })
 export type AgentPermissionDecision = z.infer<typeof AgentPermissionDecision>
 

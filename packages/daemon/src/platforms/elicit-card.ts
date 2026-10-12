@@ -56,6 +56,8 @@ export type ElicitCardDraft = unknown
 export interface ElicitCardHandle {
   readonly conn: unknown
   readonly channel: string
+  /** The platform thread it was posted into, where a thread is not a channel of its own (Slack's). */
+  readonly thread?: string
   ts?: string
   /** The card's OWN opaque state slot, written by the surface that assembles an answer over
    *  several taps (§7.3, the same shape `turnState` takes). Core never reads it; it exists so a
@@ -83,13 +85,14 @@ export interface ElicitCardSettlement {
   readonly fallback?: string
 }
 
-/** The turn, as an elicitation-card facet sees it: where the card goes and the identity it goes
- *  out under. Deliberately narrow — a facet may not reach core turn machinery. `Pending`
- *  satisfies it structurally, the same boundary Telegram's applier takes its turn through. */
+/** The turn as a card facet sees it: where the card goes and who sends it, narrow so a facet reaches no core machinery; `Pending` satisfies it. */
 export interface ElicitCardTurn {
   conn?: unknown
   plan: {
     platform: string
+    agentId: string
+    /** The integration the turn speaks through; absent for one with none. */
+    integrationId?: string
     channel: string
     thread?: string
     statusThread: string
@@ -205,4 +208,10 @@ export interface ElicitCardFacet {
    *  resolver so it is globally unique. Absent where the surface's user ids already are — a
    *  Telegram user id names one account across every chat, a Slack one only within its workspace. */
   answerScope?(handle: ElicitCardHandle): string | undefined
+  /** Tell only `userId`, beside the card, why their tap was not taken (Slack's ephemeral message). Absent ⇒ core hands the words back to the tap's own ingress, which answers it privately. */
+  tellPrivately?(handle: ElicitCardHandle, userId: string, text: string): void
+  /** The most characters a refusal said only to the tapper can carry here, by either path; absent ⇒ no limit core must fit. */
+  readonly privateTextLimit?: number
+  /** A tapping member's display name, for a tap that carried none (a relayed Slack click); undefined when unknown. */
+  nameOf?(handle: ElicitCardHandle, userId: string): Promise<string | undefined>
 }

@@ -114,7 +114,7 @@ describe('game subjects (§8.1/§14 step 4)', () => {
   it('forces account-app isolation on even when the template disables it, and preserves other security settings', () => {
     const root = template()
     const config = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))
-    config.security = { isolateAccountApps: false, requireSandbox: true }
+    config.security = { isolateAccountApps: false, workspaceGitAllowedOrigins: ['https://git.example.test'] }
     writeFileSync(join(root, 'config.json'), JSON.stringify(config))
     const subject = prepareRealSubject(topology, {
       kind: 'real',
@@ -123,7 +123,10 @@ describe('game subjects (§8.1/§14 step 4)', () => {
     })
     try {
       const prepared = JSON.parse(readFileSync(join(subject.root, 'config.json'), 'utf8'))
-      expect(prepared.security).toEqual({ isolateAccountApps: true, requireSandbox: true })
+      expect(prepared.security).toEqual({
+        isolateAccountApps: true,
+        workspaceGitAllowedOrigins: ['https://git.example.test']
+      })
     } finally {
       subject.cleanup()
     }

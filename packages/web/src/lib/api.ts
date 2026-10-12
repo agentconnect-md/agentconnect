@@ -38,10 +38,13 @@ import type {
   StrategyTable
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
+import { HOST_ONLY_TABLE, HOST_STRATEGY } from '@/lib/execution-strategy'
 import type {
+  AgentModelProvider,
   AgentApiProtocol,
   AssistantModeAdmission,
   AssistantModePolicy,
+  ChatActions,
   HookKind,
   SessionStayedHomeReason,
   ProviderKeyProvider,
@@ -186,6 +189,17 @@ export function addWebchatConversationAgent(
   )
 }
 
+/** Remove a non-primary member from a conversation (§3.1a); owner-only, 409 for the primary, idempotent. */
+export function removeWebchatConversationAgent(
+  orgId: string,
+  conversationId: string,
+  agentId: string
+): Promise<{ participants: Array<{ agentId: string; primary?: boolean }> }> {
+  return apiDelete(
+    `/orgs/${encodeURIComponent(orgId)}/webchat/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(agentId)}`
+  )
+}
+
 /**
  * Conversation-scoped mint (webchat-multi-agents.md §6.2): pass `agentIds` (first
  * entry = primary) to CREATE a conversation — the roster is fixed at creation — or
@@ -327,13 +341,14 @@ export interface AgentDto {
   description: string | null
   runtime: string | null // null ⇒ deferred exec config (an unplaced preset; set at placement)
   model: string | null
+  modelProvider?: AgentModelProvider | null
   reasoningEffort: string | null
   outputMode: string | null // platform output verbosity: low | medium | high; null when unset
   showFooter: boolean // render attribution/session footer; defaults true
   showStatusBar: boolean // render Slack's persistent session status row; defaults false
   fastMode: boolean | null // runtime fast mode; null when never set (runtime default)
   permissionMode: string | null // runtime permission/approval mode; null when never set
-  allowRuntimeChangesInChat: boolean // explicit opt-in; defaults false
+  chatActions: ChatActions // what people can do in chat
   pause: boolean | null // operational message-processing toggle; true ⇒ agent skips all messages; null ⇒ not paused
   env: Record<string, string> // the agent's OWN variables
   secretKeys: string[] // names of the agent's write-only secret env vars (values never returned)
@@ -375,12 +390,8 @@ export interface AgentDto {
   outboundPolicy: AgentCallPolicy // which peer agents this agent may discover/call
   allowedTargetAgentIds: string[] // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join
-  runInSandbox: boolean // #642: kept in step with `execution` (false only for `host`)
-  execution?: string | null // the strategy sessions run in; null ⇒ sandboxed where the backend is not yet reported; absent on an older CP
-  strategies?: StrategyTable | null // what the placement offers `execution`; null ⇒ it reports none and the sandbox fields apply
-  sandboxSupported: boolean // #642: whether the placed daemon can provide an OS sandbox
-  sandboxRequired: boolean // #642: whether daemon policy forces the effective value on
-  sandboxUnavailable: string | null // why a sandbox the daemon HAS cannot be provided right now
+  execution?: string // the strategy slug sessions run in (session-executors.md §5); absent only on an older CP
+  strategies?: StrategyTable // what the placement offers `execution`, host alone for an unplaced agent; absent only on an older CP
   hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
 }
 
@@ -627,6 +638,8 @@ export interface SessionDetailDto {
    *  §6.5): whether THIS caller may continue the session from the console
    *  composer. Absent on a CP that predates the feature (⇒ read-only). */
   canContinue?: boolean | null
+  /** Whether THIS caller owns this webchat conversation; absent on an older Control Plane. */
+  ownsConversation?: boolean | null
   continuationUnavailableReason?:
     'unauthorized' | 'content_purged' | 'unsupported_platform' | 'agent_moved' | 'daemon_offline' | 'unavailable' | null
   externalProvider?: string | null
@@ -1035,19 +1048,18 @@ export interface UpdateAgentInput {
   description?: string | null
   runtime?: string
   model?: string | null
+  modelProvider?: AgentModelProvider | null
   reasoningEffort?: string | null
   outputMode?: string | null
   showFooter?: boolean
   showStatusBar?: boolean
   fastMode?: boolean | null
   permissionMode?: string | null
-  allowRuntimeChangesInChat?: boolean
+  chatActions?: ChatActions
   /** Operational message-processing toggle; true ⇒ agent skips all messages; null clears. */
   pause?: boolean | null
   /** #536: self-introduce to peers on a genuine channel join (default off). */
   introduceOnJoin?: boolean
-  /** The legacy boolean, sent only where the placement reports no strategy table. */
-  runInSandbox?: boolean
   /** The strategy new sessions run in, checked against the placement's table (409 with the reason when it cannot run there). */
   execution?: string
   /** Widen an existing App-backed GitHub workspace from read to write. */
@@ -1255,13 +1267,14 @@ export interface CreateAgentInput {
   runtime: string
   description?: string
   model?: string
+  modelProvider?: AgentModelProvider
   reasoningEffort?: string
   outputMode?: string // platform output verbosity: low | medium | high
   showFooter?: boolean
   showStatusBar?: boolean
   fastMode?: boolean // runtime fast mode toggle
   permissionMode?: string // runtime permission/approval mode
-  allowRuntimeChangesInChat?: boolean
+  chatActions?: ChatActions // absent ⇒ the Control Plane's new-agent default
   pause?: boolean // operational message-processing toggle; true ⇒ agent skips all messages
   env?: Record<string, string>
   secrets?: Record<string, string> // write-only secret env vars (initial set)
@@ -1280,8 +1293,6 @@ export interface CreateAgentInput {
   modelSelection?: AgentModelSelection
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
-  /** The legacy boolean, sent only where the placement reports no strategy table. */
-  runInSandbox?: boolean
   /** The strategy sessions run in; absent ⇒ the Control Plane's default for the placement. */
   execution?: string
   /** Initial visibility (absent ⇒ 'org'); sharedWith is intersected with org members. */
@@ -2043,7 +2054,7 @@ export function agentFromDto(d: AgentDto): Agent {
       : {}),
     ...(d.assistantMode ? { assistantMode: d.assistantMode } : {}),
     permissionMode: d.permissionMode ?? '',
-    allowRuntimeChangesInChat: d.allowRuntimeChangesInChat ?? false,
+    chatActions: d.chatActions ?? 'talk',
     env: Object.entries(d.env ?? {}).map(([k, v]) => ({ k, v })),
     secretKeys: d.secretKeys ?? [],
     // Inherited organization rows. Empty on an older CP, which renders exactly as
@@ -2083,13 +2094,9 @@ export function agentFromDto(d: AgentDto): Agent {
     allowedTargetAgentIds: d.allowedTargetAgentIds ?? [],
     // Unset (older CP) reads as off — the product default.
     introduceOnJoin: d.introduceOnJoin ?? false,
-    // Missing policy fields fail closed; the removed legacy field is not read.
-    runInSandbox: d.runInSandbox ?? false,
-    execution: d.execution ?? null,
-    strategies: d.strategies ?? null,
-    sandboxSupported: d.sandboxSupported ?? false,
-    sandboxRequired: d.sandboxRequired ?? false,
-    sandboxUnavailable: d.sandboxUnavailable ?? null,
+    // An older CP that names no strategy is read as the unplaced agent's host-only table.
+    execution: d.execution ?? HOST_STRATEGY,
+    strategies: d.strategies ?? HOST_ONLY_TABLE,
     hookKinds: d.hookKinds ?? [],
     integrations: [],
     workspace: ws
@@ -3840,6 +3847,27 @@ export async function decideAgentPermissionRequest(
   )
 }
 
+/** One webchat conversation's requests and its sub-sessions', for its owner where people in chat may approve, and for editors. */
+export async function fetchSessionPermissionRequests(sessionId: string): Promise<AgentPermissionRequestDto[]> {
+  const page = await apiGet<{ requests: AgentPermissionRequestDto[] }>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/permission-requests`
+  )
+  return page.requests
+}
+
+/** Decide one of a conversation's requests, bound to that conversation; the first answer from any surface wins. */
+export async function decideSessionPermissionRequest(
+  sessionId: string,
+  requestId: string,
+  decision: 'allow' | 'deny',
+  optionId?: string
+): Promise<void> {
+  await apiPost<{ ok: true }>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/permission-requests/${encodeURIComponent(requestId)}/decision`,
+    optionId ? { decision, optionId } : { decision }
+  )
+}
+
 // ── Assistant-mode Activity (assistant-mode.md §1.7, §5.11): read from the agent's daemon, kept nowhere else ──
 
 export interface AssistantPlaceDto {
@@ -3921,6 +3949,8 @@ export interface AssistantDraftDto {
     name: string | null
   } | null
   proposal?: AssistantProposalDto
+  /** A webchat proposal, decided on its conversation's page by whoever may continue it; `approver` is then null. */
+  inConversation?: boolean
   createdAt: string
   expiresAt: string
 }
@@ -4014,6 +4044,39 @@ export async function decideAssistantDraft(
   decision: AssistantDraftDecision
 ): Promise<AssistantDraftOutcomeDto> {
   return apiPost(`${assistantBase(agentId)}/drafts/${encodeURIComponent(draftId)}/decision`, { decision })
+}
+
+/** A proposal waiting in one webchat conversation, for whoever may continue it and the agent's editors (assistant-mode.md §5.10). */
+export interface AssistantConversationProposalDto {
+  id: string
+  sentence: string
+  why: string
+  /** What a background session would carry out once approved. */
+  task: string
+  itemId: string
+  itemTitle: string | null
+  createdAt: string
+  expiresAt: string
+}
+
+export async function fetchAssistantConversationProposals(
+  agentId: string,
+  sessionId: string
+): Promise<{ proposals: AssistantConversationProposalDto[]; truncated: boolean }> {
+  return apiGet(`${assistantBase(agentId)}/conversations/${encodeURIComponent(sessionId)}/proposals`)
+}
+
+/** Approve (start its task) or deny one; `executing` started it, `failed` ran nothing. */
+export async function decideAssistantConversationProposal(
+  agentId: string,
+  sessionId: string,
+  draftId: string,
+  decision: 'approve' | 'deny'
+): Promise<{ status: AssistantDraftOutcomeDto['status']; failure: string | null }> {
+  return apiPost(
+    `${assistantBase(agentId)}/conversations/${encodeURIComponent(sessionId)}/proposals/${encodeURIComponent(draftId)}/decision`,
+    { decision }
+  )
 }
 
 export async function fetchAssistantGrants(

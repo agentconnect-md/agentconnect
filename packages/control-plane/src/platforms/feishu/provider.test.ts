@@ -47,6 +47,7 @@ import type {
 } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { IntegrationFeishuConfig, type RcBotAssign, type RelayCpFrameType } from '@agentconnect.md/protocol'
+import { NO_SESSION_SYNC } from '../../../test/fakes/no-session-sync.js'
 
 /** A restricted owner: the projection's gated arm. */
 const RESTRICTED: SpecOwner = { visibility: 'restricted' }
@@ -421,7 +422,7 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
   // emitted, including the two-slot overloading (appId ← the secret row's
   // `appToken` slot, appSecret ← its `botToken` slot) and the row's region.
   it('emits the byte-identical direct payload the pre-adoption feishu arm produced', async () => {
-    const spec = await integrationToSpec(PLATFORMS, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [
+    const spec = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [
       channel('oc_1', 'any'),
       channel('oc_2', 'mention'),
       channel('oc_3', 'off')
@@ -443,7 +444,8 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
         gated: false,
         sessionModes: [],
         externalChannels: [],
-        decisions: { bindings: [], definitions: [] }
+        decisions: { bindings: [], definitions: [] },
+        chatAuthority: 'participants'
       },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
       // and the ingress mode ride the core envelope, never the config payload.
@@ -456,7 +458,7 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
   })
 
   it("defaults a legacy region-less row to 'feishu', exactly as the pre-adoption arm did", async () => {
-    const spec = await integrationToSpec(PLATFORMS, LEGACY_INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [])
+    const spec = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, LEGACY_INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [])
     if (!spec) throw new Error('expected a deliverable spec')
     expect(spec.config).toMatchObject({ region: 'feishu' })
   })
@@ -467,6 +469,7 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
     it(`routes the live path through the feishu projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(
         PLATFORMS,
+        NO_SESSION_SYNC,
         integration,
         SOCKET_BOT,
         SOCKET_SECRET,
@@ -514,7 +517,7 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
   // bot's own open_id rides as `botOpenId` so it can skip a `bot/info` call.
   it('emits the byte-identical shared payload the pre-adoption feishu arm produced', async () => {
     const httpBot = bot({ transport: 'http', botUserId: 'ou_bot' })
-    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, [
+    const spec = await httpIntegrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, httpBot, HTTP_SECRET, [
       channel('oc_1', 'any'),
       channel('oc_2', 'off')
     ])
@@ -531,7 +534,8 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
         gated: false,
         sessionModes: [],
         externalChannels: [],
-        decisions: { bindings: [], definitions: [] }
+        decisions: { bindings: [], definitions: [] },
+        chatAuthority: 'participants'
       },
       config: {
         appId: 'cli_testapp',
@@ -548,6 +552,7 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
       // projector instead of being forwarded positionally by each call site.
       const spec = await httpIntegrationToSpec(
         PLATFORMS,
+        NO_SESSION_SYNC,
         INTEGRATION,
         httpBot,
         HTTP_SECRET,
@@ -596,7 +601,7 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     relayReg,
     { integrationUpsert: async () => {} } as never,
     { upsert: async () => {}, get: async () => null, listForBot: async () => [] } as unknown as ThreadAffinityStore,
-    { findThreadOwner: async () => null } as unknown as SessionRepo,
+    { findThreadOwner: async () => null, getExternalAccessPolicy: async () => null } as unknown as SessionRepo,
     { info() {}, warn() {}, debug() {} },
     PLATFORMS,
     // No duty ledger ⇒ the spec goes to the placement alone, as this fixture expects.

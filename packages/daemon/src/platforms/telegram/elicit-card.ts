@@ -44,7 +44,7 @@ import type {
   ElicitCardTurn
 } from '../elicit-card.js'
 import type { InlineButton, TelegramConnection } from '../../telegram/connection.js'
-import { TELEGRAM_MESSAGE_LIMIT } from '../../telegram/render.js'
+import { TELEGRAM_CALLBACK_ANSWER_LIMIT, TELEGRAM_MESSAGE_LIMIT } from '../../telegram/render.js'
 import type { TelegramTurnState } from './turn-output.js'
 import {
   clampTo,
@@ -71,7 +71,7 @@ import {
  * produce — and a longer list is declined whole, never trimmed to fit. A checkbox card adds one
  * more button and a two-character tick per label, which the same headroom covers.
  */
-const TELEGRAM_ELICIT_MAX_BUTTONS = 24
+export const TELEGRAM_ELICIT_MAX_BUTTONS = 24
 
 /** Telegram's own cap on one button's `callback_data`, in BYTES of UTF-8 — verified live
  *  2026-09-08: 64 bytes is accepted, 65 is `BUTTON_DATA_INVALID`, and 32 two-byte characters
@@ -122,7 +122,7 @@ const TELEGRAM_ELICIT_UNPICKED = '\u26aa'
  *  `reply_markup` is refused as a whole (see {@link TELEGRAM_ELICIT_MAX_BUTTONS}) — so this is the
  *  75 characters a reduced option label already clamps to, applied to the composed labels a form
  *  card builds so the measured headroom keeps holding. */
-const TELEGRAM_BUTTON_LABEL_CAP = 75
+export const TELEGRAM_BUTTON_LABEL_CAP = 75
 
 /**
  * How much of the ANSWER a settled card echoes back. The decision core supplies is not bounded —
@@ -490,6 +490,8 @@ function telegramFoldForm(
 export const telegramElicitCards: ElicitCardFacet = {
   platform: 'telegram',
   reduction: TELEGRAM_ELICIT_SURFACE,
+  // A refused tap is told in the tap's own answer, an alert of at most 200 characters.
+  privateTextLimit: TELEGRAM_CALLBACK_ANSWER_LIMIT,
 
   build(_host: ElicitCardHost, _turn: ElicitCardTurn, ask: ElicitCardAsk): ElicitCardDraft | null {
     // No consent control: an inline `url` button fires no callback_query, so consent could never

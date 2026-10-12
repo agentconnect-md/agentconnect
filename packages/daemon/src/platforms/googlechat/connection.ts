@@ -13,6 +13,7 @@ import type {
 } from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import { PlatformSendQueue } from '../send-queue.js'
+import { renderGoogleChatMarkdown, splitGoogleChatText } from './render.js'
 import type { GoogleChatWriteBudget } from './write-budget.js'
 
 /** Google's fixed OAuth token endpoint; the key's own `token_uri` is never followed (§3). */
@@ -166,6 +167,8 @@ export interface GoogleChatMessageRef {
   name: string
   clientId?: string
   text?: string
+  /** The `spaces/…/threads/…` the message landed in, when Google's answer names it. */
+  thread?: string
 }
 
 /** A Space as `spaces.list` / `spaces.get` describe it. */
@@ -184,7 +187,11 @@ interface MessageResource {
   name?: string
   text?: string
   sender?: { name?: string }
+  thread?: { name?: string }
 }
+
+/** How many send-tool posts remember their thread, for the post's settlement right after the send. */
+const POSTED_THREADS_MAX = 256
 
 interface CachedToken {
   token: string
@@ -283,6 +290,8 @@ export class GoogleChatConnection implements PlatformConnection {
   /** The row's tenant fence (§10.8) and each Space's tenant, read once. */
   private readonly fence: TenantFence | undefined
   private readonly spaceTenants = new Map<string, Promise<SpaceTenant>>()
+  /** Send-tool post name → its thread, oldest first, for {@link threadOfPost}. */
+  private readonly postedThreads = new Map<string, string>()
   /** Every write takes one token of the app's budget before it runs, under the Space's own spacing. */
   private readonly writeGate: (() => Promise<void>) | undefined
   private cached: CachedToken | undefined
@@ -346,6 +355,8 @@ export class GoogleChatConnection implements PlatformConnection {
     text?: string
     cardsV2?: readonly unknown[]
     fallbackText?: string
+    /** A `users/…` the message is private to: only they and the app see it (app authentication, which this connection uses). */
+    privateViewer?: string
   }): Promise<GoogleChatMessageRef> {
     const query: Record<string, string> = { messageId: input.clientId, requestId: input.clientId }
     if (input.thread) query.messageReplyOption = 'REPLY_MESSAGE_OR_FAIL'
@@ -353,7 +364,8 @@ export class GoogleChatConnection implements PlatformConnection {
       ...(input.text !== undefined ? { text: input.text, markupSyntax: GOOGLE_CHAT_MARKUP } : {}),
       ...(input.cardsV2 ? { cardsV2: input.cardsV2 } : {}),
       ...(input.fallbackText ? { fallbackText: input.fallbackText } : {}),
-      ...(input.thread ? { thread: { name: input.thread } } : {})
+      ...(input.thread ? { thread: { name: input.thread } } : {}),
+      ...(input.privateViewer ? { privateMessageViewer: { name: input.privateViewer } } : {})
     }
     const byClientId = `${input.space}/messages/${input.clientId}`
     await this.assertOwnTenant(input.space)
@@ -368,7 +380,8 @@ export class GoogleChatConnection implements PlatformConnection {
       return {
         name: created.name ?? byClientId,
         clientId: input.clientId,
-        ...(created.text !== undefined ? { text: created.text } : {})
+        ...(created.text !== undefined ? { text: created.text } : {}),
+        ...(created.thread?.name ? { thread: created.thread.name } : {})
       }
     }
     return this.queueFor(input.space).enqueue(async () => {
@@ -446,6 +459,33 @@ export class GoogleChatConnection implements PlatformConnection {
       })
       this.noteAppIdentity(created.sender?.name)
     }, this.writeGate)
+  }
+
+  /** A post from the send tool, outside any turn: rendered and split as a reply is, each part under its own `client-` id; answers the first part's name. */
+  async postMessage(channel: string, text: string, thread?: string): Promise<string | undefined> {
+    let first: GoogleChatMessageRef | undefined
+    for (const part of splitGoogleChatText(renderGoogleChatMarkdown(text))) {
+      // A long post's later parts follow its first into the same thread.
+      const into = thread ?? first?.thread
+      const created = await this.createMessage({
+        space: channel,
+        ...(into ? { thread: into } : {}),
+        clientId: `client-${this.newRequestId()}`,
+        text: part
+      })
+      first ??= created
+    }
+    if (first?.thread) {
+      this.postedThreads.set(first.name, first.thread)
+      if (this.postedThreads.size > POSTED_THREADS_MAX)
+        this.postedThreads.delete(this.postedThreads.keys().next().value!)
+    }
+    return first?.name
+  }
+
+  /** The thread a send-tool post landed in, which a reply to it carries; a message name says nothing about it (§5). */
+  threadOfPost(postId: string): string | undefined {
+    return this.postedThreads.get(postId)
   }
 
   // ── tenant fence (§10.8) ──
@@ -691,7 +731,11 @@ export class GoogleChatConnection implements PlatformConnection {
     try {
       const message = await this.request<MessageResource>('GET', name, { retry: 'idempotent' })
       this.noteAppIdentity(message.sender?.name)
-      return { name: message.name ?? name, ...(message.text !== undefined ? { text: message.text } : {}) }
+      return {
+        name: message.name ?? name,
+        ...(message.text !== undefined ? { text: message.text } : {}),
+        ...(message.thread?.name ? { thread: message.thread.name } : {})
+      }
     } catch (err) {
       if (err instanceof GoogleChatApiError && err.kind === 'not_found') return undefined
       throw err

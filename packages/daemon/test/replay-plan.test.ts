@@ -173,6 +173,23 @@ describe('planReplay — batch and skip', () => {
     expect(p.shape).toBe('inorder')
     expect(p.context).toEqual([])
   })
+
+  it('delivers a daemon-minted trigger past the cursor in order, even one the agent authored', () => {
+    // A report's transcript ts is a millisecond stamp, which carries no Slack order.
+    const report = '1700000020000'
+    const own = plan({ gap: [entry(report, 'bot', 'report')], triggerTs: report, markerBefore: at(4) })
+    expect(own.shape).toBe('inorder')
+    expect(own.context).toEqual([])
+    expect(own.deliveredThrough).toBe(at(4))
+    const withNewer = plan({
+      gap: [entry(at(5), 'u1', 'newer'), entry(report, 'bot', 'report')],
+      triggerTs: report,
+      markerBefore: at(4)
+    })
+    expect(withNewer.shape).toBe('inorder')
+    expect(withNewer.context.map((e) => e.text)).toEqual(['newer'])
+    expect(withNewer.deliveredThrough).toBe(at(5))
+  })
 })
 
 describe('planReplay — runtime session recreated without its history', () => {

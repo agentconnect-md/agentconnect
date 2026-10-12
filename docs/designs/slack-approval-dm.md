@@ -5,9 +5,9 @@
 > stacked changes (§9) and the console states (§7, #1704) have shipped. File/line references describe the
 > shipped machinery this design composes.
 >
-> **Scope:** protocol + control-plane + daemon + web. Slack only — it is the
-> one platform with a linked-identity **assertion** (see §4.4) and the one
-> platform with DM-capable read ports today.
+> **Scope:** protocol + control-plane + daemon + web. The DM is Slack only — it is
+> the one platform whose linked identity can address a DM (see §4.4, §10) and the
+> one platform with DM-capable read ports today. §6.5 covers Feishu/Lark too.
 >
 > Related documents:
 > [slack-identity.md](slack-identity.md),
@@ -23,13 +23,15 @@ When an ACP runtime asks `session/request_permission` (or Codex maps an MCP
 tool approval onto `elicitation/create`), the daemon's
 `PermissionCoordinator` resolves it on one of two paths:
 
-- **Chat path** — only when the agent opts in
-  (`allowRuntimeChangesInChat`) _and_ the session lives on Slack: an
-  interactive card with one button per ACP option is posted **into the
+- **Chat path** — only when the agent lets people in chat approve tool
+  calls (`chatActions` at `approve` or `settings`) _and_ the session's platform has
+  an approval card (the `approvalCards` facet, integration-plugin-architecture.md
+  §7.3): an interactive card with one button per ACP option is posted **into the
   session's own conversation** (`awaitChatPermission`,
-  `packages/daemon/src/permissions/coordinator.ts`). Anyone who can see the
-  conversation can click it — which is exactly why it is opt-in.
-- **Editor path** — the default: the ACP promise is parked, a durable row
+  `packages/daemon/src/permissions/coordinator.ts`). Outside a synced platform
+  (§6.5), anyone who can see the conversation can click it — which is exactly
+  why the agent's setting gates it.
+- **Editor path** — otherwise: the ACP promise is parked, a durable row
   lands in the daemon's `permission_requests` table
   (`packages/daemon/src/store/local-store.ts`), and chat gets only a notice:
   _"🔒 Permission requested. Ask an Agent editor to allow it from the Agent
@@ -51,23 +53,23 @@ The approval itself keeps living on the web exactly as today, and the
 console's approval cards learn to show **who** decided (§6).
 
 Non-goals: replacing the in-conversation chat card (it stays, unchanged
-behind its opt-in), console notifications (§7, deferred), a server-side
+behind its setting), console notifications (§7, deferred), a server-side
 notification store (§8), any platform other than Slack (§10), and a reverse
 Slack→console identity index (§4.4).
 
 ## 2. The trust model — why a DM is the editor path, not the chat path
 
-The in-conversation card is gated by `allowRuntimeChangesInChat` because it
-performs **no per-user authorization**: any conversation participant can
-click it. The DM card is the opposite: its recipient is chosen by the same
-`canEdit` predicate the console decision route enforces
+The in-conversation card is gated by `chatActions` because, outside a synced
+platform (§6.5), it performs **no per-user authorization**: any conversation
+participant can click it. The DM card is the opposite: its recipient is chosen
+by the same `canEdit` predicate the console decision route enforces
 (`packages/control-plane/src/http/routes/agents.ts`), and the Slack account
 is bound to that console user by a Logto assertion (a Slack OIDC sign-in or
 an Account API link under the user's own session — never an email guess).
 
 So the DM surface is **the editor path delivered over Slack**, and:
 
-- it is **not** gated by `allowRuntimeChangesInChat`;
+- it is **not** gated by `chatActions`;
 - a click on a DM card is honored only when the acting Slack user **is the
   DM's addressed target** and **still passes both gates at click time**
   (§6.3) — routing-time authorization is not an indefinite grant;
@@ -175,6 +177,13 @@ displayName? }`. Naming the addressed console user makes the check a single
 forward lookup instead of a scan. Routing is best-effort (§4.3);
 verification is not — it authorizes an action, so an unanswerable verify
 fails closed.
+
+A verify that names no console user (`chat-actor-v1`) asks whether a chat member is any
+editor's linked identity, for the in-conversation card where the organization syncs Slack's
+session access (§6.5). `teamId` may be left to the integration's own workspace. It runs the same
+capped forward scan, over the editors, and when the membership is within the cap over every
+member too, so a refusal can say whether the member is linked to anyone; over the editor cap it
+refuses.
 
 A third form serves assistant-mode drafts ([assistant-mode.md](assistant-mode.md)
 §5.5): `agent/approval-route` with `consoleUserId` set asks for exactly that
@@ -327,8 +336,8 @@ Deny the first `reject_once` (else `reject_always`, else cancels).
 
 ### 6.3 Actor verification on the DM card
 
-`handlePermissionChoice` currently refuses when
-`allowRuntimeChangesInChat` is off. It learns to distinguish card origin:
+`handlePermissionChoice` refuses an in-conversation click when
+`chatActions` is `talk`. It learns to distinguish card origin:
 for a DM-originated request (the coordinator knows — it posted it), the
 gate is replaced by two checks, both required:
 
@@ -349,7 +358,7 @@ gate is replaced by two checks, both required:
   `consoleUserId` plus the verify's fresh `displayName` are what land in
   `resolvedBy` / `resolvedByName`.
 
-In-thread cards keep their existing gate unchanged.
+In-thread cards keep their existing gate, plus §6.5 where session access is synced.
 
 ### 6.4 Elicitation clicks carry no actor today
 
@@ -362,6 +371,37 @@ scope for this delivery (§9) — actor on the Socket Mode handler, an
 acting-user field on the relay frame, and the §6.3 checks in
 `handleElicitChoice` for DM-originated cards — so both request kinds get
 identical interactive DMs; the two runtimes must not diverge here.
+
+### 6.5 The in-conversation card where session access is synced
+
+Where the organization syncs a platform's session access and that platform's provider can match
+chat members (`chatMemberTenant`, integration-plugin-architecture.md §9: Slack and Feishu/Lark),
+"What people can do in chat" admits only the agent's editors (product-conventions.md). The CP
+projects `chatAuthority: 'editors'` onto each such integration spec while the sync is on, and
+re-pushes the platform's integrations when it is switched. A click on the in-conversation card,
+approval elicitations and sub-session cards included, is then honored only when the clicker is an
+editor's linked identity: on Slack the pair in the bot's workspace, on Feishu/Lark the union_id
+in the bot's region, which the daemon carries as `InteractionActor.memberId` and refuses a click
+without. It is asked with the anonymous verify of §4.2 and cached on the daemon (an editor two
+minutes, a refusal thirty seconds, an unanswered question never). An unreachable CP, one without `chat-actor-v1`, or an
+agent over the editor cap refuses the click too. A refusal is told only to the clicker and the
+card stays live: it says only an Agent editor can answer, tells a member linked to no console
+account how to link one, or, when the check could not run, says to try again in a moment. It
+carries no console link: the session is `external` (session-visibility.md §1), so its page
+opens only to linked members with access to the same conversation, with no editor override, and
+an editor linked elsewhere would get a 404. A click in a closed conversation still
+gets the console link, as on any platform.
+Beside a permission request's card, the editor DM of §5 (a Slack DM) goes out too unless the
+turn owner is an editor. It is routed over the agent's Slack integrations
+(`approvalDmIntegrations`), so on a synced Feishu/Lark integration of an agent with no Slack
+integration nobody is DMed, and the request waits for an editor in the conversation or the
+console; a Feishu/Lark approval DM is not built yet. The first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
+here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
+(§11.4); editors answer it there or in the console. A conversation shared with another
+organization takes the editor path instead of the asker's DM. A sub-session's card keeps the
+row's `notify*` handle, so the DM beside it keeps its own (`besideIntegrationId`,
+`besideChannel`, `besideTs`), and the reconnect sweep of §5.4 retires both. §4.4 holds: the check
+is a forward scan from the console side, never a reverse index.
 
 ## 7. Console notification states
 
@@ -467,7 +507,8 @@ Three things genuinely differ per surface, and each stays with its surface:
   console reaches a request only through the CP proxy (§6.2), because the CP is
   never on the hot path.
 - **Who may answer.** For an in-conversation card, anyone who can see it, and
-  only behind `allowRuntimeChangesInChat` (§2). For a DM card, the addressed
+  only behind `chatActions` at `approve` or above (§2); only an editor where session
+  access is synced (§6.5). For a DM card, the addressed
   target, re-verified at click time (§6.3). For the console, an Agent editor,
   which the CP decision route enforces before the frame reaches the daemon.
 - **Rendering limits.** Option caps, surfaces with no buttons that take a
@@ -544,4 +585,6 @@ rather than from core.
    choice, form, typed reply and URL consent) onto `settle`, collapse the
    elicitation map into the same record, and replace the
    `instanceof SlackConnection` gates on chat approval with a surface
-   capability.
+   capability. The in-conversation card's gate is replaced: it is the
+   `approvalCards` facet (integration-plugin-architecture.md §7.3), which
+   other chat platforms implement too.

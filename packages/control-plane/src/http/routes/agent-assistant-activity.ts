@@ -1,9 +1,10 @@
-// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): bounded reads and editors' edits proxied to the owning daemon, nothing kept here.
+// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11) and a webchat conversation's proposals (§5.10): bounded reads and edits proxied to the owning daemon, nothing kept here.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
   ASSISTANT_ACTIVITY_DRAFTS_MAX,
   ASSISTANT_ACTIVITY_FEATURE,
+  ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   ASSISTANT_ACTIVITY_ITEMS_MAX,
   ASSISTANT_ACTIVITY_SUBSESSIONS_MAX,
   AssistantActivityDraft,
@@ -121,6 +122,35 @@ const SUBSESSION_PANEL = {
   feature: ASSISTANT_SUBSESSION_PANEL_FEATURE,
   refusal: 'this agent version cannot list or stop a conversation’s sub-sessions; upgrade its daemon'
 }
+const ConversationParam = IdParam.extend({ sessionId: z.string().min(1).max(512) })
+const ConversationProposalParam = ConversationParam.extend({ draftId: z.string().min(1).max(512) })
+const ProposalDecisionBody = z.object({ decision: z.enum(['approve', 'deny']) })
+const PROPOSAL_CHOICE = { approve: 'approve', deny: 'discard' } as const
+/** A proposal waiting in one webchat conversation: the sentence its card would lead with, why, the task and its item. */
+const ConversationProposalDto = z.object({
+  /** Decided with `decideAssistantConversationProposal`. */
+  id: z.string(),
+  sentence: z.string(),
+  why: z.string(),
+  /** What the background session would carry out. */
+  task: z.string(),
+  itemId: z.string(),
+  /** The item's title as the agent last saw it; null once the item is gone. */
+  itemTitle: z.string().nullable(),
+  createdAt: z.string(),
+  expiresAt: z.string()
+})
+const ConversationProposalsDto = z.object({ proposals: z.array(ConversationProposalDto), truncated: z.boolean() })
+const ProposalDecisionDto = z.object({
+  /** `executing` started its task, `denied` dropped it, `failed` ran nothing. */
+  status: AssistantDraftStatus,
+  /** Why it could not run. */
+  failure: z.string().nullable()
+})
+const CONVERSATION_PROPOSALS = {
+  feature: ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
+  refusal: 'this agent version cannot show a conversation’s proposals; upgrade its daemon'
+}
 const OkDto = z.object({ ok: z.literal(true) })
 
 type Failure = { status: 400 | 404 | 409 | 503; error: string; message: string; code: string }
@@ -197,6 +227,12 @@ const DRAFT_REFUSED: Record<'expired' | 'already-decided' | 'busy', Failure> = {
   }
 }
 
+/** The same refusals for a proposal, worded for a task that never ran. */
+const PROPOSAL_REFUSED: Record<'expired' | 'already-decided', Failure> = {
+  expired: { ...DRAFT_REFUSED.expired, message: 'the proposal expired; nothing was run' },
+  'already-decided': { ...DRAFT_REFUSED['already-decided'], message: 'the proposal was already decided' }
+}
+
 export function agentAssistantActivityRoutes(deps: HttpDeps) {
   return async function agentAssistantActivityRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
@@ -217,6 +253,43 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
     }
     const conversationOf = (row: SessionMetaRecord | undefined) =>
       row ? { sessionId: String(row.id), title: row.title, platform: row.platform, channelName: row.channelName } : null
+    // The console user acting, stamped here from the session, never taken from the request.
+    const actorOf = async (req: FastifyRequest) => {
+      const { userId } = ctxOf(req)
+      const profile = await deps.repos.user.getProfile(userId).catch(() => null)
+      const name = profile?.displayName ?? profile?.email ?? null
+      return { userId, name: name === null ? null : [...name].slice(0, 256).join('') }
+    }
+
+    // A webchat conversation of this agent the caller may view, whose proposals whoever may continue it or edits the agent decides; the reply is sent on refusal.
+    const admitConversation = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agent: AgentRecord
+    ): Promise<SessionMetaRecord | null> => {
+      const row = await deps.repos.session.get(orgOf(req), SessionId((req.params as { sessionId: string }).sessionId))
+      // A sub-session's page is read-only and not a conversation of its own.
+      if (!row || row.agentId !== agent.id || row.platform !== 'webchat' || isSubsessionCoordinate(row.thread)) {
+        await send(reply, notFound('conversation not found'))
+        return null
+      }
+      const ctx = ctxOf(req)
+      const audience = await access.forSessions(req, [row])
+      if (!canViewSession(row, ctx, audience.identitySet, audience.externalAccess)) {
+        await send(reply, notFound('conversation not found'))
+        return null
+      }
+      // The same authority the composer and a sub-session's stop need, or the agent's editors'.
+      if (!canEdit(agent, ctx) && !canContinueSession(row, ctx, audience.identitySet, audience.externalAccess)) {
+        await reply.code(403).send({
+          error: 'Forbidden',
+          statusCode: 403,
+          message: 'not authorized to decide this conversation’s proposals'
+        })
+        return null
+      }
+      return row
+    }
 
     // Visible agent → editor (when asked) → assistant mode → serving daemon with the feature; the reply is sent on refusal.
     const admit = async (
@@ -499,14 +572,11 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'not authorized to stop this sub-session' })
         }
-        // Stamped here from the session, never taken from the request.
-        const profile = await deps.repos.user.getProfile(ctx.userId).catch(() => null)
-        const name = profile?.displayName ?? profile?.email ?? null
         const answer = await writeEdit(reply, admitted.daemonId, {
           agentId: admitted.agent.id,
           operation: 'stop-subsession',
           sessionId: String(row.id),
-          actor: { userId: ctx.userId, name: name === null ? null : [...name].slice(0, 256).join('') }
+          actor: await actorOf(req)
         })
         if (!answer) return reply
         if (answer.result === 'not-found') return send(reply, notFound('sub-session not found'))
@@ -583,10 +653,6 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           refusal: 'this agent version cannot decide drafts from the console; upgrade its daemon'
         })
         if (!admitted) return reply
-        // The decider is stamped here from the session, never taken from the request.
-        const me = ctxOf(req)
-        const profile = await deps.repos.user.getProfile(me.userId).catch(() => null)
-        const name = profile?.displayName ?? profile?.email ?? null
         const answer = await writeEdit(
           reply,
           admitted.daemonId,
@@ -595,7 +661,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
             operation: 'decide-draft',
             draftId: req.params.draftId,
             choice: DRAFT_CHOICE[req.body.decision],
-            decider: { userId: me.userId, name: name === null ? null : [...name].slice(0, 256).join('') }
+            decider: await actorOf(req)
           },
           assistantDraftDecisionFailure
         )
@@ -607,6 +673,95 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           return send(reply, DRAFT_REFUSED[answer.result === 'expired' ? 'expired' : 'already-decided'])
         }
         return { status: answer.status, alwaysAllowed: answer.granted, failure: answer.failure }
+      }
+    )
+
+    r.get(
+      '/agents/:id/assistant/conversations/:sessionId/proposals',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List a webchat conversation’s pending proposals',
+          description: `Lists what the agent’s scheduled checks propose to do for items taken in one webchat conversation, still waiting for approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: each proposal’s sentence, its reason, the task a background session would carry out, its item and when it expires. Only callers who may continue that conversation, or who can edit the agent, may read it; the conversation must be one the caller may view. Answers 409 \`DAEMON_FEATURE_MISSING\` when the agent’s daemon cannot narrow its proposals to one conversation. Nothing is stored by this call.`,
+          operationId: 'listAssistantConversationProposals',
+          params: ConversationParam,
+          response: { 200: ConversationProposalsDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const admitted = await admit(req, reply, false, CONVERSATION_PROPOSALS)
+        if (!admitted) return reply
+        const row = await admitConversation(req, reply, admitted.agent)
+        if (!row) return reply
+        const page = await readSection(reply, admitted.daemonId, {
+          agentId: admitted.agent.id,
+          operation: 'drafts',
+          limit: ASSISTANT_ACTIVITY_DRAFTS_MAX,
+          proposals: true,
+          conversation: { sessionId: String(row.id) }
+        })
+        if (!page) return reply
+        // A daemon answers for the conversation asked about only; anything else is dropped rather than shown.
+        const proposals = page.drafts.flatMap((d) =>
+          d.kind === 'task' && d.proposal && d.target.platform === 'webchat' && d.target.channel === row.channel
+            ? [
+                {
+                  id: d.id,
+                  sentence: d.proposal.sentence,
+                  why: d.proposal.why,
+                  task: d.text,
+                  itemId: d.proposal.itemId,
+                  itemTitle: d.proposal.itemTitle,
+                  createdAt: d.createdAt,
+                  expiresAt: d.expiresAt
+                }
+              ]
+            : []
+        )
+        return { proposals, truncated: page.truncated }
+      }
+    )
+
+    r.post(
+      '/agents/:id/assistant/conversations/:sessionId/proposals/:draftId/decision',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Decide a webchat conversation’s pending proposal',
+          description:
+            'Approves or denies one proposal waiting in a webchat conversation, exactly as Activity would: `approve` starts its task in a background session of that conversation and answers `executing`, `deny` drops it and runs nothing. While the agent already runs as many sub-sessions as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. Whichever surface answers first decides it: one that expired or was already decided is refused with 409 and runs nothing, and a proposal of another conversation answers 404. Only callers who may continue that conversation, or who can edit the agent, may decide, and they are recorded as the decider. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot bind a decision to one conversation.',
+          operationId: 'decideAssistantConversationProposal',
+          params: ConversationProposalParam,
+          body: ProposalDecisionBody,
+          response: { 200: ProposalDecisionDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const admitted = await admit(req, reply, false, CONVERSATION_PROPOSALS)
+        if (!admitted) return reply
+        const row = await admitConversation(req, reply, admitted.agent)
+        if (!row) return reply
+        const answer = await writeEdit(
+          reply,
+          admitted.daemonId,
+          {
+            agentId: admitted.agent.id,
+            operation: 'decide-draft',
+            draftId: req.params.draftId,
+            choice: PROPOSAL_CHOICE[req.body.decision],
+            decider: await actorOf(req),
+            conversation: { sessionId: String(row.id) }
+          },
+          assistantDraftDecisionFailure
+        )
+        if (!answer) return reply
+        if (answer.result === 'not-found') return send(reply, notFound('proposal not found'))
+        if (answer.result === 'busy')
+          return send(reply, { ...DRAFT_REFUSED.busy, ...(answer.failure ? { message: answer.failure } : {}) })
+        if (answer.result !== 'decided' || !answer.status) {
+          return send(reply, PROPOSAL_REFUSED[answer.result === 'expired' ? 'expired' : 'already-decided'])
+        }
+        return { status: answer.status, failure: answer.failure }
       }
     )
 

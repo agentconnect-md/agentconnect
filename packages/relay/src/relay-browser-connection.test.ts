@@ -50,7 +50,13 @@ function build(
     ack?: RdAck
     remoteMcp?: WebchatRemoteMcpEntitlement
     log?: Logger
-    participants?: Array<{ agentId: string; daemonId?: string; primary?: boolean; targetSessionId?: string }>
+    participants?: Array<{
+      agentId: string
+      daemonId?: string
+      primary?: boolean
+      targetSessionId?: string
+      callerRole?: 'editor' | 'owner' | 'participant'
+    }>
     targetSessionId?: string
     supports?: boolean
   } = {}
@@ -111,6 +117,21 @@ describe('parseBrowserFrame', () => {
     expect(parseBrowserFrame({ text: 'hi', steer: false }, USER)).toEqual({
       op: { op: 'turn', text: 'hi', user: USER }
     })
+  })
+
+  it('carries the browser time zone, and leaves out a malformed one without dropping the turn', () => {
+    expect(parseBrowserFrame({ text: 'hi', timeZone: 'America/Los_Angeles' }, USER)).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER, timeZone: 'America/Los_Angeles' }
+    })
+    for (const timeZone of ['Asia/Shanghai; drop', 'x'.repeat(65), 42, ''])
+      expect(parseBrowserFrame({ text: 'hi', timeZone }, USER)).toEqual({ op: { op: 'turn', text: 'hi', user: USER } })
+  })
+
+  it('forwards the browser time zone on the turn it bridges to the daemon', async () => {
+    const { transport, sent } = build()
+    transport.feed({ text: 'hi', turnId: AGENT, timeZone: 'Asia/Shanghai' })
+    await tick()
+    expect(sent[0]?.payload).toMatchObject({ op: 'turn', text: 'hi', timeZone: 'Asia/Shanghai' })
   })
 
   it('maps a bare {text} and {type:"message",text} to a turn op carrying the user', () => {
@@ -337,6 +358,49 @@ describe('RelayBrowserConnection', () => {
     expect(transport.last('image_update')).toEqual({ type: 'image_update', update })
   })
 
+  it('stamps the verified role on each participant’s turns and runtime changes, never one the browser sent', async () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    const { transport, sent } = build({
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true, callerRole: 'owner' },
+        { agentId: PEER, daemonId: DAEMON, callerRole: 'participant' }
+      ]
+    })
+    transport.feed({ text: 'both of you', targets: [AGENT, PEER], callerRole: 'editor' })
+    transport.feed({ type: 'set_model', model: 'b', callerRole: 'editor' })
+    transport.feed({ type: 'cancel', agentId: AGENT })
+    await tick()
+    const stamped = sent.map((frame) => [
+      frame.agentId,
+      frame.payload.op,
+      'callerRole' in frame.payload ? frame.payload.callerRole : undefined
+    ])
+    expect(stamped).toEqual([
+      [AGENT, 'turn', 'owner'],
+      [PEER, 'turn', 'participant'],
+      [AGENT, 'set_model', 'owner'],
+      [AGENT, 'cancel', undefined]
+    ])
+  })
+
+  it('stamps no role from a verdict that carries none', async () => {
+    const { transport, sent } = build()
+    transport.feed({ type: 'set_fast', fastMode: true })
+    await tick()
+    expect(sent[0]?.payload).toEqual({ op: 'set_fast', fastMode: true })
+  })
+
+  it('tells only this browser why a runtime change was refused', async () => {
+    const reason = 'Only an Agent editor or the owner of this conversation can change its runtime settings.'
+    const { transport } = build({ ack: { msgId: 'm', accepted: false, reason } })
+    transport.feed({ type: 'set_effort', effort: 'high' })
+    await tick()
+    expect(transport.last('refused')).toEqual({
+      type: 'refused',
+      refused: { op: 'set_effort', agentId: AGENT, reason }
+    })
+  })
+
   it('stamps the verdict targetSessionId verbatim onto every rd/msg — turn and close alike', async () => {
     const TARGET = 'acp-session-cont-1'
     const { conn, transport, sent } = build({ targetSessionId: TARGET })
@@ -380,6 +444,38 @@ describe('RelayBrowserConnection', () => {
         [THIRD, 'session-c']
       ])
     )
+  })
+
+  it("gives peers' context copies the uploaded files' marker, never the uploads themselves", async () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    const file = {
+      uploadId: '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c',
+      name: 'spec.pdf',
+      mimeType: 'application/pdf',
+      size: 12,
+      sha256: Buffer.alloc(32, 1).toString('base64')
+    }
+    const { transport, sent } = build({
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true },
+        { agentId: PEER, daemonId: DAEMON }
+      ]
+    })
+    transport.feed({ text: 'read this', files: [file], targets: [AGENT] })
+    await tick()
+    expect(sent.find((frame) => frame.agentId === AGENT)?.payload).toMatchObject({ op: 'turn', files: [file] })
+    const context = sent.find((frame) => frame.agentId === PEER)?.payload as {
+      op: string
+      post: Record<string, unknown>
+    }
+    expect(context.op).toBe('context')
+    expect(context.post.text).toBe('read this\n[attached: spec.pdf (application/pdf)]')
+    expect(context.post).not.toHaveProperty('files')
+
+    transport.feed({ text: '', files: [file], targets: [AGENT] })
+    await tick()
+    const fileOnly = sent.filter((frame) => frame.agentId === PEER).at(-1)?.payload as { post: { text: string } }
+    expect(fileOnly.post.text).toBe('[attached: spec.pdf (application/pdf)]')
   })
 
   it('forwards structured mentions inside every per-target rd/msg(turn) payload', async () => {

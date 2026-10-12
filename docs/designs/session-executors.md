@@ -290,16 +290,15 @@ defaults and the reply says nothing new. The shim's hello does not change (§15)
 The wire contract is unchanged; only the paths move.
 
 **Configured is what a machine offers; reported is what is effective.** A strategy
-whose probe fails at startup is reported unavailable with its reason, the way the
-daemon already reports `sandboxUnavailable`; placement reads only the effective
-table. The console shows it only through the agent's strategy picker (below), with
-each unavailable entry's reason. The table is a process-level fact, so it rides
-registration beside `sandboxUnavailable`, not the heartbeat (§6).
+whose probe fails at startup is reported unavailable with its reason; placement reads
+only the effective table. The console shows it only through the agent's strategy
+picker (below), with each unavailable entry's reason. The table is a process-level
+fact, so it rides registration, not the heartbeat (§6).
 
 ### The machine's table and the agent's choice
 
 **A machine offers every strategy by default; its probes decide which are available.**
-The single-valued `sandbox.backend` becomes a table:
+The single-valued `sandbox.backend` became a table:
 
 ```json
 "sandbox": {
@@ -324,16 +323,18 @@ was the selected backend. A mount layout a strategy cannot honor makes that stra
 the validation error rather than refusing startup. `sandbox.env` and `sandbox.mounts`
 stay where they are and apply to every sandboxing strategy.
 
-`sandbox.backend` and `security.requireSandbox` retire together. A file that still
-sets them is mapped once at startup, with a warning: either backend value gives the
-default table, and `requireSandbox: true` is `host: false`. A machine that offers no
-`host` refuses unsandboxed sessions, and a machine whose table has no available entry
-refuses to start, which keeps today's fail-closed behavior. For that rule and for the
-machine's own sessions, `host` is the direct local child and available on every
-platform; the reading an executor reports to other members keeps `host` Linux-only
-(above). An explicit `sandbox.backend: none` stays rejected (§15).
+`sandbox.backend` and `security.requireSandbox` retired together (#2463), after one
+release in which a file that still set them was mapped once at startup with a
+warning. A file that sets one now refuses startup with an error naming the
+replacement: either backend value is the default table, and `requireSandbox: true`
+is `host: false`. A machine that offers no `host` refuses unsandboxed sessions, and a
+machine whose table has no available entry refuses to start, which keeps today's
+fail-closed behavior. For that rule and for the machine's own sessions, `host` is the
+direct local child and available on every platform; the reading an executor reports
+to other members keeps `host` Linux-only (above). An explicit `sandbox.backend: none`
+stays rejected (§15).
 
-**An agent names one strategy.** `runInSandbox` gives way to `execution`, a strategy
+**An agent names one strategy.** `runInSandbox` gave way to `execution`, a strategy
 slug. The user picks what sessions actually run in, instead of a boolean whose meaning
 depended on the machine. The console offers the strategies available where the agent
 is placed — a daemon's table, or for a group those at least one serving member offers —
@@ -341,21 +342,23 @@ each by its plain name (**Host**, **Sandbox** for the default process-level stra
 **VM**) with its technology and boundary in a tooltip, and shows an unavailable one
 disabled with its probe's reason. It reads each machine's own table
 from the daemon read model and, for the agent's saved placement, the table the agent
-carries; a daemon that predates the table keeps a "Sandbox" choice sent as the legacy
-boolean. A `shared` session runs on its holder, so for it the holder's table decides.
+carries. A `shared` session runs on its holder, so for it the holder's table decides.
 A pool agent's boundary is its pod, and the pool shows no picker. The Control Plane
-validates `execution` against the same tables, which replaces today's two conflicts
-("required by this daemon", "unavailable on this daemon").
+validates `execution` against the same tables, which replaced the two sandbox
+conflicts ("required by this daemon", "unavailable on this daemon"); an unplaced
+agent, or one whose daemons report no table, is offered `host` alone. A create that
+names no strategy takes `host` where the placement runs it, else the first available
+sandbox. Every write of `execution` advances the agent's `configRevision`, since the
+field rides the spec.
 
-Existing agents migrate once: `runInSandbox: false` becomes `host`; `true` becomes
-the backend the agent's daemon last reported at registration, `srt` unless it runs
-`microsandbox`; an agent with no daemon becomes `srt`. Registration reports the legacy
-backend for exactly this purpose while a daemon still reads one (`sandboxBackend`,
-beside the machine's own table in `strategies`). A daemon that predates the report
-names no backend, so a placed, sandboxed agent keeps no strategy until that daemon's
-first registration with a report. Until then the spec carries none and the daemon reads
-`runInSandbox`. Every write of `execution` advances the agent's `configRevision`, since
-the field rides the spec.
+The boolean is gone (#2463): the column, the wire field, the registration-time
+`sandboxBackend` report that backfilled a placed agent's strategy, and the `sandbox` /
+`sandbox-required` features with `sandboxUnavailable` beside them, all of which the
+table replaced. The one-time migration ran as S1 described it — `false` became `host`,
+`true` the backend the agent's daemon last reported, `srt` for an agent with no
+daemon — and the retiring migration backfills any straggler the same way. A daemon
+older than S2a reports no table, so the Control Plane reads it as offering `host`
+alone, and its agents' specs carry `execution` whether or not it reads them.
 
 **No silent downgrade.** A session whose strategy is unavailable where it would run is
 refused with the probe's reason; it never falls back to a weaker boundary. A session
@@ -1498,6 +1501,7 @@ feature, S2 lands in three parts, M1–M4 precede R1, and R1 lands in five parts
 | S2b    | Daemon: the birth strategy in the session's verdict, its upgrade backfill, and the executor's `strategy_mismatch` refusal.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | S2c    | Daemon: the image runtime's model probe per image identity; model selection judging targets against the candidates and the strategy's catalog, and placement landing a session only where its runtime and model run (§5).                                                                                                                                                                                                                                                                                                                                |
 | S3     | Console: the strategy picker per placement, plain names with the boundary in a tooltip, and unavailable reasons; the daemon's runtime list per strategy; the pool shows none.                                                                                                                                                                                                                                                                                                                                                                            |
+| S4     | Retirement (#2463), one release after S2a: `runInSandbox`, `sandboxBackend`, the `sandbox` / `sandbox-required` features and `sandboxUnavailable` leave the protocol, the Control Plane and the console; `sandbox.backend`, `security.requireSandbox` and `--require-sandbox` leave the daemon, a leftover key refusing startup with its replacement named.                                                                                                                                                                                              |
 | M1     | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | M2     | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | M3     | The launcher takes an environment descriptor instead of a session leaf: hosted and local descriptors, identities unchanged, nothing migrated (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                               |

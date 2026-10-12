@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   dto: {} as Record<string, unknown>,
   daemon: {} as unknown,
   agent: {} as unknown,
+  providers: [] as string[],
   updateAgent: vi.fn(async (_id: string, _patch: Record<string, unknown>) => undefined)
 }))
 
@@ -52,6 +53,7 @@ vi.mock('@/lib/data-context', () => ({
 }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
+  fetchProviderKeys: vi.fn(async () => mocks.providers.map((provider) => ({ provider, configured: true }))),
   fetchAgentDto: vi.fn(async () => mocks.dto)
 }))
 
@@ -78,6 +80,7 @@ mocks.daemon = {
   ],
   mcpServers: []
 } as unknown as DaemonRow
+const daemon = mocks.daemon as DaemonRow
 
 const agent = {
   id: 'agent-1',
@@ -119,10 +122,11 @@ afterEach(async () => {
   host?.remove()
   root = undefined
   mocks.updateAgent.mockClear()
+  mocks.providers = []
+  mocks.daemon = daemon
 })
 
-/** Open the form on an agent saved in `host`, switch it to the VM, and press Save. */
-async function switchToVm(dto: Record<string, unknown>): Promise<HTMLButtonElement> {
+async function openEditor(dto: Record<string, unknown>) {
   mocks.dto = {
     name: 'pilot',
     runtime: 'claude',
@@ -144,6 +148,11 @@ async function switchToVm(dto: Record<string, unknown>): Promise<HTMLButtonEleme
     )
   )
   await vi.waitFor(() => expect(host!.querySelector('[aria-label="Execution strategy"]')).not.toBeNull())
+}
+
+// Open the form on an agent saved in host, switch it to the VM, and press Save.
+async function switchToVm(dto: Record<string, unknown>): Promise<HTMLButtonElement> {
+  await openEditor(dto)
   await act(async () => host!.querySelector<HTMLButtonElement>('[aria-label="Execution strategy"]')!.click())
   const vm = [...host!.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((row) => row.textContent === 'VM')!
   await act(async () => vm.click())
@@ -168,4 +177,77 @@ it('holds Save while a Decision rule names a model the VM does not offer', async
   })
   expect(save.disabled).toBe(true)
   expect(mocks.updateAgent).not.toHaveBeenCalled()
+})
+
+const button = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
+const saveButton = () => [...host!.querySelectorAll<HTMLButtonElement>('.modalfoot button')].at(-1)!
+
+async function chooseCredentials(saved: boolean) {
+  await act(async () => button('Credentials').click())
+  const options = [...host!.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+  expect(options.map((option) => option.textContent)).toEqual(['Daemon credentials', 'Use saved credential (Beta)'])
+  await act(async () => options[saved ? 1 : 0]!.click())
+}
+
+it('offers two credential sources, filters models by saved keys and restores daemon choices', async () => {
+  mocks.providers = ['anthropic', 'typesafe']
+  mocks.daemon = {
+    ...daemon,
+    runtimeModels: [
+      { runtime: 'claude', models: ['model-host'], authRequired: true },
+      { runtime: 'codex', models: ['gpt-5'] },
+      { runtime: 'opencode', models: ['anthropic/claude-sonnet-4', 'openai/gpt-5', 'openrouter/other'] }
+    ]
+  }
+  await openEditor({ model: 'model-host' })
+  expect(button('Credentials').textContent).toBe('Daemon credentials')
+  await chooseCredentials(true)
+  await vi.waitFor(() => expect(saveButton().disabled).toBe(false))
+  await act(async () => button('Provider and model').click())
+  const dialog = document.querySelector('[role="dialog"][aria-label="Provider and model"]')!
+  expect(dialog.textContent).not.toContain('Codex')
+  expect(dialog.querySelector('[title="Login required"]')).toBeNull()
+  const opencode = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((entry) =>
+    entry.textContent?.startsWith('opencode')
+  )!
+  await act(async () => opencode.click())
+  expect(button('opencode · anthropic/claude-sonnet-4')).not.toBeNull()
+  expect(button('opencode · openai/gpt-5')).toBeNull()
+  expect(button('opencode · openrouter/other')).toBeNull()
+  await act(async () => button('opencode · anthropic/claude-sonnet-4').click())
+  await act(async () => button('Provider and model').click())
+  await act(async () => saveButton().click())
+  expect(mocks.updateAgent).toHaveBeenLastCalledWith(
+    'agent-1',
+    expect.objectContaining({ modelProvider: 'auto', runtime: 'opencode', model: 'anthropic/claude-sonnet-4' })
+  )
+  await chooseCredentials(false)
+  expect(button('Provider and model').getAttribute('aria-expanded')).toBe('false')
+  await act(async () => button('Provider and model').click())
+  expect(button('Provider and model').getAttribute('aria-expanded')).toBe('true')
+  expect(document.querySelector('[role="dialog"][aria-label="Provider and model"]')!.textContent).toContain('Codex')
+})
+
+it('refuses to save with no matching saved key, including an existing unsupported model', async () => {
+  await openEditor({ model: 'model-host' })
+  await chooseCredentials(true)
+  expect(saveButton().disabled).toBe(true)
+  expect(host!.textContent).toContain('Choose a model with a key configured in Providers.')
+  expect(mocks.updateAgent).not.toHaveBeenCalled()
+  await chooseCredentials(false)
+  expect(saveButton().disabled).toBe(false)
+})
+
+it('shows the saved level of what people can do in chat and saves a new one', async () => {
+  await openEditor({ model: 'model-host', chatActions: 'settings' })
+  const field = button('What people can do in chat')
+  expect(field.textContent).toBe('Talk, approve and change settings')
+  await act(async () => field.click())
+  const approve = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
+    (option) => option.textContent === 'Talk and approve tool calls'
+  )!
+  await act(async () => approve.click())
+  await act(async () => saveButton().click())
+  await vi.waitFor(() => expect(mocks.updateAgent).toHaveBeenCalled())
+  expect(mocks.updateAgent.mock.calls[0]![1]).toMatchObject({ chatActions: 'approve' })
 })

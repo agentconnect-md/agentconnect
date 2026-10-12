@@ -585,9 +585,7 @@ describe('IntegrationChannelList default dispatch on a one-member bot', () => {
   })
 })
 
-// A CONTROL has one shape wherever it appears — the trigger's bell, and this. The button used
-// to lead with the current agent's avatar, which varies per agent: the control had no
-// recognisable form, and one agent's mark could read as a different control entirely.
+// The dispatch control shows the current agent's avatar and a chevron on every conversation row.
 describe('IntegrationChannelList default dispatch control', () => {
   const render = (agentId: string) =>
     renderToStaticMarkup(
@@ -608,10 +606,10 @@ describe('IntegrationChannelList default dispatch control', () => {
     }
   })
 
-  it('names the default beside its mark on a chat row', () => {
+  it('names the default accessibly without displaying its name on a chat row', () => {
     const html = render('alice')
-    expect(html).toContain('>Alice</span>')
-    expect(html).not.toContain('desktop:hidden')
+    expect(html).toContain('aria-label="Default dispatch — Alice"')
+    expect(html).not.toContain('>Alice</span>')
   })
 })
 
@@ -641,6 +639,7 @@ describe('IntegrationChannelList direct rows', () => {
       })
     )
     expect(html).toContain('Default dispatch — Bob')
+    expect(html).not.toContain('>Bob</span>')
   })
 })
 

@@ -43,11 +43,11 @@ adapters remain a separate discussion.
 | Output           | Text, supported Markdown, coalesced message edits, and final replies.                                        |
 | Session behavior | Existing conversation gates, session modes, steering, queuing, and text control commands.                    |
 | Elicitation      | Agent questions as an in-thread card of buttons or form inputs, settled in place (§5).                       |
-| Approvals        | Existing Console approval queue; a chat card decides only where the agent allows it (§6).                    |
+| Approvals        | An in-thread approval card where people in chat may approve tool calls, else the Console queue (§6).         |
 | Context          | Messages delivered to this app and the daemon's retained session history.                                    |
 
 Ambient Space history, unmentioned thread follow-ups, group DMs, attachments,
-cards other than the welcome and elicitation cards, dialogs, app-home surfaces,
+cards other than the welcome, elicitation and approval cards, dialogs, app-home surfaces,
 Google-native commands other than `/help` (§11.4), shared bots, Google identity
 linking, and synchronization of Google membership into Console session permissions are outside the first
 version. An elicitation the card cannot render (URL mode, an over-long option
@@ -524,7 +524,7 @@ Concurrent copies elect one admission in the store transaction; receipts outlive
 turn completion, steering, and inbox removal. Check them before an in-memory dedup
 fast path can settle a delivery: the relay host's `dedupSeen` marks an identity
 on first sight and answers a repeat with 200 before any admission result exists,
-which suits Slack's bounded-loss path and not this one. The Google module uses
+which suits an always-200 path and not this one. The Google module uses
 the host's split pair instead: `dedupPeek(msgId)` before forwarding answers a
 settled repeat with 200 and forwards nothing; after `forwardStrict`,
 `dedupMark(msgId)` marks an `admitted` or `rejected` disposition and never a
@@ -722,14 +722,15 @@ identity, so the transcripts stay inaccessible there. Space sessions follow Agen
 organization visibility; Google Space membership does not become a Console ACL.
 Explain both consequences during setup, especially for restricted Google Spaces.
 
-Permission requests remain in the existing Console queue authorized for agent
-editors. That approval authority is separate from private transcript readership.
-An approval posted as an elicitation card (§5) follows the core rule every chat
-surface shares: a click answers it only when the agent allows runtime changes in
-chat, and otherwise settles the card as editor-only and leaves the decision to
-the Console. No Google message or mention grants approval authority, and an ask
-the card cannot render must never select a permissive fallback. Verify this
-behavior for private DM turns as part of the acceptance checks.
+Permission requests follow the rule every chat surface shares
+([product-conventions.md](../product-conventions.md), "What people can do in chat"):
+where people in chat may approve tool calls, the request is an approval card in the
+turn's thread (integration-plugin-architecture.md §7.3), or an elicitation card (§5)
+for an MCP approval, and a refused click is told in a private message; otherwise it
+goes to the agent's editors in the Console queue. That approval authority is separate
+from private transcript readership. No Google message or mention grants approval
+authority, and an ask the card cannot render must never select a permissive
+fallback. Verify this behavior for private DM turns as part of the acceptance checks.
 
 ## 7. Implementation boundaries
 
@@ -1128,8 +1129,8 @@ not an action: Chat refused a configuration prompt as the answer to a card click
 ("Requesting user authentication isn't allowed as a response to the event type",
 observed live on September 28, 2026, before the app became an add-on), so a click
 could not reach the private prompt. Any message from an unclaimed tenant still
-gets the authorization prompt of §10.4. Replies stay text; the only other card is
-the elicitation card of §5, which builds on the `interaction` path.
+gets the authorization prompt of §10.4. Replies stay text; the only other cards are
+the elicitation card of §5 and the approval card of §6, which build on the `interaction` path.
 
 A claimed customer row and a single-tenant row welcome an add too, in the DM or
 Space it happened in, because Marketplace review expects an app to introduce

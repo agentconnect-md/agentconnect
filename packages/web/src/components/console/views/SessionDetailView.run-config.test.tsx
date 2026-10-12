@@ -55,7 +55,7 @@ const agent = {
   name: 'Ops bot',
   runtime: 'claude',
   model: 'model-b',
-  allowRuntimeChangesInChat: true,
+  chatActions: 'settings',
   status: 'online',
   statusLabel: 'online',
   icon: 'bot',

@@ -20,6 +20,7 @@ import {
 import { CODE_HOST_PROJECTION } from './code-hosts'
 import type {
   AssistantModePolicy,
+  ChatActions,
   DaemonLifecyclePhase,
   McpAppCsp,
   McpAppDimensions,
@@ -601,8 +602,8 @@ export interface Agent {
   assistantMode?: AssistantModePolicy
   /** Runtime permission/approval mode; 'default' means the runtime default. */
   permissionMode: string
-  /** Explicit opt-in for chat-side runtime changes and approval controls. */
-  allowRuntimeChangesInChat: boolean
+  /** What people can do in chat: only talk, also approve tool calls, or also change runtime settings. */
+  chatActions: ChatActions
   /** The agent's OWN variables, in display order. A row here may be inactive while
    *  a same-key organization entry is assigned (shown "Overridden by Organization")
    *  and becomes effective again once that assignment goes away. */
@@ -662,18 +663,10 @@ export interface Agent {
   allowedTargetAgentIds: string[]
   /** #536: when true, the agent introduces itself to peers on a genuine channel join. */
   introduceOnJoin: boolean
-  /** #642: kept in step with `execution` — false only for `host`. */
-  runInSandbox: boolean
-  /** The strategy sessions run in (session-executors.md §5); null ⇒ sandboxed where the backend is not yet reported. */
-  execution?: string | null
-  /** What the placement offers `execution`; null ⇒ it reports no table and the sandbox fields below apply. */
-  strategies?: StrategyTable | null
-  /** #642: whether the placed daemon can provide a sandbox; read only where `strategies` is null. */
-  sandboxSupported: boolean
-  /** #642: whether daemon policy requires a sandbox; read only where `strategies` is null. */
-  sandboxRequired: boolean
-  /** Why the placed daemon cannot provide the sandbox it HAS; supported stays true, since it refuses the session rather than running it unconfined. */
-  sandboxUnavailable?: string | null
+  /** The strategy slug sessions run in (session-executors.md §5), `host` when unconfined. */
+  execution: string
+  /** What the placement offers `execution`, as the Control Plane projected it; host alone for an unplaced agent. */
+  strategies: StrategyTable
   integrations: Integration[]
   /** Distinct kinds of enabled inbound triggers (hooks) — list-view marks. */
   hookKinds?: HookKind[]
@@ -1551,9 +1544,8 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      runInSandbox: false,
-      sandboxSupported: false,
-      sandboxRequired: false,
+      execution: 'host',
+      strategies: { host: { available: true }, srt: { available: true } },
       name: 'agentconnect',
       builtin: true,
       icon: { kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' },
@@ -1569,7 +1561,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: '',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [],
       secretKeys: [],
       organizationVariables: [],
@@ -1604,9 +1596,8 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      runInSandbox: false,
-      sandboxSupported: true,
-      sandboxRequired: false,
+      execution: 'host',
+      strategies: { host: { available: true }, srt: { available: true } },
       name: 'deploy-bot',
       model: 'Claude Sonnet 4.5',
       runtime: 'claude',
@@ -1620,7 +1611,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: 'default',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [
         { k: 'GITHUB_TOKEN', v: 'ghp_••••' },
         { k: 'DEPLOY_ENV', v: 'production' }
@@ -1702,9 +1693,8 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: true,
-      runInSandbox: false,
-      sandboxSupported: true,
-      sandboxRequired: false,
+      execution: 'host',
+      strategies: { host: { available: true }, srt: { available: true } },
       name: 'review-bot',
       model: 'Codex (GPT-5)',
       runtime: 'codex',
@@ -1718,7 +1708,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: 'agent',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [{ k: 'GITHUB_TOKEN', v: 'ghp_••••' }],
       secretKeys: ['OPENAI_API_KEY'],
       organizationVariables: [],
@@ -1783,9 +1773,8 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'selected',
       allowedTargetAgentIds: ['deploy'],
       introduceOnJoin: false,
-      runInSandbox: false,
-      sandboxSupported: true,
-      sandboxRequired: false,
+      execution: 'host',
+      strategies: { host: { available: true }, srt: { available: true } },
       name: 'oncall-bot',
       model: 'Claude Opus 4.1',
       runtime: 'claude',
@@ -1799,7 +1788,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: 'default',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [{ k: 'PAGERDUTY_KEY', v: 'pd_••••' }],
       secretKeys: [],
       organizationVariables: [],
@@ -1851,9 +1840,8 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'selected',
       allowedTargetAgentIds: ['review'],
       introduceOnJoin: false,
-      runInSandbox: false,
-      sandboxSupported: true,
-      sandboxRequired: false,
+      execution: 'host',
+      strategies: { host: { available: true }, srt: { available: true } },
       name: 'docs-bot',
       model: 'opencode',
       runtime: 'opencode',
@@ -1867,7 +1855,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: 'default',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [{ k: 'NOTION_TOKEN', v: 'secret_••••' }],
       secretKeys: ['SLACK_SIGNING_SECRET'],
       organizationVariables: [],
@@ -2317,11 +2305,9 @@ export interface DaemonCaps {
   runtimes: string[]
   acp: boolean
   features: string[]
-  /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, since it refuses such a session rather than running it unconfined. */
-  sandboxUnavailable?: string
   /** What this daemon offers the group's sessions (session-executors.md §10); absent while its executor facet is off. */
   executor?: DaemonExecutor
-  /** Where this daemon's own sessions can run (§5); absent for a daemon that predates the table. */
+  /** Where this daemon's own sessions can run (§5); read as host alone when a daemon reports none. */
   strategies?: StrategyTable
 }
 

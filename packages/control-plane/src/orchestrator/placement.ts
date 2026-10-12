@@ -35,6 +35,7 @@ import type {
   IntegrationBindRule,
   IntegrationSessionMode,
   IntegrationCoreEnvelope,
+  ChatAuthority,
   McpServerSpec,
   MemoryConnectionSpec
 } from '@agentconnect.md/protocol'
@@ -56,7 +57,8 @@ import type {
   BotRecord,
   BotRepo,
   IntegrationChannelRepo,
-  IntegrationChannelRecord
+  IntegrationChannelRecord,
+  SessionRepo
 } from '../persistence/ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import {
@@ -75,6 +77,7 @@ import {
 } from './agentDefinitions.js'
 import { daemonSupportsAgent, encodeAgentSpecForPeer, requiredDaemonFeatures } from '../domain/daemon-features.js'
 import { encodeIntegrationSpecForPeer } from '../domain/decision-trigger-features.js'
+import { pendingExternalConversation } from '../domain/conversation-defaults.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -158,7 +161,11 @@ export function cronToUpsert(c: CronRecord): CronUpsert | null {
         }
       : {}),
     trigger: c.trigger,
-    enabled: c.enabled
+    enabled: c.enabled,
+    // Its runs read as the person who last set what it does, else its creator (assistant-mode.md §5.5).
+    ...((c.lastModifiedBy?.userId ?? c.createdByUserId)
+      ? { askerUserId: c.lastModifiedBy?.userId ?? c.createdByUserId! }
+      : {})
   }
 }
 
@@ -281,6 +288,12 @@ function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): 
   return channels.filter((c) => c.trigger === 'off').map((c) => c.channelId)
 }
 
+/** The muted conversations of an UNGATED integration that still owe the §14.3 notice (§14.9); a gated one's notice needs no list. */
+function pendingChannelIds(channels: IntegrationChannelRecord[], gated: boolean): string[] {
+  if (gated) return []
+  return channels.filter(pendingExternalConversation).map((c) => c.channelId)
+}
+
 /** Sparse per-conversation session modes (channel-session-mode.md §4), sent in both modes; `appendKinds` forces one session per place. */
 function sessionModeEntries(
   channels: IntegrationChannelRecord[],
@@ -306,9 +319,24 @@ function externalChannelIds(channels: IntegrationChannelRecord[]): string[] {
   return channels.filter((c) => c.externalReason).map((c) => c.channelId)
 }
 
+/** Where the projection reads whether the organization syncs a platform's session access; every projection takes one. */
+export type ChatAuthoritySource = Pick<SessionRepo, 'getExternalAccessPolicy'>
+
+/** Who may take chat actions on an integration: its agent's editors while the organization syncs that platform's session access and its provider can match chat members. */
+export async function chatAuthorityOf(
+  platforms: CpPlatformRegistry,
+  source: ChatAuthoritySource,
+  i: Pick<IntegrationRecord, 'orgId' | 'platform'>
+): Promise<ChatAuthority> {
+  if (!platforms.get(i.platform)?.chatMemberTenant) return 'participants'
+  const policy = await source.getExternalAccessPolicy(i.orgId, i.platform)
+  return policy && policy.state !== 'disabled' ? 'editors' : 'participants'
+}
+
 /** The direct-mode {@link IntegrationSpec} (gating and session modes read off `owner`); `null` ⇒ nothing deliverable. Token-bearing: NEVER log. */
 export async function integrationToSpec(
   platforms: CpPlatformRegistry,
+  chatAuthority: ChatAuthoritySource,
   i: IntegrationRecord,
   bot: BotRecord,
   secret: BotSecretMaterial,
@@ -336,14 +364,17 @@ export async function integrationToSpec(
   // the Feishu WSClient). The 'shared' envelope is assembled by
   // {@link httpIntegrationToSpec}; the two differ ONLY in this envelope, which is
   // why the fork stays core and the payload behind it does not.
+  const pendingChannels = pendingChannelIds(channels, gated)
   const core = {
     mode: 'direct' as const,
     bindRules,
     mutedChannels,
+    ...(pendingChannels.length > 0 ? { pendingChannels } : {}),
     gated,
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
-    decisions: decisionBundleOf(channels)
+    decisions: decisionBundleOf(channels),
+    chatAuthority: await chatAuthorityOf(platforms, chatAuthority, i)
   }
   return projectSpec(platforms, i, bot, core, secret)
 }
@@ -351,6 +382,7 @@ export async function integrationToSpec(
 /** A shared bot member's send-only {@link IntegrationSpec}: a gated one's scoped rules and every one's Off channels back the relay at the daemon's last hop (§14.3). Token-bearing: NEVER log. */
 export async function httpIntegrationToSpec(
   platforms: CpPlatformRegistry,
+  chatAuthority: ChatAuthoritySource,
   i: IntegrationRecord,
   bot: BotRecord,
   secret: BotSecretMaterial,
@@ -358,6 +390,7 @@ export async function httpIntegrationToSpec(
   owner?: SpecOwner
 ): Promise<IntegrationSpec | null> {
   const gated = owner ? isGatedAgent(owner) : false
+  const pendingChannels = pendingChannelIds(channels, gated)
   // §6.4 final shape (see integrationToSpec): envelope + opaque config only.
   // The shared-mode payload's remaining inputs — `shareable` (the daemon's
   // in-thread "Switch agent" control), the provider app id, the bot's own user
@@ -370,10 +403,12 @@ export async function httpIntegrationToSpec(
     // Non-gated ships no bind rules by design: the relay route is the candidate and the daemon holds by the bundle.
     bindRules: gated ? gatedBindRules(channels) : [],
     mutedChannels: [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))],
+    ...(pendingChannels.length > 0 ? { pendingChannels } : {}),
     gated,
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
-    decisions: decisionBundleOf(channels)
+    decisions: decisionBundleOf(channels),
+    chatAuthority: await chatAuthorityOf(platforms, chatAuthority, i)
   }
   return projectSpec(platforms, i, bot, httpCore, secret)
 }
@@ -457,6 +492,8 @@ export class Placement implements ReconcileService {
      *  with the route-dep bundle, which does not exist yet when Placement is
      *  constructed); every read happens at reconcile time. */
     private readonly platforms: CpPlatformRegistry,
+    /** Whether each integration's platform has session access sync on, for its chat authority. */
+    private readonly chatAuthority: ChatAuthoritySource,
     orch?: PlacementOrchDeps
   ) {
     this.orch = orch
@@ -548,8 +585,8 @@ export class Placement implements ReconcileService {
           // Both arms await the SAME provider projector; only the envelope differs.
           const owner = ownerById.get(i.agentId)
           return bot.transport === 'http'
-            ? await httpIntegrationToSpec(this.platforms, i, bot, secret, channels, owner)
-            : await integrationToSpec(this.platforms, i, bot, secret, channels, owner)
+            ? await httpIntegrationToSpec(this.platforms, this.chatAuthority, i, bot, secret, channels, owner)
+            : await integrationToSpec(this.platforms, this.chatAuthority, i, bot, secret, channels, owner)
         })
       )
     ])

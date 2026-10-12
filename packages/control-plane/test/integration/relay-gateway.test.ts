@@ -668,6 +668,26 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     daemonWs.close()
   })
 
+  it('rc/verify(webchat-token) names who the user is to the agent: its editor, or the owner who only views it', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
+
+    const editor = await verifyWebchat(base, token.token, 'pod-role-editor')
+    expect(editor.result.participants).toEqual([expect.objectContaining({ agentId: AGENT, callerRole: 'editor' })])
+    // Every dial re-reads the role: once the owner only views the agent, they are still the conversation's owner.
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
+      data: { role: 'viewer' }
+    })
+    const owner = await verifyWebchat(base, token.token, 'pod-role-owner')
+    expect(owner.result.participants).toEqual([expect.objectContaining({ agentId: AGENT, callerRole: 'owner' })])
+    editor.ws.close()
+    owner.ws.close()
+    daemonWs.close()
+  })
+
   // ── multi-agent conversations (webchat-multi-agents.md §3.1 / §6.2) ──
 
   it('POST …/webchat/conversations/token creates a multi-agent roster when every daemon is capable', async () => {
@@ -699,8 +719,8 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     const { ws, result } = await verifyWebchat(base, minted.token, 'pod-multi')
     expect(result.ok).toBe(true)
     expect(result.participants).toEqual([
-      { agentId: AGENT, daemonId: DAEMON, primary: true },
-      { agentId: AGENT_B, daemonId: DAEMON }
+      { agentId: AGENT, daemonId: DAEMON, primary: true, callerRole: 'editor' },
+      { agentId: AGENT_B, daemonId: DAEMON, callerRole: 'editor' }
     ])
     expect(result.remoteMcp).toBeUndefined()
     ws.close()
@@ -727,8 +747,8 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     // rc/verify resolves the same member for both participants.
     const { ws, result } = await verifyWebchat(base, minted.token, 'pod-pool-multi')
     expect(result.participants).toEqual([
-      { agentId: AGENT, daemonId: DAEMON, primary: true },
-      { agentId: AGENT_B, daemonId: DAEMON }
+      { agentId: AGENT, daemonId: DAEMON, primary: true, callerRole: 'editor' },
+      { agentId: AGENT_B, daemonId: DAEMON, callerRole: 'editor' }
     ])
     ws.close()
     memberWs.close()
@@ -810,6 +830,88 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       payload: { agentId: AGENT }
     })
     expect(res.statusCode).toBe(404)
+  })
+
+  // ── member removal (webchat-multi-agents.md §3.1a) ──
+
+  const removeAgent = (app: Awaited<ReturnType<typeof start>>['app'], conversationId: string, agentId: string) =>
+    app.http.inject({
+      method: 'DELETE',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/${conversationId}/agents/${agentId}`
+    })
+
+  it('DELETE …/webchat/conversations/:id/agents/:agentId removes a member (idempotent) and shrinks the verified roster', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base, [WEBCHAT_MULTI_AGENT_FEATURE, WEBCHAT_REMOTE_MCP_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, name: 'agent-b' })
+    const minted = (await app.http
+      .inject({
+        method: 'POST',
+        url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/token`,
+        payload: { agentIds: [AGENT, AGENT_B] }
+      })
+      .then((r) => r.json())) as { token: string; conversationId: string }
+    const before = await verifyWebchat(base, minted.token, 'pod-remove-before')
+    expect(before.result.remoteMcp).toBeUndefined()
+
+    const removed = await removeAgent(app, minted.conversationId, AGENT_B)
+    expect(removed.statusCode).toBe(200)
+    expect((removed.json() as { participants: unknown }).participants).toEqual([{ agentId: AGENT, primary: true }])
+    expect((await removeAgent(app, minted.conversationId, AGENT_B)).statusCode).toBe(200) // idempotent
+    const row = await prisma.webchatConversationAgent.findUnique({
+      where: { conversationId_agentId: { conversationId: minted.conversationId, agentId: AGENT_B } }
+    })
+    expect(row).toMatchObject({ removedByUserId: DEFAULT_OWNER_ID, currentSessionId: null })
+    expect(row?.removedAt).toBeInstanceOf(Date)
+
+    // A reconnect verifies the shrunk roster, and a single participant regains the delegated MCP (§10.3).
+    const resumed = (await mintWebchatToken(app, AGENT, { conversationId: minted.conversationId }).then((r) =>
+      r.json()
+    )) as { token: string }
+    const after = await verifyWebchat(base, resumed.token, 'pod-remove-after')
+    expect(after.result.participants?.map((p) => p.agentId)).toEqual([AGENT])
+    expect(after.result.remoteMcp).toBeDefined()
+    before.ws.close()
+    after.ws.close()
+    daemonWs.close()
+  })
+
+  it('DELETE …/agents/:agentId → 409 for the primary, and a removed member can rejoin at the end', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const AGENT_C = 'c6c6c6c6-cccc-4ccc-8ccc-c6c6c6c6c6c6'
+    const daemonWs = await connectDaemonReady(base, [WEBCHAT_MULTI_AGENT_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, name: 'agent-b' })
+    await seedAgent(prisma, AGENT_C, { daemonId: DAEMON, name: 'agent-c' })
+    const minted = (await app.http
+      .inject({
+        method: 'POST',
+        url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/token`,
+        payload: { agentIds: [AGENT, AGENT_B, AGENT_C] }
+      })
+      .then((r) => r.json())) as { conversationId: string }
+
+    expect((await removeAgent(app, minted.conversationId, AGENT)).statusCode).toBe(409)
+    expect((await removeAgent(app, minted.conversationId, AGENT_B)).statusCode).toBe(200)
+    const rejoin = await app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/${minted.conversationId}/agents`,
+      payload: { agentId: AGENT_B }
+    })
+    expect(rejoin.statusCode).toBe(200)
+    expect((rejoin.json() as { participants: unknown }).participants).toEqual([
+      { agentId: AGENT, primary: true },
+      { agentId: AGENT_C },
+      { agentId: AGENT_B }
+    ])
+    daemonWs.close()
+  })
+
+  it('DELETE …/agents/:agentId → 404 for an unknown or foreign conversation', async () => {
+    const { app } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    await seedAgent(prisma, AGENT)
+    expect((await removeAgent(app, randomUUID(), AGENT)).statusCode).toBe(404)
   })
 
   it('rc/verify(webchat-token) establishes a delegation for any agent when the daemon capability passes', async () => {
@@ -1149,6 +1251,11 @@ describe('webchat session-continuation mint + verify', () => {
       payload: { agentId: AGENT_B }
     })
     expect(join.statusCode).toBe(409)
+    const remove = await app.http.inject({
+      method: 'DELETE',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/${minted.conversationId}/agents/${AGENT}`
+    })
+    expect(remove.statusCode).toBe(409)
 
     relayWs.close()
     daemonWs.close()
@@ -1543,6 +1650,35 @@ describe('rc/verify(agent-chat-key)', () => {
       ok: false,
       reason: AGENT_CHAT_KEY_REFUSAL.agentNotFound
     })
+    ws.close()
+    daemonWs.close()
+  })
+
+  it("lets the key's owner decide its conversation's approvals where people in chat may approve, even one who only views", async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await addApi(AGENT)
+    const chat = await mintKey(app, { permission: 'agent:chat', agents: [AGENT] })
+    const full = await mintKey(app, {})
+    const level = (chatActions: string) =>
+      prisma.agent.update({ where: { id: AGENT }, data: { runtimeOverrides: { chatActions } } })
+    const { ws } = await openRelay(base, 'pod-key-level', 'wss://pod-key-level.example.test')
+
+    await level('talk')
+    expect((await verifyKey(ws, chat, AGENT)).callerApproves).toBe(false)
+    for (const at of ['approve', 'settings']) {
+      await level(at)
+      expect((await verifyKey(ws, chat, AGENT)).callerApproves).toBe(true)
+    }
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
+      data: { role: 'viewer' }
+    })
+    expect((await verifyKey(ws, chat, AGENT)).callerApproves).toBe(true)
+    // At talk a viewer answers nothing, whatever the key.
+    await level('talk')
+    expect((await verifyKey(ws, full, AGENT)).callerApproves).toBe(false)
     ws.close()
     daemonWs.close()
   })

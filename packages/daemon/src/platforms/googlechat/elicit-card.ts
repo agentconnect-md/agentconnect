@@ -27,6 +27,7 @@ import {
   type ElicitSurface,
   type ElicitTarget
 } from '../../slack/render.js'
+import { tellGoogleChatPrivately } from './approval-card.js'
 import type { GoogleChatMessageRef } from './connection.js'
 import type { GoogleChatTurnState } from './turn-output.js'
 
@@ -256,5 +257,10 @@ export const googleChatElicitCards: ElicitCardFacet = {
     const message = (settlement.params as { message?: string }).message?.trim() || 'The agent needs your input'
     const decision = `${GOOGLE_CHAT_ELICIT_MARK[settlement.mark]} ${clampTo(settlement.text, GOOGLE_CHAT_ELICIT_DECISION_CAP)}`
     void conn?.patchCards?.(handle.ts, buildGoogleChatElicitSettled(message, decision)).catch(() => {})
+  },
+
+  /** A refused tap on an approval is told in a message only the tapper and the app see. */
+  tellPrivately(handle: ElicitCardHandle, userId: string, text: string): void {
+    void tellGoogleChatPrivately(handle.conn, handle.channel, handle.thread, userId, text).catch(() => {})
   }
 }

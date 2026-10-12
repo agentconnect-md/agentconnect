@@ -792,7 +792,8 @@ function BotsCard({
                                     rows: channels.map((other) => ({
                                       integrationId: canWrite ? (other.integrationId ?? undefined) : undefined,
                                       row: other.row
-                                    }))
+                                    })),
+                                    assistantMode: ownerAssistant
                                   }
                                 })}
                             </Fragment>

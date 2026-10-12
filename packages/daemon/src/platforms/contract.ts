@@ -47,6 +47,15 @@ export interface InteractionActor {
   isBot?: boolean
   /** Provider-observed display label. Presentation only — never an identity or auth input. */
   name?: string
+  /** The cross-app id a synced platform matches this person to a console account by, where it is not `userId` (Feishu/Lark's union_id). */
+  memberId?: string
+}
+
+/** A refused chat action, said only to whoever acted; `channel`/`thread` locate its session for a surface that answers by posting. */
+export interface ChatRefusal {
+  text: string
+  channel: string
+  thread?: string
 }
 
 /**
@@ -77,6 +86,8 @@ export interface PlatformChannelInfo {
   /** The conversation's short platform handle and the page it opens there (a Linear team). */
   key?: string
   url?: string
+  /** Shared with another organization right now, where the platform declares `sharedConversations` (assistant-mode.md §5.3); null when it is not. */
+  externalReason?: PlaceExternalReason | null
 }
 
 /** A conversation in an enumeration (`listChannels` / `listBotChannels`). */
@@ -324,6 +335,8 @@ export interface PlatformConnection {
   openDirectMessage?(user: string): Promise<string>
   /** Every current member, all pages; only this port, not the capped `listMembers`, may back `authoritativeMembers`. */
   listMemberIds?(channel: string): Promise<string[]>
+  /** Whether a person is a full member of this bot's workspace, not a guest or an outsider; backs `workspaceMembers`, false when unsure. */
+  isFullMember?(user: string): Promise<boolean>
   /** AUTHORITATIVE bot membership, when the platform can enumerate it
    *  (`membershipEnumeration: 'authoritative'`). `null` ⇒ not answerable now. */
   listBotChannels?(): Promise<PlatformChannelRef[] | null>
@@ -409,4 +422,6 @@ export interface DaemonPlatformModule {
   readonly platformId: string
   /** Absent ⇒ the shared relay `im` path, byte for byte. */
   readonly relayIngress?: RelayIngressStrategy
+  /** The id a synced organization matches this platform's chat member to a console account by; undefined refuses the action. Absent ⇒ the actor's `userId`. */
+  chatMemberKey?(actor: InteractionActor): string | undefined
 }

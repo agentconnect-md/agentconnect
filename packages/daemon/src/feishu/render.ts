@@ -101,6 +101,14 @@ function cardInlineRow(
   }
 }
 
+/** The target a card callback names so the relay routes it to this integration on a shared app; none without one. Pure. */
+export function feishuCardTarget(
+  agentId: string,
+  integrationId: string | undefined
+): WireFeishuCardActionTarget | undefined {
+  return integrationId ? { v: 1, agentId, integrationId } : undefined
+}
+
 /** Initial CardKit 2.0 reply card. `streaming_mode` makes element updates render
  * incrementally in clients that support CardKit streaming. */
 export function buildStreamingReplyCard(

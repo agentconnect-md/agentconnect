@@ -10,6 +10,7 @@ import type {
   WireFeishuCardActionTarget
 } from '@agentconnect.md/protocol'
 import { parseFeishuElicit } from '../platforms/feishu/elicit-card.js'
+import { parseFeishuApproval } from '../platforms/feishu/approval-card.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
@@ -117,8 +118,19 @@ export interface FeishuDeps {
   /** Fired when a user selects Cancel run from an active reply card's overflow menu.
    * The connection resolves the callback message id to the turn's local session key. */
   onStatusAction?: (a: { kind: 'cancel'; sessionKey: string; actor?: InteractionActor }) => void
-  /** A tapped elicitation option, or Dismiss (`token` null) — §7.3. */
-  onElicitChoice?: (a: { requestId: string; token: string | null; actor?: InteractionActor }) => Promise<void>
+  /** A tapped elicitation option, or Dismiss (`token` null) — §7.3; a refusal only the tapper is told comes back. */
+  onElicitChoice?: (a: {
+    requestId: string
+    token: string | null
+    actor?: InteractionActor
+  }) => Promise<string | undefined>
+  /** A clicked permission-card option, by position; a refusal only the clicker is told comes back. */
+  onApprovalChoice?: (a: {
+    requestId: string
+    option: number
+    ts?: string
+    actor?: InteractionActor
+  }) => Promise<string | undefined>
   /** One submitted elicitation form: every named control's value, as CardKit reports them. */
   onElicitSubmit?: (a: {
     requestId: string
@@ -129,6 +141,14 @@ export interface FeishuDeps {
   log?: Logger
   /** Min spacing (ms) between outbound writes (serialized send-queue). Tests pass 0. */
   sendIntervalMs?: number
+}
+
+/** Who clicked a card: the app-scoped open_id they act under, their union_id a synced organization matches them by, and their name. */
+function cardActor(event: WireFeishuCardActionEvent, actorId: string | undefined): InteractionActor | undefined {
+  if (!actorId) return undefined
+  const unionId = event.operator?.union_id
+  const name = event.operator?.name?.trim()
+  return { userId: actorId, ...(unionId ? { memberId: unionId } : {}), ...(name ? { name } : {}) }
 }
 
 /** The raw `card.action.trigger` body delivered by the Lark WSClient. CardKit v2
@@ -202,10 +222,14 @@ export interface FeishuApi {
   /** im.message.create/reply (msg_type 'image') for an already-hosted `image_key`. */
   createImage(chatId: string, imageKey: string): Promise<{ messageId?: string }>
   replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string }>
-  /** im.chat.get. */
-  getChat(chatId: string): Promise<{ id: string; name?: string; chatMode?: string }>
+  /** im.chat.get; `chatType` is `public` or `private`, and `external` a chat shared with another tenant. */
+  getChat(
+    chatId: string
+  ): Promise<{ id: string; name?: string; chatMode?: string; chatType?: string; external?: boolean }>
   /** im.chatMembers.get (capped). */
   listChatMembers(chatId: string, cap: number): Promise<{ id: string; name?: string; isBot?: boolean }[]>
+  /** One page of im.chatMembers.get by union_id, the id a message sender carries. */
+  listChatMemberUnionIds?(chatId: string, pageToken?: string): Promise<{ ids: string[]; nextPageToken?: string }>
   /** im.chat.list (capped). */
   listChats(cap: number): Promise<{ id: string; name?: string }[]>
   /** contact.user.get. */
@@ -244,7 +268,9 @@ export interface FeishuClientHandle {
    * interactions. Resolves once the first handshake succeeds. */
   startWs(
     onEvent: (event: FeishuRawEvent) => void,
-    onCardAction: (event: FeishuRawCardActionEvent) => FeishuCardActionResponse | undefined
+    onCardAction: (
+      event: FeishuRawCardActionEvent
+    ) => FeishuCardActionResponse | undefined | Promise<FeishuCardActionResponse | undefined>
   ): Promise<void>
   /** Close the WSClient (there is NO WSClient.stop()). */
   close(): void
@@ -410,10 +436,16 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
     },
     async getChat(chatId) {
       const res = (await client.im.chat.get({ path: { chat_id: chatId } })) as {
-        data?: { name?: string; chat_mode?: string }
+        data?: { name?: string; chat_mode?: string; chat_type?: string; external?: boolean }
       }
       const d = res?.data ?? {}
-      return { id: chatId, ...(d.name ? { name: d.name } : {}), ...(d.chat_mode ? { chatMode: d.chat_mode } : {}) }
+      return {
+        id: chatId,
+        ...(d.name ? { name: d.name } : {}),
+        ...(d.chat_mode ? { chatMode: d.chat_mode } : {}),
+        ...(d.chat_type ? { chatType: d.chat_type } : {}),
+        ...(typeof d.external === 'boolean' ? { external: d.external } : {})
+      }
     },
     async listChatMembers(chatId, cap) {
       const res = (await client.im.chatMembers.get({
@@ -423,6 +455,22 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
       return (res?.data?.items ?? [])
         .slice(0, cap)
         .map((i) => ({ id: i.member_id ?? '', ...(i.name ? { name: i.name } : {}) }))
+    },
+    async listChatMemberUnionIds(chatId, pageToken) {
+      const res = assertApiSuccess(
+        (await client.im.chatMembers.get({
+          path: { chat_id: chatId },
+          params: { member_id_type: 'union_id', page_size: 100, ...(pageToken ? { page_token: pageToken } : {}) }
+        })) as {
+          code?: number
+          msg?: string
+          data?: { items?: { member_id?: string }[]; has_more?: boolean; page_token?: string }
+        },
+        'im.chatMembers.get'
+      )
+      const ids = (res.data?.items ?? []).flatMap((i) => (i.member_id ? [i.member_id] : []))
+      const next = res.data?.has_more === true ? res.data.page_token : undefined
+      return { ids, ...(next ? { nextPageToken: next } : {}) }
     },
     async listChats(cap) {
       const res = (await client.im.chat.list({ params: { page_size: cap } })) as {
@@ -493,6 +541,8 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 /** Cap on channels/members enumerated per read call (bounds the response). */
 const CHANNEL_CAP = 200
 const MEMBER_CAP = 50
+/** Pages of 100 a full member listing may take before it is given up as unfinished. */
+const MEMBER_ID_PAGES = 100
 const FEISHU_CHANNEL_HISTORY_DEFAULT_LIMIT = 50
 const FEISHU_CHANNEL_HISTORY_MAX_LIMIT = 50
 const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
@@ -764,16 +814,27 @@ export class FeishuConnection implements PlatformConnection {
   /** Resolve an active reply's overflow selection and acknowledge it within Lark's
    * callback deadline. The daemon owns the actual cancellation and resulting card
    * lifecycle; removing the mapping first makes redelivered clicks idempotent. */
-  handleCardAction(event: FeishuRawCardActionEvent): FeishuCardActionResponse | undefined {
+  async handleCardAction(event: FeishuRawCardActionEvent): Promise<FeishuCardActionResponse | undefined> {
     const messageId = event.context?.open_message_id ?? event.open_message_id
     const channel = event.context?.open_chat_id ?? event.open_chat_id
     const actorId = event.operator?.open_id ?? event.operator?.user_id
     const value = asRecord(event.action?.value)
+    // A permission card carries its request in its own payload too; a refusal is answered in the toast only the clicker sees.
+    const approval = parseFeishuApproval(value)
+    if (approval) {
+      const actor = cardActor(event, actorId)
+      const refusal = await this.deps.onApprovalChoice?.({
+        ...approval,
+        ...(messageId ? { ts: messageId } : {}),
+        ...(actor ? { actor } : {})
+      })
+      return refusal ? { toast: { type: 'warning', content: refusal } } : undefined
+    }
     // An elicitation card carries the request in its OWN payload, so it needs no message-to-session
     // registry and is matched before the session-control card below. Anyone who can see it may
     // answer it, which is the same rule its buttons follow on every other surface.
     const elicit = parseFeishuElicit(value)
-    if (elicit) return this.onElicitCardAction(event, elicit, actorId)
+    if (elicit) return await this.onElicitCardAction(event, elicit, actorId)
     if (
       !messageId ||
       !actorId ||
@@ -797,12 +858,12 @@ export class FeishuConnection implements PlatformConnection {
   /** Route one interaction on an elicitation card: a Confirm carries every named control at once
    *  in `form_value`, and every other control is a whole answer in itself. The toast is what tells
    *  the reader the tap landed — a CardKit callback that answers nothing shows them nothing. */
-  private onElicitCardAction(
+  private async onElicitCardAction(
     event: FeishuRawCardActionEvent,
     elicit: { requestId: string; token: string | null },
     actorId?: string
-  ): FeishuCardActionResponse | undefined {
-    const actor: InteractionActor | undefined = actorId ? { userId: actorId } : undefined
+  ): Promise<FeishuCardActionResponse | undefined> {
+    const actor = cardActor(event, actorId)
     const form = event.action?.form_value
     if (form && this.deps.onElicitSubmit) {
       const values: Record<string, string | string[]> = {}
@@ -816,8 +877,13 @@ export class FeishuConnection implements PlatformConnection {
       return undefined
     }
     if (!this.deps.onElicitChoice) return undefined
-    void this.deps.onElicitChoice({ requestId: elicit.requestId, token: elicit.token, ...(actor ? { actor } : {}) })
-    return undefined
+    const refusal = await this.deps.onElicitChoice({
+      requestId: elicit.requestId,
+      token: elicit.token,
+      ...(actor ? { actor } : {})
+    })
+    // Only the tapper sees a toast, and the card stays as everyone else sees it.
+    return refusal ? { toast: { type: 'warning', content: refusal } } : undefined
   }
 
   /** Send one chunk: reply INTO the topic thread when `anchor` is a message id (the
@@ -1349,8 +1415,8 @@ export class FeishuConnection implements PlatformConnection {
         id: channel,
         ...(c.name ? { name: c.name } : {}),
         isIm: c.chatMode === 'p2p',
-        // A chat's visibility isn't reported cheaply here; treat as non-private best-effort.
-        isPrivate: false
+        // Only a public group of this tenant is public; a chat whose type was not reported stays undetermined.
+        ...(c.chatType ? { isPrivate: c.chatType !== 'public' || c.external === true } : {})
       }
     } catch (err) {
       this.rememberPermissionIssue(err, channel)
@@ -1367,6 +1433,24 @@ export class FeishuConnection implements PlatformConnection {
       this.deps.log?.debug(`feishu: listMembers failed (ch=${channel}): ${(err as Error).message}`)
       return []
     }
+  }
+
+  /** Every member's union_id, all pages; a repeated page token is a failure, never a short answer. */
+  async listMemberIds(channel: string): Promise<string[]> {
+    const list = this.handle.api.listChatMemberUnionIds
+    if (!list) throw new Error('feishu: no member listing on this client')
+    const ids: string[] = []
+    const seen = new Set<string>()
+    let token: string | undefined
+    for (let page = 0; page < MEMBER_ID_PAGES; page += 1) {
+      const res = await list.call(this.handle.api, channel, token)
+      ids.push(...res.ids)
+      if (!res.nextPageToken) return ids
+      if (seen.has(res.nextPageToken)) break
+      seen.add(res.nextPageToken)
+      token = res.nextPageToken
+    }
+    throw new Error('feishu: the member listing did not finish')
   }
 
   async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {

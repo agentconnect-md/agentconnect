@@ -29,6 +29,18 @@ function harness(grants: Array<Record<string, unknown>>, opts: Record<string, un
 const agent = { id: 'agent-a', runtime: 'claude' }
 
 describe('daemon model-key session lifecycle', () => {
+  it('keeps Cloud credentials when an agent retains a self-hosted provider selection', async () => {
+    const h = harness([{ keyId: 'key-1', key: 'cloud-secret', requestedAtMs: 1_000 }])
+    const selected = { ...agent, modelProvider: 'anthropic' }
+    const requestProviderCredentials = vi.fn()
+    h.daemon.cpClient = { requestProviderCredentials }
+    expect(await h.daemon.requestModelProviderCredential(selected)).toBeUndefined()
+    expect(requestProviderCredentials).not.toHaveBeenCalled()
+    await h.daemon.modelSessions.ensure(selected, 'session-a')
+    expect(h.issue).toHaveBeenCalledOnce()
+    await h.daemon.modelSessions.release('session-a')
+  })
+
   it('restores the pinned Decision model into both provider selection and host startup', async () => {
     const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
     const configured = {
@@ -195,7 +207,7 @@ describe('daemon model-key session lifecycle', () => {
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'openai/gpt-5', env: [], secrets: [] }
     }
     h.daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
@@ -206,7 +218,7 @@ describe('daemon model-key session lifecycle', () => {
     expect(h.issue).toHaveBeenCalledWith(expect.objectContaining({ provider: 'anthropic' }))
 
     // Live SDK work: the switch is recorded, but the running host keeps its binding.
-    h.daemon.store.getSession = () => ({ agentId: 'agent-a', acpSessionId: 'acp-1' })
+    h.daemon.store.getSession = () => ({ agentId: 'agent-a', platform: 'webchat', acpSessionId: 'acp-1' })
     h.daemon.sdkLease.set(sdkLeaseKey(sessionHostKey('agent-a', 'session-a'), 'acp-1'), {
       agentId: 'agent-a',
       tasks: new Map([['task-1', {}]]),
@@ -243,13 +255,16 @@ describe('daemon model-key session lifecycle', () => {
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'openai/gpt-5', env: [], secrets: [] }
     }
     daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
     daemon.agents.set('agent-a', opencodeAgent)
     const setModelOverride = vi.fn()
-    daemon.store = { getSession: () => ({ agentId: 'agent-a', acpSessionId: null }), setModelOverride }
+    daemon.store = {
+      getSession: () => ({ agentId: 'agent-a', platform: 'webchat', acpSessionId: null }),
+      setModelOverride
+    }
 
     expect(await daemon.commands.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(false)
     expect(setModelOverride).not.toHaveBeenCalled()
@@ -265,13 +280,16 @@ describe('daemon model-key session lifecycle', () => {
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'openai/gpt-5', env: [], secrets: [] }
     }
     daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
     daemon.agents.set('agent-a', opencodeAgent)
     const setModelOverride = vi.fn()
-    daemon.store = { getSession: () => ({ agentId: 'agent-a', acpSessionId: null }), setModelOverride }
+    daemon.store = {
+      getSession: () => ({ agentId: 'agent-a', platform: 'webchat', acpSessionId: null }),
+      setModelOverride
+    }
 
     // Without injected provider credentials, the runtime owns authentication and switching.
     expect(await daemon.commands.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(true)

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  AgentModelProvider,
   AgentAdditionalInstallation,
   AgentApiGateProjections,
   AgentDecisionIds,
@@ -7,6 +8,7 @@ import {
   AgentRepositorySelector,
   AgentMemoryBinding,
   AssistantModePolicy,
+  ChatActions,
   HookRoutingProjection,
   CompatibleAgentSkillEntry,
   IntegrationCoreEnvelope,
@@ -157,6 +159,7 @@ export const AgentSchema = z.object({
   // System-prompt seed + runtime knobs. Settable in a local agent.json or supplied
   // in memory by the CP (agent/upsert + register/ok roster).
   description: z.string().optional(),
+  modelProvider: AgentModelProvider.optional(),
   reasoningEffort: z.string().optional(),
   executionMode: z.string().optional(),
   // Runtime fast mode (ACP `model_config` toggle, claude/codex). Absent ⇒ leave
@@ -166,10 +169,8 @@ export const AgentSchema = z.object({
   // runtime-owned strings: claude-acp uses default/acceptEdits/auto/dontAsk/plan,
   // codex-acp uses read-only/agent/agent-full-access.
   permissionMode: z.string().default('default'),
-  // Conversation participants are not authorization principals by default.
-  // Editors may explicitly opt this agent back into chat-side runtime setting
-  // changes (model, effort, permission mode, fast mode) and approval controls.
-  allowRuntimeChangesInChat: z.boolean().default(false),
+  // What people can do in chat; absent ⇒ only talk, so neither in-chat approval cards nor runtime changes.
+  chatActions: ChatActions.default('talk'),
   runtimeOverrides: z
     .object({
       model: z.string().optional(),
@@ -219,13 +220,11 @@ export const AgentSchema = z.object({
   // off — the daemon seeds each integration's channel baseline silently, so only
   // channels joined AFTER the baseline (never a restart/re-list) trigger an intro.
   introduceOnJoin: z.boolean().default(false),
-  // The legacy sandbox request, read only while `execution` is absent (session-executors.md §5).
-  runInSandbox: z.boolean().default(false),
-  // The strategy this agent's sessions run in (§5); absent ⇒ the Control Plane has not migrated it, and `runInSandbox` decides.
+  // The strategy this agent's sessions run in (session-executors.md §5); absent ⇒ `host`, the direct child.
   execution: z
     .string()
     .regex(/^[a-z][a-z0-9-]{0,31}$/)
-    .optional(),
+    .default('host'),
   // Org built-in preset marker (preset-agents.md §3.1), replicated from the CP via
   // AgentSpec.builtin. Gates preset-only behavior locally — including attaching
   // `agentconnect-admin` when the CP supplies a webchat entitlement. Never set by

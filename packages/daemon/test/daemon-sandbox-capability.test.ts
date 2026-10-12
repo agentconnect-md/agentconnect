@@ -33,7 +33,7 @@ function scaffold(config: Record<string, unknown> = {}, agent: Record<string, un
       status: 'active',
       runtime: 'arbitrary-acp',
       builtin: true,
-      runInSandbox: true,
+      execution: 'srt',
       workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
       integrations: [],
       output: { mode: 'medium' },
@@ -137,7 +137,7 @@ describe('the strategy table a daemon reports for its own sessions', () => {
         srt: { available: false, reason: 'this host has no supported SRT mechanism' },
         microsandbox: { available: false, reason: NO_KVM }
       })
-      expect(registers({ strategies: daemon.strategyTable(), sandboxBackend: 'srt' })).toBe(true)
+      expect(registers({ strategies: daemon.strategyTable() })).toBe(true)
     } finally {
       await stop()
     }
@@ -204,55 +204,21 @@ describe('the strategy table a daemon reports for its own sessions', () => {
     await daemon.stop().catch(() => {})
   })
 
-  it('reads the retiring keys once, with a warning, as the default table', async () => {
-    const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    const { daemon, stop } = await boot({
-      root: scaffold({ sandbox: { backend: 'microsandbox' }, security: { requireSandbox: true } }),
-      srt: true
-    })
-    try {
-      const lines = stderr.mock.calls.map(([line]) => String(line))
-      expect(lines.some((line) => line.includes('sandbox.backend is retired'))).toBe(true)
-      expect(
-        lines.some((line) => line.includes('security.requireSandbox is retired and read as sandbox.host: false'))
-      ).toBe(true)
-      expect(daemon.strategyTable().host).toEqual({ available: false, reason: 'sandbox.host is off on this daemon' })
-      expect(daemon.strategyTable().srt).toEqual({ available: true })
-      // Kept only as what the Control Plane migrates `runInSandbox` from.
-      expect(daemon.cfg.sandbox.backend).toBe('microsandbox')
-      expect(daemon.registrationFeatures()).toEqual(expect.arrayContaining(['sandbox', 'sandbox-required']))
-    } finally {
-      stderr.mockRestore()
-      await stop()
+  it('refuses to start on a retired key, naming its replacement (#2463)', async () => {
+    const start = async (config: Record<string, unknown>) => {
+      const daemon = new Daemon({ root: scaffold(config), sandboxMechanism: 'bwrap', microsandboxHost: () => NO_KVM })
+      try {
+        await daemon.start()
+      } finally {
+        await daemon.stop().catch(() => {})
+      }
     }
-  })
-})
-
-describe('the sandbox a daemon reports to a console without the strategy picker', () => {
-  it('claims the capability only where a sandboxing strategy can run', async () => {
-    const confined = await boot({ srt: true })
-    try {
-      expect(confined.daemon.registrationFeatures()).toContain('sandbox')
-      expect(confined.daemon.sandboxUnavailableReason()).toBeUndefined()
-    } finally {
-      await confined.stop()
-    }
-  })
-
-  it('says why every offered sandbox is out, bounded to fit the register frame', async () => {
-    const { daemon, stop } = await boot()
-    try {
-      daemon.microsandboxFailure = `boom ${'x'.repeat(4000)}\n    at Object.run (/opt/daemon/dist/index.js:1:1)`
-      const unavailable: string = daemon.sandboxUnavailableReason()
-      expect(daemon.registrationFeatures()).not.toContain('sandbox')
-      expect(unavailable).toContain('srt: this host has no supported SRT mechanism; microsandbox: boom')
-      expect(unavailable.length).toBeLessThanOrEqual(500)
-      // Stack frames are log material, not console material.
-      expect(unavailable).not.toContain('at Object.run')
-      expect(registers({ features: daemon.registrationFeatures(), sandboxUnavailable: unavailable })).toBe(true)
-    } finally {
-      await stop()
-    }
+    await expect(start({ sandbox: { backend: 'microsandbox' } })).rejects.toThrow(
+      'sandbox.backend is no longer supported'
+    )
+    await expect(start({ security: { requireSandbox: true } })).rejects.toThrow(
+      'security.requireSandbox is no longer supported: set "sandbox": { "host": false } instead'
+    )
   })
 })
 
@@ -280,16 +246,15 @@ describe('a session in a strategy this machine cannot run', () => {
   }
 
   it('is refused with the probe’s reason instead of running unconfined', async () => {
-    const error = await launch({ runInSandbox: false, execution: 'srt' })
+    const error = await launch({ execution: 'srt' })
     expect(error?.message).toBe(
       `agent "${AGENT_ID}" runs its sessions in the srt strategy, which this daemon cannot run: this host has no supported SRT mechanism`
     )
   })
 
-  it('reads an unmigrated agent’s runInSandbox, and refuses it the same way', async () => {
-    expect((await launch({ runInSandbox: true }))?.message).toContain(
-      'in the srt strategy, which this daemon cannot run'
-    )
+  it('reads an agent that names no strategy as host, and ignores the retired runInSandbox boolean (#2463)', async () => {
+    expect(await launch({ execution: undefined })).toBeUndefined()
+    expect(await launch({ execution: undefined, runInSandbox: true })).toBeUndefined()
   })
 
   it('refuses a host session where host is withdrawn, and a strategy this daemon has never heard of', async () => {
@@ -300,7 +265,7 @@ describe('a session in a strategy this machine cannot run', () => {
   })
 
   it('launches a host session where host is offered', async () => {
-    expect(await launch({ runInSandbox: false, execution: 'host' })).toBeUndefined()
+    expect(await launch({ execution: 'host' })).toBeUndefined()
   })
 })
 

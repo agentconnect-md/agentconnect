@@ -8,7 +8,9 @@ import { z } from 'zod'
 import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
+  AgentModelProvider,
   AgentDecisionIds,
+  ChatActions,
   AssistantModeAdmission,
   AssistantModePolicy,
   AgentModelSelection,
@@ -124,8 +126,6 @@ export const DaemonCapabilitiesDto = z.object({
   runtimes: z.array(z.string()),
   acp: z.boolean(),
   features: z.array(z.string()),
-  /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, because it refuses launches rather than running them unconfined. */
-  sandboxUnavailable: z.string().optional(),
   /** What this daemon offers the group's sessions (session-executors.md §10); absent while its executor facet is off. */
   executor: DaemonExecutorDto.optional(),
   /** Where this daemon's own sessions can run (§5), which the agent's `execution` is checked against; absent for a daemon that predates it. */
@@ -697,17 +697,17 @@ export const CreateAgentBody = z.object({
   description: z.string().optional(),
   runtime: z.string().min(1),
   model: z.string().optional(),
+  modelProvider: AgentModelProvider.optional(),
   reasoningEffort: z.string().min(1).optional(),
   outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(), // platform output verbosity ('none' = session-only)
   showFooter: z.boolean().optional(), // attribution/session footer (absent ⇒ default true)
   showStatusBar: z.boolean().optional(), // persistent Slack session status row (absent ⇒ default false)
   fastMode: z.boolean().optional(), // runtime fast mode toggle
   permissionMode: z.string().min(1).optional(), // runtime permission/approval mode
-  allowRuntimeChangesInChat: z.boolean().optional(), // explicit opt-in; absent ⇒ false
+  chatActions: ChatActions.optional(), // what people can do in chat; absent ⇒ 'approve'
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-  runInSandbox: z.boolean().optional(), // #642: request an OS sandbox (absent ⇒ default false)
-  // The strategy sessions run in (session-executors.md §5), checked against the placement's tables; runInSandbox follows it, and a request naming both must agree.
+  // The strategy sessions run in (session-executors.md §5), checked against the placement's table; absent ⇒ host where it runs, else the first available sandbox.
   execution: ExecutorStrategyName.optional(),
   env: AgentEnvBody.optional(),
   secrets: AgentSecretsCreateBody.optional(), // write-only secret env vars (values never returned)
@@ -755,17 +755,17 @@ export const UpdateAgentBody = z
     runtime: z.string().min(1).optional(),
     capabilities: z.array(z.string()).optional(),
     model: z.string().nullable().optional(),
+    modelProvider: AgentModelProvider.nullable().optional(),
     reasoningEffort: z.string().min(1).nullable().optional(),
     outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).nullable().optional(),
     showFooter: z.boolean().optional(),
     showStatusBar: z.boolean().optional(),
     fastMode: z.boolean().nullable().optional(),
     permissionMode: z.string().min(1).nullable().optional(),
-    allowRuntimeChangesInChat: z.boolean().optional(),
+    chatActions: ChatActions.optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-    runInSandbox: z.boolean().optional(), // #642: request an OS sandbox for this agent
-    execution: ExecutorStrategyName.optional(), // the strategy sessions run in; runInSandbox follows it
+    execution: ExecutorStrategyName.optional(), // the strategy sessions run in, checked against the placement's table
     // Same-repository capability widening only. Workspace identity/conversion
     // stays on the dedicated cold action, and downgrades are deliberately not
     // exposed here because enabled review hooks may depend on write access.
@@ -861,13 +861,14 @@ export const AgentDto = z.object({
    *  the console renders "—" and choosing a runtime happens at placement. */
   runtime: z.string().nullable(),
   model: z.string().nullable(),
+  modelProvider: AgentModelProvider.nullable().optional(),
   reasoningEffort: z.string().nullable(),
   outputMode: z.string().nullable(),
   showFooter: z.boolean(),
   showStatusBar: z.boolean(),
   fastMode: z.boolean().nullable(), // null ⇒ never set (runtime default)
   permissionMode: z.string().nullable(), // null ⇒ never set (runtime default)
-  allowRuntimeChangesInChat: z.boolean(),
+  chatActions: ChatActions,
   pause: z.boolean().nullable(), // null ⇒ not paused (#288)
   // The agent's OWN variables. Unchanged meaning: a row here may be inactive while
   // a same-key organization entry is assigned (the console marks it "Overridden by
@@ -925,17 +926,10 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
-  runInSandbox: z.boolean(), // #642: persisted per-agent sandbox preference (default false)
-  // The strategy sessions run in; null ⇒ sandboxed on a daemon that has not yet reported which sandbox it runs.
-  execution: ExecutorStrategyName.nullable(),
-  // What the placement offers `execution`: its daemon's table, or for a group what one ready member offers; null ⇒ none reported, the sandbox fields below apply.
-  strategies: StrategyTableDto.nullable(),
-  // #642: whether the placed daemon can provide a sandbox; the console reads it only where `strategies` is null.
-  sandboxSupported: z.boolean(),
-  // #642: daemon policy forces the effective value true and makes it immutable.
-  sandboxRequired: z.boolean(),
-  // Why the placed daemon cannot provide the sandbox it HAS; supported stays true, because such a session is refused, not run unconfined.
-  sandboxUnavailable: z.string().nullable(),
+  // The strategy sessions run in (session-executors.md §5).
+  execution: ExecutorStrategyName,
+  // What the placement offers `execution`: its daemon's table, or for a group what one ready member offers; only `host` for an unplaced agent.
+  strategies: StrategyTableDto,
   // Distinct kinds of ENABLED inbound triggers on this agent — one mark per kind in the
   // list's integrations cell, without an org-wide hook list existing anywhere.
   hookKinds: z.array(z.enum(HOOK_KINDS))
@@ -3411,13 +3405,11 @@ export const SessionDetailDto = z.object({
   continuationUnavailableReason: z
     .enum(['unauthorized', 'content_purged', 'unsupported_platform', 'agent_moved', 'daemon_offline', 'unavailable'])
     .nullable(),
+  /** Whether THIS caller owns this webchat conversation, whatever their role: what people can do in chat at the agent's level is theirs here. Server-computed. */
+  ownsConversation: z.boolean(),
   accessSyncDegraded: z.boolean(),
   accessIssues: z.array(SessionAccessIssueDto).optional(),
-  /** Multi-agent webchat conversation roster, in pick order (webchat-multi-agents.md
-   *  §3.1). Adopted/refreshed sessions have no live relay socket to deliver the
-   *  verified roster, so the composer and header read it from here. Null for
-   *  single-agent conversations and for every other platform; `name` is null only
-   *  when the Agent no longer has a resolvable display record. */
+  /** Live multi-agent webchat roster in pick order (§3.1), also kept when removals shrank it to one (§3.1a); null otherwise, and `name` is null only for an unresolvable Agent. */
   participants: z
     .array(z.object({ agentId: z.string(), name: z.string().nullable(), primary: z.boolean() }))
     .nullable(),

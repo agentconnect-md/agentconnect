@@ -1,12 +1,20 @@
 import { z } from 'zod'
 
-export const ProviderKeyProvider = z.enum(['typesafe', 'openrouter', 'cloudflare', 'openai'])
+export const ProviderKeyProvider = z.enum(['typesafe', 'openrouter', 'cloudflare', 'openai', 'anthropic'])
 export type ProviderKeyProvider = z.infer<typeof ProviderKeyProvider>
+
+export const AGENT_MODEL_PROVIDER_FEATURE = 'agent-model-provider-v1'
+export const AGENT_MODEL_PROVIDER_AUTO_FEATURE = 'agent-model-provider-auto-v1'
+export const AgentModelKeyProvider = ProviderKeyProvider.extract(['anthropic', 'openai'])
+export type AgentModelKeyProvider = z.infer<typeof AgentModelKeyProvider>
+export const AgentModelProvider = z.enum([...AgentModelKeyProvider.options, 'auto'])
+export type AgentModelProvider = z.infer<typeof AgentModelProvider>
 
 export const PROVIDER_KEY_PROFILES: Record<
   ProviderKeyProvider,
   { name: string; defaultEndpoint: string | null; endpointRequired: boolean }
 > = {
+  anthropic: { name: 'Anthropic (Claude)', defaultEndpoint: 'https://api.anthropic.com', endpointRequired: false },
   openai: { name: 'OpenAI', defaultEndpoint: 'https://api.openai.com/v1', endpointRequired: false },
   typesafe: { name: 'TypeSafe (Jev)', defaultEndpoint: 'https://api.typesafe.ai', endpointRequired: false },
   openrouter: { name: 'OpenRouter', defaultEndpoint: 'https://openrouter.ai/api/v1', endpointRequired: false },

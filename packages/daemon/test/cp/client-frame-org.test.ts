@@ -13,6 +13,8 @@ const DAEMON_ID = '22222222-2222-4222-8222-222222222222'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const UNKNOWN_AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9'
 const CRON = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1'
+const INTEGRATION = 'dddddddd-dddd-4ddd-8ddd-ddddddddddd1'
+const UNKNOWN_INTEGRATION = 'dddddddd-dddd-4ddd-8ddd-ddddddddddd9'
 const ORG_A = 'org-a'
 const ORG_B = 'org-b'
 
@@ -38,6 +40,7 @@ async function ready(mode: 'frame' | 'connection') {
     activeSessions: () => 0,
     orgForAgent: (agentId: string) => (agentId === AGENT ? ORG_A : undefined),
     orgForCron: (cronId: string) => (cronId === CRON ? ORG_A : undefined),
+    orgForIntegration: (integrationId: string) => (integrationId === INTEGRATION ? ORG_A : undefined),
     configApply: {
       applyConfigPush() {},
       applyReconcileSnapshot() {},
@@ -170,6 +173,18 @@ describe('frame mode: outbound frames', () => {
     // The claim names an agent this member knows, and still carries no org: duty frames are install-wide.
     expect(sent(t).find((f) => f.type === 'duty/claim')).toMatchObject({ payload: { agentId: AGENT } })
     expect(sent(t).find((f) => f.type === 'duty/claim')?.orgId).toBeUndefined()
+  })
+
+  it('scopes a Linear token renewal by the org of the integration it names', async () => {
+    const { client, t } = await ready('frame')
+    void client.requestLinearCred({ integrationId: INTEGRATION }).catch(() => {})
+    await tick()
+    expect(sent(t).find((f) => f.type === 'linearcred/request')?.orgId).toBe(ORG_A)
+    const before = sent(t).length
+    await expect(client.requestLinearCred({ integrationId: UNKNOWN_INTEGRATION })).rejects.toMatchObject({
+      code: 'SCOPE_DENIED'
+    })
+    expect(sent(t).length).toBe(before)
   })
 })
 

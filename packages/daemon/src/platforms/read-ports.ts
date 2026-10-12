@@ -118,13 +118,16 @@ export interface PlatformReadPorts {
   readonly conversationCreate?: boolean
   /** `scheduleMessage`: the platform accepts a message for later delivery. */
   readonly scheduledMessages?: boolean
-  /** Cross-conversation reach is PUBLIC-ONLY: the connection enters any public channel on
-   *  demand, so `getChannelHistory`, `getThreadHistory` and `sendMessage` may name one — while
-   *  a private channel, DM or group DM is reachable only as the session's own conversation
-   *  (`mcp/ops/channel-reach.ts`). */
+  /** `sendMessage` reaches PUBLIC channels only beyond the session's own conversation, entering one on demand (`mcp/ops/channel-reach.ts`). */
   readonly publicChannelReach?: boolean
   /** `listMemberIds` names every current member of a conversation, so a person's membership may be decided from it. */
   readonly authoritativeMembers?: boolean
+  /** `getChannelInfo`'s `isPrivate` is the platform's own answer, so a channel it reports not private is confirmed public. */
+  readonly channelPrivacy?: boolean
+  /** `isFullMember` tells a full member of the bot's workspace from a guest or someone from another organization. */
+  readonly workspaceMembers?: boolean
+  /** `getChannelInfo` says whether a conversation is shared with another organization now (`externalReason`). */
+  readonly sharedConversations?: boolean
   /** `createCanvas` / `readCanvas` / `updateCanvas`: a platform-hosted rich-text page. */
   readonly canvas?: boolean
   /** `listBookmarks` / `addBookmark` / `removeBookmark`: the platform pins links in a channel. */
@@ -167,6 +170,9 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       publicMessageSearch: true,
       publicChannelReach: true,
       authoritativeMembers: true,
+      channelPrivacy: true,
+      workspaceMembers: true,
+      sharedConversations: true,
       scheduledMessages: true,
       canvas: true,
       bookmarks: true,
@@ -180,6 +186,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       platform: 'telegram',
       label: 'Telegram',
       messageDelete: true,
+      channelPrivacy: true,
       attachmentReadTool: TELEGRAM_ATTACHMENT_TOOL
     }
   ],
@@ -196,7 +203,8 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
     {
       platform: 'discord',
       label: 'Discord',
-      channelHistory: true
+      channelHistory: true,
+      channelPrivacy: true
     }
   ],
   [
@@ -204,7 +212,9 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
     {
       platform: 'feishu',
       label: 'Lark / Feishu',
-      channelHistory: true
+      channelHistory: true,
+      authoritativeMembers: true,
+      channelPrivacy: true
     }
   ],
   [
@@ -260,8 +270,7 @@ export function directMessagePlatformFor(sessionPlatform: string): string {
   return sessionPlatform
 }
 
-/** Does `platform` confine what a tool may reach beyond the session's own conversation to
- *  PUBLIC channels? Undeclared ⇒ no gate: the bot reaches whatever it is already in. */
+/** Does `platform` confine what `sendMessage` reaches beyond the session's own conversation to public channels? Undeclared ⇒ no gate. */
 export function reachesPublicChannelsOnly(platform: string): boolean {
   return READ_PORTS.get(platform)?.publicChannelReach === true
 }
@@ -269,6 +278,21 @@ export function reachesPublicChannelsOnly(platform: string): boolean {
 /** Does `platform`'s member listing name every current member? Undeclared ⇒ no, so membership is never decided from it. */
 export function membersAuthoritative(platform: string): boolean {
   return READ_PORTS.get(platform)?.authoritativeMembers === true
+}
+
+/** Does `platform` confirm a public channel by its own `isPrivate`? Undeclared ⇒ no channel there is confirmed public. */
+export function reportsChannelPrivacy(platform: string): boolean {
+  return READ_PORTS.get(platform)?.channelPrivacy === true
+}
+
+/** Can `platform` tell a full member of a workspace from a guest or an outsider? Undeclared ⇒ it cannot tell. */
+export function tellsWorkspaceMembers(platform: string): boolean {
+  return READ_PORTS.get(platform)?.workspaceMembers === true
+}
+
+/** Does `platform`'s channel lookup report a share with another organization? Undeclared ⇒ no, so enabled means trusted there. */
+export function reportsSharedConversations(platform: string): boolean {
+  return READ_PORTS.get(platform)?.sharedConversations === true
 }
 
 /** The DM-capable platforms, rendered for an error message ("Slack",

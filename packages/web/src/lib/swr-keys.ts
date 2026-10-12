@@ -143,6 +143,9 @@ export const consoleKeys = {
     consoleKey(orgId, 'gitlab-accounts', bindings),
   agentPermissionRequests: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-permission-requests', agentId) : null,
+  /** One webchat conversation's requests, as its owner reads them. */
+  sessionPermissionRequests: (orgId: string | null | undefined, sessionId: string) =>
+    consoleKey(orgId, 'session-permission-requests', sessionId),
   /** The assistant-mode Activity view's sections, each its own read so a collapsed one costs nothing. */
   assistantItems: (orgId: string | null | undefined, agentId: string, section: 'open' | 'closed') =>
     consoleKey(orgId, 'assistant-items', agentId, section),
@@ -152,6 +155,9 @@ export const consoleKeys = {
     consoleKey(orgId, 'assistant-subsessions', agentId),
   assistantDrafts: (orgId: string | null | undefined, agentId: string) =>
     consoleKey(orgId, 'assistant-drafts', agentId),
+  /** One webchat conversation's proposals, for its pending-requests strip. */
+  assistantConversationProposals: (orgId: string | null | undefined, agentId: string, sessionId: string) =>
+    consoleKey(orgId, 'assistant-conversation-proposals', agentId, sessionId),
   assistantGrants: (orgId: string | null | undefined, agentId: string) =>
     consoleKey(orgId, 'assistant-grants', agentId),
   /** The org's sessions waiting on an approval — the bell's feed (slack-approval-dm.md §7). */

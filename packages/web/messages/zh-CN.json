@@ -12,10 +12,24 @@
       "waiting": "{label} 正等待你的操作",
       "show": "查看"
     },
-    "runtimeChat": {
-      "label": "允许在聊天中更改",
-      "enabled": "聊天用户可以更改 Runtime 设置并回答审批请求。",
-      "disabled": "只有 Agent 编辑者可以管理 Runtime 设置；聊天用户不能更改设置或回答审批请求。"
+    "modelProvider": {
+      "label": "凭据",
+      "daemon": "Daemon 本机凭据",
+      "saved": "使用已保存的凭据（Beta）"
+    },
+    "chatActions": {
+      "label": "聊天中可以做什么",
+      "title": "“人”指：权限已和控制台同步的平台上是 agent 的编辑者，其他平台上是会话里的任何人。Webchat 始终按控制台权限。",
+      "option": {
+        "talk": "和 agent 对话",
+        "approve": "对话并批准工具调用",
+        "settings": "对话、批准并修改设置"
+      },
+      "optionTitle": {
+        "talk": "需要批准的工具调用交给 agent 的编辑者，在控制台或各自的私信里处理。",
+        "approve": "回答权限策略询问的工具调用：允许一次、始终允许该工具，或拒绝。",
+        "settings": "还能在聊天里修改模型、推理强度、权限模式和快速模式。"
+      }
     },
     "executionStrategy": {
       "label": "执行策略",
@@ -35,7 +49,6 @@
       "unavailable": "不可用",
       "noneAvailable": "没有可用的执行策略",
       "refusal": {
-        "sandboxRequired": "此 Daemon 要求使用沙箱。",
         "notOffered": "当前位置不提供此策略。"
       }
     },
@@ -636,6 +649,7 @@
       "addPhotos": "添加图片",
       "participant": "参与者",
       "addAgents": "添加 Agent",
+      "removeParticipant": "将 {agent} 移出此对话",
       "searchAgents": "搜索 Agent…",
       "model": "模型",
       "defaultModel": "默认",
@@ -2551,12 +2565,14 @@
         "retained": "你已无法查看此 Decision，现有规则会保留。选择其他 Decision 可替换规则。",
         "rule": "规则 {index}",
         "removeRule": "删除规则 {index}",
-        "ruleModel": "规则 {index} 的 Provider 和模型",
+        "ruleModel": "规则 {index} 的模型",
         "addRule": "添加规则",
         "invalidRules": "请检查条件：每个答案只能分配一次，Score 区间不能重叠，且至少保留一条规则。",
-        "missingModel": "请为每条规则和兜底配置选择可用的运行时与模型。",
+        "missingModel": "请为每条规则和兜底配置选择可用的模型。",
+        "savedModelUnavailable": "请选择已在 Providers 中配置 key 的模型。",
         "fallback": "没有规则匹配，或评估不可用时使用。",
-        "providerModel": "Provider · 模型",
+        "providerModel": "模型",
+        "providerModelTitle": "每个新会话启动时使用的 runtime 和模型，以及它的推理强度、权限模式和快速模式。",
         "chooseDecision": "选择 Decision",
         "nextDecision": "继续判断下一个 Decision",
         "editNext": "编辑下一步 Decision：{name}",
@@ -2572,7 +2588,7 @@
         "yes": "是",
         "no": "否",
         "answer": "规则 {index} 的答案",
-        "answerModel": "答案为 {answer} 时的 Provider 和模型",
+        "answerModel": "答案为 {answer} 时的模型",
         "useFallback": "答案为 {answer} 时使用兜底配置",
         "probability": "规则 {index} 的概率",
         "intervalStart": "规则 {index} 的区间起点",
@@ -2580,7 +2596,7 @@
         "choiceHelp": "达到阈值的答案中，概率最高者优先；相同概率按规则顺序。",
         "intervalHelp": "每个答案只能分配一次，评分区间不能重叠。",
         "reorder": "调整规则 {index} 的顺序：拖动，或使用方向键",
-        "fallbackTitle": "兜底 Provider 和模型",
+        "fallbackTitle": "兜底模型",
         "sample": {
           "title": "试用样例",
           "badge": "示例数据",
@@ -2601,7 +2617,7 @@
           "fallback": "兜底",
           "notNeeded": "无需使用",
           "continued": "规则匹配",
-          "fallbackUsed": "使用兜底 Provider 和模型",
+          "fallbackUsed": "使用兜底模型",
           "startsOn": "Session 将使用",
           "booleanResult": "{value} · true 的概率为 {probability}%",
           "text4": "评估暂时不可用",
@@ -2652,6 +2668,7 @@
         "lowerLatency": "更低延迟",
         "imageBinaryMissing": "镜像中未安装此运行时",
         "readOnly": "当前聊天不允许修改 Runtime。",
+        "readOnlyOwner": "只有 Agent 的编辑者或此对话的所有者可以修改 Runtime。",
         "model": "模型",
         "decision": "Decision",
         "fallback": "兜底",
@@ -2737,8 +2754,6 @@
         "title": "Runtime",
         "permissionMode": "权限模式",
         "fastMode": "快速模式",
-        "changeInChat": "允许在聊天中更改 Runtime",
-        "allowed": "允许",
         "paused": "已暂停",
         "outputMode": "输出模式",
         "showFooter": "显示页脚",
@@ -3144,6 +3159,7 @@
           "approver": "审批人：{name}",
           "expires": "{time} 过期",
           "noApprover": "无人可审批",
+          "inConversation": "可以继续该对话的人",
           "approve": "批准",
           "approveAlways": "批准，并始终允许从这里发到那里",
           "discard": "丢弃",
@@ -3169,19 +3185,24 @@
           "proposal": {
             "badge": "提议",
             "why": "原因：{why}",
+            "details": "原因和任务",
             "item": "事项：{title}",
             "runsIn": "在 {place} 中执行",
             "deny": "拒绝",
             "approveConfirm": "现在执行这项任务？结果会回报到 {place}。",
+            "approveConfirmHere": "现在执行这项任务？结果会回报到此对话。",
             "denyConfirm": "拒绝这项提议？不会执行任何操作。",
+            "dismiss": "关闭",
             "outcome": {
               "executing": "已批准，正在后台执行，完成后回报到 {place}。",
+              "executingHere": "已批准，正在后台执行，完成后回报到此对话。",
               "succeeded": "已批准，已执行并回报到 {place}。",
               "denied": "已拒绝，没有执行任何操作。",
               "failed": "无法执行：{reason}。没有执行任何操作。",
               "outcome_unknown": "不确定是否已执行，请查看 {place}；不会再次执行。",
               "expired": "已过期，没有执行任何操作。",
-              "unconfirmedGone": "无法确认是否已处理，它已不在等待批准。请查看 {place}，可能已经开始执行。"
+              "unconfirmedGone": "无法确认是否已处理，它已不在等待批准。请查看 {place}，可能已经开始执行。",
+              "unconfirmedHere": "无法确认是否已处理，它已不在等待批准，可能已经开始执行。"
             }
           }
         },

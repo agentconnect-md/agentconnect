@@ -52,6 +52,89 @@ This convention governs human Console access only. The independently configured
 agent-to-agent inbound and outbound policies may intentionally use **Selected**
 with an empty peer list to deny peer discovery or calls.
 
+## What people can do in chat
+
+People choose how they use the product, and no choice may make it harder to use than it
+must be. The product serves the experience first, and applies console permissions only where
+it can tell who someone is.
+
+Each agent has one setting, **What people can do in chat**. Each level includes the one
+before it:
+
+| Level                                                   | People in a conversation may                                                                                                                                     |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Talk to the agent**                                   | Talk to the agent. A tool call that needs approval goes to the agent's editors, in the console or, where the platform supports it, in their own direct messages. |
+| **Talk and approve tool calls** (a new agent's default) | Also answer a tool call that the agent's permission policy asks about: allow it once, always allow that tool, or deny it.                                        |
+| **Talk, approve and change settings**                   | Also change the agent's runtime settings from chat: model, effort, permission mode and fast mode.                                                                |
+
+Who counts as "people" depends on whether the product can tell who someone is:
+
+- **A platform whose permissions are synced with the console** (Slack or Feishu/Lark with the
+  organization's session access sync on): only people whose console permissions allow the
+  action, that is, the agent's editors, recognized by the account they linked under Sign-in
+  methods in their console Profile: their Slack account in the app's workspace, or their
+  Feishu/Lark account in the app's region. Anyone else, a guest or an editor who has not linked
+  included, is refused privately, and the card stays as it is. A refused approval says only an
+  Agent editor can answer it, and someone linked to no console account is told how to link one;
+  it gives no console link, since the console shows that conversation only to the same people. A
+  refused settings change also says where in the console an editor changes them, and tells
+  someone linked to no console account how to link one. Where people may approve tool calls, a
+  permission request's card also goes to an Agent editor in a direct message unless the person
+  who asked is one, so a request never waits on a conversation with no editor in it; the first
+  answer decides. Today that direct message is sent through the agent's Slack integration: on
+  Feishu/Lark, an agent without one leaves the request to an editor in the conversation or in the
+  console. When who someone is cannot be checked, because the Control Plane cannot
+  be reached, the agent has more than 200 editors, or a Feishu/Lark click does not say who made
+  it, the action is refused, and a refused approval says to try again in a moment. Switching the
+  sync changes who may act from then on; settings already changed from chat stay.
+- **A platform without that sync**: anyone who can talk to the agent in that conversation.
+- **Webchat** always knows who someone is: the agent's editors, and at the second and third
+  levels also the conversation's owner, even one whose role only lets them view. The owner
+  answers the conversation's approvals, its background sub-sessions' included, among its pending
+  requests above the composer. Anyone else who tries to change a setting there is told, on their
+  own screen only, who may. A conversation started through the agent's chat API belongs to the
+  API key's owner.
+
+Every level keeps these rules:
+
+- The setting never opens what a conversation keeps closed. A conversation switched off, or
+  admitted per message by a Decision, stays closed, and a bot never answers. A closed
+  conversation gets what the first level gives it, and a card posted before it closed decides
+  nothing.
+- In a conversation shared with another organization, an approval goes to an internal member
+  instead, as an assistant-mode draft does: where people may approve tool calls, the person who
+  asked, in their own direct message, when they are a full member of the installing workspace;
+  otherwise the agent's editors. Where permissions are synced it goes to an Agent editor's
+  direct message, the person who asked first when they are one.
+- Slack, Telegram, Discord, Feishu/Lark and Google Chat post the approval card in the
+  conversation the request came from: in its thread, its Telegram topic or reply chain, or at
+  its top level when it is one long conversation. The card offers the runtime's own choices,
+  "always allow" included where offered; a list longer than any card can show is declined with a
+  notice, and nothing is allowed. Where no card is posted, the conversation gets a notice and the
+  approval is answered in the console. QQ has no approval card, because its message buttons need
+  a grant from QQ that a bot cannot count on: its conversation gets the notice, in a group only
+  while QQ still allows a reply beside the answer, and its approvals are answered in the console.
+- The first answer from any surface decides, and the request is rewritten to say who answered
+  and how.
+- A refusal names who can answer instead, or where to go. A refused click or tap is told only to
+  the person who made it, and leaves the card as everyone else sees it: on Slack and Discord in a
+  message only they see, on Telegram in an alert on the tap, on Feishu/Lark in a toast on the
+  click, and on Google Chat in a private message.
+- The setting does not change the agent's permission policy. Which tool calls need approval is
+  set in the console, and an agent that allows every tool call never asks.
+
+Two things are outside this setting:
+
+- An assistant-mode patrol's proposal. Approving it is the same as asking the agent there, so
+  whoever could ask there may approve it ("Assistant-mode proposals").
+- Stopping a turn or a sub-session, which follows the `!stop` sender rule.
+
+Existing agents start where a new one does. An agent that had "Allow runtime changes in chat"
+switched off, or never set, moves to the second level, and one that had it switched on moves to
+the third. On a platform whose permissions are synced, both levels narrow who may act to the
+agent's editors, as the rule above says. An agent that should take no answers from chat, such as
+one in a public group, is set to the first level.
+
 ## Public platform app descriptions
 
 Slack, Feishu/Lark, and Discord app or bot profiles use the fixed public description
@@ -663,6 +746,12 @@ had no way to know it was private. A channel switched Off says nothing at all: a
 operator already decided, and pointing the room at an admin would be both wrong and
 noise. Off is silence; the gate is a closed door with a sign on it.
 
+A place the platform marks as shared outside the organization (a Slack Connect channel)
+starts Off for every agent, because "Everyone" means the organization
+([resource-visibility.md](designs/resource-visibility.md) §14.9, with the detection in
+[assistant-mode.md](designs/assistant-mode.md) §5.3). Nobody chose that Off, so it is the
+closed door with a sign, not silence, until an editor picks a trigger for the row.
+
 ## Leaving a conversation and removing its row
 
 Three different things can end a conversation, and the Console must not blur them:
@@ -798,7 +887,8 @@ routing fence, not merely display state.
 Visibility determines the initial state, not whether the control exists:
 
 - An **Everyone** agent's newly observed 1:1 DM starts **On**, preserving the normal
-  open-DM behavior while making it explicitly reversible.
+  open-DM behavior while making it explicitly reversible, unless the platform marks it
+  external, which starts it Off.
 - A **Restricted** agent's newly observed 1:1 DM starts **Off** and remains unroutable
   until a Console editor enables it.
 
@@ -810,6 +900,11 @@ integration still removes only its own listing.
 Switching Everyone → Restricted closes every known direct row before the gated routing
 configuration is pushed. Switching back keeps the stored choices; the rows stay visible
 and configurable.
+
+Who sees a DM's session in the console follows the same test as "What people can do in
+chat": where the platform's permissions are synced with the console, only the person in
+the DM; elsewhere, every member of the organization, so the session never goes unseen.
+That person can still make it private once the console recognizes them.
 
 ## Group direct messages
 
@@ -846,9 +941,23 @@ a channel cannot reset a later operator choice.
 
 An agent in assistant mode answers only where an editor enabled it, whatever its
 visibility: its conversations are gated exactly like a Restricted agent's. Turning the
-mode on resets nothing — every conversation already enabled, DMs included, stays enabled
+mode on resets no conversation — every conversation already enabled, DMs included, stays enabled
 — and new conversations start Off. Switching it off restores the agent's ordinary
-defaults.
+defaults. The console's `assistant-mode` flag decides only whether the mode can be switched on: an
+agent already in assistant mode keeps the switch, so it can be switched off, and keeps its Activity
+tab, Sub-sessions tab and proposals in the console whatever the flag says.
+
+Turning the mode on also sets the agent's permission mode, so background work nobody is watching
+does not stop to wait for approval: a mode that asks for approval or only reads, or no mode at
+all, becomes the runtime's auto mode (Claude Code's Auto, Codex's Auto review), or its full-access
+mode where the runtime has no auto mode. An auto or full-access mode, Claude Code's Don't ask, and
+a mode chosen in the same edit are kept, and a runtime with neither keeps its mode. This happens
+whether the mode is turned on in the console or through the API, and the agent's permission mode
+row shows the result with no extra text. It is a default, not a requirement: an editor may pick
+another mode afterwards and it stays while the mode is on. With Manual chosen, the assistant mode
+panel warns that background work will often wait for approval; while the switch is being turned
+on, it warns only when the runtime keeps the mode. Turning the mode off leaves the permission mode
+as it is.
 
 Each enabled place keeps one long session while the mode is on: every room, and a 1:1 DM
 on a platform whose DMs otherwise open a session per message. A conversation gated By
@@ -864,35 +973,82 @@ one at a time: a decision's Apply to all reaches only the rooms already enabled.
 is the same wherever a room is enabled, including a decision started from the organization's
 Bots list.
 
-A room or group DM is external when the platform says people from outside the organization
-are in it. On Slack that is a Slack Connect conversation, read from the membership listing and
-from every event Slack delivers from the conversation, or a guest or a member of another
-organization joining it, found with one user lookup per join. The lookup is made only for an
-agent in assistant mode; no other agent changes. A share is lifted once Slack no longer
+A room or group DM is external when the platform says people from outside the organization are
+in it. On Slack that is a Slack Connect conversation, read from the membership listing and from
+every event Slack delivers from the conversation, or a guest or a member of another organization
+joining it, found with one user lookup per join. Before posting something no message from the
+conversation prompted, such as a scheduled run and its opening message, a report from background
+work, a reminder, a post allowed from another conversation or an approval card, the agent asks
+Slack whether the conversation is shared now, at most once a minute per conversation; when Slack
+cannot answer, the post waits for approval as in an external place. These lookups are made only
+for an agent in assistant mode; no other agent changes. A share is lifted once Slack no longer
 reports it; a guest or an outside member never is. When an enabled place turns external, the
-reply already in progress there is stopped before it can post; messages waiting behind it, and
-everything the agent knows, are kept. Enabling a 1:1 DM trusts the person in it, so a DM never
-turns external.
+reply already in progress there is stopped before it can post; messages waiting behind it or
+arriving while it stops, and everything the agent knows, are kept, and those messages are then
+answered as drafts. Only that place is affected: the agent's other conversations keep running
+and keep taking messages. Enabling a 1:1 DM trusts the person in it, so a DM never turns
+external.
 
-## Assistant-mode recall in a person's own DM
+## Reading other conversations
 
-An agent in assistant mode reads a private channel or group DM only from that conversation,
-with one exception: a person's own 1:1 DM with the agent. There, on a turn the person started with
-their own message, the agent may read a private channel or group DM the person is a member of
-right now, when it is named. The agent's list of places it can recall never shows one, so only
-an actual read restricts the conversation. The conversation must be on the same platform and
-workspace as the DM, on a platform whose member list is complete (Slack). Membership is checked when the read happens and
-trusted for at most a minute. When it cannot be confirmed, the answer is the same "I can't share
-that here" as for any other private place. Reports from sub-sessions, scheduled runs, patrols and
-every other conversation keep the ordinary rule. Another person's DM is never readable.
+Every agent, in assistant mode or not, reads another conversation (its history, a thread in it,
+its reactions or bookmarks, or its own transcript there through `recall`) only when the person
+asking may see that conversation. The product checks access; whether to bring the content into the
+current conversation is that person's call. The conversation the agent is answering in is always
+readable.
 
-Once a DM conversation has read a private place this way, it writes only to that DM: it changes
-no item, sends nothing to any agent, itself included, and posts or drafts nothing anywhere else.
-This holds for every later turn of that conversation and across restarts. When it refuses, the
-agent tells the person that starting a new conversation with `!new` lifts it. `!new` lifts it only
-for a conversation that does not read the DM's earlier history back: recalling the DM, or reading
-its history or a thread in it, while an earlier conversation there was restricted restricts the
-reader too.
+**On the asker's own platform and bot**, the platform decides:
+
+- a public channel, for a full member of that workspace or tenant. A guest, or a member of another
+  organization, reads only conversations they are in. Where the platform cannot tell a guest from a
+  full member, a channel it confirms public is readable;
+- a private channel or group DM, for its current members, by the platform's own member list, looked
+  up when the read happens and trusted for at most a minute;
+- the asker's own 1:1 DM with the agent. Another person's DM never.
+
+**Anywhere else** (another platform, another of the agent's bots, or any read for a console user),
+only what the console itself would show that person: they must be known as a console user, through
+the chat account they linked under Sign-in methods in their console Profile (a webchat or console
+user already is), and the console must show them the agent's sessions in that conversation. A Slack
+member linked to an organization member therefore reads a Telegram or Discord group, whose sessions
+every member sees while that platform's session access sync is off. Someone on a platform the
+console cannot match reads nothing beyond their own platform and bot. A webchat conversation and a
+DM on any platform stay readable only by their owner, even where the console shows them to every
+member.
+
+**Who is asking:**
+
+- the sender of the turn's message, by their platform identity, with no console link needed for
+  their own platform and bot. When a turn takes in messages from several people, every one of them
+  must have access;
+- in webchat or a console continuation, the console user;
+- in a sub-session, the person whose turn opened it (a restart forgets them, and it then reads as
+  no one); in a patrol, or a task approved from a proposal, the person who asked for the item; in a
+  scheduled run, the console user who last edited the schedule, else the one who created it;
+- no one, for a scheduled run that records no person, a hook run, a sub-session's report, and an
+  agent's message to another agent. Such a turn reads only its own conversation and the public
+  channels its own bot confirms. A hook or a schedule anchored to a conversation reads that
+  conversation as its own.
+
+**What each platform can tell:** Slack all of the above; Feishu/Lark membership (by union_id) and
+public groups, but not a guest from a full member; Discord a guild channel that `@everyone` can
+view, and nothing per member; Telegram, which has no history reads, a group with a public
+@username, for `recall`; Google Chat nothing.
+
+A refused read answers "I can't share that here." and never says whether the conversation exists.
+Someone who linked no console account is also told that reading a conversation on another platform
+or bot needs their account linked under Sign-in methods in their console Profile. Content from a
+private channel, a group DM, a DM or a webchat conversation comes with a note naming it, and the
+agent says where it came from in one short clause when it uses it; the note never blocks anything.
+`recall` lists only public conversations the person may read; a private one is read by name.
+
+In assistant mode, once a person's 1:1 DM or webchat conversation has read a private channel or group
+DM, that conversation writes only to itself: it changes no item, sends nothing to any agent, itself
+included, and posts or drafts nothing anywhere else. This holds for every later turn of that
+conversation and across restarts. When it refuses, the agent tells the person that starting a new
+conversation with `!new` lifts it. `!new` lifts it only for a conversation that does not read the
+DM's earlier history back: recalling the DM, or reading its history or a thread in it, while an
+earlier conversation there was restricted restricts the reader too.
 
 ## Assistant-mode drafts
 
@@ -902,7 +1058,8 @@ of post wait for an internal member's approval instead:
 - **A reply in an external place.** In a conversation the platform reports as shared with
   another organization (a Slack Connect channel), the reply is drafted, not posted. The
   conversation sees no working indicator, no streaming and no tool progress: only a reaction
-  on the message that started the turn, where the platform has reactions, and never text.
+  on the message that started the turn, where the platform has reactions, and never text. A
+  scheduled run's opening message there is drafted too.
   Other platform writes there are refused; reads are unchanged.
 - **A post to another place.** `sendMessage` to another channel, a direct message, or a thread
   elsewhere is drafted instead of sent, and only to a conversation where the agent is enabled;
@@ -935,8 +1092,8 @@ mode is switched off. A card shown before assistant mode was switched off or on 
 even when clicked later. Whether a post needs approval follows from its target, never from the
 model's judgment.
 
-Runtime permission requests in an external place take the editor path: no card or notice
-appears in the conversation, and the approval DM goes to an agent editor. Draft cards are
+Runtime permission requests in an external place get no card or notice in the conversation; who
+is asked instead is in "What people can do in chat". Draft cards are
 delivered on Slack; when no member or conversation can be reached the draft is kept until it
 expires, nothing is sent, and for a post it attempted the agent is told so.
 
@@ -983,17 +1140,25 @@ background sub-session of its own: `sendMessage` with its own agent id and no `c
 Ordinary conversation stays in the main conversation. The main conversation says the work
 has started; the sub-session runs in a session of its own, never the conversation's long
 session; none of its replies is posted anywhere, and it reports back into the conversation
-that opened it when it finishes or fails, which then speaks for it. It takes that
+that opened it when it finishes or fails, which then speaks for it. One that stops without
+reporting is reported as ended, at the latest about ten minutes after nothing is left running for
+it, and then no longer counts toward the agent's concurrent sub-sessions. It takes that
 conversation's visibility and owner, and its visibility cannot be changed on its own;
 making the main conversation private still makes it private. A sub-session cannot open
 sub-sessions of its own. Only the assistant-mode agent is told about this form; for every
 other agent, and for every other form, a postless self-call is refused as before.
 
-While the console's `assistant-mode` flag is on, the session page of a conversation that
-opened sub-sessions has a Sub-sessions tab in its side panel; no other conversation shows it.
+Reports follow the language of the people in the conversation they report to. The conversation
+tells a sub-session which language they use; a patrol or an approved task, which sees none of
+their messages, goes by its item's title and summary. The conversation then answers them in their
+language whatever language a report arrived in. Fixed text on cards is not translated.
+
+The session page of a conversation that opened sub-sessions has a Sub-sessions tab in its side
+panel; no other conversation shows it.
 It lists the sub-sessions that conversation opened, newest first and a page at a time, each
 with its state and start. A title and a link to its own session appear only to someone who may
-view that session, as in the Activity view. Whoever may continue a running sub-session's
+view that session, as in the Activity view. A delegated sub-session is titled by its task, as its
+cards name it, until its runtime gives it a title. Whoever may continue a running sub-session's
 session may stop it there: Stop interrupts its current turn as the composer's stop does,
 mutes nothing and undoes nothing it already did, and a process its runtime started in the
 background may keep running. The sub-session then reports to the conversation that it ended,
@@ -1003,22 +1168,41 @@ transcript with no composer and no composer stop, since nothing sent from there 
 sub-session. An agent whose daemon cannot list one conversation's sub-sessions says to upgrade
 it.
 
+A person can also ask the conversation that opened a sub-session to stop it, on any platform:
+"stop the one writing the release notes". The agent asks which one is meant only when that is not
+clear, then stops it the way the console's Stop does, with the same answer: stopped, or nothing
+was running, and that a process it started in the background may keep running. Its transcript
+names the person who asked. Only that conversation can stop it, only on a turn a person there
+started, and only for someone `!stop` accepts there; in webchat, anyone who may continue the
+conversation. A sub-session of another conversation is refused in the same words as one that
+does not exist. A sub-session, patrol, approved task, hook or scheduled run cannot stop one. The
+agent is reminded which sub-sessions its conversation has running, by id and label, and the
+reminder is refreshed on the next turn after one starts or ends. An agent outside assistant mode
+has no such tool and no such reminder.
+
 ## Assistant-mode sub-session permission requests
 
 When a background sub-session needs permission to run a tool, whether delegated or an approved
 proposal's task, the request goes to the conversation the work belongs to, and the sub-session
 waits; its turn is not cancelled. A patrol never asks.
 
-- In a Slack conversation where "allow runtime changes in chat" is on, an approval card is posted
-  there, in the conversation's thread or at its top level when it is one long conversation, and
-  anyone there may answer it. The card says a background sub-session is asking, names and links
-  it, and offers the runtime's own choices, "always allow" included where offered.
-- Where that setting is off, the conversation gets a notice that the sub-session is waiting, and an
+- In a Slack, Telegram, Discord, Feishu/Lark or Google Chat conversation where "What people can
+  do in chat" includes approving tool calls, an approval card is posted there, where its reports
+  land: in the conversation's thread (on Telegram its topic or reply chain), or at its top level
+  when it is one long conversation. Anyone there may answer it; where permissions are synced
+  (Slack, Feishu/Lark), only an Agent editor, and an editor also gets it in a direct message
+  through the agent's Slack integration, when it has one. The card says a background sub-session is asking, names and links it, and offers the
+  runtime's own choices, "always allow" included where offered.
+- Where it does not, or the conversation is closed (switched off, admitted per message by a
+  Decision, or routed), the conversation gets a notice that the sub-session is waiting, and an
   Agent editor gets the request in a direct message, as for any other request.
+- A QQ conversation, which has no approval card, gets neither: an Agent editor answers the
+  request in the console or in a direct message.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
   marked as from a background sub-session.
 - A conversation shared with another organization gets no card. It goes to the agent's
-  responsible user in a direct message, or to its fallback conversation, as drafts do.
+  responsible user in a direct message, or to its fallback conversation, as drafts do; where
+  permissions are synced, only an Agent editor answers the card there.
 - Editors can also answer it on the sub-session's own page and in the Activity view.
 
 The first answer from any of these places decides it, and the other cards show that decision. If
@@ -1064,11 +1248,30 @@ A patrol that finds something worth doing asks for approval with `propose`: one 
 as "rebase PR #12 onto main and push". A patrol proposes at most once and runs nothing itself; no
 other session and no agent outside assistant mode is offered `propose`.
 
-The proposal is carded like a draft with no asker: to the agent's responsible user in a direct
-message, otherwise its fallback conversation, and an editor may decide it from the Activity view,
-including one no one could be reached for. The card leads with the sentence, shows the reason and
-the task, and offers Approve and Deny; there is no "always allow". A proposal expires after 24 hours
-and never runs afterwards, and a denied one never runs.
+The proposal is carded in the Slack conversation the item was taken in, where that conversation's
+replies land: its top level when it is one long conversation, else its thread. Whoever could ask
+the agent there may approve it: in a direct message, that person; in a channel, anyone whose own
+message would start a turn of the agent there; never a bot. A click from anyone else does nothing.
+Approving grants nothing that typing the request there would not: the task runs with the agent's
+own permissions, and its permission requests follow "Assistant-mode sub-session permission
+requests". "What people can do in chat" makes no difference to proposals. A conversation shared
+with another organization, one gated By decision, one the card definitely could not be posted in,
+and conversations on other platforms get the card where drafts go instead: the agent's responsible
+user in a direct message, otherwise its fallback conversation. A post that timed out may still land,
+so it is never sent a second time elsewhere. In a webchat conversation, the live Playground
+included, there is no card: the proposal waits among the conversation's pending requests above the
+composer, and is not sent to the responsible user. Whoever may continue that conversation may
+approve or deny it there after a confirmation, and so may the agent's editors, who also find it in
+the conversation's Requests popover. The row leads with the sentence, folds the reason and the task,
+and shows the item and when it expires; once decided it says what happened until dismissed. An
+editor may decide any proposal from the Activity view, including one no one could be reached for,
+and the first answer decides it.
+
+The card leads with the sentence, shows the reason and the task, and offers Approve and Deny; there
+is no "always allow". Once decided it is rewritten in place: approved by whom and running, denied by
+whom, or expired with nothing run, and later how the task ended. A card a restart left unedited is
+rewritten when its integration reconnects. A proposal expires after 24 hours and never runs
+afterwards, and a denied one never runs.
 
 Approval runs the task once, in a background sub-session of the conversation the item was taken in,
 under that conversation's long session, with the agent's own permissions rather than a patrol's
@@ -1100,12 +1303,21 @@ reply there (see "Assistant-mode drafts"). Background sessions, patrols and webc
 reminders. A DM that read a private conversation for its person can still set them, since they
 post only in that DM.
 
+## Assistant-mode local time
+
+An agent in assistant mode reasons about "now", "today" and "this Friday" in the people's time
+zone, never its host's. Every turn it takes is told the current local date, weekday and time and
+the zone they are in: the zone of the person whose message started the turn, from their Slack
+profile or, in the console, their browser. A background sub-session, a patrol, a task, a report,
+or a person whose zone is unknown takes the zone last seen from a person in that conversation.
+When none was ever seen, as on platforms that report no zone, the agent is told it is UTC and that
+the local zone is unknown. An agent outside assistant mode is told nothing.
+
 ## Assistant-mode Activity
 
-The page of an agent in assistant mode has an Activity tab, offered while the console's
-`assistant-mode` flag is on. No other agent shows it, and a link to it opens Integrations
-instead. It is read from the agent's daemon when it is shown and kept nowhere else; each list
-shows the most recent entries, up to a limit, and says when more exist.
+The page of an agent in assistant mode has an Activity tab. No other agent shows it, and a link to
+it opens Integrations instead. It is read from the agent's daemon when it is shown and kept nowhere
+else; each list shows the most recent entries, up to a limit, and says when more exist.
 
 - **Items** are visible to everyone who can view the agent: the active and waiting ones, most
   recently updated first, each with what counts as done, its next check (when a patrol looks at it
@@ -1724,6 +1936,28 @@ Trigger is required. The agent inspects current review and CI state and keeps
 fixes on the existing branch. This association never guesses a session from a
 shared checkout, a fork, or an additional workspace root. Provider event support
 and delivery rules are documented in [Pull-request feedback continuation](designs/codehost-pr-feedback.md).
+
+## Agent model credentials
+
+Provider keys are organization-scoped, encrypted and write-only. On desktop,
+Runs on and Credentials appear side by side in the same row. A self-hosted agent
+has two credential choices:
+Daemon credentials (the default) and Use saved credential (Beta). Only the saved
+credential choice is Beta. With saved credentials, model pickers offer only models
+whose Anthropic or OpenAI key is configured, including Decision rules and their
+fallback. The daemon matches the key to each session's selected runtime and model.
+Cloud keeps its existing
+subscription credentials and ignores this selection, including after a move from
+a self-hosted daemon.
+
+The daemon retrieves the selected key when starting the runtime process and applies
+its key, endpoint and custom headers together in the child environment. Selecting a
+key does not log in, log out, or modify the host's runtime login files. Missing keys
+and credential delivery failures refuse that launch rather than falling back to a
+different billing source. Runtime output masks the injected secrets. Key updates
+take effect on the next process start; a running process keeps its original key.
+Sandboxed launches with a selected key skip seeding host runtime settings and
+credentials into their private runtime home.
 
 ## Agent secret environment variables
 

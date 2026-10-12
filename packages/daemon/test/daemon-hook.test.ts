@@ -38,7 +38,7 @@ import { GITLAB_HOST_MISMATCH_REASON } from '../src/gitlab/host-fence.js'
 import { NO_ACTIVE_REVIEW_TURN } from '../src/codehost/review-adapter.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
 import { DatabaseSync } from 'node:sqlite'
-import { sessionKey } from '../src/store/local-store.js'
+import { sessionKey, type LocalStore } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { openTestStore } from './store-support.js'
 import { statePath } from '../src/paths.js'
@@ -3332,6 +3332,7 @@ describe('Daemon rd/msg hook fires', () => {
       ownerId: ownDaemonId,
       orgForAgent: () => 'org-1'
     })
+    const own = (daemon as any).store as LocalStore
     ;(daemon as any).store = shared
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
@@ -3376,6 +3377,8 @@ describe('Daemon rd/msg hook fires', () => {
       WAIT
     )
     await daemon.stop()
+    // stop() closed the swapped-in store, so the one start() opened is still ours to close.
+    await own.close()
   })
 
   it('keeps only the newest relay-fired PR revision without reordering explicit GitHub turns', async () => {

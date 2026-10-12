@@ -4,13 +4,44 @@ import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({
-  rows: [] as unknown[],
-  decide: vi.fn(async () => undefined)
-}))
+const mocks = vi.hoisted(() => {
+  class ApiError extends Error {
+    constructor(
+      message: string,
+      readonly status: number,
+      readonly code?: string
+    ) {
+      super(message)
+    }
+  }
+  return {
+    ApiError,
+    rows: [] as unknown[],
+    decide: vi.fn(async () => undefined),
+    fetchRequests: vi.fn(async (): Promise<unknown[]> => []),
+    proposals: [] as unknown[],
+    /** Set: the Control Plane refuses this caller the conversation's proposals. */
+    proposalsRefusal: null as Error | null,
+    fetchProposals: vi.fn(async (_agentId: string, _sessionId: string): Promise<unknown> => undefined),
+    decideProposal: vi.fn(
+      async (_agentId: string, _sessionId: string, _draftId: string, _decision: string): Promise<unknown> => ({
+        status: 'executing',
+        failure: null
+      })
+    )
+  }
+})
+mocks.fetchRequests.mockImplementation(async () => mocks.rows)
+mocks.fetchProposals.mockImplementation(async () => {
+  if (mocks.proposalsRefusal) throw mocks.proposalsRefusal
+  return { proposals: mocks.proposals, truncated: false }
+})
 vi.mock('@/lib/api', () => ({
-  fetchAgentPermissionRequests: vi.fn(async () => mocks.rows),
-  decideAgentPermissionRequest: mocks.decide
+  ApiError: mocks.ApiError,
+  fetchAgentPermissionRequests: mocks.fetchRequests,
+  decideAgentPermissionRequest: mocks.decide,
+  fetchAssistantConversationProposals: mocks.fetchProposals,
+  decideAssistantConversationProposal: mocks.decideProposal
 }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'example-org' }, orgPath: (path: string) => `/example${path}` })
@@ -24,6 +55,7 @@ vi.mock('next/link', () => ({
 }))
 
 import { ApprovalRequestsCard } from './ApprovalRequestsCard'
+import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let root: Root | undefined
@@ -32,7 +64,15 @@ afterEach(() => {
   act(() => root?.unmount())
   host?.remove()
   mocks.decide.mockClear()
+  mocks.fetchRequests.mockClear()
+  mocks.fetchProposals.mockClear()
+  mocks.decideProposal.mockClear()
+  mocks.proposals = []
+  mocks.proposalsRefusal = null
 })
+
+// The console's own retry policy, so a failed read behaves here as it does in the app.
+const swrConfig = { ...CONSOLE_SWR_CONFIG, provider: () => new Map(), dedupingInterval: 0 }
 
 const request = (extra: Record<string, unknown> = {}) => ({
   id: 'request-1',
@@ -52,7 +92,7 @@ async function render(sessionId?: string) {
   root = createRoot(host)
   await act(async () => {
     root!.render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <SWRConfig value={swrConfig}>
         <ApprovalRequestsCard agentId="example-agent" bare {...(sessionId ? { sessionId } : {})} />
       </SWRConfig>
     )
@@ -112,5 +152,171 @@ describe('console approval requests', () => {
     expect(host!.textContent).toContain('Write src/app.ts')
     expect(host!.textContent).not.toContain('Bash: ls')
     expect(host!.querySelectorAll('a')).toHaveLength(0)
+  })
+})
+
+/** A patrol's proposal waiting in the webchat conversation `sid-webchat`. */
+const proposal = (extra: Record<string, unknown> = {}) => ({
+  id: 'proposal-1',
+  sentence: 'I want to rebase PR #12 because it conflicts with main.',
+  why: 'The check found a merge conflict.',
+  task: 'Rebase PR #12 onto main and push.',
+  itemId: 'item-1',
+  itemTitle: 'Land PR #12',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  expiresAt: '2026-01-02T00:00:00.000Z',
+  ...extra
+})
+
+/** The composer strip of the webchat conversation `sid-webchat`, as an editor or as someone who may only continue it. */
+async function renderStrip(permissions: boolean) {
+  host = document.createElement('div')
+  document.body.appendChild(host)
+  root = createRoot(host)
+  await act(async () => {
+    root!.render(
+      <SWRConfig value={swrConfig}>
+        <ApprovalRequestsCard
+          agentId="example-agent"
+          sessionId="sid-webchat"
+          pendingOnly
+          permissions={permissions}
+          proposals
+        />
+      </SWRConfig>
+    )
+  })
+  await act(async () => {})
+}
+
+const row = (id: string) => host!.querySelector<HTMLElement>(`[data-conversation-proposal="${id}"]`)
+/** Press a proposal row's own button by its label, then its confirm strip's confirm. */
+const choose = async (id: string, label: 'Approve' | 'Deny') => {
+  const choice = [...row(id)!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === label)
+  await act(async () => choice!.click())
+}
+const confirm = async (id: string) => {
+  await act(async () => row(id)!.querySelector<HTMLButtonElement>('[role="group"] button')!.click())
+}
+
+describe('a webchat conversation’s proposals in its pending-requests strip', () => {
+  it('shows the conversation’s owner its proposals and nothing an editor alone answers', async () => {
+    mocks.rows = [request({ sessionId: 'sid-webchat' })]
+    mocks.proposals = [proposal()]
+    await renderStrip(false)
+    expect(mocks.fetchRequests).not.toHaveBeenCalled()
+    expect(mocks.fetchProposals).toHaveBeenCalledWith('example-agent', 'sid-webchat')
+    expect(host!.textContent).not.toContain('Bash: git push')
+    const shown = row('proposal-1')!
+    // The sentence leads, the item and the expiry follow, and the reason and the task stay folded.
+    expect(shown.textContent).toContain('Proposal')
+    expect(shown.textContent).toContain('I want to rebase PR #12 because it conflicts with main.')
+    expect(shown.textContent).toContain('For Land PR #12')
+    expect(shown.textContent).toContain('Expires Jan 2, 2026')
+    expect(shown.textContent).not.toContain('The check found a merge conflict.')
+    expect(shown.textContent).not.toContain('Rebase PR #12 onto main and push.')
+    await click('Reason and task')
+    expect(shown.textContent).toContain('Why: The check found a merge conflict.')
+    expect(shown.textContent).toContain('Rebase PR #12 onto main and push.')
+    expect(host!.textContent).toContain('1 pending')
+  })
+
+  it('approves one only after a confirmation, then says it runs in the background here', async () => {
+    mocks.proposals = [proposal()]
+    await renderStrip(false)
+    await click('Approve')
+    expect(mocks.decideProposal).not.toHaveBeenCalled()
+    expect(host!.textContent).toContain('Run this task now? It reports back in this conversation.')
+    await click('Cancel')
+    expect(mocks.decideProposal).not.toHaveBeenCalled()
+
+    await choose('proposal-1', 'Approve')
+    mocks.proposals = []
+    await confirm('proposal-1')
+    expect(mocks.decideProposal).toHaveBeenCalledWith('example-agent', 'sid-webchat', 'proposal-1', 'approve')
+    expect(row('proposal-1')!.textContent).toContain(
+      'Approved. It runs in the background and reports back in this conversation.'
+    )
+    expect(buttons()).not.toContain('Approve')
+    // Dismissed, nothing is left to show.
+    await act(async () => row('proposal-1')!.querySelector<HTMLElement>('[aria-label="Dismiss"]')!.click())
+    expect(host!.textContent).toBe('')
+  })
+
+  it('denies one after a confirmation, and says a proposal decided elsewhere first is no longer its to decide', async () => {
+    mocks.proposals = [proposal(), proposal({ id: 'proposal-2', sentence: 'I want to close PR #9.' })]
+    mocks.decideProposal.mockResolvedValueOnce({ status: 'denied', failure: null })
+    await renderStrip(false)
+    await choose('proposal-1', 'Deny')
+    expect(row('proposal-1')!.textContent).toContain('Deny this proposal? Nothing is run.')
+    await confirm('proposal-1')
+    expect(mocks.decideProposal).toHaveBeenLastCalledWith('example-agent', 'sid-webchat', 'proposal-1', 'deny')
+    expect(row('proposal-1')!.textContent).toContain('Denied. Nothing was run.')
+
+    mocks.decideProposal.mockRejectedValueOnce(new mocks.ApiError('decided', 409, 'DRAFT_ALREADY_DECIDED'))
+    await choose('proposal-2', 'Approve')
+    await confirm('proposal-2')
+    expect(row('proposal-2')!.textContent).toContain('Already decided.')
+  })
+
+  it('keeps one waiting with its choices while the agent’s sub-sessions are at their limit', async () => {
+    mocks.proposals = [proposal()]
+    const limit = 'The agent already has 3 sub-sessions running; approve again once one finishes.'
+    mocks.decideProposal.mockRejectedValueOnce(new mocks.ApiError(limit, 409, 'SUBSESSION_LIMIT'))
+    await renderStrip(false)
+    await choose('proposal-1', 'Approve')
+    await confirm('proposal-1')
+    expect(row('proposal-1')!.textContent).toContain(limit)
+    expect(buttons()).toContain('Approve')
+  })
+
+  it('shows an editor the conversation’s permission requests beside its proposals', async () => {
+    mocks.rows = [request({ sessionId: 'sid-webchat' })]
+    mocks.proposals = [proposal()]
+    await renderStrip(true)
+    expect(host!.textContent).toContain('Bash: git push')
+    expect(row('proposal-1')!.textContent).toContain('I want to rebase PR #12 because it conflicts with main.')
+    expect(host!.textContent).toContain('2 pending')
+  })
+
+  it('picks up what arrives after a failed read without leaving the page', async () => {
+    vi.useFakeTimers()
+    try {
+      const offline = () => new mocks.ApiError('owning daemon is offline', 503, 'DAEMON_OFFLINE')
+      mocks.fetchRequests.mockRejectedValueOnce(offline())
+      mocks.fetchProposals.mockRejectedValueOnce(offline())
+      await renderStrip(true)
+      expect(host!.textContent).toBe('')
+      mocks.rows = [request({ sessionId: 'sid-webchat' })]
+      mocks.proposals = [proposal()]
+      await act(async () => vi.advanceTimersByTimeAsync(15_000))
+      expect(host!.textContent).toContain('Bash: git push')
+      expect(row('proposal-1')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops asking once the Control Plane refuses', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.proposalsRefusal = new mocks.ApiError('forbidden', 403)
+      await renderStrip(false)
+      await act(async () => vi.advanceTimersByTimeAsync(30_000))
+      expect(mocks.fetchProposals).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows nothing to someone the Control Plane refuses, and nothing when none waits', async () => {
+    mocks.proposalsRefusal = new mocks.ApiError('forbidden', 403)
+    await renderStrip(false)
+    expect(host!.textContent).toBe('')
+    act(() => root?.unmount())
+    host?.remove()
+    mocks.proposalsRefusal = null
+    await renderStrip(false)
+    expect(host!.textContent).toBe('')
   })
 })

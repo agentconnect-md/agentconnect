@@ -61,7 +61,7 @@ import {
 } from '../domain/placement.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import { convergeAgentRouting } from './agentRouting.js'
-import { cronToUpsert, integrationToSpec, httpIntegrationToSpec } from './placement.js'
+import { cronToUpsert, integrationToSpec, httpIntegrationToSpec, type ChatAuthoritySource } from './placement.js'
 import {
   mcpDefsForAgents,
   memoryDefsForAgents,
@@ -115,6 +115,8 @@ export interface AgentMoveDeps {
   platforms: CpPlatformRegistry
   /** Owns AgentSpec assembly (secret loading + icon bases) for the activation definition. */
   specs: AgentSpecAssembler
+  /** Whether each integration's platform has session access sync on, for its chat authority. */
+  chatAuthority: ChatAuthoritySource
   crons: CronRepo
   /** The `duty/fetch` bundle's MCP and external-memory projections — the same
    *  optional seams `PlacementOrchDeps` carries, so the bundle and the reconnect
@@ -915,8 +917,24 @@ export class AgentMoveService {
         if (!secret) throw new AgentMoveConflict(`integration ${integration.id} has no credentials`)
         const isHttp = bot.transport === 'http'
         const spec = isHttp
-          ? await httpIntegrationToSpec(this.deps.platforms, integration, bot, secret, channels, agent)
-          : await integrationToSpec(this.deps.platforms, integration, bot, secret, channels, agent)
+          ? await httpIntegrationToSpec(
+              this.deps.platforms,
+              this.deps.chatAuthority,
+              integration,
+              bot,
+              secret,
+              channels,
+              agent
+            )
+          : await integrationToSpec(
+              this.deps.platforms,
+              this.deps.chatAuthority,
+              integration,
+              bot,
+              secret,
+              channels,
+              agent
+            )
         // A provider-held credential that is gone is the same blocker as a missing secret row: the
         // move bundle is atomic, so it must not carry an integration the target cannot serve.
         if (!spec) throw new AgentMoveConflict(`integration ${integration.id} has no credentials`)

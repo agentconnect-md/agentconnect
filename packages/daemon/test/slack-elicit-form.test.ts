@@ -439,6 +439,23 @@ describe('a Slack turn answers a form card from its own Confirm', () => {
     expect(h.daemon.permissions.pendingElicits.size).toBe(0)
   })
 
+  it("posts the card in the turn's thread, and at the root for a turn that has none", async () => {
+    for (const thread of ['1700000000.000100', undefined]) {
+      const h = slackTurn()
+      const { plan } = h.daemon.pending.get(JSON.stringify(['agent-1', 's1']))
+      // A threadless turn's transcript coordinate is its own daemon-minted id, never a Slack thread.
+      plan.statusThread = thread ?? 'agentcall:C1:d-1'
+      if (thread) plan.thread = thread
+      const threads: (string | undefined)[] = []
+      h.conn.postBlocks = async (_c: string, _b: unknown[], _t: string, at?: string) => {
+        threads.push(at)
+        return 'ts-1'
+      }
+      await raise(h, form(TWO, ['branch']))
+      expect(threads).toEqual([thread])
+    }
+  })
+
   it('takes an omitted optional field and refuses a missing required one, leaving the card live', async () => {
     const h = slackTurn()
     const { requestId, result } = await raise(h, form(TWO, ['branch']))

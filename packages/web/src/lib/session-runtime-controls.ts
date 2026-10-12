@@ -7,6 +7,7 @@ import {
   permissionModeLabel,
   resolvedPermissionMode,
   resolveEffortForModel,
+  type Agent,
   type DaemonRow,
   type EffortChoice,
   type RuntimeModelCatalog,
@@ -16,12 +17,27 @@ import {
 type RuntimeDaemon = Pick<DaemonRow, 'runtimeModels'> | undefined
 type PermissionChoice = { v: string; l: string; description?: string }
 
-/** Playground can stage settings for its first turn; other chat surfaces need a live session. */
+/** Runtime settings change from chat only when people there may also change settings. */
+export function chatSettingsAllowed(agent: Pick<Agent, 'chatActions'> | undefined): boolean {
+  return agent?.chatActions === 'settings'
+}
+
+/** Tool-call approvals are answered from chat when people there may also approve them. */
+export function chatApprovalsAllowed(agent: Pick<Agent, 'chatActions'> | undefined): boolean {
+  return agent?.chatActions === 'approve' || agent?.chatActions === 'settings'
+}
+
+/** Playground can stage settings for its first turn; other chat surfaces need a live session. Only the agent's editors and the conversation's owner change them; an unknown owner (an older Control Plane, or a conversation not yet sent) keeps the controls. */
 export function sessionRuntimeChangesEnabled(
-  allowed: boolean,
-  session: Pick<Session, 'platform' | 'realSessionId'>
+  agent: (Pick<Agent, 'chatActions'> & { canEdit?: boolean }) | undefined,
+  session: Pick<Session, 'platform' | 'realSessionId'>,
+  ownsConversation?: boolean | null
 ): boolean {
-  return allowed && (session.platform === 'playground' || session.platform === 'webchat' || !!session.realSessionId)
+  return (
+    chatSettingsAllowed(agent) &&
+    (agent?.canEdit === true || ownsConversation !== false) &&
+    (session.platform === 'playground' || session.platform === 'webchat' || !!session.realSessionId)
+  )
 }
 
 /** A received live list is authoritative, including `[]`; discovery is idle-session fallback only. */

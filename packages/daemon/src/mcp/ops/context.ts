@@ -92,13 +92,23 @@ export interface MessageGateway {
   /** Materialize a provider-native thread from a root message when that platform
    *  requires one before the post can own a follow-up session (Discord). */
   createThread?(channel: string, messageId: string, name: string): Promise<string | undefined>
+  /** The provider thread a just-posted root message landed in, where it is not the message id itself (Google Chat). */
+  threadOfPost?(postId: string): string | undefined
   /** `user` is the counterpart of a 1:1 direct conversation, where the platform names one. */
-  getChannelInfo(
-    channel: string
-  ): Promise<{ id: string; name?: string; isIm?: boolean; isMpim?: boolean; isPrivate?: boolean; user?: string }>
+  getChannelInfo(channel: string): Promise<{
+    id: string
+    name?: string
+    isIm?: boolean
+    isMpim?: boolean
+    isPrivate?: boolean
+    user?: string
+    externalReason?: PlatformChannelInfo['externalReason']
+  }>
   listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]>
   /** Every current member's id, all pages; offered where the platform declares `authoritativeMembers`. */
   listMemberIds?(channel: string): Promise<string[]>
+  /** A full member of this bot's workspace, not a guest or an outsider; offered where the platform declares `workspaceMembers`. */
+  isFullMember?(user: string): Promise<boolean>
   listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]>
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
   /** Read one bounded page from the conversation bound to the current session. */

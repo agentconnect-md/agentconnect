@@ -3,6 +3,7 @@ import {
   AssistantModeAdmissionRefused,
   assertAssistantModeDefinition,
   assistantModeEditNeedsAdmission,
+  assistantModePermissionModeForEdit,
   assistantModeStoreRefusals
 } from './assistant-mode.js'
 
@@ -47,5 +48,30 @@ describe('assistant mode admission edges', () => {
     expect(
       await assistantModeStoreRefusals(sets('org', ['s1', 's2']), { placementKind: 'daemon', setId: null })
     ).toEqual([])
+  })
+})
+
+describe('assistant mode permission default', () => {
+  const claude = (permissionMode: string | null) => ({ runtime: 'claude-acp', permissionMode })
+
+  it('applies only on the edit that turns it on', () => {
+    expect(assistantModePermissionModeForEdit(undefined, ON, claude('default'), false)).toBe('auto')
+    expect(assistantModePermissionModeForEdit(OFF, ON, claude(null), false)).toBe('auto')
+    expect(assistantModePermissionModeForEdit(ON, { ...ON, instructions: 'x' }, claude('default'), false)).toBe(
+      undefined
+    )
+    expect(assistantModePermissionModeForEdit(OFF, OFF, claude('default'), false)).toBeUndefined()
+    expect(assistantModePermissionModeForEdit(ON, null, claude('default'), false)).toBeUndefined()
+  })
+
+  it('leaves a mode set in the same edit, and one that already runs unattended', () => {
+    expect(assistantModePermissionModeForEdit(OFF, ON, claude('default'), true)).toBeUndefined()
+    expect(assistantModePermissionModeForEdit(OFF, ON, claude('bypassPermissions'), false)).toBeUndefined()
+    expect(
+      assistantModePermissionModeForEdit(OFF, ON, { runtime: 'codex-acp', permissionMode: 'read-only' }, false)
+    ).toBe('agent')
+    expect(assistantModePermissionModeForEdit(OFF, ON, { runtime: 'opencode', permissionMode: 'plan' }, false)).toBe(
+      undefined
+    )
   })
 })

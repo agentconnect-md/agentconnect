@@ -48,7 +48,7 @@ const fleetRow: DaemonFleetDto = {
 
 const capability: DaemonCapabilityDto = {
   daemonId: 'd-1',
-  capabilities: { platforms: ['slack'], runtimes: ['claude-acp'], acp: true, features: ['sandbox'] },
+  capabilities: { platforms: ['slack'], runtimes: ['claude-acp'], acp: true, features: ['agent-move-v1'] },
   runtimeProfiles: [
     {
       runtime: 'claude-acp',
@@ -161,7 +161,7 @@ describe('daemon read split', () => {
   it('stitches capability onto the liveness row without disturbing liveness', () => {
     const row = withDaemonCapability(daemonFromDto(fleetRow), capability)
     expect(row.status).toBe('online') // the console's word for a ready daemon
-    expect(row.caps.features).toEqual(['sandbox'])
+    expect(row.caps.features).toEqual(['agent-move-v1'])
     expect(row.mcpServers).toEqual([{ name: 'github', transport: 'stdio' }])
     expect(row.runtimeModels).toHaveLength(1)
     expect(row.runtimeModels[0]!.models).toEqual(['opus', 'sonnet'])

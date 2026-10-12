@@ -17,6 +17,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { poolSetId } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
@@ -141,89 +142,75 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(fetched.allowedTargetAgentIds).toEqual([])
   })
 
-  it('defaults and locks Run in sandbox from the placed daemon policy', async () => {
+  it('defaults a new agent to host, and offers only host where no table is reported (#2463)', async () => {
     const app = build()
-    const unsupportedId = randomUUID()
-    const optionalId = randomUUID()
-    const requiredId = randomUUID()
-    const capabilities = (features: string[]) => ({ platforms: [], runtimes: ['claude'], acp: true, features })
-    await seedDaemon(prisma, unsupportedId, { capabilities: capabilities([]) })
-    await seedDaemon(prisma, optionalId, { capabilities: capabilities(['sandbox']) })
-    await seedDaemon(prisma, requiredId, {
-      capabilities: capabilities(['sandbox', 'sandbox-required'])
+    const noTableId = randomUUID()
+    const vmOnlyId = randomUUID()
+    await seedDaemon(prisma, noTableId, {
+      capabilities: { platforms: [], runtimes: ['claude'], acp: true, features: [] }
+    })
+    await seedDaemon(prisma, vmOnlyId, {
+      capabilities: {
+        platforms: [],
+        runtimes: ['claude'],
+        acp: true,
+        features: [],
+        strategies: {
+          host: { available: false, reason: 'sandbox.host is off on this daemon' },
+          srt: { available: false, reason: 'bwrap is missing' },
+          microsandbox: { available: true }
+        }
+      }
     })
 
-    const unsupported = await app.app.inject({
+    const unplaced = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
-      payload: { name: 'unsandboxed', runtime: 'claude', daemonId: unsupportedId }
+      payload: { name: 'unplaced', runtime: 'claude' }
     })
-    expect(unsupported.statusCode).toBe(201)
-    // A daemon that reports no table offers the console no strategies; the sandbox fields speak for it.
-    expect(unsupported.json()).toMatchObject({
-      runInSandbox: false,
-      execution: 'host',
-      strategies: null,
-      sandboxSupported: false,
-      sandboxRequired: false
-    })
+    expect(unplaced.statusCode).toBe(201)
+    expect(unplaced.json()).toMatchObject({ execution: 'host', strategies: { host: { available: true } } })
+    expect(unplaced.json()).not.toHaveProperty('runInSandbox')
+    expect(unplaced.json()).not.toHaveProperty('sandboxSupported')
 
-    const optional = await app.app.inject({
+    // A daemon that reports no table is read as offering the direct child alone.
+    const noTable = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
-      payload: { name: 'optional-sandbox', runtime: 'claude', daemonId: optionalId }
+      payload: { name: 'no-table', runtime: 'claude', daemonId: noTableId }
     })
-    expect(optional.statusCode).toBe(201)
-    const optionalBody = optional.json() as { id: string }
-    expect(optional.json()).toMatchObject({
-      runInSandbox: false,
-      sandboxSupported: true,
-      sandboxRequired: false
-    })
-
-    const enable = await app.app.inject({
-      method: 'PATCH',
-      url: `${ORG}/agents/${optionalBody.id}`,
-      payload: { runInSandbox: true }
-    })
-    expect(enable.statusCode).toBe(200)
-    // A daemon that reports no backend leaves the strategy for its next registration to name.
-    expect(enable.json()).toMatchObject({ runInSandbox: true, execution: null })
-
-    const required = await app.app.inject({
-      method: 'POST',
-      url: `${ORG}/agents`,
-      payload: { name: 'required-sandbox', runtime: 'claude', daemonId: requiredId }
-    })
-    expect(required.statusCode).toBe(201)
-    const requiredBody = required.json() as { id: string }
-    expect(required.json()).toMatchObject({
-      runInSandbox: true,
-      execution: null,
-      sandboxSupported: true,
-      sandboxRequired: true
-    })
-
-    const disable = await app.app.inject({
-      method: 'PATCH',
-      url: `${ORG}/agents/${requiredBody.id}`,
-      payload: { runInSandbox: false }
-    })
-    expect(disable.statusCode).toBe(409)
-    expect(disable.json()).toMatchObject({
-      message: 'execution strategy "host" is unavailable where this agent is placed: its daemon requires a sandbox'
-    })
-
+    expect(noTable.statusCode).toBe(201)
+    expect(noTable.json()).toMatchObject({ execution: 'host', strategies: { host: { available: true } } })
     const refused = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
-      payload: { name: 'no-sandbox-here', runtime: 'claude', daemonId: unsupportedId, runInSandbox: true }
+      payload: { name: 'no-sandbox-here', runtime: 'claude', daemonId: noTableId, execution: 'srt' }
     })
     expect(refused.statusCode).toBe(409)
-    expect(refused.json()).toMatchObject({ message: 'no sandbox is available where this agent is placed' })
+    expect(refused.json()).toMatchObject({
+      message: 'execution strategy "srt" is not offered where this agent is placed'
+    })
+
+    // Where host does not run, a create that names nothing takes the first available sandbox.
+    const vmOnly = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'vm-only', runtime: 'claude', daemonId: vmOnlyId }
+    })
+    expect(vmOnly.statusCode).toBe(201)
+    expect(vmOnly.json()).toMatchObject({ execution: 'microsandbox' })
+    const toHost = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${(vmOnly.json() as { id: string }).id}`,
+      payload: { execution: 'host' }
+    })
+    expect(toHost.statusCode).toBe(409)
+    expect(toHost.json()).toMatchObject({
+      message: 'execution strategy "host" is unavailable where this agent is placed: sandbox.host is off on this daemon'
+    })
   })
 
-  it('checks execution against the strategy table the placed daemon reports, and keeps runInSandbox in step', async () => {
+  it('checks execution against the strategy table the placed daemon reports', async () => {
     const app = build()
     const daemonId = randomUUID()
     await seedDaemon(prisma, daemonId, {
@@ -231,13 +218,12 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         platforms: [],
         runtimes: ['claude'],
         acp: true,
-        features: ['sandbox'],
+        features: [],
         strategies: {
           host: { available: true },
           srt: { available: true },
-          microsandbox: { available: false, reason: 'microsandbox is not the configured sandbox backend' }
-        },
-        sandboxBackend: 'srt'
+          microsandbox: { available: false, reason: 'no usable /dev/kvm' }
+        }
       }
     })
     const create = (payload: Record<string, unknown>) =>
@@ -246,8 +232,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const vm = await create({ name: 'vm-agent', execution: 'microsandbox' })
     expect(vm.statusCode).toBe(409)
     expect(vm.json()).toMatchObject({
-      message:
-        'execution strategy "microsandbox" is unavailable where this agent is placed: microsandbox is not the configured sandbox backend'
+      message: 'execution strategy "microsandbox" is unavailable where this agent is placed: no usable /dev/kvm'
     })
     const unknown = await create({ name: 'docker-agent', execution: 'docker' })
     expect(unknown.statusCode).toBe(409)
@@ -255,75 +240,32 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       message: 'execution strategy "docker" is not offered where this agent is placed'
     })
 
-    // The legacy boolean names the daemon's backend.
-    const legacy = await create({ name: 'legacy-agent', runInSandbox: true })
-    expect(legacy.statusCode).toBe(201)
-    expect(legacy.json()).toMatchObject({ runInSandbox: true, execution: 'srt' })
+    const srt = await create({ name: 'srt-agent', execution: 'srt' })
+    expect(srt.statusCode).toBe(201)
+    expect(srt.json()).toMatchObject({ execution: 'srt' })
     // The console's picker reads the same table the choice was checked against.
-    expect((legacy.json() as { strategies: unknown }).strategies).toEqual({
+    expect((srt.json() as { strategies: unknown }).strategies).toEqual({
       host: { available: true },
       srt: { available: true },
-      microsandbox: { available: false, reason: 'microsandbox is not the configured sandbox backend' }
+      microsandbox: { available: false, reason: 'no usable /dev/kvm' }
     })
+    // The retired boolean is not a request field any more: a create ignores it, and the strict edit refuses it.
+    const legacy = await create({ name: 'legacy-agent', runInSandbox: true })
+    expect(legacy.statusCode).toBe(201)
+    expect(legacy.json()).toMatchObject({ execution: 'host' })
 
-    const id = (legacy.json() as { id: string }).id
+    const id = (srt.json() as { id: string }).id
     const patch = (payload: Record<string, unknown>) =>
       app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${id}`, payload })
+    expect((await patch({ runInSandbox: false })).statusCode).toBe(400)
     const host = await patch({ execution: 'host' })
     expect(host.statusCode).toBe(200)
-    expect(host.json()).toMatchObject({ runInSandbox: false, execution: 'host' })
-    const contradiction = await patch({ execution: 'srt', runInSandbox: false })
-    expect(contradiction.statusCode).toBe(400)
-    // An edit that names neither leaves the strategy alone.
-    const rename = await patch({ displayName: 'Legacy Agent' })
-    expect(rename.json()).toMatchObject({ runInSandbox: false, execution: 'host' })
-    const row = await prisma.agent.findUniqueOrThrow({ where: { id }, select: { execution: true, runInSandbox: true } })
-    expect(row).toEqual({ execution: 'host', runInSandbox: false })
-  })
-
-  it('keeps Run in sandbox on a daemon whose sandbox is down, and reports why', async () => {
-    const app = build()
-    const downId = randomUUID()
-    const reason = 'microsandbox requires KVM, but this daemon cannot open /dev/kvm'
-    await seedDaemon(prisma, downId, {
-      capabilities: {
-        platforms: [],
-        runtimes: ['claude'],
-        acp: true,
-        features: ['sandbox'],
-        sandboxUnavailable: reason
-      }
-    })
-
-    // Supported, because such a daemon refuses the session rather than running it unconfined; reading the outage as "no sandbox" used to store false.
-    const created = await app.app.inject({
-      method: 'POST',
-      url: `${ORG}/agents`,
-      payload: { name: 'sandbox-down', runtime: 'claude', daemonId: downId, runInSandbox: true }
-    })
-    expect(created.statusCode).toBe(201)
-    expect(created.json()).toMatchObject({
-      runInSandbox: true,
-      execution: null,
-      sandboxSupported: true,
-      sandboxRequired: false,
-      sandboxUnavailable: reason
-    })
-
-    // …and turning it ON there is a real request the operator gets to make, not a 409.
-    const off = await app.app.inject({
-      method: 'POST',
-      url: `${ORG}/agents`,
-      payload: { name: 'sandbox-down-off', runtime: 'claude', daemonId: downId }
-    })
-    expect(off.statusCode).toBe(201)
-    const enable = await app.app.inject({
-      method: 'PATCH',
-      url: `${ORG}/agents/${(off.json() as { id: string }).id}`,
-      payload: { runInSandbox: true }
-    })
-    expect(enable.statusCode).toBe(200)
-    expect(enable.json()).toMatchObject({ runInSandbox: true, sandboxUnavailable: reason })
+    expect(host.json()).toMatchObject({ execution: 'host' })
+    // An edit that names no strategy leaves it alone.
+    const rename = await patch({ displayName: 'SRT Agent' })
+    expect(rename.json()).toMatchObject({ execution: 'host' })
+    const row = await prisma.agent.findUniqueOrThrow({ where: { id }, select: { execution: true } })
+    expect(row).toEqual({ execution: 'host' })
   })
 
   it('PUT /agents/:id/call-policy stores selected peer agents and clears the list for all', async () => {
@@ -960,7 +902,33 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(bad.statusCode).toBe(400)
   })
 
-  it('POST + PATCH /agents carries reasoningEffort + env; the JSON merge never clobbers siblings', async () => {
+  it.each(['anthropic', 'auto'])('rejects %s credentials on unsupported placements', async (modelProvider) => {
+    const app = build()
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const cloudAgent = await seedAgent(prisma, randomUUID(), { setId: await poolSetId(prisma) })
+    for (const id of [agentId, cloudAgent]) {
+      const response = await app.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/agents/${id}`,
+        payload: { modelProvider }
+      })
+      expect(response.statusCode).toBe(409)
+      expect((await prisma.agent.findUniqueOrThrow({ where: { id } })).runtimeOverrides ?? {}).not.toHaveProperty(
+        'modelProvider'
+      )
+    }
+    for (const placement of [{ daemonId }, { placementKind: 'pool' }]) {
+      const response = await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents`,
+        payload: { name: 'provider-agent', runtime: 'claude', modelProvider, ...placement }
+      })
+      expect(response.statusCode).toBe(409)
+    }
+  })
+
+  it.each(['anthropic', 'auto'])('saves %s credentials alongside runtime settings', async (modelProvider) => {
     const app = build()
     const create = await app.app.inject({
       method: 'POST',
@@ -969,6 +937,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         name: 'tuned',
         runtime: 'claude',
         model: 'opus',
+        modelProvider,
         reasoningEffort: 'high',
         env: { GITHUB_TOKEN: 'ghp_x', DEPLOY_ENV: 'production' }
       }
@@ -976,13 +945,16 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(create.statusCode).toBe(201)
     const created = create.json() as { id: string; reasoningEffort: string | null; env: Record<string, string> }
     expect(created.reasoningEffort).toBe('high')
+    expect(create.json().modelProvider).toBe(modelProvider)
     expect(created.env).toEqual({ GITHUB_TOKEN: 'ghp_x', DEPLOY_ENV: 'production' })
 
-    // All three live side by side in the runtimeOverrides JSON.
+    // Provider selection shares the runtimeOverrides JSON with runtime preferences.
     const row = await prisma.agent.findUnique({ where: { id: created.id } })
     expect(row?.runtimeOverrides).toEqual({
       model: 'opus',
+      modelProvider,
       reasoningEffort: 'high',
+      chatActions: 'approve',
       env: { GITHUB_TOKEN: 'ghp_x', DEPLOY_ENV: 'production' }
     })
 
@@ -993,6 +965,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: { env: { GITHUB_TOKEN: 'ghp_y' } }
     })
     expect(envPatch.statusCode).toBe(200)
+    expect(envPatch.json().modelProvider).toBe(modelProvider)
     const afterEnv = envPatch.json() as {
       model: string | null
       reasoningEffort: string | null
@@ -1006,7 +979,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const clearEffort = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${created.id}`,
-      payload: { reasoningEffort: null, env: {} }
+      payload: { reasoningEffort: null, env: {}, modelProvider: null }
     })
     const cleared = clearEffort.json() as {
       model: string | null
@@ -1014,10 +987,12 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       env: Record<string, string>
     }
     expect(cleared.reasoningEffort).toBeNull()
+    expect(clearEffort.json().modelProvider).toBeNull()
     expect(cleared.env).toEqual({})
     expect(cleared.model).toBe('opus')
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       model: 'opus',
+      chatActions: 'approve',
       env: {}
     })
 
@@ -1054,7 +1029,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     // Values are persisted row-per-key in agent_secret behind the AgentSecretStore
     // seam — NEVER in the agent row's runtimeOverrides bag, never a response.
     const row = await prisma.agent.findUnique({ where: { id: created.id } })
-    expect(row?.runtimeOverrides).toEqual({ env: { PUBLIC_URL: 'https://x' } })
+    expect(row?.runtimeOverrides).toEqual({ chatActions: 'approve', env: { PUBLIC_URL: 'https://x' } })
     const secretRows = await prisma.agentSecret.findMany({ where: { agentId: created.id }, orderBy: { key: 'asc' } })
     expect(secretRows.map((s) => ({ key: s.key, value: s.value }))).toEqual([
       { key: 'API_KEY', value: 'sk-1' },
@@ -1109,7 +1084,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         showFooter: false,
         showStatusBar: false,
         fastMode: true,
-        allowRuntimeChangesInChat: true
+        chatActions: 'settings'
       }
     })
     expect(create.statusCode).toBe(201)
@@ -1119,19 +1094,19 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       showFooter: boolean
       showStatusBar: boolean
       fastMode: boolean | null
-      allowRuntimeChangesInChat: boolean
+      chatActions: string
     }
     expect(created.outputMode).toBe('high')
     expect(created.showFooter).toBe(false)
     expect(created.showStatusBar).toBe(false)
     expect(created.fastMode).toBe(true)
-    expect(created.allowRuntimeChangesInChat).toBe(true)
+    expect(created.chatActions).toBe('settings')
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       outputMode: 'high',
       showFooter: false,
       showStatusBar: false,
       fastMode: true,
-      allowRuntimeChangesInChat: true
+      chatActions: 'settings'
     })
 
     // Explicit false/true booleans persist; nullable runtime selectors can still be cleared.
@@ -1143,7 +1118,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         showFooter: true,
         showStatusBar: true,
         fastMode: false,
-        allowRuntimeChangesInChat: false
+        chatActions: 'talk'
       }
     })
     expect(patch.statusCode).toBe(200)
@@ -1152,13 +1127,13 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       showFooter: boolean
       showStatusBar: boolean
       fastMode: boolean | null
-      allowRuntimeChangesInChat: boolean
+      chatActions: string
     }
     expect(patched.outputMode).toBe('low')
     expect(patched.showFooter).toBe(true)
     expect(patched.showStatusBar).toBe(true)
     expect(patched.fastMode).toBe(false)
-    expect(patched.allowRuntimeChangesInChat).toBe(false)
+    expect(patched.chatActions).toBe('talk')
 
     const cleared = await app.app.inject({
       method: 'PATCH',
@@ -1170,7 +1145,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       showFooter: true,
       showStatusBar: true,
-      allowRuntimeChangesInChat: false
+      chatActions: 'talk'
     })
 
     // outputMode vocabulary is closed — anything else is a 400.
@@ -1180,6 +1155,49 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: { outputMode: 'verbose' }
     })
     expect(bad.statusCode).toBe(400)
+  })
+
+  it('a new agent lets people in chat approve tool calls, and the level round-trips', async () => {
+    const app = build()
+    const create = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'chat-actions-default', runtime: 'claude' }
+    })
+    expect(create.statusCode).toBe(201)
+    const created = create.json() as { id: string; chatActions: string }
+    expect(created.chatActions).toBe('approve')
+    expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
+      chatActions: 'approve'
+    })
+
+    for (const level of ['settings', 'talk', 'approve'] as const) {
+      const patch = await app.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/agents/${created.id}`,
+        payload: { chatActions: level }
+      })
+      expect(patch.statusCode).toBe(200)
+      const read = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${created.id}` })
+      expect((read.json() as { chatActions: string }).chatActions).toBe(level)
+    }
+
+    // The level is closed, and the boolean it replaced is no longer accepted.
+    for (const payload of [{ chatActions: 'everything' }, { allowRuntimeChangesInChat: true }]) {
+      const bad = await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${created.id}`, payload })
+      expect(bad.statusCode).toBe(400)
+    }
+  })
+
+  it('an agent row without a stored level reads as only talking to the agent', async () => {
+    const app = build()
+    const agentId = randomUUID()
+    await prisma.agent.create({
+      data: { id: agentId, orgId: DEFAULT_ORG_ID, name: 'chat-actions-absent', runtime: 'claude' }
+    })
+    const read = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })
+    expect(read.statusCode).toBe(200)
+    expect((read.json() as { chatActions: string }).chatActions).toBe('talk')
   })
 
   it('proxies the editor approval queue to the agent’s owning daemon', async () => {
@@ -1274,6 +1292,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const created = create.json() as { id: string; mcpServers: string[] }
     expect(created.mcpServers).toEqual(['github', 'metrics'])
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
+      chatActions: 'approve',
       mcpServers: ['github', 'metrics']
     })
 
@@ -1296,7 +1315,8 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     })
     expect((cleared.json() as { mcpServers: string[] }).mcpServers).toEqual([])
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
-      model: 'opus'
+      model: 'opus',
+      chatActions: 'approve'
     })
 
     // An agent created without the field reads [] (never undefined/null).

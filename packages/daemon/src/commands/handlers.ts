@@ -41,10 +41,18 @@ import { loopGuardScope, loopGuardScopeFromCoords } from '../daemon/loop-guard-s
 import type { PlatformConnection } from '../platforms/connection-reconciler.js'
 import { parseTelegramSelect, telegramSelectButtons } from '../platforms/telegram/command-chrome.js'
 import type { TelegramCallback, TelegramConnection } from '../telegram/connection.js'
-import type { InteractionActor } from '../platforms/contract.js'
+import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from '../telegram/render.js'
+import type { ChatRefusal, InteractionActor } from '../platforms/contract.js'
 import type { StatusBarInfo } from '../slack/render.js'
 import { buildDiscordSelectComponents, type DiscordComponents } from '../discord/render.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
+import {
+  CHAT_LINK_HINT,
+  chatSettingsAllowed,
+  settingsRefusalText,
+  type ChatActorVerdict,
+  type ChatSurface
+} from '../agents/chat-actions.js'
 import {
   pendingTurnKey,
   QueueFullError,
@@ -94,6 +102,8 @@ export interface CommandHost {
   replyConnFor(agentId: string, integrationId?: string): PlatformConnection | undefined
   /** Takes the session's OUTWARD id (session-concept.md §1.1), which {@link outwardSessionId} resolves. */
   sessionLink(sessionId: string, source?: string): string
+  /** The agent's console page, where an Agent editor changes its runtime settings. */
+  agentLink(agentId: string): string
   outwardSessionId(agentId: string, acpSessionId: string): Promise<string | undefined>
   sessionLinkSource(platform: string, integrationId?: string): string | undefined
   /** Thread affinity for the routing ladder a command reuses. */
@@ -119,6 +129,23 @@ export interface CommandHost {
   srcIntegrationIds(conn: unknown): string[]
   /** `!resume` re-arms this member's own loop-scope enforcement. */
   clearEnforcedLoopScope(scope: string): void
+  /** Whether people in a conversation may change settings there ("What people can do in chat"); an unknown one is closed. */
+  chatSurface(
+    agentId: string,
+    integrationId: string | undefined,
+    channel: string,
+    externallyShared?: boolean
+  ): ChatSurface
+  /** The same for a session's own conversation. */
+  sessionChatSurfaceOpen(rec: SessionRecord): boolean
+  /** Whether this person may act in chat past the level and the conversation; fails closed where permissions are synced. */
+  chatActor(
+    agentId: string,
+    integrationId: string | undefined,
+    actor: InteractionActor | undefined
+  ): Promise<ChatActorVerdict>
+  /** The same for a session's own conversation. */
+  sessionChatActor(rec: SessionRecord, actor: InteractionActor | undefined): Promise<ChatActorVerdict>
 }
 
 /** What a handled command did: a durable effect completed before returning, a reply or refusal with nothing durable to prove, or a `!queue` whose admission the caller awaits. */
@@ -137,10 +164,16 @@ export interface QueueAdmission {
   onDispatched?: (turn: Promise<unknown>) => void
 }
 
-/** The human behind a chat command, in the same shape a Block Kit click reports. */
-function senderActor(msg: NormalizedMessage): InteractionActor {
+/** The human behind a chat command, in the shape a click reports: with the cross-app id a synced platform matches by. */
+export function senderActor(msg: NormalizedMessage): InteractionActor {
   const name = msg.sender.name?.trim()
-  return { userId: msg.sender.id, isBot: msg.sender.isBot, ...(name ? { name } : {}) }
+  const memberId = msg.sender.memberId
+  return {
+    userId: msg.sender.id,
+    isBot: msg.sender.isBot,
+    ...(name ? { name } : {}),
+    ...(memberId ? { memberId } : {})
+  }
 }
 
 interface CommandContext {
@@ -191,10 +224,12 @@ export class CommandHandlers {
     this.host.log().info(`session ${sessionKey}: "${verb}" by ${who}`)
   }
 
-  /** Resolve a session only while its Agent explicitly permits chat-side runtime changes. */
+  /** Resolve a session only while its Agent permits chat-side runtime changes and its conversation is open to them. */
   async chatRuntimeSession(key: string) {
     const rec = await this.host.store().getSession(key)
-    return rec && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat === true ? rec : undefined
+    return rec && chatSettingsAllowed(this.host.agents().get(rec.agentId)) && this.host.sessionChatSurfaceOpen(rec)
+      ? rec
+      : undefined
   }
 
   /** Switch a session's model by its local key — the core shared by the webchat
@@ -336,9 +371,7 @@ export class CommandHandlers {
     await this.refreshStatusBarForKey(key)
     return true // reports whether the override was recorded (nothing else reads it)
   }
-  /** Route a Slack status-bar Block Kit interaction (the model / effort / fast selects, or
-   *  a cancel raised by the native Stop) to the shared key-based cores. `sessionKey` rides
-   *  the block; no-op on an unknown key. */
+  /** Route a status-bar or controls-modal action to the key-based cores; a refused settings change returns what only its actor is told. */
   async handleStatusAction(a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
@@ -348,12 +381,14 @@ export class CommandHandlers {
     permissionMode?: string
     fastMode?: boolean
     outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
-  }): Promise<void> {
-    // A status-bar tap carries no author in the transcript, so the operator behind a
-    // cancelled turn or a switched model is otherwise unrecoverable. Record it here,
-    // at the one point every ingress funnels through — but only when the verb actually
-    // applied, so a refused or no-op click never reads as a change someone made.
+  }): Promise<ChatRefusal | undefined> {
+    // Who acted is recorded here, where every ingress funnels, and only for a change that applied.
     let applied = false
+    // A bot never changes a setting; cancelling follows the stop rule instead.
+    if (a.kind !== 'cancel' && a.actor?.isBot) return undefined
+    const runtimeSetting = a.kind !== 'cancel' && a.kind !== 'set-output'
+    const refusal = runtimeSetting ? await this.runtimeSettingsRefusal(a.sessionKey, a.actor) : undefined
+    if (refusal) return refusal
     if (a.kind === 'cancel') applied = await this.cancelSessionByKey(a.sessionKey, a.actor)
     else if (a.kind === 'set-model') {
       if (a.model) applied = await this.setModelByKey(a.sessionKey, a.model)
@@ -367,35 +402,51 @@ export class CommandHandlers {
       if (a.outputMode) applied = await this.setOutputModeByKey(a.sessionKey, a.outputMode)
     }
     if (applied) this.logSessionAction(a.kind, a.sessionKey, a.actor)
+    return undefined
   }
 
-  /**
-   * A tapped Discord select-card button (`/models` `/effort` `/permission`): resolve the
-   * session from the button's key, apply the chosen option, and return the re-rendered
-   * card so the connection edits the message in place (new current flagged). Undefined
-   * when the session is gone or the option index is stale (options changed) — the
-   * connection then leaves the card as-is. Mirrors handleTelegramCallback.
-   */
+  /** What only the person behind a refused runtime-settings change is told, within `limit` characters; undefined when this conversation takes it from them. */
+  private async runtimeSettingsRefusal(
+    key: string,
+    actor: InteractionActor | undefined,
+    limit?: number
+  ): Promise<ChatRefusal | undefined> {
+    const rec = await this.host.store().getSession(key)
+    if (!rec) return undefined
+    const open = await this.chatRuntimeSession(key)
+    const verdict = open ? await this.host.sessionChatActor(open, actor) : undefined
+    if (verdict === 'allowed') return undefined
+    return {
+      text: settingsRefusalText(this.host.agentLink(rec.agentId), verdict, limit),
+      channel: rec.channel,
+      thread: rec.thread
+    }
+  }
+
+  /** A tapped Discord select-card button: the card redrawn on the value in force, a refusal's private `notice`, or undefined to leave it. */
   async handleDiscordSelect(a: {
     kind: SelectKind
     index: number
     sessionKey: string
     actor?: InteractionActor
-  }): Promise<{ text: string; components: DiscordComponents } | undefined> {
+  }): Promise<{ text: string; components: DiscordComponents } | { notice: string } | undefined> {
+    if (a.actor?.isBot) return undefined
     const rec = await this.host.store().getSession(a.sessionKey)
     if (!rec) return undefined
+    const refusal = await this.runtimeSettingsRefusal(a.sessionKey, a.actor)
+    if (refusal) return { notice: refusal.text }
     const info = await this.host.statusInfoFrom(rec.agentId, a.sessionKey, rec.acpSessionId ?? undefined)
-    const { options } = selectOptions(a.kind, info)
+    const { current, options } = selectOptions(a.kind, info)
     const value = options[a.index]
     if (value === undefined) return undefined
-    // Recorded only once the choice actually applied — a refused or stale select
-    // changes nothing and must not read as though someone had changed it. The card is
-    // still re-rendered either way, as before.
-    if (await applySelect(a.kind, a.sessionKey, value, this.selectSetters))
-      this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
-    const components = buildDiscordSelectComponents(a.kind, value, options)
+    // Recorded only once the choice applied: a refused select changed nothing.
+    const applied = await applySelect(a.kind, a.sessionKey, value, this.selectSetters)
+    if (applied) this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
+    // A choice that did not apply leaves the card on the value really in force.
+    const shown = applied ? value : current
+    const components = buildDiscordSelectComponents(a.kind, shown, options)
     if (!components) return undefined
-    return { text: selectCardText(a.kind, value), components }
+    return { text: selectCardText(a.kind, shown), components }
   }
   async isSessionMuted(key: string): Promise<boolean> {
     return await this.host.store().isSessionMuted(key)
@@ -640,10 +691,19 @@ export class CommandHandlers {
     }
 
     const entry = this.registry[command.kind]
-    // The Agent-level chat-changes guard, applied for every runtime-setting command before its handler runs.
-    if (entry.runtimeChange && this.host.agents().get(target.agentId)?.allowRuntimeChangesInChat !== true) {
-      reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
-      return 'consumed'
+    // The Agent-level chat-changes guard, applied for every runtime-setting command before its handler runs; a closed conversation takes none.
+    if (entry.runtimeChange) {
+      const verdict =
+        chatSettingsAllowed(this.host.agents().get(target.agentId)) &&
+        this.host.chatSurface(target.agentId, target.integrationId, msg.channel, msg.externallyShared === true) ===
+          'open'
+          ? await this.host.chatActor(target.agentId, target.integrationId, senderActor(msg))
+          : undefined
+      if (verdict !== 'allowed') {
+        const refused = 'Runtime settings can only be changed by an Agent editor from the Agent page.'
+        reply(verdict === 'unlinked' ? `${refused}\n${CHAT_LINK_HINT}` : refused)
+        return 'consumed'
+      }
     }
     // The entry is the one registered for this exact kind; the union-keyed index can't narrow that.
     return await (entry.run as (c: AgentCommand, x: CommandContext) => Promise<CommandEffect>)(command, ctx)
@@ -1057,8 +1117,15 @@ export class CommandHandlers {
       void conn.answerCallback(cb.id, 'No active session here.')
       return
     }
-    if (this.host.agents().get(session.agentId)?.allowRuntimeChangesInChat !== true) {
-      void conn.answerCallback(cb.id, 'Ask an Agent editor to change runtime settings.')
+    // Told in the tap's own answer, so it is built to fit an alert rather than cut there.
+    const refusal = await this.runtimeSettingsRefusal(
+      session.key,
+      { userId: cb.userId },
+      TELEGRAM_CALLBACK_ANSWER_LIMIT
+    )
+    if (refusal) {
+      // Answered on the tap itself, which only its tapper sees.
+      void conn.answerCallback(cb.id, refusal.text, { alert: true })
       return
     }
     const info = await this.host.statusInfoFrom(session.agentId, session.key, session.acpSessionId)

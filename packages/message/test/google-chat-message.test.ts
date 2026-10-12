@@ -332,6 +332,8 @@ describe('Google Chat tenant keys and button clicks (design §10)', () => {
         formInputs: { f0: ['typed'] },
         message: `${SPACE}/messages/EXAMPLE_CARD_MESSAGE`,
         user: PERSON,
+        // The clicker's display name, which a settled card names them by.
+        userName: 'Example Person',
         space: SPACE,
         thread: `${SPACE}/threads/EXAMPLE_CARD_THREAD`,
         isDm: false

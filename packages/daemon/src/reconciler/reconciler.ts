@@ -22,7 +22,7 @@ function signature(a: Agent): string {
 function hostSpawnSig(a: Agent): string {
   return JSON.stringify({
     runtime: a.runtime,
-    runInSandbox: a.runInSandbox,
+    modelProvider: a.modelProvider,
     execution: a.execution,
     model: a.runtimeOverrides?.model,
     description: a.description,

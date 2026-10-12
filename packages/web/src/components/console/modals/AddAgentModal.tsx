@@ -3,6 +3,8 @@
 // "props must be serializable" entry-file check on the onClose callback.
 
 import { useEffect, useRef, useState } from 'react'
+import type { AgentModelProvider, ChatActions } from '@agentconnect.md/protocol'
+import { ModelProviderField } from '@/components/console/ModelProviderField'
 import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -36,7 +38,6 @@ import {
   defaultStrategy,
   executionAsk,
   groupStrategies,
-  isSandboxStrategy,
   strategyModelSource,
   strategyOptions,
   strategyUsesImage,
@@ -69,7 +70,7 @@ import { Button, Icon } from '@/components/ui'
 import { VisibilityField, type SharingValue } from '@/components/console/VisibilityField'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { OutputModeField } from '@/components/console/OutputModeField'
-import { RuntimeChatField } from '@/components/console/RuntimeChatField'
+import { ChatActionsField } from '@/components/console/ChatActionsField'
 import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
 import {
   EnvSecretsFields,
@@ -116,6 +117,7 @@ import { gitRepoUrlTileHint } from '@/lib/git-url-tile'
 import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
+import { useSavedModelSource } from '@/lib/use-saved-model-source'
 
 type WsMode = WorkspaceMode
 
@@ -169,6 +171,7 @@ export default function AddAgentModal({
   const [icon, setIcon] = useState<AgentIcon>(() => randomGlyphIcon())
   const [runtime, setRuntime] = useState(seed.runtime) // '' = untouched; the daemon supplies the default
   const [model, setModel] = useState(seed.model)
+  const [modelProvider, setModelProvider] = useState<AgentModelProvider | null>(null)
   const [modelSelection, setModelSelection] = useState<AgentModelSelection | null>(null)
   const [modelSelectionValid, setModelSelectionValid] = useState(true)
   const [effort, setEffort] = useState(seed.effort)
@@ -181,7 +184,7 @@ export default function AddAgentModal({
   const [permissionMode, setPermissionMode] = useState(
     seed.permissionMode ?? permissionModeDefault(FALLBACK_RUNTIME_IDS[0]!)
   )
-  const [allowRuntimeChangesInChat, setAllowRuntimeChangesInChat] = useState(false)
+  const [chatActions, setChatActions] = useState<ChatActions>('approve')
   const [description, setDescription] = useState(seed.description)
   const [daemonId, setDaemonId] = useState(seed.daemonValue)
   // '' until the user picks one, so the placement's default applies.
@@ -384,25 +387,25 @@ export default function AddAgentModal({
     executionOptions.find((option) => option.value === execution && option.available)?.value ??
     defaultStrategy(executionOptions) ??
     ''
-  const effectiveRunInSandbox = placementStrategies.kind !== 'pool' && isSandboxStrategy(effectiveExecution)
   // Only a strategy that starts the image's install reads its image-binary warning.
   const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(effectiveExecution)
   // Models come from the chosen strategy's catalog: the host install's for host and srt, the image's for a VM.
-  const modelSource =
+  const strategySource =
     daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : effectiveExecution)
+  const savedCredentials = placement?.kind !== 'pool' && modelProvider !== null
+  const modelSource = useSavedModelSource(strategySource, savedCredentials)
   // The pool's pod, not the strategy, is what encloses a session there.
-  const isolationLabel = sessionIsolationLabel({
-    pool: placement?.kind === 'pool',
-    runInSandbox: effectiveRunInSandbox,
-    sandboxSupported: true,
-    sandboxRequired: false
-  })
+  const isolationLabel = sessionIsolationLabel({ pool: placement?.kind === 'pool', execution: effectiveExecution })
   const isolationMode = isolationLabel.mode === 'Session isolation' ? t('sessionIsolation') : t('worktree')
   // A selected daemon's reported profiles are authoritative, including an empty list.
-  const runtimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : FALLBACK_RUNTIME_IDS
+  const runtimeIds = savedCredentials
+    ? selectableRuntimeIds(modelSource!, runtime)
+    : daemon
+      ? selectableRuntimeIds(daemon, runtime)
+      : FALLBACK_RUNTIME_IDS
   // Runtimes the daemon reports as logged out. Marked in the picker, never blocked —
   // creating on one is a supported state (docs/designs/preset-agents.md §3.2).
-  const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
+  const runtimesNeedingLogin = loginRequiredRuntimeIds(modelSource)
   const runtimesMissingImageBinary = readsImage ? imageBinaryMissingRuntimeIds(daemon) : []
   // …but the DEFAULT prefers a signed-in one, mirroring how auto-placement picks a
   // preset's runtime. Falls through to the first reported id when all are logged out.
@@ -859,6 +862,7 @@ export default function AddAgentModal({
         outputMode,
         showFooter,
         showStatusBar,
+        ...(placement?.kind !== 'pool' && modelProvider ? { modelProvider } : {}),
         ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}),
         fastMode: fastModeAvailable || modelSelection ? fastMode : false,
         ...(memoryProvider === 'external'
@@ -877,7 +881,7 @@ export default function AddAgentModal({
         ...(Object.keys(envRecord).length ? { env: envRecord } : {}),
         ...(Object.keys(secretsRecord).length ? { secrets: secretsRecord } : {}),
         permissionMode: selectedPermissionMode,
-        allowRuntimeChangesInChat,
+        chatActions,
         workspace,
         // Atomic restricted-create: the CP intersects sharedWith with org members.
         ...(sharing.visibility === 'restricted'
@@ -1031,11 +1035,14 @@ export default function AddAgentModal({
                 />
               </div>
               {/* Placement belongs to Basics; runtime and model are configured together below. */}
-              <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px]">
-                <div className="fld">
+              <div
+                className={`desktop:col-span-2 grid grid-cols-1 gap-[14px] ${placement?.kind !== 'pool' ? 'desktop:grid-cols-2' : ''}`}
+              >
+                <div className="fld min-w-0">
                   <span className="fldlbl">{t('runsOn')}</span>
                   <DaemonSelect value={effectiveDaemonId} options={daemonOptions} onChange={setDaemonId} />
                 </div>
+                {placement?.kind !== 'pool' && <ModelProviderField value={modelProvider} onChange={setModelProvider} />}
               </div>
             </div>
           </section>
@@ -1054,7 +1061,9 @@ export default function AddAgentModal({
               }}
               source={modelSource}
               runtimes={runtimeIds}
-              runInSandbox={readsImage}
+              readsImage={readsImage}
+              requireAvailableModel={savedCredentials}
+              aside={<ChatActionsField value={chatActions} onChange={setChatActions} />}
               onFallbackChange={(target) => {
                 if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
                 setRuntime(target.runtime)
@@ -1073,7 +1082,6 @@ export default function AddAgentModal({
               }}
             />
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-              <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
               {placementStrategies.kind !== 'pool' && (
                 <ExecutionStrategyField options={executionOptions} value={effectiveExecution} onChange={setExecution} />
               )}

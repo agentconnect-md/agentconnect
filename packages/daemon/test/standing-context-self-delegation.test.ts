@@ -38,6 +38,10 @@ describe('standing collaboration guidance', () => {
         '("fix this bug and open a PR")'
     )
     expect(assistant.collabAppend).toContain('reports back into this conversation when it finishes or fails')
+    expect(assistant.collabAppend).toContain(
+      'so say it has started and end your turn. Say in its task which language the people here use, so it reports ' +
+        'in that language, and answer them in it whatever language a report comes back in. Keep ordinary conversation'
+    )
     expect(assistant.collabAppend).toContain('A sub-session cannot open sub-sessions of its own.')
     for (const text of [assistant.resumeSystemContext, assistant.sessionContext, assistant.metaContext!]) {
       expect(text).toContain(assistant.collabAppend)

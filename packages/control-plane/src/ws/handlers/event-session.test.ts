@@ -282,6 +282,81 @@ describe('handleEventSession', () => {
     )
   })
 
+  describe('a 1:1 DM is private only where its platform names people', () => {
+    // Slack can match chat members; Telegram cannot.
+    const platforms = {
+      get: (id: string) => (id === 'slack' ? { chatMemberTenant: () => 'T1' } : id === 'telegram' ? {} : undefined)
+    }
+    async function classifyDm(platform: string, getExternalAccessPolicy: (...args: unknown[]) => Promise<unknown>) {
+      const recordMilestone = vi.fn().mockResolvedValue(recorded())
+      const policyRead = vi.fn(getExternalAccessPolicy)
+      const deps = scopedDeps({
+        session: { recordMilestone, getExternalAccessPolicy: policyRead },
+        platforms,
+        events: { publish: vi.fn() }
+      })
+      const frame = eventSessionFrame()
+      Object.assign(frame.payload as Record<string, unknown>, {
+        platform,
+        channel: 'D1',
+        conversationKind: 'dm',
+        transportScope: 'S1',
+        triggeredBy: 'U1'
+      })
+      await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+      const [call] = recordMilestone.mock.calls[0] as [{ classification: unknown }]
+      return { classification: call.classification, policyRead }
+    }
+
+    it('opens a Telegram DM to the org and keeps its sender as provenance', async () => {
+      const { classification, policyRead } = await classifyDm('telegram', async () => null)
+      expect(classification).toEqual({ visibility: 'org', ownerIdentity: 'telegram:S1:U1', source: 'default' })
+      expect(policyRead).not.toHaveBeenCalled()
+    })
+
+    it('keeps a Slack DM private to its sender while session access sync is on', async () => {
+      const { classification, policyRead } = await classifyDm('slack', async () => ({ state: 'enabled' }))
+      expect(classification).toEqual({ visibility: 'private', ownerIdentity: 'slack:S1:U1', source: 'default' })
+      expect(policyRead).toHaveBeenCalledWith(ORG_ID, 'slack')
+    })
+
+    it('opens a Slack DM to the org while session access sync is off', async () => {
+      for (const policy of [{ state: 'disabled' }, null]) {
+        const { classification } = await classifyDm('slack', async () => policy)
+        expect(classification).toEqual({ visibility: 'org', ownerIdentity: 'slack:S1:U1', source: 'default' })
+      }
+    })
+
+    it('keeps a Slack DM private when the sync state cannot be read', async () => {
+      const { classification } = await classifyDm('slack', async () => {
+        throw new Error('db unavailable')
+      })
+      expect(classification).toEqual({ visibility: 'private', ownerIdentity: 'slack:S1:U1', source: 'default' })
+    })
+
+    it('leaves a webchat conversation private to its owner', async () => {
+      const recordMilestone = vi.fn().mockResolvedValue(recorded())
+      const deps = scopedDeps({
+        session: { recordMilestone, getExternalAccessPolicy: vi.fn(async () => null) },
+        platforms,
+        webchatConversation: { findOwner: vi.fn().mockResolvedValue('u1') },
+        events: { publish: vi.fn() }
+      })
+      const frame = eventSessionFrame()
+      Object.assign(frame.payload as Record<string, unknown>, {
+        platform: 'webchat',
+        channel: '0f0f0f0f-0000-4000-8000-0f0f0f0f0f0f',
+        conversationKind: 'dm'
+      })
+      await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+      expect(recordMilestone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          classification: { visibility: 'private', ownerIdentity: 'user:u1', source: 'default' }
+        })
+      )
+    })
+  })
+
   it('binds a Slack audience only after validating its integration and workspace', async () => {
     const recordMilestone = vi.fn().mockResolvedValue(recorded())
     const deps = scopedDeps({

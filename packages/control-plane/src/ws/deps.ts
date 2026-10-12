@@ -59,6 +59,7 @@ import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { GatedDmSeedResolver } from '../orchestrator/linkedDm.js'
 import type { ApprovalRouteResolver } from '../orchestrator/approvalRoute.js'
+import type { ReadAccessResolver } from '../orchestrator/readAccess.js'
 import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
 import type { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
@@ -66,6 +67,7 @@ import type { SlackSessionAccessService } from '../http/slack-session-access.js'
 import type { SessionAccessWarmer } from '../http/session-access-warmer.js'
 import type { SessionPullRequestFeedbackService } from '../codehost/session-pull-request-feedback.service.js'
 import type { CodeHostFeedbackService } from '../codehost/feedback.service.js'
+import type { CpPlatformRegistry } from '../platforms/provider.js'
 
 /** The two CP facts an `integration/revoked` report needs beyond the repositories. */
 export interface SocketBotRevocation {
@@ -113,6 +115,8 @@ export interface DaemonWsDeps {
   launch?: LaunchRepo
   /** Tells a service-account owner apart for the same classification; absent ⇒ every owner reads as a person. */
   user?: Pick<UserRepo, 'isServiceAccount'>
+  /** Tells whether a DM's platform can name its people (§4.2); absent ⇒ every DM stays private to its sender. */
+  platforms?: CpPlatformRegistry
   /** Pushes the CP-confirmed capture gate to the owning daemon (§5.1); absent ⇒
    *  daemons converge on their next register snapshot instead. */
   visibilityPush?: SessionVisibilityPushService
@@ -146,6 +150,8 @@ export interface DaemonWsDeps {
   /** slack-approval-dm.md §4.2: pick / revalidate a pending approval's DM recipient;
    *  absent ⇒ `agent/approval-route` fails closed and the daemon keeps today's behavior. */
   approvalRoute?: ApprovalRouteResolver
+  /** The console's session visibility for whoever asks a cross-platform read; absent ⇒ every asker is unidentifiable. */
+  readAccess?: ReadAccessResolver
   /** Republish the agent's integrations. Needed because §14.8 is the one path where a
    *  daemon REPORT creates an ENABLED row: the reporter is still holding bindRules that
    *  predate it, and it has already cached the conversation, so nothing re-reports and

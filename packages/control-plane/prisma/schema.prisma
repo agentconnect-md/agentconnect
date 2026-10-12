@@ -938,9 +938,8 @@ model Agent {
   outboundPolicy        AgentCallPolicy    @default(all) // 'all' = this agent may discover/call any otherwise-callable org peer
   allowedTargetAgentIds String[]           @default([]) // agent.id set used when outboundPolicy='selected'
   introduceOnJoin       Boolean            @default(false) // #536: self-introduce to peers on a genuine channel join
-  runInSandbox          Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on
-  // The strategy slug sessions run in (session-executors.md §5), kept in step with runInSandbox; null ⇒ a sandboxed agent whose daemon has not yet reported its backend.
-  execution             String?
+  // The strategy slug sessions run in (session-executors.md §5).
+  execution             String             @default("host")
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); both set or both null.
   repositorySelectorProviderId String?
   repositorySelectorModel      String?
@@ -1610,14 +1609,17 @@ model WebchatConversation {
 // Each participant carries its OWN current-session pointer, maintained by the
 // session-milestone upsert exactly like the conversation-level fence.
 model WebchatConversationAgent {
-  conversationId    String   @db.Uuid
-  agentId           String   @db.Uuid
-  role              String   @default("member") // 'primary' | 'member'
-  ord               Int      @default(0)
+  conversationId    String    @db.Uuid
+  agentId           String    @db.Uuid
+  role              String    @default("member") // 'primary' | 'member'
+  ord               Int       @default(0)
   addedByUserId     String
-  addedAt           DateTime @default(now()) @db.Timestamptz(6)
+  addedAt           DateTime  @default(now()) @db.Timestamptz(6)
   currentSessionId  String?
-  currentSessionRev Int      @default(0)
+  currentSessionRev Int       @default(0)
+  // Soft removal (webchat-multi-agents.md §3.1a): the row outlives the membership for late session events.
+  removedAt         DateTime? @db.Timestamptz(6)
+  removedByUserId   String?
 
   conversation   WebchatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   agent          Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)

@@ -7,9 +7,15 @@
  */
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { httpIntegrationToSpec, integrationToSpec, isGatedAgent, type SpecOwner } from './placement.js'
+import { cronToUpsert, httpIntegrationToSpec, integrationToSpec, isGatedAgent, type SpecOwner } from './placement.js'
 import { agentRecordToSpec } from './agentSpecAssembler.js'
-import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
+import type {
+  AgentRecord,
+  BotRecord,
+  CronRecord,
+  IntegrationChannelRecord,
+  IntegrationRecord
+} from '../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
 import { buildCpPlatformRegistry } from '../platforms/registry.js'
 import { createSlackCpProvider } from '../platforms/slack/provider.js'
@@ -22,6 +28,7 @@ import {
   IntegrationDiscordConfig,
   IntegrationFeishuConfig
 } from '@agentconnect.md/protocol'
+import { NO_SESSION_SYNC } from '../../test/fakes/no-session-sync.js'
 
 // The §9 projector seam: spec assembly now awaits the platform provider for the
 // opaque `config` payload, so every call needs the registry + the bot row. The
@@ -77,13 +84,21 @@ const ASSISTANT: SpecOwner = { visibility: 'org', assistantMode: { enabled: true
  *  cases below keep reading as the trigger→bindRules fold they are testing. */
 const specOf = async (
   i: IntegrationRecord,
-  secret: Parameters<typeof integrationToSpec>[3],
+  secret: Parameters<typeof integrationToSpec>[4],
   channels: IntegrationChannelRecord[] = [],
   owner?: SpecOwner
 ) => {
   // Every platform exercised here always has a deliverable payload; `null` is the
   // withheld-integration answer, pinned in its own suite below.
-  const spec = await integrationToSpec(PLATFORMS, i, bot({ platform: i.platform }), secret, channels, owner)
+  const spec = await integrationToSpec(
+    PLATFORMS,
+    NO_SESSION_SYNC,
+    i,
+    bot({ platform: i.platform }),
+    secret,
+    channels,
+    owner
+  )
   if (!spec) throw new Error('expected a deliverable spec')
   return spec
 }
@@ -145,9 +160,14 @@ describe('integrationToSpec sessionModes', () => {
   // The relay arbitrates activation for a shared bot, so its bindRules are empty — but
   // the daemon still owns session keying, which is why this rides its own field.
   it('ships for a relay-managed bot whose bindRules are empty', async () => {
-    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, [
-      channel('C1', 'mention', 'channel', 'append')
-    ])
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      [channel('C1', 'mention', 'channel', 'append')]
+    )
     expect(spec?.core.bindRules).toEqual([])
     expect(spec?.core.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
   })
@@ -210,6 +230,7 @@ describe('assistant-mode places', () => {
   it('forces the same on a relay-managed member spec', async () => {
     const spec = await httpIntegrationToSpec(
       PLATFORMS,
+      NO_SESSION_SYNC,
       INTEGRATION,
       bot({ transport: 'http' }),
       SECRET,
@@ -244,6 +265,7 @@ describe('assistant-mode places', () => {
     ])
     const spec = await httpIntegrationToSpec(
       linear,
+      NO_SESSION_SYNC,
       { ...INTEGRATION, platform: 'linear' },
       bot({ platform: 'linear', transport: 'http' }),
       SECRET,
@@ -268,8 +290,120 @@ describe('integrationToSpec externalChannels', () => {
   })
 
   it('ships for a relay-managed bot too', async () => {
-    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, [shared('C1')])
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      [shared('C1')]
+    )
     expect(spec?.core.externalChannels).toEqual(['C1'])
+  })
+})
+
+// resource-visibility.md §14.9: an ungated integration's undecided Off on an external place still owes the §14.3 notice.
+describe('integrationToSpec pendingChannels', () => {
+  const external = (
+    channelId: string,
+    trigger: 'off' | 'mention',
+    triggerChosen = false
+  ): IntegrationChannelRecord => ({
+    ...channel(channelId, trigger),
+    triggerChosen,
+    externalReason: 'externallyShared'
+  })
+
+  it('lists the undecided external Off conversations, each also muted', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [
+      external('C1', 'off'),
+      external('C2', 'off', true),
+      external('C3', 'mention'),
+      channel('C4', 'off')
+    ])
+    expect(spec.core.mutedChannels).toEqual(['C1', 'C2', 'C4'])
+    expect(spec.core.pendingChannels).toEqual(['C1'])
+  })
+
+  it('is absent when nothing is pending, so an older daemon reads the spec exactly as before', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), external('C2', 'mention')])
+    expect(spec.core).not.toHaveProperty('pendingChannels')
+  })
+
+  it('stays absent for a gated integration, whose notice needs no list', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [external('C1', 'off')], RESTRICTED)
+    expect(spec.core).not.toHaveProperty('pendingChannels')
+  })
+
+  it('ships for a relay-managed bot too', async () => {
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      [external('C1', 'off')]
+    )
+    expect(spec?.core.pendingChannels).toEqual(['C1'])
+  })
+})
+
+describe('integrationToSpec chatAuthority', () => {
+  /** An organization whose session access sync is on (in any of its states) for exactly `synced` platforms. */
+  const policies = (synced: Record<string, 'enabling' | 'enabled' | 'degraded' | 'disabled'>) => ({
+    getExternalAccessPolicy: async (orgId: OrgId, provider: string) => {
+      const state = synced[provider]
+      return state ? { orgId, provider, state, currentRev: 1n, readFenceRev: null } : null
+    }
+  })
+
+  it.each(['enabling', 'enabled', 'degraded'] as const)(
+    'names the agent’s editors while the platform’s sync is %s',
+    async (state) => {
+      const spec = await integrationToSpec(PLATFORMS, policies({ slack: state }), INTEGRATION, bot(), SECRET)
+      expect(spec?.core.chatAuthority).toBe('editors')
+      const http = await httpIntegrationToSpec(
+        PLATFORMS,
+        policies({ slack: state }),
+        INTEGRATION,
+        bot({ transport: 'http' }),
+        SECRET
+      )
+      expect(http?.core.chatAuthority).toBe('editors')
+    }
+  )
+
+  it('names the agent’s editors on synced Feishu/Lark, whose members are matched by union_id', async () => {
+    const feishu = { ...INTEGRATION, platform: 'feishu' as const }
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      policies({ feishu: 'enabled' }),
+      feishu,
+      bot({ platform: 'feishu' }),
+      { botToken: 'secret', appToken: 'cli_a', signingSecret: null }
+    )
+    expect(spec?.core.chatAuthority).toBe('editors')
+  })
+
+  it('names anyone in a conversation whose members its platform cannot match, synced or not', async () => {
+    const telegram = { ...INTEGRATION, platform: 'telegram' as const }
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      policies({ telegram: 'enabled' }),
+      telegram,
+      bot({ platform: 'telegram' }),
+      { botToken: '123:abc', appToken: null, signingSecret: null }
+    )
+    expect(spec?.core.chatAuthority).toBe('participants')
+  })
+
+  it('names anyone in the conversation where the sync is off, never set, or on for another platform only', async () => {
+    const cases: Array<Parameters<typeof policies>[0]> = [{ slack: 'disabled' }, {}, { feishu: 'enabled' }]
+    for (const synced of cases) {
+      const spec = await integrationToSpec(PLATFORMS, policies(synced), INTEGRATION, bot(), SECRET)
+      expect(spec?.core.chatAuthority).toBe('participants')
+    }
+    expect((await specOf(INTEGRATION, SECRET)).core.chatAuthority).toBe('participants')
   })
 })
 
@@ -479,7 +613,14 @@ describe('By decision projection (decisions.md §7.1)', () => {
   })
 
   it('ships the bundle on a relay-managed spec without bind rules, muting held conversations', async () => {
-    const shared = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows())
+    const shared = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      rows()
+    )
     expect(shared?.core.bindRules).toEqual([])
     expect(shared?.core.mutedChannels).toEqual(['C2'])
     expect(shared?.core.decisions.bindings.map((b) => [b.channel, b.enabled])).toEqual([
@@ -488,6 +629,7 @@ describe('By decision projection (decisions.md §7.1)', () => {
     ])
     const gated = await httpIntegrationToSpec(
       PLATFORMS,
+      NO_SESSION_SYNC,
       INTEGRATION,
       bot({ transport: 'http' }),
       SECRET,
@@ -512,7 +654,14 @@ describe('shared-bot router projection on member specs (decisions.md §7.1)', ()
   const rows = () => [routedRow('R1'), routedRow('R2', { decisionRouting: { ...routing, enabled: false } })]
 
   it('binds every member as a held candidate without the router config', async () => {
-    const shared = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, rows())
+    const shared = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      rows()
+    )
     expect(shared?.core.bindRules).toEqual([])
     expect(shared?.core.mutedChannels).toEqual(['R2'])
     expect(shared?.core.decisions).toEqual({
@@ -527,6 +676,7 @@ describe('shared-bot router projection on member specs (decisions.md §7.1)', ()
   it('gives a gated member a decision rule for an enabled routed channel only', async () => {
     const gated = await httpIntegrationToSpec(
       PLATFORMS,
+      NO_SESSION_SYNC,
       INTEGRATION,
       bot({ transport: 'http' }),
       SECRET,
@@ -546,22 +696,22 @@ describe('integrationToSpec platform fences (§9)', () => {
     ])
     // A SERVED id (slack) whose provider is simply not composed — the case that
     // reaches the provider fence rather than `toDbPlatform`'s served-set check.
-    await expect(integrationToSpec(withoutSlack, INTEGRATION, bot(), SECRET, [])).rejects.toThrow(
+    await expect(integrationToSpec(withoutSlack, NO_SESSION_SYNC, INTEGRATION, bot(), SECRET, [])).rejects.toThrow(
       /no control-plane platform provider registered for slack/
     )
   })
 
   it('refuses an id outside the served set at the provider fence', async () => {
-    await expect(integrationToSpec(PLATFORMS, foreign, bot({ platform: 'mastodon' }), SECRET, [])).rejects.toThrow(
-      /no control-plane platform provider registered for mastodon/
-    )
+    await expect(
+      integrationToSpec(PLATFORMS, NO_SESSION_SYNC, foreign, bot({ platform: 'mastodon' }), SECRET, [])
+    ).rejects.toThrow(/no control-plane platform provider registered for mastodon/)
   })
 
   it('refuses a session-identity id, which has no persisted integration at all', async () => {
     const webchat = { ...INTEGRATION, platform: 'webchat' }
-    await expect(integrationToSpec(PLATFORMS, webchat, bot({ platform: 'webchat' }), SECRET, [])).rejects.toThrow(
-      /no control-plane platform provider registered for webchat/
-    )
+    await expect(
+      integrationToSpec(PLATFORMS, NO_SESSION_SYNC, webchat, bot({ platform: 'webchat' }), SECRET, [])
+    ).rejects.toThrow(/no control-plane platform provider registered for webchat/)
   })
 })
 
@@ -591,11 +741,13 @@ describe('a provider with no deliverable payload withholds the integration', () 
   ])
 
   it('answers null from the direct (socket) assembler', async () => {
-    expect(await integrationToSpec(withheld, INTEGRATION, bot(), SECRET, [])).toBeNull()
+    expect(await integrationToSpec(withheld, NO_SESSION_SYNC, INTEGRATION, bot(), SECRET, [])).toBeNull()
   })
 
   it('answers null from the shared (http) assembler', async () => {
-    expect(await httpIntegrationToSpec(withheld, INTEGRATION, bot({ transport: 'http' }), SECRET, [])).toBeNull()
+    expect(
+      await httpIntegrationToSpec(withheld, NO_SESSION_SYNC, INTEGRATION, bot({ transport: 'http' }), SECRET, [])
+    ).toBeNull()
   })
 
   it('still emits a spec when the provider returns a payload, including a falsy one', async () => {
@@ -612,7 +764,7 @@ describe('a provider with no deliverable payload withholds the integration', () 
         projectIntegrationConfig: () => Promise.resolve({})
       }
     ])
-    expect(await integrationToSpec(empty, INTEGRATION, bot(), SECRET, [])).toMatchObject({
+    expect(await integrationToSpec(empty, NO_SESSION_SYNC, INTEGRATION, bot(), SECRET, [])).toMatchObject({
       integrationId: INTEGRATION.id,
       config: {}
     })
@@ -637,7 +789,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       showStatusBar: false,
       fastMode: null,
       permissionMode: null,
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       pause: null,
       env: {},
       mcpServers: [],
@@ -661,7 +813,6 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
@@ -700,7 +851,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       showStatusBar: false,
       fastMode: null,
       permissionMode: 'plan',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       pause: null,
       env: {},
       mcpServers: [],
@@ -724,7 +875,6 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
@@ -751,7 +901,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       showStatusBar: false,
       fastMode: null,
       permissionMode: null,
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       pause: true,
       env: {},
       mcpServers: [],
@@ -775,7 +925,6 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
@@ -807,7 +956,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       showStatusBar: false,
       fastMode: null,
       permissionMode: null,
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       pause: null,
       env: {},
       mcpServers: [],
@@ -831,7 +980,6 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
@@ -860,7 +1008,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       showStatusBar: false,
       fastMode: null,
       permissionMode: null,
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       pause: null,
       env: {},
       mcpServers: [],
@@ -884,7 +1032,6 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
@@ -920,7 +1067,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       showStatusBar: false,
       fastMode: null,
       permissionMode: null,
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       pause: null,
       env: {},
       mcpServers: [],
@@ -944,7 +1091,6 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
@@ -953,5 +1099,40 @@ describe('agentRecordToSpec runtime overrides', () => {
 
     expect(agentRecordToSpec(base, { API_KEY: 'sk-1' })).toMatchObject({ secrets: { API_KEY: 'sk-1' } })
     expect(agentRecordToSpec(base, {})).toMatchObject({ secrets: {} })
+  })
+})
+
+describe('cronToUpsert asker (assistant-mode.md §5.5)', () => {
+  const cron = (over: Partial<CronRecord>): CronRecord =>
+    ({
+      id: '55555555-5555-4555-8555-555555555555',
+      orgId: OrgId('org-1'),
+      agentId: AgentId('66666666-6666-4666-8666-666666666666'),
+      name: null,
+      schedule: '0 9 * * 1-5',
+      timezone: 'UTC',
+      targetPlatform: 'slack',
+      targetChannel: null,
+      targetIntegrationId: null,
+      trigger: 'report',
+      enabled: true,
+      lastRunAt: null,
+      createdBy: null,
+      createdByUserId: null,
+      visibility: 'org',
+      sharedWith: [],
+      createdAt: new Date(0),
+      lastModifiedAt: new Date(0),
+      lastModifiedBy: null,
+      ...over
+    }) as CronRecord
+
+  it('reads as the last human editor, else the creator, and as nobody when neither is recorded', () => {
+    const editor = { userId: 'user-editor', displayName: null, email: 'e@example.test' }
+    expect(cronToUpsert(cron({ createdByUserId: 'user-creator', lastModifiedBy: editor }))?.askerUserId).toBe(
+      'user-editor'
+    )
+    expect(cronToUpsert(cron({ createdByUserId: 'user-creator' }))?.askerUserId).toBe('user-creator')
+    expect(cronToUpsert(cron({}))).not.toHaveProperty('askerUserId')
   })
 })

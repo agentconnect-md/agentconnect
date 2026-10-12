@@ -3,6 +3,7 @@ import type { Agent } from '../src/agents/agent-schema.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 import {
   applyCodexSessionFloor,
+  applyOrganizationModelCredential,
   applyConfiguredModelProviders,
   applyModelCredential,
   applyStaticModelConfig,
@@ -17,6 +18,73 @@ const runtime = (command: string, args: string[] = []): RuntimeDef => ({ command
 const agent = (runtimeId: string, model?: string): Pick<Agent, 'runtime' | 'runtimeOverrides'> => ({
   runtime: runtimeId,
   ...(model ? { runtimeOverrides: { model, env: [], secrets: [] } } : {})
+})
+
+describe('organization model credentials', () => {
+  it('replaces ambient Claude auth, endpoint and headers without changing the source', () => {
+    const source = {
+      ANTHROPIC_API_KEY: 'local-key',
+      ANTHROPIC_BASE_URL: 'https://gateway.example.test',
+      ANTHROPIC_AUTH_TOKEN: 'local-token',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      ANTHROPIC_CUSTOM_HEADERS: 'Authorization: local-header'
+    }
+    const env: Record<string, string> = { ...source }
+    applyOrganizationModelCredential('anthropic', { provider: 'anthropic', runtime: 'claude' }, env, {
+      apiKey: 'organization-key',
+      endpoint: null,
+      headers: { 'anthropic-workspace-id': 'example-workspace' }
+    })
+    expect(env).toMatchObject({
+      ANTHROPIC_API_KEY: 'organization-key',
+      ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+      ANTHROPIC_AUTH_TOKEN: '',
+      CLAUDE_CODE_USE_BEDROCK: '',
+      ANTHROPIC_CUSTOM_HEADERS: 'anthropic-workspace-id: example-workspace'
+    })
+    expect(source.ANTHROPIC_API_KEY).toBe('local-key')
+    expect(() =>
+      applyOrganizationModelCredential('anthropic', { provider: 'openai', runtime: 'codex' }, env, {
+        apiKey: 'organization-key',
+        endpoint: null,
+        headers: {}
+      })
+    ).toThrow('do not match')
+  })
+
+  it('uses ephemeral Codex authentication and preserves the provider headers', () => {
+    const env: Record<string, string> = {}
+    applyOrganizationModelCredential('openai', { provider: 'openai', runtime: 'codex' }, env, {
+      apiKey: 'organization-key',
+      endpoint: 'https://gateway.example.test/v1',
+      headers: { 'x-route': 'example-route' }
+    })
+    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST!)).toMatchObject({
+      methodId: 'gateway',
+      _meta: {
+        gateway: {
+          baseUrl: 'https://gateway.example.test/v1',
+          headers: { Authorization: 'Bearer organization-key', 'x-route': 'example-route' }
+        }
+      }
+    })
+  })
+
+  it('automatically binds OpenCode to the selected model provider and rejects unsupported providers', () => {
+    const env: Record<string, string> = {}
+    const target = modelProviderTarget(agent('opencode', 'anthropic/claude-sonnet-4'), runtime('opencode', ['acp']))
+    applyOrganizationModelCredential('auto', target, env, { apiKey: 'example-key', endpoint: null, headers: {} })
+    expect(env.ANTHROPIC_API_KEY).toBe('example-key')
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!).enabled_providers).toEqual(['anthropic'])
+    expect(() =>
+      applyOrganizationModelCredential(
+        'auto',
+        { provider: 'openai', runtime: 'opencode', opencodeProvider: 'openrouter' },
+        {},
+        { apiKey: 'example-key', endpoint: null, headers: {} }
+      )
+    ).toThrow(/do not match/)
+  })
 })
 
 describe('modelProviderTarget', () => {

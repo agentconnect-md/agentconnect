@@ -633,7 +633,7 @@ function injectHost(daemon: Daemon) {
 describe('session-control cards (/models tappable buttons)', () => {
   it('renders a tappable card for a bare /models with the current model flagged', async () => {
     const daemon = await boot()
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     const conn = makeTelegramRoutable(daemon)
     injectHost(daemon)
     await seedSession(daemon, '-100', 'tg:100')
@@ -647,7 +647,7 @@ describe('session-control cards (/models tappable buttons)', () => {
 
   it('applies the tapped button, acks it, and re-renders the card', async () => {
     const daemon = await boot()
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     const conn = makeTelegramRoutable(daemon)
     injectHost(daemon)
     const key = await seedSession(daemon, '-100', 'tg:100')
@@ -663,7 +663,7 @@ describe('session-control cards (/models tappable buttons)', () => {
 
   it('attributes an applied tap to the tapping user, and records nothing when refused', async () => {
     const daemon = await boot()
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     const conn = makeTelegramRoutable(daemon)
     injectHost(daemon)
     await seedSession(daemon, '-100', 'tg:100')
@@ -679,7 +679,7 @@ describe('session-control cards (/models tappable buttons)', () => {
     expect(applied[0]).toContain('U-DANA')
 
     // Withdraw chat authority: the next tap changes nothing, so it records nothing.
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = false
+    ;(daemon as any).agents.get('bot-a').chatActions = 'talk'
     lines.length = 0
     await (daemon as any).commands.handleTelegramCallback(
       { id: 'cb-b', data: 'm:0', channel: '-100', messageId: 55, userId: 'U-DANA' },
@@ -688,11 +688,53 @@ describe('session-control cards (/models tappable buttons)', () => {
     expect(lines.filter((l) => l.includes('select:model'))).toEqual([])
   })
 
+  it('answers a refused tap only to its tapper, saying who can change it and where', async () => {
+    const daemon = await boot()
+    ;(daemon as any).agents.get('bot-a').chatActions = 'approve'
+    const conn = makeTelegramRoutable(daemon)
+    injectHost(daemon)
+    const key = await seedSession(daemon, '-100', 'tg:100')
+
+    await (daemon as any).commands.handleTelegramCallback(
+      { id: 'cb-r', data: 'm:1', channel: '-100', messageId: 55, userId: 'U-DANA' },
+      conn
+    )
+    // The callback's own answer, shown as a dialog to the tapper alone — never a group message.
+    expect(conn.answerCallback).toHaveBeenCalledWith(
+      'cb-r',
+      expect.stringContaining('Only an Agent editor can change runtime settings.'),
+      { alert: true }
+    )
+    expect((conn.answerCallback.mock.calls.at(-1) as unknown[])[1]).toContain('/agents/bot-a')
+    expect(conn.postMessage).not.toHaveBeenCalled()
+    expect(conn.editCard).not.toHaveBeenCalled()
+    expect(await (daemon as any).store.getModelOverride(key)).toBeUndefined()
+  })
+
+  it('says where to change it without a console link that would not fit the alert', async () => {
+    const daemon = await boot()
+    ;(daemon as any).agents.get('bot-a').chatActions = 'approve'
+    ;(daemon as any).cfg.webAppUrl = `https://console.example.test/${'a'.repeat(160)}`
+    const conn = makeTelegramRoutable(daemon)
+    injectHost(daemon)
+    await seedSession(daemon, '-100', 'tg:100')
+
+    await (daemon as any).commands.handleTelegramCallback(
+      { id: 'cb-long', data: 'm:1', channel: '-100', messageId: 55, userId: 'U-DANA' },
+      conn
+    )
+    expect(conn.answerCallback).toHaveBeenCalledWith(
+      'cb-long',
+      'Only an Agent editor can change runtime settings. They can change them in the console.',
+      { alert: true }
+    )
+  })
+
   it('applies a callback only to a session owned by the bot that delivered the tap', async () => {
     const daemon = await boot()
     const { agentA, agentB, connB } = makeScopedTelegramPair(daemon)
-    agentA.allowRuntimeChangesInChat = true
-    agentB.allowRuntimeChangesInChat = true
+    agentA.chatActions = 'settings'
+    agentB.chatActions = 'settings'
     const host = {
       hasSession: () => true,
       modelOptions: () => ({ current: 'opus', models: ['opus', 'sonnet'] }),

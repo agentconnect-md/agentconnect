@@ -96,7 +96,7 @@ import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
-import { sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
+import { liveResumeMembers, sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
@@ -167,7 +167,6 @@ import {
   subsessionsTabStatus,
   type SubsessionsPanelVerdict
 } from '@/components/console/dock/SubsessionsPanel'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   PullRequestPanel,
   pullRequestTabStatus,
@@ -187,7 +186,7 @@ import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
 import { approvalNotice, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
-import { agentStrategyValue, strategyModelSource } from '@/lib/execution-strategy'
+import { agentStrategyValue, HOST_STRATEGY, strategyModelSource, strategyUsesImage } from '@/lib/execution-strategy'
 import {
   CodeHostDecisionResult,
   DecisionResultMarker,
@@ -196,6 +195,7 @@ import {
 import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
 import {
+  chatApprovalsAllowed,
   sessionEffortAfterModelChange,
   sessionEffortChoicesForSelection,
   sessionPermissionChoices,
@@ -462,14 +462,16 @@ function ComposerSendButton({
 }) {
   const t = useTranslations('Sessions.detail')
   const hasText = usePgDraftHasText(sessionId)
+  // Stop only while the composer is empty; a drafted follow-up still sends (queued or steered) mid-turn.
+  const stop = busy && !hasText && !hasImage
   return (
     <button
       className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
-      aria-label={busy ? t('stopResponse') : t('sendMessage')}
-      onClick={() => (busy ? onStop() : onSend())}
-      disabled={!busy && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
+      aria-label={stop ? t('stopResponse') : t('sendMessage')}
+      onClick={() => (stop ? onStop() : onSend())}
+      disabled={!stop && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
     >
-      <Icon name={busy ? 'square' : 'arrow-up'} size={busy ? 10 : 14} />
+      <Icon name={stop ? 'square' : 'arrow-up'} size={stop ? 10 : 14} />
     </button>
   )
 }
@@ -2692,6 +2694,7 @@ export default function SessionDetailView() {
     getPgQueue,
     pgCancelQueued,
     pgAddAgent,
+    pgRemoveAgent,
     pgSetModel,
     pgStageRuntime,
     pgSetEffort,
@@ -3196,12 +3199,9 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
-  // The conversation whose sub-sessions the dock lists: the focused participant's session, while that agent is in assistant mode and the console offers it.
+  // The conversation whose sub-sessions the dock lists: the focused participant's session, while that agent is in assistant mode.
   const subsessionsAgent = filesAgentId ? agentById.get(filesAgentId) : undefined
-  const subsessionsSessionId =
-    !MOCK_MODE && featureFlagEnabled('assistant-mode') && subsessionsAgent?.assistantMode?.enabled === true
-      ? tasksSessionId
-      : null
+  const subsessionsSessionId = !MOCK_MODE && subsessionsAgent?.assistantMode?.enabled === true ? tasksSessionId : null
   // An isolated session's own wake, with its own agent; the panel presses it only when the read says this session's arm places the watcher.
   const prSessionIsolation =
     currentSessionDetail && currentSessionDetail.id === prSessionId
@@ -3899,6 +3899,8 @@ export default function SessionDetailView() {
       continuationReason === 'daemon_offline' ||
       continuationReason === 'unavailable')
   const isLive = !readOnlySubsession && (isPg || isWebchat || isContinuable || continuationBlocked)
+  // The server says whether this caller owns a webchat conversation; a playground they opened is theirs until it answers.
+  const ownsThisConversation = currentSessionDetail ? currentSessionDetail.ownsConversation : isPg ? true : undefined
   // Where each agent runs NOW: a machine for a `daemon` placement, the set otherwise (a pool matched by `contentSetId`, a group by its holder).
   const placementByAgent = new Map(
     agents.map((agent) => [
@@ -3908,7 +3910,10 @@ export default function SessionDetailView() {
         : { daemonId: agent.daemon === '—' ? undefined : agent.daemon }
     ])
   )
-  const resumeConversationMembers = conversationKey ? conversationMembers : selfConversation?.sessions
+  const resumeConversationMembers = liveResumeMembers(
+    conversationKey ? conversationMembers : selfConversation?.sessions,
+    detailSession?.participants
+  )
   const resumeConversationLookupPending = conversationKey
     ? conversationLoading
     : Boolean(selfKey && selfConversationLoading)
@@ -3955,10 +3960,7 @@ export default function SessionDetailView() {
   const workspaceIcon = focusedAgent && isGitWorkspace(focusedAgent.workspace) ? 'git-branch' : 'folder'
   const focusedAgentLabel = focusedAgent ? agentLabel(focusedAgent) : (headerFocusOption?.label ?? 'agent')
   // Named by the focused agent's effective boundary, so a confined session is not offered a "worktree" it does not get (git-workspace-model.md §11).
-  const focusedIsolation = agentSessionIsolationLabel(
-    focusedAgent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false },
-    orgSetIds
-  )
+  const focusedIsolation = agentSessionIsolationLabel(focusedAgent ?? { execution: HOST_STRATEGY }, orgSetIds)
   const workspaceTitle = hasSessionWorktree
     ? `Open ${focusedAgentLabel}’s ${focusedIsolation.checkout}`
     : `Open ${focusedAgentLabel}’s workspace`
@@ -4148,20 +4150,13 @@ export default function SessionDetailView() {
       ? (agentId: string | undefined, appId: string): void =>
           pgCloseApp(session.id, agentId ?? session.agentId ?? '', appId, webchatConversationId)
       : undefined
-  // Mid-conversation join (webchat-multi-agents.md §3.1): a live playground
-  // conversation may GROW its roster; removal stays unsupported. The join is
-  // still playground-only — `pgAddAgent` mutates provider-side session state that
-  // an adopted webchat session never had — so a resumed conversation shows its
-  // roster (above) without the `+`.
+  // Joins and removals (§3.1/§3.1a) mutate provider-side state an adopted session never had, so they stay playground-only.
   const pgWorktree =
     worktreeSelections[session.id] ??
     getPgWorktree(session.id) ??
     (!!owner?.workspace && isGitWorkspace(owner.workspace) && owner.workspace.worktree === true)
   // The chip names the isolation by the owner's EFFECTIVE boundary (git-workspace-model.md §11), never by its stored sandbox flag.
-  const isolationLabel = agentSessionIsolationLabel(
-    owner ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false },
-    orgSetIds
-  )
+  const isolationLabel = agentSessionIsolationLabel(owner ?? { execution: HOST_STRATEGY }, orgSetIds)
   const canChooseWorktree =
     isPg &&
     !multiLive &&
@@ -4821,11 +4816,13 @@ export default function SessionDetailView() {
   // Live controls and status folded into the composer toolbar. Webchat `status`
   // frames are authoritative when they include choices. An idle or restored session
   // may not have a live frame, so fall back to the owning daemon's discovered catalog.
-  const allowRuntimeChangesInChat = owner?.allowRuntimeChangesInChat === true
   // A continuation adds human input but never session-global runtime
   // administration — pills stay hidden (§6.5).
   const runtimeChangesEnabled =
-    !isContinuable && !continuationBlocked && sessionRuntimeChangesEnabled(allowRuntimeChangesInChat, session)
+    !isContinuable && !continuationBlocked && sessionRuntimeChangesEnabled(owner, session, ownsThisConversation)
+  // People in chat may change settings here, just not this reader: the pill names who may.
+  const runtimeOwnersOnly =
+    !isContinuable && !continuationBlocked && !runtimeChangesEnabled && sessionRuntimeChangesEnabled(owner, session)
   const runtimeSelection = runtimeSelections[session.id]
   const setRuntimeSelection = (patch: {
     runtime?: string
@@ -4997,25 +4994,47 @@ export default function SessionDetailView() {
   // meta row → transcript. Both form factors put the run's numbers behind the
   // same Details popover. Breakpoint differences are CSS-gated (desktop: /
   // max-desktop:), never JS-forked.
-  // Approval requests are an action the user has to answer, so on a live session
-  // they ride inside the sticky composer footer (always above the input, never
-  // scrolled away). A non-live session has no composer — it keeps the top slot.
-  // Either way the strip shows only while something is PENDING; the full history
-  // (answered included) lives behind the header's Requests popover.
+  // The approval strip rides the sticky composer footer on a live session (the top slot otherwise) while something waits; the Requests popover keeps the history.
   const canReviewApprovals = Boolean(owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId)
+  // Where people in chat may approve, a webchat conversation's owner answers its own requests here too, through the conversation.
+  const ownerApprovals = Boolean(
+    !canReviewApprovals &&
+    (isWebchat || (isPg && session.realSessionId)) &&
+    !readOnlySubsession &&
+    ownsThisConversation === true &&
+    chatApprovalsAllowed(owner) &&
+    owner &&
+    !owner.name.startsWith(MOCK_PREFIX)
+  )
+  // A webchat conversation's proposals, the live Playground's included (assistant-mode.md §5.10): whoever may continue it and editors decide them here; the CP refuses anyone else.
+  const conversationProposals = Boolean(
+    (isWebchat || (isPg && session.realSessionId)) &&
+    !readOnlySubsession &&
+    owner?.assistantMode?.enabled === true &&
+    !owner.name.startsWith(MOCK_PREFIX)
+  )
   const approvalCard = (className: string) =>
-    canReviewApprovals && session.agentId ? (
+    (canReviewApprovals || ownerApprovals || conversationProposals) && session.agentId ? (
       <ApprovalRequestsCard
         key={session.id}
         agentId={session.agentId}
         sessionId={session.realSessionId ?? session.id}
         pendingOnly
+        permissions={canReviewApprovals || ownerApprovals}
+        conversationPermissions={ownerApprovals}
+        proposals={conversationProposals}
         className={className}
       />
     ) : null
+  // The Requests popover keeps an editor's history, this conversation's proposals included.
   const requestsPanel =
     canReviewApprovals && session.agentId ? (
-      <ApprovalRequestsCard bare agentId={session.agentId} sessionId={session.realSessionId ?? session.id} />
+      <ApprovalRequestsCard
+        bare
+        agentId={session.agentId}
+        sessionId={session.realSessionId ?? session.id}
+        proposals={conversationProposals}
+      />
     ) : null
 
   return (
@@ -6142,9 +6161,22 @@ export default function SessionDetailView() {
                                   </>
                                 )
                                 if (!pickRecipient) {
+                                  const removable = isPg && !p.primary && p.agentId !== session.agentId
                                   return (
                                     <span key={p.agentId} className={COMPOSER_PILL_STATIC} title={t('participant')}>
                                       {chip}
+                                      {removable && (
+                                        <button
+                                          type="button"
+                                          className="-mr-1 inline-flex h-4 w-4 flex-none cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
+                                          title={t('removeParticipant', { agent: p.name })}
+                                          aria-label={t('removeParticipant', { agent: p.name })}
+                                          disabled={pgBusy || pgQueue.length > 0}
+                                          onClick={() => void pgRemoveAgent(session.id, p.agentId)}
+                                        >
+                                          <Icon name="x" size={12} />
+                                        </button>
+                                      )}
                                     </span>
                                   )
                                 }
@@ -6203,8 +6235,9 @@ export default function SessionDetailView() {
                                 value={{ runtime: agentRuntime, model: pgShownModel }}
                                 source={pickerSource}
                                 runtimes={beforeFirstTurn ? undefined : [agentRuntime]}
-                                runInSandbox={owner?.runInSandbox}
+                                readsImage={!!owner && strategyUsesImage(owner.execution)}
                                 readOnly={!runtimeChangesEnabled}
+                                {...(runtimeOwnersOnly ? { readOnlyNote: runtimeModelT('readOnlyOwner') } : {})}
                                 decision={
                                   beforeFirstTurn && owner?.modelSelection
                                     ? {

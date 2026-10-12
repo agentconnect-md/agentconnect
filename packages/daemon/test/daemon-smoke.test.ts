@@ -50,6 +50,88 @@ function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', ico
 }
 
 describe('Daemon (no Slack, injected ACP host)', () => {
+  it('loads provider credentials for the selected agent, isolates the launch and fails closed when missing', async () => {
+    const root = scaffold()
+    const config = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))
+    config.runtimes.claude = { command: 'node', args: ['claude-agent-acp'] }
+    writeFileSync(join(root, 'config.json'), JSON.stringify(config))
+    const daemon = new Daemon({ root, slackAppFactory: fakeSlackAppFactory(), probeRuntimes: async () => [] })
+    const d = daemon as any
+    try {
+      await daemon.start()
+      const agent = d.agents.get('bot-a')
+      const requestProviderCredentials = vi.fn().mockResolvedValue({
+        credentials: {
+          apiKey: 'example-provider-key',
+          endpoint: 'https://api.example.test',
+          headers: { 'x-workspace': 'example-workspace' }
+        }
+      })
+      d.cpClient = { requestProviderCredentials }
+      expect(await d.requestModelProviderCredential(agent)).toBeUndefined()
+      expect(requestProviderCredentials).not.toHaveBeenCalled()
+      agent.modelProvider = 'anthropic'
+      await d.requestModelProviderCredential(agent)
+      expect(requestProviderCredentials).toHaveBeenLastCalledWith({ agentId: 'bot-a', provider: 'anthropic' })
+      agent.modelProvider = 'auto'
+      const credentials = await d.requestModelProviderCredential(agent)
+      expect(requestProviderCredentials).toHaveBeenCalledWith({ agentId: 'bot-a', provider: 'anthropic' })
+      const { host } = d.buildAcpHost(agent, d.cfg, {
+        hostKey: agentHostKey(agent.id),
+        strategy: 'host',
+        cwd: agent.workspace.path,
+        providerCredential: credentials
+      })
+      expect(host.opts.env).toMatchObject({
+        ANTHROPIC_API_KEY: 'example-provider-key',
+        ANTHROPIC_AUTH_TOKEN: '',
+        ANTHROPIC_BASE_URL: 'https://api.example.test'
+      })
+      expect(d.maskAgentSecrets(agent.id, 'echo example-provider-key example-workspace')).not.toContain(
+        'example-provider-key'
+      )
+      expect(d.maskAgentSecrets('another-agent', 'example-provider-key')).toBe('example-provider-key')
+      const local = d.buildAcpHost({ ...agent, id: 'another-agent', modelProvider: undefined }, d.cfg, {
+        hostKey: agentHostKey('another-agent'),
+        strategy: 'host',
+        cwd: agent.workspace.path
+      })
+      expect(local.host.opts.env.ANTHROPIC_API_KEY).not.toBe('example-provider-key')
+      requestProviderCredentials.mockResolvedValueOnce({ credentials: null })
+      await expect(d.requestModelProviderCredential(agent)).rejects.toThrow(/Configure the anthropic API key/)
+      requestProviderCredentials.mockRejectedValueOnce(new Error('example-provider-key'))
+      await expect(d.requestModelProviderCredential(agent)).rejects.toThrow(
+        /^Could not load the selected provider API key/
+      )
+      expect(() =>
+        d.buildAcpHost(agent, d.cfg, { hostKey: agentHostKey(agent.id), strategy: 'host', cwd: agent.workspace.path })
+      ).toThrow(/must be loaded/)
+      d.runtimes.opencode = { command: 'opencode', args: ['acp'], env: [] }
+      await d.requestModelProviderCredential({
+        ...agent,
+        runtime: 'opencode',
+        runtimeOverrides: { model: 'openai/gpt-5' }
+      })
+      expect(requestProviderCredentials).toHaveBeenLastCalledWith({ agentId: 'bot-a', provider: 'openai' })
+      await expect(
+        d.requestModelProviderCredential({
+          ...agent,
+          runtime: 'opencode',
+          runtimeOverrides: { model: 'openrouter/anthropic/claude-sonnet-4' }
+        })
+      ).rejects.toThrow(/do not match/)
+      d.k8s = {}
+      requestProviderCredentials.mockClear()
+      expect(await d.requestModelProviderCredential(agent)).toBeUndefined()
+      expect(requestProviderCredentials).not.toHaveBeenCalled()
+      d.k8s = undefined
+    } finally {
+      d.cpClient = undefined
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('sandboxes a host only when the agent opts in — skills are not force-sandboxed (#36)', async () => {
     const root = scaffold()
     const toolchain = join(root, 'shared-toolchain')
@@ -79,7 +161,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect((defaultHost as any).opts.sandbox).toBeUndefined()
       // Opting the agent into the sandbox confines it via the available mechanism.
       ;(daemon as any).hosts.delete('bot-a')
-      agent.runInSandbox = true
+      agent.execution = 'srt'
       expect((daemon as any).agentRunsInSandbox(agent)).toBe(true)
       const driverFor = vi.spyOn((daemon as any).localSrtExecutor, 'driverFor')
       const sandboxed = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
@@ -104,7 +186,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const root = scaffold()
     writeFileSync(
       join(root, 'config.json'),
-      JSON.stringify({ version: 1, controlPlane: { enabled: false }, security: { requireSandbox: true } })
+      JSON.stringify({ version: 1, controlPlane: { enabled: false }, sandbox: { host: false } })
     )
 
     await expect(

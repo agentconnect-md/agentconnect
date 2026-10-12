@@ -73,7 +73,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   ])
 }
 
-function scaffold(id: string, rt: RuntimeDef, creds: SlackCreds, runInSandbox: boolean): string {
+function scaffold(id: string, rt: RuntimeDef, creds: SlackCreds, execution: string): string {
   const dir = mkdtempSync(join(tmpdir(), `ac-live-${id}-`))
   writeFileSync(
     join(dir, 'config.json'),
@@ -88,8 +88,8 @@ function scaffold(id: string, rt: RuntimeDef, creds: SlackCreds, runInSandbox: b
       name: AGENT,
       status: 'active',
       runtime: id,
-      runInSandbox,
-      allowRuntimeChangesInChat: true,
+      execution,
+      chatActions: 'settings',
       workspace: { mode: 'from-scratch', path: join(adir, 'ws') },
       output: { mode: 'medium' },
       // Shared mode → the daemon opens a send-only Web-API client (no Socket Mode, no
@@ -113,7 +113,7 @@ export async function driveAgentThroughDaemon(id: string, rt: RuntimeDef, ctx: S
   const res: AgentResult = { id, reachable: false, features: {} }
   const sandboxMechanism = detectSandbox()
   const daemon = new Daemon({
-    root: scaffold(id, rt, ctx.creds, sandboxMechanism !== undefined),
+    root: scaffold(id, rt, ctx.creds, sandboxMechanism !== undefined ? 'srt' : 'host'),
     probeRuntimes: async () => []
   })
   const d = daemon as any

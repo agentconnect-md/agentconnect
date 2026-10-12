@@ -7,6 +7,7 @@ import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import { isTelegramMembershipServiceMessage, normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
+import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from './render.js'
 import type { PlatformConnection, PlatformReactionIntent } from '../platforms/contract.js'
 
 /** Core names the intent; Telegram's alphabet is a fixed set of literal emoji. */
@@ -98,6 +99,9 @@ export interface TelegramCallback {
   channel: string
   messageId: number
   userId: string
+  /** Whether the tapper is a bot, and their display name: presentation and the bot rule only, never an identity. */
+  isBot?: boolean
+  name?: string
   topicId?: string
 }
 
@@ -130,11 +134,20 @@ type InlineKeyboardMarkup = { inline_keyboard: { text: string; callback_data: st
  *  carries a keyboard OR a force-reply, never both. */
 type ForceReply = { force_reply: true; input_field_placeholder?: string }
 
+/** A Telegram user's display name: first and last name, else their username. */
+function telegramUserName(from: TelegramCallbackQuery['from']): string | undefined {
+  const full = [from?.first_name, from?.last_name]
+    .filter((part) => part?.trim())
+    .join(' ')
+    .trim()
+  return full || from?.username?.trim() || undefined
+}
+
 /** The raw grammY `callback_query` slice the connection reads. */
 export interface TelegramCallbackQuery {
   id: string
   data?: string
-  from?: { id: number }
+  from?: { id: number; is_bot?: boolean; first_name?: string; last_name?: string; username?: string }
   message?: { message_id: number; chat: { id: number }; message_thread_id?: number }
 }
 
@@ -329,12 +342,15 @@ export class TelegramConnection implements PlatformConnection {
       // A stray tap on a card whose message we can't identify is unactionable — ack it
       // (so the client's spinner clears) and drop it.
       if (!q.message || q.data == null) return
+      const name = telegramUserName(q.from)
       const cb: TelegramCallback = {
         id: q.id,
         data: q.data,
         channel: String(q.message.chat.id),
         messageId: q.message.message_id,
         userId: q.from ? String(q.from.id) : 'unknown',
+        ...(q.from?.is_bot !== undefined ? { isBot: q.from.is_bot } : {}),
+        ...(name ? { name } : {}),
         ...(q.message.message_thread_id != null ? { topicId: String(q.message.message_thread_id) } : {})
       }
       log?.debug(`telegram: callback ch=${cb.channel} user=${cb.userId} data=${JSON.stringify(cb.data)}`)
@@ -579,11 +595,18 @@ export class TelegramConnection implements PlatformConnection {
     })
   }
 
-  /** Acknowledge an inline-keyboard tap (clears the client's loading spinner; the
-   *  optional `text` shows as a transient toast). Not queued — a quick standalone ack. */
-  async answerCallback(callbackId: string, text?: string): Promise<void> {
+  /** Acknowledge an inline-keyboard tap; `text` shows as a toast, or a dialog with `alert`, to the tapper alone. */
+  async answerCallback(callbackId: string, text?: string, opts: { alert?: boolean } = {}): Promise<void> {
+    // Telegram refuses a longer answer, so one is cut rather than lost; a refusal is already built to fit.
+    const shown =
+      text && text.length > TELEGRAM_CALLBACK_ANSWER_LIMIT
+        ? `${text.slice(0, TELEGRAM_CALLBACK_ANSWER_LIMIT - 1)}…`
+        : text
     try {
-      await this.bot.api.answerCallbackQuery(callbackId, text ? { text } : undefined)
+      await this.bot.api.answerCallbackQuery(
+        callbackId,
+        shown ? { text: shown, ...(opts.alert ? { show_alert: true } : {}) } : undefined
+      )
     } catch (err) {
       this.deps.log?.debug(`telegram: answerCallbackQuery failed: ${(err as Error).message}`)
     }
@@ -682,8 +705,8 @@ export class TelegramConnection implements PlatformConnection {
       id: String(c.id ?? channel),
       name: (c.title ?? c.username ?? privateName) || undefined,
       isIm: c.type === 'private',
-      // A group/supergroup without a public @username is effectively private.
-      isPrivate: c.type === 'group' || c.type === 'supergroup' ? !c.username : c.type !== 'channel'
+      // Only a group or channel with a public @username is open to anyone.
+      isPrivate: c.type === 'private' || !c.username
     }
   }
 

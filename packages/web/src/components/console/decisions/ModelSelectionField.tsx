@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, type DragEvent } from 'react'
+import { useEffect, useState, type DragEvent, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
@@ -92,7 +92,9 @@ export function ModelSelectionField({
   onFallbackChange,
   source,
   runtimes,
-  runInSandbox
+  readsImage,
+  requireAvailableModel = false,
+  aside
 }: {
   agentId?: string
   value: AgentModelSelection | null
@@ -102,7 +104,11 @@ export function ModelSelectionField({
   onFallbackChange(value: DecisionRuntimeTarget): void
   source?: RuntimeModelSource
   runtimes: readonly string[]
-  runInSandbox?: boolean
+  /** Whether the agent's strategy starts the image's runtime install, so a profile's image-binary warning applies. */
+  readsImage?: boolean
+  requireAvailableModel?: boolean
+  /** A field shown beside the fixed picker, or under the Decision chain. */
+  aside?: ReactNode
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
   const tDecisions = useTranslations('Decisions')
@@ -145,19 +151,21 @@ export function ModelSelectionField({
   const fallbackAvailable = source?.runtimeModels
     .find((profile) => profile.runtime === fallback.runtime)
     ?.models.includes(fallback.model)
-  const valid = !active || (!!configuration && !!fallbackAvailable && !missingModel && issues.length === 0)
+  const valid =
+    (!requireAvailableModel || !!fallbackAvailable) &&
+    (!active || (!!configuration && !!fallbackAvailable && !missingModel && issues.length === 0))
   useEffect(() => onValidityChange(valid), [valid, onValidityChange])
   // Fixed and By decision share one control: the fallback's run settings are the agent's own.
   const fallbackPicker = (dense: boolean) => (
     <RuntimeModelSelect
       dense={dense}
       runSettings
-      allowRuntimeOnly={!active}
+      allowRuntimeOnly={!active && !requireAvailableModel}
       value={fallback}
       onChange={onFallbackChange}
       source={source}
       runtimes={runtimes}
-      runInSandbox={runInSandbox}
+      readsImage={readsImage}
     />
   )
   const fallbackPanel = (
@@ -249,7 +257,7 @@ export function ModelSelectionField({
                 ariaLabel={ariaLabel}
                 source={source}
                 runtimes={runtimes}
-                runInSandbox={runInSandbox}
+                readsImage={readsImage}
                 onChange={(target) => onPick(target)}
               />
             </div>
@@ -631,9 +639,19 @@ export function ModelSelectionField({
         )}
       </div>
       {!active ? (
-        <div className="fld">
-          <span className="fldlbl">{t('providerModel')}</span>
-          <div className="w-[340px] max-w-full">{fallbackPicker(false)}</div>
+        <div className="grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
+          <div className="fld min-w-0">
+            <span className="fldlbl" title={t('providerModelTitle')}>
+              {t('providerModel')}
+            </span>
+            {fallbackPicker(false)}
+            {requireAvailableModel && !fallbackAvailable && (
+              <div role="alert" className="text-[12px] text-(--status-error)">
+                {t('savedModelUnavailable')}
+              </div>
+            )}
+          </div>
+          {aside}
         </div>
       ) : (
         <>
@@ -682,6 +700,7 @@ export function ModelSelectionField({
             </div>
           )}
           <p className="m-0 text-[12px] text-(--text-tertiary)">{t('help')}</p>
+          {aside}
         </>
       )}
       {error && (

@@ -1,6 +1,9 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { AgentModelProvider } from '@agentconnect.md/protocol'
+import { ModelProviderField } from '@/components/console/ModelProviderField'
+import { useSavedModelSource } from '@/lib/use-saved-model-source'
 import { useTranslations } from 'next-intl'
 import {
   FALLBACK_RUNTIME_IDS,
@@ -48,7 +51,7 @@ import {
   type SecretDraft
 } from '@/components/console/EnvSecretsFields'
 import { OutputModeField } from '@/components/console/OutputModeField'
-import { RuntimeChatField } from '@/components/console/RuntimeChatField'
+import { ChatActionsField } from '@/components/console/ChatActionsField'
 import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
 import {
   agentStrategies,
@@ -56,6 +59,8 @@ import {
   daemonStrategies,
   executionAsk,
   groupStrategies,
+  HOST_ONLY_TABLE,
+  HOST_STRATEGY,
   strategyModelSource,
   strategyOptions,
   strategyUsesImage,
@@ -166,14 +171,16 @@ export default function EditAgentModal({
   const initialShowFooter = useRef(agent.showFooter)
   const [showStatusBar, setShowStatusBar] = useState(agent.showStatusBar)
   const initialShowStatusBar = useRef(agent.showStatusBar)
+  const [modelProvider, setModelProvider] = useState<AgentModelProvider | null>(null)
+  const initialModelProvider = useRef<AgentModelProvider | null>(null)
   const [effort, setEffort] = useState('')
   const initialEffort = useRef('')
   const [fastMode, setFastMode] = useState(agent.fastMode)
   const initialFastMode = useRef(agent.fastMode)
   const [permissionMode, setPermissionMode] = useState(permissionModeDefault(agent.runtime))
   const initialPermissionMode = useRef(permissionModeDefault(agent.runtime))
-  const [allowRuntimeChangesInChat, setAllowRuntimeChangesInChat] = useState(agent.allowRuntimeChangesInChat)
-  const initialAllowRuntimeChangesInChat = useRef(agent.allowRuntimeChangesInChat)
+  const [chatActions, setChatActions] = useState(agent.chatActions)
+  const initialChatActions = useRef(agent.chatActions)
   const [introduceOnJoin, setIntroduceOnJoin] = useState(agent.introduceOnJoin)
   const initialIntroduceOnJoin = useRef(agent.introduceOnJoin)
   const [execution, setExecution] = useState(() => agentStrategyValue(agent))
@@ -244,6 +251,8 @@ export default function EditAgentModal({
         initialModel.current = dto.model ?? ''
         setModelSelection(dto.modelSelection ?? null)
         initialModelSelection.current = dto.modelSelection ?? null
+        setModelProvider(dto.modelProvider ?? null)
+        initialModelProvider.current = dto.modelProvider ?? null
         setEffort(dto.reasoningEffort ?? '')
         initialEffort.current = dto.reasoningEffort ?? ''
         const nextOutputMode = isOutputMode(dto.outputMode) ? dto.outputMode : ''
@@ -257,27 +266,15 @@ export default function EditAgentModal({
         initialFastMode.current = dto.fastMode ?? false
         setPermissionMode(dto.permissionMode ?? permissionModeDefault(dto.runtime ?? ''))
         initialPermissionMode.current = dto.permissionMode ?? permissionModeDefault(dto.runtime ?? '')
-        setAllowRuntimeChangesInChat(dto.allowRuntimeChangesInChat ?? false)
-        initialAllowRuntimeChangesInChat.current = dto.allowRuntimeChangesInChat ?? false
+        setChatActions(dto.chatActions ?? 'talk')
+        initialChatActions.current = dto.chatActions ?? 'talk'
         setIntroduceOnJoin(dto.introduceOnJoin ?? false)
         initialIntroduceOnJoin.current = dto.introduceOnJoin ?? false
-        const storedExecution = agentStrategyValue({
-          execution: dto.execution ?? null,
-          runInSandbox: dto.runInSandbox ?? false
-        })
+        // An older CP that names no strategy reads as the unplaced agent's host-only table.
+        const storedExecution = agentStrategyValue({ execution: dto.execution ?? HOST_STRATEGY })
         setExecution(storedExecution)
         initialExecution.current = storedExecution
-        setSavedStrategies(
-          agentStrategies(
-            {
-              strategies: dto.strategies ?? null,
-              sandboxSupported: dto.sandboxSupported ?? false,
-              sandboxRequired: dto.sandboxRequired ?? false,
-              sandboxUnavailable: dto.sandboxUnavailable ?? null
-            },
-            false
-          )
-        )
+        setSavedStrategies(agentStrategies({ strategies: dto.strategies ?? HOST_ONLY_TABLE }, false))
         const fresh: SharingValue = { visibility: dto.visibility, sharedWith: dto.sharedWith }
         setSharing(fresh)
         initialSharing.current = fresh
@@ -415,7 +412,10 @@ export default function EditAgentModal({
   // Only a strategy that starts the image's install reads its image-binary warning.
   const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(execution)
   // Models come from the chosen strategy's catalog: the host install's for host and srt, the image's for a VM.
-  const modelSource = daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : execution)
+  const strategySource =
+    daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : execution)
+  const savedCredentials = daemonId !== POOL_PLACEMENT && modelProvider !== null
+  const modelSource = useSavedModelSource(strategySource, savedCredentials)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
     // With the flag off the picker offers Cloud only to an agent already ON it — same rule
@@ -502,7 +502,11 @@ export default function EditAgentModal({
   // Preserve the configured runtime while keeping the selected daemon's reported choices authoritative.
   const reportedRuntimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : []
   const runtimeIds = daemon ? reportedRuntimeIds : FALLBACK_RUNTIME_IDS
-  const runtimeOptions = runtime && !runtimeIds.includes(runtime) ? [runtime, ...runtimeIds] : runtimeIds
+  const runtimeOptions = savedCredentials
+    ? selectableRuntimeIds(modelSource!, runtime)
+    : runtime && !runtimeIds.includes(runtime)
+      ? [runtime, ...runtimeIds]
+      : runtimeIds
   const runtimeMeta = acpRuntime(acpRegistry, runtime)
   // Models are only what the daemon reports for this runtime — advertised ids
   // verbatim, never a synthesized "Default" entry: an agent without an explicit
@@ -514,7 +518,9 @@ export default function EditAgentModal({
   const runtimeProfile = modelSource?.runtimeModels.find((r) => r.runtime === runtime)
   const reportedModels = runtimeProfile?.models ?? []
   const selectedModel =
-    model && (reportedModels.includes(model) || daemonChanged) ? model : preferredModelFor(modelSource, runtime)
+    model && (savedCredentials || reportedModels.includes(model) || daemonChanged)
+      ? model
+      : preferredModelFor(modelSource, runtime)
   const runtimeUnavailable = daemonChanged && reportedRuntimeIds.length > 0 && !reportedRuntimeIds.includes(runtime)
   const modelUnavailable =
     daemonChanged && !!selectedModel && reportedModels.length > 0 && !reportedModels.includes(selectedModel)
@@ -523,6 +529,8 @@ export default function EditAgentModal({
     execution !== initialExecution.current && !!model && !!selectedModel && selectedModel !== model
       ? selectedModel
       : undefined
+  const credentialModel =
+    savedCredentials && modelProvider !== initialModelProvider.current && !model ? selectedModel : undefined
 
   // Agent-call reachability, computed with THIS agent's in-progress policy so the
   // "X of Y" hints track the pending edits (same graph the standalone card built).
@@ -568,6 +576,7 @@ export default function EditAgentModal({
   const secretsChanged = Object.keys(secretsPatch).length > 0
   const modelSelectionChanged = JSON.stringify(modelSelection) !== JSON.stringify(initialModelSelection.current)
   const validateModelSelection =
+    savedCredentials ||
     modelSelectionChanged ||
     model !== initialModel.current ||
     runtime !== initialRuntime.current ||
@@ -578,20 +587,21 @@ export default function EditAgentModal({
     ...(normalizedDisplayName !== (initialDisplayName.current.trim() || null)
       ? { displayName: normalizedDisplayName }
       : {}),
-    ...(strategyModel
-      ? { model: strategyModel }
+    ...(strategyModel || credentialModel
+      ? { model: strategyModel || credentialModel }
       : model !== initialModel.current
         ? { model: model || (modelSelection ? selectedModel : null) }
         : {}),
     ...(modelSelectionChanged ? { modelSelection, ...(modelSelection && !model ? { model: selectedModel } : {}) } : {}),
     ...(runtime.trim() !== initialRuntime.current ? { runtime: runtime.trim() } : {}),
+    ...(daemonId !== POOL_PLACEMENT && modelProvider !== initialModelProvider.current ? { modelProvider } : {}),
     ...(effort !== initialEffort.current ? { reasoningEffort: effort || null } : {}),
     ...(outputMode !== initialOutputMode.current ? { outputMode: outputMode || null } : {}),
     ...(showFooter !== initialShowFooter.current ? { showFooter } : {}),
     ...(showStatusBar !== initialShowStatusBar.current ? { showStatusBar } : {}),
     ...(fastMode !== initialFastMode.current ? { fastMode } : {}),
     ...(permissionMode !== initialPermissionMode.current ? { permissionMode } : {}),
-    ...(allowRuntimeChangesInChat !== initialAllowRuntimeChangesInChat.current ? { allowRuntimeChangesInChat } : {}),
+    ...(chatActions !== initialChatActions.current ? { chatActions } : {}),
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
     // Saved before any move, so it is asked of the saved placement.
     ...(execution !== initialExecution.current ? executionAsk(savedStrategies, execution) : {}),
@@ -782,8 +792,10 @@ export default function EditAgentModal({
                   />
                 </div>
                 {/* Placement belongs to Basics; runtime and model are configured together below. */}
-                <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px]">
-                  <div className="fld">
+                <div
+                  className={`desktop:col-span-2 grid grid-cols-1 gap-[14px] ${daemonId !== POOL_PLACEMENT ? 'desktop:grid-cols-2' : ''}`}
+                >
+                  <div className="fld min-w-0">
                     <div className="flex items-center justify-between gap-3">
                       <span className="fldlbl">{t('runsOn')}</span>
                       {!!initialDaemonId.current && !daemonChanged && (
@@ -804,8 +816,7 @@ export default function EditAgentModal({
                       options={daemonOptions}
                       placeholder={t('edit.noDaemon')}
                       onChange={(nextDaemonId) => {
-                        // Chaining through ModalProvider replaces this dialog; Continue reopens it
-                        // with the fresh daemon listed (same path as the unplaced agent's chip).
+                        // Continue reopens this dialog with the fresh daemon listed.
                         if (nextDaemonId === ADD_DAEMON) {
                           openModal('daemon', agent, { focusSection: 'basics' })
                           return
@@ -816,9 +827,12 @@ export default function EditAgentModal({
                       }}
                     />
                   </div>
+                  {daemonId !== POOL_PLACEMENT && (
+                    <ModelProviderField value={modelProvider} onChange={setModelProvider} />
+                  )}
                   {/* Keep the placement warning with the daemon selector. */}
                   {sourceDaemon && sourceUnavailable && (
-                    <div className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
+                    <div className="col-span-full flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
                       <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
                       <div className="min-w-0 flex-1">
                         <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
@@ -849,13 +863,19 @@ export default function EditAgentModal({
               <ModelSelectionField
                 agentId={agent.id}
                 value={modelSelection}
-                onChange={setModelSelection}
+                onChange={(value) => {
+                  setModelSelection(value)
+                  if (savedCredentials) setModelProvider('auto')
+                }}
                 onValidityChange={setModelSelectionValid}
                 fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
                 source={modelSource}
                 runtimes={runtimeOptions}
-                runInSandbox={readsImage}
+                readsImage={readsImage}
+                requireAvailableModel={savedCredentials}
+                aside={<ChatActionsField value={chatActions} onChange={setChatActions} />}
                 onFallbackChange={(target) => {
+                  if (savedCredentials) setModelProvider('auto')
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)
                   setModel((stored) => storedModelAfterPick(target, runtime, selectedModel, stored))
                   setEffort(
@@ -872,7 +892,6 @@ export default function EditAgentModal({
                 }}
               />
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-                <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
                 {placementStrategies.kind !== 'pool' && (
                   <ExecutionStrategyField
                     options={executionOptions}

@@ -19,13 +19,9 @@ export type StrategyAvailability = { available: true } | { available: false; rea
 
 export type StrategyTable = Record<SandboxStrategy, StrategyAvailability>
 
-/** The strategy an agent's sessions run in (§5): its `execution`, or for one the Control Plane has not migrated, `runInSandbox` read as the migration will read it. */
-export function agentStrategyOf(
-  agent: { execution?: string; runInSandbox?: boolean },
-  legacyBackend: 'srt' | 'microsandbox' | undefined
-): string {
-  if (agent.execution) return agent.execution
-  return agent.runInSandbox ? (legacyBackend ?? 'srt') : 'host'
+/** The strategy an agent's sessions run in (§5): its `execution`, `host` while a hand-authored file names none. */
+export function agentStrategyOf(agent: { execution?: string }): string {
+  return agent.execution || 'host'
 }
 
 /** Whether a slug names one of this machine's strategies. */

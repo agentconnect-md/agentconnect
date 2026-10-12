@@ -34,10 +34,10 @@
     "semantic-release": "^25.0.8"
   },
   "devDependencies": {
-    "@formatjs/icu-messageformat-parser": "^3.5.20",
-    "@types/node": "^24.19.0",
-    "@typescript-eslint/parser": "^8.71.0",
-    "eslint": "^10.11.0",
+    "@formatjs/icu-messageformat-parser": "^3.5.21",
+    "@types/node": "^24.19.1",
+    "@typescript-eslint/parser": "^8.71.1",
+    "eslint": "^10.12.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-import-resolver-typescript": "^4.4.5",
     "eslint-plugin-import-x": "^4.17.1",
@@ -46,11 +46,11 @@
     "prettier": "^3.9.9",
     "prettier-package-json": "^2.8.0",
     "prettier-plugin-sh": "^0.20.2",
-    "promptfoo": "0.123.1",
+    "promptfoo": "0.124.0",
     "semver": "^7.8.5",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.71.0",
-    "vitest": "^5.0.2",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.3",
     "yaml": "^2.9.1"
   },
   "engines": {

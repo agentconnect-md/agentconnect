@@ -63,6 +63,7 @@ import type {
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } from './placement.js'
+import { pendingExternalConversation } from '../domain/conversation-defaults.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
@@ -911,14 +912,9 @@ export class HttpBotOrchestrator {
       if (!agent) continue
       const kind = conversation.kind === 'mpim' ? ('mpim' as const) : ('im' as const)
       const reported = { ...conversation, kind }
-      // Resolved per install, because a shared bot's installs are different agents with
-      // different audiences — the same DM may be open for one and Off for the next.
-      const defaultTrigger = isGatedAgent(agent)
-        ? await this.gatedConversationTrigger(agent, bot, reported)
-        : kind === 'im'
-          ? ('any' as const)
-          : ('mention' as const)
-      await this.channels.upsertConversation(install.id, reported, { defaultTrigger })
+      // Per install, since installs have different audiences; an ungated one takes the repository's open default (§14.9).
+      const defaultTrigger = isGatedAgent(agent) ? await this.gatedConversationTrigger(agent, bot, reported) : undefined
+      await this.channels.upsertConversation(install.id, reported, defaultTrigger ? { defaultTrigger } : undefined)
     }
     await this.syncRoutes(botId)
   }
@@ -1522,12 +1518,21 @@ export class HttpBotOrchestrator {
     for (const [channelId, ownerId] of conversationOwner) {
       if (!byAgent.has(ownerId)) muted.add(channelId)
     }
+    // The Off conversations nobody enabled keep the notice: a gated owner's, or an ungated owner's undecided external one (§14.9).
     const gatedOff = new Set(
       chans
         .filter((c) => c.trigger === 'off')
         .filter((c) => {
           const agent = c.agentId ? agentById.get(c.agentId) : undefined
-          return !!agent && isGatedAgent(agent)
+          if (!agent) return false
+          if (isGatedAgent(agent)) return true
+          // Read conversation-wide, as ownership convergence does: any sibling may carry the decision or the detection.
+          const rows = chans.filter((row) => row.channelId === c.channelId)
+          return pendingExternalConversation({
+            trigger: c.trigger,
+            triggerChosen: rows.some((row) => row.triggerChosen),
+            externalReason: rows.find((row) => row.externalReason)?.externalReason ?? null
+          })
         })
         .map((c) => c.channelId)
     )
@@ -1691,7 +1696,7 @@ export class HttpBotOrchestrator {
     // per install, so filter by integrationId.
     for (const { integration, agent } of compiled.placed) {
       const channels = compiled.botChannels.filter((c) => c.integrationId === integration.id)
-      const spec = await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, agent)
+      const spec = await httpIntegrationToSpec(this.platforms, this.sessions, integration, bot, secret, channels, agent)
       // No deliverable spec ⇒ the provider's own credential for this bot is gone (a revoked or
       // swept grant). PULL the send-only bundle instead of leaving the daemon on the last good
       // one — the same teardown `revokeBot` performs for a credential the workspace revoked.

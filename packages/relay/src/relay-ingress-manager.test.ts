@@ -32,11 +32,12 @@ import {
   forwardSessionStop,
   httpSlackActionMsgId,
   httpSlackShortcutMsgId,
-  httpSlackStopMsgId
+  httpSlackStopMsgId,
+  slackIngressPlugin
 } from './platforms/slack/ingress-plugin.js'
 import { forwardFeishuCardAction, httpFeishuActionMsgId } from './platforms/feishu/ingress-plugin.js'
 import { DemuxIndex, relayIngressPlugins } from './platforms/registry.js'
-import type { RelayBotIngress, RelayPlatformIngressPlugin } from './platforms/contract.js'
+import type { RelayBotIngress, RelayForwardOutcome, RelayPlatformIngressPlugin } from './platforms/contract.js'
 import { BotArbitrationRouter, mapAgentDirectory, toRoutesPatch, type BotAssignment } from './bot-arbitration.js'
 import type {
   HttpSlackSessionAction,
@@ -128,7 +129,7 @@ interface ManagerInternals {
   reportRevoked(m: { botId: string; reason: 'app_uninstalled' | 'tokens_revoked'; credentialRevision?: number }): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   ingressHost: import('./platforms/contract.js').RelayIngressHost
-  forward(botId: string, msg: WireNormalizedMessage): Promise<void>
+  forward(botId: string, msg: WireNormalizedMessage): Promise<RelayForwardOutcome>
 }
 
 /**
@@ -558,6 +559,59 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
     })
   })
 
+  it('routes a permission or elicitation click on a shared app to the integration its card names, and drops one naming none', async () => {
+    const accept = async (msg: RdMsgPlatformAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true })
+    const first = vi.fn(accept)
+    const second = vi.fn(accept)
+    const daemons: Record<string, RelayDaemonConnection> = {
+      [DAEMON_ID]: { sendMsg: first } as unknown as RelayDaemonConnection,
+      [OTHER_DAEMON_ID]: { sendMsg: second } as unknown as RelayDaemonConnection
+    }
+    const manager = new RelayIngressManager(deps({ getDaemon: (daemonId) => daemons[daemonId] }))
+    const internals = internalsOf(manager)
+    internals.router.upsert({
+      botId: BOT_ID,
+      platform: 'feishu',
+      secrets: { verificationToken: 'verify-token' },
+      apiAppId: 'cli_http_app',
+      members: [
+        { daemonId: DAEMON_ID, agentIds: [AGENT_ID] },
+        { daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] }
+      ],
+      agents: [
+        { agentId: AGENT_ID, name: 'Agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID },
+        {
+          agentId: OTHER_AGENT_ID,
+          name: 'Review Agent',
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID
+        }
+      ],
+      routes: []
+    })
+    const target = { v: 1, agentId: OTHER_AGENT_ID, integrationId: OTHER_INTEGRATION_ID }
+    const click = (value: Record<string, unknown>): WireFeishuCardActionEvent => ({
+      context: { open_message_id: 'om_card', open_chat_id: 'oc_chat' },
+      operator: { open_id: 'ou_human', union_id: 'on_human' },
+      action: { tag: 'button', value }
+    })
+    const permission = { action: 'agentconnect_approval', request: 'req-1', option: '0' }
+    const elicitation = { action: 'agentconnect_elicit', request: 'req-2', token: 'ok' }
+
+    for (const value of [permission, elicitation])
+      await forwardFeishuCardAction(internals.ingressHost, BOT_ID, click({ ...value, target }), `evt-${value.request}`)
+    expect(first).not.toHaveBeenCalled()
+    expect(second.mock.calls.map(([msg]) => [msg.agentId, msg.integrationId])).toEqual([
+      [OTHER_AGENT_ID, OTHER_INTEGRATION_ID],
+      [OTHER_AGENT_ID, OTHER_INTEGRATION_ID]
+    ])
+
+    // Without a target the shared app has no sole integration, so the click reaches nobody.
+    await forwardFeishuCardAction(internals.ingressHost, BOT_ID, click(permission), 'evt-untargeted')
+    expect(first).not.toHaveBeenCalled()
+    expect(second).toHaveBeenCalledTimes(2)
+  })
+
   it('ignores the RETIRED Feishu-named ack slot — the generic response is the one answer', async () => {
     // S1b cleanup: the named slot left RdAck one release after every fleet daemon
     // began filling `response` (#521). An ack carrying only the stale key (which
@@ -717,6 +771,54 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     )
     expect(first.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, trustedRouteVia: 'mention' })
     expect(second.mock.calls[0]![0]).toMatchObject({ agentId: OTHER_AGENT_ID, trustedRouteVia: 'implicit' })
+  })
+
+  it('reports retry only when no target took the message and a resend can still land', async () => {
+    const acks: Record<string, Partial<RdAck> | 'offline'> = {}
+    const daemon = (id: string) =>
+      ({
+        sendMsg: async (m: RdMsgIm): Promise<RdAck> => ({
+          msgId: m.msgId,
+          accepted: true,
+          ...(acks[id] as Partial<RdAck>)
+        }),
+        supports: () => true
+      }) as unknown as RelayDaemonConnection
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: (id) => (acks[id] === 'offline' ? undefined : daemon(id)) })
+    )
+    const internals = internalsOf(manager)
+    const shared = channelAutoOwned()
+    shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+    shared.agents.push({ agentId: OTHER_AGENT_ID, name: 'Other' })
+    shared.routes.push({
+      agentId: OTHER_AGENT_ID,
+      daemonId: OTHER_DAEMON_ID,
+      integrationId: OTHER_INTEGRATION_ID,
+      scope: { channel: 'C123' },
+      match: { kind: 'auto' }
+    })
+    internals.router.upsert(shared)
+    const send = (n: number) => internals.forward(BOT_ID, followUp({ msgId: `slack:C123:outcome-${n}` }))
+
+    // One daemon took the fan-out: a resend would hand that target the message twice.
+    acks[DAEMON_ID] = {}
+    acks[OTHER_DAEMON_ID] = 'offline'
+    expect(await send(1)).toBe('accepted')
+    // Neither daemon is connected to this relay yet, as right after a rollout.
+    acks[DAEMON_ID] = 'offline'
+    expect(await send(2)).toBe('retry')
+    // A duty refusal the rendezvous cannot place is transient too.
+    acks[DAEMON_ID] = { accepted: false, reason: RD_ACK_NOT_HOLDER }
+    expect(await send(3)).toBe('retry')
+    // A deliberate gate consumed the message; a resend changes nothing.
+    acks[DAEMON_ID] = acks[OTHER_DAEMON_ID] = {
+      accepted: true,
+      reason: 'off',
+      routeAdmission: 'rejected',
+      recoverable: false
+    }
+    expect(await send(4)).toBe('accepted')
   })
 
   it("reads a normalizer's mention stamp as an explicit address before the bot's identity is known", async () => {
@@ -2729,6 +2831,51 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(ingest.postText).toHaveBeenCalledTimes(1)
   })
 
+  // resource-visibility.md §14.9: on a bot with no gated member, the CP's undecided Off (an external place) still speaks once.
+  describe('an undecided Off on an ungated bot', () => {
+    const ungated = (over: Partial<BotAssignment> = {}): BotAssignment => ({
+      ...gatedAssignment(),
+      gatedAgentIds: [],
+      routes: [
+        {
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID,
+          match: { kind: 'keyword', value: 'agent' }
+        }
+      ],
+      defaultAgentId: AGENT_ID,
+      defaultDaemonId: DAEMON_ID,
+      ...over
+    })
+    const setUp = (assignment: BotAssignment) => {
+      const sendMsg = vi.fn(async (msg: RdMsgIm): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+      const daemon = { sendMsg } as unknown as RelayDaemonConnection
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, selfRelayId: () => SELF_RELAY }))
+      const internals = internalsOf(manager)
+      const ingest = fakeIngest()
+      internals.slackPool.set(BOT_ID, ingest)
+      internals.router.upsert(assignment)
+      return { internals, ingest, sendMsg }
+    }
+
+    it('fences the conversation and answers an addressed message once', async () => {
+      const { internals, ingest, sendMsg } = setUp(ungated({ mutedChannels: ['C9'], gatedOffChannels: ['C9'] }))
+      await internals.forward(BOT_ID, mention(M1, '1.1'))
+      await internals.forward(BOT_ID, mention(M2, '2.2'))
+      expect(sendMsg).not.toHaveBeenCalled()
+      expect(ingest.postText).toHaveBeenCalledTimes(1)
+      expect(ingest.postText.mock.calls[0]![0]).toBe('C9')
+    })
+
+    it('stays silent on an Off an editor chose, and on an older CP that marks nothing', async () => {
+      const { internals, ingest, sendMsg } = setUp(ungated({ mutedChannels: ['C9'] }))
+      await internals.forward(BOT_ID, mention(M1, '1.1'))
+      expect(sendMsg).not.toHaveBeenCalled()
+      expect(ingest.postText).not.toHaveBeenCalled()
+    })
+  })
+
   it('mutes only the named channel — another gated conversation still gets its notice', async () => {
     const auth = pod(true)
     auth.internals.router.get(BOT_ID)!.mutedChannels = ['C7']
@@ -3716,5 +3863,52 @@ describe('RelayIngressManager periodic credential probe', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('Slack HTTP events while the owning daemon reconnects', () => {
+  const NOW = 1_720_000_000_000
+  const ts = String(Math.floor(NOW / 1000))
+  const dm = {
+    type: 'event_callback',
+    api_app_id: 'A1',
+    team_id: 'T1',
+    event_id: 'Ev-dm',
+    event: { type: 'message', channel_type: 'im', channel: 'D1', user: 'U1', text: 'hello', ts: '1720000000.000100' }
+  }
+  const deliver = (manager: RelayIngressManager) => {
+    const raw = Buffer.from(JSON.stringify(dm))
+    const signature = `v0=${createHmac('sha256', 'ssecret').update(`v0:${ts}:${raw}`).digest('hex')}`
+    return manager.handleInbound('slack', raw, dm, {
+      'x-slack-request-timestamp': ts,
+      'x-slack-signature': signature
+    })
+  }
+
+  // A rollout restarts relays and daemons together: a READY relay holds the bot before the pool's next dial lands.
+  it('leaves an event no daemon took for Slack to redeliver, then forwards the redelivery once', async () => {
+    const sendMsg = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    let connected = false
+    const manager = new RelayIngressManager(
+      deps({
+        clock: new FakeClock(NOW),
+        getDaemon: (id) =>
+          connected && id === DAEMON_ID ? ({ sendMsg } as unknown as RelayDaemonConnection) : undefined
+      })
+    )
+    const internals = internalsOf(manager)
+    const bot = { ...assignment(), defaultAgentId: AGENT_ID, defaultDaemonId: DAEMON_ID }
+    internals.router.upsert(bot)
+    internals.slackPool.set(BOT_ID, slackIngressPlugin.buildIngest(bot, internals.ingressHost)!)
+
+    expect(await deliver(manager)).toEqual({ admission: { disposition: 'retry' } })
+    expect(sendMsg).not.toHaveBeenCalled()
+
+    connected = true
+    expect(await deliver(manager)).toEqual({})
+    // A later copy of the delivered event is settled by the relay's table and never reaches the daemon.
+    expect(await deliver(manager)).toEqual({})
+    expect(sendMsg).toHaveBeenCalledTimes(1)
+    expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, msgId: 'slack:D1:1720000000.000100' })
   })
 })

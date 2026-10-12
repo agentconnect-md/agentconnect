@@ -496,6 +496,25 @@ export class VirtualSlackConnection implements PlatformConnection {
     return this.world.profile(user) ?? { id: user }
   }
 
+  /** A member's display name, as the real connection reads it from their profile. */
+  async memberName(user: string): Promise<string | undefined> {
+    const profile = this.world.profile(user)
+    return profile?.realName?.trim() || profile?.name?.trim() || undefined
+  }
+
+  /** A notice only one person sees; recorded as best-effort chrome, like the real one never fails a turn. */
+  async postEphemeral(channel: string, _user: string, text: string, threadTs?: string): Promise<boolean> {
+    const result = await this.world.recordOutbound({
+      kind: 'chrome',
+      platform: 'slack',
+      integrationId: this.integrationId,
+      channel,
+      ...(threadTs !== undefined ? { thread: threadTs } : {}),
+      text
+    })
+    return result.status === 'delivered'
+  }
+
   /** The Arena's participants are one organization: only a share the event itself names makes a room external. */
   async joinedMemberReason(_user: string, externallyShared = false): Promise<PlaceExternalReason | null> {
     return externallyShared ? 'externallyShared' : null

@@ -8,7 +8,7 @@ import { McpServerSpec } from './mcpserver.js'
 import { MemoryConnectionSpec } from './memory-connection.js'
 import { CollabRoutesSnapshot } from './collab.js'
 import { GitCommitIdentity } from './gitcred.js'
-import { ExecutorFacts, ExecutorStrategyName, ExecutorStrategyTable } from './executor.js'
+import { ExecutorFacts, ExecutorStrategyTable } from './executor.js'
 
 /**
  * Capability upload + the reconcile snapshot — protocol §3.3.
@@ -35,14 +35,10 @@ export const RegisterReq = z.object({
     runtimes: z.array(z.string()), // e.g. ["claude","codex"]
     acp: z.boolean(), // can this daemon host ACP sessions (D6)?
     features: z.array(z.string()).default([]), // e.g. ["cli-wrapper-fallback","worktree-iso"]
-    // Why a configured sandbox is unusable right now; `features` keeps `sandbox`, since such a daemon refuses a launch rather than running it unconfined.
-    sandboxUnavailable: z.string().max(2000).optional(),
     // Session-executor facts (session-executors.md §6); absent for a daemon that reports none, and stripped by a CP that predates them.
     executor: ExecutorFacts.optional(),
-    // The machine's own effective strategy table (§5), in the executor report's shape: what its own sessions can run in, and what an agent's `execution` is checked against.
+    // The machine's own effective strategy table (§5), in the executor report's shape: what its own sessions can run in, and what an agent's `execution` is checked against; each unavailable entry carries its probe's reason.
     strategies: ExecutorStrategyTable.optional(),
-    // The retiring `sandbox.backend`, reported while the daemon still reads one so the CP can migrate `runInSandbox` once (§5).
-    sandboxBackend: ExecutorStrategyName.optional(),
     // The shared PostgreSQL store's id (one per database); absent on a private local store. Members of a group that report the same id read each other's sessions.
     contentStore: z.string().uuid().optional()
   }),

@@ -96,6 +96,8 @@ async function world(over?: {
     postCardSerialized: vi.fn(async () => undefined),
     // The approval DM is its own surface; no in-channel elicitation card is posted from here.
     elicitCardFacet: () => undefined,
+    approvalCardFacet: () => undefined,
+    chatCardsAt: () => undefined,
     httpSlackSessionTarget: () => undefined,
     maskAgentSecrets: (_agentId, payload) => payload,
     logSessionAction: vi.fn(),
@@ -108,7 +110,10 @@ async function world(over?: {
     slackConnFor: (integrationId) =>
       integrationId === TARGET.integrationId && !over?.noChannel ? (conn as unknown as SlackConnection) : undefined,
     approvalDmIntegrations: () => ['int-1'],
-    slackDmSessionTarget: () => 'encoded-target'
+    slackDmSessionTarget: () => 'encoded-target',
+    chatSurface: () => 'open',
+    chatEditorsOnly: () => false,
+    chatActor: async () => 'allowed' as const
   }
   return { store, conn, route, host, coordinator: new PermissionCoordinator(host), p }
 }

@@ -39,11 +39,11 @@ the picture it draws.
 - [slack-integration-install.md](designs/slack-integration-install.md) — Slack installation and credential distribution.
 - [slack-install-smoothing.md](designs/slack-install-smoothing.md) — The streamlined Slack install flow.
 - [slack-identity.md](designs/slack-identity.md) — Slack accounts as a sign-in method, and the one rule for reading that identity.
-- [slack-approval-dm.md](designs/slack-approval-dm.md) — DM-ing a linked agent editor to decide a pending approval from Slack.
+- [slack-approval-dm.md](designs/slack-approval-dm.md) — DM-ing a linked agent editor to decide a pending approval from Slack, the editor check on synced platforms' in-chat cards, and one settle path for every approval surface.
 - [slack-streaming-turn-output.md](designs/slack-streaming-turn-output.md) — Streaming a Slack turn's tool-call chrome over one native card stream.
 - **(draft)** [slack-code-channels.md](designs/slack-code-channels.md) — Slack Code code channels: what is buildable now on generally available primitives, and what waits on the partner-only API.
 - [feishu-integration.md](designs/feishu-integration.md) — The Lark / Feishu integration, international and CN variants.
-- [qq-integration.md](designs/qq-integration.md) — Official QQ bot integration, attachment support, and shared group-context and approval dependencies.
+- [qq-integration.md](designs/qq-integration.md) — Official QQ bot integration, attachment support, the shared group-context dependency, and why QQ has no approval card.
 - **(draft)** [google-chat-integration.md](designs/google-chat-integration.md) — Proposed native Google Chat integration with HTTPS relay ingress, threaded replies, durable admission, and a Pub/Sub alternative.
 - **(draft)** [voice-meeting-participation.md](designs/voice-meeting-participation.md) — Agents in voice calls: joining and transcribing Google Meet through a meeting runner first, then speaking, Discord voice channels, the console microphone, and Zoom, Teams, and huddles on the same runner seam.
 

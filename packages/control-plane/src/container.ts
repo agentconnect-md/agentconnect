@@ -29,7 +29,8 @@ import {
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   codeHostHookMetadataOf,
   WORKSPACE_SESSION_READ_FEATURE,
-  PROVIDER_CREDENTIALS_V1_FEATURE
+  PROVIDER_CREDENTIALS_V1_FEATURE,
+  AGENT_MODEL_PROVIDER_FEATURE
 } from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
@@ -198,6 +199,8 @@ import { AgentMemoryStoreService } from './agent-memory/store.service.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
 import { resolveApprovalRoute, type ApprovalRouteResolver } from './orchestrator/approvalRoute.js'
+import { resolveReadAccess } from './orchestrator/readAccess.js'
+import { sessionsVisibleTo } from './http/read-access.js'
 import { convergeIntegrationGating } from './orchestrator/integrationPush.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
@@ -1037,6 +1040,7 @@ export function buildContainer(
         integration: repos.integration,
         bot: repos.bot,
         users: repos.user,
+        platforms,
         ...(logtoIdentity ? { identity: logtoIdentity } : {}),
         log: { debug: (o, m) => http.log.debug(o, m), warn: (o, m) => http.log.warn(o, m) }
       },
@@ -1078,6 +1082,7 @@ export function buildContainer(
     botSecrets: repos.botSecret,
     platforms,
     specs: agentSpecs,
+    chatAuthority: repos.session,
     crons: repos.cron,
     // The `duty/fetch` bundle's MCP + external-memory projections (same seams the
     // reconcile roster below is given, same projector).
@@ -1115,6 +1120,7 @@ export function buildContainer(
     repos.integrationChannel,
     repos.bot,
     platforms,
+    repos.session,
     {
       registry: connReg,
       sender,
@@ -1842,6 +1848,7 @@ export function buildContainer(
     providerCredentialsChanged: (orgId, provider) => {
       for (const peer of connReg.reachableDaemons()) {
         if (!peer.capabilities?.features?.includes(PROVIDER_CREDENTIALS_V1_FEATURE)) continue
+        if (provider === 'anthropic' && !peer.capabilities.features.includes(AGENT_MODEL_PROVIDER_FEATURE)) continue
         if (peer.orgId !== orgId && ![...(peer.orgByAgent?.values() ?? [])].includes(orgId)) continue
         try {
           peer.conn.send('provider-credentials/changed', { provider }, undefined, orgId)
@@ -2519,6 +2526,7 @@ export function buildContainer(
     webchatRemoteMcp,
     launch: repos.launch,
     user: repos.user,
+    platforms,
     visibilityPush,
     httpBotDaemonReady: async (daemonId) => {
       await Promise.all([
@@ -2545,6 +2553,22 @@ export function buildContainer(
     slackSessionAccess,
     gatedDmSeeds: gatedDmSeedResolver,
     approvalRoute,
+    // The console's own session visibility for whoever asks a cross-platform read; lazy over the HTTP deps built above.
+    readAccess: (req, expectedOrgId) =>
+      resolveReadAccess(
+        req,
+        {
+          agent: repos.agent,
+          integration: repos.integration,
+          bot: repos.bot,
+          org: repos.org,
+          users: repos.user,
+          platforms,
+          ...(logtoIdentity ? { identity: logtoIdentity } : {}),
+          sessionsVisible: sessionsVisibleTo(httpDeps, () => http.log)
+        },
+        expectedOrgId
+      ),
     // §14.8: the report path can now create an ENABLED row, so it needs the same
     // re-converge a visibility flip performs — the reporter's own bindRules predate it.
     integrationConverge: (agent) =>

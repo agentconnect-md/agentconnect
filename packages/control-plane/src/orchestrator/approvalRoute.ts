@@ -1,9 +1,12 @@
-// Pick one approval recipient by preference, or revalidate their edit authority and linked Slack identity.
+// Pick one approval recipient by preference, or revalidate their edit authority and linked chat identity.
 import type { AgentApprovalRoute, AgentApprovalRouted, ApprovalRouteTarget } from '@agentconnect.md/protocol'
-import type { SlackIdentity } from '../github/logto-identity.js'
+import type { LinkedChatIdentity } from '../github/logto-identity.js'
+import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type {
   AgentRepo,
+  BotRecord,
   BotRepo,
+  IntegrationRecord,
   IntegrationRepo,
   OrgMemberRecord,
   SessionRepo,
@@ -19,9 +22,17 @@ export interface ApprovalRouteDeps {
   integration: Pick<IntegrationRepo, 'activeForAgents'>
   bot: Pick<BotRepo, 'get'>
   users: Pick<UserRepo, 'listMembers' | 'getOidcSubject'>
+  /** Each platform's provider says whether, and under which tenant, its chat members can be matched (`chatMemberTenant`). */
+  platforms: Pick<CpPlatformRegistry, 'get'>
   /** Absent when the deployment has no sign-in configured — then nothing is linked. */
-  identity?: { slackIdentityFor(sub: string): Promise<SlackIdentity | null> }
+  identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> }
   log?: { debug(obj: object, msg: string): void; warn(obj: object, msg: string): void }
+}
+
+/** How one platform's chat members are matched: the bot's tenant, and the member ids a console user linked under it. */
+interface ChatMemberMatcher {
+  tenantOf(bot: BotRecord): string | null
+  linkedIds(sub: string, tenant: string): Promise<string[]>
 }
 
 /** The seam the WS handler holds; the composition root knows it is Logto-backed. */
@@ -36,46 +47,78 @@ export async function resolveApprovalRoute(
     ? { requestId: req.requestId, allowed: false }
     : { requestId: req.requestId }
   const agent = await deps.agent.getUnscoped(AgentId(req.agentId))
-  if (!agent || (expectedOrgId && agent.orgId !== expectedOrgId) || !deps.identity) return none
+  const identity = deps.identity
+  if (!agent || (expectedOrgId && agent.orgId !== expectedOrgId) || !identity) return none
+
+  // The agent's integrations whose chat members can be matched to console accounts, each with how its platform does it.
+  const owned = await deps.integration.activeForAgents([req.agentId])
+  const matchable = new Map<string, { integration: IntegrationRecord; matcher: ChatMemberMatcher }>()
+  for (const integration of owned) {
+    const tenantOf = deps.platforms.get(integration.platform)?.chatMemberTenant
+    if (!tenantOf) continue
+    const matcher: ChatMemberMatcher = {
+      tenantOf,
+      linkedIds: async (sub, tenant) =>
+        (await identity.chatIdentitiesFor(sub))
+          .filter((linked) => linked.platform === integration.platform && linked.tenant === tenant)
+          .map((linked) => linked.memberId)
+    }
+    matchable.set(String(integration.id), { integration, matcher })
+  }
+  if (matchable.size === 0) return none
 
   const members = await deps.users.listMembers(agent.orgId)
   // Authority includes organization owners; recipient selection below still follows the explicit preference chain.
   const editors = members.filter((member) => canEdit(agent, member))
   if (editors.length === 0) return none
 
-  const owned = await deps.integration.activeForAgents([req.agentId])
-  const slackOwned = new Map(owned.filter((i) => i.platform === 'slack').map((i) => [String(i.id), i]))
-  // The integration's workspace anchor. `teamId` is written by platform-app installs only;
-  // a token-installed (direct) bot carries the same fact as `workspaceId`, reported by the
-  // owning daemon's auth.test — the provenance `ownerIdentity`'s transportScope already has,
-  // and session visibility already matches on. A revoked bot's workspace asserts nothing.
-  const workspaceFor = async (integrationId: string): Promise<string | null> => {
-    const integration = slackOwned.get(integrationId)
-    if (!integration) return null
-    const bot = await deps.bot.get(OrgId(integration.orgId), integration.botId)
-    if (!bot || bot.revokedAt) return null
-    return bot.teamId ?? bot.workspaceId ?? null
+  // The integration's tenant anchor (Slack's workspace, Feishu/Lark's region), as its platform reads it off the bot.
+  const tenantFor = async (integrationId: string): Promise<string | null> => {
+    const owned = matchable.get(integrationId)
+    if (!owned) return null
+    const bot = await deps.bot.get(OrgId(owned.integration.orgId), owned.integration.botId)
+    return bot ? owned.matcher.tenantOf(bot) : null
   }
   // One member's lookup failing costs that member a match, never the whole answer.
-  const pairOf = async (userId: string): Promise<SlackIdentity | null> => {
+  const idsOf = async (userId: string, matcher: ChatMemberMatcher, tenant: string): Promise<string[]> => {
     try {
       const sub = await deps.users.getOidcSubject(userId)
-      return sub ? await deps.identity!.slackIdentityFor(sub) : null
+      return sub ? await matcher.linkedIds(sub, tenant) : []
     } catch (err) {
       deps.log?.warn({ err, userId }, 'approval route: linked-identity lookup failed — treating as unlinked')
-      return null
+      return []
     }
+  }
+
+  // A chat member on a synced integration (chat-actor-v1): an editor linked to them, else whether any member is; over the cap refuses.
+  const verifyChatActor = async (
+    requestId: string,
+    userId: string,
+    matcher: ChatMemberMatcher,
+    tenant: string
+  ): Promise<AgentApprovalRouted> => {
+    if (editors.length > MAX_AUDIENCE) return none
+    const scanned = members.length <= MAX_AUDIENCE ? members : editors
+    const matches = await mapLimited(scanned, AUDIENCE_CONCURRENCY, async (m) =>
+      (await idsOf(m.userId, matcher, tenant)).includes(userId) ? m : null
+    )
+    const linked = matches.filter((m): m is OrgMemberRecord => m !== null)
+    const editor = linked.find((m) => editors.includes(m))
+    if (editor) return { requestId, allowed: true, ...(editor.displayName ? { displayName: editor.displayName } : {}) }
+    return { requestId, allowed: false, ...(scanned === members ? { linked: linked.length > 0 } : {}) }
   }
 
   if (req.verify) {
     const v = req.verify
-    const workspace = await workspaceFor(v.integrationId)
-    if (!workspace || workspace !== v.teamId) return none
+    const tenant = await tenantFor(v.integrationId)
+    const matcher = matchable.get(v.integrationId)?.matcher
+    if (!tenant || !matcher || (v.teamId !== undefined && tenant !== v.teamId)) return none
+    if (v.consoleUserId === undefined) return await verifyChatActor(req.requestId, v.userId, matcher, tenant)
+    if (v.teamId === undefined) return none
     // Recheck current membership and edit authority before verifying the linked actor pair.
     const member = editors.find((m) => m.userId === v.consoleUserId)
     if (!member) return none
-    const pair = await pairOf(member.userId)
-    const allowed = pair !== null && pair.teamId === v.teamId && pair.userId === v.userId
+    const allowed = (await idsOf(member.userId, matcher, tenant)).includes(v.userId)
     return {
       requestId: req.requestId,
       allowed,
@@ -83,19 +126,20 @@ export async function resolveApprovalRoute(
     }
   }
 
-  // One named console user, never the chain: an editor linked to one of the given workspaces, or nobody.
+  // One named console user, never the chain: an editor linked to one of the given tenants, or nobody.
   if (req.consoleUserId) {
     const member = editors.find((m) => m.userId === req.consoleUserId)
     if (!member) return none
-    const pair = await pairOf(member.userId)
-    if (!pair) return none
     for (const integrationId of req.integrationIds) {
-      const teamId = await workspaceFor(integrationId)
-      if (teamId && pair.teamId === teamId) {
+      const tenant = await tenantFor(integrationId)
+      const matcher = matchable.get(integrationId)?.matcher
+      if (!tenant || !matcher) continue
+      const [uid] = await idsOf(member.userId, matcher, tenant)
+      if (uid) {
         const target: ApprovalRouteTarget = {
           integrationId,
-          teamId,
-          userId: pair.userId,
+          teamId: tenant,
+          userId: uid,
           consoleUserId: member.userId,
           ...(member.displayName ? { displayName: member.displayName } : {})
         }
@@ -109,28 +153,31 @@ export async function resolveApprovalRoute(
   const ownerIdentity = session && session.agentId === req.agentId ? session.ownerIdentity : null
   const capped = editors.length > MAX_AUDIENCE
   if (capped) {
-    deps.log?.debug({ editors: editors.length }, 'approval route: editor set over cap — Slack-id rungs skipped')
+    deps.log?.debug({ editors: editors.length }, 'approval route: editor set over cap — member-id rungs skipped')
   }
 
   for (const integrationId of req.integrationIds) {
-    const teamId = await workspaceFor(integrationId)
-    if (!teamId) continue
-    // The one forward scan (§3): editors linked to THIS workspace, both directions.
-    let bySlackUid: Map<string, OrgMemberRecord> | null = null
-    let uidByConsole: Map<string, string> | null = null
+    const teamId = await tenantFor(integrationId)
+    const matcher = matchable.get(integrationId)?.matcher
+    if (!teamId || !matcher) continue
+    const firstId = async (m: OrgMemberRecord): Promise<string | null> =>
+      (await idsOf(m.userId, matcher, teamId))[0] ?? null
+    // The one forward scan (§3): editors linked to THIS tenant, both directions.
+    let byMemberId: Map<string, OrgMemberRecord> | null = null
+    let idByConsole: Map<string, string> | null = null
     if (!capped) {
       const linked = await mapLimited(editors, AUDIENCE_CONCURRENCY, async (m) => {
-        const pair = await pairOf(m.userId)
-        return pair && pair.teamId === teamId ? ([pair.userId, m] as const) : null
+        const uid = await firstId(m)
+        return uid ? ([uid, m] as const) : null
       })
-      bySlackUid = new Map(linked.filter((entry): entry is readonly [string, OrgMemberRecord] => entry !== null))
-      uidByConsole = new Map([...bySlackUid].map(([uid, m]) => [m.userId, uid]))
+      byMemberId = new Map(linked.filter((entry): entry is readonly [string, OrgMemberRecord] => entry !== null))
+      idByConsole = new Map([...byMemberId].map(([uid, m]) => [m.userId, uid]))
     }
-    const hit = (member: OrgMemberRecord, slackUid: string): AgentApprovalRouted => {
+    const hit = (member: OrgMemberRecord, uid: string): AgentApprovalRouted => {
       const target: ApprovalRouteTarget = {
         integrationId,
         teamId,
-        userId: slackUid,
+        userId: uid,
         consoleUserId: member.userId,
         ...(member.displayName ? { displayName: member.displayName } : {})
       }
@@ -138,14 +185,12 @@ export async function resolveApprovalRoute(
     }
     // Console-user rungs run even capped: resolve that one member's link directly.
     const singleLookup = async (member: OrgMemberRecord): Promise<AgentApprovalRouted | null> => {
-      const uid = uidByConsole
-        ? (uidByConsole.get(member.userId) ?? null)
-        : await pairOf(member.userId).then((p) => (p && p.teamId === teamId ? p.userId : null))
+      const uid = idByConsole ? (idByConsole.get(member.userId) ?? null) : await firstId(member)
       return uid ? hit(member, uid) : null
     }
 
-    // Rung 1 — conversation turn owner (a Slack member id; needs the scan).
-    const turnOwner = req.requesterId ? bySlackUid?.get(req.requesterId) : undefined
+    // Rung 1 — conversation turn owner (a chat member id; needs the scan).
+    const turnOwner = req.requesterId ? byMemberId?.get(req.requesterId) : undefined
     if (turnOwner && req.requesterId) return hit(turnOwner, req.requesterId)
     // Rung 2 — session owner: `user:<id>` is a console user, `slack:T:U` needs the scan.
     if (ownerIdentity) {
@@ -155,15 +200,15 @@ export async function resolveApprovalRoute(
         const routed = member ? await singleLookup(member) : null
         if (routed) return routed
       } else if (parts.length === 3 && parts[0] === 'slack' && parts[1] === teamId) {
-        const member = bySlackUid?.get(parts[2]!)
+        const member = byMemberId?.get(parts[2]!)
         if (member) return hit(member, parts[2]!)
       }
     }
     // Rung 3 — restricted audience, in sharedWith order (stable tie-break).
-    if (agent.visibility === 'restricted' && uidByConsole && bySlackUid) {
+    if (agent.visibility === 'restricted' && idByConsole && byMemberId) {
       for (const userId of agent.sharedWith) {
-        const uid = uidByConsole.get(userId)
-        if (uid) return hit(bySlackUid.get(uid)!, uid)
+        const uid = idByConsole.get(userId)
+        if (uid) return hit(byMemberId.get(uid)!, uid)
       }
     }
     // Rung 4 — agent creator (a console user; no implicit rights, must be an editor).

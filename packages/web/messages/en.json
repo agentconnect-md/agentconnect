@@ -12,10 +12,24 @@
       "waiting": "{label} is waiting for your action",
       "show": "Show"
     },
-    "runtimeChat": {
-      "label": "Allow change in chat",
-      "enabled": "Chat users can change runtime settings and answer approval requests.",
-      "disabled": "Only agent editors can manage runtime settings. Chat users cannot change them or answer approval requests."
+    "modelProvider": {
+      "label": "Credentials",
+      "daemon": "Daemon credentials",
+      "saved": "Use saved credential (Beta)"
+    },
+    "chatActions": {
+      "label": "What people can do in chat",
+      "title": "People means the agent's editors on a platform whose permissions sync with the console, and anyone in the conversation elsewhere. Webchat always applies console permissions.",
+      "option": {
+        "talk": "Talk to the agent",
+        "approve": "Talk and approve tool calls",
+        "settings": "Talk, approve and change settings"
+      },
+      "optionTitle": {
+        "talk": "Tool calls that need approval go to the agent's editors, in the console or in their direct messages.",
+        "approve": "Answer a tool call the permission policy asks about: allow it once, always allow that tool, or deny it.",
+        "settings": "Also change the model, effort, permission mode and Fast mode from chat."
+      }
     },
     "executionStrategy": {
       "label": "Execution strategy",
@@ -35,7 +49,6 @@
       "unavailable": "unavailable",
       "noneAvailable": "No strategy available",
       "refusal": {
-        "sandboxRequired": "This daemon requires a sandbox.",
         "notOffered": "Not offered where this agent is placed."
       }
     },
@@ -636,6 +649,7 @@
       "addPhotos": "Add photos",
       "participant": "Participant",
       "addAgents": "Add agents",
+      "removeParticipant": "Remove {agent} from this conversation",
       "searchAgents": "Search agents…",
       "model": "Model",
       "defaultModel": "Default",
@@ -2551,12 +2565,14 @@
         "retained": "This saved Decision is no longer visible to you. Its rules are preserved; select another Decision to replace them.",
         "rule": "Rule {index}",
         "removeRule": "Remove rule {index}",
-        "ruleModel": "Provider and model for rule {index}",
+        "ruleModel": "Model for rule {index}",
         "addRule": "Add rule",
         "invalidRules": "Check the conditions: assign each answer once and keep score intervals separate. At least one rule is required.",
-        "missingModel": "Choose an available provider and model for every rule and the fallback.",
+        "missingModel": "Choose an available model for every rule and the fallback.",
+        "savedModelUnavailable": "Choose a model with a key configured in Providers.",
         "fallback": "No rule matches, or the evaluation is unavailable.",
-        "providerModel": "Provider · model",
+        "providerModel": "Model",
+        "providerModelTitle": "The runtime and model each new session starts with, and its effort, permission mode and Fast mode.",
         "chooseDecision": "Choose a Decision",
         "nextDecision": "Continue with a Decision",
         "editNext": "Edit next Decision: {name}",
@@ -2572,7 +2588,7 @@
         "yes": "Yes",
         "no": "No",
         "answer": "Answer for rule {index}",
-        "answerModel": "Provider and model when the answer is {answer}",
+        "answerModel": "Model when the answer is {answer}",
         "useFallback": "Use the fallback when the answer is {answer}",
         "probability": "Probability for rule {index}",
         "intervalStart": "Interval start for rule {index}",
@@ -2580,7 +2596,7 @@
         "choiceHelp": "Highest passing probability wins. Ties follow rule order.",
         "intervalHelp": "Assign each answer once. Score intervals must not overlap.",
         "reorder": "Reorder rule {index}: drag, or use the arrow keys",
-        "fallbackTitle": "Fallback provider and model",
+        "fallbackTitle": "Fallback model",
         "sample": {
           "title": "Try a sample",
           "badge": "Sample data",
@@ -2601,7 +2617,7 @@
           "fallback": "Fallback",
           "notNeeded": "Not needed",
           "continued": "Matching rule",
-          "fallbackUsed": "Use the fallback provider and model",
+          "fallbackUsed": "Use the fallback model",
           "startsOn": "Session starts on",
           "booleanResult": "{value} · {probability}% true",
           "text4": "The evaluator is temporarily unavailable",
@@ -2652,6 +2668,7 @@
         "lowerLatency": "Lower latency",
         "imageBinaryMissing": "Binary not installed in image",
         "readOnly": "Runtime changes are disabled for this chat.",
+        "readOnlyOwner": "Only an Agent editor or this conversation’s owner can change the runtime.",
         "model": "Model",
         "decision": "Decision",
         "fallback": "Fallback",
@@ -2737,8 +2754,6 @@
         "title": "Runtime",
         "permissionMode": "Permission mode",
         "fastMode": "Fast mode",
-        "changeInChat": "Change runtime in chat",
-        "allowed": "Allowed",
         "paused": "Paused",
         "outputMode": "Output mode",
         "showFooter": "Show footer",
@@ -3144,6 +3159,7 @@
           "approver": "Approver: {name}",
           "expires": "Expires {time}",
           "noApprover": "No one reachable",
+          "inConversation": "anyone who may continue the conversation",
           "approve": "Approve",
           "approveAlways": "Approve and always allow from here to there",
           "discard": "Discard",
@@ -3169,19 +3185,24 @@
           "proposal": {
             "badge": "Proposal",
             "why": "Why: {why}",
+            "details": "Reason and task",
             "item": "For {title}",
             "runsIn": "Runs in {place}",
             "deny": "Deny",
             "approveConfirm": "Run this task now? It reports back in {place}.",
+            "approveConfirmHere": "Run this task now? It reports back in this conversation.",
             "denyConfirm": "Deny this proposal? Nothing is run.",
+            "dismiss": "Dismiss",
             "outcome": {
               "executing": "Approved. It runs in the background and reports back in {place}.",
+              "executingHere": "Approved. It runs in the background and reports back in this conversation.",
               "succeeded": "Approved. It ran and reported back in {place}.",
               "denied": "Denied. Nothing was run.",
               "failed": "Couldn’t run: {reason}. Nothing was run.",
               "outcome_unknown": "Not sure this went through. Check {place}; it won’t be run again.",
               "expired": "Expired. Nothing was run.",
-              "unconfirmedGone": "Couldn’t confirm the decision, and it is no longer waiting. Check {place}; it may have started."
+              "unconfirmedGone": "Couldn’t confirm the decision, and it is no longer waiting. Check {place}; it may have started.",
+              "unconfirmedHere": "Couldn’t confirm the decision, and it is no longer waiting. It may have started."
             }
           }
         },

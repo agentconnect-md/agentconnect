@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
 import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
+import { LONG_IDLE_SKIP_AFTER_TTLS, LONG_IDLE_SKIP_REPORT_INTERVAL_MS } from '../src/daemon/constants.js'
 import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
 import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
@@ -382,9 +383,8 @@ describe('Daemon session lifecycle (#118)', () => {
     try {
       await daemon.start()
       const d = daemon as any
-      d.cfg.sandbox.backend = 'microsandbox'
       const agent = d.agents.get('bot-a')
-      agent.runInSandbox = true
+      agent.execution = 'microsandbox'
       const environment = { id: 'bot-a/agent' }
       d.microsandbox = {
         environment: (id: string) => (warm && id === environment.id ? environment : undefined),
@@ -706,27 +706,29 @@ describe('Daemon session lifecycle (#118)', () => {
     }
   })
 
-  it.each([true, false])('installs a host runtime only for local execution (runInSandbox=%s)', async (runInSandbox) => {
-    const root = scaffold()
-    const host = quietHost()
-    const daemon = new Daemon({ root, hostFactory: () => host as never })
-    try {
-      await daemon.start()
-      const d = daemon as any
-      d.cfg.sandbox.backend = 'microsandbox'
-      d.agents.get('bot-a').runInSandbox = runInSandbox
-      vi.spyOn(d, 'prepareAgentWorkspace').mockResolvedValue(join(root, 'workspace'))
-      const install = vi.spyOn(d, 'ensureRuntimeInstalled').mockResolvedValue(undefined)
+  it.each(['microsandbox', 'host'])(
+    'installs a host runtime only for local execution (execution=%s)',
+    async (execution) => {
+      const root = scaffold()
+      const host = quietHost()
+      const daemon = new Daemon({ root, hostFactory: () => host as never })
+      try {
+        await daemon.start()
+        const d = daemon as any
+        d.agents.get('bot-a').execution = execution
+        vi.spyOn(d, 'prepareAgentWorkspace').mockResolvedValue(join(root, 'workspace'))
+        const install = vi.spyOn(d, 'ensureRuntimeInstalled').mockResolvedValue(undefined)
 
-      await d.ensureHostAsync('bot-a')
+        await d.ensureHostAsync('bot-a')
 
-      expect(host.start).toHaveBeenCalledOnce()
-      if (runInSandbox) expect(install).not.toHaveBeenCalled()
-      else expect(install).toHaveBeenCalledExactlyOnceWith('claude', true)
-    } finally {
-      await daemon.stop()
+        expect(host.start).toHaveBeenCalledOnce()
+        if (execution === 'microsandbox') expect(install).not.toHaveBeenCalled()
+        else expect(install).toHaveBeenCalledExactlyOnceWith('claude', true)
+      } finally {
+        await daemon.stop()
+      }
     }
-  })
+  )
 
   it('prepares the workspace before every direct cold-host lifecycle start', async () => {
     const root = scaffold()
@@ -1938,6 +1940,66 @@ describe('Daemon idle sweep (#111/#118)', () => {
     await daemon.stop()
   })
 
+  it('closes a TTL-expired session on a shared host that another session keeps warm, and resumes it on a follow-up (#2923)', async () => {
+    const clock = new FakeClock()
+    const live = new Set<string>()
+    let nextSession = 0
+    const host = {
+      ...quietHost(),
+      newSession: vi.fn(async () => {
+        const id = `acp-${++nextSession}`
+        live.add(id)
+        return id
+      }),
+      hasSession: vi.fn((id: string) => live.has(id)),
+      closeSupported: vi.fn(() => true),
+      closeSession: vi.fn(async (id: string) => live.delete(id)),
+      loadSupported: vi.fn(() => true),
+      loadSession: vi.fn(async (id: string) => {
+        live.add(id)
+      })
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 10_000_000 }),
+      hostFactory: () => host as any,
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'first run', 'T1'), 'int-a')
+    clock.advance(600)
+    await (daemon as any).dispatch('bot-a', dm('200', 'second run', 'T2'), 'int-a')
+    clock.advance(500)
+    await (daemon as any).sweepIdle()
+
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
+    await vi.waitFor(() => expect(host.closeSession).toHaveBeenCalledWith('acp-1'), WAIT)
+    expect(host.closeSession).not.toHaveBeenCalledWith('acp-2')
+    // The second session's activity keeps the shared host warm; only the expired session's runtime goes.
+    expect((daemon as any).hosts.has('bot-a')).toBe(true)
+    expect(host.stop).not.toHaveBeenCalled()
+
+    // A follow-up in the closed thread resumes the same ACP session (session/load) instead of starting over.
+    await (daemon as any).dispatch('bot-a', dm('300', 'follow-up question', 'T1'), 'int-a')
+    expect(host.loadSession).toHaveBeenCalledWith(
+      'acp-1',
+      expect.any(String),
+      expect.anything(),
+      undefined,
+      undefined,
+      expect.anything()
+    )
+    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(host.prompt).toHaveBeenLastCalledWith('acp-1', expect.anything())
+    const resumed = await (daemon as any).store.getSession(KEY)
+    expect(resumed?.acpSessionId).toBe('acp-1')
+    expect(resumed?.state).toBe('idle')
+
+    await daemon.stop()
+  })
+
   it('does not TTL-close a session while an admitted initialization owns its dispatch fences', async () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
@@ -1965,6 +2027,52 @@ describe('Daemon idle sweep (#111/#118)', () => {
     await (daemon as any).sweepIdle()
     expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
 
+    await daemon.stop()
+  })
+
+  it('names what keeps a long-quiet host at info once an hour, and at debug before and in between', async () => {
+    const clock = new FakeClock()
+    // Reproduce slow startup by leaving the fake clock behind the store's wall-clock timestamps.
+    clock.advance(Date.now() - 10_000)
+    const blocked = blockingHost()
+    const daemon = new Daemon({
+      root: scaffold({ agentIdleTimeoutMs: 1000, idleSweepMs: 10_000_000 }),
+      hostFactory: () => blocked.host as any,
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    const inner = daemon as any
+    const turn = inner.dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(blocked.host.prompt).toHaveBeenCalled(), WAIT)
+    // The turn waits on a permission card nobody answers, which the stall watchdog leaves alone by design.
+    vi.spyOn(inner.permissions, 'awaitingHuman').mockReturnValue(true)
+    const info = vi.spyOn(inner.log, 'info')
+    const debug = vi.spyOn(inner.log, 'debug')
+    const held = 'a turn awaits a human answer to a permission or question'
+    const named = (): number =>
+      info.mock.calls.filter(([line]) => String(line).startsWith('idle: the host "bot-a" is still up after')).length
+
+    // Measure idle time after setup, whose wall-clock duration varies across runners.
+    clock.advance(Date.now() - clock.now() + 2001)
+    await inner.sweepIdle()
+    expect(debug).toHaveBeenCalledWith(`idle: skipping host "bot-a" — ${held}`)
+    expect(named()).toBe(0)
+    clock.advance(LONG_IDLE_SKIP_AFTER_TTLS * 1000)
+    await inner.sweepIdle()
+    expect(info).toHaveBeenCalledWith(
+      `idle: the host "bot-a" is still up after 0 min without recorded activity — ${held}`
+    )
+    clock.advance(LONG_IDLE_SKIP_REPORT_INTERVAL_MS - 1)
+    await inner.sweepIdle()
+    expect(named()).toBe(1)
+    clock.advance(1)
+    await inner.sweepIdle()
+    expect(named()).toBe(2)
+    expect(inner.hosts.has('bot-a')).toBe(true)
+
+    blocked.release()
+    await turn
     await daemon.stop()
   })
 
@@ -3591,6 +3699,35 @@ describe('Daemon session retention GC (#485)', () => {
         // It holds no clone, so it goes without any Git to judge it by.
         expect(existsSync(orphan)).toBe(false)
       } finally {
+        await daemon.stop()
+      }
+    })
+
+    it('lets admitted work keep its own leaf only: one session that never settles does not hold the rest', async () => {
+      const daemon = await startDaemon()
+      const store = (daemon as any).store
+      // A delivery admitted for a row that rejects it at every replay stays pending for good; it pins its session, not its agent.
+      await seedSession(daemon, 'stuck', 'idle', (daemon as any).clock.now())
+      await store.appendInbox({ id: 'm-stuck', sessionKey: 'stuck', agentId: 'bot-a', msg: '{}', enqueuedAt: '1' })
+      // Admitted work with no row yet — a durable inbox row, a gate-owned key, a planned turn — keeps the leaf its key names.
+      await store.appendInbox({
+        id: 'm-admitted',
+        sessionKey: 'admitted',
+        agentId: 'bot-a',
+        msg: '{}',
+        enqueuedAt: '2'
+      })
+      ;(daemon as any).activeGateEntries.set('gated', { agentId: 'bot-a' })
+      ;(daemon as any).pending.set('planned', { plan: { agentId: 'bot-a', sessionKey: 'planned' } })
+      const kept = ['stuck', 'admitted', 'gated', 'planned'].map((key) => sessionDirOf(daemon, key))
+      const orphan = sessionDirOf(daemon, 'purged')
+      try {
+        await sweepRetention(daemon)
+        expect(existsSync(orphan)).toBe(false)
+        for (const dir of kept) expect(existsSync(dir)).toBe(true)
+      } finally {
+        ;(daemon as any).activeGateEntries.delete('gated')
+        ;(daemon as any).pending.delete('planned')
         await daemon.stop()
       }
     })

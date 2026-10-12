@@ -68,6 +68,11 @@ cannot prove its bytes, so it is uploaded again.
   store accepts exactly the declared bytes.
 - **The agent's GET for an upload.** The CP `HEAD`s the object first and requires the
   declared length, and the declared checksum when the store returns one.
+- **The agent's GET is a bearer URL.** Anyone holding it can read that one object on the
+  origin its network names until it expires. The agent may pass it to the model provider's API,
+  so it can leave the cluster for up to `limits.urlSeconds`.
+- **An upload is org-scoped, not agent-bound.** Any daemon serving any agent in the org can
+  `transfer/get` an upload given its uuid, size and SHA-256; the unguessable uuid is the guard.
 - **A daemon may sign only what it was asked to upload.** `transfer/sign` names a ticket
   the CP minted for one `workspace/upload` to that daemon. The ticket is bound to:
   - the object key;
@@ -214,7 +219,11 @@ the `x-amz-checksum-sha256` and `x-amz-tagging` headers (chart README).
 ## 8. Limitations
 
 - **No steering with files.** A steered turn carries only the attachment marker, so the
-  console never steers a turn that has files; it queues it instead.
+  console never steers a turn that has files, and the daemon refuses to: a message with an
+  upload queues behind the live turn, and a steer-only one is refused `busy`.
+- **Peers see the marker only.** In a multi-agent conversation the relay gives the
+  participants a turn does not address the `[attached: …]` marker in their context copy,
+  never the upload itself.
 - **A long-held request.** A workspace transfer holds the HTTP request open while the
   daemon uploads, and a CP failover mid-upload loses the reply.
   - An ingress idle timeout shorter than the upload fails the request.

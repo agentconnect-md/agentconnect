@@ -381,14 +381,18 @@ describe('Decision management and standalone preview', () => {
     expect((await prisma.decision.findUniqueOrThrow({ where: { id } })).sharedWith).toEqual([DEFAULT_OWNER_ID])
   })
 
-  it('projects daemon capabilities and BYOK priority without decrypting or evaluating', async () => {
-    const { app, deps, daemonId, preview } = await execution()
+  it('projects daemon capabilities and managed-gateway priority without decrypting or evaluating', async () => {
+    const { app, deps, daemonId, preview, catalog } = await execution()
     const path = `${BASE}/providers?daemonId=${daemonId}`
     expect((await app.inject({ method: 'GET', url: path })).json()[0]).toMatchObject({
       source: 'ac_credits',
       readiness: { status: 'ready' }
     })
     await deps.repos.providerKey.put(OrgId(DEFAULT_ORG_ID), 'typesafe', { apiKey: 'example-key' })
+    expect((await app.inject({ method: 'GET', url: path })).json()[0].source).toBe('ac_credits')
+    catalog.mockResolvedValue({
+      providers: DECISION_PROVIDER_PROFILES.map((profile) => ({ ...profile, cloudAvailable: false }))
+    })
     const byok = await app.inject({ method: 'GET', url: path })
     expect(byok.json()[0]).toMatchObject({
       source: 'byok',

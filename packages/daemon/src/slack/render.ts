@@ -606,10 +606,10 @@ export function buildApprovalDmIntro(info: {
   ]
 }
 
-/** "Agent's background sub-session “title”", the subject of every sub-session approval card. */
+/** "Agent's background sub-session “label”", the subject of every sub-session approval card; "background task" without a label. */
 function subsessionAsker(agentName: string, title: string | null): string {
-  const named = title?.trim() ? ` “${escapeMrkdwnLabel(clampTo(title.trim(), 80))}”` : ''
-  return `*${escapeMrkdwnLabel(clampTo(agentName, 60))}*’s background sub-session${named}`
+  const agent = `*${escapeMrkdwnLabel(clampTo(agentName, 60))}*’s background`
+  return title?.trim() ? `${agent} sub-session “${escapeMrkdwnLabel(clampTo(title.trim(), 80))}”` : `${agent} task`
 }
 
 const subsessionWaitNote = (hours: number): string =>
@@ -651,6 +651,42 @@ export function buildSubsessionApprovalNotice(info: {
       }
     }
   ]
+}
+
+/** How a sub-session's request ended, as its settled notice says (§5.6). */
+export type SubsessionNoticeOutcome =
+  { kind: 'allowed' | 'denied'; by: string | null } | { kind: 'expired'; hours: number } | { kind: 'cancelled' }
+
+/** The neutral notice rewritten in place once its request settles; like the notice, it names no tool (§5.6). Pure. */
+export function buildSubsessionApprovalSettledNotice(
+  info: { agentName: string; title: string | null; sessionUrl?: string },
+  outcome: SubsessionNoticeOutcome
+): unknown[] {
+  const link = info.sessionUrl ? `\n<${info.sessionUrl}|Open the sub-session>` : ''
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `${subsessionSettledLine(subsessionAsker(info.agentName, info.title), outcome)}${link}`
+      }
+    }
+  ]
+}
+
+function subsessionSettledLine(asker: string, outcome: SubsessionNoticeOutcome): string {
+  const by = (word: string, name: string | null): string =>
+    name?.trim() ? ` ${word} ${escapeMrkdwnLabel(clampTo(name.trim(), 60))}` : ''
+  switch (outcome.kind) {
+    case 'allowed':
+      return `:white_check_mark: ${asker} got permission${by('from', outcome.by)}.`
+    case 'denied':
+      return `:no_entry_sign: ${asker} was denied permission${by('by', outcome.by)}.`
+    case 'expired':
+      return `:no_entry_sign: ${asker} got no answer within ${outcome.hours} hour${outcome.hours === 1 ? '' : 's'}, so it was denied and stopped.`
+    case 'cancelled':
+      return `:hourglass: ${asker} no longer needs permission.`
+  }
 }
 
 /** What an assistant-mode draft card shows (assistant-mode.md §5.5); a `task` is a patrol's proposal (§5.10), whose text is the task. */

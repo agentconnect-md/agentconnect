@@ -24,6 +24,7 @@ import {
   canContinueSession,
   canView,
   canViewSession,
+  ownsSession,
   type SubsessionFacts
 } from '../../authorization/policy.js'
 import {
@@ -54,6 +55,7 @@ import type { ConversationCoordinate, ConversationKey, SessionMetaRecord } from 
 import { GithubApiError } from '../../github/api.js'
 import { GitCredDeniedError } from '../../github/service.js'
 import { ProtocolError } from '../../domain/errors.js'
+import { convergeOrgPlatform } from '../../orchestrator/integrationPush.js'
 import {
   SessionListPageDto,
   ActivityStateEnum,
@@ -736,6 +738,8 @@ export function sessionRoutes(deps: HttpDeps) {
           }
           const result = await deps.repos.session.setExternalAccessEnabled(orgOf(req), provider, req.body.enabled)
           if (result.affected.length > 0) void deps.visibilityPush?.notifySessions(result.affected)
+          // Who may act in chat follows the sync, so the platform's integrations are re-pushed with it.
+          void convergeOrgPlatform(deps, orgOf(req), provider, req.log).catch(() => {})
           return {
             provider,
             available: externalAccessAvailable(provider),
@@ -1037,6 +1041,11 @@ export function sessionRoutes(deps: HttpDeps) {
             hookMetadataForSessions(deps, [s], orgOf(req)),
             channelNamesForSessions(deps, [s], orgOf(req))
           ])
+        // A roster shrunk to one by removal stays explicit, so the console never falls back to its historical members (§3.1a).
+        const reportRoster =
+          webchatRoster.length > 1 ||
+          (webchatRoster.length === 1 &&
+            (await deps.repos.webchatConversation.hasRemovedParticipants(orgOf(req), s.channel ?? '')))
         const hook = hookMetadataForSession(hookMetadata, s)
         const display = sessionDisplayMetadata(s, hook, channelNames)
         // Continuation gate (webchat-cross-integration-continuation.md §6.5):
@@ -1106,14 +1115,13 @@ export function sessionRoutes(deps: HttpDeps) {
           triggeredByName: display.triggeredByName,
           threadUrl: s.threadUrl,
           tenantScope: s.tenantScope ?? null,
-          participants:
-            webchatRoster.length > 1
-              ? webchatRoster.map((p) => ({
-                  agentId: p.agentId,
-                  name: agentNames.get(p.agentId) ?? null,
-                  primary: p.role === 'primary'
-                }))
-              : null,
+          participants: reportRoster
+            ? webchatRoster.map((p) => ({
+                agentId: p.agentId,
+                name: agentNames.get(p.agentId) ?? null,
+                primary: p.role === 'primary'
+              }))
+            : null,
           runtime: s.runtime,
           model: s.model,
           effort: s.effort,
@@ -1140,6 +1148,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ),
           canContinue: continuationUnavailableReason === null,
           continuationUnavailableReason,
+          ownsConversation: s.platform === 'webchat' && ownsSession(s, access.identitySet),
           accessSyncDegraded: access.degraded || relatedAccess.degraded,
           accessIssues,
           contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null,

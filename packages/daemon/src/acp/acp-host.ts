@@ -45,6 +45,7 @@ import { accountAppIsolation } from './account-apps.js'
 import { STEERING_METHOD, parseSteeringOutcome, steeringRequestParams, steeringSupported } from './steering.js'
 import type { SteeringIdleBehavior, SteeringOutcome } from './steering.js'
 import { RuntimeSessionFailure, SESSION_FAILURE_CAPABILITIES, sessionFailureFromMeta } from './session-failure.js'
+import { customInstructionsMeta, customInstructionsSupported } from './session-instructions.js'
 
 // The raw session config-option shapes (from the ACP SDK), re-exported so
 // sessionConfigOptions() consumers can type the option tree without importing
@@ -151,10 +152,7 @@ export interface SessionConfigPrefs {
    *  `category: "mode"`. Values are runtime-owned (`default` / `plan` on
    *  claude-acp, `agent` / `read-only` on codex-acp, etc.). */
   permissionMode?: string
-  /** Optional host-level system-prompt seed, layered ahead of any per-session append
-   *  on Claude runtimes (see {@link claudeSessionMeta}). Left unset by default: the
-   *  agent's identity + description now travel per-session in the agent meta object
-   *  (see SessionManager), which also carries the channel source. undefined ⇒ none. */
+  /** Optional host-level instruction seed, layered before per-session standing context on supported runtimes. */
   systemPrompt?: string
 }
 
@@ -469,11 +467,13 @@ export function claudeSessionMeta(
   allowModelToolUnixSockets = false,
   extraDisallowedTools: readonly string[] = [],
   sharedWriteRoots: readonly string[] = [],
-  readOnlyStateRoots: readonly string[] = []
+  readOnlyStateRoots: readonly string[] = [],
+  model?: string
 ):
   | {
       claudeCode: {
         options: {
+          model?: string
           thinking: { type: 'adaptive'; display: 'summarized' }
           disallowedTools: readonly string[]
           settings?: ClaudeSessionSettings
@@ -506,6 +506,8 @@ export function claudeSessionMeta(
   return {
     claudeCode: {
       options: {
+        // Select before SDK initialization so a resumed model keeps its context suffix in the picker.
+        ...(model ? { model } : {}),
         thinking: { type: 'adaptive', display: 'summarized' },
         // Suppress built-in cross-session messaging through the SDK options (#998).
         disallowedTools: [...CLAUDE_DISALLOWED_BUILTIN_TOOLS, ...extraDisallowedTools],
@@ -604,6 +606,9 @@ export class AcpHost {
   // This is capability-gated because older ACP adapters reject the field.
   private canUseAdditionalDirectories = false
   private canDelete = false
+  private canClose = false
+  // In-flight session/close requests, so a reload of the same id waits for the runtime to release it.
+  private closing = new Map<string, Promise<void>>()
   // whether the agent advertised mid-turn steering (`_meta.steering.supported`) at initialize.
   private canSteer = false
   // prompt content-block variants the agent opted into at initialize. text +
@@ -629,6 +634,7 @@ export class AcpHost {
   // unstable `acp` transport flag is deliberately ignored. Read via mcpCapabilities().
   private mcpCaps: McpTransportCapabilities | null = null
   private agentAuthMethods: AuthMethod[] = []
+  private canUseCustomInstructions = false
   // The ACP agent's self-reported identity from the `initialize` response
   // (`agentInfo`: name/title/version) — the ACTUAL running adapter version (e.g.
   // claude-agent-acp 0.59.0), as opposed to the registry's declared version.
@@ -925,7 +931,9 @@ export class AcpHost {
     this.agentAuthMethods = init.authMethods ?? []
     this.canLoad = init.agentCapabilities?.loadSession ?? false
     this.canUseAdditionalDirectories = init.agentCapabilities?.sessionCapabilities?.additionalDirectories != null
+    this.canUseCustomInstructions = customInstructionsSupported(init._meta)
     this.canDelete = init.agentCapabilities?.sessionCapabilities?.delete != null
+    this.canClose = init.agentCapabilities?.sessionCapabilities?.close != null
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
     this.canSteer = steeringSupported(init._meta)
     const mcp = init.agentCapabilities?.mcpCapabilities
@@ -952,30 +960,35 @@ export class AcpHost {
     return Boolean(this.promptCaps[kind])
   }
 
-  /** Whether this runtime carries the system prompt (and the fresh-session memory
-   *  index) via `_meta.systemPrompt` — true for Claude, which gets them there rather
-   *  than as a leading inline block. Lets SessionManager route memory correctly:
-   *  Claude → `_meta` (via newSession's memoryAppend); others → an inline block. */
+  /** Whether standing context has a native instruction channel instead of an inline user-prompt block. */
   usesMetaSystemPrompt(): boolean {
-    return this.isClaudeRuntime()
+    return this.isClaudeRuntime() || this.canUseCustomInstructions
   }
 
-  /** Create a fresh ACP session. `effortOverride` (the sticky per-session effort choice,
-   *  when set) takes the place of the agent default in the Claude `_meta` — the only
-   *  channel `ultracode` can ride (the `thought_level` select rejects it); select-based
-   *  effort/model/fast overrides are layered on afterward by the daemon at turn start.
-   *  `systemAppend` (the agent meta object + the agent's memory index, for a FRESH
-   *  session) rides the Claude `_meta.systemPrompt` append — standing context, never a
-   *  user turn (see #398). `additionalDirectories` expands the runtime workspace
-   *  without changing the configured working-subdirectory `cwd`. */
-  /**
-   * @param announce Called with the runtime's brand-new id at the raw `session/new` response —
-   *   BEFORE the session becomes reachable. Anything the daemon must know before an update can
-   *   arrive belongs here: `live.add()` makes the session ownable, and the configuration round
-   *   trips that follow are awaited, so a runtime may advertise from inside this call.
-   *   SYNCHRONOUS on purpose: a runtime can emit the instant it has answered, and anything awaited
-   *   here would widen the response-to-ownership gap into a window where that update is dropped.
-   */
+  private sessionMeta(
+    effortOverride?: string,
+    systemPrompt?: string,
+    systemAppend?: string,
+    extraDisallowedTools: readonly string[] = []
+  ) {
+    const claudeMeta = claudeSessionMeta(
+      effortOverride ?? this.opts.configPrefs?.reasoningEffort,
+      this.isClaudeRuntime(),
+      systemPrompt,
+      systemAppend,
+      this.opts.toolSandbox?.protectedCredentialRoots,
+      this.opts.toolSandbox?.claudeProtectedSettings,
+      this.opts.toolSandbox?.allowModelToolUnixSockets,
+      extraDisallowedTools,
+      this.opts.toolSandbox?.sharedWriteRoots,
+      this.opts.toolSandbox?.readOnlyStateRoots,
+      this.opts.configPrefs?.model
+    )
+    return (
+      claudeMeta ?? (this.canUseCustomInstructions ? customInstructionsMeta(systemPrompt, systemAppend) : undefined)
+    )
+  }
+
   /** A runtime that rejects non-empty session mcpServers gets [] instead of a failed session — covers every creator. */
   private clampSessionMcpServers(mcpServers: McpServer[]): McpServer[] {
     if (this.runtime.sessionMcpServers !== 'unsupported' || mcpServers.length === 0) return mcpServers
@@ -983,6 +996,7 @@ export class AcpHost {
     return []
   }
 
+  /** Create a session with native standing instructions; announce synchronously before configuration can emit updates. */
   async newSession(
     cwd: string,
     mcpServers: McpServer[] = [],
@@ -992,17 +1006,11 @@ export class AcpHost {
     announce?: (sessionId: string) => void,
     extraDisallowedTools: readonly string[] = []
   ): Promise<string> {
-    const _meta = claudeSessionMeta(
-      effortOverride ?? this.opts.configPrefs?.reasoningEffort,
-      this.isClaudeRuntime(),
+    const _meta = this.sessionMeta(
+      effortOverride,
       this.opts.configPrefs?.systemPrompt,
       systemAppend,
-      this.opts.toolSandbox?.protectedCredentialRoots,
-      this.opts.toolSandbox?.claudeProtectedSettings,
-      this.opts.toolSandbox?.allowModelToolUnixSockets,
-      extraDisallowedTools,
-      this.opts.toolSandbox?.sharedWriteRoots,
-      this.opts.toolSandbox?.readOnlyStateRoots
+      extraDisallowedTools
     )
     const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
     const res = await this.conn!.agent.request(methods.agent.session.new, {
@@ -1235,14 +1243,12 @@ export class AcpHost {
     return this.canDelete
   }
 
-  /** Resume a previously-created session by id (ACP `session/load`). The agent
-   *  restores its own history server-side; replayed conversation/tool output is
-   *  suppressed while metadata updates still converge. `mcpServers` must be
-   *  re-attached here — the agent doesn't persist them across processes. `systemAppend`
-   *  (agent metadata plus standing collaboration/response rules) is re-asserted via
-   *  `_meta.systemPrompt` so a session resumed in a fresh agent process keeps its system
-   *  prompt. Throws if the agent can't load the id
-   *  (caller falls back to newSession). */
+  /** Whether the agent advertised support for ACP session/close. */
+  closeSupported(): boolean {
+    return this.canClose
+  }
+
+  /** Restore history and pass MCP servers and native instructions to the adapter; a failed load falls back to newSession. */
   async loadSession(
     sessionId: string,
     cwd: string,
@@ -1253,18 +1259,8 @@ export class AcpHost {
   ): Promise<void> {
     this.loadingSessions.add(sessionId)
     try {
-      const _meta = claudeSessionMeta(
-        effortOverride ?? this.opts.configPrefs?.reasoningEffort,
-        this.isClaudeRuntime(),
-        systemAppend ?? this.opts.configPrefs?.systemPrompt,
-        undefined,
-        this.opts.toolSandbox?.protectedCredentialRoots,
-        this.opts.toolSandbox?.claudeProtectedSettings,
-        this.opts.toolSandbox?.allowModelToolUnixSockets,
-        [],
-        this.opts.toolSandbox?.sharedWriteRoots,
-        this.opts.toolSandbox?.readOnlyStateRoots
-      )
+      await this.closing.get(sessionId)
+      const _meta = this.sessionMeta(effortOverride, systemAppend ?? this.opts.configPrefs?.systemPrompt)
       const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
       const res = await this.conn!.agent.request(methods.agent.session.load, {
         sessionId,
@@ -1332,6 +1328,22 @@ export class AcpHost {
     if (!this.canDelete) return false
     await this.conn!.agent.request(methods.agent.session.delete, { sessionId })
     this.forgetSession(sessionId)
+    return true
+  }
+
+  /** End a live session's runtime resources (its `claude` child) but keep its history loadable; false when unsupported or not live here. */
+  async closeSession(sessionId: string): Promise<boolean> {
+    if (!this.canClose || !this.live.has(sessionId)) return false
+    // Forget before the request goes out, so a turn admitted meanwhile reloads instead of prompting a closing session.
+    this.forgetSession(sessionId)
+    const request = this.conn!.agent.request(methods.agent.session.close, { sessionId }).then(() => undefined)
+    const settled = request.catch(() => undefined)
+    this.closing.set(sessionId, settled)
+    try {
+      await request
+    } finally {
+      if (this.closing.get(sessionId) === settled) this.closing.delete(sessionId)
+    }
     return true
   }
 

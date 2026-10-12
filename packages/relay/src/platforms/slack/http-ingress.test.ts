@@ -15,10 +15,7 @@ interface Harness {
   inboundCalls: Array<{ platformId: string; hints: { apiAppId?: string; teamId?: string } }>
 }
 
-/** A stub of the §8 seam: verification-by-signature stands in for the HMAC
- *  demux; handling mirrors the slack plugin's split (events fire async and
- *  return no sync body; interactions return their result as the syncResponse;
- *  event_id dedup runs inside, on a set-backed stand-in for the core table). */
+/** A §8 seam stub: a fixed signature stands in for the HMAC demux, events dedup on a set, and interactions return their syncResponse. */
 function makeHarness(): Harness {
   const h: Harness = {
     app: Fastify(),
@@ -190,5 +187,55 @@ describe('slack http ingress', () => {
     const res = await postInteraction({ type: 'block_actions', api_app_id: 'A1' }, { signature: 'forged' })
     expect(res.statusCode).toBe(401)
     expect(h.interactions).toHaveLength(0)
+  })
+})
+
+describe('slack http ingress — answering an event from its delivery outcome', () => {
+  const envelope = {
+    type: 'event_callback',
+    api_app_id: 'A1',
+    event_id: 'Ev-answer',
+    event: { type: 'message', channel: 'D1', ts: '1.1', user: 'U1', text: 'hi' }
+  }
+  const apps: FastifyInstance[] = []
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()))
+  })
+
+  const mount = (handleInbound: RelayInboundSeam['handleInbound'], deadlineMs?: number) => {
+    const app = Fastify()
+    registerSlackHttpIngress(app, { manager: () => ({ handleInbound }), log }, deadlineMs)
+    apps.push(app)
+  }
+  const post = (headers: Record<string, string> = {}) =>
+    apps.at(-1)!.inject({
+      method: 'POST',
+      url: '/slack/events',
+      headers: { 'content-type': 'application/json', ...headers },
+      payload: JSON.stringify(envelope)
+    })
+
+  it('answers 503 when no daemon took the event, so Slack redelivers it', async () => {
+    mount(async () => ({ admission: { disposition: 'retry' } }))
+    expect((await post()).statusCode).toBe(503)
+    expect((await post({ 'x-slack-retry-num': '2', 'x-slack-retry-reason': 'http_error' })).statusCode).toBe(503)
+  })
+
+  it("answers 200 on Slack's last redelivery, which a 503 could no longer save", async () => {
+    mount(async () => ({ admission: { disposition: 'retry' } }))
+    expect((await post({ 'x-slack-retry-num': '3', 'x-slack-retry-reason': 'http_error' })).statusCode).toBe(200)
+  })
+
+  it('answers 503 when the handling outlives the deadline or fails, and 200 once a daemon took it', async () => {
+    let settle!: () => void
+    mount(() => new Promise((resolve) => (settle = () => resolve({}))), 10)
+    expect((await post()).statusCode).toBe(503)
+    settle()
+    mount(async () => {
+      throw new Error('boom')
+    })
+    expect((await post()).statusCode).toBe(503)
+    mount(async () => ({}))
+    expect((await post()).statusCode).toBe(200)
   })
 })

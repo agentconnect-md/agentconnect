@@ -34,6 +34,7 @@
  * design leaves them (§12 — webchat is core end to end).
  */
 
+import type { ApprovalCardFacet } from './approval-card.js'
 import type { ElicitCardFacet } from './elicit-card.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import type { ImageUploader } from '../mcp/ops/context.js'
@@ -112,6 +113,8 @@ export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
    *  webchat / hook / dream turn renders through the core surface but must not inherit its
    *  platform's cards. */
   readonly elicitCards?: ElicitCardFacet
+  /** How this surface offers a permission request as a card the conversation answers; absent ⇒ a notice and the console. Exact lookup, as `elicitCards`. */
+  readonly approvalCards?: ApprovalCardFacet
   /** Build this turn's converger. A fresh one per turn, so a config change
    *  applies from the next turn rather than mid-stream. */
   createConverger(ctx: TurnOutputContext<TMessage>): TConv

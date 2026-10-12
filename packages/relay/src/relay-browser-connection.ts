@@ -5,7 +5,7 @@
  * different daemons.
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
- * `{text, turnId, mentions?, targets?, attachments?, runtime?}` (a turn) or
+ * `{text, turnId, mentions?, targets?, attachments?, runtime?, timeZone?}` (a turn) or
  * `{type:'resume'|'attach'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
  * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'attached'|'post'|'error'}`.
  * A turn fans out as one pre-addressed `rd/msg(webchat)` per targeted agent's
@@ -19,6 +19,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { selectTurnTargets } from '@agentconnect.md/activation-policy'
+import { attachmentMention } from '@agentconnect.md/message'
 import {
   RelayWebchatOp,
   RD_WEBCHAT_ATTACH_V1,
@@ -26,6 +27,7 @@ import {
   type RdWebchatPost,
   type RdWebchatImageUpdate,
   WEBCHAT_IMAGES_FEATURE,
+  WebchatTimeZone,
   type WebchatPost,
   type WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
@@ -123,7 +125,9 @@ export function parseBrowserFrame(
       ...(m.files !== undefined ? { files: m.files } : {}),
       ...(m.runtime !== undefined ? { runtime: m.runtime } : {}),
       ...(m.worktree !== undefined ? { worktree: m.worktree } : {}),
-      ...(m.steer === true ? { steer: true } : {})
+      ...(m.steer === true ? { steer: true } : {}),
+      // A malformed zone is left out rather than costing the turn.
+      ...(WebchatTimeZone.safeParse(m.timeZone).success ? { timeZone: m.timeZone as string } : {})
     })
     if (!parsed.success || parsed.data.op !== 'turn') return null
     const targets = m.targets !== undefined ? uuidArray(m.targets, 16) : undefined
@@ -373,11 +377,13 @@ export class RelayBrowserConnection implements ChatSink {
 
     // Context copies for the non-targeted participants, so the whole roster sees
     // the conversation at its next activation. Fire-and-forget with postId dedup.
+    // Uploaded files stay with the targeted agents; peers get the `[attached: …]` marker the targeted row carries.
+    const fileMarker = attachmentMention(op.files)
     const contextPost: WebchatPost = {
       postId: post.postId,
       conversationId: this.deps.chatId,
       author: { kind: 'user', user: this.deps.user, ...(this.deps.userId ? { userId: this.deps.userId } : {}) },
-      text: op.text,
+      text: fileMarker ? `${op.text}\n${fileMarker}`.trim() : op.text,
       at: post.at,
       ...(op.attachments?.length ? { attachments: op.attachments } : {})
     }
@@ -467,6 +473,9 @@ export class RelayBrowserConnection implements ChatSink {
         this.send({ type: 'resumed', ack: browserAck })
       } else if (kind === 'attach') {
         this.send({ type: 'attached', ack: browserAck })
+      } else if (!ack.accepted && ack.reason && kind.startsWith('set_')) {
+        // A refused runtime change says why to this browser alone, so its author learns who may make it.
+        this.send({ type: 'refused', refused: { op: kind, agentId, reason: ack.reason } })
       }
     } catch (error) {
       // Lower layers may include the outbound frame in an error. Do not let the opaque

@@ -15,14 +15,14 @@ const CONV = '11111111-1111-4111-8111-111111111111'
 const REPLAYED = '⚠️ The agent is restarting to apply its new configuration — this message will be picked up again.'
 const LOST = '⚠️ The agent restarted to apply its new configuration — this turn was stopped; send your message again.'
 
-function scaffold(runtime = 'claude'): string {
+function scaffold(runtime = 'claude', features: Record<string, boolean> = { turnFinalContextRefresh: false }): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-config-respawn-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      features: { turnFinalContextRefresh: false },
+      features,
       runtimes: { [runtime]: { command: 'node', args: ['unused'] } }
     })
   )
@@ -375,6 +375,34 @@ describe('config change respawn', () => {
       // The kept row runs again, on the process started with the new config.
       await vi.waitFor(() => expect(fresh.prompts).toEqual([expect.stringContaining('long question')]), WAIT)
       expect(old.host.stop).toHaveBeenCalled()
+      await vi.waitFor(async () => expect(await inboxIds(root)).toEqual([]), WAIT)
+    } finally {
+      old.release()
+      await Promise.allSettled([running])
+      await daemon.stop()
+    }
+  })
+
+  it('replays a cut turn whose prompt already carried its own message', async () => {
+    const old = blockingHost('old')
+    const fresh = answeringHost('new')
+    // The default: the cut prompt recorded its own message as context it absorbed.
+    const root = scaffold('claude', { turnFinalContextRefresh: true })
+    const daemon = await boot(root, [old.host, fresh.host])
+    ;(daemon as any).cfg.limits.configRespawnDrainMs = 50
+    const appended = vi.spyOn((daemon as any).store, 'appendTranscript')
+    const running = (daemon as any).dispatch(AGENT_ID, msg('100', 'long question', 'T1'), 'int-a')
+
+    try {
+      await vi.waitFor(() => expect(old.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      updateAgent(root, { description: 'be terse' })
+      await daemon.reconcile()
+
+      await vi.waitFor(() => expect(old.host.cancel).toHaveBeenCalledWith('acp-old'), WAIT)
+      expect(appended).toHaveBeenCalledWith(expect.objectContaining({ text: REPLAYED }))
+      await expect(running).resolves.toBeNull()
+
+      await vi.waitFor(() => expect(fresh.prompts).toEqual([expect.stringContaining('long question')]), WAIT)
       await vi.waitFor(async () => expect(await inboxIds(root)).toEqual([]), WAIT)
     } finally {
       old.release()

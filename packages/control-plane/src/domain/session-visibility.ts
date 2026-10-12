@@ -50,6 +50,8 @@ export interface SessionClassificationInput {
   launchOwnerUserId?: string | null
   /** The resolved webchat or launch owner is a service account, whose sessions belong to the org. */
   ownerIsServiceAccount?: boolean
+  /** Whether the console can tell who this platform's chat members are; only an explicit `false` opens an owned DM to the org. */
+  platformNamesPeople?: boolean
 }
 
 /** A settled classification, or the marker that the row must inherit (§4.5). */
@@ -80,7 +82,8 @@ function imOwnerIdentity(input: SessionClassificationInput): string | null {
  * | webchat / Playground          | `private`       | `user:<WebchatConversation.userId>` |
  * | Web API launch (§4.4)         | `private`       | `user:<launch principal>`        |
  * | cron / hook / dream           | `org`           | null                             |
- * | IM DM                         | `private`       | `<platform>:<scope>:<uid>`       |
+ * | IM DM, platform names people  | `private`       | `<platform>:<scope>:<uid>`       |
+ * | IM DM, platform cannot        | `org`           | `<platform>:<scope>:<uid>`       |
  * | IM group DM / channel / absent| `org`           | `<platform>:<scope>:<uid>`       |
  */
 export function classifySession(input: SessionClassificationInput): SessionClassification {
@@ -126,11 +129,10 @@ export function classifySession(input: SessionClassificationInput): SessionClass
     return { visibility: 'org', ownerIdentity: null, source: 'default' }
   }
 
-  // IM. A group DM defaults to `org` like a channel: the predicate can match
-  // only one owner, so treating a multi-party conversation as `private` would
-  // hide it from its own participants. Its initiator can still pull it private
-  // via §4.3 — which is why the owner is recorded for `org` rows too.
+  // IM: a group DM is `org` like a channel, since one owner cannot cover its participants; the owner stays for §4.3.
   const ownerIdentity = imOwnerIdentity(input)
-  const visibility: SessionVisibility = input.conversationKind === 'dm' ? 'private' : 'org'
+  if (input.conversationKind !== 'dm') return { visibility: 'org', ownerIdentity, source: 'default' }
+  // A DM is private to its sender only where the console can recognize them; elsewhere that owner would match no one.
+  const visibility: SessionVisibility = ownerIdentity && input.platformNamesPeople === false ? 'org' : 'private'
   return { visibility, ownerIdentity, source: 'default' }
 }

@@ -10,6 +10,7 @@ import {
 import { externalMemoryTools } from '../src/memory/tools.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
+import { STOP_SUBSESSION_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -82,7 +83,8 @@ const advertised: ToolDescriptor[] = [
   ...CODE_HOST_EFFECT_TOOLS,
   ...ASSISTANT_ITEM_TOOLS,
   PROPOSE_TOOL,
-  ...ASSISTANT_REMINDER_TOOLS
+  ...ASSISTANT_REMINDER_TOOLS,
+  STOP_SUBSESSION_TOOL
 ]
 
 interface ObjectSchemaView {

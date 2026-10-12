@@ -276,7 +276,6 @@ describe('evaluation tool registry (§6)', () => {
       }
     })
     await expect(daemon.start()).rejects.toThrow(/shadows a product tool/)
-    daemon = undefined
   })
 
   it('rejects duplicate evaluation tool names at startup', async () => {
@@ -301,6 +300,5 @@ describe('evaluation tool registry (§6)', () => {
       }
     })
     await expect(daemon.start()).rejects.toThrow(/duplicate evaluation tool/)
-    daemon = undefined
   })
 })

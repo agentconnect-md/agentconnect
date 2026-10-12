@@ -26,6 +26,8 @@ import {
   AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
+  CHAT_ACTOR_V1_FEATURE,
+  READ_ACCESS_V1_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   CRON_REPORT_ACK_FEATURE,
@@ -42,7 +44,6 @@ import {
   SESSION_VISIBILITY_FEATURE
 } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
-import { migratedExecution } from '../../domain/execution.js'
 import type { Handler } from './index.js'
 import { clearAwaitingApprovals } from '../approval-waits.js'
 
@@ -63,10 +64,6 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   }
 
   await deps.registry.upsertOnRegister(did, req)
-  // The one-time `execution` migration of this daemon's sandboxed agents (session-executors.md §5), before the snapshot that carries it.
-  if (req.observer !== true && req.capabilities.sandboxBackend !== undefined) {
-    await deps.agent.migrateExecution(did, migratedExecution(true, req.capabilities.sandboxBackend))
-  }
   // A fresh registration clears the member's draining declaration (frames/duty.ts).
   deps.dutyLease.onRegister(did)
   // Silent reset of the daemon's approval waits ahead of its replay (§7): a superseded socket's
@@ -154,6 +151,10 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       AGENT_PLACEMENT_FEATURE,
       // slack-approval-dm.md §4.2: this CP resolves and revalidates approval-DM recipients.
       APPROVAL_DM_ROUTE_V1_FEATURE,
+      // …and tells whether a chat member is any editor's linked identity, for a synced integration's chat actions.
+      CHAT_ACTOR_V1_FEATURE,
+      // …and gives the console's session visibility for whoever asks a cross-platform read.
+      READ_ACCESS_V1_FEATURE,
       // memory-evolution.md §3.2.1: this CP serves the whole `memory/store` family, the migration completion included.
       AGENT_MEMORY_STORE_V1_FEATURE,
       AGENT_MEMORY_HISTORY_READ_V1_FEATURE,

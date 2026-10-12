@@ -8,7 +8,7 @@ import {
   defaultStrategy,
   executionAsk,
   groupStrategies,
-  LEGACY_SANDBOX,
+  HOST_ONLY_TABLE,
   sortStrategies,
   strategyNameKey,
   strategyOptions,
@@ -59,37 +59,19 @@ describe('what a placement offers the picker', () => {
 
   it('shows no picker on the pool, whose boundary is the pod', () => {
     expect(strategyOptions({ kind: 'pool' })).toEqual([])
-    expect(
-      strategyOptions(agentStrategies({ strategies: TABLE, sandboxSupported: false, sandboxRequired: false }, true))
-    ).toEqual([])
+    expect(strategyOptions(agentStrategies({ strategies: TABLE }, true))).toEqual([])
     expect(executionAsk({ kind: 'pool' }, 'host')).toEqual({})
   })
 
-  it('reads the sandbox features of a daemon that predates the table', () => {
-    expect(strategyOptions(daemonStrategies(caps({ features: ['sandbox'] })))).toEqual([
-      { value: 'host', available: true },
-      { value: LEGACY_SANDBOX, available: true }
-    ])
-    expect(strategyOptions(daemonStrategies(caps({ features: ['sandbox-required'] })))).toEqual([
-      { value: 'host', available: false, refusal: 'sandboxRequired' },
-      { value: LEGACY_SANDBOX, available: true }
-    ])
-    expect(strategyOptions(daemonStrategies(caps({ features: ['sandbox'], sandboxUnavailable: KVM })))).toEqual([
-      { value: 'host', available: true },
-      { value: LEGACY_SANDBOX, available: false, reason: KVM }
-    ])
-    // A group none of whose members reports a table speaks through its first member, as the Control Plane reads it.
-    expect(groupStrategies([caps(), caps({ features: ['sandbox'] })])).toEqual(daemonStrategies(caps()))
+  it('reads a daemon that reports no table, and no placement at all, as host alone', () => {
+    expect(daemonStrategies(caps())).toEqual({ kind: 'table', table: HOST_ONLY_TABLE })
     expect(strategyOptions(daemonStrategies(undefined))).toEqual([{ value: 'host', available: true }])
+    // A group none of whose members reports a table speaks through its first member, as the Control Plane reads it.
+    expect(groupStrategies([caps(), caps()])).toEqual(daemonStrategies(caps()))
   })
 
-  it('reads an agent’s placement from the table the Control Plane projected, else from its sandbox fields', () => {
-    const agent = { strategies: TABLE, sandboxSupported: true, sandboxRequired: false }
-    expect(agentStrategies(agent, false)).toEqual({ kind: 'table', table: TABLE })
-    expect(agentStrategies({ ...agent, strategies: null, sandboxUnavailable: KVM }, false)).toEqual({
-      kind: 'legacy',
-      sandbox: { supported: true, required: false, unavailable: KVM }
-    })
+  it('reads an agent’s placement from the table the Control Plane projected', () => {
+    expect(agentStrategies({ strategies: TABLE }, false)).toEqual({ kind: 'table', table: TABLE })
   })
 
   it('keeps the current choice listed where the placement no longer offers it', () => {
@@ -110,38 +92,30 @@ describe('the choice and its request', () => {
     expect(defaultStrategy([{ value: 'srt', available: false, reason: 'no bwrap' }])).toBeUndefined()
   })
 
-  it('names the slug where the placement reports a table, and the legacy boolean where it does not', () => {
+  it('names the slug, whatever table the placement reports', () => {
     expect(executionAsk(daemonStrategies(caps({ strategies: TABLE })), 'srt')).toEqual({ execution: 'srt' })
     expect(executionAsk(daemonStrategies(caps({ strategies: TABLE })), 'host')).toEqual({ execution: 'host' })
-    const legacy = daemonStrategies(caps({ features: ['sandbox'] }))
-    expect(executionAsk(legacy, LEGACY_SANDBOX)).toEqual({ runInSandbox: true })
-    expect(executionAsk(legacy, 'host')).toEqual({ runInSandbox: false })
-    // The legacy sandbox is never sent as a slug, even to a placement that now reports a table.
-    expect(executionAsk(daemonStrategies(caps({ strategies: TABLE })), LEGACY_SANDBOX)).toEqual({ runInSandbox: true })
+    expect(executionAsk(daemonStrategies(caps()), 'host')).toEqual({ execution: 'host' })
   })
 
   it('applies the image’s runtime warnings only to a strategy that starts the image’s install', () => {
     expect(strategyUsesImage('microsandbox')).toBe(true)
-    // An unreported backend may be the VM, as the old toggle read it.
-    expect(strategyUsesImage(LEGACY_SANDBOX)).toBe(true)
     // `srt` confines the host's install, so an image-only binary gap says nothing about it.
     expect(strategyUsesImage('srt')).toBe(false)
     expect(strategyUsesImage('host')).toBe(false)
   })
 
-  it('reads an agent’s stored strategy, or the legacy sandbox while its backend is unreported', () => {
-    expect(agentStrategyValue({ execution: 'microsandbox', runInSandbox: true })).toBe('microsandbox')
-    expect(agentStrategyValue({ execution: null, runInSandbox: true })).toBe(LEGACY_SANDBOX)
-    expect(agentStrategyValue({ runInSandbox: false })).toBe('host')
+  it('reads an agent’s stored strategy as its picker value', () => {
+    expect(agentStrategyValue({ execution: 'microsandbox' })).toBe('microsandbox')
+    expect(agentStrategyValue({ execution: 'host' })).toBe('host')
   })
 })
 
 describe('what the console calls a strategy', () => {
-  it('calls the default process sandbox and a legacy daemon’s sandbox “Sandbox”, and every other known one by its own name', () => {
+  it('calls the default process sandbox “Sandbox”, and every other known one by its own name', () => {
     expect(DEFAULT_SANDBOX_STRATEGY).toBe('srt')
     expect(strategyNameKey('host')).toBe('host')
     expect(strategyNameKey('srt')).toBe('sandbox')
-    expect(strategyNameKey(LEGACY_SANDBOX)).toBe('sandbox')
     expect(strategyNameKey('microsandbox')).toBe('microsandbox')
     expect(strategyNameKey('docker')).toBe('docker')
   })
@@ -220,7 +194,7 @@ describe('the runtimes one strategy starts', () => {
   it('reads a daemon that predates the entries as the host or image install', () => {
     const legacy: Runtime = { ...claude, strategies: null, unavailableReason: 'image-binary-missing' }
     expect(strategyRuntimeModels([legacy], 'host')).toMatchObject([{ version: '2.0.0', unavailableReason: null }])
-    expect(strategyRuntimeModels([legacy], LEGACY_SANDBOX)).toMatchObject([
+    expect(strategyRuntimeModels([legacy], 'microsandbox')).toMatchObject([
       { version: '', models: ['host-model'], unavailableReason: 'image-binary-missing' }
     ])
   })
@@ -285,7 +259,6 @@ describe('the models an agent picks from', () => {
   it('keeps an older daemon’s single list, and leaves a pool agent’s as reported', () => {
     const legacy = { runtimeModels: [runtime(null)] }
     expect(models(strategyModelSource(legacy, 'microsandbox'))).toEqual([['host-model']])
-    expect(models(strategyModelSource(legacy, LEGACY_SANDBOX))).toEqual([['host-model']])
     const daemon = { runtimeModels: [runtime({ microsandbox: { available: true, models: ['image-model'] } })] }
     expect(strategyModelSource(daemon, undefined)).toBe(daemon)
   })

@@ -75,18 +75,21 @@ afterEach(async () => {
 })
 
 describe('Provider keys configuration', () => {
-  it('offers OpenAI keys for Decisions while hiding providers without consumers', async () => {
+  it.each([
+    ['openai', 'OpenAI'],
+    ['anthropic', 'Anthropic (Claude)']
+  ])('offers %s while hiding providers without consumers', async (provider, name) => {
     mocks.fetchProviderKeys.mockResolvedValue([
-      { ...empty, provider: 'openai', name: 'OpenAI' },
+      { ...empty, provider, name },
       { ...empty, provider: 'openrouter', name: 'OpenRouter' }
     ])
     await render()
-    expect(element.textContent).toContain('OpenAI')
+    expect(element.textContent).toContain(name)
     expect(element.textContent).not.toContain('OpenRouter')
     await click('Add key')
     await enterKey('example-openai-key')
     await click('Save')
-    expect(mocks.setProviderKey).toHaveBeenCalledWith('example-org', 'openai', {
+    expect(mocks.setProviderKey).toHaveBeenCalledWith('example-org', provider, {
       apiKey: 'example-openai-key',
       endpoint: null,
       headers: {}

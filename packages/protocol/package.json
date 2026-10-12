@@ -11,6 +11,12 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./assistant-permission-modes": {
+      "development": "./src/assistant-permission-modes.ts",
+      "types": "./dist/assistant-permission-modes.d.ts",
+      "import": "./dist/assistant-permission-modes.js",
+      "default": "./dist/assistant-permission-modes.js"
+    },
     "./code-host": {
       "development": "./src/code-host.ts",
       "types": "./dist/code-host.d.ts",
@@ -34,6 +40,12 @@
       "types": "./dist/decision-api.d.ts",
       "import": "./dist/decision-api.js",
       "default": "./dist/decision-api.js"
+    },
+    "./provider-key": {
+      "development": "./src/provider-key.ts",
+      "types": "./dist/provider-key.d.ts",
+      "import": "./dist/provider-key.js",
+      "default": "./dist/provider-key.js"
     },
     "./subsession-coordinate": {
       "development": "./src/subsession-coordinate.ts",

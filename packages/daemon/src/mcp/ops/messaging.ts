@@ -459,7 +459,7 @@ export async function settlePost(
       ? threadKeyForUpdate(platform, channel, updateThread)
       : providerPostId === undefined
         ? undefined
-        : threadKeyForPost(platform, channel, providerPostId, isDmTarget)
+        : threadKeyForPost(platform, channel, gw.threadOfPost?.(providerPostId) ?? providerPostId, isDmTarget)
   const postedThread =
     updateThread !== undefined
       ? canonicalPostThread
@@ -654,10 +654,10 @@ export async function sendMessage(
       parseArgs(platformField, args.platform) ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
     const wantIntegrationId = parseArgs(integrationIdField, args.integrationId)
     const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
-    // A named channel must be one this session may reach (channel-reach.ts): on Slack any public
-    // channel, a private one only as the conversation the agent was invoked in. The DM form names
-    // a user, not a channel, and is not gated here.
-    if (channel !== undefined) await assertChannelReachable(ctx, gw, wantPlatform, channel, 'sendMessage')
+    // An intercepted post skips the reach rule: an enabled place and a person's approval or grant replace it (§5.5).
+    if (channel !== undefined && !deps.interceptPost) {
+      await assertChannelReachable(ctx, gw, wantPlatform, channel, 'sendMessage')
+    }
     // §2.4 refusals, all BEFORE the post — an update that cannot be honored must not fall back
     // to the channel root, which loses the message where the caller was looking for it.
     if (updateThread !== undefined) {

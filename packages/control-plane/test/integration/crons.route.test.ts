@@ -99,7 +99,9 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
       timezone: 'Asia/Singapore',
       target: { platform: 'slack', channel: 'C123' },
       trigger: 'post the standup summary',
-      enabled: true
+      enabled: true,
+      // The person who set what it does: its runs read as them.
+      askerUserId: expect.any(String)
     })
   })
 

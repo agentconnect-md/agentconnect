@@ -12,9 +12,11 @@ import {
   type RdMsgPlatformAction
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { CHAT_LINK_HINT } from '../src/agents/chat-actions.js'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { elicitOptionToken } from '../src/slack/render.js'
+import { slackApprovalCards } from '../src/platforms/slack/approval-card.js'
 import { slackElicitCards } from '../src/platforms/slack/elicit-card.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -1055,7 +1057,7 @@ describe('Daemon in-conversation commands', () => {
     })
     await daemon.start()
     const conn = makeRoutable(daemon)
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     const store = (daemon as any).store
     const key = SESSION_KEY
 
@@ -1083,7 +1085,7 @@ describe('Daemon in-conversation commands', () => {
     })
     await daemon.start()
     const conn = makeRoutable(daemon)
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     const store = (daemon as any).store
     const key = SESSION_KEY
 
@@ -1165,7 +1167,7 @@ describe('Daemon in-conversation commands', () => {
     expect(await store.getFastModeOverride(key)).toBeUndefined()
     expect(await store.getPermissionModeOverride(key)).toBeUndefined()
 
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
 
     // bare /permission lists Codex's own mode names, not the raw wire ids.
     await (daemon as any).onInboundOutcome(dm('200', '/permission'))
@@ -1199,6 +1201,47 @@ describe('Daemon in-conversation commands', () => {
     await daemon.stop()
   })
 
+  it.each([
+    { level: 'talk', changes: false },
+    { level: 'approve', changes: false },
+    { level: 'settings', changes: true }
+  ] as const)('changes runtime settings from chat only at the settings level ($level)', async ({ level, changes }) => {
+    const host = { ...selectHost(), setSessionFastMode: vi.fn(async () => true) }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    const key = SESSION_KEY
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    ;(daemon as any).agents.get('bot-a').chatActions = level
+
+    // Typed commands.
+    await (daemon as any).onInboundOutcome(dm('200', '/models 2'))
+    expect(await store.getModelOverride(key)).toBe(changes ? 'sonnet' : undefined)
+    if (!changes) expect(conn.postMessage.mock.calls.at(-1)![1]).toContain('Agent editor')
+    await (daemon as any).onInboundOutcome(dm('210', '/effort high'))
+    expect(await store.getEffortOverride(key)).toBe(changes ? 'high' : undefined)
+
+    // The status-bar selects and the status modal funnel through these.
+    const commands = (daemon as any).commands
+    expect(await commands.setPermissionModeByKey(key, 'plan')).toBe(changes)
+    expect(await commands.setFastByKey(key, true)).toBe(changes)
+    expect(await store.getPermissionModeOverride(key)).toBe(changes ? 'plan' : undefined)
+    expect(await store.getFastModeOverride(key)).toBe(changes ? true : undefined)
+
+    // The status modal offers its runtime controls only where they can be used.
+    const info = await (daemon as any).statusInfoFrom('bot-a', key, 'acp-1', { breakdown: true })
+    expect(info.models).toEqual(changes ? ['opus', 'sonnet'] : undefined)
+    expect(info.efforts).toEqual(changes ? ['low', 'medium', 'high'] : undefined)
+    expect(info.permissionModes).toEqual(changes ? ['default', 'plan', 'acceptEdits'] : [])
+
+    await daemon.stop()
+  })
+
   it('a command from a non-routable thread is ignored (no dispatch, no crash)', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({
@@ -1211,6 +1254,136 @@ describe('Daemon in-conversation commands', () => {
     await (daemon as any).onInboundOutcome(dm('100', '!stop'))
     await new Promise((r) => setTimeout(r, 20))
     expect(blocked.prompts).toEqual([])
+    await daemon.stop()
+  })
+  it.each([
+    [
+      'admits each message by a Decision',
+      { bindRules: [{ match: { kind: 'dm' } }, { channel: 'C1', match: { kind: 'decision' } }] }
+    ],
+    ['is shared with another organization', { externalChannels: ['C1'] }]
+  ] as const)('changes no runtime setting from a conversation that %s', async (_how, core) => {
+    const host = { ...selectHost(), setSessionFastMode: vi.fn(async () => true) }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    const key = SESSION_KEY
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    const agent = (daemon as any).agents.get('bot-a')
+    agent.chatActions = 'settings'
+    Object.assign(agent.integrations[0].core, core)
+
+    await (daemon as any).onInboundOutcome(dm('200', '/models 2'))
+    expect(await store.getModelOverride(key)).toBeUndefined()
+    expect(conn.postMessage.mock.calls.at(-1)![1]).toContain('Agent editor')
+    await (daemon as any).onInboundOutcome(dm('210', '!fast on'))
+    expect(await store.getFastModeOverride(key)).toBeUndefined()
+
+    // The status-bar selects funnel through these, and the modal offers no control.
+    const commands = (daemon as any).commands
+    expect(await commands.setModelByKey(key, 'sonnet')).toBe(false)
+    expect(await commands.setPermissionModeByKey(key, 'plan')).toBe(false)
+    expect(await store.getPermissionModeOverride(key)).toBeUndefined()
+    const modal = await (daemon as any).statusInfoForKey(key)
+    expect(modal.info.models).toBeUndefined()
+    expect(modal.info.permissionModes).toEqual([])
+    await daemon.stop()
+  })
+
+  it('takes no runtime setting from a bot, and still takes one from a person', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => selectHost() as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    const store = (daemon as any).store
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
+    const select = (actor: { userId: string; isBot?: boolean }) =>
+      (daemon as any).commands.handleStatusAction({
+        kind: 'set-model',
+        sessionKey: SESSION_KEY,
+        model: 'sonnet',
+        actor
+      })
+    await select({ userId: 'B1', isBot: true })
+    expect(await store.getModelOverride(SESSION_KEY)).toBeUndefined()
+    await select({ userId: 'U1' })
+    expect(await store.getModelOverride(SESSION_KEY)).toBe('sonnet')
+    await daemon.stop()
+  })
+
+  it('takes runtime settings only from a linked Agent editor where permissions are synced', async () => {
+    const host = { ...selectHost(), setSessionFastMode: vi.fn(async () => true) }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    const agent = (daemon as any).agents.get('bot-a')
+    agent.chatActions = 'settings'
+    agent.integrations[0].core.chatAuthority = 'editors'
+    // U-ED is linked to an editor, U1 to a member who cannot edit, and anyone else to nobody.
+    const asked: string[] = []
+    ;(daemon as any).askChatActor = vi.fn(async (_agentId: string, _integrationId: string, userId: string) => {
+      asked.push(userId)
+      return userId === 'U-ED' ? { allowed: true } : { allowed: false, linked: userId === 'U1' }
+    })
+    const from = (sender: string, ts: string, text: string) => ({
+      ...dm(ts, text),
+      sender: { id: sender, isBot: false }
+    })
+
+    await (daemon as any).onInboundOutcome(from('U1', '200', '/models 2'))
+    expect(await store.getModelOverride(SESSION_KEY)).toBeUndefined()
+    expect(conn.postMessage.mock.calls.at(-1)![1]).toBe(
+      'Runtime settings can only be changed by an Agent editor from the Agent page.'
+    )
+    await (daemon as any).onInboundOutcome(from('U-NEW', '210', '!fast on'))
+    expect(await store.getFastModeOverride(SESSION_KEY)).toBeUndefined()
+    expect(conn.postMessage.mock.calls.at(-1)![1]).toContain(CHAT_LINK_HINT)
+    await (daemon as any).onInboundOutcome(from('U-ED', '220', '!fast on'))
+    expect(await store.getFastModeOverride(SESSION_KEY)).toBe(true)
+
+    const select = (userId: string) =>
+      (daemon as any).commands.handleStatusAction({
+        kind: 'set-model',
+        sessionKey: SESSION_KEY,
+        model: 'sonnet',
+        actor: { userId }
+      })
+    await expect(select('U-NEW')).resolves.toMatchObject({ text: expect.stringContaining(CHAT_LINK_HINT) })
+    await expect(select('U1')).resolves.toMatchObject({
+      text: expect.stringContaining('Only an Agent editor can change runtime settings.')
+    })
+    expect(await store.getModelOverride(SESSION_KEY)).toBeUndefined()
+    await expect(select('U-ED')).resolves.toBeUndefined()
+    expect(await store.getModelOverride(SESSION_KEY)).toBe('sonnet')
+
+    // Where permissions are not synced, anyone in the conversation changes them, and no one is asked.
+    agent.integrations[0].core.chatAuthority = 'participants'
+    const before = asked.length
+    await expect(
+      (daemon as any).commands.handleStatusAction({
+        kind: 'set-model',
+        sessionKey: SESSION_KEY,
+        model: 'opus',
+        actor: { userId: 'U-NEW' }
+      })
+    ).resolves.toBeUndefined()
+    expect(await store.getModelOverride(SESSION_KEY)).toBe('opus')
+    expect(asked).toHaveLength(before)
     await daemon.stop()
   })
 })
@@ -2055,7 +2228,7 @@ describe('Slack interactive status bar', () => {
 
     const permissionResolved = vi.fn()
     const permissionRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     await (daemon as any).store.createPermissionRequest({
       id: permissionRequestId,
       agentId: 'bot-a',
@@ -2073,7 +2246,13 @@ describe('Slack interactive status bar', () => {
       sessionId: 'acp-1',
       params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
       evaluationParams: {},
-      chat: { conn: { updateBlocks, workspaceId: () => 'T1' }, channel: 'C1', ts: 'card-1' },
+      chat: {
+        facet: slackApprovalCards,
+        conn: { updateBlocks, workspaceId: () => 'T1' },
+        channel: 'C1',
+        place: { integrationId: 'int-a', channel: 'C1' },
+        ts: 'card-1'
+      },
       resolve: permissionResolved
     })
     expect(
@@ -2531,7 +2710,7 @@ describe('Slack interactive status bar', () => {
     })
     await daemon.start()
     routableWithBlocks(daemon)
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     // Simulate the CP sending its console origin on auth/ok (no local webAppUrl config).
     ;(daemon as any).cpWebAppUrl = 'https://console.example.com'
 
@@ -2601,7 +2780,7 @@ describe('Slack interactive status bar', () => {
       hostFactory: () => host as any
     })
     await daemon.start()
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     routableWithBlocks(daemon)
 
     const key = SESSION_KEY
@@ -2668,7 +2847,7 @@ describe('Slack interactive status bar', () => {
       hostFactory: () => host as any
     })
     await daemon.start()
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     routableWithBlocks(daemon)
     const store = (daemon as any).store
     const key = SESSION_KEY

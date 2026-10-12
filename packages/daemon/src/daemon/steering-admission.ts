@@ -17,6 +17,8 @@ type SteerCandidate = Pick<
 export function steerEligibleEntry(entry: SteerCandidate): boolean {
   return (
     entry.msg.source === 'user' &&
+    // A steer carries only the marker, never an upload's download link, so a message with uploads queues.
+    !entry.msg.attachments?.some((attachment) => attachment.transfer !== undefined) &&
     entry.isQueueCmd !== true &&
     entry.hookContext === undefined &&
     entry.callMeta === undefined &&
@@ -25,8 +27,7 @@ export function steerEligibleEntry(entry: SteerCandidate): boolean {
   )
 }
 
-/** The turn a same-key arrival can be steered into: its prompt is awaiting the runtime, its output
- *  is not suppressed, and it still has steering budget. Undefined ⇒ queue as before. */
+/** The live prompt of the key a same-key arrival may ride: not being cut, with budget left; undefined ⇒ queue. */
 export function selectSteerTarget(
   pendings: Iterable<Pending>,
   sessionKey: string,
@@ -34,7 +35,9 @@ export function selectSteerTarget(
 ): Pending | undefined {
   for (const pending of pendings) {
     if (pending.plan.sessionKey !== sessionKey) continue
-    if (pending.promptInFlight !== true || pending.outputSuppressed !== undefined) return undefined
+    // An interrupt marks the entry before it silences the output, so either one means the turn is going.
+    const cut = pending.outputSuppressed !== undefined || pending.entry.cancelledReason !== undefined
+    if (pending.promptInFlight !== true || cut) return undefined
     return (pending.steerCount ?? 0) < cap ? pending : undefined
   }
   return undefined

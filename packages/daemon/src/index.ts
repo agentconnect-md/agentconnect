@@ -57,7 +57,6 @@ program
   .option('--log-level <level>', 'trace|debug|info|warn|error')
   .option('--agents-dir <dir>', 'override agents directory')
   .option('--max-agents <n>', 'max agents this daemon advertises / enforces')
-  .option('--require-sandbox', 'refuse unsandboxed sessions (sandbox.host: false)')
   .option('--k8s', 'run runtimes in cluster sandbox pods instead of on this host (no probing, no local runtimes)')
   .option('--key-server <url>', 'http(s) endpoint for session-scoped model credentials')
   .option('--key-server-token-path <path>', 'file containing the key-server bearer token')
@@ -134,8 +133,7 @@ program
           daemonId: opts.daemonId,
           logLevel: opts.logLevel,
           agentsDir: opts.agentsDir,
-          maxAgents: opts.maxAgents ? Number(opts.maxAgents) : undefined,
-          requireSandbox: opts.requireSandbox
+          maxAgents: opts.maxAgents ? Number(opts.maxAgents) : undefined
         }
       })
       lock.release()

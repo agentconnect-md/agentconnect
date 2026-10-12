@@ -133,6 +133,22 @@ describe('bindWebchatPostAuthor', () => {
     expect(bound.post.post.author).toEqual({ kind: 'agent', agentId: AGENT })
   })
 
+  // §3.1a: a removal reaches this relay as a newer, shrunk roster; the removed member's late post is shown but wakes no one.
+  it('after a removal refresh, a removed member gets no fan-out and its late post is delivered without depth', () => {
+    const r = new WebchatRouter()
+    r.rememberRoster(CHAT_A, roster, 1_000)
+    r.rememberRoster(CHAT_A, [roster[0]!], 2_000)
+    expect(r.rosterOf(CHAT_A).map((p) => p.agentId)).toEqual([AGENT])
+
+    const browser = { onChat: vi.fn(), onPost: vi.fn<(post: RdWebchatPost) => void>() }
+    r.register(CHAT_A, browser)
+    const bound = bindWebchatPostAuthor(post({ agentId: OTHER }, OTHER), 'daemon-2', r.rosterOf(CHAT_A))
+    expect(bound.authorBound).toBe(false)
+    expect(bound.post.post.author).toEqual({ kind: 'agent', agentId: OTHER })
+    r.deliverPost(bound.post)
+    expect(browser.onPost).toHaveBeenCalledWith(bound.post)
+  })
+
   it('leaves a depth-less (pre-parity) post verbatim — nothing to strip, still unbound', () => {
     const p = post({ hopCount: undefined })
     delete (p.post.author as { hopCount?: number }).hopCount

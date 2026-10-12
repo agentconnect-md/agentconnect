@@ -8,6 +8,7 @@ import { LocalMemoryFs } from '../src/memory/fs.js'
 import { emitWebchatUpdate, flushHeldWebchatText, type WebchatTurnOutput } from '../src/webchat/turn-output.js'
 import type { WebchatOutput, WebchatDone, RdChatEvent, RdMsgWebchat, RdWebchatPost } from '@agentconnect.md/protocol'
 import { WAIT } from './wait-support.js'
+import { WEBCHAT_SETTINGS_REFUSAL } from '../src/webchat/caller-role.js'
 
 // A webchat conversation/agent target. agentId is a real UUID because the protocol
 // WebchatMessage.agentId is uuid-validated at the wire; here it is the on-disk agent id.
@@ -833,7 +834,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const { factory, host } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
-    ;(daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get(AGENT_ID).chatActions = 'settings'
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
@@ -863,7 +864,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       const runtime = { model: 'b', effort: 'high', permissionMode: 'plan', fastMode: true }
       const { factory, host } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
       const daemon = new Daemon({
-        root: scaffold(undefined, { allowRuntimeChangesInChat: allowed }),
+        root: scaffold(undefined, { chatActions: allowed ? 'settings' : 'talk' }),
         hostFactory: factory
       })
       await daemon.start()
@@ -906,7 +907,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const firstSessionGate = new Promise<void>((resolve) => (releaseFirstSession = resolve))
     const secondSessionGate = new Promise<void>((resolve) => (releaseSecondSession = resolve))
     const configured = {
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'a' },
       reasoningEffort: 'low',
       permissionMode: 'default',
@@ -935,7 +936,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
         // Re-enable in the narrow gap before recreation so the retry itself carries
         // ultracode; the second disable below must fence that awaited retry too.
         const current = (daemon as any).agents.get(AGENT_ID)
-        ;(daemon as any).agents.set(AGENT_ID, { ...current, allowRuntimeChangesInChat: true })
+        ;(daemon as any).agents.set(AGENT_ID, { ...current, chatActions: 'settings' })
       }),
       modelOptions: vi.fn(() => ({ current: 'a', models: ['a', 'b'] })),
       hasSession: vi.fn(() => true),
@@ -964,12 +965,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     )
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
 
-    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    writeAgent(root, { ...configured, chatActions: 'talk' })
     await (daemon as any).reconcile()
     releaseFirstSession()
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(2), WAIT)
 
-    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    writeAgent(root, { ...configured, chatActions: 'talk' })
     await (daemon as any).reconcile()
     releaseSecondSession()
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
@@ -1002,7 +1003,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
   it('revokes chat-selected runtime settings from an idle warm session', async () => {
     const configured = {
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'a' },
       reasoningEffort: 'low',
       permissionMode: 'default',
@@ -1044,7 +1045,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     host.setSessionFastMode.mockClear()
 
     // Turning the gate off must restore every live session, not only an in-flight turn.
-    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    writeAgent(root, { ...configured, chatActions: 'talk' })
     await (daemon as any).reconcile()
     await vi.waitFor(() => {
       expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'a')
@@ -1067,13 +1068,54 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     )
     await vi.waitFor(() => expect(cp.dones).toHaveLength(2), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
-    expect((daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat).toBe(false)
+    expect((daemon as any).agents.get(AGENT_ID).chatActions).toBe('talk')
     await daemon.stop()
   })
 
+  it.each([
+    { from: 'settings', to: 'approve', cleared: true, restored: true, cardsRetired: false },
+    { from: 'settings', to: 'talk', cleared: true, restored: true, cardsRetired: true },
+    { from: 'approve', to: 'settings', cleared: true, restored: false, cardsRetired: false },
+    { from: 'approve', to: 'talk', cleared: false, restored: false, cardsRetired: true },
+    { from: 'talk', to: 'approve', cleared: false, restored: false, cardsRetired: false }
+  ] as const)(
+    'a level change from $from to $to touches overrides only across settings and cards only below approve',
+    async ({ from, to, cleared, restored, cardsRetired }) => {
+      const configured = { runtimeOverrides: { model: 'a' } }
+      const root = scaffold(undefined, { ...configured, chatActions: from })
+      const { factory, host } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
+      const daemon = new Daemon({ root, hostFactory: factory })
+      await daemon.start()
+      const cp = fakeCpClient()
+      ;(daemon as any).cpClient = cp
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'first',
+        { id: 'webchat', name: 'webchat' },
+        cp.sink
+      )
+      await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
+      const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+      await (daemon as any).store.setModelOverride(key, 'b')
+      host.setSessionModel.mockClear()
+      const retire = vi.spyOn((daemon as any).permissions, 'disableChatPermissionSurfaces')
+
+      writeAgent(root, { ...configured, chatActions: to })
+      await (daemon as any).reconcile()
+
+      expect((daemon as any).agents.get(AGENT_ID).chatActions).toBe(to)
+      expect(await (daemon as any).store.getModelOverride(key)).toBe(cleared ? undefined : 'b')
+      if (restored) await vi.waitFor(() => expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'a'), WAIT)
+      else expect(host.setSessionModel).not.toHaveBeenCalled()
+      expect(retire).toHaveBeenCalledTimes(cardsRetired ? 1 : 0)
+      await daemon.stop()
+    }
+  )
+
   it('restores the runtime default model and effort when the Agent leaves them unpinned', async () => {
     const configured = {
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       permissionMode: 'default',
       fastMode: false
     }
@@ -1123,7 +1165,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     host.setSessionEffort.mockClear()
     host.setSessionFastMode.mockClear()
 
-    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    writeAgent(root, { ...configured, chatActions: 'talk' })
     await (daemon as any).reconcile()
     await vi.waitFor(() => {
       expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'default')
@@ -1931,6 +1973,37 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
+  it('tells an assistant-mode agent the local time in the zone the browser reported, else UTC', async () => {
+    const { factory, host } = streamingHost([text('ok')])
+    const assistant = { assistantMode: { enabled: true, responsibleUserId: 'usr_ada' } }
+    const daemon = new Daemon({ root: scaffold(undefined, assistant), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    const nowLine = async (chatId: string, turnId: string, timeZone?: string): Promise<string | undefined> => {
+      const events: RdChatEvent[] = []
+      const payload = { op: 'turn', text: 'what day is it?', user: 'ada', userId: 'usr_ada', turnId } as const
+      const ack = await (daemon as any).handleRelayMsg(
+        rd(timeZone ? { ...payload, timeZone } : payload, { chatId, sessionKey: chatId, msgId: turnId }),
+        (e: RdChatEvent) => events.push(e)
+      )
+      expect(ack).toMatchObject({ accepted: true })
+      await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+      const blocks = host.prompt.mock.calls.at(-1)?.[1] as { text?: string }[]
+      return blocks.find((b) => b.text?.includes('\nNow: '))?.text
+    }
+    const stamp = String.raw`\d{4}-\d{2}-\d{2} [A-Z][a-z]{2} \d{2}:\d{2}`
+    expect(await nowLine(CONV, '77777777-7777-4777-8777-777777777777', 'America/Los_Angeles')).toMatch(
+      new RegExp(
+        String.raw`^<system-reminder>\nNow: ${stamp} \(America/Los_Angeles, UTC-0[78]:00\)\.\n</system-reminder>$`
+      )
+    )
+    // A relay that predates the field sends no zone.
+    expect(await nowLine('99999999-9999-4999-8999-999999999999', '77777777-7777-4777-8777-777777777778')).toMatch(
+      new RegExp(String.raw`^<system-reminder>\nNow: ${stamp} \(UTC, local time zone unknown\)\.\n</system-reminder>$`)
+    )
+    await daemon.stop()
+  })
+
   it('keeps a newer resume bound when a delayed older generation arrives afterward', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
@@ -2308,7 +2381,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    ;(daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get(AGENT_ID).chatActions = 'settings'
 
     const setModel = vi.spyOn((daemon as any).commands, 'setModelByKey')
     const setEffort = vi.spyOn((daemon as any).commands, 'setEffortByKey')
@@ -2373,6 +2446,103 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(await (daemon as any).store.getFastModeOverride(key)).toBeUndefined()
     await daemon.stop()
   })
+
+  it('lets only the agent’s editors and the conversation’s owner change runtime settings at the third level', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(undefined, { chatActions: 'settings' }), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+    await (daemon as any).store.upsertSession({
+      key,
+      agentId: AGENT_ID,
+      platform: 'webchat',
+      channel: CONV,
+      thread: `webchat:${CONV}`,
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+
+    const ops: RdMsgWebchat['payload'][] = [
+      { op: 'set_model', model: 'b', callerRole: 'participant' },
+      { op: 'set_effort', effort: 'high', callerRole: 'participant' },
+      { op: 'set_permission_mode', permissionMode: 'plan', callerRole: 'participant' },
+      { op: 'set_fast', fastMode: true, callerRole: 'participant' }
+    ]
+    for (const [index, payload] of ops.entries()) {
+      expect(await (daemon as any).handleRelayMsg(rd(payload, { msgId: `participant-${index}` }), () => {})).toEqual({
+        msgId: `participant-${index}`,
+        accepted: false,
+        reason: WEBCHAT_SETTINGS_REFUSAL
+      })
+    }
+    expect(await (daemon as any).store.getModelOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getEffortOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getPermissionModeOverride(key)).toBeUndefined()
+    expect(await (daemon as any).store.getFastModeOverride(key)).toBeUndefined()
+
+    for (const [index, callerRole] of (['owner', 'editor'] as const).entries()) {
+      const model = `model-${callerRole}`
+      expect(
+        await (daemon as any).handleRelayMsg(
+          rd({ op: 'set_model', model, callerRole }, { msgId: `allowed-${index}` }),
+          () => {}
+        )
+      ).toEqual({ msgId: `allowed-${index}`, accepted: true })
+      expect(await (daemon as any).store.getModelOverride(key)).toBe(model)
+    }
+    await daemon.stop()
+  })
+
+  it('refuses a runtime change at the second level even from the agent’s editors and the conversation’s owner', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(undefined, { chatActions: 'approve' }), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    for (const [index, callerRole] of (['owner', 'editor'] as const).entries()) {
+      expect(
+        await (daemon as any).handleRelayMsg(
+          rd({ op: 'set_effort', effort: 'high', callerRole }, { msgId: `approve-${index}` }),
+          () => {}
+        )
+      ).toMatchObject({ accepted: false, reason: 'runtime changes are disabled in chat' })
+    }
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+    expect(await (daemon as any).store.getEffortOverride(key)).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it.each([
+    { callerRole: 'participant' as const, staged: false },
+    { callerRole: 'owner' as const, staged: true }
+  ])(
+    'stages a turn’s runtime choices only for an editor or the owner (callerRole=$callerRole)',
+    async ({ callerRole, staged }) => {
+      const { factory } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
+      const daemon = new Daemon({ root: scaffold(undefined, { chatActions: 'settings' }), hostFactory: factory })
+      await daemon.start()
+      ;(daemon as any).cpClient = fakeCpClient()
+      const dones: unknown[] = []
+      const runtime = { model: 'b', effort: 'high', permissionMode: 'plan', fastMode: true }
+      expect(
+        await (daemon as any).handleRelayMsg(
+          rd({ op: 'turn', text: 'go', user: 'Alice', userId: 'user-1', runtime, callerRole }, { msgId: 'm-turn' }),
+          (event: RdChatEvent) => {
+            if (event.kind === 'done') dones.push(event.done)
+          }
+        )
+      ).toMatchObject({ accepted: true })
+      await vi.waitFor(() => expect(dones).toHaveLength(1), WAIT)
+
+      const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+      expect(await (daemon as any).store.getModelOverride(key)).toBe(staged ? 'b' : undefined)
+      expect(await (daemon as any).store.getFastModeOverride(key)).toBe(staged ? true : undefined)
+      await daemon.stop()
+    },
+    15_000
+  )
 
   it('routes cancel/close to their handlers by chatId', async () => {
     const { factory } = streamingHost([])

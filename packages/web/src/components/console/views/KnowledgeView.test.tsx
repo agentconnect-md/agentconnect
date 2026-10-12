@@ -163,6 +163,7 @@ afterEach(async () => {
   host.remove()
   setApiOrgId(null)
   vi.unstubAllGlobals()
+  sessionStorage.clear()
 })
 
 describe('organization suggestion review row', () => {
@@ -399,6 +400,40 @@ describe('organization knowledge surface', () => {
     expect(reviewBody(fetchMock)).toEqual({ decision: 'accept', snapshotToken: KNOWLEDGE_BODY.snapshotToken })
     expect(host.textContent).toContain('Safe deployment')
     expect(host.textContent).toContain('1 suggestion')
+  })
+
+  it('keeps the editor open across a drag that ends on the backdrop, and restores its draft after a close', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => json([]))
+    )
+    await renderView()
+    await settleUntil(() => host.textContent?.includes('No knowledge yet') === true)
+    const editor = () => document.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')
+
+    await act(async () => button('Publish').click())
+    const textarea = editor()!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'Half-written entry')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    // Resizing the textarea presses inside the dialog and releases over the scrim.
+    const scrim = document.querySelector<HTMLElement>('.scrim')!
+    await act(async () => {
+      textarea.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      scrim.click()
+    })
+    expect(editor()).not.toBeNull()
+
+    await act(async () => {
+      scrim.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      scrim.click()
+    })
+    expect(editor()).toBeNull()
+
+    await act(async () => button('Publish').click())
+    expect(editor()?.value).toBe('Half-written entry')
   })
 
   it('hides the review tab and the publish action from members who cannot manage knowledge', async () => {

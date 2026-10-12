@@ -31,6 +31,9 @@ export const canonicalColumns = [
   'automaticCount',
   'automaticWindowStartedAt',
   'backendOperationId',
+  'besideChannel',
+  'besideIntegrationId',
+  'besideTs',
   'birthStrategy',
   'callEnvelope',
   'callMeta',
@@ -110,6 +113,9 @@ export const canonicalColumns = [
   'needsParentReply',
   'nextAttemptAt',
   'noteId',
+  'noticeChannel',
+  'noticeIntegrationId',
+  'noticeTs',
   'notifyChannel',
   'notifyIntegrationId',
   'notifyTs',
@@ -183,6 +189,7 @@ export const canonicalColumns = [
   'terminalReport',
   'tenantScope',
   'threadUrl',
+  'timeZone',
   'toAgentId',
   'toolCallId',
   'touchedAt',
@@ -257,6 +264,7 @@ export const canonicalColumns = [
   'approverTeamId',
   'approverConsoleUserId',
   'cardTs',
+  'cardShows',
   'offerAlways',
   'decidedAt',
   'decidedBy',
@@ -281,7 +289,9 @@ export const canonicalColumns = [
   'runningObservationVersion',
   'runningReport',
   'itemVersion',
-  'subsessionKey'
+  'subsessionKey',
+  'endReport',
+  'reportAttempts'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

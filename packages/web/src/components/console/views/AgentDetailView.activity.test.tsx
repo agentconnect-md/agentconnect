@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// The Activity tab is offered only for an assistant-mode agent, and only behind the console flag.
+// The Activity tab is offered for an assistant-mode agent whatever the console flag, which only offers switching the mode on.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
@@ -27,6 +27,14 @@ vi.mock('next/link', () => ({
   )
 }))
 vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: (id: string) => mocks.flags.has(id) }))
+vi.mock('@/components/console/MemoryPanel', () => ({
+  MemoryPanel: ({ besideSettings }: { besideSettings?: ReactNode }) => <div>{besideSettings}</div>
+}))
+vi.mock('@/components/console/AssistantModePanel', () => ({
+  AssistantModePanel: ({ assistantMode }: { assistantMode?: { enabled: boolean } }) => (
+    <div data-assistant-mode-panel={String(assistantMode?.enabled === true)} />
+  )
+}))
 vi.mock('@/components/console/AssistantActivityPanel', () => ({
   AssistantActivityPanel: ({ agentId, canEdit }: { agentId: string; canEdit: boolean }) => (
     <div data-activity-panel={agentId} data-can-edit={String(canEdit)} />
@@ -127,7 +135,7 @@ afterEach(async () => {
 })
 
 describe('the agent page’s Activity tab', () => {
-  it('appears last for an assistant-mode agent behind the flag, and opens the panel', async () => {
+  it('appears last for an assistant-mode agent, and opens the panel', async () => {
     mocks.flags = new Set(['assistant-mode'])
     mocks.assistantMode = { enabled: true, responsibleUserId: 'usr-1' }
     mocks.query = 'tab=activity'
@@ -148,14 +156,12 @@ describe('the agent page’s Activity tab', () => {
     expect(scope.querySelector('[data-activity-panel]')?.getAttribute('data-can-edit')).toBe('false')
   })
 
-  it('is hidden with the flag off, even for an assistant-mode agent', async () => {
+  it('stays for an agent already in assistant mode with the flag off', async () => {
     mocks.assistantMode = { enabled: true, responsibleUserId: 'usr-1' }
     mocks.query = 'tab=activity'
     const scope = await render()
-    expect(tabs(scope).map(([label]) => label)).not.toContain('Activity')
-    expect(scope.querySelector('[data-activity-panel]')).toBeNull()
-    // A link to the tab lands on Integrations instead.
-    expect(scope.querySelector('a.tab.on')?.textContent).toBe('Integrations')
+    expect(tabs(scope).at(-1)).toEqual(['Activity', '/agents/agent-1?tab=activity'])
+    expect(scope.querySelector('[data-activity-panel]')?.getAttribute('data-activity-panel')).toBe('agent-1')
   })
 
   it('is hidden for an agent outside assistant mode, flag or not', async () => {
@@ -176,5 +182,33 @@ describe('the agent page’s Activity tab', () => {
       host?.remove()
       root = undefined
     }
+  })
+})
+
+describe('the assistant mode switch', () => {
+  const panel = async () => {
+    mocks.query = 'tab=memory'
+    const scope = await render()
+    return scope.querySelector('[data-assistant-mode-panel]')?.getAttribute('data-assistant-mode-panel')
+  }
+
+  it('stays on an agent already in assistant mode with the flag off, so it can be switched off', async () => {
+    mocks.assistantMode = { enabled: true, responsibleUserId: 'usr-1' }
+    expect(await panel()).toBe('true')
+  })
+
+  it('is not offered to switch an agent on with the flag off', async () => {
+    for (const mode of [undefined, { enabled: false }]) {
+      mocks.assistantMode = mode
+      expect(await panel()).toBeUndefined()
+      await act(async () => root!.unmount())
+      host?.remove()
+      root = undefined
+    }
+  })
+
+  it('is offered to switch an agent on with the flag on', async () => {
+    mocks.flags = new Set(['assistant-mode'])
+    expect(await panel()).toBe('false')
   })
 })

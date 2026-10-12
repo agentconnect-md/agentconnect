@@ -36,7 +36,11 @@ function connection() {
   const patchCardMessage = vi.fn<FeishuApi['patchCardMessage']>(async () => {})
   const deleteMessage = vi.fn(async () => {})
   const onStatusAction = vi.fn()
-  let cardActionHandler: ((event: FeishuRawCardActionEvent) => FeishuCardActionResponse | undefined) | undefined
+  let cardActionHandler:
+    | ((
+        event: FeishuRawCardActionEvent
+      ) => FeishuCardActionResponse | undefined | Promise<FeishuCardActionResponse | undefined>)
+    | undefined
   const handle: FeishuClientHandle = {
     api: {
       createText: async () => ({}),
@@ -194,10 +198,10 @@ describe('Lark CardKit transport', () => {
         value: { action: FEISHU_REPLY_ACTION_VALUE, target: cardTarget }
       }
     }
-    expect(triggerCardAction(event)).toEqual({
+    expect(await triggerCardAction(event)).toEqual({
       toast: { type: 'info', content: 'Cancellation requested.' }
     })
-    expect(triggerCardAction(event)).toBeUndefined()
+    expect(await triggerCardAction(event)).toBeUndefined()
     expect(onStatusAction).toHaveBeenCalledOnce()
     expect(onStatusAction).toHaveBeenCalledWith({
       kind: 'cancel',

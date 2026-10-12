@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DecisionBundle, DecisionEvaluation } from '@agentconnect.md/protocol'
 import { resolveDecisionBundle, type ResolvedDecisionGate } from '../src/decisions/bundle.js'
 import { decisionRequestBody, type DecisionEvaluationInput } from '../src/decisions/evaluator.js'
@@ -76,6 +76,20 @@ interface Release {
 
 const AGENT_CONTEXT = { name: 'Docs bot', description: 'Answers questions about the product docs.' }
 
+// Each case's gates stop before its stores close, so no SQLite handle outlives the case.
+const gates: DecisionGate[] = []
+const stores: LocalStore[] = []
+afterEach(async () => {
+  for (const gate of gates.splice(0)) gate.close()
+  for (const store of stores.splice(0)) await store.close()
+})
+
+async function openStore(): Promise<LocalStore> {
+  const store = await openTestStore()
+  stores.push(store)
+  return store
+}
+
 async function harness(
   opts: {
     store?: LocalStore
@@ -86,7 +100,7 @@ async function harness(
   } = {}
 ) {
   const serving = { served: true }
-  const store = opts.store ?? (await openTestStore())
+  const store = opts.store ?? (await openStore())
   const calls: Call[] = []
   const releases: Release[] = []
   const state: { current: CurrentGate; applied: DecisionBundle } = {
@@ -123,6 +137,7 @@ async function harness(
     }
   }
   const gate = new DecisionGate(host, { ...DEFAULT_DECISION_GATE_LIMITS, ...opts.limits })
+  gates.push(gate)
   let ts = 0
   const post = async (channel = 'C1', over: Partial<NormalizedMessage> = {}) => {
     ts += 1
@@ -308,7 +323,7 @@ describe('DecisionGate', () => {
   })
 
   it('(c) recovers a pending verdict as unavailable with no provider call, before a settled later one', async () => {
-    const store = await openTestStore()
+    const store = await openStore()
     const one = await harness({ store, fence: 'daemon-1:boot-1' })
     const a = await one.post()
     const b = await one.post()
@@ -348,7 +363,7 @@ describe('DecisionGate', () => {
   })
 
   it('(c) trusts an existing admission receipt at recovery and never releases again', async () => {
-    const store = await openTestStore()
+    const store = await openStore()
     const one = await harness({ store })
     const a = await one.post()
     await one.candidate(a)

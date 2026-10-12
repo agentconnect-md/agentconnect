@@ -61,6 +61,8 @@ export {
   AGENT_EXISTS_FEATURE,
   AGENT_PLACEMENT_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
+  CHAT_ACTOR_V1_FEATURE,
+  READ_ACCESS_V1_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
@@ -109,11 +111,13 @@ export * from './frames/hook.js'
 export * from './frames/codehost-note.js'
 export * from './frames/codehost-review.js'
 export * from './frames/approval-route.js'
+export * from './frames/read-access.js'
 export * from './frames/integration.js'
 export * from './frames/mcpserver.js'
 export * from './frames/memory-connection.js'
 export * from './frames/assistant-mode.js'
 export * from './assistant-mode-admission.js'
+export * from './assistant-permission-modes.js'
 export * from './frames/skill.js'
 export * from './frames/runtime-command.js'
 export * from './frames/gitcred.js'

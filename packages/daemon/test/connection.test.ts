@@ -192,6 +192,30 @@ describe('SlackConnection.listMemberIds', () => {
   })
 })
 
+// assistant-mode.md §5.3: a post no event triggered asks whether the channel is a Slack Connect one now.
+describe('SlackConnection.getChannelInfo', () => {
+  const fakeAppWithInfo = (channel: Record<string, unknown>) => ({
+    message() {},
+    event() {},
+    action() {},
+    shortcut() {},
+    view() {},
+    client: { conversations: { info: async () => ({ channel }) } },
+    start: async () => {},
+    stop: async () => {}
+  })
+
+  it('reports a share, or an invitation to one, and null for a channel shared with no one', async () => {
+    const reasonOf = async (channel: Record<string, unknown>) =>
+      (await new SlackConnection(deps() as any, () => fakeAppWithInfo(channel) as any).getChannelInfo('C1'))
+        .externalReason
+    expect(await reasonOf({ id: 'C1', is_ext_shared: true })).toBe('externallyShared')
+    expect(await reasonOf({ id: 'C1', is_pending_ext_shared: true })).toBe('externallyShared')
+    expect(await reasonOf({ id: 'C1', is_ext_shared: false })).toBeNull()
+    expect(await reasonOf({ id: 'C1' })).toBeNull()
+  })
+})
+
 describe('SlackConnection.listBotChannels', () => {
   const fakeAppWithConversations = (pages: any[], fail = false) => {
     let call = 0

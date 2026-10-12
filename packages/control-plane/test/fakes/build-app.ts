@@ -130,7 +130,8 @@ export function buildDaemonApp(prisma: PrismaClient, opts: { wsConfig?: Partial<
     new AgentSpecAssembler(repos.agentSecret),
     repos.integrationChannel,
     repos.bot,
-    PLATFORMS
+    PLATFORMS,
+    repos.session
   )
   const connReg = new ConnectionRegistry()
   const placementResolver = new PlacementResolver({

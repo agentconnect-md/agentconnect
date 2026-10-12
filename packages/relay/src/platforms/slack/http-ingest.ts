@@ -1,20 +1,4 @@
-/**
- * `SlackHttpIngest` (shared-bot-relay.md §12) — per-HTTP-bot inbound handler,
- * held by the relay. Inbound no longer rides a Socket Mode websocket: the relay
- * exposes ONE shared HTTP Events API surface (`/slack/events` + `/slack/interactions`,
- * see `http-ingress.ts`) behind the pool's stable public URL, and after the
- * POST is demuxed to a bot + its signing secret verified, the route calls
- * {@link SlackHttpIngest.handleEvent} / {@link SlackHttpIngest.handleInteraction}.
- * There is no MANUAL-ack seam anymore: Slack's HTTP 200 IS the ack. We answer 200
- * immediately (Slack's 3s window) and forward asynchronously — a forward miss is
- * still counted as bounded loss by the forwarder, honestly declared.
- *
- * The bot's Slack user id + bot id are resolved here via `auth.test` on `start()` and each periodic probe.
- * The user id drives mention matching; both identities suppress exact self echoes.
- * The `WebClient` also opens the config modal (`views.open`).
- *
- * Secret material (`botToken`/`signingSecret`) MUST NEVER be logged.
- */
+// Per-HTTP-bot Slack handler held by the relay (shared-bot-relay.md §12): the route hands it verified events and interactions, and `botToken`/`signingSecret` are never logged.
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
 import {
@@ -46,6 +30,7 @@ import {
   type WireNormalizedMessage
 } from '@agentconnect.md/protocol'
 import type { Logger } from '../../log.js'
+import type { RelayForwardOutcome } from '../contract.js'
 
 export { normalizeSlackMessage } from '@agentconnect.md/message'
 export type SlackMessageEvent = SlackMessageLike & {
@@ -403,9 +388,8 @@ export interface SlackReportedChannel {
 }
 
 export interface SlackHttpIngestDeps {
-  /** Hand a normalized message to the router/forwarder; resolves once the delivery
-   *  outcome is known (delivered or dropped). NEVER throws — runs after the HTTP 200. */
-  onMessage: (msg: WireNormalizedMessage, sidecar?: SlackIngestSidecar) => Promise<void>
+  /** Hand a normalized message to the router/forwarder; resolves to core's outcome, which the HTTP answer reports. NEVER throws. */
+  onMessage: (msg: WireNormalizedMessage, sidecar?: SlackIngestSidecar) => Promise<RelayForwardOutcome>
   /** Report the resolved bot user id (from auth.test) for arbitration. */
   onBotUserId: (botUserId: string) => void
   /** Report the bot's complete Slack channel-membership snapshot after an event
@@ -544,13 +528,13 @@ export class SlackHttpIngest {
     }
   }
 
-  // Handle verified events after acknowledgement, dropping own echoes and unsupported event types.
+  // Handle one verified event, dropping own echoes and unsupported types; a forwarded message resolves to core's outcome.
   async handleEvent(
     event: SlackMessageEvent | undefined,
     eventAtMs?: number,
     eventId?: string,
     externallyShared = false
-  ): Promise<void> {
+  ): Promise<RelayForwardOutcome | undefined> {
     try {
       if (event?.type === 'app_home_opened') {
         if (event.tab === 'home' && event.user)
@@ -622,10 +606,7 @@ export class SlackHttpIngest {
       // Recognition is by daemon-written metadata, so mid-answer `streaming` edits and
       // ordinary human edits still return null here and stay filtered.
       const finalization = normalizeSlackResponseFinalization(event)
-      if (finalization) {
-        await this.deps.onMessage(finalization)
-        return
-      }
+      if (finalization) return await this.deps.onMessage(finalization)
       const ownMessage = event.user === this.botUserId || event.bot_id === this.slackBotId
       if (ownMessage || !isRoutableEvent(event)) return
       if (event.type !== 'message' && event.type !== 'app_mention') return
@@ -642,7 +623,10 @@ export class SlackHttpIngest {
       // The envelope says the conversation is shared with another organization (assistant-mode.md §5.3).
       if (msg && externallyShared) msg.externallyShared = true
       if (msg)
-        await this.deps.onMessage(msg, event.action_token ? { searchActionToken: event.action_token } : undefined)
+        return await this.deps.onMessage(
+          msg,
+          event.action_token ? { searchActionToken: event.action_token } : undefined
+        )
     } catch (err) {
       this.deps.log.warn(`slack-http-ingest(${this.botId}): event handler error: ${(err as Error).message}`)
     }

@@ -6,8 +6,9 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DecisionApi } from '@agentconnect.md/protocol/decision-api'
+import type { DecisionApi, DecisionSummary } from '@agentconnect.md/protocol/decision-api'
 import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
+import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
 import type { IntegrationChannelRow } from '@/lib/data'
 
 const data = vi.hoisted(() => ({
@@ -35,6 +36,9 @@ vi.mock('@/lib/data-context', () => ({
     integrations: []
   })
 }))
+const summaries: DecisionSummary[] = createDecisionMockSeed()
+  .decisions.slice(0, 2)
+  .map((entry) => ({ ...entry, usageCount: 0 }))
 vi.mock('@/lib/api', async (original) => {
   const actual = await original<typeof import('@/lib/api')>()
   const refuse = async (): Promise<never> => {
@@ -43,7 +47,7 @@ vi.mock('@/lib/api', async (original) => {
   const live: DecisionApi = {
     mode: 'live',
     listProviders: async () => [],
-    listDecisions: async () => [],
+    listDecisions: async () => summaries,
     getDecision: refuse,
     createDecision: refuse,
     updateDecision: refuse,
@@ -178,6 +182,21 @@ describe('IntegrationChannelList assistant-mode places', () => {
     expect(document.body.querySelector('[aria-label="general · By decision rules"]')).toBeNull()
     await click(button('Enable'))
     expect(document.body.querySelector('[aria-label="general · By decision rules"]')).toBeTruthy()
+  })
+
+  it('applies a decision to all channels already enabled, never to an Off one', async () => {
+    const confirm = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirm)
+    await render([
+      room({ trigger: 'mention' }),
+      room({ channelId: 'C2', name: 'random' }),
+      room({ channelId: 'C3', name: 'eng', trigger: 'any' })
+    ])
+    await click(all('button[aria-label="Add decision"]')[0])
+    await click(button('Apply to all channels'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('all 2 channels'))
+    expect(data.setChannelDecision.mock.calls.map((call) => call[1])).toEqual(['C1', 'C3'])
+    vi.unstubAllGlobals()
   })
 
   it('enables straight away outside assistant mode, and when the room is already on', async () => {

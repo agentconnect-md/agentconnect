@@ -805,9 +805,30 @@ objectStore:
   region: auto
 
 # Source Cache (docs/designs/source-cache.md, chart README): pool members cache Git bundles; the Control Plane signs console file transfers; pods get presigned URLs alone.
-# Apply the bucket lifecycle rules yourself (chart README "Bucket lifecycle rules"); without them members stop writing bundles.
+# `store` bundles the bucket and turns the feature on once its host is set; `enabled` points it at an external bucket instead.
+# Apply an external bucket's lifecycle rules yourself (chart README "Bucket lifecycle rules"); without them members stop writing bundles.
 sourceCache:
+  # An external bucket, configured by the values below; true takes precedence over `store`.
   enabled: false
+  # Bundled single-node RustFS with its bucket, lifecycle rules and browser CORS for publicUrl (chart README "Bundled store").
+  store:
+    enabled: true
+    # Public hostname the Gateway routes to the store; the endpoint is https://<host>. Needs DNS, edge TLS and a listener, like apiHost. Empty => no store, Source Cache off.
+    host: ''
+    image: docker.io/rustfs/rustfs
+    tag: 1.0.1
+    bucket: agentconnect-source-cache
+    persistence:
+      size: 50Gi
+      # Empty => the cluster's default StorageClass.
+      storageClass: ''
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: '1'
+        memory: 1Gi
   # S3 API origin; must be https:// (the shim admits only https bundle URLs). Empty => AWS regional S3.
   endpoint: ''
   # Optional https:// origin browsers and out-of-cluster daemons reach the bucket at for console file transfers; empty => endpoint. Needs a bucket CORS rule (chart README).

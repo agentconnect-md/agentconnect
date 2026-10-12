@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { sessionResumeMembers, sessionResumeState } from './session-resume'
+import { liveResumeMembers, sessionResumeMembers, sessionResumeState } from './session-resume'
+
+describe('liveResumeMembers', () => {
+  const members = [
+    { agentId: 'agent-a', daemonId: 'daemon-1' },
+    { agentId: 'agent-b', daemonId: 'daemon-2' }
+  ]
+
+  it('drops a removed member, so its moved daemon cannot block the rest (§3.1a)', () => {
+    const live = liveResumeMembers(members, [{ agentId: 'agent-a' }])
+    expect(live).toEqual([members[0]])
+    expect(sessionResumeState(live!, new Map([['agent-a', { daemonId: 'daemon-1' }]]))).toBe('available')
+  })
+
+  it('keeps every member when no live roster is reported', () => {
+    expect(liveResumeMembers(members, null)).toBe(members)
+    expect(liveResumeMembers(undefined, [{ agentId: 'agent-a' }])).toBeUndefined()
+  })
+})
 
 describe('sessionResumeState', () => {
   const placements = new Map([

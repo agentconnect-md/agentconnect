@@ -64,12 +64,12 @@ export interface AssistantDraftSource {
   place: boolean
 }
 
-/** Who approves: a member addressed in their DM, or everyone in the agent's fallback conversation. */
+/** Who approves: a member addressed in their DM, everyone in the agent's fallback conversation, or whoever could ask the agent in the proposal's own place. */
 export interface AssistantDraftApprover {
-  kind: 'member' | 'conversation'
-  /** The integration the card is posted and clicked through. */
+  kind: 'member' | 'conversation' | 'place'
+  /** The integration the card is posted and clicked through; '' for a webchat place, decided on its page with no card. */
   integrationId: string
-  /** The conversation the card lands in: the member's DM, or the fallback conversation. */
+  /** The conversation the card lands in: the member's DM, the fallback conversation, or the proposal's place. */
   channel: string
   userId: string | null
   teamId: string | null
@@ -103,6 +103,8 @@ export interface AssistantDraft {
   source: AssistantDraftSource | null
   approver: AssistantDraftApprover | null
   cardTs: string | null
+  /** The status the card was posted or last rewritten with; null for a card from before it was recorded. */
+  cardShows: AssistantDraftStatus | null
   /** The card offers "always allow from here to there". */
   offerAlways: boolean
   /** The agent's grant generation when the draft was written; a grant from an older one is never honored. */
@@ -227,7 +229,8 @@ export const ASSISTANT_DRAFT_SCHEMA = `
         why TEXT,
         itemId TEXT,
         itemVersion INTEGER,
-        subsessionKey TEXT
+        subsessionKey TEXT,
+        cardShows TEXT
       );
       CREATE INDEX IF NOT EXISTS assistant_draft_by_status ON assistant_draft (agentId, status, expiresAt);
       CREATE INDEX IF NOT EXISTS assistant_draft_by_subsession ON assistant_draft (agentId, subsessionKey);
@@ -314,7 +317,7 @@ function draftOf(row: Row): AssistantDraft {
         }
       : null,
     approver:
-      approverKind === 'member' || approverKind === 'conversation'
+      approverKind === 'member' || approverKind === 'conversation' || approverKind === 'place'
         ? {
             kind: approverKind,
             integrationId: String(row.approverIntegrationId),
@@ -325,6 +328,7 @@ function draftOf(row: Row): AssistantDraft {
           }
         : null,
     cardTs: str(row.cardTs),
+    cardShows: (str(row.cardShows) as AssistantDraftStatus | null) ?? null,
     offerAlways: Number(row.offerAlways) === 1,
     grantEpoch: Number(row.grantEpoch),
     status: row.status as AssistantDraftStatus,
@@ -493,7 +497,46 @@ export class AssistantDraftLedger {
 
   /** Records the posted card, so a later settlement can rewrite it. */
   async setCard(id: string, ts: string): Promise<boolean> {
-    return (await this.db.query('UPDATE assistant_draft SET cardTs = ? WHERE id = ?', [ts, id])).changes > 0
+    const sql = "UPDATE assistant_draft SET cardTs = ?, cardShows = 'awaiting_review' WHERE id = ?"
+    return (await this.db.query(sql, [ts, id])).changes > 0
+  }
+
+  /** Hand a card nobody could post to another approver; false once decided or carded. */
+  async reroute(id: string, approver: AssistantDraftApprover | null): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_draft SET approverKind = ?, approverIntegrationId = ?, approverChannel = ?, approverUserId = ?,
+         approverTeamId = ?, approverConsoleUserId = ?
+       WHERE id = ? AND status = 'awaiting_review' AND cardTs IS NULL`,
+      [
+        approver?.kind ?? null,
+        approver?.integrationId ?? null,
+        approver?.channel ?? null,
+        approver?.userId ?? null,
+        approver?.teamId ?? null,
+        approver?.consoleUserId ?? null,
+        id
+      ]
+    )
+    return changes > 0
+  }
+
+  /** Records the status a card rewrite showed. */
+  async markCard(id: string, status: AssistantDraftStatus): Promise<void> {
+    await this.db.query('UPDATE assistant_draft SET cardShows = ? WHERE id = ?', [status, id])
+  }
+
+  /** Decided drafts carded through this integration whose card still shows an earlier status, newest first; a post being posted is not one. */
+  async staleCards(integrationId: string, limit = 20): Promise<AssistantDraft[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_draft WHERE approverIntegrationId = ? AND cardTs IS NOT NULL
+           AND cardShows IS NOT NULL AND cardShows <> status AND status <> 'awaiting_review'
+           AND NOT (action = 'post' AND status = 'executing')
+         ORDER BY COALESCE(settledAt, decidedAt) DESC, id LIMIT ?`,
+        [integrationId, Math.max(1, Math.min(100, limit))]
+      )
+    ).rows as Row[]
+    return rows.map(draftOf)
   }
 
   /** Approve a post: awaiting review and unexpired → executing. False when someone else decided, or it expired. */
@@ -720,20 +763,24 @@ export class AssistantDraftLedger {
     return rows.length > 0
   }
 
-  /** Drafts still awaiting review and not yet due, the soonest to lapse first; proposals only when asked. */
+  /** Drafts still awaiting review and not yet due, the soonest to lapse first; proposals only when asked, and with `place` only the proposals whose item lives there. */
   async listPending(
     agentId: string,
     limit: number,
     now = Date.now(),
-    opts: { tasks?: boolean } = {}
+    opts: { tasks?: boolean; place?: { platform: string; channel: string } } = {}
   ): Promise<AssistantDraft[]> {
+    const { place } = opts
+    const which = place
+      ? " AND action = 'task' AND targetPlatform = ? AND targetChannel = ?"
+      : opts.tasks
+        ? ''
+        : " AND action = 'post'"
     const rows = (
       await this.db.query(
-        `SELECT * FROM assistant_draft WHERE agentId = ? AND status = 'awaiting_review' AND expiresAt > ?${
-          opts.tasks ? '' : " AND action = 'post'"
-        }
+        `SELECT * FROM assistant_draft WHERE agentId = ? AND status = 'awaiting_review' AND expiresAt > ?${which}
          ORDER BY expiresAt, id LIMIT ?`,
-        [agentId, now, limit]
+        [agentId, now, ...(place ? [place.platform, place.channel] : []), limit]
       )
     ).rows as Row[]
     return rows.map(draftOf)

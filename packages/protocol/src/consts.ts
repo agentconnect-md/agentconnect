@@ -431,6 +431,14 @@ export const CODEHOST_NOTE_PROJECTION_V1_FEATURE = 'codehost-note-projection-v1'
  *  a new request type is frame-fatal to an older CP. */
 export const APPROVAL_DM_ROUTE_V1_FEATURE = 'approval-dm-route-v1'
 
+/** CP answers an `agent/approval-route` verify that names no console user: whether a chat member is any
+ *  editor's linked identity. A daemon must not send that form before seeing this: an older CP refuses it. */
+export const CHAT_ACTOR_V1_FEATURE = 'chat-actor-v1'
+
+/** CP answers `agent/read-access`: which sessions the console user behind an asker could see. A daemon must not send it
+ *  before seeing this, since a new request type is frame-fatal to an older CP; until then every cross-platform read is refused. */
+export const READ_ACCESS_V1_FEATURE = 'read-access-v1'
+
 /** CP mints the §14.2 broker effect lease — `purpose: 'gitlab_effect'` on a gitcred v2 request,
  *  authorized by the agent's GitLab workspace binding or an enabled gitlab hook and clamped by the
  *  grant's echoed access. A daemon must not name that purpose before seeing this: a new enum value

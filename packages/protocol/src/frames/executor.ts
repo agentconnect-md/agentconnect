@@ -1,7 +1,7 @@
 // Session executors (session-executors.md §6, §7): the registration facts, the three requests a holder sends, and the birth verdict.
 import { z } from 'zod'
 
-/** A strategy as `sandbox.backend` and the agent's `execution` name it; a slug rather than an enum, so a later strategy needs no frame revision. */
+/** A strategy as the daemon's `sandbox` table and the agent's `execution` name it; a slug rather than an enum, so a later strategy needs no frame revision. */
 export const ExecutorStrategyName = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/)
 export type ExecutorStrategyName = z.infer<typeof ExecutorStrategyName>
 

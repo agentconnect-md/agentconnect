@@ -495,7 +495,7 @@ or a wrapper reporting no actor must not be able to forge it. The check is one p
 (`requiresTrustedActor`) applied at BOTH ingress paths — direct and relay — because relay is
 where the HTTP callbacks that can carry no actor at all arrive, and a gate on one path only
 is the failure mode this shape exists to prevent. **Not** marked `runtimeChange` —
-that flag guards Agent-level runtime settings behind an Agent editor, and `!new` changes
+that flag guards runtime settings behind the agent's `chatActions` level, and `!new` changes
 no setting. No confirmation step. `logSessionAction('new', key, actor)` records who ran
 it, which is what that function exists for.
 

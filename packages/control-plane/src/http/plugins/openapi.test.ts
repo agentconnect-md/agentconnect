@@ -158,6 +158,18 @@ describe('openapi plane', () => {
         ['/subsessions/{sessionId}/stop', 'post', 'stopAssistantSubsession', /continue that sub-session/],
         ['/drafts', 'get', 'listAssistantDrafts', true],
         ['/drafts/{draftId}/decision', 'post', 'decideAssistantDraft', true],
+        [
+          '/conversations/{sessionId}/proposals',
+          'get',
+          'listAssistantConversationProposals',
+          /continue that conversation, or who can edit the agent/
+        ],
+        [
+          '/conversations/{sessionId}/proposals/{draftId}/decision',
+          'post',
+          'decideAssistantConversationProposal',
+          /continue that conversation, or who can edit the agent/
+        ],
         ['/grants', 'get', 'listAssistantPostGrants', true],
         ['/grants/{grantId}', 'delete', 'revokeAssistantPostGrant', true]
       ]
@@ -174,6 +186,29 @@ describe('openapi plane', () => {
         } else {
           expect(statuses, path).not.toContain('403')
         }
+      }
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('names, tags and describes a webchat conversation’s approval routes, and who may be refused', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const base = '/api/v1/orgs/{orgId}/sessions/{sessionId}/permission-requests'
+      const expected: Array<[string, 'get' | 'post', string]> = [
+        [base, 'get', 'listSessionPermissionRequests'],
+        [`${base}/{requestId}/decision`, 'post', 'decideSessionPermissionRequest']
+      ]
+      for (const [path, method, operationId] of expected) {
+        const op = doc.paths?.[path]?.[method]
+        expect(op, `${method} ${path}`).toMatchObject({ tags: ['Sessions'], operationId })
+        expect(op?.summary, path).toBeTruthy()
+        expect(op?.description, path).toMatch(/edit the agent[\s\S]*conversation’s owner/)
+        expect(Object.keys(op?.responses ?? {}), path).toEqual(
+          expect.arrayContaining(['200', '403', '404', '409', '503'])
+        )
       }
     } finally {
       await app.close()

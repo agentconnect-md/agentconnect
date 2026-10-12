@@ -41,6 +41,7 @@ import {
   webchatWsUrl,
   webchatSessionWsUrl,
   addWebchatConversationAgent,
+  removeWebchatConversationAgent,
   fmtCountCompact,
   fmtCost,
   ApiError,
@@ -110,6 +111,8 @@ interface PlaygroundData {
    *  (e.g. the mention picker) can tell an actual join from a no-op/refusal.
    *  Refused while a turn streams. */
   pgAddAgent: (id: string, agent: Agent) => Promise<boolean>
+  /** Remove a non-primary member from a live conversation (§3.1a), then reconnect so the relay re-verifies the shrunk roster; refused while a turn streams or queues. */
+  pgRemoveAgent: (id: string, agentId: string) => Promise<boolean>
   /** Returns whether the send was ACCEPTED — false only when there is nothing to
    *  send. A send while a turn is still streaming is accepted too: it QUEUES
    *  (Claude Code-style) and dispatches in order as turns finish. Callers that
@@ -394,6 +397,16 @@ type WebchatRuntimeConfig = {
   effort?: string
   permissionMode?: string
   fastMode?: boolean
+}
+
+/** The reader's IANA time zone, which an assistant-mode agent reasons in; omitted when the browser names none. */
+function browserTimeZone(): { timeZone?: string } {
+  try {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return timeZone ? { timeZone } : {}
+  } catch {
+    return {}
+  }
 }
 
 /** A steer on the wire (see sendSteer): its send args for a requeue, its frame for a reconnect re-send. */
@@ -1575,6 +1588,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 post?: WebchatPost
                 initiator?: string
                 update?: WebchatImageUpdate
+                refused?: { op?: string; agentId?: string; reason?: string }
               }
               try {
                 m = JSON.parse(String(e.data))
@@ -1805,6 +1819,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 }
               } else if (m.type === 'ack' && m.ack?.accepted === false) {
                 rejectLane(m.ack.agentId, m.ack.turnId, m.ack.reason, m.ack.detail)
+              } else if (m.type === 'refused' && m.refused?.reason) {
+                // A runtime change the agent refused: only this browser is told, and the reason names who may make it.
+                pushStep(id, { kind: 'notice', text: `🔒 ${m.refused.reason}`, standing: true })
               } else if (m.type === 'error') {
                 // An error frame with nothing in flight (e.g. an older relay answering
                 // the attach probe with 'unrecognized frame') must not push a warning
@@ -1892,6 +1909,21 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect, setPgImage, setPgInput, setBusy]
   )
 
+  // The relay caches the roster it verified at connect, so a join or removal rebuilds the socket for a fresh rc/verify.
+  const reverifyRoster = useCallback(
+    (id: string, primaryId: string, conversationId: string): void => {
+      const existing = conns.current.get(id)
+      if (existing) {
+        existing.closing = true
+        if (existing.reconnectTimer) window.clearTimeout(existing.reconnectTimer)
+        existing.ws?.close()
+        conns.current.delete(id)
+      }
+      connect(id, primaryId, conversationId).ready.catch(() => {})
+    },
+    [connect]
+  )
+
   const pgAddAgent = useCallback(
     async (id: string, added: Agent): Promise<boolean> => {
       const orgId = activeOrg?.id
@@ -1936,21 +1968,52 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           }
         }
       })
-      // A live conversation's relay connection caches the roster it verified at
-      // connect — rebuild the socket so a fresh rc/verify picks up the join.
-      if (conversationId) {
-        const existing = conns.current.get(id)
-        if (existing) {
-          existing.closing = true
-          if (existing.reconnectTimer) window.clearTimeout(existing.reconnectTimer)
-          existing.ws?.close()
-          conns.current.delete(id)
-        }
-        connect(id, primaryId, conversationId).ready.catch(() => {})
-      }
+      if (conversationId) reverifyRoster(id, primaryId, conversationId)
       return true
     },
-    [activeOrg, pgSessions, connect, pushStep]
+    [activeOrg, pgSessions, reverifyRoster, pushStep]
+  )
+
+  const pgRemoveAgent = useCallback(
+    async (id: string, agentId: string): Promise<boolean> => {
+      const orgId = activeOrg?.id
+      const session = pgSessions[id]
+      const primaryId = session?.agentId
+      if (!orgId || !primaryId || primaryId === agentId) return false
+      const removed = session.participants?.find((p) => p.agentId === agentId)
+      if (!removed) return true
+      if (busyRef.current[id] || (pgQueueRef.current[id]?.length ?? 0) > 0) {
+        pushStep(id, { kind: 'done', text: '⚠️ Wait for the current reply to finish before removing an agent.' })
+        return false
+      }
+      const conversationId = conversationIds.current.get(id)
+      if (conversationId) {
+        try {
+          await removeWebchatConversationAgent(orgId, conversationId, agentId)
+        } catch (err) {
+          pushStep(id, {
+            kind: 'done',
+            text: `⚠️ ${err instanceof ApiError ? err.message : `Could not remove ${removed.name}.`}`
+          })
+          return false
+        }
+      }
+      const ids = rosterAgentIds.current.get(id)
+      if (ids)
+        rosterAgentIds.current.set(
+          id,
+          ids.filter((a) => a !== agentId)
+        )
+      rosterNames.current.get(id)?.delete(agentId)
+      setPgSessions((cur) => {
+        const s = cur[id]
+        if (!s?.participants) return cur
+        return { ...cur, [id]: { ...s, participants: s.participants.filter((p) => p.agentId !== agentId) } }
+      })
+      if (conversationId) reverifyRoster(id, primaryId, conversationId)
+      return true
+    },
+    [activeOrg, pgSessions, reverifyRoster, pushStep]
   )
 
   /** Put one turn on the wire NOW. The composer read / busy check / queueing live
@@ -2041,7 +2104,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           ...(files?.length ? { files } : {}),
           // Runtime staging is a single-agent affordance — multi-agent conversations expose no runtime controls (§9.1/§9.3).
           ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {}),
-          ...(roster.length <= 1 && stagedWorktree.current.has(id) ? { worktree: stagedWorktree.current.get(id) } : {})
+          ...(roster.length <= 1 && stagedWorktree.current.has(id) ? { worktree: stagedWorktree.current.get(id) } : {}),
+          ...browserTimeZone()
         })
         // Re-send only one-target turns; retrying several targets could duplicate the relay's canonical post.
         if (targets.length <= 1)
@@ -2112,7 +2176,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         agentId: agentForId,
         text,
         seq,
-        frame: JSON.stringify({ text, turnId, steer: true }),
+        frame: JSON.stringify({ text, turnId, steer: true, ...browserTimeZone() }),
         ...(conversationId ? { conversationId } : {})
       }
       const bucket = steerTurns.current.get(id) ?? new Map<string, PendingSteer>()
@@ -2324,6 +2388,17 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  // A fresh playground has no daemon session for a set_* to bind to — its staged runtime rides the first turn instead.
+  const sendRuntimeChange = useCallback(
+    (id: string, agentForId: string, conversationId: string | undefined, frame: Record<string, unknown>): void => {
+      if (id.startsWith(PG_PREFIX) && !conversationId && !agentSessionIds.current.has(id)) return
+      connect(id, agentForId, conversationId)
+        .ready.then((ws) => ws.send(JSON.stringify(frame)))
+        .catch(() => {})
+    },
+    [connect]
+  )
+
   /** Switch the session's model (fire-and-forget over the conversation socket). Updates
    *  the local model optimistically so the dropdown reflects the choice at once; the
    *  daemon confirms via the next status frame. */
@@ -2331,11 +2406,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, agentForId: string, model: string, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: sessionAfterModelSelection(cur[id]!, model) } : cur))
       stageRuntimeChange(id, { model })
-      connect(id, agentForId, conversationId)
-        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_model', model })))
-        .catch(() => {})
+      sendRuntimeChange(id, agentForId, conversationId, { type: 'set_model', model })
     },
-    [connect, stageRuntimeChange]
+    [sendRuntimeChange, stageRuntimeChange]
   )
 
   /** Switch the session's reasoning effort (fire-and-forget). Optimistically updates the
@@ -2345,11 +2418,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, agentForId: string, effort: string, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, effort } } : cur))
       stageRuntimeChange(id, { effort })
-      connect(id, agentForId, conversationId)
-        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_effort', effort })))
-        .catch(() => {})
+      sendRuntimeChange(id, agentForId, conversationId, { type: 'set_effort', effort })
     },
-    [connect, stageRuntimeChange]
+    [sendRuntimeChange, stageRuntimeChange]
   )
 
   /** Switch the session's composite permission preset (fire-and-forget), optimistic
@@ -2358,11 +2429,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, agentForId: string, permissionPreset: string, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, permissionMode: permissionPreset } } : cur))
       stageRuntimeChange(id, { permissionMode: permissionPreset })
-      connect(id, agentForId, conversationId)
-        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_permission_mode', permissionMode: permissionPreset })))
-        .catch(() => {})
+      sendRuntimeChange(id, agentForId, conversationId, {
+        type: 'set_permission_mode',
+        permissionMode: permissionPreset
+      })
     },
-    [connect, stageRuntimeChange]
+    [sendRuntimeChange, stageRuntimeChange]
   )
 
   /** Toggle the session's fast mode (fire-and-forget), optimistic like pgSetEffort. */
@@ -2370,11 +2442,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, agentForId: string, fastMode: boolean, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, fastMode } } : cur))
       stageRuntimeChange(id, { fastMode })
-      connect(id, agentForId, conversationId)
-        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_fast', fastMode })))
-        .catch(() => {})
+      sendRuntimeChange(id, agentForId, conversationId, { type: 'set_fast', fastMode })
     },
-    [connect, stageRuntimeChange]
+    [sendRuntimeChange, stageRuntimeChange]
   )
 
   /** Answer an in-band elicitation card (fire-and-forget) — `value: null` is Dismiss.
@@ -2517,6 +2587,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       isPgBusy,
       openPlayground,
       pgAddAgent,
+      pgRemoveAgent,
       pgSend,
       pgNotice,
       pgAttach,
@@ -2551,6 +2622,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       isPgBusy,
       openPlayground,
       pgAddAgent,
+      pgRemoveAgent,
       pgSend,
       pgNotice,
       pgAttach,

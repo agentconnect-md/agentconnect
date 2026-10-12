@@ -98,4 +98,24 @@ describe('Scrim', () => {
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledTimes(1)
   })
+
+  it('ignores a click whose press began inside the dialog', () => {
+    const onClick = vi.fn()
+    render(
+      <Scrim onEscape={undefined} onClick={onClick}>
+        <textarea />
+      </Scrim>
+    )
+    const scrim = host!.querySelector<HTMLElement>('.scrim')!
+    act(() => {
+      host!.querySelector('textarea')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      scrim.click()
+    })
+    expect(onClick).not.toHaveBeenCalled()
+    act(() => {
+      scrim.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      scrim.click()
+    })
+    expect(onClick).toHaveBeenCalledTimes(1)
+  })
 })

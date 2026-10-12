@@ -78,6 +78,11 @@ function strictAdmissionFrom(ack: RdAck): RelayAdmission {
   return ack.accepted && ack.routeAdmission === undefined ? rejected('unsupported') : admissionFrom(ack)
 }
 
+/** The best-effort reading of one ack: an `accepted` with no verdict took the message, so a resend must not reach that target again. */
+function bestEffortAdmissionFrom(ack: RdAck): RelayAdmission {
+  return ack.accepted && ack.routeAdmission === undefined ? { disposition: 'admitted' } : admissionFrom(ack)
+}
+
 /** One delivery's verdict over its fan-out: one admission settles it, else one retry does, else the first rejection. */
 export function aggregateAdmission(verdicts: readonly RelayAdmission[]): RelayAdmission {
   return (
@@ -512,7 +517,7 @@ export class RelayIngressManager {
     try {
       const ack = await this.sendWithRendezvous(host, rd, botId, `relay-ingress(${botId}) routed`)
       if (!ack.accepted) this.deps.log.warn(`relay-ingress(${botId}): host refused routed ${msg.msgId} (${ack.reason})`)
-      return (strict ? strictAdmissionFrom : admissionFrom)(ack)
+      return (strict ? strictAdmissionFrom : bestEffortAdmissionFrom)(ack)
     } catch (err) {
       return drop(`forward to host failed: ${(err as Error).message}`, retry('offline'))
     }
@@ -1228,15 +1233,15 @@ export class RelayIngressManager {
     }
   }
 
-  /** Arbitrate + forward one message to its daemon (never throws — bounded loss).
-   *  Reports a first-route/changed affinity to the CP, and on a genuine un-mentioned
-   *  thread follow-up with no local affinity, pulls the persisted owner from the CP. */
+  /** Arbitrate + forward one message to its daemons (never throws); `retry` when no target took it and a resend can still land. */
   private async forward(
     botId: string,
     msg: WireNormalizedMessage,
     sidecar?: RelayIngressSidecar
   ): Promise<RelayForwardOutcome> {
-    return (await this.arbitrateAndForward(botId, msg, sidecar, false)) === 'refused' ? 'refused' : 'accepted'
+    const outcome = await this.arbitrateAndForward(botId, msg, sidecar, false)
+    if (outcome === 'refused') return 'refused'
+    return outcome.disposition === 'retry' ? 'retry' : 'accepted'
   }
 
   /** {@link forward} with the daemon's strict verdict: the same ladder, gated per target on `im-admission-v1`. */
@@ -1315,22 +1320,12 @@ export class RelayIngressManager {
       }
     }
     if (!tgt && conversationTargets.length === 0) {
-      // Conversation gating (resource-visibility §14.3): an explicitly-addressed
-      // message (DM, or @bot mention) that arbitration could not place, on a bot
-      // that backs ≥1 gated agent, must not look silently dead — answer once per
-      // conversation (the DM row itself was already reported above, independently
-      // of the routing outcome).
-      //
-      // Every Off channel arrives here unroutable, and the two kinds answer
-      // differently. A channel an OPERATOR silenced says nothing: they already
-      // decided, and "ask an admin to enable it" would be the opposite of what
-      // happened. A channel that is Off because §14 never enabled its gated owner
-      // still speaks once — the person asking had no way to know the agent is
-      // private. Only ownership separates them (they share a trigger value), so the
-      // CP marks the gated ones and the fence and the notice stay independent.
+      // §14.3: an addressed message nothing could place answers once per conversation where nobody enabled the agent; an operator's Off stays silent.
       const muted = this.router.channelMuted(botId, msg.channel)
-      const speaks = !muted || this.router.channelGatedOff(botId, msg.channel)
-      if (!msg.sender.isBot && hasGatedMembers && speaks) {
+      const gatedOff = this.router.channelGatedOff(botId, msg.channel)
+      // A bot with gated members speaks in unrouted places too; any bot speaks where the CP marks the Off undecided (§14.9).
+      const speaks = gatedOff || (hasGatedMembers && !muted)
+      if (!msg.sender.isBot && speaks) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
           // §8 relayOwnsEgress, derived from the egress FACET: an ingest without
@@ -1403,7 +1398,7 @@ export class RelayIngressManager {
     // A By decision conversation: every delivery names its Decision, and only a daemon that can hold it receives one.
     const decisionId = this.router.decisionIdFor(botId, msg.channel)
     const verdicts: RelayAdmission[] = []
-    const verdictOf = strict ? strictAdmissionFrom : admissionFrom
+    const verdictOf = strict ? strictAdmissionFrom : bestEffortAdmissionFrom
     for (const { target: participant, via } of conversationTargets) {
       const daemon = this.deps.getDaemon(participant.daemonId)
       if (!daemon) {
@@ -1476,7 +1471,7 @@ export class RelayIngressManager {
     if (ownerTarget) targets.set(ownerTarget.agentId, ownerTarget)
     for (const t of this.router.conversationParticipants(botId, sessionKey, msg.channel)) targets.set(t.agentId, t)
     const verdicts: RelayAdmission[] = []
-    const verdictOf = strict ? strictAdmissionFrom : admissionFrom
+    const verdictOf = strict ? strictAdmissionFrom : bestEffortAdmissionFrom
     for (const target of targets.values()) {
       const daemon = this.deps.getDaemon(target.daemonId)
       if (

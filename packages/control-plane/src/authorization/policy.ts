@@ -239,6 +239,11 @@ export function canContinueSession(
   })
 }
 
+/** The caller is this session's recorded owner, whatever their role: a webchat conversation's owner, whom chat actions name apart from the agent's editors. */
+export function ownsSession(resource: SessionViewable, identitySet: ReadonlySet<string>): boolean {
+  return identityOwnsSession(resource, identitySet)
+}
+
 /**
  * Prisma list projection of `resource.view`.
  *

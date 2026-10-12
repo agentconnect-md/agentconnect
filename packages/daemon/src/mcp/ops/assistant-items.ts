@@ -150,7 +150,8 @@ export type ProposeInput = z.infer<typeof PROPOSE_ARGS>
 
 const TEAM_VISIBLE =
   'The ledger is visible to everyone in the organization: write it as a neutral record of who asked for what and ' +
-  'where it stands, and never quote or paraphrase a direct message.'
+  'where it stands, and never quote or paraphrase a direct message, a private channel or a private group ' +
+  'conversation, not even a figure or a detail from one.'
 
 const nextCheckProp = {
   type: 'string',
@@ -171,8 +172,9 @@ export const ASSISTANT_ITEM_TOOLS: ToolDescriptor[] = [
       'time, which reports here only if something changed; it only looks and records what it saw, so promise a ' +
       'check then, never an action. Check listItems before restating: when an open item already covers the ' +
       'request, ask "attach this to <who>’s item?" instead and, on a yes, call followItem rather than ' +
-      `taking a second item. ${TEAM_VISIBLE} When the request came in a direct message, say so as you take it. The ` +
-      'person asking and this conversation become the first follower.',
+      `taking a second item. ${TEAM_VISIBLE} When the request came in a direct message or a private channel or ` +
+      'group, tell the person as you take it that the item is visible to the whole organization and records only ' +
+      'who asked for what. The person asking and this conversation become the first follower.',
     inputSchema: obj(
       {
         title: {
@@ -311,7 +313,10 @@ export const PATROL_UPDATE_ITEM_TOOL: ToolDescriptor = {
         type: 'string',
         minLength: 1,
         maxLength: ASSISTANT_ITEM_LIMITS.observation,
-        description: 'Optional. What changed, for the people following the item; omit it when nothing did.'
+        description:
+          'Optional. What changed, for the people following the item; omit it when nothing did. It says what you ' +
+          'found and promises no later message, no time anyone will hear back and no next check; when the item ' +
+          'should be looked at again, set `nextCheck`, which they are not told about.'
       }
     },
     ['itemId', 'observation']

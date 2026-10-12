@@ -51,6 +51,7 @@ import type {
 } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { IntegrationSlackConfig, type RcBotAssign, type RelayCpFrameType } from '@agentconnect.md/protocol'
+import { NO_SESSION_SYNC } from '../../../test/fakes/no-session-sync.js'
 
 /** A restricted owner: the projection's gated arm. */
 const RESTRICTED: SpecOwner = { visibility: 'restricted' }
@@ -520,7 +521,7 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
   // emitted for these inputs — frozen here so the flip to the provider projector
   // is provably byte-identical rather than merely self-consistent.
   it('emits the byte-identical direct payload the pre-adoption slack arm produced', async () => {
-    const spec = await integrationToSpec(PLATFORMS, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [
+    const spec = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [
       channel('C1', 'any'),
       channel('C2', 'mention'),
       channel('C3', 'off')
@@ -542,7 +543,8 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
         gated: false,
         sessionModes: [],
         externalChannels: [],
-        decisions: { bindings: [], definitions: [] }
+        decisions: { bindings: [], definitions: [] },
+        chatAuthority: 'participants'
       },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
       // and the ingress mode ride the core envelope, never the config payload.
@@ -562,6 +564,7 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
     it(`routes the live path through the slack projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(
         PLATFORMS,
+        NO_SESSION_SYNC,
         INTEGRATION,
         SOCKET_BOT,
         SOCKET_SECRET,
@@ -608,7 +611,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
   // arm emitted. Send-only by credential domaining — xoxb but NEVER the appToken.
   it('emits the byte-identical shared payload the pre-adoption slack arm produced', async () => {
     const httpBot = bot({ transport: 'http', shareable: true, slackAppId: 'A0TESTAPP' })
-    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, [
+    const spec = await httpIntegrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, httpBot, HTTP_SECRET, [
       channel('C1', 'any'),
       channel('C2', 'off')
     ])
@@ -625,7 +628,8 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
         gated: false,
         sessionModes: [],
         externalChannels: [],
-        decisions: { bindings: [], definitions: [] }
+        decisions: { bindings: [], definitions: [] },
+        chatAuthority: 'participants'
       },
       config: {
         shareable: true,
@@ -644,6 +648,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       // positionally by each call site.
       const spec = await httpIntegrationToSpec(
         PLATFORMS,
+        NO_SESSION_SYNC,
         INTEGRATION,
         httpBot,
         HTTP_SECRET,
@@ -661,13 +666,20 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
 
   it('carries the operator’s join-public-channels switch from the bot row on both arms', async () => {
     // Absent from the bag ⇒ true (the behaviour bots predating the switch keep).
-    const socketOn = await integrationToSpec(PLATFORMS, INTEGRATION, bot(), SOCKET_SECRET, [])
+    const socketOn = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, bot(), SOCKET_SECRET, [])
     expect(socketOn?.config).toMatchObject({ joinPublicChannels: true })
     const off = { platformConfig: { joinPublicChannels: false } }
-    const socketOff = await integrationToSpec(PLATFORMS, INTEGRATION, { ...bot(), ...off }, SOCKET_SECRET, [])
+    const socketOff = await integrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      { ...bot(), ...off },
+      SOCKET_SECRET,
+      []
+    )
     expect(socketOff?.config).toMatchObject({ joinPublicChannels: false })
     const httpBotOff = { ...bot({ transport: 'http', shareable: true, slackAppId: 'A0TESTAPP' }), ...off }
-    const httpOff = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBotOff, HTTP_SECRET, [])
+    const httpOff = await httpIntegrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, httpBotOff, HTTP_SECRET, [])
     expect(httpOff?.config).toMatchObject({ joinPublicChannels: false })
   })
 })
@@ -704,7 +716,7 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     relayReg,
     { integrationUpsert: async () => {} } as never,
     { upsert: async () => {}, get: async () => null, listForBot: async () => [] } as unknown as ThreadAffinityStore,
-    { findThreadOwner: async () => null } as unknown as SessionRepo,
+    { findThreadOwner: async () => null, getExternalAccessPolicy: async () => null } as unknown as SessionRepo,
     { info() {}, warn() {}, debug() {} },
     PLATFORMS,
     // No duty ledger ⇒ the spec goes to the placement alone, as this fixture expects.

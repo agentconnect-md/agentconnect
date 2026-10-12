@@ -40,6 +40,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
         },
         chat: {
           postMessage: async () => ({ ts: '1700000000.000100' }),
+          postEphemeral: ok,
           getPermalink: async () => ({ permalink: 'https://fake.slack.com/archives/C1/p1700000000000100' }),
           update: async () => ({ ts: '1700000000.000100' }),
           delete: ok,

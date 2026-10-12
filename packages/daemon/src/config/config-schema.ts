@@ -139,8 +139,8 @@ const SandboxMountSchema = z
   .strict()
 export type SandboxMount = z.infer<typeof SandboxMountSchema>
 
-const SandboxBackendSchema = z.enum(['srt', 'microsandbox'])
-export type SandboxBackend = z.infer<typeof SandboxBackendSchema>
+/** The two sandboxing strategies of the `sandbox` table (session-executors.md §5). */
+export type SandboxBackend = 'srt' | 'microsandbox'
 
 export const MicrosandboxConfigSchema = z
   .object({
@@ -214,8 +214,6 @@ export const ConfigSchema = z.object({
       host: StrategyOffer.default(true),
       srt: StrategyOffer.default(true),
       microsandbox: MicrosandboxOffer.prefault(true),
-      // Retiring: read once at startup with a warning, and kept only as the backend the CP migrates `runInSandbox` from.
-      backend: SandboxBackendSchema.optional(),
       env: z.record(EnvironmentName, ProcessValue).default({}),
       mounts: z.array(SandboxMountSchema).default([]),
       // The executor facet switch (session-executors.md §10): this machine hosts isolated sessions of its group's other members, under ITS runtime sign-in. The owner's consent, so `config/push` never sets it.
@@ -229,8 +227,6 @@ export const ConfigSchema = z.object({
       // to the signed-in cloud account. Explicit local and daemon-injected MCP
       // servers remain available. Set false only to opt this daemon out.
       isolateAccountApps: z.boolean().default(true),
-      // Retiring (session-executors.md §5): read once at startup with a warning, `true` as `sandbox.host: false`.
-      requireSandbox: z.boolean().optional(),
       // Operator-owned remote-origin policy for daemon-managed workspace clone/pull. Default
       // ['*'] admits any https/ssh origin; exact scheme+host+port entries tighten it, and []
       // disables remote Git workspaces entirely.
@@ -300,12 +296,7 @@ export const ConfigSchema = z.object({
       // window, is what keeps background work alive. (Was widened to 2h by bb328c01 as
       // an interim workaround before the lease existed; now dialed back.)
       agentIdleTimeoutMs: z.number().int().default(900_000),
-      // Absolute host lifetime ceiling (from host start). The background-task lease
-      // defers idle reclaim while work is in flight; this bounds that deferral so a
-      // wedged / never-ending background task (a hung build, a long-lived dev server)
-      // can't pin an otherwise-idle host forever. Past this, the sweep force-reclaims
-      // even with live background work (logged at warn). Must exceed agentIdleTimeoutMs
-      // to have any effect. 6h.
+      // Ceiling on what may hold an idle host: live background work from host start, and a turn's unanswered card from when it was asked. 6h.
       agentMaxLifetimeMs: z.number().int().default(21_600_000),
       // How often the idle sweep runs: reaps idle ACP adapter children back to
       // `provisioned` (§7.2) and TTL-closes idle sessions (§7.3). Keep well below

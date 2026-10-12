@@ -1,7 +1,6 @@
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { ALL_TOOL_NAMES } from '../mcp/tools.js'
 import { RESERVED_MCP_SERVER_NAME } from '../mcp/resolve-servers.js'
-import { turnChromeFor } from '../platforms/turn-chrome.js'
 
 // ACP runtime identities for this daemon's own MCP tools; both approval transports below trust only these.
 const BUILTIN_TOOL_NAMES = new Set(ALL_TOOL_NAMES)
@@ -120,25 +119,11 @@ export function approvalRequestSummary(parts: ApprovalRequestParts): string {
   return approvalSummary(parts.detail ? `${parts.tool}: ${parts.detail}` : parts.tool, 'Tool permission request')
 }
 
-/**
- * True when `none` output mode removed THIS turn's interactive permission/elicitation
- * surface. Permission requests still enter the Agent-editor queue; this flag only prevents
- * a chat-side card from being rendered for the turn.
- *
- * Scoped narrowly to the surface `none` actually removes: a live user turn on a platform that
- * HAS an in-chat card at all. `hasChatInputCards` is that fact, and it is passed in rather than
- * looked up because it now has two independent sources — Slack's permission-approval chrome
- * (`turnChromeFor(...).chatInputCards`) and any platform's Layer-2 elicitation-card facet — and
- * either one means `none` removed something. Discord and Feishu still have neither, so `none`
- * removes nothing there; webchat/headless are non-IM transports. Computed once at dispatch
- * (frozen for the turn) so a mid-turn mode flip can't desync it from the connection it was
- * derived from.
- */
+/** True when `none` removed this live IM turn's in-chat card: `hasChatInputCards` says its surface has an approval or elicitation card at all; frozen at dispatch. */
 export function noneSuppressedApprovalSurface(
   mode: string,
   turn: { platform: string; webchat?: unknown; headless?: boolean },
   hasChatInputCards = false
 ): boolean {
-  const surfaced = hasChatInputCards || turnChromeFor(turn.platform).chatInputCards === true
-  return mode === 'none' && surfaced && !turn.webchat && !turn.headless
+  return mode === 'none' && hasChatInputCards && !turn.webchat && !turn.headless
 }

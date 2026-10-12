@@ -9,6 +9,7 @@ import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js
 import { ASSISTANT_PATROL_SCHEMA, AssistantPatrolLedger } from './assistant-patrols.js'
 import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
+import { ASSISTANT_TIME_ZONE_SCHEMA, AssistantPlaceTimeZones } from './assistant-time-zones.js'
 import { ASSISTANT_WIDENED_SCHEMA, AssistantWidenedSessions } from './assistant-widened.js'
 import {
   APPEND_COORDINATE_PREFIX,
@@ -371,6 +372,17 @@ export interface PermissionNoticeRow {
   resolvedByName: string | null
   notifyChannel: string
   notifyTs: string
+}
+
+/** A settled sub-session request whose notice in its conversation was never rewritten (assistant-mode.md §5.6). */
+export interface SubsessionNoticeRow {
+  id: string
+  agentId: string
+  /** The sub-session's ACP session id. */
+  sessionId: string
+  status: PermissionRequestStatus
+  noticeChannel: string
+  noticeTs: string
 }
 
 /**
@@ -1338,7 +1350,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 43
+export const SCHEMA_VERSION = 47
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1859,6 +1871,63 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       )
       if (!columns.includes('sharedImageJson')) await db.exec('ALTER TABLE transcript ADD COLUMN sharedImageJson TEXT')
     }
+  },
+  // v44 holds a sub-session's failure report and its refused attempts until it is admitted (assistant-mode.md §5.7).
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec(`
+        ALTER TABLE IF EXISTS assistant_subsession ADD COLUMN IF NOT EXISTS endReport TEXT;
+        ALTER TABLE IF EXISTS assistant_subsession ADD COLUMN IF NOT EXISTS reportAttempts INTEGER NOT NULL DEFAULT 0;
+      `)
+      return
+    }
+    const columns = ((await db.query('PRAGMA table_info(assistant_subsession)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    if (columns.length === 0) return
+    if (!columns.includes('endReport')) await db.exec('ALTER TABLE assistant_subsession ADD COLUMN endReport TEXT')
+    if (!columns.includes('reportAttempts'))
+      await db.exec('ALTER TABLE assistant_subsession ADD COLUMN reportAttempts INTEGER NOT NULL DEFAULT 0')
+  },
+  // v45 keeps a sub-session's notice handle on its request, so a restart's sweep settles it (assistant-mode.md §5.6).
+  async (db, store) => {
+    const added = ['noticeIntegrationId', 'noticeChannel', 'noticeTs']
+    if (store.postgres) {
+      for (const column of added)
+        await db.exec(`ALTER TABLE permission_requests ADD COLUMN IF NOT EXISTS ${column} TEXT`)
+      return
+    }
+    const columns = ((await db.query('PRAGMA table_info(permission_requests)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    for (const column of added)
+      if (!columns.includes(column)) await db.exec(`ALTER TABLE permission_requests ADD COLUMN ${column} TEXT`)
+  },
+  // v46 records what a draft's card shows, so a reconnect rewrites one that missed its settlement (assistant-mode.md §5.10).
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE IF EXISTS assistant_draft ADD COLUMN IF NOT EXISTS cardShows TEXT')
+      return
+    }
+    const columns = ((await db.query('PRAGMA table_info(assistant_draft)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    if (columns.length > 0 && !columns.includes('cardShows'))
+      await db.exec('ALTER TABLE assistant_draft ADD COLUMN cardShows TEXT')
+  },
+  // v47 keeps the editor DM sent beside a stored card on its own handle, so a restart's sweep retires both.
+  async (db, store) => {
+    const added = ['besideIntegrationId', 'besideChannel', 'besideTs']
+    if (store.postgres) {
+      for (const column of added)
+        await db.exec(`ALTER TABLE permission_requests ADD COLUMN IF NOT EXISTS ${column} TEXT`)
+      return
+    }
+    const columns = ((await db.query('PRAGMA table_info(permission_requests)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    for (const column of added)
+      if (!columns.includes(column)) await db.exec(`ALTER TABLE permission_requests ADD COLUMN ${column} TEXT`)
   }
 ]
 
@@ -2056,6 +2125,8 @@ export class LocalStore {
   readonly assistantWidened: AssistantWidenedSessions
   /** Reminders the daemon posts at their time with no model turn (assistant-mode.md §5.9). */
   readonly assistantReminders: AssistantReminderLedger
+  /** The time zone last seen from a person in each place, for turns no person started (assistant-mode.md §5.4). */
+  readonly assistantTimeZones: AssistantPlaceTimeZones
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -2091,6 +2162,7 @@ export class LocalStore {
     this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantWidened = new AssistantWidenedSessions({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
+    this.assistantTimeZones = new AssistantPlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
   }
 
   /**
@@ -2131,7 +2203,13 @@ export class LocalStore {
         orgForAgent: source.orgForAgent
       })
     }
-    await store.initializeSchema()
+    try {
+      await store.initializeSchema()
+    } catch (error) {
+      // A refused path keeps no handle open; a caller's database is the caller's to close.
+      if (typeof source === 'string') await store.backend.close().catch(() => undefined)
+      throw error
+    }
     return store
   }
 
@@ -2151,6 +2229,7 @@ export class LocalStore {
       ${ASSISTANT_WIDENED_SCHEMA}
       ${ASSISTANT_PATROL_SCHEMA}
       ${ASSISTANT_REMINDER_SCHEMA}
+      ${ASSISTANT_TIME_ZONE_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
@@ -2307,7 +2386,13 @@ export class LocalStore {
         resolvedByName TEXT,
         notifyIntegrationId TEXT,
         notifyChannel TEXT,
-        notifyTs TEXT
+        notifyTs TEXT,
+        noticeIntegrationId TEXT,
+        noticeChannel TEXT,
+        noticeTs TEXT,
+        besideIntegrationId TEXT,
+        besideChannel TEXT,
+        besideTs TEXT
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
@@ -2952,18 +3037,92 @@ export class LocalStore {
       .run(agentId, id)
   }
 
-  /** Settled rows whose DM card was never rewritten (daemon died first) — returned
-   *  once, handles cleared, so a reconnect sweep rewrites each orphan exactly once. */
+  /** Record the editor DM sent beside a card whose own handle is the notify one; false if the row already settled. */
+  async setPermissionRequestBeside(
+    agentId: string,
+    id: string,
+    integrationId: string,
+    channel: string,
+    ts: string
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE permission_requests SET besideIntegrationId = ?, besideChannel = ?, besideTs = ?
+         WHERE agentId = ? AND id = ? AND status = 'pending'`
+      )
+      .run(integrationId, channel, ts, agentId, id)
+    return Number(result.changes) === 1
+  }
+
+  /** Drop the beside DM's handle after its card has been rewritten to a terminal state. */
+  async clearPermissionRequestBeside(agentId: string, id: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE permission_requests SET besideIntegrationId = NULL, besideChannel = NULL, besideTs = NULL
+         WHERE agentId = ? AND id = ?`
+      )
+      .run(agentId, id)
+  }
+
+  /** Settled rows whose DM or in-conversation card, or the DM beside one, was never rewritten (daemon died first) —
+   *  each returned once with its handle cleared, so a reconnect sweep rewrites each orphan exactly once. */
   async takeOrphanedPermissionNotices(integrationId: string, limit = 20): Promise<PermissionNoticeRow[]> {
+    const bounded = Math.max(1, Math.min(100, limit))
+    const take = async (handle: 'notify' | 'beside'): Promise<PermissionNoticeRow[]> => {
+      const rows = (await this.db
+        .prepare(
+          `SELECT id, agentId, status, command, resolvedByName, ${handle}Channel AS notifyChannel, ${handle}Ts AS notifyTs
+           FROM permission_requests
+           WHERE ${handle}IntegrationId = ? AND ${handle}Ts IS NOT NULL AND status != 'pending'
+           ORDER BY resolvedAt DESC LIMIT ?`
+        )
+        .all(integrationId, bounded)) as unknown as PermissionNoticeRow[]
+      for (const row of rows)
+        if (handle === 'notify') await this.clearPermissionRequestNotify(row.agentId, row.id)
+        else await this.clearPermissionRequestBeside(row.agentId, row.id)
+      return rows
+    }
+    return [...(await take('notify')), ...(await take('beside'))]
+  }
+
+  /** Record a pending sub-session request's notice handle in its conversation; false if the row already settled. */
+  async setPermissionRequestNotice(
+    agentId: string,
+    id: string,
+    integrationId: string,
+    channel: string,
+    ts: string
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE permission_requests SET noticeIntegrationId = ?, noticeChannel = ?, noticeTs = ?
+         WHERE agentId = ? AND id = ? AND status = 'pending'`
+      )
+      .run(integrationId, channel, ts, agentId, id)
+    return Number(result.changes) === 1
+  }
+
+  /** Drop the notice handle once the notice says how the request settled. */
+  async clearPermissionRequestNotice(agentId: string, id: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE permission_requests SET noticeIntegrationId = NULL, noticeChannel = NULL, noticeTs = NULL
+         WHERE agentId = ? AND id = ?`
+      )
+      .run(agentId, id)
+  }
+
+  /** Settled rows whose sub-session notice was never rewritten — returned once, handles cleared, like the DM cards' sweep. */
+  async takeOrphanedSubsessionNotices(integrationId: string, limit = 20): Promise<SubsessionNoticeRow[]> {
     const rows = (await this.db
       .prepare(
-        `SELECT id, agentId, status, command, resolvedByName, notifyChannel, notifyTs
+        `SELECT id, agentId, sessionId, status, noticeChannel, noticeTs
          FROM permission_requests
-         WHERE notifyIntegrationId = ? AND notifyTs IS NOT NULL AND status != 'pending'
+         WHERE noticeIntegrationId = ? AND noticeTs IS NOT NULL AND status != 'pending'
          ORDER BY resolvedAt DESC LIMIT ?`
       )
-      .all(integrationId, Math.max(1, Math.min(100, limit)))) as unknown as PermissionNoticeRow[]
-    for (const row of rows) await this.clearPermissionRequestNotify(row.agentId, row.id)
+      .all(integrationId, Math.max(1, Math.min(100, limit)))) as unknown as SubsessionNoticeRow[]
+    for (const row of rows) await this.clearPermissionRequestNotice(row.agentId, row.id)
     return rows
   }
 
@@ -4491,6 +4650,14 @@ export class LocalStore {
       .prepare('SELECT 1 AS present FROM inbox WHERE agentId = ? AND completedAt IS NULL LIMIT 1')
       .get(agentId)) as { present: number } | undefined
     return row !== undefined
+  }
+
+  /** The session keys of an agent's PENDING inbox rows — admitted work that will run in those sessions, whether or not their rows exist yet; the per-session form of agentHasPendingInboxRows. */
+  async pendingInboxSessionKeys(agentId: string): Promise<string[]> {
+    const rows = (await this.db
+      .prepare('SELECT DISTINCT sessionKey FROM inbox WHERE agentId = ? AND completedAt IS NULL')
+      .all(agentId)) as Array<{ sessionKey: string }>
+    return rows.map((row) => row.sessionKey)
   }
 
   /** Retention-GC delete (#485): remove one session row and its dependent rows —

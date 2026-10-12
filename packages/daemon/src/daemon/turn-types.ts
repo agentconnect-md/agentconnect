@@ -1,3 +1,4 @@
+import type { TurnMessage } from '../assistant/place-members.js'
 import type { HostKey } from '../acp/host-key.js'
 import type { CodeHostDecisionContext } from '../codehost/decision-state.js'
 import type { DutyGrantEntry, EventSession, ExternalSessionAudience, SessionKey } from '@agentconnect.md/protocol'
@@ -303,6 +304,8 @@ export type TurnLifecycleCleanupOutcome = { blocked: false } | { blocked: true; 
 export interface QueueEntry {
   agentId: string
   msg: NormalizedMessage
+  /** Messages coalesced or steered into this live turn: the read rule reads for their senders too (assistant-mode.md §5.5). */
+  foldedMessages?: TurnMessage[]
   /** Cancels the entire cold SessionManager initialization path after the bounded
    *  host-stop backstop, including non-host awaits such as workspace/history I/O. */
   initAbort: AbortController

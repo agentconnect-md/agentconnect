@@ -14,6 +14,7 @@
  * Trust boundary: the reported agent must still be placed on the authenticated
  * daemon, and an existing sessionId remains bound to its first agent.
  */
+import { chatAuthorityOf } from '../../orchestrator/placement.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isFrame, type EventSession } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, HookId, IntegrationId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
@@ -34,7 +35,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * the reporting agent — a conversation id is only an owner claim for the agent
  * it was minted against.
  */
-async function classifyMilestone(p: EventSession, agentId: AgentId, deps: DaemonWsDeps) {
+async function classifyMilestone(p: EventSession, orgId: OrgId, agentId: AgentId, deps: DaemonWsDeps) {
   const webchatOwnerUserId =
     // An A2A child uses a daemon-minted `a2a:<caller>` channel even when the
     // parent transport is webchat. Its audience comes exclusively from the
@@ -50,6 +51,7 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
   // Without the user port the owner reads as a person, which keeps the row private.
   const ownerUserId = webchatOwnerUserId ?? launchOwnerUserId
   const ownerIsServiceAccount = ownerUserId ? ((await deps.user?.isServiceAccount(ownerUserId)) ?? false) : false
+  const platformNamesPeople = await dmPlatformNamesPeople(p, orgId, deps)
   return classifySession({
     ...(p.platform !== undefined ? { platform: p.platform } : {}),
     ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
@@ -60,8 +62,20 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
     ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),
     webchatOwnerUserId,
     launchOwnerUserId,
-    ownerIsServiceAccount
+    ownerIsServiceAccount,
+    ...(platformNamesPeople !== undefined ? { platformNamesPeople } : {})
   })
+}
+
+/** Whether a root IM DM's platform names its people, the same test chat actions use; undefined (stay private) when it cannot be read. */
+async function dmPlatformNamesPeople(p: EventSession, orgId: OrgId, deps: DaemonWsDeps): Promise<boolean | undefined> {
+  if (p.conversationKind !== 'dm' || p.parentSessionId || !p.platform || !deps.platforms) return undefined
+  try {
+    return (await chatAuthorityOf(deps.platforms, deps.session, { orgId, platform: p.platform })) === 'editors'
+  } catch (err) {
+    deps.log.warn?.({ err, orgId, sessionId: p.sessionId }, 'event/session: reading the DM platform sync state failed')
+    return undefined
+  }
 }
 
 async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId, deps: DaemonWsDeps) {
@@ -205,7 +219,7 @@ async function recordEventSession(
   pullRequestFeedback?: DaemonWsDeps['pullRequestFeedback']
 ): Promise<void> {
   const [classification, candidate] = await Promise.all([
-    classifyMilestone(p, agentId, deps),
+    classifyMilestone(p, orgId, agentId, deps),
     externalCandidate(p, orgId, agentId, deps)
   ])
   const { recorded, session, settled } = await deps.session.recordMilestone({

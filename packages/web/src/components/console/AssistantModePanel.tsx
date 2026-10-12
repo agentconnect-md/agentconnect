@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import type { AssistantModeAdmission, AssistantModePolicy, AssistantModeRefusal } from '@agentconnect.md/protocol'
+import { assistantModePermissionModeOnEnable } from '@agentconnect.md/protocol/assistant-permission-modes'
 import { fetchAgentAssistantModeAdmission, memberDisplayName } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { chatRoomSigil } from '@/lib/platform-labels'
@@ -82,6 +83,7 @@ export function AssistantModePanel({
   runtime,
   memoryProvider,
   placement,
+  permissionMode,
   askEveryTime
 }: {
   agentId: string
@@ -91,6 +93,8 @@ export function AssistantModePanel({
   runtime: string
   memoryProvider: string
   placement: string
+  /** The stored permission mode; '' when unset. */
+  permissionMode: string
   /** The effective permission mode asks before every action, so background work would wait on approvals. */
   askEveryTime: boolean
 }) {
@@ -131,6 +135,8 @@ export function AssistantModePanel({
   const result = assistantModePolicyForDraft(draft, assistantMode)
   const blocker = typeof result === 'string' ? result : null
   const editable = canEdit && !saving
+  // Turning the switch on moves an asking mode to the runtime's auto mode, so only a mode it keeps warns.
+  const asks = askEveryTime && (enabled || assistantModePermissionModeOnEnable(runtime, permissionMode) === undefined)
 
   const agentIntegrations = integrations.filter((i) => i.agentId === agentId && i.id)
   const agentConversations = agentIntegrations.flatMap((i) =>
@@ -249,7 +255,7 @@ export function AssistantModePanel({
         </ul>
       ) : null}
 
-      {askEveryTime && (enabled || (open && draft.enabled)) ? (
+      {asks && (enabled || (open && draft.enabled)) ? (
         <div
           className="border-t border-(--border-subtle) px-4 py-3 font-sans text-[12px] font-normal leading-[1.5] text-(--amber-500)"
           data-assistant-mode-ask-warning

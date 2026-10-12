@@ -16,6 +16,7 @@ import {
   type RelayCpFrameType
 } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
+import { openConversationTrigger } from '../domain/conversation-defaults.js'
 import type {
   BotRepo,
   BotRecord,
@@ -277,7 +278,12 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         for (const candidate of reported) {
           let row = channels.find((item) => item.integrationId === integrationId && item.channelId === candidate.id)
           if (!row) {
-            row = channel({ integrationId, channelId: candidate.id, trigger: opts?.defaultTrigger ?? 'mention' })
+            row = channel({
+              integrationId,
+              channelId: candidate.id,
+              trigger: opts?.defaultTrigger ?? openConversationTrigger(candidate),
+              externalReason: candidate.externalReason ?? null
+            })
             channels.push(row)
           }
           row.name = candidate.name ?? null
@@ -321,7 +327,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
             name: conversation.name ?? null,
             kind: conversation.kind ?? 'channel',
             dmUserId: conversation.dmUserId ?? null,
-            trigger: opts?.defaultTrigger ?? 'mention'
+            externalReason: conversation.externalReason ?? null,
+            trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation)
           })
           channels.push(row)
         } else {
@@ -358,11 +365,12 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       integrationRemove: async (daemonId: string, r: { integrationId: string }) =>
         void removals.push({ daemonId, integrationId: r.integrationId })
     }
-    const sessions: Pick<SessionRepo, 'findThreadOwner'> = {
+    const sessions: Pick<SessionRepo, 'findThreadOwner' | 'getExternalAccessPolicy'> = {
       findThreadOwner: async (botId, channel, thread) => {
         threadOwnerLookup = { botId, channel, thread }
         return threadOwner
-      }
+      },
+      getExternalAccessPolicy: async () => null
     }
     // The credential writer is the transaction owner in prod; here it stands in
     // for that one atomic step — CAS, then (only if it applied) the integration
@@ -1045,6 +1053,66 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       const bobRow = channels.find((c) => c.integrationId === INT_B && c.channelId === 'C7')
       expect(aliceRow?.trigger).toBe('off')
       expect(bobRow?.trigger).toBe('off')
+    })
+
+    // §14.9: "Everyone" is the organization, so a place the platform marks external starts closed even for an ungated agent.
+    it('replaceChannels seeds an external channel Off for an ungated bot and keeps it owing the notice', async () => {
+      channels = []
+      await makeOrch().replaceChannels(BOT, [
+        { id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' },
+        { id: 'C_INT', name: 'deploys', externalReason: null }
+      ])
+      const rows = (id: string) => channels.filter((c) => c.channelId === id)
+      expect(rows('C_EXT').map((c) => [c.trigger, c.triggerChosen])).toEqual([
+        ['off', false],
+        ['off', false]
+      ])
+      expect(rows('C_INT').every((c) => c.trigger === 'mention')).toBe(true)
+      // The seed pushed routes and specs at once: the fence and the notice ride the assignment.
+      const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.mutedChannels).toEqual(['C_EXT'])
+      expect(assign.gatedOffChannels).toEqual(['C_EXT'])
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C_EXT')).toEqual([])
+      const bob = upserts.filter((u) => u.daemonId === D2).at(-1)!.spec as never as {
+        core: { mutedChannels: string[]; pendingChannels?: string[] }
+      }
+      expect(bob.core.mutedChannels).toEqual(['C_EXT'])
+      expect(bob.core.pendingChannels).toEqual(['C_EXT'])
+    })
+
+    it('an Off an editor chose on an external channel is silent, and enabling it opens the route', async () => {
+      channels = []
+      const orch = makeOrch()
+      await orch.replaceChannels(BOT, [{ id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' }])
+      await orch.updateConversation(BOT, 'C_EXT', { trigger: 'off' }, { source: 'console' })
+      let assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.mutedChannels).toEqual(['C_EXT'])
+      expect(assign.gatedOffChannels).toEqual([])
+
+      await orch.updateConversation(BOT, 'C_EXT', { trigger: 'mention' }, { source: 'console' })
+      expect(channels.filter((c) => c.channelId === 'C_EXT').every((c) => c.triggerChosen)).toBe(true)
+      assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.mutedChannels).toEqual([])
+      expect(assign.gatedOffChannels).toEqual([])
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C_EXT')).toEqual([
+        expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })
+      ])
+    })
+
+    it('leaves an existing channel untouched when it later turns external', async () => {
+      channels = []
+      const orch = makeOrch()
+      await orch.replaceChannels(BOT, [{ id: 'C1', name: 'deploys', externalReason: null }])
+      await orch.replaceChannels(BOT, [{ id: 'C1', name: 'deploys', externalReason: 'externallyShared' }])
+      expect(channels.filter((c) => c.channelId === 'C1').every((c) => c.trigger === 'mention')).toBe(true)
+    })
+
+    it('reportConversation seeds an external DM Off for an ungated bot', async () => {
+      channels = []
+      await makeOrch().reportConversation(BOT, { id: 'D_EXT', name: '@Partner', externalReason: 'externallyShared' })
+      expect(channels.filter((c) => c.channelId === 'D_EXT').map((c) => c.trigger)).toEqual(['off', 'off'])
+      const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.gatedOffChannels).toEqual(['D_EXT'])
     })
 
     it('reportConversation converges a DM to one owner and one trigger', async () => {

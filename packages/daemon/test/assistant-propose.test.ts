@@ -13,6 +13,7 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { isPatrolCoordinate, isTaskCoordinate, patrolCoordinate } from '../src/session/subsession-coordinate.js'
 import { assistantTaskHash, type AssistantDraft } from '../src/store/assistant-drafts.js'
 import { sessionKey } from '../src/store/local-store.js'
+import { SlackConnection } from '../src/slack/connection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 import { z } from 'zod'
@@ -23,12 +24,16 @@ const INT_B = '11111111-1111-4111-8111-1111111111b1'
 const MINUTE = 60_000
 const PATROL_OPENING = '[patrol] A scheduled, read-only check'
 const TASK_OPENING = '[approved task]'
+const TASK_LANGUAGE =
+  'Write your report in the language the people in the item’s conversation use; without a message of theirs to ' +
+  'go by, use the language of the item’s title and summary.'
+const ANSWER_LANGUAGE = 'Speak to the people here in the language they use, even when this report is in another.'
 const SENTENCE = 'I want to rebase PR #12 because it conflicts with main.'
 const TASK = 'Rebase PR #12 onto main and push.'
 const FALLBACK = { enabled: true, fallbackConversation: { integrationId: INT_A, channelId: 'C0FALLBACK' } }
 
 /** Slack agents appending in `C1`: bot-a in assistant mode with a fallback conversation for cards, bot-b outside it. */
-function scaffold(over: { limits?: Record<string, unknown> } = {}): string {
+function scaffold(over: { limits?: Record<string, unknown>; chat?: boolean; external?: string[] } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-propose-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -63,13 +68,15 @@ function scaffold(over: { limits?: Record<string, unknown> } = {}): string {
             platform: 'slack',
             core: {
               bindRules: [{ match: { kind: 'mention' } }],
-              sessionModes: [{ channel: 'C1', mode: 'append' }]
+              sessionModes: [{ channel: 'C1', mode: 'append' }],
+              ...(a.assistantMode && over.external ? { externalChannels: over.external } : {})
             },
             config: { botToken: `xoxb-${a.id}`, appToken: `xapp-${a.id}` }
           }
         ],
         output: { mode: 'low' },
         permissionMode: 'acceptEdits',
+        ...(a.assistantMode && over.chat !== undefined ? { chatActions: over.chat ? 'settings' : 'talk' } : {}),
         ...(a.assistantMode ? { assistantMode: a.assistantMode } : {})
       })
     )
@@ -156,12 +163,21 @@ async function boot(root: string) {
     return turn
   }
   // The card surface: the integration's own Slack connection, its card calls observed.
-  const conn = d.connByIntegration.get(INT_A)
+  const conn: SlackConnection = d.connByIntegration.get(INT_A)
   const cards = {
     post: vi.spyOn(conn, 'postBlocks').mockResolvedValue('card-1'),
     update: vi.spyOn(conn, 'updateBlocks').mockResolvedValue(true)
   }
-  vi.spyOn(conn, 'getChannelInfo').mockResolvedValue({ id: 'C1', name: 'general', isPrivate: false } as never)
+  // C1 is a channel; D1 is Alice's direct message with bot-a; U0BOT is a bot, everyone else a person.
+  vi.spyOn(conn, 'getChannelInfo').mockImplementation(
+    async (channel: string) =>
+      (channel === 'D1'
+        ? { id: 'D1', isIm: true, user: 'U0ALICE' }
+        : { id: channel, name: channel === 'C1' ? 'general' : 'other', isPrivate: false }) as never
+  )
+  vi.spyOn(conn, 'getUserProfile').mockImplementation(
+    async (user: string) => ({ id: user, name: user.toLowerCase(), isBot: user === 'U0BOT' }) as never
+  )
   const patrols = () => dispatched.filter((c) => isPatrolCoordinate(c.msg.thread))
   const tasks = () => dispatched.filter((c) => isTaskCoordinate(c.msg.thread))
   const reports = () => dispatched.filter((c) => c.msg.parentReport === true)
@@ -182,8 +198,8 @@ async function boot(root: string) {
       choice,
       decider: { userId: 'usr-editor', name: 'Grace' }
     }) as Promise<any>
-  const click = (draftId: string, optionId: 'approve' | 'discard' = 'approve') =>
-    d.routePermissionChoice({ requestId: draftId, optionId, actor: { userId: 'U0BOB' } })
+  const click = (draftId: string, optionId: 'approve' | 'discard' = 'approve', userId = 'U0BOB') =>
+    d.routePermissionChoice({ requestId: draftId, optionId, actor: { userId, name: userId.toLowerCase() } })
   const records = async (): Promise<AssistantDraft[]> => {
     const rows = (await d.store.assistantDrafts.db.query('SELECT id FROM assistant_draft ORDER BY createdAt', []))
       .rows as { id: string }[]
@@ -212,15 +228,15 @@ async function boot(root: string) {
 const scopeOf = (d: any): string => d.transportScopeForIntegrationIds([INT_A])
 
 /** The conversation's long session in C1, which the item reports into and an approved task runs under. */
-async function seedPlace(d: any) {
+async function seedPlace(d: any, channel = 'C1') {
   const scope = scopeOf(d)
-  const coordinate = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1)
-  const key = sessionKey('slack', 'C1', coordinate, 'bot-a', scope)
+  const coordinate = await d.store.resolveAppendCoordinate('bot-a', channel, scope, 1)
+  const key = sessionKey('slack', channel, coordinate, 'bot-a', scope)
   await d.store.upsertSession({
     key,
     agentId: 'bot-a',
     platform: 'slack',
-    channel: 'C1',
+    channel,
     thread: coordinate,
     transportScope: scope,
     acpSessionId: 'acp-parent-bot-a',
@@ -232,13 +248,13 @@ async function seedPlace(d: any) {
   return { key, scope, coordinate }
 }
 
-async function takeItem(d: any, nextCheck = Date.now() - MINUTE) {
+async function takeItem(d: any, nextCheck = Date.now() - MINUTE, channel = 'C1') {
   return await d.store.assistantItems.create({
     agentId: 'bot-a',
     title: 'Land PR #12',
     doneWhen: 'PR #12 is merged',
     nextCheck,
-    origin: { platform: 'slack', channel: 'C1', transportScope: scopeOf(d) },
+    origin: { platform: 'slack', channel, transportScope: scopeOf(d) },
     summary: 'Alice asked to see PR #12 through.'
   })
 }
@@ -266,9 +282,9 @@ const proposing =
   }
 
 /** One proposal from a patrol of a fresh item, as the patrol makes it. */
-async function proposed(h: Awaited<ReturnType<typeof boot>>) {
-  const place = await seedPlace(h.d)
-  const item = await takeItem(h.d)
+async function proposed(h: Awaited<ReturnType<typeof boot>>, channel = 'C1') {
+  const place = await seedPlace(h.d, channel)
+  const item = await takeItem(h.d, Date.now() - MINUTE, channel)
   const results: unknown[] = []
   h.behavior.patrol = proposing(h.deps, results)
   await h.d.patrols.sweep()
@@ -286,7 +302,7 @@ const reportsBack =
   }
 
 describe('a patrol proposes', () => {
-  it('records the proposal and cards it to the fallback conversation, once per patrol, running nothing', async () => {
+  it('records the proposal and cards it in the conversation its item was taken in, once per patrol, running nothing', async () => {
     const h = await boot(scaffold())
     const { place, item, results, record } = await proposed(h)
 
@@ -301,7 +317,7 @@ describe('a patrol proposes', () => {
       destination: { name: 'general' },
       proposal: { sentence: SENTENCE, why: 'The check found a merge conflict.', itemId: item.id, itemVersion: 1 },
       source: { sessionKey: patrolKey, place: false },
-      approver: { kind: 'conversation', integrationId: INT_A, channel: 'C0FALLBACK' },
+      approver: { kind: 'place', integrationId: INT_A, channel: 'C1' },
       offerAlways: false,
       cardTs: 'card-1'
     })
@@ -310,14 +326,17 @@ describe('a patrol proposes', () => {
     expect(results[0]).toMatchObject({
       proposed: true,
       proposalId: record.id,
-      approver: "the agent's fallback conversation"
+      approver: 'the people in the conversation the item was taken in'
     })
     expect(results[1]).toContain('this patrol already proposed')
     expect(await h.records()).toHaveLength(1)
 
+    // One card, at the root of the appending conversation, and none in the fallback conversation.
+    expect(h.cards.post).toHaveBeenCalledTimes(1)
+    const [channel, blocks, , thread] = h.cards.post.mock.calls[0]!
+    expect(channel).toBe('C1')
+    expect(thread).toBeUndefined()
     // The card leads with the sentence, shows the reason and the task, and offers approve or deny only.
-    const [channel, blocks] = h.cards.post.mock.calls[0]!
-    expect(channel).toBe('C0FALLBACK')
     const card = JSON.stringify(blocks)
     expect(card.indexOf(SENTENCE)).toBeGreaterThan(-1)
     expect(card.indexOf(SENTENCE)).toBeLessThan(card.indexOf(TASK))
@@ -417,6 +436,7 @@ describe('an approved proposal runs once', () => {
     expect(task!.msg.text).toContain(TASK_OPENING)
     expect(task!.msg.text).toContain(`Task: ${TASK}`)
     expect(task!.msg.text).toContain(`Item ${item.id}`)
+    expect(task!.msg.text).toContain(`Do exactly this task, nothing more. ${TASK_LANGUAGE}`)
     expect(task!.callMeta).toMatchObject({
       callFrom: 'bot-a',
       hopCount: 0,
@@ -427,7 +447,9 @@ describe('an approved proposal runs once', () => {
 
     // The agent's own permission mode, not a patrol's read-only one, and the runtime's tools unrestricted.
     const host = h.hosts.find((x) => x.prompt.mock.calls.some((c: any) => JSON.stringify(c).includes(TASK_OPENING)))
-    const taskSession = host.prompt.mock.calls.find((c: any) => JSON.stringify(c).includes(TASK_OPENING))[0]
+    const taskPrompt = host.prompt.mock.calls.find((c: any) => JSON.stringify(c).includes(TASK_OPENING))
+    const taskSession = taskPrompt[0]
+    expect(JSON.stringify(taskPrompt[1])).toContain(TASK_LANGUAGE)
     expect(
       host.setSessionPermissionMode.mock.calls.filter((c: any) => c[0] === taskSession).map((c: any) => c[1])
     ).toEqual(['acceptEdits'])
@@ -483,6 +505,7 @@ describe('an approved proposal runs once', () => {
     await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
     await h.settled()
     expect(h.reports()[0]!.msg.text).toMatch(/^\[sub-session ended\] .* stopped before finishing \(error\)/)
+    expect(h.reports()[0]!.msg.text).toContain(`delegate again if the work is still needed.\n\n${ANSWER_LANGUAGE}`)
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'failed', failure: 'it failed' })
     expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain('ended without reporting back')
     await h.daemon.stop()
@@ -500,9 +523,13 @@ describe('a proposal that is not approved never runs', () => {
     await h.click(record.id)
     await h.settled()
     expect(h.tasks()).toHaveLength(0)
-    expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain('Denied')
+    // The card in the conversation says who denied it and that nothing ran.
+    const [channel, ts, blocks] = h.cards.update.mock.calls.at(-1)!
+    expect([channel, ts]).toEqual(['C1', 'card-1'])
+    expect(JSON.stringify(blocks)).toContain('Denied by u0bob. Nothing was run.')
+    expect(JSON.stringify(blocks)).not.toContain('"actions"')
     expect((await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toContain(
-      `Proposal "${SENTENCE}" was denied; nothing was run.`
+      `Proposal "${SENTENCE}" was denied by u0bob; nothing was run.`
     )
     await h.daemon.stop()
   })
@@ -520,6 +547,7 @@ describe('a proposal that is not approved never runs', () => {
     await h.click(record.id)
     await h.settled()
     expect(h.tasks()).toHaveLength(0)
+    expect(h.cards.update.mock.calls.at(-1)!.slice(0, 2)).toEqual(['C1', 'card-1'])
     expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain('Expired. Nothing was run.')
     await h.daemon.stop()
   })
@@ -549,6 +577,305 @@ describe('a proposal that is not approved never runs', () => {
     expect(await h.decide(record.id)).toMatchObject({ status: 'failed', failure: 'its item is done' })
     await h.settled()
     expect(h.tasks()).toHaveLength(0)
+    await h.daemon.stop()
+  })
+})
+
+describe('a proposal in the conversation its item belongs to', () => {
+  const draftOf = async (h: Awaited<ReturnType<typeof boot>>, id: string): Promise<AssistantDraft> =>
+    await h.d.store.assistantDrafts.get(id)
+
+  it.each([true, false])(
+    'is approved there by a person who could ask the agent, whatever in-chat runtime changes allow (%s)',
+    async (chat) => {
+      const h = await boot(scaffold({ chat }))
+      const { record } = await proposed(h)
+      h.behavior.task = reportsBack(h.deps)
+      expect(h.cards.post.mock.calls.map((c) => c[0])).toEqual(['C1'])
+
+      await h.click(record.id, 'approve', 'U0BOB')
+      await vi.waitFor(() => expect(h.tasks()).toHaveLength(1), WAIT)
+      await h.settled()
+      expect(h.tasks()[0]!.msg).toMatchObject({ channel: 'C1', source: 'agent', headless: true })
+      expect(await draftOf(h, record.id)).toMatchObject({
+        status: 'succeeded',
+        decidedBy: expect.stringMatching(/U0BOB$/),
+        decidedByName: 'u0bob'
+      })
+      // The card in the conversation is rewritten in place: approved by whom, then how it ended.
+      const rewrites = h.cards.update.mock.calls.filter((c) => c[0] === 'C1' && c[1] === 'card-1')
+      expect(JSON.stringify(rewrites)).toContain('Approved by u0bob')
+      expect(JSON.stringify(rewrites.at(-1))).toContain('reported back')
+      expect(h.cards.post).toHaveBeenCalledTimes(1)
+      await h.daemon.stop()
+    }
+  )
+
+  it('refuses a bot, and anyone once the agent is switched off there, and runs nothing', async () => {
+    const h = await boot(scaffold())
+    const { record } = await proposed(h)
+    await h.click(record.id, 'approve', 'U0BOT')
+    h.d.agents.get('bot-a').integrations[0].core.mutedChannels = ['C1']
+    await h.click(record.id, 'approve', 'U0BOB')
+    await h.settled()
+    expect(h.tasks()).toHaveLength(0)
+    expect(await draftOf(h, record.id)).toMatchObject({ status: 'awaiting_review', decidedBy: null })
+    expect(h.cards.update).not.toHaveBeenCalled()
+    await h.daemon.stop()
+  })
+
+  it('in a direct message, lands there and is approved by that person only', async () => {
+    const h = await boot(scaffold())
+    const { record } = await proposed(h, 'D1')
+    expect(h.cards.post.mock.calls.map((c) => c[0])).toEqual(['D1'])
+    expect(record.approver).toMatchObject({ kind: 'place', channel: 'D1' })
+
+    await h.click(record.id, 'approve', 'U0BOB')
+    expect(await draftOf(h, record.id)).toMatchObject({ status: 'awaiting_review' })
+    h.behavior.task = 'hang'
+    await h.click(record.id, 'approve', 'U0ALICE')
+    await vi.waitFor(() => expect(h.tasks()).toHaveLength(1), WAIT)
+    expect(h.tasks()[0]!.msg).toMatchObject({ channel: 'D1' })
+    expect(await draftOf(h, record.id)).toMatchObject({ status: 'executing', decidedByName: 'u0alice' })
+    await h.d.interruptAgentTurns('bot-a', 'stop')
+    await h.settled()
+    await h.daemon.stop()
+  })
+
+  it('falls back to the fallback conversation, and only there, when the conversation cannot take the card', async () => {
+    const h = await boot(scaffold())
+    h.cards.post.mockRejectedValueOnce(new Error('not_in_channel'))
+    const { record, results } = await proposed(h)
+    expect(h.cards.post.mock.calls.map((c) => c[0])).toEqual(['C1', 'C0FALLBACK'])
+    expect(record).toMatchObject({ approver: { kind: 'conversation', channel: 'C0FALLBACK' }, cardTs: 'card-1' })
+    expect(results[0]).toMatchObject({ approver: "the agent's fallback conversation" })
+    await h.daemon.stop()
+  })
+
+  it('leaves an external place’s card with the internal approver, as before', async () => {
+    const h = await boot(scaffold({ external: ['C1'] }))
+    const { record } = await proposed(h)
+    expect(h.cards.post.mock.calls.map((c) => c[0])).toEqual(['C0FALLBACK'])
+    expect(record.approver).toMatchObject({ kind: 'conversation', channel: 'C0FALLBACK' })
+    await h.daemon.stop()
+  })
+
+  it('keeps its card across a restart, and the reconnect rewrites one whose decision it missed', async () => {
+    const root = scaffold()
+    const h = await boot(root)
+    const { item, record } = await proposed(h)
+    // A second proposal, denied while its card could not be edited.
+    h.cards.post.mockResolvedValueOnce('card-2')
+    const { draft: missed } = await h.d.drafts.propose({
+      agentId: 'bot-a',
+      target: record.target,
+      destination: {},
+      task: TASK,
+      sentence: 'I want to close PR #12.',
+      why: '',
+      itemId: item.id,
+      itemVersion: item.version,
+      source: record.source,
+      place: { integrationId: INT_A, channel: 'C1' }
+    })
+    h.cards.update.mockResolvedValueOnce(false)
+    await h.click(missed.id, 'discard', 'U0BOB')
+    expect(await draftOf(h, missed.id)).toMatchObject({ status: 'denied', cardShows: 'awaiting_review' })
+    await h.daemon.stop()
+
+    const edits = vi.spyOn(SlackConnection.prototype, 'updateBlocks')
+    try {
+      const restarted = await boot(root)
+      await vi.waitFor(async () => expect((await draftOf(restarted, missed.id)).cardShows).toBe('denied'), WAIT)
+      const swept = edits.mock.calls.find((c) => c[0] === 'C1' && c[1] === 'card-2')
+      expect(JSON.stringify(swept)).toContain('Denied by u0bob. Nothing was run.')
+
+      // The first, pending across the restart, is decided there and its card rewritten.
+      restarted.behavior.task = 'hang'
+      await restarted.click(record.id, 'approve', 'U0BOB')
+      await vi.waitFor(() => expect(restarted.tasks()).toHaveLength(1), WAIT)
+      const rewrite = restarted.cards.update.mock.calls.find((c) => c[0] === 'C1' && c[1] === 'card-1')
+      expect(JSON.stringify(rewrite)).toContain('Approved by u0bob')
+      await restarted.d.interruptAgentTurns('bot-a', 'stop')
+      await restarted.settled()
+      await restarted.daemon.stop()
+    } finally {
+      edits.mockRestore()
+    }
+  })
+
+  it('leaves an agent outside assistant mode alone: no patrol, so no card', async () => {
+    const h = await boot(scaffold())
+    await h.d.store.assistantItems.create({
+      agentId: 'bot-b',
+      title: 'Land PR #12',
+      doneWhen: 'PR #12 is merged',
+      nextCheck: Date.now() - MINUTE,
+      origin: { platform: 'slack', channel: 'C1', transportScope: h.d.transportScopeForIntegrationIds([INT_B]) },
+      summary: 'Bob asked.'
+    })
+    await h.d.patrols.sweep()
+    await h.settled()
+    expect(h.patrols()).toHaveLength(0)
+    expect(await h.records()).toEqual([])
+    expect(h.cards.post).not.toHaveBeenCalled()
+    await h.daemon.stop()
+  })
+})
+
+describe('a proposal in a webchat conversation', () => {
+  const CONVERSATION = 'sid-webchat-bot-a'
+
+  /** A webchat conversation's one session, which an item taken there reports into and whose page decides its proposals. */
+  async function seedWebchat(d: any, channel: string, sessionId: string) {
+    const thread = `webchat:${channel}`
+    await d.store.upsertSession({
+      key: sessionKey('webchat', channel, thread, 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'webchat',
+      channel,
+      thread,
+      acpSessionId: `acp-${sessionId}`,
+      sessionId,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+  }
+
+  /** One proposal from a patrol of an item taken in the webchat conversation `conv-1`. */
+  async function proposedInWebchat(h: Awaited<ReturnType<typeof boot>>) {
+    await seedWebchat(h.d, 'conv-1', CONVERSATION)
+    const item = await h.d.store.assistantItems.create({
+      agentId: 'bot-a',
+      title: 'Land PR #12',
+      doneWhen: 'PR #12 is merged',
+      nextCheck: Date.now() - MINUTE,
+      origin: { platform: 'webchat', channel: 'conv-1', transportScope: null },
+      summary: 'Alice asked in webchat to see PR #12 through.'
+    })
+    const results: unknown[] = []
+    h.behavior.patrol = proposing(h.deps, results)
+    await h.d.patrols.sweep()
+    await vi.waitFor(() => expect(h.patrols()).toHaveLength(1), WAIT)
+    await h.settled()
+    const [record] = await h.records()
+    return { item, results, record: record! }
+  }
+
+  /** A decision made on a conversation's page, as the Control Plane forwards it for whoever may continue it. */
+  const decideIn = (
+    h: Awaited<ReturnType<typeof boot>>,
+    draftId: string,
+    sessionId = CONVERSATION,
+    choice: 'approve' | 'discard' = 'approve'
+  ) =>
+    h.activity.write({
+      agentId: 'bot-a',
+      operation: 'decide-draft',
+      draftId,
+      choice,
+      decider: { userId: 'usr-owner', name: 'Alice' },
+      conversation: { sessionId }
+    }) as Promise<any>
+
+  const listIn = async (h: Awaited<ReturnType<typeof boot>>, sessionId: string) =>
+    (
+      (await h.activity.read({
+        agentId: 'bot-a',
+        operation: 'drafts',
+        limit: 10,
+        proposals: true,
+        conversation: { sessionId }
+      })) as any
+    ).drafts.map((d: any) => d.id)
+
+  it('waits on the conversation’s page, listed there only, and is carded to no one', async () => {
+    const h = await boot(scaffold())
+    const { record, results } = await proposedInWebchat(h)
+    await seedPlace(h.d)
+
+    expect(record).toMatchObject({
+      status: 'awaiting_review',
+      target: { platform: 'webchat', integrationId: '', channel: 'conv-1' },
+      approver: { kind: 'place', integrationId: '', channel: 'conv-1' },
+      cardTs: null
+    })
+    expect(results[0]).toMatchObject({ approver: 'the people in the conversation the item was taken in' })
+    // Neither the responsible user nor the fallback conversation is carded.
+    expect(h.cards.post).not.toHaveBeenCalled()
+
+    expect(await listIn(h, CONVERSATION)).toEqual([record.id])
+    for (const other of ['sid-parent-bot-a', 'sid-unknown']) expect(await listIn(h, other)).toEqual([])
+    // Editors still see it in Activity, decided in its conversation rather than by a named approver.
+    const activity = (await h.activity.read({
+      agentId: 'bot-a',
+      operation: 'drafts',
+      limit: 10,
+      proposals: true
+    })) as any
+    expect(activity.drafts).toEqual([
+      expect.objectContaining({ id: record.id, kind: 'task', approver: null, inConversation: true })
+    ])
+    await h.daemon.stop()
+  })
+
+  it('starts its task once when decided there, and refuses a decision naming another conversation', async () => {
+    const h = await boot(scaffold())
+    const { record } = await proposedInWebchat(h)
+    await seedPlace(h.d)
+    await seedWebchat(h.d, 'conv-2', 'sid-webchat-other')
+    // A Slack proposal is not one of the webchat conversation's either.
+    const slack = await h.d.store.assistantDrafts.createTask({
+      agentId: 'bot-a',
+      target: { platform: 'slack', integrationId: INT_A, channel: 'C1', thread: null },
+      task: TASK,
+      sentence: SENTENCE,
+      why: '',
+      itemId: 'item-slack',
+      itemVersion: 1,
+      source: record.source!
+    })
+
+    for (const sessionId of ['sid-parent-bot-a', 'sid-webchat-other', 'sid-unknown'])
+      expect(await decideIn(h, record.id, sessionId)).toMatchObject({ result: 'not-found', status: null })
+    expect(await decideIn(h, slack.id)).toMatchObject({ result: 'not-found' })
+    expect((await h.d.store.assistantDrafts.get(record.id)).status).toBe('awaiting_review')
+    expect((await h.d.store.assistantDrafts.get(slack.id)).status).toBe('awaiting_review')
+
+    h.behavior.task = 'hang'
+    expect(await decideIn(h, record.id)).toMatchObject({ result: 'decided', status: 'executing' })
+    await vi.waitFor(() => expect(h.tasks()).toHaveLength(1), WAIT)
+    expect(h.tasks()[0]!.msg).toMatchObject({ platform: 'webchat', channel: 'conv-1', headless: true })
+    expect(h.tasks()[0]!.callMeta).toMatchObject({ originSessionId: CONVERSATION })
+    expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({
+      status: 'executing',
+      decidedBy: 'user:usr-owner',
+      decidedByName: 'Alice'
+    })
+    // Decided again there or in Activity, it runs nothing more.
+    expect(await decideIn(h, record.id)).toMatchObject({ result: 'already-decided' })
+    expect(await h.decide(record.id)).toMatchObject({ result: 'already-decided' })
+    expect(await listIn(h, CONVERSATION)).toEqual([])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(h.tasks()).toHaveLength(1)
+    expect(h.cards.post).not.toHaveBeenCalled()
+    await h.d.interruptAgentTurns('bot-a', 'stop')
+    await h.settled()
+    await h.daemon.stop()
+  })
+
+  it('takes the first answer from any surface: one denied in Activity is not approved on the page', async () => {
+    const h = await boot(scaffold())
+    const { item, record } = await proposedInWebchat(h)
+
+    expect(await h.decide(record.id, 'discard')).toMatchObject({ result: 'decided', status: 'denied' })
+    expect(await decideIn(h, record.id)).toMatchObject({ result: 'already-decided', status: 'denied' })
+    await h.settled()
+    expect(h.tasks()).toHaveLength(0)
+    expect((await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toContain(
+      `Proposal "${SENTENCE}" was denied by Grace; nothing was run.`
+    )
     await h.daemon.stop()
   })
 })
@@ -612,11 +939,15 @@ describe('a task cut short by a restart or handover', () => {
     expect(h.reports()).toHaveLength(1)
     expect(h.reports()[0]!.msg.text).toContain('Not sure this went through, please check')
     expect(h.reports()[0]!.msg.text).toContain(`item ${item.id}`)
+    expect(h.reports()[0]!.msg.text).toContain(`Tell the people here to check.\n\n${ANSWER_LANGUAGE}`)
     expect(h.reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: place.coordinate })
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'outcome_unknown' })
     expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: 'failed' })
     expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain('not sure this went through')
-    expect((await h.d.store.listInboxBySessionKeyFifo()).filter((row: any) => row.agentId === 'bot-a')).toEqual([])
+    // Nothing left to run; only the report's receipt, which a re-delivery is recognized by.
+    const inbox = (await h.d.store.listInboxBySessionKeyFifo()).filter((row: any) => row.agentId === 'bot-a')
+    expect(inbox.filter((row: any) => row.completedAt === null)).toEqual([])
+    expect(inbox).toEqual([expect.objectContaining({ sessionKey: place.key, id: expect.stringMatching(/receipt/) })])
     await h.daemon.stop()
   })
 
@@ -675,6 +1006,116 @@ describe('a task cut short by a restart or handover', () => {
       await h.daemon.stop()
     }
   )
+
+  /** An approved task that hangs, then is cut for a handover that keeps its delivery and replayed by a fresh service. */
+  async function cutTask(
+    h: Awaited<ReturnType<typeof boot>>,
+    before: (place: { coordinate: string; scope: string }) => Promise<void> = async () => {}
+  ) {
+    const { place, item, record } = await proposed(h)
+    h.behavior.task = 'hang'
+    await h.decide(record.id)
+    await vi.waitFor(() => expect(h.tasks()).toHaveLength(1), WAIT)
+    const key = sessionKey('slack', 'C1', h.tasks()[0]!.msg.thread!, 'bot-a', place.scope)
+    await vi.waitFor(async () => expect((await h.d.store.getSession(key))?.acpSessionId).toBeTruthy(), WAIT)
+    await before(place)
+    await h.d.interruptAgentTurns('bot-a', 'handover', 'handoff')
+    h.d.assistantTaskService = undefined
+    h.d.absorbedContextTs.clear()
+    const replayed = h.d.replayInbox(new Set(['bot-a'])) as Promise<void>
+    return { place, item, record, key, replayed }
+  }
+
+  /** Count the daemon's report deliveries, each held until `hold` resolves. */
+  function watchReports(d: any, hold: Promise<unknown> = Promise.resolve()) {
+    const seen = { calls: 0 }
+    const report = d.reportIntoParent.bind(d)
+    d.reportIntoParent = async (...args: unknown[]) => {
+      seen.calls += 1
+      await hold
+      return await report(...args)
+    }
+    return seen
+  }
+
+  it('tells its place before the record settles', async () => {
+    const h = await boot(scaffold())
+    let release!: () => void
+    const seen = watchReports(h.d, new Promise<void>((resolve) => (release = resolve)))
+    const { record, key, replayed } = await cutTask(h)
+    await vi.waitFor(() => expect(seen.calls).toBe(1), WAIT)
+    // The report is still on its way, so neither the record nor the sub-session has settled.
+    expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'executing' })
+    expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: 'open' })
+
+    release()
+    await replayed
+    await h.settled()
+    expect(h.reports()).toHaveLength(1)
+    expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'outcome_unknown' })
+    expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: 'failed' })
+    await h.daemon.stop()
+  })
+
+  it('tells its place again after a crash between the report and the settling, and the place hears it once', async () => {
+    const h = await boot(scaffold())
+    const seen = watchReports(h.d)
+    // The process dies after the report is in, before the record settles; the recovery that follows tries again.
+    const index = h.d.store.assistantSubsessions
+    const finishClaiming = index.finishClaiming.bind(index)
+    let crashed = false
+    index.finishClaiming = async (...args: unknown[]) => {
+      if (crashed) return await finishClaiming(...args)
+      crashed = true
+      throw new Error('the daemon was killed')
+    }
+    const { record, replayed } = await cutTask(h)
+    await replayed
+    await h.settled()
+
+    expect(crashed).toBe(true)
+    expect(seen.calls).toBe(2)
+    expect(h.reports()).toHaveLength(1)
+    expect(
+      h.hosts.flatMap((x) => x.prompt.mock.calls).filter((c: any) => JSON.stringify(c).includes('Not sure'))
+    ).toHaveLength(1)
+    expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'outcome_unknown' })
+    expect(h.tasks()).toHaveLength(1)
+    await h.daemon.stop()
+  })
+
+  it('tells the conversation’s current session after `!new`, not the one the task started under', async () => {
+    const h = await boot(scaffold())
+    let next = ''
+    // `!new` rotates the conversation while the task runs, and the next message starts the new session.
+    const { place, key, replayed } = await cutTask(h, async ({ coordinate, scope }) => {
+      next = await h.d.store.advanceAppendCoordinate('bot-a', 'C1', coordinate, scope)
+      await h.d.store.upsertSession({
+        key: sessionKey('slack', 'C1', next, 'bot-a', scope),
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: next,
+        transportScope: scope,
+        acpSessionId: 'acp-current-bot-a',
+        sessionId: 'sid-current-bot-a',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+    })
+    await replayed
+    await h.settled()
+
+    expect(next).not.toBe(place.coordinate)
+    expect(h.reports()).toHaveLength(1)
+    expect(h.reports()[0]!.msg.text).toContain('Not sure this went through, please check')
+    expect(h.reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: next })
+    expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({
+      parentSessionId: 'sid-parent-bot-a'
+    })
+    await h.daemon.stop()
+  })
 
   it('leaves a task this daemon is running alone when its inbox is replayed for another reason', async () => {
     const h = await boot(scaffold())
