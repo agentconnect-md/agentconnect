@@ -355,6 +355,8 @@ export class GoogleChatConnection implements PlatformConnection {
     text?: string
     cardsV2?: readonly unknown[]
     fallbackText?: string
+    /** A `users/…` the message is private to: only they and the app see it (app authentication, which this connection uses). */
+    privateViewer?: string
   }): Promise<GoogleChatMessageRef> {
     const query: Record<string, string> = { messageId: input.clientId, requestId: input.clientId }
     if (input.thread) query.messageReplyOption = 'REPLY_MESSAGE_OR_FAIL'
@@ -362,7 +364,8 @@ export class GoogleChatConnection implements PlatformConnection {
       ...(input.text !== undefined ? { text: input.text, markupSyntax: GOOGLE_CHAT_MARKUP } : {}),
       ...(input.cardsV2 ? { cardsV2: input.cardsV2 } : {}),
       ...(input.fallbackText ? { fallbackText: input.fallbackText } : {}),
-      ...(input.thread ? { thread: { name: input.thread } } : {})
+      ...(input.thread ? { thread: { name: input.thread } } : {}),
+      ...(input.privateViewer ? { privateMessageViewer: { name: input.privateViewer } } : {})
     }
     const byClientId = `${input.space}/messages/${input.clientId}`
     await this.assertOwnTenant(input.space)

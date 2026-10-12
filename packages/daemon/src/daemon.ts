@@ -814,6 +814,8 @@ import {
 import { parseTelegramElicit, telegramElicitCards } from './platforms/telegram/elicit-card.js'
 import { parseTelegramApproval, telegramApprovalCards } from './platforms/telegram/approval-card.js'
 import { discordApprovalCards } from './platforms/discord/approval-card.js'
+import { feishuApprovalCards } from './platforms/feishu/approval-card.js'
+import { chatMemberKey } from './platforms/chat-member-key.js'
 import { slackApprovalCards } from './platforms/slack/approval-card.js'
 import type { ApprovalCardFacet } from './platforms/approval-card.js'
 import { discordElicitCards } from './platforms/discord/elicit-card.js'
@@ -846,6 +848,7 @@ import { googleChatCommandChrome } from './platforms/googlechat/command-chrome.j
 import { googleChatPlatformModule } from './platforms/googlechat/relay-ingress.js'
 import { createGoogleChatTurnOutput } from './platforms/googlechat/surface.js'
 import { parseGoogleChatElicitClick } from './platforms/googlechat/elicit-card.js'
+import { parseGoogleChatApprovalClick } from './platforms/googlechat/approval-card.js'
 import type { RelayIngressHost } from './platforms/relay-ingress-host.js'
 import type { ChannelInfoSource } from './messages/channel-name-resolver.js'
 import { PlatformModuleRegistry } from './platforms/registry.js'
@@ -1503,6 +1506,7 @@ export class Daemon {
       registry.register({
         platform: 'feishu',
         elicitCards: feishuElicitCards,
+        approvalCards: feishuApprovalCards,
         createConverger: (ctx) => new FeishuConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: (): FeishuTurnState => ({}),
         apply: (p, action) => this.applyFeishuAction(p, action as FeishuAction),
@@ -2453,13 +2457,17 @@ export class Daemon {
         this.bind(this.dcConnByIntegration, integrationId, conn, botUserId)
         this.sweepOrphanedApprovalCards(integrationId)
       },
-      bindFeishu: (integrationId, conn, botOpenId) =>
-        this.bind(this.fsConnByIntegration, integrationId, conn, botOpenId),
+      bindFeishu: (integrationId, conn, botOpenId) => {
+        this.bind(this.fsConnByIntegration, integrationId, conn, botOpenId)
+        this.sweepOrphanedApprovalCards(integrationId)
+      },
       bindQQ: (id, conn, botId) => this.bind(this.QQConnByIntegration, id, conn, botId),
       bindLinear: (integrationId, conn, appUserId) =>
         this.bind(this.lnConnByIntegration, integrationId, conn, appUserId),
-      bindGoogleChat: (integrationId, conn, appUserName) =>
-        this.bind(this.gcConnByIntegration, integrationId, conn, appUserName),
+      bindGoogleChat: (integrationId, conn, appUserName) => {
+        this.bind(this.gcConnByIntegration, integrationId, conn, appUserName)
+        this.sweepOrphanedApprovalCards(integrationId)
+      },
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
@@ -8028,7 +8036,11 @@ export class Daemon {
   ): Promise<ChatActorVerdict> {
     if (!integrationId || !this.chatEditorsOnly(agentId, integrationId)) return 'allowed'
     if (!actor || actor.isBot) return 'unavailable'
-    return await this.chatActors.judge(agentId, integrationId, actor.userId)
+    // A platform that matches people by a cross-app id refuses an action that carries none.
+    const platform = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)?.platform
+    const key = platform ? chatMemberKey(platform, actor) : undefined
+    if (!key) return 'unavailable'
+    return await this.chatActors.judge(agentId, integrationId, key)
   }
 
   /** Whether a chat member is one of the agent's editors, by their linked identity; undefined when the CP cannot be asked. */
@@ -11342,7 +11354,7 @@ export class Daemon {
       async (msg) => {
         const payload = WireFeishuCardActionEvent.safeParse(msg.payload)
         if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
-        return this.handleRelayFeishuAction({
+        return await this.handleRelayFeishuAction({
           agentId: msg.agentId,
           sessionKey: msg.sessionKey,
           msgId: msg.msgId,
@@ -11384,9 +11396,21 @@ export class Daemon {
       this.log.warn(`relay: Google Chat card click for unknown integration ${msg.integrationId} — dropping`)
       return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
     }
+    const name = payload.userName?.trim()
+    const actor = msg.userId ? { actor: { userId: msg.userId, ...(name ? { name } : {}) } } : {}
+    // A permission card's click; its refusal is told privately by the card's own surface.
+    const pick = parseGoogleChatApprovalClick(payload)
+    if (pick) {
+      await this.permissions.handlePermissionChoice({
+        requestId: pick.requestId,
+        option: pick.option,
+        ...(payload.message ? { ts: payload.message } : {}),
+        ...actor
+      })
+      return { msgId: msg.msgId, accepted: true }
+    }
     const click = parseGoogleChatElicitClick(payload)
     if (!click) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
-    const actor = msg.userId ? { actor: { userId: msg.userId } } : {}
     if (click.kind === 'submit')
       await this.permissions.submitElicitEditor({ requestId: click.requestId, values: click.values, ...actor })
     else
@@ -11657,14 +11681,14 @@ export class Daemon {
    * send-only connection that rendered the card. The connection resolves the
    * message id against daemon-local active-card state, so a stale or forged action
    * cannot name an arbitrary session. */
-  private handleRelayFeishuAction(msg: {
+  private async handleRelayFeishuAction(msg: {
     agentId: string
     sessionKey: string
     msgId: string
     botId: string
     integrationId: string
     payload: WireFeishuCardActionEvent
-  }): RdAck {
+  }): Promise<RdAck> {
     const agent = this.agents.get(msg.agentId)
     if (!agent) {
       this.log.warn(`relay: Feishu action for unknown agent ${msg.agentId} — dropping`)
@@ -11687,7 +11711,7 @@ export class Daemon {
       this.log.warn(`relay: Feishu action for unavailable integration ${msg.integrationId} — dropping`)
       return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
     }
-    const response = conn.handleCardAction(msg.payload)
+    const response = await conn.handleCardAction(msg.payload)
     // §6.6: answered through the generic opaque slot — the Feishu-named ack
     // member retired with the legacy interaction members.
     return {
@@ -20440,7 +20464,7 @@ export class Daemon {
   private chatCardsAt(integrationId: string): { facet: ApprovalCardFacet; conn: unknown } | undefined {
     const platform = this.integrationConfigById(integrationId)?.platform
     const facet = platform ? this.turnSurfaces.exact(platform)?.approvalCards : undefined
-    const conn = this.connForIntegration(integrationId)
+    const conn = this.anyConnForIntegration(integrationId)
     return facet && conn ? { facet, conn } : undefined
   }
 

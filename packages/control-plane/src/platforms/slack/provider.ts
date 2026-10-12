@@ -348,6 +348,9 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
 
     credentialBodySchema: SlackCreateCredentials,
 
+    // A member is the (workspace, user) pair a user linked (slack-identity.md): the install's team, else the workspace its daemon reported.
+    chatMemberTenant: (bot) => (bot.revokedAt ? null : (bot.teamId ?? bot.workspaceId ?? null)),
+
     refineCreateBody: refineSlackCreateBody,
 
     /**

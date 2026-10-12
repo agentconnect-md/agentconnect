@@ -390,12 +390,13 @@ describe.each(['telegram', 'discord'] as const)('%s permission cards', (platform
 })
 
 describe('the approval-card facet', () => {
-  it('is registered on Slack, Telegram and Discord, and on no surface core renders for', () => {
+  it('is registered on every platform with interactive buttons, and on no surface core renders for', () => {
     const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const facet = (platform: string) => daemon.turnSurfaces.exact(platform)?.approvalCards?.platform
-    expect(['slack', 'telegram', 'discord'].map(facet)).toEqual(['slack', 'telegram', 'discord'])
-    for (const platform of ['webchat', 'hook', 'dream', 'feishu', 'googlechat', 'qq'])
-      expect(facet(platform)).toBeUndefined()
+    const carded = ['slack', 'telegram', 'discord', 'feishu', 'googlechat']
+    expect(carded.map(facet)).toEqual(carded)
+    // QQ's message buttons need a provider grant a bot cannot count on, so it keeps the console.
+    for (const platform of ['webchat', 'hook', 'dream', 'qq']) expect(facet(platform)).toBeUndefined()
   })
 
   it('routes a sub-session’s request to its Telegram or Discord conversation', async () => {

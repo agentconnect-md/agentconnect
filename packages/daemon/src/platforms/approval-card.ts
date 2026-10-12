@@ -74,8 +74,8 @@ export interface ApprovalCardFacet {
   readonly platform: string
   /** The most options one card offers whole: at most the cap every surface and the console share (#1969). */
   readonly maxOptions: number
-  /** The live card, or null when it cannot offer every option. */
-  build(ask: ApprovalCardAsk): ApprovalCardDraft | null
+  /** The live card for the connection it will be posted on, or null when it cannot offer every option there. */
+  build(ask: ApprovalCardAsk, conn?: unknown): ApprovalCardDraft | null
   /** The card once it takes no answer, its buttons gone. */
   settled(card: ApprovalCardSettlement): ApprovalCardDraft
   /** A sub-session's notice where nobody there may answer: it is waiting, and an Agent editor answers in the console. */

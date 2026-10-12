@@ -49,11 +49,11 @@ import {
 /** Our own cap on how many options one card offers. Feishu publishes no number this code can
  *  check, so this is Slack's button cap re-used deliberately rather than a platform limit dressed
  *  up as one: a list past it is declined whole, never trimmed to fit. */
-const FEISHU_ELICIT_MAX_OPTIONS = 24
+export const FEISHU_ELICIT_MAX_OPTIONS = 24
 
 /** Our own cap on one label, for the same reason — the 75 characters a reduced option label
  *  already clamps to. */
-const FEISHU_LABEL_CAP = 75
+export const FEISHU_LABEL_CAP = 75
 
 /** How much of the answer a settled card echoes back. What the READER sees is clamped; what the
  *  AGENT receives is not (#1844), because the accepted content is built from the raw answer. */
@@ -123,14 +123,14 @@ export function feishuElicitText(message: string): string {
 }
 
 /** A `plain_text` div for text quoting the agent or the reader: a `markdown` element would honour their `[label](url)`. */
-function feishuPlainText(content: string): Record<string, unknown> {
+export function feishuPlainText(content: string): Record<string, unknown> {
   return { tag: 'div', text: { tag: 'plain_text', content } }
 }
 
 /** A row of buttons, as CardKit 2.0 spells one: buttons live directly in `elements`, and a
  *  `column_set` is what puts several on one line — the same layout this repo's own reply card
  *  already uses. JSON 2.0 has no `tag: 'action'` wrapper at all. Pure. */
-function feishuButtonRow(buttons: Record<string, unknown>[]): Record<string, unknown> {
+export function feishuButtonRow(buttons: Record<string, unknown>[]): Record<string, unknown> {
   return {
     tag: 'column_set',
     flex_mode: 'flow',
@@ -252,7 +252,7 @@ export function buildFeishuElicitSettled(message: string, decision: string): Rec
 }
 
 /** The CardKit 2.0 envelope every card here shares. */
-function feishuCard(elements: Record<string, unknown>[]): Record<string, unknown> {
+export function feishuCard(elements: Record<string, unknown>[]): Record<string, unknown> {
   return { schema: '2.0', config: { update_multi: true }, body: { elements } }
 }
 

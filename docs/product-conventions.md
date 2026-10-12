@@ -69,19 +69,19 @@ before it:
 
 Who counts as "people" depends on whether the product can tell who someone is:
 
-- **A platform whose permissions are synced with the console** (Slack with the organization's
-  session access sync on): only people whose console permissions allow the action, that is,
-  the agent's editors, recognized by the Slack account they linked under Sign-in methods in
-  their console Profile. Anyone else, a guest or an editor who has not linked included, is told
-  privately who can answer and where, and someone linked to no console account is also told how
-  to link one; the card stays as it is. Where people may approve tool calls, a permission
-  request's card also goes to an Agent editor in a direct message unless the person who asked is
-  one, so a request never waits on a conversation with no editor in it; the first answer decides.
-  When who someone is cannot be checked, because the Control Plane cannot be reached or the agent
-  has more than 200 editors, the action is refused. Switching the sync changes who may act from
-  then on; settings already changed from chat stay. Feishu/Lark has the sync too, but a chat
-  member there cannot be matched to a console account yet, so it stays a platform without that
-  sync for this setting.
+- **A platform whose permissions are synced with the console** (Slack or Feishu/Lark with the
+  organization's session access sync on): only people whose console permissions allow the
+  action, that is, the agent's editors, recognized by the account they linked under Sign-in
+  methods in their console Profile: their Slack account in the app's workspace, or their
+  Feishu/Lark account in the app's region. Anyone else, a guest or an editor who has not linked
+  included, is told privately who can answer and where, and someone linked to no console account
+  is also told how to link one; the card stays as it is. On Slack, where people may approve tool
+  calls, a permission request's card also goes to an Agent editor in a direct message unless the
+  person who asked is one, so a request never waits on a conversation with no editor in it; the
+  first answer decides. When who someone is cannot be checked, because the Control Plane cannot
+  be reached, the agent has more than 200 editors, or a Feishu/Lark click does not say who made
+  it, the action is refused. Switching the sync changes who may act from then on; settings
+  already changed from chat stay.
 - **A platform without that sync**: anyone who can talk to the agent in that conversation.
 - **Webchat** always knows who someone is: the agent's editors, and at the second and third
   levels also the conversation's owner, even one whose role only lets them view. The owner
@@ -101,17 +101,19 @@ Every level keeps these rules:
   asked, in their own direct message, when they are a full member of the installing workspace;
   otherwise the agent's editors. Where permissions are synced it goes to an Agent editor's
   direct message, the person who asked first when they are one.
-- Slack, Telegram and Discord post the approval card in the conversation the request came from:
-  in its thread, its Telegram topic or reply chain, or at its top level when it is one long
-  conversation. The card offers the runtime's own choices, "always allow" included where
-  offered; a list longer than any card can show is declined with a notice, and nothing is
-  allowed. On a platform with no approval card yet (Feishu/Lark, Google Chat, QQ), the
-  conversation gets a notice and the approval is answered in the console.
+- Slack, Telegram, Discord, Feishu/Lark and Google Chat post the approval card in the
+  conversation the request came from: in its thread, its Telegram topic or reply chain, or at
+  its top level when it is one long conversation. The card offers the runtime's own choices,
+  "always allow" included where offered; a list longer than any card can show is declined with a
+  notice, and nothing is allowed. Where no card is posted, the conversation gets a notice and the
+  approval is answered in the console. QQ has no approval card, because its message buttons need
+  a grant from QQ that a bot cannot count on; its approvals wait in the console.
 - The first answer from any surface decides, and the request is rewritten to say who answered
   and how.
 - A refusal names who can answer instead, or where to go. A refused click or tap is told only to
   the person who made it, and leaves the card as everyone else sees it: on Slack and Discord in a
-  message only they see, on Telegram in an alert on the tap.
+  message only they see, on Telegram in an alert on the tap, on Feishu/Lark in a toast on the
+  click, and on Google Chat in a private message.
 - The setting does not change the agent's permission policy. Which tool calls need approval is
   set in the console, and an agent that allows every tool call never asks.
 
@@ -1117,18 +1119,18 @@ When a background sub-session needs permission to run a tool, whether delegated 
 proposal's task, the request goes to the conversation the work belongs to, and the sub-session
 waits; its turn is not cancelled. A patrol never asks.
 
-- In a Slack, Telegram or Discord conversation where "What people can do in chat" includes
-  approving tool calls, an approval card is posted there, where its reports land: in the
-  conversation's thread (on Telegram its topic or reply chain), or at its top level when it is one
-  long conversation. Anyone there may answer it; where permissions are synced (Slack), only an
-  Agent editor, and an editor also gets it in a direct message. The card says a background
-  sub-session is asking, names and links it, and offers the runtime's own choices, "always allow"
-  included where offered.
+- In a Slack, Telegram, Discord, Feishu/Lark or Google Chat conversation where "What people can
+  do in chat" includes approving tool calls, an approval card is posted there, where its reports
+  land: in the conversation's thread (on Telegram its topic or reply chain), or at its top level
+  when it is one long conversation. Anyone there may answer it; where permissions are synced
+  (Slack, Feishu/Lark), only an Agent editor, and on Slack an editor also gets it in a direct
+  message. The card says a background sub-session is asking, names and links it, and offers the
+  runtime's own choices, "always allow" included where offered.
 - Where it does not, or the conversation is closed (switched off, admitted per message by a
   Decision, or routed), the conversation gets a notice that the sub-session is waiting, and an
   Agent editor gets the request in a direct message, as for any other request.
-- A conversation on a platform with no approval card yet (Feishu/Lark, Google Chat, QQ) gets
-  neither: an Agent editor answers the request in the console or in a direct message.
+- A QQ conversation, which has no approval card, gets neither: an Agent editor answers the
+  request in the console or in a direct message.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
   marked as from a background sub-session.
 - A conversation shared with another organization gets no card. It goes to the agent's

@@ -674,7 +674,9 @@ export const WireGoogleChatCardAction = z.object({
   /** Every input widget on the card, by its `name`, as `commonEventObject.formInputs` carried it. */
   formInputs: z.record(z.string(), z.array(z.string())),
   /** The card message's `spaces/…/messages/…` name, when the event carried it. */
-  message: z.string().min(1).optional()
+  message: z.string().min(1).optional(),
+  /** The clicking user's display name, which a settled card names them by. Presentation only. */
+  userName: z.string().min(1).max(256).optional()
 })
 export type WireGoogleChatCardAction = z.infer<typeof WireGoogleChatCardAction>
 

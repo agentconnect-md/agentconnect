@@ -377,6 +377,8 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
 
     // Every Bot App admitted in a region was verified against that region's one configured Login App tenant.
     threadFallbackRealm: (bot) => bot.feishuRegion ?? 'feishu',
+    // A member is the union_id a user linked in the bot's region, as a chat's audience is matched for session access.
+    chatMemberTenant: (bot) => (bot.revokedAt ? null : (bot.feishuRegion ?? 'feishu')),
 
     // Feishu reuses the established two-slot shape (`install-feishu.ts`):
     // botToken = app SECRET (the credential), appToken = app ID (the
