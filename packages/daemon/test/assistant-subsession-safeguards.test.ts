@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
-import { SUBSESSION_IDLE_END_MS } from '../src/collab/coordinator.js'
+import { REPORT_ANSWER_LANGUAGE, SUBSESSION_IDLE_END_MS } from '../src/collab/coordinator.js'
 import { PATROL_SWEEP_INTERVAL_MS } from '../src/assistant/patrol.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
@@ -255,7 +255,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     expect(report!.agentId).toBe('bot-a')
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
     expect(report!.msg.text).toBe(
-      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (${reason}). It sent no result; delegate again if the work is still needed.`
+      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (${reason}). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     // It continues the delegation's hop chain and comes from the sub-session, under a delivery id of its own.
     expect(report!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
@@ -322,8 +322,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     expect(reports()).toHaveLength(0)
     expect(await stateOf(d, res.targetSession)).toBe('open')
 
-    // The successor replays the kept delivery in a process that never prompted it.
-    d.absorbedContextTs.clear()
+    // The same process replays the kept delivery its cut prompt already carried.
     rt.behavior.sub = 'answer'
     await d.replayInbox(new Set(['bot-a']))
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
@@ -751,7 +750,7 @@ describe('an open sub-session nothing runs for any more', () => {
     await vi.waitFor(() => expect(d.patrolSweepTimer).toBeDefined(), WAIT)
   }
 
-  it('is reported ended once a same-process replay folded its turn away, and frees its slot', async () => {
+  it('is reported ended once nothing runs for it any more, and frees its slot', async () => {
     const clock = new FakeClock(Date.now())
     const policy = { ...ON, limits: { maxConcurrentSubsessions: 1 } }
     const root = scaffold([{ id: 'bot-a', assistantMode: policy }])
@@ -761,12 +760,11 @@ describe('an open sub-session nothing runs for any more', () => {
 
     const res = await d.collab.messageAgent(delegation(caller))
     await vi.waitFor(() => expect(rt.subPrompts).toHaveLength(1), WAIT)
-    // A handover keeps the delivery and this process replays it, but its cut prompt already carried it: nothing runs.
+    // A handover keeps the delivery, and a purge then drops it before anything replays it: nothing runs.
     await d.interruptAgentTurns('bot-a', 'handover', 'handoff')
     await settled()
+    for (const row of await d.store.listInboxBySessionKeyFifo()) await d.store.removeInbox(row.id)
     rt.behavior.sub = 'answer'
-    await d.replayInbox(new Set(['bot-a']))
-    await settled()
     expect(rt.subPrompts).toHaveLength(1)
     expect(await stateOf(d, res.targetSession)).toBe('open')
     expect(await d.collab.messageAgent(delegation(caller))).toMatchObject({
@@ -785,7 +783,7 @@ describe('an open sub-session nothing runs for any more', () => {
     const [report] = reports()
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
     expect(report!.msg.text).toBe(
-      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (no longer running). It sent no result; delegate again if the work is still needed.`
+      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (no longer running). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await sweepAcrossTheWait(d, clock)

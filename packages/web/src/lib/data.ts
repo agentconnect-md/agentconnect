@@ -20,6 +20,7 @@ import {
 import { CODE_HOST_PROJECTION } from './code-hosts'
 import type {
   AssistantModePolicy,
+  ChatActions,
   DaemonLifecyclePhase,
   McpAppCsp,
   McpAppDimensions,
@@ -601,8 +602,8 @@ export interface Agent {
   assistantMode?: AssistantModePolicy
   /** Runtime permission/approval mode; 'default' means the runtime default. */
   permissionMode: string
-  /** Explicit opt-in for chat-side runtime changes and approval controls. */
-  allowRuntimeChangesInChat: boolean
+  /** What people can do in chat: only talk, also approve tool calls, or also change runtime settings. */
+  chatActions: ChatActions
   /** The agent's OWN variables, in display order. A row here may be inactive while
    *  a same-key organization entry is assigned (shown "Overridden by Organization")
    *  and becomes effective again once that assignment goes away. */
@@ -1560,7 +1561,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: '',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [],
       secretKeys: [],
       organizationVariables: [],
@@ -1610,7 +1611,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: 'default',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [
         { k: 'GITHUB_TOKEN', v: 'ghp_••••' },
         { k: 'DEPLOY_ENV', v: 'production' }
@@ -1707,7 +1708,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: 'agent',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [{ k: 'GITHUB_TOKEN', v: 'ghp_••••' }],
       secretKeys: ['OPENAI_API_KEY'],
       organizationVariables: [],
@@ -1787,7 +1788,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: 'default',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [{ k: 'PAGERDUTY_KEY', v: 'pd_••••' }],
       secretKeys: [],
       organizationVariables: [],
@@ -1854,7 +1855,7 @@ export const AGENTS: Agent[] = (
       memoryProvider: 'managed',
       memoryAutoDistill: false,
       permissionMode: 'default',
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: [{ k: 'NOTION_TOKEN', v: 'secret_••••' }],
       secretKeys: ['SLACK_SIGNING_SECRET'],
       organizationVariables: [],

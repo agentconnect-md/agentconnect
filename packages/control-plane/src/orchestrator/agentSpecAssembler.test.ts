@@ -46,7 +46,7 @@ const AGENT: AgentRecord = {
   showStatusBar: false,
   fastMode: null,
   permissionMode: null,
-  allowRuntimeChangesInChat: false,
+  chatActions: 'talk',
   pause: null,
   env: {},
   mcpServers: [],

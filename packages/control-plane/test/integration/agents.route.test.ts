@@ -954,6 +954,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       model: 'opus',
       modelProvider,
       reasoningEffort: 'high',
+      chatActions: 'approve',
       env: { GITHUB_TOKEN: 'ghp_x', DEPLOY_ENV: 'production' }
     })
 
@@ -991,6 +992,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(cleared.model).toBe('opus')
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       model: 'opus',
+      chatActions: 'approve',
       env: {}
     })
 
@@ -1027,7 +1029,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     // Values are persisted row-per-key in agent_secret behind the AgentSecretStore
     // seam — NEVER in the agent row's runtimeOverrides bag, never a response.
     const row = await prisma.agent.findUnique({ where: { id: created.id } })
-    expect(row?.runtimeOverrides).toEqual({ env: { PUBLIC_URL: 'https://x' } })
+    expect(row?.runtimeOverrides).toEqual({ chatActions: 'approve', env: { PUBLIC_URL: 'https://x' } })
     const secretRows = await prisma.agentSecret.findMany({ where: { agentId: created.id }, orderBy: { key: 'asc' } })
     expect(secretRows.map((s) => ({ key: s.key, value: s.value }))).toEqual([
       { key: 'API_KEY', value: 'sk-1' },
@@ -1082,7 +1084,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         showFooter: false,
         showStatusBar: false,
         fastMode: true,
-        allowRuntimeChangesInChat: true
+        chatActions: 'settings'
       }
     })
     expect(create.statusCode).toBe(201)
@@ -1092,19 +1094,19 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       showFooter: boolean
       showStatusBar: boolean
       fastMode: boolean | null
-      allowRuntimeChangesInChat: boolean
+      chatActions: string
     }
     expect(created.outputMode).toBe('high')
     expect(created.showFooter).toBe(false)
     expect(created.showStatusBar).toBe(false)
     expect(created.fastMode).toBe(true)
-    expect(created.allowRuntimeChangesInChat).toBe(true)
+    expect(created.chatActions).toBe('settings')
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       outputMode: 'high',
       showFooter: false,
       showStatusBar: false,
       fastMode: true,
-      allowRuntimeChangesInChat: true
+      chatActions: 'settings'
     })
 
     // Explicit false/true booleans persist; nullable runtime selectors can still be cleared.
@@ -1116,7 +1118,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         showFooter: true,
         showStatusBar: true,
         fastMode: false,
-        allowRuntimeChangesInChat: false
+        chatActions: 'talk'
       }
     })
     expect(patch.statusCode).toBe(200)
@@ -1125,13 +1127,13 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       showFooter: boolean
       showStatusBar: boolean
       fastMode: boolean | null
-      allowRuntimeChangesInChat: boolean
+      chatActions: string
     }
     expect(patched.outputMode).toBe('low')
     expect(patched.showFooter).toBe(true)
     expect(patched.showStatusBar).toBe(true)
     expect(patched.fastMode).toBe(false)
-    expect(patched.allowRuntimeChangesInChat).toBe(false)
+    expect(patched.chatActions).toBe('talk')
 
     const cleared = await app.app.inject({
       method: 'PATCH',
@@ -1143,7 +1145,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       showFooter: true,
       showStatusBar: true,
-      allowRuntimeChangesInChat: false
+      chatActions: 'talk'
     })
 
     // outputMode vocabulary is closed — anything else is a 400.
@@ -1153,6 +1155,49 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: { outputMode: 'verbose' }
     })
     expect(bad.statusCode).toBe(400)
+  })
+
+  it('a new agent lets people in chat approve tool calls, and the level round-trips', async () => {
+    const app = build()
+    const create = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'chat-actions-default', runtime: 'claude' }
+    })
+    expect(create.statusCode).toBe(201)
+    const created = create.json() as { id: string; chatActions: string }
+    expect(created.chatActions).toBe('approve')
+    expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
+      chatActions: 'approve'
+    })
+
+    for (const level of ['settings', 'talk', 'approve'] as const) {
+      const patch = await app.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/agents/${created.id}`,
+        payload: { chatActions: level }
+      })
+      expect(patch.statusCode).toBe(200)
+      const read = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${created.id}` })
+      expect((read.json() as { chatActions: string }).chatActions).toBe(level)
+    }
+
+    // The level is closed, and the boolean it replaced is no longer accepted.
+    for (const payload of [{ chatActions: 'everything' }, { allowRuntimeChangesInChat: true }]) {
+      const bad = await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${created.id}`, payload })
+      expect(bad.statusCode).toBe(400)
+    }
+  })
+
+  it('an agent row without a stored level reads as only talking to the agent', async () => {
+    const app = build()
+    const agentId = randomUUID()
+    await prisma.agent.create({
+      data: { id: agentId, orgId: DEFAULT_ORG_ID, name: 'chat-actions-absent', runtime: 'claude' }
+    })
+    const read = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })
+    expect(read.statusCode).toBe(200)
+    expect((read.json() as { chatActions: string }).chatActions).toBe('talk')
   })
 
   it('proxies the editor approval queue to the agent’s owning daemon', async () => {
@@ -1247,6 +1292,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const created = create.json() as { id: string; mcpServers: string[] }
     expect(created.mcpServers).toEqual(['github', 'metrics'])
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
+      chatActions: 'approve',
       mcpServers: ['github', 'metrics']
     })
 
@@ -1269,7 +1315,8 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     })
     expect((cleared.json() as { mcpServers: string[] }).mcpServers).toEqual([])
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
-      model: 'opus'
+      model: 'opus',
+      chatActions: 'approve'
     })
 
     // An agent created without the field reads [] (never undefined/null).

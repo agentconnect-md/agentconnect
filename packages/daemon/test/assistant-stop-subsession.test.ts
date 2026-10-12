@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { REPORT_ANSWER_LANGUAGE } from '../src/collab/coordinator.js'
 import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
@@ -264,7 +265,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
         await vi.waitFor(
           () =>
             expect(h.reports()).toContain(
-              `[sub-session ended] Sub-session ${key} stopped before finishing (cancel). It sent no result; delegate again if the work is still needed.`
+              `[sub-session ended] Sub-session ${key} stopped before finishing (cancel). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
             ),
           WAIT
         )
@@ -443,7 +444,7 @@ describe('who is offered stopSubsession', () => {
         description:
           'Stop the current turn of a background sub-session that this conversation opened. What it already did is ' +
           'not undone, and a process its runtime started in the background (a build, a dev server) may keep running; ' +
-          'the result says so. Before stopping, confirm with the person in one sentence which sub-session they mean.',
+          'the result says so. When it is not clear which sub-session the person means, ask them before stopping one.',
         inputSchema: {
           type: 'object',
           properties: {

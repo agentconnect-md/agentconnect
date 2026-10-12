@@ -13,6 +13,7 @@ import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
   AgentModelProvider,
   AgentApiGates,
+  ChatActions,
   AgentApiProtocol,
   AuthReq,
   ProviderKeyProvider,
@@ -740,7 +741,7 @@ export interface CreateAgentInput {
   showStatusBar?: boolean // render Slack's persistent session status row (default false)
   fastMode?: boolean // runtime fast mode toggle
   permissionMode?: string // runtime permission/approval mode
-  allowRuntimeChangesInChat?: boolean // explicit opt-in; default false
+  chatActions?: ChatActions // what people can do in chat; absent ⇒ 'approve'
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent ⇒ DB default host
@@ -794,7 +795,7 @@ export interface UpdateAgentInput {
   showStatusBar?: boolean
   fastMode?: boolean | null
   permissionMode?: string | null
-  allowRuntimeChangesInChat?: boolean
+  chatActions?: ChatActions
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
   execution?: string // the strategy slug, resolved by the route against the placement's table
@@ -848,7 +849,7 @@ export interface AgentRecord {
   showStatusBar: boolean // from runtimeOverrides.showStatusBar (default false)
   fastMode: boolean | null // from runtimeOverrides.fastMode (null ⇒ runtime default)
   permissionMode: string | null // from runtimeOverrides.permissionMode (null ⇒ runtime default)
-  allowRuntimeChangesInChat: boolean // from runtimeOverrides (default false)
+  chatActions: ChatActions // from runtimeOverrides (absent ⇒ 'talk')
   pause: boolean | null // from runtimeOverrides.pause (null ⇒ not paused) (#288)
   env: Record<string, string> // from runtimeOverrides.env ({} when unset)
   // NOTE: write-only secret env vars are deliberately NOT on the record (accidental-

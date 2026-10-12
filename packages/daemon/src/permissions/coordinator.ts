@@ -115,6 +115,7 @@ import {
   type SubsessionApprover
 } from './subsession-approval.js'
 import type { MemoryWriteAsk } from '../mcp/ops/memory.js'
+import { chatApprovalsAllowed } from '../agents/chat-actions.js'
 import {
   memoryWriteApprovalChoices,
   memoryWriteApprovalElicitation,
@@ -1135,7 +1136,7 @@ export class PermissionCoordinator {
         return undefined
       })
     const permission = rec.kind === 'permission' ? rec : undefined
-    const chatOn = this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true
+    const chatOn = chatApprovalsAllowed(this.host.agents().get(agentId))
     // The card goes where the conversation is, outside the sub-session, so its click comes home through this integration.
     const card =
       chatOn && permission
@@ -1571,7 +1572,7 @@ export class PermissionCoordinator {
     }
     // A request no card was posted for is the console's alone.
     if (!rec.chat) return
-    if (this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
+    if (!chatApprovalsAllowed(this.host.agents().get(rec.agentId))) {
       // Refused, so it decided nothing — recorded as an attempt, never as the decision.
       this.host.logSessionAction(`permission:${input.optionId} (refused)`, rec.sessionId, input.actor)
       if (rec.chat.ts) {
@@ -1599,8 +1600,7 @@ export class PermissionCoordinator {
     await this.settle(input.requestId, rec, picked, by, 'chat', input.actor)
   }
 
-  /** Remove stale Allow/Deny controls immediately when an editor disables chat-side
-   * runtime controls. The permission requests remain pending for the Agent-page queue. */
+  /** Retire in-chat Allow/Deny controls once the agent no longer lets people approve in chat; the requests stay pending for editors. */
   disableChatPermissionSurfaces(agentId: string): void {
     for (const pending of this.pendingApprovals.values()) {
       if (pending.kind !== 'permission' || pending.agentId !== agentId || !pending.chat?.ts) continue
@@ -1784,7 +1784,7 @@ export class PermissionCoordinator {
       })
     }
     const chatApprovalEnabled =
-      this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true &&
+      chatApprovalsAllowed(this.host.agents().get(agentId)) &&
       turnChromeFor(p.plan.platform).chatInputCards === true &&
       p.conn instanceof SlackConnection &&
       !p.plan.approvalSurfaceSuppressed &&
@@ -1874,7 +1874,7 @@ export class PermissionCoordinator {
     }
     if (isApproval) {
       const chatApprovalEnabled =
-        this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true &&
+        chatApprovalsAllowed(this.host.agents().get(agentId)) &&
         turnChromeFor(p.plan.platform).chatInputCards === true &&
         p.conn instanceof SlackConnection &&
         !p.plan.approvalSurfaceSuppressed
@@ -2645,7 +2645,7 @@ export class PermissionCoordinator {
       this.noticeInTurn(rec, ELICIT_ANSWER_REFUSED)
       return
     }
-    if (rec.approval && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
+    if (rec.approval && !chatApprovalsAllowed(this.host.agents().get(rec.agentId))) {
       if (rec.surface === 'chat') rec.facet.settle(rec, elicitSettlement(rec.params, false, ELICIT_EDITOR_ONLY))
       return
     }

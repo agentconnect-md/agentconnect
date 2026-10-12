@@ -479,6 +479,55 @@ describe('TurnOutputWorkflow', () => {
     await daemon.stop()
   })
 
+  it('coalesces an activation that reaches the gate after a fence already carried its message', async () => {
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    const releases: Array<() => void> = []
+    const gates = [0, 1].map(() => new Promise<void>((resolve) => releases.push(resolve)))
+    const prompts: string[] = []
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sessionId: string, blocks: { text?: string }[]) => {
+        const generation = prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
+        onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer' } })
+        await gates[generation - 1]
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      }
+    })
+    await daemon.start()
+    connect(daemon)
+
+    const firstMessage = msg('100.1', 'original request')
+    const first = (daemon as any).dispatch('bot-a', firstMessage, 'int-a')
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+    // Ingress recorded the message before its activation reached the gate.
+    const lateMessage = { ...msg('100.2', 'late clarification'), transportScope: firstMessage.transportScope }
+    await (daemon as any).admitInbound(lateMessage, 'bot-a')
+    releases[0]!()
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
+    expect(prompts[1]).toContain('late clarification')
+
+    const late = (daemon as any).dispatch('bot-a', lateMessage, 'int-a')
+    await expect(late).resolves.toBe('acp-1')
+    releases[1]!()
+    await expect(first).resolves.toBe('acp-1')
+    expect(host.prompt).toHaveBeenCalledTimes(2)
+    expect(await (daemon as any).store.listInboxBySessionKeyFifo()).toEqual([])
+
+    await daemon.stop()
+  })
+
   it('starts the retry budget with replacement work and excludes explicit approval waits', async () => {
     const clock = new FakeClock()
     const context = {} as { daemon: Daemon; firstMessage: NormalizedMessage }

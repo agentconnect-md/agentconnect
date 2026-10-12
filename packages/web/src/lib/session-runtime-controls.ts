@@ -7,6 +7,7 @@ import {
   permissionModeLabel,
   resolvedPermissionMode,
   resolveEffortForModel,
+  type Agent,
   type DaemonRow,
   type EffortChoice,
   type RuntimeModelCatalog,
@@ -16,12 +17,20 @@ import {
 type RuntimeDaemon = Pick<DaemonRow, 'runtimeModels'> | undefined
 type PermissionChoice = { v: string; l: string; description?: string }
 
+/** Runtime settings change from chat only when people there may also change settings. */
+export function chatSettingsAllowed(agent: Pick<Agent, 'chatActions'> | undefined): boolean {
+  return agent?.chatActions === 'settings'
+}
+
 /** Playground can stage settings for its first turn; other chat surfaces need a live session. */
 export function sessionRuntimeChangesEnabled(
-  allowed: boolean,
+  agent: Pick<Agent, 'chatActions'> | undefined,
   session: Pick<Session, 'platform' | 'realSessionId'>
 ): boolean {
-  return allowed && (session.platform === 'playground' || session.platform === 'webchat' || !!session.realSessionId)
+  return (
+    chatSettingsAllowed(agent) &&
+    (session.platform === 'playground' || session.platform === 'webchat' || !!session.realSessionId)
+  )
 }
 
 /** A received live list is authoritative, including `[]`; discovery is idle-session fallback only. */

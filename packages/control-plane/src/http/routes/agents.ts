@@ -371,7 +371,7 @@ function toDto(
     showStatusBar: a.showStatusBar,
     fastMode: a.fastMode,
     permissionMode: a.permissionMode,
-    allowRuntimeChangesInChat: a.allowRuntimeChangesInChat,
+    chatActions: a.chatActions,
     pause: a.pause,
     env: a.env,
     // Only the secret NAMES leave the CP (AgentSecretStore.keys — values are
@@ -2085,9 +2085,7 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.showStatusBar !== undefined ? { showStatusBar: req.body.showStatusBar } : {}),
                   ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
                   ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
-                  ...(req.body.allowRuntimeChangesInChat !== undefined
-                    ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
-                    : {}),
+                  ...(req.body.chatActions !== undefined ? { chatActions: req.body.chatActions } : {}),
                   ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
                   ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
                   execution: executionChoice.execution,

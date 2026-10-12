@@ -45,6 +45,7 @@ import type { InteractionActor } from '../platforms/contract.js'
 import type { StatusBarInfo } from '../slack/render.js'
 import { buildDiscordSelectComponents, type DiscordComponents } from '../discord/render.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
+import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import {
   pendingTurnKey,
   QueueFullError,
@@ -194,7 +195,7 @@ export class CommandHandlers {
   /** Resolve a session only while its Agent explicitly permits chat-side runtime changes. */
   async chatRuntimeSession(key: string) {
     const rec = await this.host.store().getSession(key)
-    return rec && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat === true ? rec : undefined
+    return rec && chatSettingsAllowed(this.host.agents().get(rec.agentId)) ? rec : undefined
   }
 
   /** Switch a session's model by its local key — the core shared by the webchat
@@ -641,7 +642,7 @@ export class CommandHandlers {
 
     const entry = this.registry[command.kind]
     // The Agent-level chat-changes guard, applied for every runtime-setting command before its handler runs.
-    if (entry.runtimeChange && this.host.agents().get(target.agentId)?.allowRuntimeChangesInChat !== true) {
+    if (entry.runtimeChange && !chatSettingsAllowed(this.host.agents().get(target.agentId))) {
       reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
       return 'consumed'
     }
@@ -1057,7 +1058,7 @@ export class CommandHandlers {
       void conn.answerCallback(cb.id, 'No active session here.')
       return
     }
-    if (this.host.agents().get(session.agentId)?.allowRuntimeChangesInChat !== true) {
+    if (!chatSettingsAllowed(this.host.agents().get(session.agentId))) {
       void conn.answerCallback(cb.id, 'Ask an Agent editor to change runtime settings.')
       return
     }

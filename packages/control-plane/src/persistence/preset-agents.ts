@@ -144,8 +144,7 @@ export async function provisionPresetAgents(
     displayName: GENERAL_PRESET.displayName,
     description: GENERAL_PRESET.description,
     icon: GENERAL_PRESET.icon,
-    // The default agent lets chat users change runtime settings; editors can still turn it off.
-    allowRuntimeChangesInChat: true,
+    chatActions: 'approve',
     ...(pool
       ? {
           placementKind: 'set' as const,

@@ -36,6 +36,7 @@ import { knownTimeZone } from '../messages/time-zone.js'
 import { assistantMainConversation } from '../mcp/ops/assistant-subsessions.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
+import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import { backgroundConversationText, intakeEvidenceText } from '../decisions/evidence.js'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
@@ -728,7 +729,7 @@ export class SessionManager {
       // `ultracode` sentinel (rejected by the `thought_level` select) takes effect. Chat
       // authority is resolved immediately before each request, then the await is fenced:
       // metadata-only settings cannot be reversed by a later live selector.
-      chatRuntimeChangesAllowed: () => this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true,
+      chatRuntimeChangesAllowed: () => chatSettingsAllowed(this.deps.agentById(agentId)),
       effortOverride: async () => initialEffort ?? (await this.deps.store.getEffortOverride(key)),
       metaContext: async () => {
         const context = (await standingContext()).metaContext

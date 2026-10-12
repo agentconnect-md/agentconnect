@@ -29,6 +29,11 @@ const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const ON = { enabled: true, responsibleUserId: 'user-1' }
 const MINUTE = 60_000
 const PATROL_OPENING = '[patrol] A scheduled, read-only check'
+// The patrol writes in its people's language, and the conversation answers in it whatever the report's.
+const PATROL_LANGUAGE =
+  'Write `report` and `propose`’s sentence in the language the people in the item’s conversation use; without a ' +
+  'message of theirs to go by, use the language of the item’s title and summary.'
+const ANSWER_LANGUAGE = 'Speak to the people here in the language they use, even when this report is in another.'
 
 /** One Slack agent per entry, each appending in `C1`. */
 function scaffold(agents: { id: string; assistantMode?: Record<string, unknown>; permissionMode?: string }[]): string {
@@ -274,7 +279,7 @@ describe('a due next check wakes one patrol', () => {
   })
 
   it('reports a change into the conversation the item was taken in, once', async () => {
-    const { daemon, d, behavior, patrols, reports, settled, deps } = await boot(
+    const { daemon, d, behavior, hosts, patrols, reports, settled, deps } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: ON }])
     )
     const place = await seedPlace(d)
@@ -304,7 +309,12 @@ describe('a due next check wakes one patrol', () => {
       `The scheduled check of item ${item.id} ("Watch the release build") found a change`
     )
     expect(report!.msg.text).toContain('The release is out.')
+    expect(report!.msg.text.endsWith(`The release is out.\n\n${ANSWER_LANGUAGE}`)).toBe(true)
     expect(report!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
+    // The patrol is asked for its people's language, and the conversation's runtime is told to answer in it.
+    const prompts = hosts.flatMap((h) => h.prompt.mock.calls.map((c: any) => JSON.stringify(c[1])))
+    expect(prompts.find((p: string) => p.includes(PATROL_OPENING))).toContain(PATROL_LANGUAGE)
+    expect(prompts.find((p: string) => p.includes('found a change'))).toContain(ANSWER_LANGUAGE)
     expect(reports()).toHaveLength(1)
     expect((await d.store.assistantItems.get('bot-a', item.id)).status).toBe('done')
     expect(patrols()).toHaveLength(1)
@@ -593,6 +603,7 @@ describe('failures back off and stop', () => {
     expect(reports()[0]!.msg.text).toContain(
       `Scheduled checks of item ${item.id} ("Watch the release build") stopped after 5`
     )
+    expect(reports()[0]!.msg.text).toContain(`Tell the people here.\n\n${ANSWER_LANGUAGE}`)
 
     await d.store.assistantPatrols.db.query(
       'UPDATE assistant_patrol SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
@@ -1018,6 +1029,20 @@ describe('item tool text', () => {
     expect(prompt).toContain('Otherwise leave `report` out: nothing is said.')
     const report = JSON.stringify((PATROL_UPDATE_ITEM_TOOL.inputSchema as ObjectToolSchema).properties.report)
     expect(report).toContain('promises no later message, no time anyone will hear back and no next check')
+  })
+
+  it('asks a patrol to write in the language of the people in its item’s conversation', () => {
+    const item = {
+      id: 'item-1',
+      version: 1,
+      status: 'active',
+      title: '确认新版本可用',
+      doneWhen: null,
+      summary: '',
+      observations: []
+    } as unknown as AssistantItem
+    const prompt = patrolPrompt(item, { itemId: 'item-1', nextCheck: Date.UTC(2030, 0, 1) })
+    expect(prompt).toContain(`The item gets its observation either way. ${PATROL_LANGUAGE}`)
   })
 
   it('advertises exactly the patrol updateItem’s arguments', () => {

@@ -17,10 +17,13 @@
       "daemon": "Daemon credentials",
       "saved": "Use saved credential (Beta)"
     },
-    "runtimeChat": {
-      "label": "Allow change in chat",
-      "enabled": "Chat users can change runtime settings and answer approval requests.",
-      "disabled": "Only agent editors can manage runtime settings. Chat users cannot change them or answer approval requests."
+    "chatActions": {
+      "label": "What people can do in chat",
+      "option": {
+        "talk": "Only talk to the agent",
+        "approve": "Also approve tool calls",
+        "settings": "Also approve tool calls and change settings"
+      }
     },
     "executionStrategy": {
       "label": "Execution strategy",
@@ -2743,8 +2746,6 @@
         "title": "Runtime",
         "permissionMode": "Permission mode",
         "fastMode": "Fast mode",
-        "changeInChat": "Change runtime in chat",
-        "allowed": "Allowed",
         "paused": "Paused",
         "outputMode": "Output mode",
         "showFooter": "Show footer",

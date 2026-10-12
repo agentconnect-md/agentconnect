@@ -88,7 +88,8 @@ export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { nam
     '',
     `The item was at version ${proposal.itemVersion} when this was proposed and is at version ${item.version} now. ` +
       'Check the current state first, and do not act if the task no longer applies; say so in your report instead. ' +
-      'Do exactly this task, nothing more.'
+      'Do exactly this task, nothing more. Write your report in the language the people in the item’s conversation ' +
+      'use; without a message of theirs to go by, use the language of the item’s title and summary.'
   ].join('\n')
 }
 
