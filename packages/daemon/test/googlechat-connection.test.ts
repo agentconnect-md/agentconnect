@@ -349,6 +349,15 @@ describe('creates and patches', () => {
     })
   })
 
+  it('remembers the thread a root post landed in, which its message name does not say', async () => {
+    const { conn } = harness(() =>
+      reply(200, { name: `${SPACE}/messages/T.root`, sender: { name: APP_USER }, thread: { name: THREAD } })
+    )
+    const name = await conn.postMessage(SPACE, 'hi')
+    expect(conn.threadOfPost(name!)).toBe(THREAD)
+    expect(conn.threadOfPost(`${SPACE}/messages/other`)).toBeUndefined()
+  })
+
   it('posts a send-tool message rendered as a reply is, under a fresh client id, and answers its name', async () => {
     const { conn, chatCalls } = harness(() => created(`${SPACE}/messages/T.sent`))
     const name = await conn.postMessage(SPACE, '# Done\nSMS sent.', THREAD)

@@ -699,6 +699,34 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(createThread).toHaveBeenCalledWith('C42', '900', 'hi')
     })
 
+    it('keys a Google Chat post by the thread it landed in, and a Google Chat DM by its Space', async () => {
+      // Inbound keys a Space reply by `spaces/S/threads/T` and a DM by `spaces/S`; the message name is only the message id.
+      const posted = 'spaces/S/messages/T.M'
+      const gchat = withIntegration('googlechat', 'int-gc')
+      const space = tgDeps(
+        {},
+        {
+          postMessage: vi.fn(async () => posted),
+          threadOfPost: (id: string) => (id === posted ? 'spaces/S/threads/T' : undefined),
+          getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: false }))
+        }
+      )
+      await executeTool(gchat, 'sendMessage', { platform: 'googlechat', channel: 'spaces/S', message: 'hi' }, space.d)
+      expect(space.spawns[0]).toMatchObject({ thread: 'spaces/S/threads/T', postTs: posted })
+      expect(space.recorded[0]).toMatchObject({ thread: 'spaces/S/threads/T', ts: posted })
+
+      const dm = tgDeps(
+        {},
+        {
+          postMessage: vi.fn(async () => 'spaces/D/messages/T.M'),
+          threadOfPost: () => 'spaces/D/threads/T',
+          getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: true }))
+        }
+      )
+      await executeTool(gchat, 'sendMessage', { platform: 'googlechat', channel: 'spaces/D', message: 'hi' }, dm.d)
+      expect(dm.spawns[0]).toMatchObject({ thread: 'spaces/D', postTs: 'spaces/D/messages/T.M' })
+    })
+
     it('does not initialize a Discord root session when its native thread cannot be created', async () => {
       const discord = tgDeps({}, { postMessage: vi.fn(async () => '900'), createThread: vi.fn(async () => undefined) })
       await expect(

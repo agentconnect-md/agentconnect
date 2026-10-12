@@ -22,6 +22,9 @@ describe('outbound thread keys (threadKeyForPost)', () => {
     // Feishu: group chats thread off the post; a DM is keyed by the chat.
     expect(threadKeyForPost('feishu', 'oc_1', 'om_9')).toBe('om_9')
     expect(threadKeyForPost('feishu', 'oc_1', 'om_9', true)).toBe('oc_1')
+    // Google Chat: a Space post keys on its thread (the gateway's threadOfPost), a DM on its Space.
+    expect(threadKeyForPost('googlechat', 'spaces/S', 'spaces/S/threads/T')).toBe('spaces/S/threads/T')
+    expect(threadKeyForPost('googlechat', 'spaces/D', 'spaces/D/threads/T', true)).toBe('spaces/D')
   })
 
   it('defaults an unregistered platform to the core rule (own ts)', () => {
