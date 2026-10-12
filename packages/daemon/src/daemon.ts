@@ -1792,7 +1792,7 @@ export class Daemon {
   /** Live membership behind assistant mode's per-asker reads (assistant-mode.md §5.5). */
   private readonly placeMembers = new PlaceMembers({
     now: () => this.clock.now(),
-    gatewayFor: (integrationId) => this.connForIntegration(integrationId)
+    gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId)
   })
   /** Places of assistant-mode agents turning external, and the transition that follows (assistant-mode.md §5.3). */
   private readonly placeTrust = new PlaceTrust({
@@ -3880,7 +3880,7 @@ export class Daemon {
       log: this.log,
       now: () => Date.now(),
       canRun: (ctx) => this.toolTurnRunnable(ctx),
-      gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
       // Assistant mode's place rules (assistant-mode.md §5.5), read live so a switch applies to open sessions.
       assistantModeFor: (agentId) => this.agents.get(agentId)?.assistantMode?.enabled === true,
       placeIntegrationFor: (agentId, platform, transportScope) =>
@@ -7868,7 +7868,7 @@ export class Daemon {
   /** describePlace's inputs for memory: the snapshot row, plus the privacy a channel lookup cached; `isPrivate: true` from either wins. */
   private memoryPlaceDeps(): Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'> {
     return {
-      gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
       placeSnapshot: (integrationId, channel) => {
         const row = this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel)
         const looked = this.conversationPrivacy.get(channel)
@@ -7928,7 +7928,7 @@ export class Daemon {
           integrations: a.integrations
         }
       },
-      gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
       placeEnabled: (agentId, integrationId, channel) => {
         const int = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)
         return int !== undefined && conversationAdmitted(integrationRouting(int), channel)
@@ -21545,6 +21545,11 @@ export class Daemon {
       if (conn) return conn
     }
     return undefined
+  }
+
+  /** The send tool's and assistant mode's gateway: a reply connection, or a Google Chat one, which posts outside a turn but has no reply surface here. */
+  private gatewayForIntegration(integrationId: string): ReplyConnection | GoogleChatConnection | undefined {
+    return this.connForIntegration(integrationId) ?? this.gcConnByIntegration.get(integrationId)
   }
 
   private replyConnFor(agentId: string, integrationId?: string): ReplyConnection | undefined {

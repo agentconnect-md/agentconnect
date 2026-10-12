@@ -348,6 +348,31 @@ describe('creates and patches', () => {
       messageReplyOption: 'REPLY_MESSAGE_OR_FAIL'
     })
   })
+
+  it('posts a send-tool message rendered as a reply is, under a fresh client id, and answers its name', async () => {
+    const { conn, chatCalls } = harness(() => created(`${SPACE}/messages/T.sent`))
+    const name = await conn.postMessage(SPACE, '# Done\nSMS sent.', THREAD)
+    expect(name).toBe(`${SPACE}/messages/T.sent`)
+    const call = chatCalls()[0]!
+    expect(Object.fromEntries(call.url.searchParams)).toEqual({
+      messageId: 'client-req-fixed',
+      requestId: 'client-req-fixed',
+      messageReplyOption: 'REPLY_MESSAGE_OR_FAIL'
+    })
+    expect(JSON.parse(call.body!)).toEqual({
+      text: '**Done**\nSMS sent.',
+      markupSyntax: GOOGLE_CHAT_MARKUP,
+      thread: { name: THREAD }
+    })
+  })
+
+  it('posts a send-tool message into a DM without a thread, and sends nothing for blank text', async () => {
+    const { conn, chatCalls } = harness(() => created(`${DM}/messages/x.y`))
+    await conn.postMessage(DM, 'hello')
+    expect(chatCalls()[0]!.url.searchParams.has('messageReplyOption')).toBe(false)
+    expect(await conn.postMessage(DM, '  \n')).toBeUndefined()
+    expect(chatCalls()).toHaveLength(1)
+  })
 })
 
 describe('an ambiguous create reconciles by client id', () => {

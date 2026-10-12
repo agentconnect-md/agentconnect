@@ -13,6 +13,7 @@ import type {
 } from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import { PlatformSendQueue } from '../send-queue.js'
+import { renderGoogleChatMarkdown, splitGoogleChatText } from './render.js'
 import type { GoogleChatWriteBudget } from './write-budget.js'
 
 /** Google's fixed OAuth token endpoint; the key's own `token_uri` is never followed (§3). */
@@ -446,6 +447,21 @@ export class GoogleChatConnection implements PlatformConnection {
       })
       this.noteAppIdentity(created.sender?.name)
     }, this.writeGate)
+  }
+
+  /** A post from the send tool, outside any turn: rendered and split as a reply is, each part under its own `client-` id; answers the first part's name. */
+  async postMessage(channel: string, text: string, thread?: string): Promise<string | undefined> {
+    let first: string | undefined
+    for (const part of splitGoogleChatText(renderGoogleChatMarkdown(text))) {
+      const created = await this.createMessage({
+        space: channel,
+        ...(thread ? { thread } : {}),
+        clientId: `client-${this.newRequestId()}`,
+        text: part
+      })
+      first ??= created.name
+    }
+    return first
   }
 
   // ── tenant fence (§10.8) ──
