@@ -300,8 +300,8 @@ describe('the default-dispatch selector', () => {
   it('reads each team’s current owner off its own row', async () => {
     await render()
 
-    expect(dispatchPickers()[0]?.textContent).toContain('triage-bot')
-    expect(dispatchPickers()[1]?.textContent).toContain('docs-bot')
+    expect(dispatchPickers()[0]?.getAttribute('aria-label')).toBe('Default dispatch — triage-bot')
+    expect(dispatchPickers()[1]?.getAttribute('aria-label')).toBe('Default dispatch — docs-bot')
   })
 
   it('moves an unrestricted owner straight away, addressed to the team row', async () => {
