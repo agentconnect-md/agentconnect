@@ -13,12 +13,13 @@
 import { createContext, Fragment, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { SiModelcontextprotocol } from 'react-icons/si'
-import { SWRConfig, type SWRConfiguration } from 'swr'
+import { SWRConfig } from 'swr'
 import Link from 'next/link'
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { ConsoleDataProvider, useConsoleData } from '@/lib/data-context'
 import { OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
-import { ApiError, getMyAccess, type OrgDto } from '@/lib/api'
+import { getMyAccess, type OrgDto } from '@/lib/api'
+import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import { agentLabel, poolLabel } from '@/lib/data'
 import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
@@ -68,12 +69,6 @@ const sectionRoot = (section: string): string | null => {
   if (!SECTIONS.some((s) => s.prefix === prefix)) return null
   return prefix === '/conversations' ? '/sessions' : prefix
 }
-const CONSOLE_SWR_CONFIG = {
-  dedupingInterval: 2_000,
-  focusThrottleInterval: 5_000,
-  shouldRetryOnError: (error: unknown) =>
-    !(error instanceof ApiError) || error.status === 408 || error.status === 429 || error.status >= 500
-} satisfies SWRConfiguration
 
 interface GithubCallbackNotice {
   messageKey: 'githubInstalled' | 'githubPending' | 'githubRetry'
