@@ -29,6 +29,7 @@ import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
 import type { FeishuConnection } from '../feishu/connection.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
+import { knownTimeZone } from '../messages/time-zone.js'
 import { activationKey, ACTIVATION_PAIRING_TTL_MS } from '../daemon/helpers.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
 import { formatErr } from '../daemon/text.js'
@@ -54,14 +55,27 @@ export interface WebchatAuthor {
   name: string
   /** Public avatar URL from the verified verdict — the identity a Slack mirror posts under. */
   pictureUrl?: string
+  /** The author's browser time zone, for an assistant-mode turn's local time; absent from an older relay. */
+  timeZone?: string
 }
 
 /** The author a webchat `turn` op names. A relay older than the stable-principal claim sends
  *  only the display handle; falling back to it keeps that relay working, at the cost of the
  *  handle-shaped sender this pairing exists to remove. */
-export function webchatAuthorOf(op: { user?: string; userId?: string; userPicture?: string }): WebchatAuthor {
+export function webchatAuthorOf(op: {
+  user?: string
+  userId?: string
+  userPicture?: string
+  timeZone?: string
+}): WebchatAuthor {
   const name = op.user ?? 'webchat'
-  return { id: op.userId ?? name, name, ...(op.userPicture ? { pictureUrl: op.userPicture } : {}) }
+  const timeZone = knownTimeZone(op.timeZone)
+  return {
+    id: op.userId ?? name,
+    name,
+    ...(op.userPicture ? { pictureUrl: op.userPicture } : {}),
+    ...(timeZone ? { timeZone } : {})
+  }
 }
 
 /** Any platform connection a continuation mirror can post through. */
@@ -234,6 +248,7 @@ export class WebchatTransport {
       platform: 'webchat',
       channel: chatId,
       sender: { id: author.id, isBot: false, name: author.name },
+      ...(author.timeZone ? { senderTimeZone: author.timeZone } : {}),
       text,
       // Structured composer mentions (agent ids). This agent seeing ITSELF in
       // the list is the explicit-address fact (`trigger:'mention'` below); the
@@ -478,6 +493,7 @@ export class WebchatTransport {
       transcriptTs: shared ? String(shared.at) : monotonicTs(),
       ...(shared ? { transcriptPostId: shared.postId } : {}),
       sender: { id: author.id, isBot: false, name: author.name },
+      ...(author.timeZone ? { senderTimeZone: author.timeZone } : {}),
       text,
       mentionedBots: integration?.botUserId ? [integration.botUserId] : [],
       isDm: local.conversationKind === 'dm',

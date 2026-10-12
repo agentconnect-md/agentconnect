@@ -113,6 +113,21 @@ describe('parseBrowserFrame', () => {
     })
   })
 
+  it('carries the browser time zone, and leaves out a malformed one without dropping the turn', () => {
+    expect(parseBrowserFrame({ text: 'hi', timeZone: 'America/Los_Angeles' }, USER)).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER, timeZone: 'America/Los_Angeles' }
+    })
+    for (const timeZone of ['Asia/Shanghai; drop', 'x'.repeat(65), 42, ''])
+      expect(parseBrowserFrame({ text: 'hi', timeZone }, USER)).toEqual({ op: { op: 'turn', text: 'hi', user: USER } })
+  })
+
+  it('forwards the browser time zone on the turn it bridges to the daemon', async () => {
+    const { transport, sent } = build()
+    transport.feed({ text: 'hi', turnId: AGENT, timeZone: 'Asia/Shanghai' })
+    await tick()
+    expect(sent[0]?.payload).toMatchObject({ op: 'turn', text: 'hi', timeZone: 'Asia/Shanghai' })
+  })
+
   it('maps a bare {text} and {type:"message",text} to a turn op carrying the user', () => {
     expect(parseBrowserFrame({ text: 'hi' }, USER)).toEqual({ op: { op: 'turn', text: 'hi', user: USER } })
     expect(parseBrowserFrame({ type: 'message', text: 'hi', turnId: AGENT }, USER)).toEqual({

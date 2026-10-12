@@ -19,10 +19,16 @@ import { mentionedUserIds } from './mentions.js'
 const OK_TTL_MS = 6 * 60 * 60 * 1000 // re-check successful lookups (renames) every 6h
 const FAIL_TTL_MS = 10 * 60 * 1000 // retry failed lookups (rate limit / outage) after 10min
 const MAX_TRACKED_IDS = 5000 // attempt-cache cap (oldest-evicted, ~a large workspace's actives)
+/** How long a turn waits for the profile lookup its own message started before reading on without it. */
+export const TIME_ZONE_LOOKUP_WAIT_MS = 2_000
 
 export class SlackNameResolver {
   /** id → epoch ms until which we won't re-attempt a lookup. */
   private nextAttemptAt = new Map<string, number>()
+  /** user id → the profile's time zone, null when it names none; refreshed with the name. */
+  private readonly zones = new Map<string, string | null>()
+  /** User lookups in flight, so a turn can wait for the one its message started. */
+  private readonly userLookups = new Map<string, Promise<void>>()
 
   constructor(
     private save: (id: string, name: string) => void | Promise<void>,
@@ -65,8 +71,20 @@ export class SlackNameResolver {
     for (const key of this.nextAttemptAt.keys()) {
       if (this.nextAttemptAt.size <= MAX_TRACKED_IDS) break
       this.nextAttemptAt.delete(key)
+      this.zones.delete(key)
     }
     return true
+  }
+
+  /** The person's profile time zone for an assistant-mode turn, waiting at most `waitMs` for a lookup in flight. */
+  async timeZoneOf(
+    conn: SlackConnection,
+    user: string,
+    waitMs = TIME_ZONE_LOOKUP_WAIT_MS
+  ): Promise<string | undefined> {
+    if (!/^[UW]/.test(user)) return undefined
+    if (!this.zones.has(user)) await settledWithin(this.resolveUser(conn, user), waitMs)
+    return this.zones.get(user) ?? undefined
   }
 
   private async resolveChannel(conn: SlackConnection, channel: string): Promise<void> {
@@ -90,16 +108,35 @@ export class SlackNameResolver {
     }
   }
 
-  private async resolveUser(conn: SlackConnection, user: string): Promise<void> {
-    if (!this.claim(user)) return
+  private resolveUser(conn: SlackConnection, user: string): Promise<void> {
+    if (!this.claim(user)) return this.userLookups.get(user) ?? Promise.resolve()
+    const lookup = this.lookUpUser(conn, user).finally(() => this.userLookups.delete(user))
+    this.userLookups.set(user, lookup)
+    return lookup
+  }
+
+  private async lookUpUser(conn: SlackConnection, user: string): Promise<void> {
     try {
       const p = await conn.getUserProfile(user)
       const name = p.realName || p.name
       if (name) this.persist(this.save(user, name))
       if (p.avatarUrl) this.persist(this.saveAvatar?.(conn, user, p.avatarUrl))
+      this.zones.set(user, p.timeZone ?? null)
     } catch (err) {
       this.nextAttemptAt.set(user, this.now() + FAIL_TTL_MS)
       this.log?.debug(`slack: name lookup failed for user ${user}: ${(err as Error).message}`)
     }
   }
+}
+
+/** Resolve once `work` settles or `ms` passes, whichever comes first; `work` never rejects here. */
+function settledWithin(work: Promise<void>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref?.()
+    void work.finally(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
 }

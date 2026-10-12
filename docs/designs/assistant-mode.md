@@ -333,6 +333,18 @@ none is running.
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
 another place, under §5.5.
 
+**④ The people's local time**: unlike the summary, this rides every turn of an assistant-mode
+agent — main conversations, sub-sessions, patrols, tasks and report rounds — as one line in the
+turn prelude, current at that turn: `Now: 2026-10-12 Mon 04:20 (Asia/Shanghai, UTC+08:00).` The
+zone is the one the person who started the turn reported: on Slack their profile's (`users.info`
+`tz`, else `tz_offset`), read from the profile lookup their message already starts and cached per
+user; in webchat the browser's, sent with the turn. A turn no person started, or whose person
+reported none, takes the zone last seen from a person in its place, which the daemon store keeps
+per agent and place; with none, the line says UTC and that the local zone is unknown. Other
+platforms report no zone. The runtime host's clock is never presented as the people's time. The
+line is context, not an instruction; no tool's parameters change, and instants the agent writes
+(`nextCheck`, `remind`) still carry their own offset.
+
 ### 5.5 Permission rules
 
 > **Read**: any place may recall any non-private channel; a private channel or group DM only from
@@ -1041,3 +1053,12 @@ failure report settled its row, and the row held one of the agent's concurrent s
 Now the minute sweep reports such a sub-session ended once nothing has run for it for ten minutes
 (§5.7), through the existing failure report, which also frees the slot. Why the same-process replay
 folds the turn away is not changed here.
+
+**Twenty-second revision (2026-10-12)**: assistant-mode turns are told the people's local time. In
+a test, an agent in a Slack DM with a person in UTC+8, at 04:20 on a Monday, said today was Sunday
+and called that same Monday "tomorrow". The times it scheduled carried the right offset, but its
+sense of today followed the runtime host's clock, which is UTC. Now every turn of an assistant-mode
+agent opens with one line naming the current local date, weekday, time, zone and offset (§5.4 ④).
+The zone is the sender's Slack profile zone or the console browser's; a turn no person started
+takes the zone last seen from a person in its place; otherwise the line says UTC and that the local
+zone is unknown. No tool changes, and an agent outside assistant mode gets no line.

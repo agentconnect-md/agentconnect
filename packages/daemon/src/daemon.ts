@@ -4417,6 +4417,8 @@ export class Daemon {
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
+      senderTimeZoneFor: (msg, integrationId) => this.senderProfileTimeZone(msg, integrationId),
+      now: () => this.clock.now(),
       // Match the spawn defaults so standing context describes the files actually materialized.
       runtimeEnvFor: (agent) => ({
         ...(this.agentRunsInSandbox(agent) ? this.cfg.sandbox.env : {}),
@@ -8459,6 +8461,12 @@ export class Daemon {
     if (!ctx.integrationId || !this.commands.commandSenderAllowed(ctx.agentId, ctx.integrationId, msg))
       return { ok: false, reason: 'sender' }
     return { ok: true, actor }
+  }
+
+  /** The time zone in a Slack sender's profile, read by the lookup their message already started (assistant-mode.md §5.4). */
+  private async senderProfileTimeZone(msg: NormalizedMessage, integrationId?: string): Promise<string | undefined> {
+    const conn = integrationId ? this.connByIntegration.get(integrationId) : undefined
+    return conn ? await this.nameResolver?.timeZoneOf(conn, msg.sender.id) : undefined
   }
 
   /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */

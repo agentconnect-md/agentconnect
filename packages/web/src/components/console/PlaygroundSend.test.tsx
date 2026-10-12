@@ -867,6 +867,13 @@ describe('reconnect after an unacked turn', () => {
     return second
   }
 
+  it('carries the reader’s browser time zone on the turn frame', async () => {
+    const { turn } = await sendAndOpen()
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    expect(zone).toBeTruthy()
+    expect(turn).toMatchObject({ text: 'hello', timeZone: zone })
+  })
+
   it('re-sends the turn, not a resume, when no participant acked it before the drop', async () => {
     const { first, turn } = await sendAndOpen()
     const second = await dropAndReconnect(first)
