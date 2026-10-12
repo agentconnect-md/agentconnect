@@ -469,15 +469,22 @@ seam, keeping the relay's pre-addressed fan-out as the roster walk:
   - **What counts as an invitation** is lexical: a whole-token `@name` outside
     quoted lines, inline or fenced code, and links. Negation is not parsed —
     "no need for @x" still invites x, and the response-choice rule decides.
-  - **Coalescing.** When activations fold into a live turn (a queued wake
-    absorbed by a context-refresh generation, a late admission, or a steer),
-    the turn's routing folds them in too (`foldWebchatRouting`). The reply
-    answers only addressing activations: an addressed turn that absorbs a
-    left-out post keeps its scope, and its replacement prompt names that
-    post's author as belonging to someone else's exchange. A left-out turn
+  - **Coalescing.** When activations fold into a live turn (absorbed by the
+    first prompt's pre-prompt refresh or a context-refresh generation, a late
+    admission, or a steer), the turn's routing folds them in too
+    (`foldWebchatRouting`). The reply answers only addressing activations: an
+    addressed turn that absorbs a left-out post keeps its scope and is told
+    that post's author belongs to someone else's exchange. A left-out turn
     that absorbs an invitation becomes addressed, takes the invitation's
-    scope, and its replacement prompt lifts the earlier reminder. Addressing
-    activations merge their scopes, and an unscoped one leaves no one out.
+    scope, and is released from the earlier reminder. Addressing activations
+    merge their scopes, and an unscoped one leaves no one out.
+  - **Delivery of the correction.** The prompt that consumes an activation
+    carries its routing correction: the first prompt drops its stale reminder
+    and appends the note, a steer appends it to the steered blocks, and a
+    replacement generation appends it after the context update. A correction
+    that no prompt delivered (a late admission whose row an earlier prompt
+    already carried) forces one replacement generation before the reply
+    commits.
   - **Silence.** A continuation wake streams nothing to the browser; only its
     committed post is visible, and a reply whose final line is the sentinel
     commits none.

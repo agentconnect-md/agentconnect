@@ -5,7 +5,8 @@ import {
   foldWebchatRouting,
   initialWebchatRouting,
   postNamesAgent,
-  webchatReplyScope
+  webchatReplyScope,
+  webchatRoutingNoteBlocks
 } from '../src/webchat/narrowed-scope.js'
 
 const post = (text: string, addressedAgentIds?: string[]): WebchatPost =>
@@ -134,5 +135,25 @@ describe('foldWebchatRouting', () => {
 
   it('a still-left-out turn stays left out', () => {
     expect(foldWebchatRouting(leftOut, wake('agent-c', ['agent-c'], true))).toMatchObject({ addressed: false })
+  })
+})
+
+describe('webchatRoutingNoteBlocks', () => {
+  const texts = (blocks: Array<{ text: string }>) => blocks.map((b) => b.text).join('\n')
+  const routing = (addressed: boolean, becameAddressed = false, absorbedOutsideFrom: string[] = []) => ({
+    addressed,
+    scope: undefined,
+    notes: { becameAddressed, absorbedOutsideFrom }
+  })
+
+  it('re-reminds a left-out turn only in a replacement prompt, since its first prompt already did', () => {
+    expect(webchatRoutingNoteBlocks(routing(false), false)).toEqual([])
+    expect(texts(webchatRoutingNoteBlocks(routing(false), true))).toContain('the human @-mentioned other participants')
+  })
+
+  it('releases a newly addressed turn and names absorbed left-out authors, in any prompt', () => {
+    expect(texts(webchatRoutingNoteBlocks(routing(true, true), false))).toContain('no longer applies')
+    expect(texts(webchatRoutingNoteBlocks(routing(true, false, ['agent-c']), false))).toContain('[agent-c]')
+    expect(webchatRoutingNoteBlocks(routing(true), true)).toEqual([])
   })
 })

@@ -359,9 +359,18 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
 // #2865: a human @mention never gates the wake (#549 parity), but a left-out peer is told to stay silent by default.
 describe('webchat continuation narrowed by a human @mention', () => {
   const outsideScope = (prompt: string | undefined) => prompt?.includes('the human @-mentioned other participants')
-  async function narrowedKickoff(replies: Parameters<typeof scriptedHosts>[0]) {
-    const { factory, prompts } = scriptedHosts(replies)
-    const daemon = new Daemon({ root: scaffold([P1, P2, REF]), hostFactory: factory })
+  async function narrowedKickoff(
+    replies: Parameters<typeof scriptedHosts>[0],
+    decorate?: (agentId: string, host: Record<string, any>) => void
+  ) {
+    const scripted = scriptedHosts(replies)
+    const prompts = scripted.prompts
+    const factory = (agent: { id: string }, onUpdate: (sid: string, u: unknown) => void) => {
+      const host = scripted.factory(agent, onUpdate)
+      decorate?.(agent.id, host)
+      return host
+    }
+    const daemon = new Daemon({ root: scaffold([P1, P2, REF]), hostFactory: factory as any })
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
     seedCallPolicy(daemon, [P1, P2, REF])
@@ -529,6 +538,101 @@ describe('webchat continuation narrowed by a human @mention', () => {
     const reply = posts.find((p) => p.agentId === P2)!
     expect(reply.post.text).toBe('checked')
     expect(reply.post.author).toMatchObject({ addressedAgentIds: [P1, P2] })
+    await daemon.stop()
+  })
+
+  it('an invitation absorbed before the first prompt drops the stale reminder from that prompt', async () => {
+    const starting = gate()
+    const go = gate()
+    let p1Turns = 0
+    let p2Turns = 0
+    const { daemon, prompts, posts } = await narrowedKickoff(
+      {
+        [P1]: () => (++p1Turns === 1 ? 'here is my answer' : NO_RESPONSE),
+        [P2]: () => (++p2Turns === 1 ? 'checked' : NO_RESPONSE),
+        [REF]: () => NO_RESPONSE
+      },
+      (agentId, host) => {
+        if (agentId !== P2) return
+        const create = host.newSession
+        host.newSession = vi.fn(async (...args: unknown[]) => {
+          starting.open()
+          await go.opened
+          return create(...args)
+        })
+      }
+    )
+    // P2's left-out wake is held in its startup gates when P1 invites it.
+    await starting.opened
+    await deliverPeerPost(
+      daemon,
+      P2,
+      scopedPost(P1, `@${P2} can you check this?`, 3_000, '00000008-0000-4000-8000-000000000008', [P1]),
+      'invite-before-prompt'
+    )
+    go.open()
+    await vi.waitFor(() => expect(posts.some((p) => p.agentId === P2)).toBe(true), WAIT)
+    await settle()
+    expect(prompts.get(P2)).toHaveLength(1)
+    expect(prompts.get(P2)![0]).toContain('can you check this?')
+    expect(outsideScope(prompts.get(P2)![0])).toBe(false)
+    expect(prompts.get(P2)![0]).not.toContain('no longer applies')
+    expect(posts.find((p) => p.agentId === P2)!.post.author).toMatchObject({ addressedAgentIds: [P1, P2] })
+    await daemon.stop()
+  })
+
+  it('a message steered into a left-out turn carries the release with it', async () => {
+    const drafting = gate()
+    const release = gate()
+    const steered: string[][] = []
+    let p2Turns = 0
+    const { daemon, posts } = await narrowedKickoff(
+      {
+        [P1]: () => 'here is my answer',
+        [P2]: async () => {
+          if (++p2Turns === 1) {
+            drafting.open()
+            await release.opened
+            return 'checked'
+          }
+          return NO_RESPONSE
+        },
+        [REF]: () => NO_RESPONSE
+      },
+      (agentId, host) => {
+        if (agentId !== P2) return
+        host.steeringSupported = () => true
+        host.steer = vi.fn(async (_sid: string, blocks: Array<{ text?: string }>) => {
+          steered.push(blocks.map((b) => b.text ?? ''))
+          return 'injected'
+        })
+      }
+    )
+    await drafting.opened
+    const STEER_TURN = '66666666-6666-4666-8666-666666666666'
+    const ack = await (daemon as any).handleRelayMsg(
+      rd(
+        {
+          op: 'turn',
+          text: `@${P2} please check this too`,
+          user: 'owner',
+          turnId: STEER_TURN,
+          mentions: [P2],
+          steer: true,
+          post: { postId: STEER_TURN, at: 4_000 }
+        },
+        { agentId: P2, msgId: 'steer-p2' }
+      ),
+      () => {}
+    )
+    expect(ack).toMatchObject({ accepted: true, steered: true })
+    expect(steered).toHaveLength(1)
+    expect(steered[0]!.join('\n')).toContain('please check this too')
+    expect(steered[0]!.join('\n')).toContain('no longer applies')
+    release.open()
+    await vi.waitFor(() => expect(posts.some((p) => p.agentId === P2)).toBe(true), WAIT)
+    await settle()
+    expect(posts.find((p) => p.agentId === P2)!.post.author).toMatchObject({ addressedAgentIds: [P2] })
     await daemon.stop()
   })
 

@@ -1,6 +1,11 @@
 // The human's @mention scope in a multi-agent webchat (webchat-multi-agents.md §5.2a): carried on replies so a woken peer outside it is told it was not addressed.
 import type { WebchatPost } from '@agentconnect.md/protocol'
 import type { QueueEntry } from '../daemon/turn-types.js'
+import {
+  ADDRESSED_AFTER_OUTSIDE_SCOPE_REMINDER,
+  OUTSIDE_HUMAN_SCOPE_REMINDER,
+  absorbedOutsideScopeReminder
+} from '../session/no-response.js'
 
 type RoutedEntry = Pick<QueueEntry, 'msg' | 'callMeta'>
 
@@ -55,6 +60,29 @@ export function foldWebchatRouting(routing: WebchatRouting, absorbed: RoutedEntr
     return { addressed: true, scope: next.scope, notes: { becameAddressed: true, absorbedOutsideFrom: [] } }
   }
   return { ...routing, scope: mergeScopes(routing.scope, next.scope) }
+}
+
+/** The lead of a replacement prompt whose only change is a routing correction no earlier prompt delivered. */
+export const WEBCHAT_ROUTING_UPDATE_TEXT =
+  '(AgentConnect routing update: who this conversation addressed changed while you were working.\n' +
+  'Your previous candidate answer was not delivered. Re-evaluate it with the routing fact below and\n' +
+  'produce a replacement final answer, without repeating side effects blindly.)'
+
+/** The routing facts `routing` owes a prompt; only a replacement prompt re-reminds a still-left-out turn, since the first one already carries that reminder. */
+export function webchatRoutingNoteBlocks(
+  routing: WebchatRouting,
+  replacement: boolean
+): Array<{ type: 'text'; text: string }> {
+  const blocks: Array<{ type: 'text'; text: string }> = []
+  if (!routing.addressed) {
+    if (replacement) blocks.push({ type: 'text', text: OUTSIDE_HUMAN_SCOPE_REMINDER })
+    return blocks
+  }
+  if (routing.notes.becameAddressed) blocks.push({ type: 'text', text: ADDRESSED_AFTER_OUTSIDE_SCOPE_REMINDER })
+  if (routing.notes.absorbedOutsideFrom.length > 0) {
+    blocks.push({ type: 'text', text: absorbedOutsideScopeReminder(routing.notes.absorbedOutsideFrom) })
+  }
+  return blocks
 }
 
 // An unscoped activation leaves no one out, so it wins the merge.
