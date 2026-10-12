@@ -1186,6 +1186,16 @@ reply there (see "Assistant-mode drafts"). Background sessions, patrols and webc
 reminders. A DM that read a private conversation for its person can still set them, since they
 post only in that DM.
 
+## Assistant-mode local time
+
+An agent in assistant mode reasons about "now", "today" and "this Friday" in the people's time
+zone, never its host's. Every turn it takes is told the current local date, weekday and time and
+the zone they are in: the zone of the person whose message started the turn, from their Slack
+profile or, in the console, their browser. A background sub-session, a patrol, a task, a report,
+or a person whose zone is unknown takes the zone last seen from a person in that conversation.
+When none was ever seen, as on platforms that report no zone, the agent is told it is UTC and that
+the local zone is unknown. An agent outside assistant mode is told nothing.
+
 ## Assistant-mode Activity
 
 The page of an agent in assistant mode has an Activity tab, offered while the console's

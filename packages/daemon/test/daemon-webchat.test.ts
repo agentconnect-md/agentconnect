@@ -1972,6 +1972,37 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
+  it('tells an assistant-mode agent the local time in the zone the browser reported, else UTC', async () => {
+    const { factory, host } = streamingHost([text('ok')])
+    const assistant = { assistantMode: { enabled: true, responsibleUserId: 'usr_ada' } }
+    const daemon = new Daemon({ root: scaffold(undefined, assistant), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    const nowLine = async (chatId: string, turnId: string, timeZone?: string): Promise<string | undefined> => {
+      const events: RdChatEvent[] = []
+      const payload = { op: 'turn', text: 'what day is it?', user: 'ada', userId: 'usr_ada', turnId } as const
+      const ack = await (daemon as any).handleRelayMsg(
+        rd(timeZone ? { ...payload, timeZone } : payload, { chatId, sessionKey: chatId, msgId: turnId }),
+        (e: RdChatEvent) => events.push(e)
+      )
+      expect(ack).toMatchObject({ accepted: true })
+      await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+      const blocks = host.prompt.mock.calls.at(-1)?.[1] as { text?: string }[]
+      return blocks.find((b) => b.text?.includes('\nNow: '))?.text
+    }
+    const stamp = String.raw`\d{4}-\d{2}-\d{2} [A-Z][a-z]{2} \d{2}:\d{2}`
+    expect(await nowLine(CONV, '77777777-7777-4777-8777-777777777777', 'America/Los_Angeles')).toMatch(
+      new RegExp(
+        String.raw`^<system-reminder>\nNow: ${stamp} \(America/Los_Angeles, UTC-0[78]:00\)\.\n</system-reminder>$`
+      )
+    )
+    // A relay that predates the field sends no zone.
+    expect(await nowLine('99999999-9999-4999-8999-999999999999', '77777777-7777-4777-8777-777777777778')).toMatch(
+      new RegExp(String.raw`^<system-reminder>\nNow: ${stamp} \(UTC, local time zone unknown\)\.\n</system-reminder>$`)
+    )
+    await daemon.stop()
+  })
+
   it('keeps a newer resume bound when a delayed older generation arrives afterward', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
