@@ -9,7 +9,8 @@ import {
   offersDirectMessages,
   offersReadPort,
   platformLabel,
-  readPortsFor
+  readPortsFor,
+  reportsSharedConversations
 } from '../src/platforms/read-ports.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
@@ -83,6 +84,13 @@ describe('the read-port registry', () => {
       expect(has(ctor, 'listMemberIds'), platform).toBe(false)
     }
     for (const platform of ['qq', 'linear', 'googlechat']) expect(membersAuthoritative(platform)).toBe(false)
+  })
+
+  // assistant-mode.md §5.3: only Slack's channel lookup says whether another organization shares a channel.
+  it('declares a channel lookup that reports a share only for Slack', () => {
+    expect(reportsSharedConversations('slack')).toBe(true)
+    for (const platform of ['telegram', 'discord', 'feishu', 'qq', 'linear', 'googlechat', 'webchat', ''])
+      expect(reportsSharedConversations(platform), platform).toBe(false)
   })
 
   it('is fail-closed for an unregistered platform', () => {

@@ -95,9 +95,15 @@ export interface MessageGateway {
   /** The provider thread a just-posted root message landed in, where it is not the message id itself (Google Chat). */
   threadOfPost?(postId: string): string | undefined
   /** `user` is the counterpart of a 1:1 direct conversation, where the platform names one. */
-  getChannelInfo(
-    channel: string
-  ): Promise<{ id: string; name?: string; isIm?: boolean; isMpim?: boolean; isPrivate?: boolean; user?: string }>
+  getChannelInfo(channel: string): Promise<{
+    id: string
+    name?: string
+    isIm?: boolean
+    isMpim?: boolean
+    isPrivate?: boolean
+    user?: string
+    externalReason?: PlatformChannelInfo['externalReason']
+  }>
   listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]>
   /** Every current member's id, all pages; offered where the platform declares `authoritativeMembers`. */
   listMemberIds?(channel: string): Promise<string[]>

@@ -295,6 +295,18 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
 - For assistant-mode agents only, a member joining is looked up once (`users.info`): a guest
   (`is_restricted` / `is_ultra_restricted`) or a member from another organization makes the place
   external, and that detection is never lifted by a later listing.
+- **Output no event triggered asks first.** A place learns of a share from its next event, so
+  before a post no event from that place triggered — a scheduled or hook run and its anchor
+  message, a report round, a post a grant lets through from another place, a reminder, a
+  sub-session's permission card, a patrol's proposal card — the daemon asks the platform whether
+  the place is shared now, for assistant-mode agents only: on Slack the share flags of
+  `conversations.info`, read through the channel lookup a platform module declares
+  (`sharedConversations`). The answer is cached per place for a minute, the bound the membership
+  read in §5.5 uses: repeated posts cost one lookup, and a share made after an answer goes unseen
+  for at most that minute. A 1:1 DM is never asked. A share found this way is the downgrade below,
+  and the post is drafted like any other in an external place. A lookup that fails drafts the
+  post too, without marking the place: posting as internal on no answer could reach another
+  organization, while a needless draft costs one approval. No event subscription is added.
 - Telegram groups, Discord channels, Feishu groups: no detection; enabled means trusted.
 - DM: enabling it is trusting that person as a member. Webchat is internal by construction.
 - A sub-session's place is its parent's: one born in an external place reports through that

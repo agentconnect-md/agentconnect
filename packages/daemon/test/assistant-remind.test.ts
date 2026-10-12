@@ -275,7 +275,7 @@ async function delivery(options: { external?: string[]; enabled?: boolean } = {}
     draining: () => false,
     reminders: s.assistantReminders,
     placeEnabled: vi.fn(() => options.enabled !== false),
-    placeExternal: (_agentId: string, _integrationId: string, channel: string) => external.has(channel),
+    placeExternal: async (_agentId: string, _integrationId: string, channel: string) => external.has(channel),
     post: vi.fn(async (_reminder: AssistantReminder): Promise<string | undefined> => 'ts-posted'),
     draft: vi.fn(async (_reminder: AssistantReminder) => 'draft-1')
   } satisfies AssistantRemindersHost
@@ -663,6 +663,27 @@ describe('the daemon delivers reminders', () => {
       // The card is the only message, in the DM of the person who set it.
       expect(h.conn.postBlocks).toHaveBeenCalledTimes(1)
       expect((h.conn.postBlocks.mock.calls[0] as unknown[])[0]).toBe('D_U1')
+    } finally {
+      await h.close()
+    }
+  })
+
+  // assistant-mode.md §5.3: no event told the place it became shared, so the post asks Slack first.
+  it('drafts the text once Slack says the conversation became shared, though no event from it said so', async () => {
+    const h = await bootDaemon()
+    try {
+      const { id } = await h.remind(Date.now() + MINUTE)
+      h.conn.getChannelInfo.mockResolvedValue({
+        id: 'C1',
+        name: 'general',
+        isPrivate: false,
+        externalReason: 'externallyShared'
+      } as never)
+      h.later(2 * MINUTE)
+      await h.d.reminders.sweep()
+      expect(h.conn.postMessage).not.toHaveBeenCalled()
+      expect(await h.get(id)).toMatchObject({ status: 'drafted', draftId: expect.any(String) })
+      expect(h.d.agents.get(BOT).integrations[0].core.externalChannels).toEqual(['C1'])
     } finally {
       await h.close()
     }

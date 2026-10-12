@@ -92,6 +92,8 @@ export interface AssistantDraftsHost {
   /** The agent is enabled in this conversation (conversation gating). */
   placeEnabled(agentId: string, integrationId: string, channel: string): boolean
   placeExternal(agentId: string, integrationId: string, channel: string): boolean
+  /** Before a post no event from the place triggered: true only once the platform confirms it is not shared now (§5.3). */
+  placeConfirmed?(agentId: string, integrationId: string, channel: string, dm: boolean): Promise<boolean>
   cardPortFor(integrationId: string): DraftCardPort | undefined
   /** The control plane's approval route; undefined without one. */
   approvalRoute?(agentId: string, req: Omit<AgentApprovalRoute, 'agentId'>): Promise<AgentApprovalRouted>
@@ -213,11 +215,20 @@ export class AssistantDrafts {
       channel: post.channel,
       thread: post.thread ?? null
     }
-    const external = this.host.placeExternal(agentId, post.integrationId, post.channel)
-    const fromPlace = source.place && !external
-    if (fromPlace && (await this.host.ledger().granted(agentId, grantPlace(source), grantPlace(target)))) {
-      return { handled: false }
+    let external = this.host.placeExternal(agentId, post.integrationId, post.channel)
+    if (
+      !external &&
+      source.place &&
+      (await this.host.ledger().granted(agentId, grantPlace(source), grantPlace(target)))
+    ) {
+      // A grant posts unapproved into a place no event came from, so it holds only once the place is confirmed not shared.
+      const confirmed = this.host.placeConfirmed
+        ? await this.host.placeConfirmed(agentId, post.integrationId, post.channel, post.directMessage)
+        : true
+      if (confirmed) return { handled: false }
+      external = this.host.placeExternal(agentId, post.integrationId, post.channel)
     }
+    const fromPlace = source.place && !external
     const destination = await this.host
       .describeDestination(target, { dm: post.directMessage, ...(post.recipient ? { recipient: post.recipient } : {}) })
       .catch(() => ({}))
@@ -236,11 +247,13 @@ export class AssistantDrafts {
     return { handled: true, result: draftedResult(draft, rung) }
   }
 
-  /** The turn's reply in an external place (§5.5): drafted to an internal member, never posted unapproved. */
+  /** The turn's reply in an external place, or one not confirmed internal (§5.5): drafted to an internal member, never posted unapproved. */
   async draftReply(input: {
     agentId: string
     target: AssistantDraftTarget
     targetDm: boolean
+    /** False where the platform could not confirm the place either way; the card then claims no share. */
+    targetExternal?: boolean
     text: string
     source: AssistantDraftSource
     asker: DraftAsker | undefined
@@ -249,7 +262,7 @@ export class AssistantDrafts {
     const { draft, rung } = await this.create({
       ...input,
       kind: 'reply',
-      targetExternal: true,
+      targetExternal: input.targetExternal ?? true,
       destination,
       offerAlways: false
     })

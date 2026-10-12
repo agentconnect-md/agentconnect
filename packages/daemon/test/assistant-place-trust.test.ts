@@ -1,7 +1,7 @@
 // A place of an assistant-mode agent turning external (assistant-mode.md §5.3): it reads external at once, reaches the CP, and cuts only that place's turn.
 import { describe, expect, it, vi } from 'vitest'
-import { mergePlaceExternalReason, type IntegrationChannel } from '@agentconnect.md/protocol'
-import { PlaceTrust, type PlaceTrustDeps } from '../src/assistant/place-trust.js'
+import { mergePlaceExternalReason, type IntegrationChannel, type PlaceExternalReason } from '@agentconnect.md/protocol'
+import { PLACE_SHARE_TTL_MS, PlaceTrust, type PlaceTrustDeps } from '../src/assistant/place-trust.js'
 import { Daemon } from '../src/daemon.js'
 import { conversationTrustLevel } from '../src/router/routing-rule.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -16,21 +16,33 @@ const integrationOf = (id: string, externalChannels: string[] = [], mode: 'direc
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
-describe('PlaceTrust', () => {
-  function world(owned: Record<string, boolean>, external: Record<string, string[]> = {}) {
-    const integrations = new Map(Object.keys(owned).map((id) => [id, integrationOf(id, external[id])]))
-    const reports: [string, IntegrationChannel][] = []
-    const interrupts: [string, string][] = []
-    const deps: PlaceTrustDeps = {
-      integration: (id) => integrations.get(id),
-      assistantOwned: (id) => owned[id] === true,
-      report: (id, channel) => void reports.push([id, channel]),
-      interrupt: async (id, channel) => void interrupts.push([id, channel]),
-      warn: () => {}
-    }
-    return { trust: new PlaceTrust(deps), integrations, reports, interrupts }
+/** A PlaceTrust over fakes: which integrations an assistant-mode agent owns, what each lists external, and the platform's share lookup. */
+function world(
+  owned: Record<string, boolean>,
+  external: Record<string, string[]> = {},
+  lookup?: (channel: string) => Promise<PlaceExternalReason | null>
+) {
+  const integrations = new Map(Object.keys(owned).map((id) => [id, integrationOf(id, external[id])]))
+  const reports: [string, IntegrationChannel][] = []
+  const interrupts: [string, string][] = []
+  const spared: string[][] = []
+  const clock = { now: 1_000 }
+  const deps: PlaceTrustDeps = {
+    integration: (id) => integrations.get(id),
+    assistantOwned: (id) => owned[id] === true,
+    report: (id, channel) => void reports.push([id, channel]),
+    interrupt: async (id, channel, spare) => {
+      interrupts.push([id, channel])
+      spared.push([...spare])
+    },
+    warn: () => {},
+    now: () => clock.now,
+    shareLookup: () => lookup
   }
+  return { trust: new PlaceTrust(deps), integrations, reports, interrupts, spared, clock }
+}
 
+describe('PlaceTrust', () => {
   it('downgrades an internal place of an assistant-mode agent once: it reads external, is reported, and its turn is cut', async () => {
     const w = world({ 'int-a': true, 'int-b': false })
     w.trust.detected(['int-a', 'int-b'], 'C1', 'guestMember')
@@ -131,6 +143,64 @@ describe('PlaceTrust', () => {
     const w = world({ 'int-a': true, 'int-b': false })
     expect(w.trust.watches(['int-b'])).toBe(false)
     expect(w.trust.watches(['int-b', 'int-a'])).toBe(true)
+  })
+})
+
+// A place learns of a share from its next event, so a post no event triggered asks the platform first (§5.3).
+describe('PlaceTrust.confirm', () => {
+  it('answers repeated posts from one lookup per place, and asks again once the answer is a minute old', async () => {
+    const lookup = vi.fn(async () => null)
+    const w = world({ 'int-a': true }, {}, lookup)
+    expect(await Promise.all([w.trust.confirm('int-a', 'C1'), w.trust.confirm('int-a', 'C1')])).toEqual([
+      'internal',
+      'internal'
+    ])
+    w.clock.now += PLACE_SHARE_TTL_MS - 1
+    expect(await w.trust.confirm('int-a', 'C1')).toBe('internal')
+    expect(lookup).toHaveBeenCalledTimes(1)
+    expect(await w.trust.confirm('int-a', 'C2')).toBe('internal')
+    w.clock.now += 1
+    expect(await w.trust.confirm('int-a', 'C1')).toBe('internal')
+    expect(lookup.mock.calls).toEqual([['C1'], ['C2'], ['C1']])
+    expect(w.reports).toEqual([])
+  })
+
+  it('makes a share it finds the same downgrade an event makes, sparing the turns that asked', async () => {
+    let answer!: (reason: PlaceExternalReason | null) => void
+    const lookup = vi.fn(() => new Promise<PlaceExternalReason | null>((resolve) => (answer = resolve)))
+    const w = world({ 'int-a': true }, {}, lookup)
+    const asked = [w.trust.confirm('int-a', 'C1', 'k-report'), w.trust.confirm('int-a', 'C1', 'k-cron')]
+    answer('externallyShared')
+    expect(await Promise.all(asked)).toEqual(['external', 'external'])
+    await settle()
+    expect(conversationTrustLevel(w.integrations.get('int-a')!, 'C1')).toBe('external')
+    expect(w.reports).toEqual([['int-a', { id: 'C1', externalReason: 'externallyShared' }]])
+    expect(w.interrupts).toEqual([['int-a', 'C1']])
+    expect(w.spared).toEqual([['k-report', 'k-cron']])
+    // Known now: later posts read it from the spec, with no lookup and no second transition.
+    w.clock.now += PLACE_SHARE_TTL_MS
+    expect(await w.trust.confirm('int-a', 'C1')).toBe('external')
+    expect(lookup).toHaveBeenCalledTimes(1)
+    expect(w.interrupts).toHaveLength(1)
+  })
+
+  it('answers unknown when the lookup fails, marking nothing, and asks again on the next post', async () => {
+    const lookup = vi.fn().mockRejectedValueOnce(new Error('ratelimited')).mockResolvedValueOnce(null)
+    const w = world({ 'int-a': true }, {}, lookup)
+    expect(await w.trust.confirm('int-a', 'C1')).toBe('unknown')
+    await settle()
+    expect(conversationTrustLevel(w.integrations.get('int-a')!, 'C1')).toBe('internal')
+    expect(w.reports).toEqual([])
+    expect(w.interrupts).toEqual([])
+    expect(await w.trust.confirm('int-a', 'C1')).toBe('internal')
+    expect(lookup).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks nothing of a platform that reports no share, nor about a place already known external', async () => {
+    const lookup = vi.fn(async () => null)
+    expect(await world({ 'int-a': true }).trust.confirm('int-a', 'C1')).toBe('internal')
+    expect(await world({ 'int-a': true }, { 'int-a': ['C1'] }, lookup).trust.confirm('int-a', 'C1')).toBe('external')
+    expect(lookup).not.toHaveBeenCalled()
   })
 })
 

@@ -23,7 +23,8 @@ export interface AssistantRemindersHost {
   reminders: AssistantReminderLedger
   /** The agent is enabled in this conversation (conversation gating). */
   placeEnabled(agentId: string, integrationId: string, channel: string): boolean
-  placeExternal(agentId: string, integrationId: string, channel: string): boolean
+  /** External, or not confirmed internal by the platform just now (§5.3); a 1:1 DM never is. */
+  placeExternal(agentId: string, integrationId: string, channel: string, dm: boolean): Promise<boolean>
   /** Post the text as the agent, the way an approved draft posts; the message id, or undefined when none came back. Throws on a platform error. */
   post(reminder: AssistantReminder): Promise<string | undefined>
   /** Draft the text for an internal member's approval, the way an external place's reply is drafted (§5.5); the draft's id. */
@@ -80,7 +81,7 @@ export class AssistantReminders {
     if (!this.host.placeEnabled(agentId, integrationId, reminder.place.channel))
       return await fail('the agent is no longer enabled in that conversation')
     // An external place posts nothing unapproved (§5.5): the text goes to an internal member as a draft.
-    const external = this.host.placeExternal(agentId, integrationId, reminder.place.channel)
+    const external = await this.host.placeExternal(agentId, integrationId, reminder.place.channel, reminder.targetDm)
     let outcome: { status: 'delivered'; messageId: string } | { status: 'drafted'; draftId: string }
     try {
       if (external) outcome = { status: 'drafted', draftId: await this.host.draft(reminder) }
@@ -104,7 +105,9 @@ export class AssistantReminders {
     // Outside the retry: a settle that fails leaves the claim to go stale, never to post twice.
     await reminders.settle(agentId, id, outcome, this.host.now())
     if (outcome.status === 'drafted')
-      log.info(`reminder ${id}: its conversation is shared with another organization; drafted as ${outcome.draftId}`)
+      log.info(
+        `reminder ${id}: its conversation is external or could not be confirmed internal; drafted as ${outcome.draftId}`
+      )
     else log.debug(`reminder ${id} of agent ${agentId} delivered`)
   }
 }

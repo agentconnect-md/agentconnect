@@ -84,6 +84,8 @@ export interface PlatformChannelInfo {
   /** The conversation's short platform handle and the page it opens there (a Linear team). */
   key?: string
   url?: string
+  /** Shared with another organization right now, where the platform declares `sharedConversations` (assistant-mode.md §5.3); null when it is not. */
+  externalReason?: PlaceExternalReason | null
 }
 
 /** A conversation in an enumeration (`listChannels` / `listBotChannels`). */
