@@ -502,13 +502,16 @@ Provider references: [TypeSafe API](https://api.typesafe.ai/docs),
 **Implemented runtime foundation:** the daemon resolves credentials for the
 organization of the evaluation using this precedence:
 
-| Available configuration                                      | Credential source and egress                                                                                               |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| Organization key is present                                  | Use that connection's key, endpoint, and headers for provider or user-configured gateway egress                            |
-| No organization key; Cloud explicitly supports this provider | Request an evaluation-scoped token from the deployment Key Server, then call the configured Cloud Gateway using AC credits |
-| No organization key; no supported Cloud configuration        | Missing credentials                                                                                                        |
+| Available configuration                                 | Credential source and egress                                                                                               |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Managed daemon whose Cloud gateway serves this provider | Request an evaluation-scoped token from the deployment Key Server, then call the configured Cloud Gateway using AC credits |
+| Otherwise, organization key is present                  | Use that connection's key, endpoint, and headers for provider or user-configured gateway egress                            |
+| Otherwise                                               | Missing credentials                                                                                                        |
 
-An invalid, exhausted, or temporarily unreadable organization key is still a
+A managed daemon never reads the organization key for a provider its gateway
+serves: the deployment's gateway is the only egress there, so an organization
+key applies to self-hosted daemons and to providers the gateway does not serve.
+Elsewhere, an invalid, exhausted, or temporarily unreadable organization key is still a
 configured key. Its failure must not silently start charging AC credits. The
 internal key store returns `null` only for an absent row and propagates decryption
 failures. No raw-key read route is exposed to Console users.
@@ -536,14 +539,16 @@ Credential delivery uses the negotiated `provider-credentials-v1` capability:
   also clear it. The lease bounds stale use if a notification is missed; an
   already-started provider request may hold the previous credential.
 
-For the AC-credits fallback, a Cloud daemon requires both the existing Key Server
-configuration (`KEY_SERVER`, optionally `KEY_SERVER_TOKEN_PATH`) and the deployment's
-`TYPESAFE_MODEL_BASE_URL`. The latter is the HTTP(S) API root or gateway provider
-prefix; the adapter appends `v1/systemone`. Kubernetes placement alone is insufficient.
+For AC-credits egress, a Cloud daemon requires both the existing Key Server
+configuration (`KEY_SERVER`, optionally `KEY_SERVER_TOKEN_PATH`) and the provider's
+gateway API root: `TYPESAFE_MODEL_BASE_URL` (the adapter appends `v1/systemone`) or
+`OPENAI_MODEL_BASE_URL`, the same `modelEgress` base Codex sessions use (the adapter
+appends `decisions`). Kubernetes placement alone is insufficient.
 
 The evaluator reuses the same `KeyServerClient`, `IssueKey`, `RevokeKey`, and caller
 authentication as Claude and other model clients. It requests
-`{ orgId, agentId, sessionId: "decision:<evaluationId>", provider: "typesafe", ttlSeconds: 60 }`.
+`{ orgId, agentId, sessionId: "decision:<evaluationId>", provider, ttlSeconds: 60 }`, where
+`provider` is `typesafe` or `openai`.
 The caller supplies a stable evaluation identity; the real agent and organization
 provide attribution. This creates no ACP runtime or session row. The existing
 `sessionId` field also serves as an operation attribution key; no second token
@@ -551,7 +556,8 @@ issuer or wire contract is introduced. The returned key stays inside the daemon,
 is sent only to the configured gateway, and is revoked best-effort after evaluation.
 The short requested lifetime bounds a lost response or failed revocation. Issuer
 authorization, credit checks, and gateway metering remain deployment-side duties;
-support for the `typesafe` dialect and this attribution key must be configured there.
+support for each dialect, the OpenAI `decisions` route, and this attribution key must be
+configured there.
 
 `Daemon.evaluateDecision({ agentId, evaluationId, decision, state }, signal?)` is
 the callable runtime boundary. `decision` supplies `providerId`, `model`, and
@@ -895,7 +901,8 @@ The `openai` provider offers `gpt-6-luna` for Boolean, Choice, and Score questio
 Configure its organization key in **Infra → Provider keys**, then select OpenAI
 when creating a Decision. Its endpoint defaults to `https://api.openai.com/v1`;
 a custom endpoint is an API base, to which the adapter appends `/decisions`.
-OpenAI currently requires BYOK. It never uses the TypeSafe Cloud gateway or its grants.
+A self-hosted daemon requires BYOK. A managed daemon with `OPENAI_MODEL_BASE_URL` calls
+that gateway with an OpenAI-scoped grant instead; it never uses the TypeSafe gateway or its grants.
 
 The daemon sends the frozen state as JSON text in `input` and one named question
 in the `questions` array. Boolean becomes `predicate`, with both true/false criteria
@@ -1784,8 +1791,9 @@ provider connections may be saved in Infra but do not become Decision adapters.
 What remains is Cloud evaluation on AC credits (C1).
 
 `GET /decisions/providers` projects each visible daemon's `decision/catalog` response,
-its supported models, and BYOK/Cloud readiness. Configured BYOK takes priority over
-Cloud; no upstream authentication or credit check is performed by this read. Offline,
+its supported models, and BYOK/Cloud readiness. A daemon reporting Cloud availability
+for a provider resolves to AC credits even when an organization key exists, matching
+the managed daemon's egress; no upstream authentication or credit check is performed by this read. Offline,
 unsupported, and pending execution contexts are represented explicitly.
 
 Standalone preview uses the Agent placement picker: the managed pool, an organization
