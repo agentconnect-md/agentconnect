@@ -699,9 +699,10 @@ report queues, fencing, retry backoff, and event-identity dedup _storage_.
 Dedup identity is per-assignment composite, per §5.1 — the plugin mints
 `(appId, tenantId, eventId)` because it derives from parsed action semantics,
 and core owns the TTL table, offered two ways: `dedupSeen` marks on first sight
-(Slack's bounded-loss path), while `dedupPeek`/`dedupMark` let a platform that
-answers from an admission disposition check first and mark only once the
-disposition is settled. The registry (`platforms/registry.ts`) lists Slack,
+(Linear's always-200 path), while `dedupPeek`/`dedupMark` let a platform that
+answers from a delivery outcome check first and mark only once the outcome is
+settled (Google Chat's admission disposition; Slack's forward outcome, whose
+`retry` asks Slack to redeliver). The registry (`platforms/registry.ts`) lists Slack,
 Feishu, Linear, and Google Chat; Google Chat is the first plugin that answers
 from the admission disposition, holds no secret (Google signs each callback as
 the app's Workspace add-on service account, whose project number the assignment

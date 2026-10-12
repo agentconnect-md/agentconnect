@@ -1,33 +1,22 @@
-/**
- * Slack HTTP ingress — `POST /slack/events` + `POST /slack/interactions`,
- * the relay pool's ONE inbound Events API surface for every HTTP Slack bot (the
- * successor to the per-bot Socket Mode consumer). One stable public URL behind the
- * LB; any pod may receive any bot's delivery, so this endpoint is stateless demux:
- *
- *  - `url_verification` (the manifest handshake) is answered 200 `{ challenge }`
- *    IMMEDIATELY, before any demux/verify — it carries no `api_app_id`/`team_id` and
- *    arrives before any assign. Echoing the non-secret challenge is the documented
- *    handshake;
- *  - every other POST is demuxed to a bot AND authenticated in one step by the Slack
- *    request signature (HMAC over the raw bytes, keyed by that bot's signing secret) —
- *    `resolveVerified`; a request that no assigned bot's secret verifies ⇒ 401;
- *  - Events are deduped by `(api_app_id, team_id, event_id)` (Slack redelivers on a
- *    slow/again-seen 200, while separate apps may receive the same underlying event),
- *    then ACK'd 200 and forwarded ASYNC (Slack's 3s window). Interactions run the
- *    handler to completion because `block_suggestion` must return its options on the
- *    200 body; all other interaction side-effects run after the return value.
- *
- * Raw-buffer parsers (both content types) live in an isolated plugin scope so they
- * never leak onto the relay's other JSON/health surfaces; the HMAC needs the exact
- * request bytes (Fastify's default urlencoded parser would destroy them).
- * Signing secrets + tokens are NEVER logged.
- */
+// The relay pool's Slack Events API + interactivity routes for every HTTP bot: demux by signature, and an event's answer is its delivery outcome (shared-bot-relay.md §12).
 import type { FastifyInstance } from 'fastify'
 import type { RelayIngressRouteDeps } from '../contract.js'
+import { settleWithin } from '../settle-within.js'
 import type { SlackInteractiveBody, SlackMessageEvent } from './http-ingest.js'
 
 /** Raw-body cap for the Slack endpoints (Slack payloads are well under 1 MiB). */
 export const SLACK_BODY_LIMIT = 1024 * 1024
+
+/** Slack waits 3 s for an answer; settling at 2 s leaves time to still send the 503 it redelivers on. */
+export const SLACK_EVENT_ANSWER_DEADLINE_MS = 2_000
+
+/** Slack's last scheduled redelivery (`x-slack-retry-num`): failing it loses the event all the same and only counts toward Slack's auto-disable threshold. */
+const SLACK_LAST_RETRY_NUM = 3
+
+function slackRetryNum(headers: Record<string, string | string[] | undefined>): number {
+  const value = Number(headers['x-slack-retry-num'])
+  return Number.isInteger(value) ? value : 0
+}
 
 /** The subset of a Slack Events API envelope the route reads for demux + dispatch. */
 interface SlackEventEnvelope {
@@ -45,7 +34,12 @@ interface SlackEventEnvelope {
   event?: SlackMessageEvent
 }
 
-export function registerSlackHttpIngress(app: FastifyInstance, deps: RelayIngressRouteDeps): void {
+/** Mount the routes; `deadlineMs` bounds an event's answer and is overridden only by tests that exercise its expiry. */
+export function registerSlackHttpIngress(
+  app: FastifyInstance,
+  deps: RelayIngressRouteDeps,
+  deadlineMs = SLACK_EVENT_ANSWER_DEADLINE_MS
+): void {
   void app.register(async (scope) => {
     // Raw bytes for the HMAC — one isolated scope for both Slack content types.
     scope.addContentTypeParser(
@@ -75,13 +69,26 @@ export function registerSlackHttpIngress(app: FastifyInstance, deps: RelayIngres
         return reply.code(200).send({ challenge: body.challenge ?? '' })
       }
 
-      // §8 verify → handle: demux/authentication and the dedup check (the plugin
-      // mints the composite identity; core owns the table) run inside the seam.
-      // Event handling is fired async by the plugin — the 200 stays inside
-      // Slack's 3s window, exactly as before.
-      const handled = await deps.manager()?.handleInbound('slack', raw, body, req.headers)
-      if (!handled) return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
-      return reply.code(200).send()
+      // §8 verify → handle: demux, authentication, dedup and the forward all run inside the seam.
+      const manager = deps.manager()
+      const outcome = await settleWithin(
+        manager ? manager.handleInbound('slack', raw, body, req.headers) : Promise.resolve(undefined),
+        deadlineMs
+      )
+      // No assigned bot owns the delivery, or its signature did not verify: 401, and nothing was routed.
+      if (outcome.kind === 'handled' && !outcome.handled) {
+        return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
+      }
+      if (outcome.kind === 'handled' && outcome.handled?.admission?.disposition !== 'retry')
+        return reply.code(200).send()
+      // No daemon took the event (or the outcome is unknown): a 503 makes Slack redeliver it, and a copy that did land is deduplicated.
+      const why = outcome.kind === 'handled' ? 'reached no daemon' : `handling ${outcome.kind}`
+      if (slackRetryNum(req.headers) >= SLACK_LAST_RETRY_NUM) {
+        deps.log.warn(`slack ingress: event ${body.event_id ?? '?'} ${why} on Slack's last redelivery — answering 200`)
+        return reply.code(200).send()
+      }
+      deps.log.warn(`slack ingress: event ${body.event_id ?? '?'} ${why} — asking Slack to redeliver`)
+      return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503 })
     })
 
     scope.post('/slack/interactions', { bodyLimit: SLACK_BODY_LIMIT }, async (req, reply) => {

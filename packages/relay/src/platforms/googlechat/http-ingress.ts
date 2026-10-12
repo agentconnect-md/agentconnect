@@ -3,29 +3,11 @@ import type { FastifyInstance } from 'fastify'
 import { GOOGLE_CHAT_EVENTS_PATH, GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
 import { googleChatEventObjectOf } from '@agentconnect.md/message'
 import { GOOGLE_CHAT_BODY_LIMIT } from './http-ingest.js'
-import type { HandledDelivery, RelayIngressRouteDeps } from '../contract.js'
+import type { RelayIngressRouteDeps } from '../contract.js'
+import { settleWithin } from '../settle-within.js'
 
 /** Google allows 30 s for the synchronous answer; expiring earlier leaves room to still send the 503 it retries on. */
 export const GOOGLE_CHAT_ADMISSION_DEADLINE_MS = 20_000
-
-type Outcome = { kind: 'handled'; handled: HandledDelivery | undefined } | { kind: 'expired' } | { kind: 'failed' }
-
-// Settle the handling within `deadlineMs`; the work keeps running past an expiry, and a late admission is marked as usual.
-function settleWithin(work: Promise<HandledDelivery | undefined>, deadlineMs: number): Promise<Outcome> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve({ kind: 'expired' }), deadlineMs)
-    work.then(
-      (handled) => {
-        clearTimeout(timer)
-        resolve({ kind: 'handled', handled })
-      },
-      () => {
-        clearTimeout(timer)
-        resolve({ kind: 'failed' })
-      }
-    )
-  })
-}
 
 // An add-on `EventObject` with its `chat` object is the least a delivery can be (§11.3).
 function parseEventBody(rawBody: Buffer): Record<string, unknown> | undefined {
