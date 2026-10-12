@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { AgentSpec } from './agent.js'
 import { AssistantModePolicy } from './assistant-mode.js'
-import { assistantModeDefinitionRefusals, assistantModeRuntimeAdmitted } from '../assistant-mode-admission.js'
+import {
+  assistantModeDefinitionRefusals,
+  assistantModePermissionModeOnEnable,
+  assistantModeRuntimeAdmitted
+} from '../assistant-mode-admission.js'
 
 const INTEGRATION_ID = '22222222-2222-4222-8222-222222222222'
 
@@ -91,5 +95,45 @@ describe('assistant mode admission', () => {
         }
       })
     ).toEqual(['memory-provider'])
+  })
+})
+
+// assistant-mode.md §1.8: turning the mode on defaults the permission mode, and only moves one that would stop background work.
+describe('assistant mode permission default', () => {
+  it("moves an asking or read-only mode to the runtime's auto mode", () => {
+    for (const mode of ['default', 'acceptEdits', 'plan', '', null, undefined]) {
+      expect(assistantModePermissionModeOnEnable('claude-acp', mode)).toBe('auto')
+    }
+    expect(assistantModePermissionModeOnEnable('claude', 'default')).toBe('auto')
+    for (const mode of ['read-only', 'workspace-write', null]) {
+      expect(assistantModePermissionModeOnEnable('codex-acp', mode)).toBe('agent')
+    }
+  })
+
+  it('keeps a mode that already runs unattended, and one it does not know', () => {
+    for (const mode of ['auto', 'bypassPermissions', 'dontAsk', 'some-later-mode']) {
+      expect(assistantModePermissionModeOnEnable('claude-acp', mode)).toBeUndefined()
+    }
+    for (const mode of ['agent', 'agent-full-access']) {
+      expect(assistantModePermissionModeOnEnable('codex-acp', mode)).toBeUndefined()
+    }
+  })
+
+  it('falls back to full access without an auto mode, and changes nothing with neither', () => {
+    const table = {
+      'example-full': {
+        nativeMemoryDisableable: true,
+        resumesById: true,
+        permissionModes: { ask: 'asks', open: 'full-access' } as const
+      },
+      'example-asks': { nativeMemoryDisableable: true, resumesById: true, permissionModes: { ask: 'asks' } as const }
+    }
+    expect(assistantModePermissionModeOnEnable('example-full', 'ask', table)).toBe('open')
+    expect(assistantModePermissionModeOnEnable('example-full', undefined, table)).toBe('open')
+    expect(assistantModePermissionModeOnEnable('example-asks', 'ask', table)).toBeUndefined()
+    expect(assistantModePermissionModeOnEnable('opencode', 'build')).toBeUndefined()
+    expect(assistantModePermissionModeOnEnable('some-new-runtime', 'default')).toBeUndefined()
+    expect(assistantModePermissionModeOnEnable(null, 'default')).toBeUndefined()
+    expect(assistantModePermissionModeOnEnable('claude-acp', 'constructor')).toBeUndefined()
   })
 })

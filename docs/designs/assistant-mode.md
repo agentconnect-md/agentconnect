@@ -25,9 +25,10 @@ long sessions), [agent-collaboration-implementation.md](agent-collaboration-impl
 per-agent built-in switch and the dream host), [slack-approval-dm.md](slack-approval-dm.md) (the
 two in-chat approval paths), [webchat-side-panels.md](webchat-side-panels.md) (the console dock).
 
-**Principle:** the simplest thing that works. Assistant mode leaves the agent's permission
-policy, workspace isolation and command permissions alone, reuses an existing mechanism wherever
-one exists, and does not pretend to defend against effects it cannot defend against.
+**Principle:** the simplest thing that works. Assistant mode sets a default permission mode once,
+as it is switched on (§1.8), and otherwise leaves the agent's permission policy, workspace
+isolation and command permissions alone, reuses an existing mechanism wherever one exists, and
+does not pretend to defend against effects it cannot defend against.
 
 ---
 
@@ -128,9 +129,17 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 ### 1.8 Enabling
 
 - Switch assistant mode on in the agent's settings. The agent must pass admission (§4.1); an
-  agent that does not gets a locked switch with the reason. An agent whose permission policy is
-  "ask every time" gets a warning: background work will wait for approval often; consider
-  auto-approving workspace-local operations.
+  agent that does not gets a locked switch with the reason.
+- Background work nobody watches should not stop for approval, so switching it on sets the
+  agent's permission mode to the runtime's auto mode (Claude Code's `auto`, Codex's `agent`,
+  which it calls "Auto review"), or to its full-access mode where it has no auto mode. Only an
+  unset mode or one that asks for approval or only reads is changed: an auto or full-access
+  mode, Claude Code's `dontAsk` (it refuses what is not pre-approved rather than asking), a mode
+  set in the same edit, and every mode of a runtime with neither (OpenCode) are kept. The
+  Control Plane applies it on every edit that switches the mode on, from the console or the
+  API. It is a default, never an admission check: an editor may change the mode afterwards and
+  the choice sticks while the mode stays on. While it is on, an agent whose mode asks every time
+  gets a warning: background work will wait for approval often.
 - Once on, the agent is off everywhere; an editor enables places one by one. Enabling a place
   trusts it as _internal_ unless the platform detects it as _external_ (§5.3); the enable flow
   warns "everyone here will be able to get the content of its other places out of it;
@@ -192,9 +201,9 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 | One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                             |
 
 Not admission criteria: platform (all allowed; enabling a place trusts it, §5.3), channel trigger mode
-(user configuration), workspace mode and isolation (§5.6), sandboxing, permission policy (`ask`
-only warns), a linked identity for the responsible user (a fallback conversation is required when
-no DM can be reached).
+(user configuration), workspace mode and isolation (§5.6), sandboxing, permission policy (switching
+on sets a default, §1.8; an asking mode only warns), a linked identity for the responsible user (a
+fallback conversation is required when no DM can be reached).
 
 ### 4.2 Prerequisites (independent of assistant mode, done first)
 
@@ -245,8 +254,10 @@ On enable: §4.1 is checked; the agent enters conversation gating (`gated` deriv
 "restricted **or** assistant mode"); already-enabled rows keep their state and, like any enabled
 place, count as internal unless the platform detects them as external (§5.3), so the switch shows
 the enable warning for them; DMs auto-enabled by §14.8 for `sharedWith` members count as internal
-(that person is an organization member). The agent's permission policy and workspace isolation
-are untouched.
+(that person is an organization member). In the same row-locked write, an unset, asking or
+read-only permission mode becomes the runtime's auto mode, else its full-access mode, unless the
+edit sets a mode itself (§1.8); which mode is which comes from the `permissionModes` map each
+runtime carries in the admission list. Workspace isolation is untouched.
 
 ### 5.2 Places and long conversations
 
@@ -502,8 +513,10 @@ below) have shipped, and so has stopping from the main conversation (§5.8).
      timer lives in memory: a restart ends the turn, the store expires every request no process
      holds a resolver for, a stale card's click or console decision finds nothing pending, and the
      card's and the notice's handles on the row let the reconnect sweep retire them.
-  4. The user's permission policy is never changed; an `ask`-policy agent gets the warning in
-     §1.8.
+  4. Switching assistant mode on moves an asking mode to the runtime's auto mode, else its
+     full-access mode (§1.8), so requests come only from what that mode still escalates or from
+     an asking mode an editor picks afterwards (asking every time gets the warning in §1.8).
+     Nothing else changes the permission mode.
 - **Webchat**: the session-detail dock's Sub-sessions panel (#2885) lists the sub-sessions a
   conversation opened (patrols included) and stops a running one; who may stop is whoever may
   continue that session today. A sub-session's own page is read-only (#2893): talking to one
@@ -817,8 +830,8 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 
 - The personal form; one shared context; an output filter as a defense; member enumeration as a
   precondition for recall;
-- a dedicated sub-session workspace, changing the agent's isolation, changing the user's
-  permission policy;
+- a dedicated sub-session workspace, changing the agent's isolation, changing the permission mode
+  other than by the default when the mode is switched on;
 - automatic retry of an uncertain external write; cancelling a waiting permission request to free
   a slot (P0);
 - delegation / report / status tools parallel to `sendMessage`; restoring the orchestration tool
@@ -1044,3 +1057,14 @@ failure report settled its row, and the row held one of the agent's concurrent s
 Now the minute sweep reports such a sub-session ended once nothing has run for it for ten minutes
 (§5.7), through the existing failure report, which also frees the slot. Why the same-process replay
 folds the turn away is not changed here.
+
+**Twenty-second revision (2026-10-12)**: switching assistant mode on sets a default permission mode.
+In a test, nearly every background task stopped to wait for approval of a file write, and nobody
+was watching. Now the edit that switches the mode on, from the console or the API, moves an unset,
+asking or read-only mode to the runtime's auto mode, or to its full-access mode where the runtime
+has no auto mode (§1.8). Which mode is which is a per-runtime map in the admission list: Claude
+Code gets `auto` and Codex gets `agent`, its "Auto review"; OpenCode has neither and keeps its
+mode. An auto or full-access mode, Claude Code's `dontAsk` and a mode set in the same edit are
+kept. It is a default, not an admission check: an editor may pick another mode afterwards, the
+choice sticks while the mode stays on, and the ask-every-time warning returns for it. Switching
+the mode off and on again applies the default again.
