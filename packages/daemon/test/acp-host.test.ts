@@ -18,6 +18,34 @@ import { CODEX_MCP_STARTUP_GRACE_MS } from '../src/runtimes/codex-config.js'
 const here = dirname(fileURLToPath(import.meta.url))
 const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
 describe('AcpHost (against a fake ACP agent)', () => {
+  it.each([
+    { capabilities: ['customInstructions'], native: true },
+    { capabilities: ['sessionFailure'], native: false },
+    { capabilities: 'customInstructions', native: false }
+  ])('routes new/load instructions only when advertised: $capabilities', async ({ capabilities, native }) => {
+    const instructions = 'Follow the configured review policy.'
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: {
+          AC_INIT_META: JSON.stringify({ jetbrains: { air: { version: 1, capabilities } } }),
+          AC_EXPECT_SESSION_META: JSON.stringify(
+            native ? { jetbrains: { air: { version: 1, customInstructions: instructions } } } : null
+          )
+        }
+      }
+    )
+    await host.start()
+    try {
+      expect(host.usesMetaSystemPrompt()).toBe(native)
+      const sessionId = await host.newSession('/tmp', [], undefined, instructions)
+      await host.loadSession(sessionId, '/tmp', [], undefined, instructions)
+    } finally {
+      await host.stop()
+    }
+  })
+
   it('sends the selected Claude model and native tool policy before new/load', async () => {
     const model = 'claude-fable-5-1[1m]'
     const toolSandbox = {
@@ -378,7 +406,7 @@ describe('AcpHost session/load update filtering', () => {
 describe('AcpHost.usesMetaSystemPrompt (system-prompt routing per runtime)', () => {
   const make = (command: string) => new AcpHost({ command, args: [], env: [] }, { onUpdate: () => {} })
 
-  it('is true for Claude (rides _meta.systemPrompt), false otherwise (inlined block)', () => {
+  it('retains the Claude channel before capability discovery', () => {
     expect(make('claude-code-acp').usesMetaSystemPrompt()).toBe(true)
     expect(make('codex-acp').usesMetaSystemPrompt()).toBe(false)
   })

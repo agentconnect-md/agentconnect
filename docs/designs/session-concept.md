@@ -192,8 +192,16 @@ dimensions combine independently.
 At session start, the daemon injects standing location metadata into the first
 `{ type: system }` message. Existing code already builds this block as
 `agentMeta` in `session-manager.ts:312`: Markdown beginning with `# Agent` and
-one `- Key: value` per line. Claude receives it through `_meta.systemPrompt`;
-other runtimes receive it inline as the first system block.
+one `- Key: value` per line. Claude receives it through `_meta.systemPrompt`.
+Runtimes advertising AIR `customInstructions` receive it through
+`_meta.jetbrains.air.customInstructions`; Codex maps this to native developer
+instructions. The daemon also sends them on `session/load`, but the adapter
+controls restoration: Codex currently retains the instructions already in its
+history, so an existing conversation needs a new session to adopt this channel
+or changed instructions immediately. Other runtimes receive standing context
+inline as the first prompt block. Incoming messages
+and repository content remain in the user prompt; they are not promoted to
+standing instructions.
 
 Current fields identify the agent and source:
 
