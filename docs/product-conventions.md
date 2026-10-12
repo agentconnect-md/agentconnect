@@ -989,25 +989,66 @@ answered as drafts. Only that place is affected: the agent's other conversations
 and keep taking messages. Enabling a 1:1 DM trusts the person in it, so a DM never turns
 external.
 
-## Assistant-mode recall in a person's own DM
+## Reading other conversations
 
-An agent in assistant mode reads a private channel or group DM only from that conversation,
-with one exception: a person's own 1:1 DM with the agent. There, on a turn the person started with
-their own message, the agent may read a private channel or group DM the person is a member of
-right now, when it is named. The agent's list of places it can recall never shows one, so only
-an actual read restricts the conversation. The conversation must be on the same platform and
-workspace as the DM, on a platform whose member list is complete (Slack). Membership is checked when the read happens and
-trusted for at most a minute. When it cannot be confirmed, the answer is the same "I can't share
-that here" as for any other private place. Reports from sub-sessions, scheduled runs, patrols and
-every other conversation keep the ordinary rule. Another person's DM is never readable.
+Every agent, in assistant mode or not, reads another conversation (its history, a thread in it,
+its reactions or bookmarks, or its own transcript there through `recall`) only when the person
+asking may see that conversation. The product checks access; whether to bring the content into the
+current conversation is that person's call. The conversation the agent is answering in is always
+readable.
 
-Once a DM conversation has read a private place this way, it writes only to that DM: it changes
-no item, sends nothing to any agent, itself included, and posts or drafts nothing anywhere else.
-This holds for every later turn of that conversation and across restarts. When it refuses, the
-agent tells the person that starting a new conversation with `!new` lifts it. `!new` lifts it only
-for a conversation that does not read the DM's earlier history back: recalling the DM, or reading
-its history or a thread in it, while an earlier conversation there was restricted restricts the
-reader too.
+**On the asker's own platform and bot**, the platform decides:
+
+- a public channel, for a full member of that workspace or tenant. A guest, or a member of another
+  organization, reads only conversations they are in. Where the platform cannot tell a guest from a
+  full member, a channel it confirms public is readable;
+- a private channel or group DM, for its current members, by the platform's own member list, looked
+  up when the read happens and trusted for at most a minute;
+- the asker's own 1:1 DM with the agent. Another person's DM never.
+
+**Anywhere else** (another platform, another of the agent's bots, or any read for a console user),
+only what the console itself would show that person: they must be known as a console user, through
+the chat account they linked under Sign-in methods in their console Profile (a webchat or console
+user already is), and the console must show them the agent's sessions in that conversation. A Slack
+member linked to an organization member therefore reads a Telegram or Discord group, whose sessions
+every member sees while that platform's session access sync is off. Someone on a platform the
+console cannot match reads nothing beyond their own platform and bot. A webchat conversation and a
+DM on any platform stay readable only by their owner, even where the console shows them to every
+member.
+
+**Who is asking:**
+
+- the sender of the turn's message, by their platform identity, with no console link needed for
+  their own platform and bot. When a turn takes in messages from several people, every one of them
+  must have access;
+- in webchat or a console continuation, the console user;
+- in a sub-session, the person whose turn opened it (a restart forgets them, and it then reads as
+  no one); in a patrol, or a task approved from a proposal, the person who asked for the item; in a
+  scheduled run, the console user who last edited the schedule, else the one who created it;
+- no one, for a scheduled run that records no person, a hook run, a sub-session's report, and an
+  agent's message to another agent. Such a turn reads only its own conversation and the public
+  channels its own bot confirms. A hook or a schedule anchored to a conversation reads that
+  conversation as its own.
+
+**What each platform can tell:** Slack all of the above; Feishu/Lark membership (by union_id) and
+public groups, but not a guest from a full member; Discord a guild channel that `@everyone` can
+view, and nothing per member; Telegram, which has no history reads, a group with a public
+@username, for `recall`; Google Chat nothing.
+
+A refused read answers "I can't share that here." and never says whether the conversation exists.
+Someone who linked no console account is also told that reading a conversation on another platform
+or bot needs their account linked under Sign-in methods in their console Profile. Content from a
+private channel, a group DM, a DM or a webchat conversation comes with a note naming it, and the
+agent says where it came from in one short clause when it uses it; the note never blocks anything.
+`recall` lists only public conversations the person may read; a private one is read by name.
+
+In assistant mode, once a person's 1:1 DM or webchat conversation has read a private channel or group
+DM, that conversation writes only to itself: it changes no item, sends nothing to any agent, itself
+included, and posts or drafts nothing anywhere else. This holds for every later turn of that
+conversation and across restarts. When it refuses, the agent tells the person that starting a new
+conversation with `!new` lifts it. `!new` lifts it only for a conversation that does not read the
+DM's earlier history back: recalling the DM, or reading its history or a thread in it, while an
+earlier conversation there was restricted restricts the reader too.
 
 ## Assistant-mode drafts
 

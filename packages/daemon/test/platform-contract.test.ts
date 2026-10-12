@@ -64,13 +64,16 @@ describe('Layer-1 platform contract (§7.1)', () => {
     expect(has(SlackConnection, 'getThreadReplies')).toBe(true)
     expect(has(SlackConnection, 'getChannelHistory')).toBe(true)
     expect(has(SlackConnection, 'openDirectMessage')).toBe(true)
-    // Only Slack lists every member of a conversation (`authoritativeMembers` in read-ports.ts).
+    // Slack and Feishu list every member of a conversation (`authoritativeMembers` in read-ports.ts); only Slack tells a guest apart (`workspaceMembers`).
     expect(has(SlackConnection, 'listMemberIds')).toBe(true)
+    expect(has(FeishuConnection, 'listMemberIds')).toBe(true)
+    expect(has(SlackConnection, 'isFullMember')).toBe(true)
     for (const ctor of [TelegramConnection, DiscordConnection, FeishuConnection]) {
       expect(has(ctor, 'listBotChannels')).toBe(false)
       expect(has(ctor, 'getThreadReplies')).toBe(false)
-      expect(has(ctor, 'listMemberIds')).toBe(false)
+      expect(has(ctor, 'isFullMember')).toBe(false)
     }
+    for (const ctor of [TelegramConnection, DiscordConnection]) expect(has(ctor, 'listMemberIds')).toBe(false)
     expect(has(DiscordConnection, 'getChannelHistory')).toBe(true)
     expect(has(FeishuConnection, 'getChannelHistory')).toBe(true)
     expect(has(TelegramConnection, 'getChannelHistory')).toBe(false)

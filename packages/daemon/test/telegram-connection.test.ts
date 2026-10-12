@@ -281,6 +281,16 @@ describe('TelegramConnection gateway', () => {
     })
   })
 
+  it('getChannelInfo reports a broadcast channel private unless it has a public username', async () => {
+    const chats: Record<string, { id: number; type: string; title: string; username?: string }> = {
+      '-1': { id: -1, type: 'channel', title: 'announcements' },
+      '-2': { id: -2, type: 'channel', title: 'news', username: 'news' }
+    }
+    const { conn } = makeConn({}, fakeApi({ getChat: vi.fn(async (id: string | number) => chats[String(id)]!) }))
+    expect(await conn.getChannelInfo('-1')).toMatchObject({ isIm: false, isPrivate: true })
+    expect(await conn.getChannelInfo('-2')).toMatchObject({ isIm: false, isPrivate: false })
+  })
+
   it('listMembers returns administrators (id/name/isBot), best-effort []', async () => {
     const { conn } = makeConn()
     expect(await conn.listMembers('-100')).toEqual([

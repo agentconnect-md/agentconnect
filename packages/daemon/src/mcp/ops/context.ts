@@ -107,6 +107,8 @@ export interface MessageGateway {
   listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]>
   /** Every current member's id, all pages; offered where the platform declares `authoritativeMembers`. */
   listMemberIds?(channel: string): Promise<string[]>
+  /** A full member of this bot's workspace, not a guest or an outsider; offered where the platform declares `workspaceMembers`. */
+  isFullMember?(user: string): Promise<boolean>
   listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]>
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
   /** Read one bounded page from the conversation bound to the current session. */

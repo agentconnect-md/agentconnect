@@ -44,8 +44,9 @@ does not pretend to defend against effects it cannot defend against.
   discussion in an internal channel can be recalled when you ask about it in a DM.
 - **It speaks for the room.** It writes directly only to the place it is in. To post anywhere
   else — another channel, a conversation on another platform — it shows you the target and the
-  exact text, and posts once you approve. Nobody can get at another person's DM; when something
-  cannot be said here, it says "ask me in a DM".
+  exact text, and posts once you approve. It reads another conversation only for someone who may see
+  it, and leaves it to that person whether to share what it finds; nobody can get at another
+  person's DM, and when something cannot be shared it says "I can't share that here".
 - **Shared with another organization.** In a place the platform reports as external (a Slack
   Connect channel) it still knows everything, but every reply is a draft that an internal member
   approves in a DM before it is posted.
@@ -375,26 +376,25 @@ line is context, not an instruction; no tool's parameters change, and instants t
 
 ### 5.5 Permission rules
 
-> **Read**: any place may recall any non-private channel; a private channel or group DM only from
-> itself — and, from P1, on a turn its member started in their own DM (see below); a DM only from
-> that person's own DM or webchat. Another person's DM, never.
+> **Read**: judged by who is asking, for every agent (§5.5 "Reads"): a source is readable when the
+> person behind the request may see it, and whether to bring it into this conversation is that
+> person's call. A turn no person is behind reads only public channels on its own bot.
 > **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
 > act directly only on **the current place**; a post to another place is a draft the asker
 > approves (below). Item and report traffic across places goes through §5.7 as structured fields.
 > The agent-to-agent forms of `sendMessage` are unchanged, except in a session marked by a
-> per-asker read (below).
+> private read in a 1:1 conversation (below).
 > **External**: an external place reads like an internal one; what it posts is a draft.
 
-| Current place                | Recallable sources                                                                                         | Memory / knowledge | Output                                                |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------- |
-| P's DM                       | P's own DM and webchat, every non-private channel; on P's own turns, the private places P belongs to (P1)² | all¹               | posted                                                |
-| Internal channel or group DM | itself, every non-private channel                                                                          | all¹               | posted                                                |
-| External channel or group DM | itself, every non-private channel                                                                          | all¹               | **drafted**: posted after an internal member approves |
-| Webchat                      | as a DM, by the conversation's owner                                                                       | all¹               | posted                                                |
+| Current place                | Readable sources                                             | Memory / knowledge | Output                                                |
+| ---------------------------- | ------------------------------------------------------------ | ------------------ | ----------------------------------------------------- |
+| P's DM                       | itself, and whatever P may see (§5.5 "Reads")                | all¹               | posted                                                |
+| Internal channel or group DM | itself, and whatever every person asking on the turn may see | all¹               | posted                                                |
+| External channel or group DM | itself, and whatever every person asking on the turn may see | all¹               | **drafted**: posted after an internal member approves |
+| Webchat                      | itself, and whatever the console shows its console user      | all¹               | posted                                                |
 
 ¹ Shared memory never holds content from DMs, webchat or private places (the memory bypass
 below), so opening it everywhere does not reopen what the read rule closes.
-² Per-asker widening, bound to the turn rather than the place; see "Private places" below.
 
 **Drafts in an external place:**
 
@@ -427,62 +427,66 @@ below), so opening it everywhere does not reopen what the read rule closes.
 - A session with no place of its own (a hook, a cron run) drafts every platform post, approved by
   the responsible user or in the fallback conversation.
 
-**Private places — scoped per place now, per asker later:**
+**Reads — judged by who is asking (issue #2979, item B3):**
 
-- A **private place** is a channel or group DM the platform reports as private through the
-  daemon's platform-neutral `isPrivate` facet (`PlatformChannelInfo` / `ObservedChat`). A platform
-  that cannot tell reports not private — notably Discord, whose permission-restricted channels
-  read as open.
-- The target is **per-asker scoping in the asker's own DM**: a private place's content reaches
-  only its members, and only where the asker is the whole audience. An answer in a shared place
-  is read by everyone present, so scoping by what the asker alone may see is rejected there.
-- **Until then (P0a) a private place is read only from itself**: no other place, not even a
-  member's DM, can recall it; the place itself still recalls every non-private channel.
-  Per-asker scoping only widens this, so nothing that works in P0a stops working later.
-- **P1 widens it on the asker's own turns in their DM.** In a person P's 1:1 DM with the agent, on a
-  turn started by P's own message, a private place is readable, when it is named, if P is a member
-  of it right now — checked live at read time (cached for at most about a minute), on the same
-  platform and workspace, and only where the daemon's platform adapter declares its member listing
-  authoritative. A membership that cannot be confirmed is refused as opaquely as any other private
-  place. Recall's listing never shows a private place, even to a member: the agent lists places on
-  its own, before it knows what it needs, so only an actual read widens. Channels, group DMs,
-  webchat and external places keep the P0a rule; webchat waits for identity links.
-- **The widening is bound to the turn, not the place.** Turns in P's DM session that P did not
-  start — a report round, a patrol's or a sub-session's report, a cron run, a later `handoff` — and
-  every sub-session or patrol get the P0a source set.
-- **A session that read a private place this way writes only to P's DM.** The recalled content
-  stays in the DM's long-session context, so the restriction follows the session, not the turn:
-  from the first widened read until that session is retired (`!new`, or a rollover that starts a
-  fresh context), every turn in it — P's own, a report round or a cron run alike — is refused
-  ledger writes (taking, updating or following an item: item summaries and observations are
-  team-visible and feed every place's standing summary), self-delegation, posts or drafts aimed
-  at any other place, and every agent-to-agent send — a direct `toAgent` call, a `toAgent` +
-  `channel` post at a channel root, and a reply into another session through `sessionId` — since
-  each carries the content into a session or place P does not alone see. The mark is stored with
-  the session so it survives a restart or handover, and the refusal tells P that starting a new
-  conversation lifts it. The restriction follows the content, not only the session: the DM's own
-  history still holds the earlier answers, so any session that reads it back — through `recall` or
-  a history read of the DM — once any session there was marked, a retired one included, is marked
-  too, a sub-session or patrol included. This is a refusal by tool, not an output filter; writes
-  that leave through other tools are an open question (§9).
-- **Memory**: DMs are already outside shared memory. When the per-person memory space lands,
-  anything it captures from such a session is injected only where P is the whole audience.
-- **Revocation**: after P leaves the place, excerpts already in P's DM context stay there; like
-  the downgrade rule, the context was never the risk — new reads are refused, and the session's
-  mark still keeps anything from leaving P's DM.
-- **The error metric**: "outside the allowed set" now depends on the place, whether the turn is
-  P's own, and live membership, and is evaluated with all three.
-- No place sees a private place in recall's listing, and a refused read answers as
-  opaquely as the DM rule: "I can't share that here", never where the content lives.
-
-- Webchat ↔ IM recognition depends on identity links (P1); in P0 webchat recalls only itself and
-  channels.
-- **"Ask me in a DM"**: asked in place B for something only the asker may see, B's session
-  neither reads nor answers; it says "ask me in a DM". P1 adds `handoff`: a row through §5.7 to the asker's DM carrying the original
-  question, answered there by the DM session under its own permissions (the human-reaching
-  `sendMessage` only sends already-generated text and starts no turn in the DM, so it is not used).
-- No output filter; one zero-cost assertion: a source read during a turn that is outside the
-  current place's allowed set raises an error metric.
+- **The change.** Until B3 a private place was read only from itself, except in its member's own 1:1
+  DM, and only in assistant mode; agents outside it had a Slack-only reach rule and nothing on the
+  other platforms. Now one rule serves every agent, and the person decides whether to share: the
+  machine checks only whether the person asking has access to the source. An answer in a shared
+  place is read by everyone present, but so is anything that person could paste there themselves;
+  refusing them only made the agent less useful than the person's own copy and paste. The rule
+  itself is in [product-conventions.md](../product-conventions.md), "Reading other conversations".
+- **One choke point.** `judgePlaceRead` in `mcp/ops/place-gate.ts` passes every cross-place read:
+  `getChannelHistory`, `getThreadHistory`, `getReactions`, `listBookmarks` (through the bridge
+  dispatcher, before the handler) and `recall`. The decision is `readRefusal` in
+  `assistant/place-access.ts`; refusals are counted with the existing metric, labelled by the closed
+  tool and reason sets.
+- **On the asker's own platform and bot** the platform decides, from read-port declarations
+  (`platforms/read-ports.ts`), never a platform name: `channelPrivacy` (a channel the platform reports
+  not private is confirmed public: Slack, Discord by the `@everyone` view permission, Feishu/Lark by
+  `chat_type`, Telegram by a public @username), `authoritativeMembers` (Slack, Feishu/Lark by
+  union_id) and `workspaceMembers` (Slack's `isFullMember`, which tells a guest or an outsider from
+  a full member). A 1:1 DM's only member besides the bot is its person, so membership decides a DM
+  too. Lookups are cached for a minute (`assistant/place-members.ts`) and fail closed.
+- **Anywhere else**, and for every console user, the read is judged by the console's own
+  session-visibility predicate ([session-visibility.md](session-visibility.md)), asked of the
+  Control Plane through `agent/read-access` (feature `read-access-v1`): the CP resolves a chat member
+  to the one organization member who linked that identity, or takes a console user directly, and
+  answers which of the agent's sessions there that user could see. Every session the read would
+  show must be visible; `recall` reads at most the place's eight newest sessions, the ones it checks.
+  For a DM, a webchat conversation or an undescribed place the rule is stricter than the console:
+  the daemon asks `ownerOnly`, and the CP counts only sessions whose recorded owner is that user
+  (a webchat session always), so a DM the console shows every member stays its owner's alone. A CP
+  that is unreachable, or lacks the feature, refuses the read.
+- **Who is asking** on a turn: the senders of its message and of every message coalesced or steered
+  into it, recorded before the runtime sees them; the console user in webchat and a console
+  continuation; a sub-session's opener (kept in memory, so a restart reads it as no one); a patrol's
+  or a task's item asker (the item's first follower); a schedule's last human editor, else its
+  creator (`CronUpsert.askerUserId`). Hook runs, report rounds, schedules that record no person and
+  agent-to-agent messages are no one: the agent-to-agent frame carries no originating person and was
+  not given one.
+- **The answer** to a refusal is one opaque "I can't share that here"; a chat member with no linked
+  console account is also told how linking opens reads across platforms and bots, on every refusal,
+  so the hint never tells a closed place from a missing one. A read of a private source carries a
+  `privateSource` note naming it, and the model is asked to mention the source in one short clause.
+- **A 1:1 conversation that read a private channel or group DM in assistant mode writes only to
+  itself.** The trigger and scope are those of the earlier per-asker widening (P's DM; a webchat
+  conversation, the console's 1:1, alike), and B3 does not extend it to shared conversations; its
+  future belongs to B1. The recalled content stays in the long-session context, so the restriction
+  follows the session, not the turn: from the first such read until the session is retired (`!new`,
+  or a rollover that starts a fresh context), every turn in it is refused ledger writes (taking,
+  updating or following an item: item summaries and observations are team-visible and feed every
+  place's standing summary), self-delegation, posts or drafts aimed at any other place, and every
+  agent-to-agent send. The mark is stored with the session so it survives a restart or handover,
+  and the refusal tells P that starting a new conversation lifts it. Any session that reads the
+  DM's own history back while a session there was marked is marked too, a sub-session or patrol
+  included. This is a refusal by tool, not an output filter; writes that leave through other tools
+  are an open question (§9).
+- **Revocation**: after P leaves a place, excerpts already in a conversation's context stay there;
+  new reads are refused once the cached membership expires.
+- **"Ask me in a DM"** is retired: a DM is readable from anywhere by its own person, and nothing
+  tells anyone else that it exists. `handoff` (P1) remains the way to answer a question in the
+  asker's DM under that session's permissions.
 - **Memory bypass**: in P0, per-turn capture, dreams and explicit memory writes skip `private`
   sessions (filtered by the CP-confirmed bit) and the sessions of private places (by `isPrivate`)
   for assistant-mode agents; "allow for this session" is removed on their `append` sessions. P1 adds the per-person memory space. This is a retreat from today's dream
@@ -630,7 +634,7 @@ the message only from someone who may continue the conversation. A report round,
 scheduled run is refused. The stop itself is the console's Stop: the same daemon core, logged
 with who asked. So it answers the same way: stopped, or not running, adding that a background
 process the runtime started may keep running. Stopping one's own sub-session moves no content, so
-a session marked by a per-asker read (§5.5) may still do it. The tool's description tells the
+a session marked by a private read (§5.5) may still do it. The tool's description tells the
 agent to ask which sub-session the person means only when that is not clear; a clear request is
 carried out at once.
 
@@ -729,7 +733,7 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
     less than 24 hours late posts late and an older one expires. An agent holds at most 100
     pending reminders, a fixed limit with no setting. Settled rows stay, like the other assistant
     tables' settled rows, until the agent is removed.
-  - A session marked by a per-asker read (§5.5) may set reminders: they land only in its own DM.
+  - A session marked by a private read (§5.5) may set reminders: they land only in its own DM.
 - **Budget and backoff**: `dailyPatrolBudget`; after a failure the next attempt backs off by
   `min(60, 2ⁿ)` minutes, and five consecutive failures pause that item's patrols.
 - **Start condition**: not before each runtime has been tested for exactly the residual stated
@@ -892,7 +896,7 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 7. **Wording of item summaries**: the restatement when an item is taken is the only review point
    for what becomes team-visible.
 8. Whether distillation on a normal OpenCode host runs under `plan` (live, unverified).
-9. **Other writes from a session marked by a per-asker read**: code-host comments and issues, MCP
+9. **Other writes from a session marked by a private read**: code-host comments and issues, MCP
    tools and a shell with network access are not refused, so recalled content can still leave
    P's DM through them, on P's request or in a later turn. Closing them means a restricted tool
    set for marked sessions, which would leave the DM little more than read-only until `!new`.
@@ -1106,3 +1110,15 @@ mode. An auto or full-access mode, Claude Code's `dontAsk` and a mode set in the
 kept. It is a default, not an admission check: an editor may pick another mode afterwards, the
 choice sticks while the mode stays on, and the ask-every-time warning returns for it. Switching
 the mode off and on again applies the default again.
+
+**Twenty-fourth revision (2026-10-12)**: reads are judged by who is asking, for every agent (issue
+#2979, item B3; §5.5 "Reads"). The per-place rule refused a member their own private channel from
+any shared conversation, and agents outside assistant mode had no rule at all off Slack: a Discord
+or Feishu chat the bot was in was readable from anywhere. The product owner's principle settles both:
+the machine checks whether the person behind the request has access, and that person decides
+whether to share. On the asker's own platform and bot the platform's membership decides; anywhere
+else, and for every console user, the console's own session-visibility predicate does, asked of the
+Control Plane, so no second rule exists to drift from it. Runs a person started read as that person:
+a sub-session as its opener, a patrol or a task as its item's asker, a schedule as its last editor.
+The 1:1 write bar keeps its trigger and is not extended to shared conversations; writes, memory and
+the item ledger are unchanged.

@@ -54,6 +54,8 @@ import type {
   TransferSignReq,
   AgentApprovalRoute,
   AgentApprovalRouted,
+  AgentReadAccess,
+  AgentReadAccessOk,
   GithubReviewResultReport,
   GithubReviewResultOk,
   CodeHostNoteResult,
@@ -1048,6 +1050,16 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected agent/approval-routed, got ${rep.type}`, false)
     }
     return rep.payload as AgentApprovalRouted
+  }
+
+  /** Which of an agent's sessions the console user behind an asker could see, for the read rule (assistant-mode.md §5.5). */
+  async readAccess(payload: AgentReadAccess, orgId?: string): Promise<AgentReadAccessOk> {
+    this.requireReady('agent/read-access')
+    const rep = await this.request('agent/read-access', payload, orgId)
+    if (rep.type !== 'agent/read-access/ok') {
+      throw new WireError('INTERNAL', `expected agent/read-access/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as AgentReadAccessOk
   }
 
   /** Immediate body-free outcome; HookReport repeats it for lost-reply recovery. */

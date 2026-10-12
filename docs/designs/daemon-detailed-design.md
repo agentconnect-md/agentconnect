@@ -1284,58 +1284,56 @@ added it to — so for a long time `getChannelHistory` read the session's own ch
 that, and their split is the point. The **connection** joins a PUBLIC channel on demand
 (`joiningOnRefusal` in `slack/connection.ts`: a call refused with `not_in_channel` is retried
 exactly once after `conversations.join`, `channels:join`; the join cannot enter a private channel,
-DM or group DM, so there the original refusal surfaces). The **ops layer** decides what a tool may
-reach beyond the session's own conversation (`mcp/ops/channel-reach.ts`), on a platform that
-declares `publicChannelReach` in `read-ports.ts`: a public channel is open, while a private
-channel, DM or group DM is reachable only when it IS the conversation the agent was invoked in.
-Membership is not consent — a bot invited into a private channel for one purpose must not make
-that channel readable from every other conversation the same agent is in. The gate reads the
-platform's own description (`conversations.info`) rather than the id's shape, and FAILS CLOSED
-when that description cannot be obtained — the bot may be a member of the private channel behind
-the id, so a timeout or rate limit refuses rather than admits. Only the platform's own "no such
-conversation" (`channel_not_found`) is let through, because it proves the downstream call fails
-identically and its refusal is the more precise one.
-It sits in front of `getChannelHistory` (which gained `channel` / `integrationId` like
-`getThreadHistory`), `getThreadHistory`, and every `channel` form of `sendMessage`; the `toUser`
-DM form names a user, not a channel, and is not gated. Slack's `listChannels` enumerates every
-public channel of the workspace (`conversations.list`) plus the private channels the bot is in, so
-an agent can find the id of a channel it was never added to; the console's membership snapshot
-stays `listBotChannels`. Platforms that declare nothing keep their previous reach.
+DM or group DM, so there the original refusal surfaces). The **ops layer** decides where
+`sendMessage` may post beyond the session's own conversation (`mcp/ops/channel-reach.ts`), on a
+platform that declares `publicChannelReach` in `read-ports.ts`: a public channel is open, while a
+private channel, DM or group DM is reachable only when it IS the conversation the agent was invoked
+in. The gate reads the platform's own description (`conversations.info`) rather than the id's shape,
+and FAILS CLOSED when that description cannot be obtained; only the platform's own "no such
+conversation" (`channel_not_found`) is let through, because it proves the post fails identically.
+It sits in front of every `channel` form of `sendMessage`; the `toUser` DM form names a user, not a
+channel, and is not gated. Reads no longer pass it: they pass the read rule below. Slack's
+`listChannels` enumerates every public channel of the workspace (`conversations.list`) plus the
+private channels the bot is in, so an agent can find the id of a channel it was never added to; the
+console's membership snapshot stays `listBotChannels`. Platforms that declare nothing keep their
+previous reach for posts.
+
+**The read rule** ([assistant-mode.md](assistant-mode.md) §5.5 "Reads") gates every agent's
+channel-addressed reads (`getChannelHistory`, `getThreadHistory`, `getReactions`, `listBookmarks`)
+in the bridge dispatcher before the handler runs, and `recall` the same way: `judgePlaceRead` in
+`mcp/ops/place-gate.ts`. A read of the session's own conversation always passes. Any other source is
+described from the session rows, the integration's snapshot (whose privacy counts only from a
+complete membership listing, or when it says private) and `getChannelInfo`, and judged for every
+person the live turn speaks for (`readAskers`): on the asker's own platform and bot by the platform
+(`channelPrivacy`, `authoritativeMembers`, `workspaceMembers` in `read-ports.ts`, with membership
+and standing cached for 60 seconds in `assistant/place-members.ts`), and anywhere else by the
+Control Plane's session-visibility verdict for the console user behind the asker (`agent/read-access`,
+`read-access-v1`), which needs the agent's sessions in that conversation and fails closed. A turn no
+person is behind reads only public channels on its own bot. The askers are the turn message's sender
+and every message coalesced or steered into it (`QueueEntry.foldedMessages`, recorded before the
+runtime sees the message), a console user for webchat and console continuations, a sub-session's
+opener (in memory), a patrol's or task's item asker, and a CP schedule's `askerUserId`. Every
+refusal is the same opaque "I can't share that here", with a sign-in hint for a chat member who
+linked no console account; an allowed read of a private source carries a `privateSource` note.
 
 For an agent in assistant mode one more gate sits in front of every bridge tool
-(`mcp/ops/place-gate.ts`, [assistant-mode.md](assistant-mode.md) §5.5), on every platform. The
-channel-addressed reads (`getChannelHistory`, `getThreadHistory`, `getReactions`,
-`listBookmarks`) pass the place rule that `recall` uses: a DM, and a channel or group DM whose
-platform `isPrivate` is true, is read only from itself. Privacy comes from the integration's
-conversation snapshot (the membership listing and observed chats) and otherwise from
-`getChannelInfo`; a place whose privacy cannot be read is refused. A DM refusal tells the model to
-answer "ask me in a DM"; every other refusal is the same opaque "I can't share that here" and never
-says that a private place exists or where content lives. The platform writes stay in the current
-conversation: `sendMessage` to a channel or a user, `scheduleMessage`,
-reactions, message deletion and bookmarks name only the session's own conversation and bot,
-`createCanvas` only into it, and `createConversation`, `updateCanvas` and the list writes are
-refused because their conversation is new or cannot be confirmed. The agent-to-agent forms of
-`sendMessage` and the parent-session reply are not platform writes and pass. The gate is an
-intersection: it never widens the reach above, with one exception.
+(`assertAssistantPlaceAccess` in `mcp/ops/place-gate.ts`, [assistant-mode.md](assistant-mode.md)
+§5.5), on every platform. The platform writes stay in the current conversation: `sendMessage` to a
+channel or a user, `scheduleMessage`, reactions, message deletion and bookmarks name only the
+session's own conversation and bot, `createCanvas` only into it, and `createConversation`,
+`updateCanvas` and the list writes are refused because their conversation is new or cannot be
+confirmed. The agent-to-agent forms of `sendMessage` and the parent-session reply are not platform
+writes and pass.
 
-The exception is per-asker scoping. In a person's own 1:1 DM, on a turn that person's own message
-started, a private channel or group DM is read, by name or id, when the person is a member of it
-now; `recall`'s listing never shows one, so only a read widens and marks. The source must be on the
-same platform and bot as the DM, and the platform must declare `authoritativeMembers` in
-`read-ports.ts` (Slack, whose `listMemberIds` follows every `conversations.members` page). The asker
-is the DM's counterpart (`getChannelInfo(...).user`), and the live turn's sender must be that
-person: report rounds, scheduled runs, console continuations, sub-sessions and patrols get the rule
-above. Membership and the counterpart are looked up live and cached for 60 seconds
-(`assistant/place-members.ts`); a lookup that fails is refused like any private place. Only such a
-read is let past the reach gate, and only for that call (`memberRead`). Before it returns anything,
-the read durably marks the session (`assistant_widened_session`). From then on every turn of that
-session, whoever started it, is refused ledger writes, every agent-to-agent `sendMessage` form, and
-platform posts or drafts aimed at another place, until the session is retired: `!new` (a fresh
-coordinate in `append`, a cleared context otherwise) or a purge lifts the mark. The lifted row stays
-with its place, and a read of a session's own place (same-place `recall`, `getChannelHistory`,
-`getThreadHistory`, `getReactions`, `listBookmarks`) where any session was ever marked first marks
-the reader, sub-sessions and patrols included, or is refused when the mark cannot be checked or
-written.
+In assistant mode, a 1:1 conversation (a DM, or webchat) that reads a private channel or group DM
+durably marks its session first (`assistant_widened_session`); a read that cannot take the mark is
+refused. From then on every turn of that session, whoever started it, is refused ledger writes,
+every agent-to-agent `sendMessage` form, and platform posts or drafts aimed at another place, until
+the session is retired: `!new` (a fresh coordinate in `append`, a cleared context otherwise) or a
+purge lifts the mark. The lifted row stays with its place, and a read of a session's own place
+(same-place `recall`, `getChannelHistory`, `getThreadHistory`, `getReactions`, `listBookmarks`)
+where any session was ever marked first marks the reader, sub-sessions and patrols included, or is
+refused when the mark cannot be checked or written.
 
 The join is an **operator switch**, per bot: `Bot.platformConfig.joinPublicChannels` (the
 generic bag, so no migration), flipped by `PATCH /bots/:id` and rendered by the Slack module's

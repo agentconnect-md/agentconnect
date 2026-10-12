@@ -335,6 +335,8 @@ export interface PlatformConnection {
   openDirectMessage?(user: string): Promise<string>
   /** Every current member, all pages; only this port, not the capped `listMembers`, may back `authoritativeMembers`. */
   listMemberIds?(channel: string): Promise<string[]>
+  /** Whether a person is a full member of this bot's workspace, not a guest or an outsider; backs `workspaceMembers`, false when unsure. */
+  isFullMember?(user: string): Promise<boolean>
   /** AUTHORITATIVE bot membership, when the platform can enumerate it
    *  (`membershipEnumeration: 'authoritative'`). `null` ⇒ not answerable now. */
   listBotChannels?(): Promise<PlatformChannelRef[] | null>

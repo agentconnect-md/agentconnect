@@ -171,6 +171,8 @@ export interface CollabCoreHost {
   /** Serialized queue depth and the entry executing now, keyed by logical sessionKey. */
   serialQueue(): ReadonlyMap<string, readonly QueueEntry[]>
   activeGateEntries(): ReadonlyMap<string, QueueEntry>
+  /** A sub-session was opened from the parent session's live turn, whose people it then reads for (assistant-mode.md §5.5). */
+  noteSubsessionOpened?(childKey: string, parentKey: string): void
   /** Background SDK tasks a child may still legitimately be waiting on. */
   sdkLease(): ReadonlyMap<string, { tasks: ReadonlyMap<string, unknown>; armedWakes: number }>
   /** Resolves once no interrupt is still unwinding the agent's turns, so a fresh delivery is admitted again. */
@@ -1144,6 +1146,7 @@ export class CollabCoordinator {
           message: `You already have ${limit} sub-sessions running, the limit. Finish this here or wait for one to report.`
         })
       }
+      this.host.noteSubsessionOpened?.(targetSession, callerKey)
     }
 
     // Fire-and-forget dispatch — mirror handleRelayIm. The wake is async: the tool returns
