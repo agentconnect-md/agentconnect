@@ -20,6 +20,7 @@ export { MEMORY_LAYER_CHOICES, type MemoryLayerChoice } from './types.js'
 /** How long a chat member's linked console account is trusted before the Control Plane is asked again. */
 export const LINKED_PERSON_TTL_MS = 10 * 60_000
 const MAX_LINKED_ENTRIES = 1024
+const MAX_PEER_ENTRIES = 1024
 
 /** A conversation as the layer rule reads it. */
 export interface MemoryPlace {
@@ -29,8 +30,10 @@ export interface MemoryPlace {
   transportScope?: string | null
   /** Its recorded or observed conversation kinds; the strictest wins. */
   kinds: readonly (string | null | undefined)[]
-  /** Platform or console user ids that may be its person, best first: the row's first sender, the turn's sender. */
-  people: readonly (string | null | undefined)[]
+  /** Who typed the message at hand, when a person did. */
+  speaker?: string
+  /** Whoever opened the session, as its row records: a person, or an automation's id that never counts as one. */
+  opener?: string | null
 }
 
 /** The layer a conversation uses and the scope that reaches it. */
@@ -50,13 +53,13 @@ export interface MemoryLayerDeps {
     kind: PlaceKind | undefined,
     integrationId?: string
   ): Promise<SourcePlace>
-  /** Whether the conversation is shared with another organization or holds a detected guest. */
+  /** Whether the agent already knows the conversation is shared with another organization or holds a guest. */
   external(agentId: string, integrationId: string | undefined, channel: string): boolean
   /** The integration's durable tenant scope, part of a chat member's identity. */
   tenantScope(integrationId: string): Promise<string | undefined>
-  /** Who wrote in this conversation before, newest first, when its own row names no person. */
+  /** Who opened the agent's other sessions in this conversation, newest first. */
   earlierSenders(place: MemoryPlace): Promise<string[]>
-  /** A 1:1 DM's other member, from the platform, when nothing recorded names them. */
+  /** The person a 1:1 DM is with, as its platform names them. */
   dmPeer?(integrationId: string, channel: string): Promise<string | undefined>
   /** The console user a chat member linked, or undefined when unlinked; rejects when the Control Plane cannot be asked. */
   linkedConsoleUser(agentId: string, integrationId: string, memberId: string): Promise<string | undefined>
@@ -69,16 +72,26 @@ export interface MemoryLayerDeps {
 /** An id that can stand in an identity: no whitespace, no separator. */
 const usableId = (id: string | null | undefined): id is string => !!id && !/[\s:]/.test(id)
 
-/** The audience test: a public channel confirmed internal shares, a 1:1 DM or a console conversation is its person's, anything else keeps its own. */
-export function layerOfPlace(place: SourcePlace, external: boolean): MemoryLayer {
+// Agent ids are UUIDs (the protocol's AgentId); a schedule's or hook's trigger id carries a colon.
+const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Whether an initiator is a person: never an agent (a patrol's, a task's, another agent's message) or an automation trigger. */
+export function personId(id: string | null | undefined): id is string {
+  return usableId(id) && !AGENT_ID.test(id)
+}
+
+/** The audience test: shared only where an internal audience is confirmed, a 1:1 DM or a console conversation is its person's, anything else keeps its own. */
+export function layerOfPlace(place: SourcePlace, knownExternal: boolean): MemoryLayer {
   if (place.kind === 'webchat' || place.kind === 'dm') return 'person'
-  if (place.kind !== 'channel' || place.private !== false || external) return 'place'
+  // Unknown sharing is not internal: only a listing or a lookup that found no share confirms it.
+  if (place.kind !== 'channel' || place.private !== false || knownExternal || place.external !== false) return 'place'
   return confirmsInternalAudience(place.platform) ? 'shared' : 'place'
 }
 
 export class MemoryLayers {
   private readonly linked = new Map<string, { at: number; consoleUserId: string | null }>()
   private readonly adopted = new Set<string>()
+  private readonly peers = new Map<string, string>()
 
   constructor(private readonly deps: MemoryLayerDeps) {}
 
@@ -123,7 +136,7 @@ export class MemoryLayers {
   async personScope(agentId: string, asker: ReadAsker): Promise<MemoryScope | undefined> {
     const person =
       asker.kind === 'console'
-        ? usableId(asker.userId)
+        ? personId(asker.userId)
           ? { identity: `user:${asker.userId}` }
           : undefined
         : await this.memberIdentity(agentId, asker.platform, asker.integrationId, asker.userId)
@@ -131,20 +144,39 @@ export class MemoryLayers {
     return { agentId, personKey: await this.settle(agentId, person) }
   }
 
-  /** The person a DM or a console conversation belongs to, as an identity. */
+  /** The person a DM or a console conversation belongs to, from what a person did there and never from an automation. */
   private async personOfPlace(
     place: MemoryPlace
   ): Promise<{ identity: string; platformIdentity?: string } | undefined> {
+    const earlier = async () => (await this.deps.earlierSenders(place).catch(() => [])).find(personId)
     if (place.platform === 'webchat') {
-      const owner = place.people.find(usableId)
+      // The conversation's owner opened it; the person typing stands in on its first turn.
+      const owner = [place.opener, place.speaker].find(personId) ?? (await earlier())
       return owner ? { identity: `user:${owner}` } : undefined
     }
     const integrationId = this.deps.integrationFor(place.agentId, place.platform, place.transportScope)
     if (!integrationId) return undefined
-    let uid = place.people.find(usableId)
-    uid ??= (await this.deps.earlierSenders(place).catch(() => [])).find(usableId)
-    if (!uid && this.deps.dmPeer) uid = await this.deps.dmPeer(integrationId, place.channel).catch(() => undefined)
-    return usableId(uid) ? await this.memberIdentity(place.agentId, place.platform, integrationId, uid) : undefined
+    // A 1:1 DM is with one person: whoever typed here, else whom the platform says it is with, else who opened it.
+    let uid = personId(place.speaker) ? place.speaker : undefined
+    uid ??= await this.dmPeer(integrationId, place.channel)
+    if (!uid && personId(place.opener)) uid = place.opener
+    uid ??= await earlier()
+    return uid ? await this.memberIdentity(place.agentId, place.platform, integrationId, uid) : undefined
+  }
+
+  /** The platform's answer on whom a DM is with, kept: it never changes. */
+  private async dmPeer(integrationId: string, channel: string): Promise<string | undefined> {
+    const key = `${integrationId}\u001f${channel}`
+    const known = this.peers.get(key)
+    if (known) return known
+    const peer = await this.deps.dmPeer?.(integrationId, channel).catch(() => undefined)
+    if (!personId(peer)) return undefined
+    this.peers.set(key, peer)
+    if (this.peers.size > MAX_PEER_ENTRIES) {
+      const oldest = this.peers.keys().next().value
+      if (oldest !== undefined) this.peers.delete(oldest)
+    }
+    return peer
   }
 
   /** A chat member's identity: their linked console account when they have one, else their platform identity. */
@@ -155,7 +187,7 @@ export class MemoryLayers {
     uid: string
   ): Promise<{ identity: string; platformIdentity: string } | undefined> {
     const tenant = await this.deps.tenantScope(integrationId).catch(() => undefined)
-    if (!usableId(uid) || !tenant || /\s/.test(tenant)) return undefined
+    if (!personId(uid) || !tenant || /\s/.test(tenant)) return undefined
     const platformIdentity = `${platform}:${tenant}:${uid}`
     const consoleUserId = await this.linkedConsoleUser(agentId, integrationId, uid)
     return { identity: usableId(consoleUserId) ? `user:${consoleUserId}` : platformIdentity, platformIdentity }

@@ -698,13 +698,17 @@ export class TelegramConnection implements PlatformConnection {
 
   // ── MCP MessageGateway: read helpers backing the injected channel tools ──
 
-  async getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }> {
+  async getChannelInfo(
+    channel: string
+  ): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean; user?: string }> {
     const c = await this.bot.api.getChat(channel)
     const privateName = [c.first_name, c.last_name].filter(Boolean).join(' ')
     return {
       id: String(c.id ?? channel),
       name: (c.title ?? c.username ?? privateName) || undefined,
       isIm: c.type === 'private',
+      // A private chat is the person's own: its id is theirs.
+      ...(c.type === 'private' ? { user: String(c.id) } : {}),
       // Only a group or channel with a public @username is open to anyone.
       isPrivate: c.type === 'private' || !c.username
     }

@@ -6,12 +6,13 @@ import { join } from 'node:path'
 import type { SourcePlace } from '../src/assistant/place-access.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
-import { MemoryLayers, layerOfPlace, type MemoryLayerDeps, type MemoryPlace } from '../src/memory/layers.js'
+import { MemoryLayers, layerOfPlace, personId, type MemoryLayerDeps, type MemoryPlace } from '../src/memory/layers.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import { createMemoryReader } from '../src/cp/memory-reader.js'
 import { listChannelMemoryKeys, memoryChannelKey, memoryPersonKey } from '../src/memory/store.js'
 
 const AGENT = 'agent-a'
+const AGENT_UUID = '0b0b0b0b-0000-4000-8000-000000000001'
 const TENANT = 'T-EXAMPLE'
 
 function tree() {
@@ -27,6 +28,10 @@ interface Places {
   /** Chat members who linked a console account, by platform id. */
   linked?: Record<string, string>
   fs?: LocalMemoryFs
+  /** Whom each DM is with, as the platform says. */
+  peers?: Record<string, string>
+  /** Who opened the agent's other sessions in each conversation, newest first. */
+  earlier?: Record<string, string[]>
 }
 
 function layers(p: Places = {}) {
@@ -37,7 +42,8 @@ function layers(p: Places = {}) {
     describe: async (place, kind) => ({ ...place, ...(kind ? { kind } : {}), ...p.described?.[place.channel] }),
     external: (_agent, _int, channel) => p.external?.includes(channel) === true,
     tenantScope: async () => TENANT,
-    earlierSenders: async () => [],
+    earlierSenders: async (at) => p.earlier?.[at.channel] ?? [],
+    dmPeer: async (_int, channel) => p.peers?.[channel],
     linkedConsoleUser,
     memoryTree: () => p.fs,
     now: () => 0
@@ -51,11 +57,10 @@ const place = (over: Partial<MemoryPlace>): MemoryPlace => ({
   channel: 'C1',
   transportScope: null,
   kinds: [],
-  people: [],
   ...over
 })
 
-const PUBLIC = { kind: 'channel' as const, private: false }
+const PUBLIC = { kind: 'channel' as const, private: false, external: false }
 
 describe('which layer a place uses', () => {
   it('shares a public channel only where the platform confirms its audience is the organization', () => {
@@ -67,6 +72,9 @@ describe('which layer a place uses', () => {
       expect(layerOfPlace({ platform, channel: 'G1', ...PUBLIC }, false)).toBe('place')
     expect(layerOfPlace({ platform: 'slack', channel: 'C1', kind: 'channel', private: true }, false)).toBe('place')
     expect(layerOfPlace({ platform: 'slack', channel: 'C1', kind: 'channel' }, false)).toBe('place')
+    // Sharing nobody confirmed is not internal: an unknown or reported share keeps the place's own layer.
+    expect(layerOfPlace({ platform: 'slack', channel: 'C1', kind: 'channel', private: false }, false)).toBe('place')
+    expect(layerOfPlace({ platform: 'slack', channel: 'C1', ...PUBLIC, external: true }, false)).toBe('place')
     expect(layerOfPlace({ platform: 'slack', channel: 'G1', kind: 'group_dm', private: true }, false)).toBe('place')
     expect(layerOfPlace({ platform: 'slack', channel: 'D1', kind: 'dm' }, false)).toBe('person')
   })
@@ -122,11 +130,11 @@ describe('which layer a place uses', () => {
 describe('the person layer', () => {
   it('keys an unlinked DM by the platform identity and a console conversation by the console user', async () => {
     const { layers: l } = layers()
-    expect(await l.resolve(place({ channel: 'D1', kinds: ['dm'], people: ['U1'] }))).toEqual({
+    expect(await l.resolve(place({ channel: 'D1', kinds: ['dm'], speaker: 'U1' }))).toEqual({
       layer: 'person',
       scope: { agentId: AGENT, personKey: memoryPersonKey(`slack:${TENANT}:U1`) }
     })
-    expect(await l.resolve(place({ platform: 'webchat', channel: 'conv-1', people: ['user-1'] }))).toEqual({
+    expect(await l.resolve(place({ platform: 'webchat', channel: 'conv-1', speaker: 'user-1' }))).toEqual({
       layer: 'person',
       scope: { agentId: AGENT, personKey: memoryPersonKey('user:user-1') }
     })
@@ -134,11 +142,11 @@ describe('the person layer', () => {
 
   it("gives a linked person's Slack DM and webchat one folder, asking the Control Plane once", async () => {
     const { layers: l, linkedConsoleUser } = layers({ linked: { U1: 'user-1' } })
-    const dm = await l.resolve(place({ channel: 'D1', kinds: ['dm'], people: ['U1'] }))
-    const web = await l.resolve(place({ platform: 'webchat', channel: 'conv-1', people: ['user-1'] }))
+    const dm = await l.resolve(place({ channel: 'D1', kinds: ['dm'], speaker: 'U1' }))
+    const web = await l.resolve(place({ platform: 'webchat', channel: 'conv-1', speaker: 'user-1' }))
     expect(dm.scope.personKey).toBe(memoryPersonKey('user:user-1'))
     expect(web.scope.personKey).toBe(dm.scope.personKey)
-    await l.resolve(place({ channel: 'D1', kinds: ['dm'], people: ['U1'] }))
+    await l.resolve(place({ channel: 'D1', kinds: ['dm'], speaker: 'U1' }))
     expect(linkedConsoleUser).toHaveBeenCalledTimes(1)
   })
 
@@ -155,12 +163,12 @@ describe('the person layer', () => {
         return deps.linkedConsoleUser(a, i, m)
       }
     })
-    const dm = place({ channel: 'D1', kinds: ['dm'], people: ['U1'] })
+    const dm = place({ channel: 'D1', kinds: ['dm'], speaker: 'U1' })
     expect((await l.resolve(dm)).scope.personKey).toBe(memoryPersonKey('user:user-1'))
     up = false
     clock = 60 * 60_000
     expect((await l.resolve(dm)).scope.personKey).toBe(memoryPersonKey('user:user-1'))
-    expect((await l.resolve(place({ channel: 'D2', kinds: ['dm'], people: ['U2'] }))).scope.personKey).toBe(
+    expect((await l.resolve(place({ channel: 'D2', kinds: ['dm'], speaker: 'U2' }))).scope.personKey).toBe(
       memoryPersonKey(`slack:${TENANT}:U2`)
     )
   })
@@ -171,7 +179,7 @@ describe('the person layer', () => {
     await mem.write(platformScope, 'prefs.md', '- likes tabs')
     const linked: Record<string, string> = {}
     const { layers: l } = layers({ fs, linked })
-    const dm = place({ channel: 'D1', kinds: ['dm'], people: ['U1'] })
+    const dm = place({ channel: 'D1', kinds: ['dm'], speaker: 'U1' })
     expect((await l.resolve(dm)).scope).toEqual(platformScope)
     linked.U1 = 'user-1'
     const now = new MemoryLayers({ ...(l as unknown as { deps: MemoryLayerDeps }).deps, now: () => 60 * 60_000 })
@@ -192,7 +200,7 @@ describe('the person layer', () => {
     await mem.write(platformScope, 'old.md', '- from the DM')
     await mem.write(consoleScope, 'web.md', '- from webchat')
     const { layers: l } = layers({ fs, linked: { U1: 'user-1' } })
-    const scope = (await l.resolve(place({ channel: 'D1', kinds: ['dm'], people: ['U1'] }))).scope
+    const scope = (await l.resolve(place({ channel: 'D1', kinds: ['dm'], speaker: 'U1' }))).scope
     expect(scope).toEqual(consoleScope)
     expect((await mem.read(scope, 'web.md')).content).toBe('- from webchat')
     expect((await mem.read(scope, 'old.md')).content).toBe('')
@@ -204,7 +212,7 @@ describe('the person layer', () => {
     const legacy = { agentId: AGENT, channelKey: memoryChannelKey('D1'), channel: 'D1' }
     await mem.write(legacy, 'notes.md', '- kept per DM before')
     const { layers: l } = layers({ fs })
-    const scope = (await l.resolve(place({ channel: 'D1', kinds: ['dm'], people: ['U1'] }))).scope
+    const scope = (await l.resolve(place({ channel: 'D1', kinds: ['dm'], speaker: 'U1' }))).scope
     expect((await mem.read(scope, 'notes.md')).content).toBe('- kept per DM before')
     expect(await listChannelMemoryKeys(fs)).toEqual([])
   })
@@ -283,5 +291,57 @@ describe('what a session reads and is injected with', () => {
     await expect(reader.list({ agentId: AGENT, personUserId: 'user-1', channelKey: 'C1-abc' })).rejects.toThrow(
       'one layer'
     )
+  })
+
+  it('never takes an agent or an automation for the person a DM is with', () => {
+    expect(personId('U0PERSON')).toBe(true)
+    expect(personId('user_cuid000000000000000000')).toBe(true)
+    expect(personId(AGENT_UUID)).toBe(false)
+    expect(personId('cron:nightly')).toBe(false)
+    expect(personId('hook:repo-events')).toBe(false)
+  })
+
+  it("gives patrol sessions in two people's DMs those two people's layers, never one shared key", async () => {
+    // A patrol's row records the agent as its opener; the platform names whom each DM is with.
+    const { layers: l } = layers({ peers: { D1: 'U1', D2: 'U2' } })
+    const one = await l.resolve(place({ channel: 'D1', kinds: ['dm'], opener: AGENT_UUID }))
+    const two = await l.resolve(place({ channel: 'D2', kinds: ['dm'], opener: AGENT_UUID }))
+    expect(one.scope).toEqual({ agentId: AGENT, personKey: memoryPersonKey(`slack:${TENANT}:U1`) })
+    expect(two.scope).toEqual({ agentId: AGENT, personKey: memoryPersonKey(`slack:${TENANT}:U2`) })
+  })
+
+  it('keeps an automated DM session to the DM itself when nothing names its person', async () => {
+    const { layers: l } = layers({ earlier: { D1: [AGENT_UUID, 'cron:nightly'], D2: [AGENT_UUID] } })
+    const one = await l.resolve(place({ channel: 'D1', kinds: ['dm'], opener: AGENT_UUID }))
+    const two = await l.resolve(place({ channel: 'D2', kinds: ['dm'], opener: AGENT_UUID }))
+    expect(one).toEqual({
+      layer: 'place',
+      scope: { agentId: AGENT, channelKey: memoryChannelKey('D1'), channel: 'D1' }
+    })
+    expect(two.scope.channelKey).toBe(memoryChannelKey('D2'))
+    // An earlier session the person opened there names them.
+    const { layers: m } = layers({ earlier: { D1: [AGENT_UUID, 'U1'] } })
+    expect((await m.resolve(place({ channel: 'D1', kinds: ['dm'], opener: AGENT_UUID }))).scope.personKey).toBe(
+      memoryPersonKey(`slack:${TENANT}:U1`)
+    )
+  })
+
+  it('resolves the same layer at session start and at a later tool call of an automated session', async () => {
+    const { layers: l } = layers({ peers: { D1: 'U1' }, earlier: { D1: ['U1'] } })
+    // Session start: the row does not exist yet and an agent sent the message.
+    const start = await l.resolve(place({ channel: 'D1', kinds: ['dm'] }))
+    // A tool call: the row now names the agent as its opener.
+    const tool = await l.resolve(place({ channel: 'D1', kinds: ['dm'], opener: AGENT_UUID }))
+    expect(tool.scope).toEqual(start.scope)
+    expect(start.scope.personKey).toBe(memoryPersonKey(`slack:${TENANT}:U1`))
+  })
+
+  it("keeps a webchat conversation an agent opened to its owner's layer, or to itself", async () => {
+    const { layers: l } = layers({ earlier: { 'conv-1': [AGENT_UUID, 'user-1'] } })
+    expect(
+      (await l.resolve(place({ platform: 'webchat', channel: 'conv-1', opener: AGENT_UUID }))).scope.personKey
+    ).toBe(memoryPersonKey('user:user-1'))
+    const alone = await l.resolve(place({ platform: 'webchat', channel: 'conv-2', opener: AGENT_UUID }))
+    expect(alone.layer).toBe('place')
   })
 })

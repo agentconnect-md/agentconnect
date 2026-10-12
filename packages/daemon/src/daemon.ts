@@ -371,7 +371,7 @@ import {
   type DreamPlaces
 } from './dream/runner.js'
 import { describePlace, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
-import { PlaceTrust } from './assistant/place-trust.js'
+import { PLACE_SHARE_TTL_MS, PlaceTrust } from './assistant/place-trust.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
   conversationAdmitsAgent,
@@ -421,7 +421,12 @@ import { physicalThreadOf, registerThreadPromotion, threadPromotionFor } from '.
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { sessionLinkSourceFor } from './platforms/link-source.js'
 import { sessionThreadUrlFor } from './platforms/session-links.js'
-import { offersReadPort, platformLabel, reportsSharedConversations } from './platforms/read-ports.js'
+import {
+  confirmsInternalAudience,
+  offersReadPort,
+  platformLabel,
+  reportsSharedConversations
+} from './platforms/read-ports.js'
 import { registerObservedChannels } from './platforms/observed-channels.js'
 import { ObservedChannelsSync, type ObservedChannelsSyncHost } from './platforms/observed-channels-sync.js'
 import { discordObservedChannels } from './platforms/discord/observed-channels.js'
@@ -7930,9 +7935,10 @@ export class Daemon {
     agentId: string,
     place: { platform: string; channel: string; transportScope?: string | null },
     rec?: Pick<SessionRecord, 'conversationKind' | 'triggeredBy'>,
-    msg?: Pick<NormalizedMessage, 'source' | 'sender' | 'isDm' | 'isGroupDm'>
+    msg?: Pick<NormalizedMessage, 'source' | 'sender' | 'isDm' | 'isGroupDm' | 'headless'>
   ): MemoryPlace {
-    const sender = msg && msg.source === 'user' && !msg.sender.isBot ? msg.sender.id : undefined
+    // Only a message a person typed names a person; a patrol, a task, another agent or a schedule never does.
+    const speaker = msg && msg.source === 'user' && !msg.sender.isBot && !msg.headless ? msg.sender.id : undefined
     const observed = msg?.isDm ? (msg.isGroupDm ? 'group_dm' : 'dm') : undefined
     return {
       agentId,
@@ -7940,8 +7946,8 @@ export class Daemon {
       channel: place.channel,
       transportScope: place.transportScope ?? null,
       kinds: [rec?.conversationKind, observed],
-      // The conversation's first sender is its owner; the sender at hand stands in on a session's first turn.
-      people: [rec?.triggeredBy, sender]
+      ...(speaker ? { speaker } : {}),
+      ...(rec?.triggeredBy ? { opener: rec.triggeredBy } : {})
     }
   }
 
@@ -7975,12 +7981,10 @@ export class Daemon {
     return { ...scope, ...(call.layer === 'here' ? { alone: true } : {}), ...turn }
   }
 
-  /** Whether a conversation is shared with another organization or holds a detected guest; one the agent cannot place counts as such. */
+  /** Whether the agent already holds a conversation external (a share or a guest detected); one it cannot place counts as such. */
   private memoryPlaceExternal(agentId: string, integrationId: string | undefined, channel: string): boolean {
     const int = integrationId ? this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId) : undefined
-    if (!int) return true
-    if (conversationTrustLevel(int, channel) === 'external') return true
-    return !!this.channelSnapshots.get(int.id)?.channels.find((c) => c.id === channel)?.externalReason
+    return int === undefined || conversationTrustLevel(int, channel) === 'external'
   }
 
   /** The console user a chat member linked, through the Control Plane mapping the read rule uses; rejects when it cannot be asked. */
@@ -8009,8 +8013,40 @@ export class Daemon {
     const described = await describePlace(place, kind, integrationId, deps)
     if (known === undefined && described.private !== undefined)
       this.conversationPrivacy.set(place.channel, described.private)
+    // A public channel whose sharing nothing said yet is asked once more, on platforms that can confirm it.
+    if (
+      integrationId &&
+      described.kind === 'channel' &&
+      described.private === false &&
+      described.external === undefined &&
+      confirmsInternalAudience(place.platform)
+    ) {
+      const external = await this.memoryShareLookup(integrationId, place.channel)
+      if (external !== undefined) return { ...described, external }
+    }
     return described
   }
+
+  /** Whether the platform reports a conversation shared with another organization now; kept a minute, a failed lookup not at all. */
+  private async memoryShareLookup(integrationId: string, channel: string): Promise<boolean | undefined> {
+    const key = `${integrationId}\u001f${channel}`
+    const hit = this.memoryShares.get(key)
+    if (hit && this.clock.now() - hit.at < PLACE_SHARE_TTL_MS) return hit.external
+    const info = await this.gatewayForIntegration(integrationId)
+      ?.getChannelInfo(channel)
+      .catch(() => undefined)
+    const reason = info && 'externalReason' in info ? info.externalReason : undefined
+    if (reason === undefined) return undefined
+    const external = reason !== null
+    this.memoryShares.delete(key)
+    this.memoryShares.set(key, { at: this.clock.now(), external })
+    if (this.memoryShares.size > 512) {
+      const oldest = this.memoryShares.keys().next().value
+      if (oldest !== undefined) this.memoryShares.delete(oldest)
+    }
+    return external
+  }
+  private readonly memoryShares = new Map<string, { at: number; external: boolean }>()
 
   /** describePlace's inputs for memory: the snapshot row, plus the privacy a channel lookup cached; `isPrivate: true` from either wins. */
   private memoryPlaceDeps(): Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'> {
@@ -8020,7 +8056,11 @@ export class Daemon {
         const row = this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel)
         const looked = this.conversationPrivacy.get(channel)
         const isPrivate = row?.isPrivate === true || looked === true ? true : (row?.isPrivate ?? looked)
-        return { ...(row?.kind ? { kind: row.kind } : {}), ...(isPrivate !== undefined ? { isPrivate } : {}) }
+        return {
+          ...(row?.kind ? { kind: row.kind } : {}),
+          ...(isPrivate !== undefined ? { isPrivate } : {}),
+          ...(row?.externalReason !== undefined ? { externalReason: row.externalReason } : {})
+        }
       }
     }
   }
@@ -8859,9 +8899,10 @@ export class Daemon {
   /** The layer a session's conversation uses and its scope, from the session row. */
   private async memoryLayerOfSession(
     agentId: string,
-    rec: SessionRecord | undefined
+    rec: SessionRecord | undefined,
+    msg?: NormalizedMessage
   ): Promise<ResolvedMemoryLayer | undefined> {
-    return rec ? await this.memoryLayerFor(this.memoryPlaceOf(agentId, rec, rec)) : undefined
+    return rec ? await this.memoryLayerFor(this.memoryPlaceOf(agentId, rec, rec, msg)) : undefined
   }
 
   // Memory scope of a captured turn on replay: the capture names its session outwardly (§1.1); a row
@@ -8887,13 +8928,15 @@ export class Daemon {
     captureTarget?: PreparedExternalMemoryCapture,
     evaluationTurnId = turnId,
     // The logical session and its outward id: the gate is keyed by the former, the capture names the latter.
-    session?: { key: string; outwardSessionId: string }
+    session?: { key: string; outwardSessionId: string },
+    // The turn's message, which names the person when one typed it.
+    msg?: NormalizedMessage
   ): Promise<void> {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
     // The turn goes to its conversation's layer (unified-memory-interface.md §6); a session with no row has none.
     const rec = session ? await this.store.getSession(session.key) : undefined
-    const placed = await this.memoryLayerOfSession(agentId, rec)
+    const placed = await this.memoryLayerOfSession(agentId, rec, msg)
     if (!placed) return
     // The shared layer never takes a capture-excluded turn, checked before distillation and the external outbox alike.
     if (placed.layer === 'shared' && (await this.store.isCaptureExcluded(agentId, session?.key))) return
@@ -17650,7 +17693,8 @@ export class Daemon {
       agent.memory,
       memoryCaptureTarget,
       plan.evaluationTurnId,
-      { key, outwardSessionId: p.outwardSessionId }
+      { key, outwardSessionId: p.outwardSessionId },
+      msg
     )
     evaluation.finishEvaluation('turn.completed', {
       ...(stopReason ? { stopReason } : {}),

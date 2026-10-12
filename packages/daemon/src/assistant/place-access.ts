@@ -18,6 +18,8 @@ export interface SourcePlace extends PlaceRef {
   private?: boolean
   /** Its display name, which the private-source note gives the model. */
   name?: string
+  /** Shared with another organization, as the listing or a lookup said; undefined when neither said. */
+  external?: boolean
   /** The agent's sessions there by outward id, newest first: what a cross-platform read is judged by. */
   sessions?: readonly string[]
 }

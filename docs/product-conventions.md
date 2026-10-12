@@ -1562,9 +1562,14 @@ A run with no person behind it (a schedule, a hook, a patrol, a report round, a 
 from another agent) and a turn that folds several people's messages use the layer of the
 conversation they are in: output landing in someone's DM uses that person's layer, output
 in a channel uses the channel's. A code-host review or any other session that is not a
-conversation uses the shared layer. A conversation that cannot be described yet, as right
-after a restart before its platform answers, keeps a place layer of its own; a shared
-channel still reads its own earlier folder beneath the shared layer.
+conversation uses the shared layer. The person of a DM is whoever typed in it, else whom
+the platform says the DM is with, else whoever opened a session there; an agent or an
+automation is never taken for that person, and a DM whose person cannot be told keeps a
+place layer of its own. A channel shares only when a membership listing or a lookup has
+confirmed it is not shared with another organization. A conversation that cannot be
+described yet, as right after a restart before its platform answers, or whose sharing is
+unknown, keeps a place layer of its own; a shared channel still reads its own earlier
+folder beneath the shared layer.
 
 Per-turn distillation and an explicit "remember this" write to the session's layer with no
 card. "Remember this for everyone" writes to the shared layer. A person may read their own
