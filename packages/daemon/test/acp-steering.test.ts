@@ -66,6 +66,13 @@ describe('steer admission policy', () => {
     expect(steerEligibleEntry({ msg: msg(), coordinationWait: Promise.resolve() })).toBe(false)
   })
 
+  it('queues a message carrying an uploaded file, whose download link a steer cannot deliver', () => {
+    const upload = { id: 'webchat:t1:file:u1', name: 'spec.pdf', mimeType: 'application/pdf', size: 12 }
+    const transfer = { uploadId: '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c', sha256: 'abc' }
+    expect(steerEligibleEntry({ msg: msg({ attachments: [{ ...upload, transfer }] }) })).toBe(false)
+    expect(steerEligibleEntry({ msg: msg({ attachments: [{ ...upload, sourceUrl: 'https://x.test/f' }] }) })).toBe(true)
+  })
+
   const pending = (over: Partial<Pending> = {}): Pending =>
     ({ plan: { sessionKey: 'slack:C1:T1:bot-a' }, promptInFlight: true, ...over }) as unknown as Pending
 

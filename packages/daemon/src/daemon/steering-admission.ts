@@ -17,6 +17,8 @@ type SteerCandidate = Pick<
 export function steerEligibleEntry(entry: SteerCandidate): boolean {
   return (
     entry.msg.source === 'user' &&
+    // A steer carries only the marker, never an upload's download link, so a message with uploads queues.
+    !entry.msg.attachments?.some((attachment) => attachment.transfer !== undefined) &&
     entry.isQueueCmd !== true &&
     entry.hookContext === undefined &&
     entry.callMeta === undefined &&

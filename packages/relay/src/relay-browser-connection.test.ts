@@ -446,6 +446,38 @@ describe('RelayBrowserConnection', () => {
     )
   })
 
+  it("gives peers' context copies the uploaded files' marker, never the uploads themselves", async () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    const file = {
+      uploadId: '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c',
+      name: 'spec.pdf',
+      mimeType: 'application/pdf',
+      size: 12,
+      sha256: Buffer.alloc(32, 1).toString('base64')
+    }
+    const { transport, sent } = build({
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true },
+        { agentId: PEER, daemonId: DAEMON }
+      ]
+    })
+    transport.feed({ text: 'read this', files: [file], targets: [AGENT] })
+    await tick()
+    expect(sent.find((frame) => frame.agentId === AGENT)?.payload).toMatchObject({ op: 'turn', files: [file] })
+    const context = sent.find((frame) => frame.agentId === PEER)?.payload as {
+      op: string
+      post: Record<string, unknown>
+    }
+    expect(context.op).toBe('context')
+    expect(context.post.text).toBe('read this\n[attached: spec.pdf (application/pdf)]')
+    expect(context.post).not.toHaveProperty('files')
+
+    transport.feed({ text: '', files: [file], targets: [AGENT] })
+    await tick()
+    const fileOnly = sent.filter((frame) => frame.agentId === PEER).at(-1)?.payload as { post: { text: string } }
+    expect(fileOnly.post.text).toBe('[attached: spec.pdf (application/pdf)]')
+  })
+
   it('forwards structured mentions inside every per-target rd/msg(turn) payload', async () => {
     const PEER = '22222222-2222-4222-8222-222222222222'
     const { transport, sent } = build({

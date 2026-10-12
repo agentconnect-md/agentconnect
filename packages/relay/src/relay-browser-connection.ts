@@ -19,6 +19,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { selectTurnTargets } from '@agentconnect.md/activation-policy'
+import { attachmentMention } from '@agentconnect.md/message'
 import {
   RelayWebchatOp,
   RD_WEBCHAT_ATTACH_V1,
@@ -376,11 +377,13 @@ export class RelayBrowserConnection implements ChatSink {
 
     // Context copies for the non-targeted participants, so the whole roster sees
     // the conversation at its next activation. Fire-and-forget with postId dedup.
+    // Uploaded files stay with the targeted agents; peers get the `[attached: …]` marker the targeted row carries.
+    const fileMarker = attachmentMention(op.files)
     const contextPost: WebchatPost = {
       postId: post.postId,
       conversationId: this.deps.chatId,
       author: { kind: 'user', user: this.deps.user, ...(this.deps.userId ? { userId: this.deps.userId } : {}) },
-      text: op.text,
+      text: fileMarker ? `${op.text}\n${fileMarker}`.trim() : op.text,
       at: post.at,
       ...(op.attachments?.length ? { attachments: op.attachments } : {})
     }
