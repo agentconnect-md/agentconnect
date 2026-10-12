@@ -3,6 +3,7 @@
 // visible channel post) and every ordering below — record-first, CAS, admission barrier — is
 // load-bearing against a fast worker replying before its record exists.
 import { isAppendCoordinate } from '../session/append-coordinate.js'
+import { deriveTitle } from '../session/derive-title.js'
 import {
   SUBSESSION_COORDINATE_PREFIX,
   isSubsessionCoordinate,
@@ -976,6 +977,7 @@ export class CollabCoordinator {
           text: `From your own main conversation, as a background sub-session: ${req.text}`
         }
       : prepared
+    const subsessionTitle = selfDelegation ? deriveTitle(req.text) : undefined
     const { deliveryId } = event
     const msgId = `agentcall:${coordChannel}:${deliveryId}`
     // Keyed on the CALLEE's coordinate where its conversation appends: this path dispatches a
@@ -1101,6 +1103,8 @@ export class CollabCoordinator {
       ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
       sender: { id: req.callerAgentId, isBot: true },
       text: event.text,
+      // §5.6: a sub-session is born titled by its task, never the wrapper above, as its cards name it.
+      ...(subsessionTitle ? { initialSessionTitle: subsessionTitle } : {}),
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
       isDm: false,
       // A `toAgent`+`channel` wake was preceded by a visible post; carry its real ts so the

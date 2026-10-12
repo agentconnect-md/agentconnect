@@ -7,6 +7,7 @@ import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { subsessionLabel } from '../src/permissions/subsession-approval.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
 import { sessionKey } from '../src/store/local-store.js'
 import * as monotonic from '../src/store/monotonic-ts.js'
@@ -178,8 +179,11 @@ describe('self-delegation: an assistant-mode agent opens a sub-session', () => {
       transportScope: caller.scope,
       headless: true,
       sender: { id: 'bot-a', isBot: true },
-      text: 'From your own main conversation, as a background sub-session: fix the flaky test and open a PR'
+      text: 'From your own main conversation, as a background sub-session: fix the flaky test and open a PR',
+      // Born titled by its task, as its cards name it, never by the wrapper it reads.
+      initialSessionTitle: 'fix the flaky test and open a PR'
     })
+    expect(subsessionLabel(undefined, calls[0]!.msg.text)).toBe(calls[0]!.msg.initialSessionTitle)
     expect(calls[0]!.msg.sessionThread).toBeUndefined()
     expect(isSubsessionCoordinate(calls[0]!.msg.thread)).toBe(true)
     await daemon.stop()
@@ -436,8 +440,12 @@ describe('self-delegation: through the turn engine', () => {
       channel: 'C1',
       thread: dispatched[0]!.msg.thread,
       originSessionId: 'sid-parent-1',
-      needsParentReply: 1
+      needsParentReply: 1,
+      title: 'fix the flaky test and open a PR'
     })
+    // The metadata the console stores for it, which Activity, the Sub-sessions panel and its page show.
+    const listed = await d.sessionMetadataOutbox.sessionListProjection(child.sessionId, 'bot-a')
+    expect(listed).toMatchObject({ title: 'fix the flaky test and open a PR' })
     expect(await d.store.getSessionClassificationByKey(res.targetSession)).not.toHaveProperty('directDestination')
     const report = dispatched.find((c) => c.msg.parentReport === true)!
     expect(report.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate, source: 'agent' })
