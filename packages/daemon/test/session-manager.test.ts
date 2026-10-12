@@ -1888,7 +1888,7 @@ describe('SessionManager', () => {
     await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
     await (await store).setEffortOverride(sessionKey('slack', 'C1', '100.1', 'bot-a'), 'ultracode')
 
-    let allowRuntimeChangesInChat = true
+    let chatActions: 'settings' | 'talk' = 'settings'
     let releaseLoad!: () => void
     const loadGate = new Promise<void>((resolve) => (releaseLoad = resolve))
     let remoteEffort: string | undefined
@@ -1907,13 +1907,13 @@ describe('SessionManager', () => {
     const sm2 = new SessionManager({
       store,
       hostFor: async () => host2,
-      agentById: () => ({ ...agent, allowRuntimeChangesInChat }),
+      agentById: () => ({ ...agent, chatActions }),
       memory
     })
 
     const resumed = sm2.handle('bot-a', msg({ ts: '100.2', text: 'second turn' }))
     await vi.waitFor(() => expect(host2.loadSession).toHaveBeenCalledTimes(1))
-    allowRuntimeChangesInChat = false
+    chatActions = 'talk'
     releaseLoad()
 
     await expect(resumed).resolves.toMatchObject({ sessionId: 'acp-2', created: true })

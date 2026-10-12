@@ -1000,7 +1000,7 @@ describe('a permission card offers every option or sends the request where they 
   it('cards a list the actions block holds, past the five it used to slice to', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const { posted } = slackPending(daemon)
-    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    ;(daemon as any).agents.set('agent-1', { chatActions: 'settings' })
     void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(8))
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     // Eight buttons, not five. The reader sees the whole menu their pick is read against.
@@ -1020,7 +1020,7 @@ describe('a permission card offers every option or sends the request where they 
         threads.push(at)
         return 'ts-1'
       }
-      ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+      ;(daemon as any).agents.set('agent-1', { chatActions: 'settings' })
       void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(2))
       await vi.waitFor(() => expect(threads).toEqual([thread]))
     }
@@ -1031,7 +1031,7 @@ describe('a permission card offers every option or sends the request where they 
     const { pending, posted } = slackPending(daemon)
     const applied: any[] = []
     ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
-    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    ;(daemon as any).agents.set('agent-1', { chatActions: 'settings' })
     void pending
     // One past what the block holds. Truncating reported a pick from a menu the reader could not
     // see the end of as their decision on the FULL request, with the agent unable to tell.
@@ -1056,7 +1056,7 @@ describe('a permission card offers every option or sends the request where they 
     slackPending(daemon)
     const applied: any[] = []
     ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
-    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    ;(daemon as any).agents.set('agent-1', { chatActions: 'settings' })
     const req = { ...permReq(26), toolCall: { toolCallId: 'tc-1', title: 'Run [Approve](https://evil.test/steal)' } }
     await (daemon as any).permissions.onAcpPermission('agent-1', 's1', req)
     const [notice] = applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
@@ -1072,7 +1072,7 @@ describe('a permission card offers every option or sends the request where they 
     const { posted } = slackPending(daemon)
     const applied: any[] = []
     ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
-    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: false })
+    ;(daemon as any).agents.set('agent-1', { chatActions: 'talk' })
     await expect((daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(26))).resolves.toEqual({
       outcome: { outcome: 'cancelled' }
     })
@@ -1086,9 +1086,59 @@ describe('a permission card offers every option or sends the request where they 
     // standard set — still take the editor path exactly as before.
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     slackPending(daemon)
-    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: false })
+    ;(daemon as any).agents.set('agent-1', { chatActions: 'talk' })
     void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(4))
     await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+  })
+})
+
+describe('what people can do in chat decides whether the conversation gets an approval card', () => {
+  const req = {
+    sessionId: 's1',
+    options: [
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+    ],
+    toolCall: { toolCallId: 'tc-1', title: 'Write example.txt' }
+  } as unknown as RequestPermissionRequest
+
+  it.each(['approve', 'settings'] as const)('posts the card at %s, and a click decides', async (level) => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { chatActions: level })
+    const decided = (daemon as any).permissions.onAcpPermission('agent-1', 's1', req)
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
+    await (daemon as any).permissions.handlePermissionChoice({ requestId, optionId: 'allow', actor: { userId: 'U1' } })
+    await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+  })
+
+  it('posts no card when people may only talk to the agent, and holds the request for an editor', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { chatActions: 'talk' })
+    void (daemon as any).permissions.onAcpPermission('agent-1', 's1', req)
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    expect(posted).toEqual([])
+  })
+
+  it.each([
+    { level: 'talk', card: false },
+    { level: 'approve', card: true }
+  ] as const)('cards an MCP tool approval only when people may approve ($level)', async ({ level, card }) => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { chatActions: level })
+    const approval = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('call-1'))
+    if (!card) {
+      await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+      expect(posted).toEqual([])
+      return
+    }
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
+    await expect(approval).resolves.toMatchObject({ action: 'accept' })
   })
 })
 
@@ -1319,7 +1369,7 @@ describe('a Slack answer is re-derived against the card that offered it', () => 
   it('resolves a Codex MCP approval through the persist option its own card offered', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const { posted, updated } = slackPending(daemon)
-    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    ;(daemon as any).agents.set('agent-1', { chatActions: 'settings' })
     const approval = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('call-1'))
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     const [requestId] = (daemon as any).permissions.pendingElicits.keys()
@@ -2343,7 +2393,7 @@ describe('the console decides by the options the request offers (#1969)', () => 
   it('resolves a chat-card request decided from the console by the same option id', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const { posted, updated } = slackPending(daemon)
-    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    ;(daemon as any).agents.set('agent-1', { chatActions: 'settings' })
     const result = (daemon as any).permissions.onAcpPermission('agent-1', 's1', fourOptionReq())
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     const [requestId] = (daemon as any).permissions.pendingApprovals.keys()

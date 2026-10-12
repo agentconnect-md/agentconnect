@@ -44,6 +44,7 @@ import type {
   AgentApiProtocol,
   AssistantModeAdmission,
   AssistantModePolicy,
+  ChatActions,
   HookKind,
   SessionStayedHomeReason,
   ProviderKeyProvider,
@@ -347,7 +348,7 @@ export interface AgentDto {
   showStatusBar: boolean // render Slack's persistent session status row; defaults false
   fastMode: boolean | null // runtime fast mode; null when never set (runtime default)
   permissionMode: string | null // runtime permission/approval mode; null when never set
-  allowRuntimeChangesInChat: boolean // explicit opt-in; defaults false
+  chatActions: ChatActions // what people can do in chat
   pause: boolean | null // operational message-processing toggle; true ⇒ agent skips all messages; null ⇒ not paused
   env: Record<string, string> // the agent's OWN variables
   secretKeys: string[] // names of the agent's write-only secret env vars (values never returned)
@@ -1052,7 +1053,7 @@ export interface UpdateAgentInput {
   showStatusBar?: boolean
   fastMode?: boolean | null
   permissionMode?: string | null
-  allowRuntimeChangesInChat?: boolean
+  chatActions?: ChatActions
   /** Operational message-processing toggle; true ⇒ agent skips all messages; null clears. */
   pause?: boolean | null
   /** #536: self-introduce to peers on a genuine channel join (default off). */
@@ -1271,7 +1272,7 @@ export interface CreateAgentInput {
   showStatusBar?: boolean
   fastMode?: boolean // runtime fast mode toggle
   permissionMode?: string // runtime permission/approval mode
-  allowRuntimeChangesInChat?: boolean
+  chatActions?: ChatActions // absent ⇒ the Control Plane's new-agent default
   pause?: boolean // operational message-processing toggle; true ⇒ agent skips all messages
   env?: Record<string, string>
   secrets?: Record<string, string> // write-only secret env vars (initial set)
@@ -2051,7 +2052,7 @@ export function agentFromDto(d: AgentDto): Agent {
       : {}),
     ...(d.assistantMode ? { assistantMode: d.assistantMode } : {}),
     permissionMode: d.permissionMode ?? '',
-    allowRuntimeChangesInChat: d.allowRuntimeChangesInChat ?? false,
+    chatActions: d.chatActions ?? 'talk',
     env: Object.entries(d.env ?? {}).map(([k, v]) => ({ k, v })),
     secretKeys: d.secretKeys ?? [],
     // Inherited organization rows. Empty on an older CP, which renders exactly as

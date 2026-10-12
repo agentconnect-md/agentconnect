@@ -32,6 +32,7 @@ import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import { activationKey, ACTIVATION_PAIRING_TTL_MS } from '../daemon/helpers.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
 import { formatErr } from '../daemon/text.js'
+import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import { LifecycleCleanupBlockedError, type CallMeta, type Pending, type QueueEntry } from '../daemon/turn-types.js'
 import { appendWebchatTextRow } from './turn-output.js'
 import {
@@ -296,8 +297,7 @@ export class WebchatTransport {
       }
       return { accepted: false, turnId, reason: 'busy' }
     }
-    const initialRuntime =
-      this.host.agents().get(result.agentId)?.allowRuntimeChangesInChat === true ? requestedRuntime : undefined
+    const initialRuntime = chatSettingsAllowed(this.host.agents().get(result.agentId)) ? requestedRuntime : undefined
     const stream = this.createWebchatTurnStream(
       result.agentId,
       chatId,

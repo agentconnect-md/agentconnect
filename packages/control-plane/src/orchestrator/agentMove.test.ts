@@ -71,7 +71,7 @@ function agent(daemonId: string | null): AgentRecord {
     showStatusBar: false,
     fastMode: null,
     permissionMode: null,
-    allowRuntimeChangesInChat: false,
+    chatActions: 'talk',
     pause: null,
     env: {},
     mcpServers: [],

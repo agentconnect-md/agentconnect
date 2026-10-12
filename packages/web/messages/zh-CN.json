@@ -17,10 +17,13 @@
       "daemon": "Daemon 本机凭据",
       "saved": "使用已保存的凭据（Beta）"
     },
-    "runtimeChat": {
-      "label": "允许在聊天中更改",
-      "enabled": "聊天用户可以更改 Runtime 设置并回答审批请求。",
-      "disabled": "只有 Agent 编辑者可以管理 Runtime 设置；聊天用户不能更改设置或回答审批请求。"
+    "chatActions": {
+      "label": "聊天中可以做什么",
+      "option": {
+        "talk": "只能和 agent 对话",
+        "approve": "还能批准工具调用",
+        "settings": "还能批准工具调用和修改设置"
+      }
     },
     "executionStrategy": {
       "label": "执行策略",
@@ -2743,8 +2746,6 @@
         "title": "Runtime",
         "permissionMode": "权限模式",
         "fastMode": "快速模式",
-        "changeInChat": "允许在聊天中更改 Runtime",
-        "allowed": "允许",
         "paused": "已暂停",
         "outputMode": "输出模式",
         "showFooter": "显示页脚",

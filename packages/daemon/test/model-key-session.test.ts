@@ -207,7 +207,7 @@ describe('daemon model-key session lifecycle', () => {
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'openai/gpt-5', env: [], secrets: [] }
     }
     h.daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
@@ -255,7 +255,7 @@ describe('daemon model-key session lifecycle', () => {
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'openai/gpt-5', env: [], secrets: [] }
     }
     daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
@@ -277,7 +277,7 @@ describe('daemon model-key session lifecycle', () => {
     const opencodeAgent = {
       id: 'agent-a',
       runtime: 'opencode',
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'openai/gpt-5', env: [], secrets: [] }
     }
     daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }

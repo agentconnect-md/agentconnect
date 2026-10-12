@@ -105,7 +105,7 @@ describe('Daemon interrupt safety gates', () => {
     })
     const stream = webchatSink()
     await daemon.start()
-    ;(daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get(AGENT_ID).chatActions = 'settings'
 
     try {
       const key = (daemon as any).webchatTransport.webchatSessionKey(CONV_1, AGENT_ID)

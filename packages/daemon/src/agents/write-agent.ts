@@ -766,9 +766,7 @@ export function applySpecFields(
     if (spec.permissionMode === null) delete raw.permissionMode
     else raw.permissionMode = spec.permissionMode
   }
-  if (spec.allowRuntimeChangesInChat !== undefined) {
-    raw.allowRuntimeChangesInChat = spec.allowRuntimeChangesInChat
-  }
+  if (spec.chatActions !== undefined) raw.chatActions = spec.chatActions
   if (spec.pause !== undefined) raw.pause = spec.pause
   if (spec.mcpServers !== undefined) raw.mcpServers = spec.mcpServers
   // Skill sources are CP-owned and self-contained (design: shared-skills.md); mirror

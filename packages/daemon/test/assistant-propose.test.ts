@@ -72,7 +72,7 @@ function scaffold(over: { limits?: Record<string, unknown>; chat?: boolean; exte
         ],
         output: { mode: 'low' },
         permissionMode: 'acceptEdits',
-        ...(a.assistantMode && over.chat !== undefined ? { allowRuntimeChangesInChat: over.chat } : {}),
+        ...(a.assistantMode && over.chat !== undefined ? { chatActions: over.chat ? 'settings' : 'talk' } : {}),
         ...(a.assistantMode ? { assistantMode: a.assistantMode } : {})
       })
     )

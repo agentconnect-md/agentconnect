@@ -134,7 +134,9 @@ async function world(
     cancelTurn,
     store: () => store,
     agents: () =>
-      new Map([[AGENT, { id: AGENT, name: 'Butler', allowRuntimeChangesInChat: over.chatOn === true } as never]]),
+      new Map([
+        [AGENT, { id: AGENT, name: 'Butler', chatActions: over.chatOn === true ? 'approve' : 'talk' } as never]
+      ]),
     pending: () => pending,
     evalHooks: () => ({ emit: vi.fn() }) as never,
     memoryExtraction: () => undefined,
@@ -741,7 +743,7 @@ function scaffold(): string {
           }
         ],
         output: { mode: 'low' },
-        allowRuntimeChangesInChat: true,
+        chatActions: 'settings',
         ...(id === 'bot-a'
           ? { assistantMode: { enabled: true, responsibleUserId: 'user-1', limits: { permissionWaitHours: 1 } } }
           : {})

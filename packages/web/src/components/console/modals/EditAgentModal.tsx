@@ -51,7 +51,7 @@ import {
   type SecretDraft
 } from '@/components/console/EnvSecretsFields'
 import { OutputModeField } from '@/components/console/OutputModeField'
-import { RuntimeChatField } from '@/components/console/RuntimeChatField'
+import { ChatActionsField } from '@/components/console/ChatActionsField'
 import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
 import {
   agentStrategies,
@@ -179,8 +179,8 @@ export default function EditAgentModal({
   const initialFastMode = useRef(agent.fastMode)
   const [permissionMode, setPermissionMode] = useState(permissionModeDefault(agent.runtime))
   const initialPermissionMode = useRef(permissionModeDefault(agent.runtime))
-  const [allowRuntimeChangesInChat, setAllowRuntimeChangesInChat] = useState(agent.allowRuntimeChangesInChat)
-  const initialAllowRuntimeChangesInChat = useRef(agent.allowRuntimeChangesInChat)
+  const [chatActions, setChatActions] = useState(agent.chatActions)
+  const initialChatActions = useRef(agent.chatActions)
   const [introduceOnJoin, setIntroduceOnJoin] = useState(agent.introduceOnJoin)
   const initialIntroduceOnJoin = useRef(agent.introduceOnJoin)
   const [execution, setExecution] = useState(() => agentStrategyValue(agent))
@@ -266,8 +266,8 @@ export default function EditAgentModal({
         initialFastMode.current = dto.fastMode ?? false
         setPermissionMode(dto.permissionMode ?? permissionModeDefault(dto.runtime ?? ''))
         initialPermissionMode.current = dto.permissionMode ?? permissionModeDefault(dto.runtime ?? '')
-        setAllowRuntimeChangesInChat(dto.allowRuntimeChangesInChat ?? false)
-        initialAllowRuntimeChangesInChat.current = dto.allowRuntimeChangesInChat ?? false
+        setChatActions(dto.chatActions ?? 'talk')
+        initialChatActions.current = dto.chatActions ?? 'talk'
         setIntroduceOnJoin(dto.introduceOnJoin ?? false)
         initialIntroduceOnJoin.current = dto.introduceOnJoin ?? false
         // An older CP that names no strategy reads as the unplaced agent's host-only table.
@@ -601,7 +601,7 @@ export default function EditAgentModal({
     ...(showStatusBar !== initialShowStatusBar.current ? { showStatusBar } : {}),
     ...(fastMode !== initialFastMode.current ? { fastMode } : {}),
     ...(permissionMode !== initialPermissionMode.current ? { permissionMode } : {}),
-    ...(allowRuntimeChangesInChat !== initialAllowRuntimeChangesInChat.current ? { allowRuntimeChangesInChat } : {}),
+    ...(chatActions !== initialChatActions.current ? { chatActions } : {}),
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
     // Saved before any move, so it is asked of the saved placement.
     ...(execution !== initialExecution.current ? executionAsk(savedStrategies, execution) : {}),
@@ -890,7 +890,7 @@ export default function EditAgentModal({
                 }}
               />
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-                <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
+                <ChatActionsField className="desktop:col-span-2" value={chatActions} onChange={setChatActions} />
                 {placementStrategies.kind !== 'pool' && (
                   <ExecutionStrategyField
                     options={executionOptions}

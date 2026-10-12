@@ -8,6 +8,7 @@ import {
   AgentRepositorySelector,
   AgentMemoryBinding,
   AssistantModePolicy,
+  ChatActions,
   HookRoutingProjection,
   CompatibleAgentSkillEntry,
   IntegrationCoreEnvelope,
@@ -168,10 +169,8 @@ export const AgentSchema = z.object({
   // runtime-owned strings: claude-acp uses default/acceptEdits/auto/dontAsk/plan,
   // codex-acp uses read-only/agent/agent-full-access.
   permissionMode: z.string().default('default'),
-  // Conversation participants are not authorization principals by default.
-  // Editors may explicitly opt this agent back into chat-side runtime setting
-  // changes (model, effort, permission mode, fast mode) and approval controls.
-  allowRuntimeChangesInChat: z.boolean().default(false),
+  // What people can do in chat; absent ⇒ only talk, so neither in-chat approval cards nor runtime changes.
+  chatActions: ChatActions.default('talk'),
   runtimeOverrides: z
     .object({
       model: z.string().optional(),

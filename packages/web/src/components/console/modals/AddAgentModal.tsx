@@ -3,7 +3,7 @@
 // "props must be serializable" entry-file check on the onClose callback.
 
 import { useEffect, useRef, useState } from 'react'
-import type { AgentModelProvider } from '@agentconnect.md/protocol'
+import type { AgentModelProvider, ChatActions } from '@agentconnect.md/protocol'
 import { ModelProviderField } from '@/components/console/ModelProviderField'
 import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
@@ -70,7 +70,7 @@ import { Button, Icon } from '@/components/ui'
 import { VisibilityField, type SharingValue } from '@/components/console/VisibilityField'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { OutputModeField } from '@/components/console/OutputModeField'
-import { RuntimeChatField } from '@/components/console/RuntimeChatField'
+import { ChatActionsField } from '@/components/console/ChatActionsField'
 import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
 import {
   EnvSecretsFields,
@@ -184,7 +184,7 @@ export default function AddAgentModal({
   const [permissionMode, setPermissionMode] = useState(
     seed.permissionMode ?? permissionModeDefault(FALLBACK_RUNTIME_IDS[0]!)
   )
-  const [allowRuntimeChangesInChat, setAllowRuntimeChangesInChat] = useState(false)
+  const [chatActions, setChatActions] = useState<ChatActions>('approve')
   const [description, setDescription] = useState(seed.description)
   const [daemonId, setDaemonId] = useState(seed.daemonValue)
   // '' until the user picks one, so the placement's default applies.
@@ -881,7 +881,7 @@ export default function AddAgentModal({
         ...(Object.keys(envRecord).length ? { env: envRecord } : {}),
         ...(Object.keys(secretsRecord).length ? { secrets: secretsRecord } : {}),
         permissionMode: selectedPermissionMode,
-        allowRuntimeChangesInChat,
+        chatActions,
         workspace,
         // Atomic restricted-create: the CP intersects sharedWith with org members.
         ...(sharing.visibility === 'restricted'
@@ -1079,7 +1079,7 @@ export default function AddAgentModal({
               }}
             />
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-              <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
+              <ChatActionsField className="desktop:col-span-2" value={chatActions} onChange={setChatActions} />
               {placementStrategies.kind !== 'pool' && (
                 <ExecutionStrategyField options={executionOptions} value={effectiveExecution} onChange={setExecution} />
               )}

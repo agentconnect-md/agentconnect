@@ -23,12 +23,12 @@ function daemonWithLog(): { daemon: Daemon; lines: string[] } {
 }
 
 /** A pending chat permission with no `ts`, so no card update is attempted. */
-function seedPending(daemon: Daemon, allowRuntimeChangesInChat: boolean): void {
+function seedPending(daemon: Daemon, chatActions: 'talk' | 'approve' | 'settings'): void {
   const inner = daemon as never as {
     agents: Map<string, unknown>
     permissions: { pendingApprovals: Map<string, unknown> }
   }
-  inner.agents.set(AGENT, { id: AGENT, allowRuntimeChangesInChat })
+  inner.agents.set(AGENT, { id: AGENT, chatActions })
   inner.permissions.pendingApprovals.set(REQUEST, {
     kind: 'permission',
     agentId: AGENT,
@@ -43,7 +43,7 @@ function seedPending(daemon: Daemon, allowRuntimeChangesInChat: boolean): void {
 describe('chat-side session action audit', () => {
   it('records a refused permission click as an attempt, never as the decision', () => {
     const { daemon, lines } = daemonWithLog()
-    seedPending(daemon, false) // chat authority withdrawn
+    seedPending(daemon, 'talk') // chat authority withdrawn
 
     ;(
       daemon as never as { permissions: { handlePermissionChoice: (i: unknown) => void } }

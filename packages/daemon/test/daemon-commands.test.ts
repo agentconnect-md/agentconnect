@@ -1055,7 +1055,7 @@ describe('Daemon in-conversation commands', () => {
     })
     await daemon.start()
     const conn = makeRoutable(daemon)
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     const store = (daemon as any).store
     const key = SESSION_KEY
 
@@ -1083,7 +1083,7 @@ describe('Daemon in-conversation commands', () => {
     })
     await daemon.start()
     const conn = makeRoutable(daemon)
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     const store = (daemon as any).store
     const key = SESSION_KEY
 
@@ -1165,7 +1165,7 @@ describe('Daemon in-conversation commands', () => {
     expect(await store.getFastModeOverride(key)).toBeUndefined()
     expect(await store.getPermissionModeOverride(key)).toBeUndefined()
 
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
 
     // bare /permission lists Codex's own mode names, not the raw wire ids.
     await (daemon as any).onInboundOutcome(dm('200', '/permission'))
@@ -1195,6 +1195,47 @@ describe('Daemon in-conversation commands', () => {
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
     }, WAIT)
+
+    await daemon.stop()
+  })
+
+  it.each([
+    { level: 'talk', changes: false },
+    { level: 'approve', changes: false },
+    { level: 'settings', changes: true }
+  ] as const)('changes runtime settings from chat only at the settings level ($level)', async ({ level, changes }) => {
+    const host = { ...selectHost(), setSessionFastMode: vi.fn(async () => true) }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    const key = SESSION_KEY
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    ;(daemon as any).agents.get('bot-a').chatActions = level
+
+    // Typed commands.
+    await (daemon as any).onInboundOutcome(dm('200', '/models 2'))
+    expect(await store.getModelOverride(key)).toBe(changes ? 'sonnet' : undefined)
+    if (!changes) expect(conn.postMessage.mock.calls.at(-1)![1]).toContain('Agent editor')
+    await (daemon as any).onInboundOutcome(dm('210', '/effort high'))
+    expect(await store.getEffortOverride(key)).toBe(changes ? 'high' : undefined)
+
+    // The status-bar selects and the status modal funnel through these.
+    const commands = (daemon as any).commands
+    expect(await commands.setPermissionModeByKey(key, 'plan')).toBe(changes)
+    expect(await commands.setFastByKey(key, true)).toBe(changes)
+    expect(await store.getPermissionModeOverride(key)).toBe(changes ? 'plan' : undefined)
+    expect(await store.getFastModeOverride(key)).toBe(changes ? true : undefined)
+
+    // The status modal offers its runtime controls only where they can be used.
+    const info = await (daemon as any).statusInfoFrom('bot-a', key, 'acp-1', { breakdown: true })
+    expect(info.models).toEqual(changes ? ['opus', 'sonnet'] : undefined)
+    expect(info.efforts).toEqual(changes ? ['low', 'medium', 'high'] : undefined)
+    expect(info.permissionModes).toEqual(changes ? ['default', 'plan', 'acceptEdits'] : [])
 
     await daemon.stop()
   })
@@ -2055,7 +2096,7 @@ describe('Slack interactive status bar', () => {
 
     const permissionResolved = vi.fn()
     const permissionRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     await (daemon as any).store.createPermissionRequest({
       id: permissionRequestId,
       agentId: 'bot-a',
@@ -2531,7 +2572,7 @@ describe('Slack interactive status bar', () => {
     })
     await daemon.start()
     routableWithBlocks(daemon)
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     // Simulate the CP sending its console origin on auth/ok (no local webAppUrl config).
     ;(daemon as any).cpWebAppUrl = 'https://console.example.com'
 
@@ -2601,7 +2642,7 @@ describe('Slack interactive status bar', () => {
       hostFactory: () => host as any
     })
     await daemon.start()
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     routableWithBlocks(daemon)
 
     const key = SESSION_KEY
@@ -2668,7 +2709,7 @@ describe('Slack interactive status bar', () => {
       hostFactory: () => host as any
     })
     await daemon.start()
-    ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get('bot-a').chatActions = 'settings'
     routableWithBlocks(daemon)
     const store = (daemon as any).store
     const key = SESSION_KEY
