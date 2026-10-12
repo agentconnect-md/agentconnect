@@ -241,10 +241,10 @@ it('refuses to save with no matching saved key, including an existing unsupporte
 it('shows the saved level of what people can do in chat and saves a new one', async () => {
   await openEditor({ model: 'model-host', chatActions: 'settings' })
   const field = button('What people can do in chat')
-  expect(field.textContent).toBe('Also approve tool calls and change settings')
+  expect(field.textContent).toBe('Talk, approve and change settings')
   await act(async () => field.click())
   const approve = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
-    (option) => option.textContent === 'Also approve tool calls'
+    (option) => option.textContent === 'Talk and approve tool calls'
   )!
   await act(async () => approve.click())
   await act(async () => saveButton().click())

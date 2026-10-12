@@ -9,6 +9,8 @@ export interface FieldSelectOption<T extends string> {
   label: string
   /** A short tag after the label, such as the kind of an entry. */
   tag?: string
+  /** A hover hint on the option, spelling out what choosing it means. */
+  title?: string
 }
 
 const OptionTag = ({ tag }: { tag: string }) => (
@@ -143,6 +145,7 @@ function FieldSelectMenu<T extends string>({
           role="menuitemradio"
           aria-checked={o.value === value}
           tabIndex={-1}
+          title={o.title}
           className={`fopt focus-visible:bg-(--surface-hover) focus-visible:outline-none ${o.value === value ? 'on' : ''}`}
           onClick={() => onPick(o.value)}
         >

@@ -61,11 +61,11 @@ it can tell who someone is.
 Each agent has one setting, **What people can do in chat**. Each level includes the one
 before it:
 
-| Level                                               | People in a conversation may                                                                                                                                     |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Only talk to the agent**                          | Talk to the agent. A tool call that needs approval goes to the agent's editors, in the console or, where the platform supports it, in their own direct messages. |
-| **Also approve tool calls** (a new agent's default) | Also answer a tool call that the agent's permission policy asks about: allow it once, always allow that tool, or deny it.                                        |
-| **Also approve tool calls and change settings**     | Also change the agent's runtime settings from chat: model, effort, permission mode and fast mode.                                                                |
+| Level                                                   | People in a conversation may                                                                                                                                     |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Talk to the agent**                                   | Talk to the agent. A tool call that needs approval goes to the agent's editors, in the console or, where the platform supports it, in their own direct messages. |
+| **Talk and approve tool calls** (a new agent's default) | Also answer a tool call that the agent's permission policy asks about: allow it once, always allow that tool, or deny it.                                        |
+| **Talk, approve and change settings**                   | Also change the agent's runtime settings from chat: model, effort, permission mode and fast mode.                                                                |
 
 Who counts as "people" depends on whether the product can tell who someone is:
 

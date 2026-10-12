@@ -1061,6 +1061,7 @@ export default function AddAgentModal({
               runtimes={runtimeIds}
               readsImage={readsImage}
               requireAvailableModel={savedCredentials}
+              aside={<ChatActionsField value={chatActions} onChange={setChatActions} />}
               onFallbackChange={(target) => {
                 if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
                 setRuntime(target.runtime)
@@ -1079,7 +1080,6 @@ export default function AddAgentModal({
               }}
             />
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-              <ChatActionsField className="desktop:col-span-2" value={chatActions} onChange={setChatActions} />
               {placementStrategies.kind !== 'pool' && (
                 <ExecutionStrategyField options={executionOptions} value={effectiveExecution} onChange={setExecution} />
               )}

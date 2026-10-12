@@ -872,6 +872,7 @@ export default function EditAgentModal({
                 runtimes={runtimeOptions}
                 readsImage={readsImage}
                 requireAvailableModel={savedCredentials}
+                aside={<ChatActionsField value={chatActions} onChange={setChatActions} />}
                 onFallbackChange={(target) => {
                   if (savedCredentials) setModelProvider('auto')
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)
@@ -890,7 +891,6 @@ export default function EditAgentModal({
                 }}
               />
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-                <ChatActionsField className="desktop:col-span-2" value={chatActions} onChange={setChatActions} />
                 {placementStrategies.kind !== 'pool' && (
                   <ExecutionStrategyField
                     options={executionOptions}
