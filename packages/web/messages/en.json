@@ -3149,6 +3149,7 @@
           "approver": "Approver: {name}",
           "expires": "Expires {time}",
           "noApprover": "No one reachable",
+          "inConversation": "anyone who may continue the conversation",
           "approve": "Approve",
           "approveAlways": "Approve and always allow from here to there",
           "discard": "Discard",
@@ -3174,19 +3175,24 @@
           "proposal": {
             "badge": "Proposal",
             "why": "Why: {why}",
+            "details": "Reason and task",
             "item": "For {title}",
             "runsIn": "Runs in {place}",
             "deny": "Deny",
             "approveConfirm": "Run this task now? It reports back in {place}.",
+            "approveConfirmHere": "Run this task now? It reports back in this conversation.",
             "denyConfirm": "Deny this proposal? Nothing is run.",
+            "dismiss": "Dismiss",
             "outcome": {
               "executing": "Approved. It runs in the background and reports back in {place}.",
+              "executingHere": "Approved. It runs in the background and reports back in this conversation.",
               "succeeded": "Approved. It ran and reported back in {place}.",
               "denied": "Denied. Nothing was run.",
               "failed": "Couldn’t run: {reason}. Nothing was run.",
               "outcome_unknown": "Not sure this went through. Check {place}; it won’t be run again.",
               "expired": "Expired. Nothing was run.",
-              "unconfirmedGone": "Couldn’t confirm the decision, and it is no longer waiting. Check {place}; it may have started."
+              "unconfirmedGone": "Couldn’t confirm the decision, and it is no longer waiting. Check {place}; it may have started.",
+              "unconfirmedHere": "Couldn’t confirm the decision, and it is no longer waiting. It may have started."
             }
           }
         },

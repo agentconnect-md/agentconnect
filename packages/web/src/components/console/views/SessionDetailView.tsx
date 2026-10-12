@@ -4991,19 +4991,25 @@ export default function SessionDetailView() {
   // meta row → transcript. Both form factors put the run's numbers behind the
   // same Details popover. Breakpoint differences are CSS-gated (desktop: /
   // max-desktop:), never JS-forked.
-  // Approval requests are an action the user has to answer, so on a live session
-  // they ride inside the sticky composer footer (always above the input, never
-  // scrolled away). A non-live session has no composer — it keeps the top slot.
-  // Either way the strip shows only while something is PENDING; the full history
-  // (answered included) lives behind the header's Requests popover.
+  // The approval strip rides the sticky composer footer on a live session (the top slot otherwise) while something waits; the Requests popover keeps the history.
   const canReviewApprovals = Boolean(owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId)
+  // A webchat conversation's proposals (assistant-mode.md §5.10): whoever may continue it and editors decide them here; the CP refuses anyone else.
+  const conversationProposals = Boolean(
+    isWebchat &&
+    !readOnlySubsession &&
+    featureFlagEnabled('assistant-mode') &&
+    owner?.assistantMode?.enabled === true &&
+    !owner.name.startsWith(MOCK_PREFIX)
+  )
   const approvalCard = (className: string) =>
-    canReviewApprovals && session.agentId ? (
+    (canReviewApprovals || conversationProposals) && session.agentId ? (
       <ApprovalRequestsCard
         key={session.id}
         agentId={session.agentId}
         sessionId={session.realSessionId ?? session.id}
         pendingOnly
+        permissions={canReviewApprovals}
+        proposals={conversationProposals}
         className={className}
       />
     ) : null

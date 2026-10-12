@@ -32,6 +32,7 @@ import { useOrgs } from '@/lib/org-context'
 import { chatPlatformName, chatRoomSigil } from '@/lib/platform-labels'
 import { consoleKeys } from '@/lib/swr-keys'
 import { Button, Icon } from '@/components/ui'
+import { ConfirmStrip } from '@/components/console/ConfirmStrip'
 
 const REFRESH_MS = 30_000
 
@@ -118,40 +119,6 @@ function Quiet({ children }: { children: ReactNode }) {
   return (
     <div className="px-4 py-3 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
       {children}
-    </div>
-  )
-}
-
-/** An inline confirm strip, one responsive row: it wraps under the row's text on a phone. */
-function ConfirmStrip({
-  prompt,
-  confirm,
-  keep,
-  busy,
-  onConfirm,
-  onKeep,
-  tone = 'danger'
-}: {
-  prompt: string
-  confirm: string
-  keep: string
-  busy: boolean
-  onConfirm: () => void
-  onKeep: () => void
-  tone?: 'danger' | 'primary'
-}) {
-  return (
-    <div
-      role="group"
-      className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)"
-    >
-      <span className="min-w-0 flex-1">{prompt}</span>
-      <Button variant={tone} size="xs" disabled={busy} onClick={onConfirm}>
-        {confirm}
-      </Button>
-      <Button variant="secondary" size="xs" disabled={busy} onClick={onKeep}>
-        {keep}
-      </Button>
     </div>
   )
 }
@@ -752,11 +719,13 @@ function DraftRow({
   const proposal = draft.kind === 'task' ? draft.proposal : undefined
   const approver = draft.approver
   const member = approver?.consoleUserId ? members.find((m) => m.userId === approver.consoleUserId) : undefined
-  const approverName = !approver
-    ? t('drafts.noApprover')
-    : approver.kind === 'conversation'
-      ? placeLabel(approver)
-      : (approver.name ?? (member ? memberDisplayName(member) : (approver.userId ?? t('drafts.noApprover'))))
+  const approverName = draft.inConversation
+    ? t('drafts.inConversation')
+    : !approver
+      ? t('drafts.noApprover')
+      : approver.kind === 'conversation'
+        ? placeLabel(approver)
+        : (approver.name ?? (member ? memberDisplayName(member) : (approver.userId ?? t('drafts.noApprover'))))
   // An unconfirmed decision may be tried again only while the draft is still listed as waiting; a proposal left waiting may be approved again.
   const canDecide = !result || ('unconfirmed' in result && pending) || 'busy' in result
 

@@ -2,13 +2,17 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { useTranslations } from 'next-intl'
+import { useFormatter, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
+  ApiError,
   decideAgentPermissionRequest,
+  decideAssistantConversationProposal,
   fetchAgentPermissionRequests,
+  fetchAssistantConversationProposals,
   type AgentPermissionOptionDto,
-  type AgentPermissionRequestDto
+  type AgentPermissionRequestDto,
+  type AssistantConversationProposalDto
 } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
@@ -16,13 +20,23 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { useOptionalNotifications } from '@/lib/notifications'
 import { approvalSourceKey } from '@/lib/approval-notifications'
 import { Button, Icon } from '@/components/ui'
+import { ConfirmStrip } from '@/components/console/ConfirmStrip'
+
+/** How a decision on a conversation's proposal ended here: its outcome, or why it was no longer waiting. */
+interface SettledProposal {
+  proposal: AssistantConversationProposalDto
+  text: string
+  tone: string
+}
 
 export function ApprovalRequestsCard({
   agentId,
   sessionId,
   pendingOnly = false,
   bare = false,
-  className = ''
+  className = '',
+  permissions = true,
+  proposals = false
 }: {
   agentId: string
   sessionId?: string
@@ -31,11 +45,16 @@ export function ApprovalRequestsCard({
   /** Rows only, no card chrome / header / collapse — for embedding in a popover. */
   bare?: boolean
   className?: string
+  /** The agent's permission requests, which only its editors may answer. */
+  permissions?: boolean
+  /** Also this webchat conversation's proposals (assistant-mode.md §5.10), for whoever may continue it and editors; needs `sessionId`. */
+  proposals?: boolean
 }) {
   const t = useTranslations('Agents.detail.integrations')
+  const ta = useTranslations('Agents.detail.activity')
   const { activeOrg, orgPath } = useOrgs()
   const notifications = useOptionalNotifications()
-  const requestsKey = MOCK_MODE ? null : consoleKeys.agentPermissionRequests(activeOrg?.id, agentId)
+  const requestsKey = MOCK_MODE || !permissions ? null : consoleKeys.agentPermissionRequests(activeOrg?.id, agentId)
   const {
     data: allRequests,
     error,
@@ -45,12 +64,25 @@ export function ApprovalRequestsCard({
     refreshInterval: 3_000,
     shouldRetryOnError: false
   })
+  // Who may not decide them is refused once, and SWR stops polling an errored key.
+  const proposalsKey =
+    MOCK_MODE || !proposals || !sessionId
+      ? null
+      : consoleKeys.assistantConversationProposals(activeOrg?.id, agentId, sessionId)
+  const {
+    data: proposalPage,
+    isLoading: proposalsLoading,
+    mutate: mutateProposals
+  } = useSWR(
+    proposalsKey,
+    ([, , , id, conversation]) => fetchAssistantConversationProposals(id as string, conversation as string),
+    { refreshInterval: 3_000, shouldRetryOnError: false }
+  )
+  const [settledProposals, setSettledProposals] = useState<Record<string, SettledProposal>>({})
+  // Decisions sent without an answer: still waiting they say so, gone they may have started.
+  const [unconfirmed, setUnconfirmed] = useState<Record<string, AssistantConversationProposalDto>>({})
   const [busy, setBusy] = useState<string | null>(null)
-  // Collapse follows the pending set by default — nothing to answer, nothing to
-  // show — and a manual toggle only overrides that until the SET changes. Keyed
-  // by the pending ids (not the count): a count can return to its old value with
-  // different requests in it, and a stale "collapsed at 1 pending" must not hide
-  // a genuinely new request.
+  // Collapse follows what is listed, and a toggle overrides it only until the listed ids change: a count can repeat with new rows.
   const [collapseOverride, setCollapseOverride] = useState<{ key: string; collapsed: boolean } | null>(null)
   const [decisionError, setDecisionError] = useState<string | null>(null)
   // A conversation also answers what its background sub-sessions ask (assistant-mode.md §5.6).
@@ -60,16 +92,28 @@ export function ApprovalRequestsCard({
     ? allRequests?.filter((request) => request.sessionId === sessionId || fromSubsession(request))
     : allRequests
   const pendingRequests = sessionRequests?.filter((request) => request.status === 'pending') ?? []
-  const pendingCount = pendingRequests.length
-  const pendingKey = pendingRequests
-    .map((request) => request.id)
+  const listedProposals = proposalPage?.proposals ?? []
+  const pendingProposals = listedProposals.filter((proposal) => !settledProposals[proposal.id])
+  const listedIds = new Set(listedProposals.map((proposal) => proposal.id))
+  // A proposal decided here keeps its row and what happened until dismissed; one sent unanswered and gone may have started.
+  const settledRows: SettledProposal[] = [
+    ...Object.values(settledProposals),
+    ...Object.values(unconfirmed)
+      .filter((proposal) => proposalPage !== undefined && !listedIds.has(proposal.id) && !settledProposals[proposal.id])
+      .map((proposal) => ({
+        proposal,
+        text: ta('drafts.proposal.outcome.unconfirmedHere'),
+        tone: 'text-(--status-paused)'
+      }))
+  ]
+  const pendingCount = pendingRequests.length + pendingProposals.length
+  const pendingKey = [...pendingRequests.map((request) => request.id), ...pendingProposals.map((p) => p.id)]
     .sort()
     .join('\n')
-  // The composer strip only shows what still needs an answer: fully-resolved
-  // history lives behind the header's Requests popover instead.
+  // The composer strip shows what still needs an answer; answered history lives behind the header's Requests popover.
   const requests = pendingOnly ? sessionRequests && pendingRequests : sessionRequests
 
-  if (pendingOnly && pendingCount === 0) return null
+  if (pendingOnly && pendingCount === 0 && settledRows.length === 0) return null
 
   const decide = async (request: AgentPermissionRequestDto, decision: 'allow' | 'deny', optionId?: string) => {
     if (busy || request.status !== 'pending') return
@@ -100,18 +144,71 @@ export function ApprovalRequestsCard({
     }
   }
 
-  const collapsed = collapseOverride?.key === pendingKey ? collapseOverride.collapsed : pendingCount === 0
+  const settleProposal = (proposal: AssistantConversationProposalDto, text: string, tone: string) =>
+    setSettledProposals((prev) => ({ ...prev, [proposal.id]: { proposal, text, tone } }))
+  const dismissProposal = (id: string) => {
+    setSettledProposals(({ [id]: _settled, ...rest }) => rest)
+    setUnconfirmed(({ [id]: _sent, ...rest }) => rest)
+  }
+  // Activity's decision, bound to this conversation: the first answer from any surface wins. Returns a notice for a row still waiting.
+  const decideProposal = async (
+    proposal: AssistantConversationProposalDto,
+    decision: 'approve' | 'deny'
+  ): Promise<string | null> => {
+    if (!sessionId) return null
+    try {
+      const { status, failure } = await decideAssistantConversationProposal(agentId, sessionId, proposal.id, decision)
+      if (status === 'denied') settleProposal(proposal, ta('drafts.proposal.outcome.denied'), 'text-(--text-secondary)')
+      else if (status === 'failed')
+        settleProposal(
+          proposal,
+          ta('drafts.proposal.outcome.failed', { reason: failure ?? ta('drafts.outcome.unknownReason') }),
+          'text-(--status-error)'
+        )
+      else settleProposal(proposal, ta('drafts.proposal.outcome.executingHere'), 'text-(--status-info)')
+      void mutateProposals()
+      return null
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : undefined
+      // The agent runs as many sub-sessions as it may: the proposal keeps waiting, and says why.
+      if (code === 'SUBSESSION_LIMIT') return (err as ApiError).message
+      if (code === 'DECISION_UNCONFIRMED') {
+        setUnconfirmed((prev) => ({ ...prev, [proposal.id]: proposal }))
+        void mutateProposals()
+        return ta('drafts.outcome.unconfirmedWaiting')
+      }
+      const refused =
+        code === 'DRAFT_EXPIRED'
+          ? ta('drafts.proposal.outcome.expired')
+          : code === 'DRAFT_ALREADY_DECIDED'
+            ? ta('drafts.outcome.decided')
+            : err instanceof ApiError && err.status === 404
+              ? ta('drafts.outcome.gone')
+              : null
+      if (!refused) return ta('drafts.decideFailed')
+      settleProposal(proposal, refused, 'text-(--text-secondary)')
+      void mutateProposals()
+      return null
+    }
+  }
+
+  const collapseKey = [pendingKey, ...settledRows.map((row) => row.proposal.id)].join('\n')
+  const collapsed =
+    collapseOverride?.key === collapseKey ? collapseOverride.collapsed : pendingCount === 0 && settledRows.length === 0
+  const permissionRows = requests?.length ?? 0
+  const rowCount = permissionRows + pendingProposals.length + settledRows.length
+  const loading = allRequests === undefined && proposalPage === undefined && (isLoading || proposalsLoading)
 
   const body = (
     <>
-      {isLoading ? (
+      {loading ? (
         <div className="px-3 py-3 font-sans text-[12px] text-(--text-tertiary)">{t('loadingRequests')}</div>
-      ) : error && allRequests === undefined ? (
+      ) : error && allRequests === undefined && rowCount === 0 ? (
         <div className="px-3 py-3 font-sans text-[12px] text-(--text-tertiary)">{t('unavailable')}</div>
-      ) : requests?.length ? (
+      ) : rowCount ? (
         // Capped so a pile of requests can never push the composer off-screen.
         <div className="max-h-[34vh] overflow-y-auto">
-          {requests.map((request, index) => {
+          {requests?.map((request, index) => {
             const allowBusy = busy === `${request.id}:allow`
             const denyBusy = busy === `${request.id}:deny`
             return (
@@ -189,6 +286,23 @@ export function ApprovalRequestsCard({
               </div>
             )
           })}
+          {pendingProposals.map((proposal, index) => (
+            <ProposalRow
+              key={proposal.id}
+              proposal={proposal}
+              first={permissionRows === 0 && index === 0}
+              notice={unconfirmed[proposal.id] ? ta('drafts.outcome.unconfirmedWaiting') : null}
+              onDecide={decideProposal}
+            />
+          ))}
+          {settledRows.map((row, index) => (
+            <SettledProposalRow
+              key={row.proposal.id}
+              settled={row}
+              first={permissionRows === 0 && pendingProposals.length === 0 && index === 0}
+              onDismiss={dismissProposal}
+            />
+          ))}
         </div>
       ) : (
         <div className="px-3 py-3 font-sans text-[12px] text-(--text-tertiary)">{t('noRequests')}</div>
@@ -205,14 +319,13 @@ export function ApprovalRequestsCard({
 
   return (
     <div className={`card overflow-hidden ${className}`}>
-      {/* Collapsed, the card is just this one header row — the pending count stays
-        visible so it can be reopened knowingly. */}
+      {/* Collapsed, the card is one header row whose pending count stays visible. */}
       <div
         className={`flex items-center justify-between px-3 py-[6px] ${collapsed ? '' : 'border-b border-(--border-subtle)'}`}
       >
         <button
           type="button"
-          onClick={() => setCollapseOverride({ key: pendingKey, collapsed: !collapsed })}
+          onClick={() => setCollapseOverride({ key: collapseKey, collapsed: !collapsed })}
           aria-expanded={!collapsed}
           className="flex min-w-0 flex-1 cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 text-left"
         >
@@ -226,6 +339,146 @@ export function ApprovalRequestsCard({
         )}
       </div>
       {collapsed ? null : body}
+    </div>
+  )
+}
+
+/** A patrol's proposal waiting in this conversation: the sentence first, its reason and task folded, Activity's confirm before deciding. */
+function ProposalRow({
+  proposal,
+  first,
+  notice,
+  onDecide
+}: {
+  proposal: AssistantConversationProposalDto
+  first: boolean
+  /** Why the last decision left it waiting. */
+  notice: string | null
+  onDecide: (proposal: AssistantConversationProposalDto, decision: 'approve' | 'deny') => Promise<string | null>
+}) {
+  const t = useTranslations('Agents.detail.activity')
+  const format = useFormatter()
+  const [open, setOpen] = useState(false)
+  const [confirming, setConfirming] = useState<'approve' | 'deny' | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [rowNotice, setRowNotice] = useState<string | null>(null)
+  const shown = rowNotice ?? notice
+
+  const decide = async (decision: 'approve' | 'deny') => {
+    setBusy(true)
+    setRowNotice(null)
+    try {
+      setRowNotice(await onDecide(proposal, decision))
+    } finally {
+      setBusy(false)
+      setConfirming(null)
+    }
+  }
+
+  return (
+    <div
+      className={`px-3 py-2 ${first ? '' : 'border-t border-(--border-subtle)'}`}
+      data-conversation-proposal={proposal.id}
+    >
+      <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
+        <span className="badge w-fit flex-none bg-(--status-info-soft) text-(--status-info)">
+          {t('drafts.proposal.badge')}
+        </span>
+        <span className="min-w-0 break-words font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary) desktop:flex-1">
+          {proposal.sentence}
+        </span>
+      </div>
+      <div className="mt-1 flex flex-col gap-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary) desktop:flex-row desktop:gap-3">
+        {proposal.itemTitle ? <span>{t('drafts.proposal.item', { title: proposal.itemTitle })}</span> : null}
+        <span>
+          {t('drafts.expires', {
+            time: format.dateTime(new Date(proposal.expiresAt), { dateStyle: 'medium', timeStyle: 'short' })
+          })}
+        </span>
+      </div>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="mt-1 flex cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
+      >
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
+        {t('drafts.proposal.details')}
+      </button>
+      {open ? (
+        <div className="mt-1">
+          {proposal.why ? (
+            <div className="break-words font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+              {t('drafts.proposal.why', { why: proposal.why })}
+            </div>
+          ) : null}
+          <div className="mt-1 max-h-[160px] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-2 py-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-primary)">
+            {proposal.task}
+          </div>
+        </div>
+      ) : null}
+      {confirming ? (
+        <ConfirmStrip
+          prompt={confirming === 'deny' ? t('drafts.proposal.denyConfirm') : t('drafts.proposal.approveConfirmHere')}
+          confirm={confirming === 'deny' ? t('drafts.proposal.deny') : t('drafts.approve')}
+          keep={t('drafts.cancel')}
+          busy={busy}
+          tone={confirming === 'deny' ? 'danger' : 'primary'}
+          onConfirm={() => void decide(confirming)}
+          onKeep={() => setConfirming(null)}
+        />
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Button variant="primary" size="xs" onClick={() => setConfirming('approve')}>
+            {t('drafts.approve')}
+          </Button>
+          <Button variant="secondary" size="xs" onClick={() => setConfirming('deny')}>
+            {t('drafts.proposal.deny')}
+          </Button>
+        </div>
+      )}
+      {shown ? (
+        <div role="alert" className="mt-1 font-sans text-[11.5px] text-(--status-paused)">
+          {shown}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/** A proposal decided here, or one no longer waiting: what happened, until dismissed. */
+function SettledProposalRow({
+  settled,
+  first,
+  onDismiss
+}: {
+  settled: SettledProposal
+  first: boolean
+  onDismiss: (id: string) => void
+}) {
+  const t = useTranslations('Agents.detail.activity')
+  return (
+    <div
+      className={`flex items-start gap-2 px-3 py-2 ${first ? '' : 'border-t border-(--border-subtle)'}`}
+      data-conversation-proposal={settled.proposal.id}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="break-words font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+          {settled.proposal.sentence}
+        </div>
+        <div role="status" className={`mt-[2px] font-sans text-[11.5px] font-medium leading-normal ${settled.tone}`}>
+          {settled.text}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => onDismiss(settled.proposal.id)}
+        aria-label={t('drafts.proposal.dismiss')}
+        title={t('drafts.proposal.dismiss')}
+        className="flex h-[22px] w-[22px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+      >
+        <Icon name="x" size={12} />
+      </button>
     </div>
   )
 }

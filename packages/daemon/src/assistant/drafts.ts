@@ -130,6 +130,14 @@ export interface ProposalInput {
   source: AssistantDraftSource
   /** The item's conversation, for its card; absent for one with no integration (webchat). */
   place?: ProposalPlace
+  /** The item lives in a webchat conversation: whoever may continue it decides on its page, so no card is posted. */
+  webchat?: boolean
+}
+
+/** A conversation a console decision is bound to: only a proposal whose item lives there may be decided. */
+export interface DecisionConversation {
+  platform: string
+  channel: string
 }
 
 /** A post `sendMessage` resolved and is about to make. */
@@ -273,15 +281,22 @@ export class AssistantDrafts {
     return true
   }
 
-  /** An editor's decision from the console; the control plane checked the editor, so only the agent must match. */
+  /** A console decision: an editor's, or with `conversation` one made on that webchat conversation's page; the control plane checked the caller, so only the agent and the conversation must match. */
   async decideFromConsole(input: {
     agentId: string
     draftId: string
     choice: AssistantDraftChoice
     decider: { userId: string; name: string | null }
+    conversation?: DecisionConversation
   }): Promise<DraftDecision> {
     const draft = await this.host.ledger().get(input.draftId)
-    if (!draft || draft.agentId !== input.agentId) {
+    const { conversation } = input
+    const elsewhere =
+      conversation !== undefined &&
+      (draft?.action !== 'task' ||
+        draft.target.platform !== conversation.platform ||
+        draft.target.channel !== conversation.channel)
+    if (!draft || draft.agentId !== input.agentId || elsewhere) {
       return { result: 'not-found', status: null, granted: false, failure: null }
     }
     return await this.decide(draft, input.choice, {
@@ -311,39 +326,34 @@ export class AssistantDrafts {
     }
   }
 
-  /** A patrol's proposal (§5.10): carded in its item's conversation, else like a draft with no asker (the responsible user, then the fallback conversation). */
+  /** A patrol's proposal (§5.10): carded in its item's conversation, decided on a webchat conversation's page, else carded like a draft with no asker (the responsible user, then the fallback conversation). */
   async propose(input: ProposalInput): Promise<{ draft: AssistantDraft; approver: string | null }> {
     const id = randomUUID()
     const ledger = this.host.ledger()
+    const record = async (approver: AssistantDraftApprover | null): Promise<AssistantDraft> =>
+      await ledger.createTask({
+        id,
+        agentId: input.agentId,
+        target: input.target,
+        destination: input.destination,
+        task: input.task,
+        sentence: input.sentence,
+        why: input.why,
+        itemId: input.itemId,
+        itemVersion: input.itemVersion,
+        source: input.source,
+        approver,
+        now: this.host.now()
+      })
+    // A webchat conversation has no card: its people decide on its page and editors in Activity, never the responsible user.
+    if (input.webchat)
+      return { draft: await record(placeApprover('', input.target.channel)), approver: APPROVER_LABEL.place }
     // Only a place whose people could ask the agent there gets the card: anyone else could not approve it.
     const place = input.place && (await this.askers(input.agentId, input.place)) ? input.place : undefined
     const routed: Routed | undefined = place
-      ? {
-          rung: 'place',
-          approver: {
-            kind: 'place',
-            integrationId: place.integrationId,
-            channel: place.channel,
-            userId: null,
-            teamId: null,
-            consoleUserId: null
-          }
-        }
+      ? { rung: 'place', approver: placeApprover(place.integrationId, place.channel) }
       : await this.route(input.agentId, id, undefined)
-    const draft = await ledger.createTask({
-      id,
-      agentId: input.agentId,
-      target: input.target,
-      destination: input.destination,
-      task: input.task,
-      sentence: input.sentence,
-      why: input.why,
-      itemId: input.itemId,
-      itemVersion: input.itemVersion,
-      source: input.source,
-      approver: routed?.approver ?? null,
-      now: this.host.now()
-    })
+    const draft = await record(routed?.approver ?? null)
     let carded = await this.card(draft, routed, place?.thread)
     if (carded.mayHaveLanded) {
       // The in-place card may still land, so it is never carded twice: its people decide it, or editors in Activity.
@@ -850,6 +860,16 @@ export async function postAsAgent(
   }
   return await gw.postMessage(target.channel, text, target.thread ?? undefined, identity)
 }
+
+/** Whoever could ask the agent in a proposal's own place; a webchat place has no integration (''). */
+const placeApprover = (integrationId: string, channel: string): AssistantDraftApprover => ({
+  kind: 'place',
+  integrationId,
+  channel,
+  userId: null,
+  teamId: null,
+  consoleUserId: null
+})
 
 /** A grant's end of a place: integration and conversation, never a thread. */
 function grantPlace(place: { platform: string; integrationId: string | null; channel: string }): AssistantGrantPlace {

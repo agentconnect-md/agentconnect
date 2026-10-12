@@ -7,6 +7,7 @@ import {
   ASSISTANT_ACTIVITY_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
+  ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   AGENT_WAKE_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
@@ -75,6 +76,8 @@ describe('registrationFeatures — the console dock reads (git review + write + 
     expect(features).toContain(ASSISTANT_SUBSESSION_PANEL_FEATURE)
     // So is deciding a draft from it: the decision runs the card's own path.
     expect(features).toContain(ASSISTANT_DRAFT_DECISION_FEATURE)
+    // And one webchat conversation's proposals, which an older daemon would answer for every draft.
+    expect(features).toContain(ASSISTANT_CONVERSATION_PROPOSALS_FEATURE)
     // The console's repo scope is likewise unconditional daemon code: whether the agent HAS an
     // additional repository is its spec's business, not something the handshake can promise.
     expect(features).toContain(WORKSPACE_REPO_SCOPE_FEATURE)

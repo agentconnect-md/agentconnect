@@ -67,7 +67,7 @@ export interface AssistantDraftSource {
 /** Who approves: a member addressed in their DM, everyone in the agent's fallback conversation, or whoever could ask the agent in the proposal's own place. */
 export interface AssistantDraftApprover {
   kind: 'member' | 'conversation' | 'place'
-  /** The integration the card is posted and clicked through. */
+  /** The integration the card is posted and clicked through; '' for a webchat place, decided on its page with no card. */
   integrationId: string
   /** The conversation the card lands in: the member's DM, the fallback conversation, or the proposal's place. */
   channel: string
@@ -763,20 +763,24 @@ export class AssistantDraftLedger {
     return rows.length > 0
   }
 
-  /** Drafts still awaiting review and not yet due, the soonest to lapse first; proposals only when asked. */
+  /** Drafts still awaiting review and not yet due, the soonest to lapse first; proposals only when asked, and with `place` only the proposals whose item lives there. */
   async listPending(
     agentId: string,
     limit: number,
     now = Date.now(),
-    opts: { tasks?: boolean } = {}
+    opts: { tasks?: boolean; place?: { platform: string; channel: string } } = {}
   ): Promise<AssistantDraft[]> {
+    const { place } = opts
+    const which = place
+      ? " AND action = 'task' AND targetPlatform = ? AND targetChannel = ?"
+      : opts.tasks
+        ? ''
+        : " AND action = 'post'"
     const rows = (
       await this.db.query(
-        `SELECT * FROM assistant_draft WHERE agentId = ? AND status = 'awaiting_review' AND expiresAt > ?${
-          opts.tasks ? '' : " AND action = 'post'"
-        }
+        `SELECT * FROM assistant_draft WHERE agentId = ? AND status = 'awaiting_review' AND expiresAt > ?${which}
          ORDER BY expiresAt, id LIMIT ?`,
-        [agentId, now, limit]
+        [agentId, now, ...(place ? [place.platform, place.channel] : []), limit]
       )
     ).rows as Row[]
     return rows.map(draftOf)

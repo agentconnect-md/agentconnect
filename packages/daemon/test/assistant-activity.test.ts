@@ -489,6 +489,109 @@ describe('the Activity view: drafts and grants', () => {
   })
 })
 
+describe('the Activity view: one webchat conversation’s proposals', () => {
+  /** A session of agent `agentId` with outward id `sessionId`. */
+  const seedSession = (s: LocalStore, agentId: string, sessionId: string, platform: string, thread: string) =>
+    s.upsertSession({
+      key: sessionKey(platform, 'conv-1', thread, agentId),
+      agentId,
+      platform,
+      channel: 'conv-1',
+      thread,
+      transportScope: null,
+      acpSessionId: `acp-${sessionId}`,
+      sessionId,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+  const proposal = (s: LocalStore, agentId: string, platform: string, channel: string) =>
+    s.assistantDrafts.createTask({
+      agentId,
+      target: { platform, integrationId: platform === 'webchat' ? '' : 'int-a', channel, thread: null },
+      task: 'Rebase PR #12 onto main and push.',
+      sentence: 'I want to rebase PR #12.',
+      why: 'It conflicts with main.',
+      itemId: 'item-1',
+      itemVersion: 1,
+      source: {
+        platform,
+        integrationId: null,
+        channel,
+        thread: 'subsession:patrol-1',
+        transportScope: null,
+        sessionKey: null,
+        sessionId: null,
+        place: false
+      },
+      approver: {
+        kind: 'place',
+        integrationId: platform === 'webchat' ? '' : 'int-a',
+        channel,
+        userId: null,
+        teamId: null,
+        consoleUserId: null
+      },
+      now: 1_000
+    })
+
+  it('lists only that conversation’s proposals, never its permission requests, and nothing for another session', async () => {
+    const { s, a, b, activity, pendingPermissions } = await setup()
+    await seedSession(s, a, 'sid-webchat', 'webchat', 'webchat:conv-1')
+    await seedSession(s, a, 'sid-sub', 'webchat', subsessionCoordinate('1'))
+    await seedSession(s, a, 'sid-slack', 'slack', 'append:1')
+    await seedSession(s, b, 'sid-theirs', 'webchat', 'webchat:conv-1')
+    const here = await proposal(s, a, 'webchat', 'conv-1')
+    await proposal(s, a, 'webchat', 'conv-2')
+    await proposal(s, a, 'slack', 'conv-1')
+    await proposal(s, b, 'webchat', 'conv-1')
+    await s.assistantDrafts.create({ ...draftInput(a), now: 1_000 })
+
+    const page = await read(activity, {
+      agentId: a,
+      operation: 'drafts',
+      limit: 10,
+      permissions: true,
+      conversation: { sessionId: 'sid-webchat' }
+    })
+    expect(page).not.toHaveProperty('permissions')
+    expect(pendingPermissions).not.toHaveBeenCalled()
+    expect(page.drafts).toEqual([
+      expect.objectContaining({ id: here.id, kind: 'task', approver: null, inConversation: true })
+    ])
+    // A sub-session's page, a Slack conversation, another agent's session and an unknown one hold none of them.
+    for (const sessionId of ['sid-sub', 'sid-slack', 'sid-theirs', 'sid-unknown']) {
+      const none = await read(activity, { agentId: a, operation: 'drafts', limit: 10, conversation: { sessionId } })
+      expect(none.drafts).toEqual([])
+    }
+  })
+
+  it('binds a decision to the conversation, and never reaches the draft path for a session that is not one', async () => {
+    const { s, a, activity, decideDraft } = await setup()
+    await seedSession(s, a, 'sid-webchat', 'webchat', 'webchat:conv-1')
+    await seedSession(s, a, 'sid-slack', 'slack', 'append:1')
+    const req = {
+      agentId: a,
+      operation: 'decide-draft' as const,
+      draftId: 'draft-1',
+      choice: 'approve' as const,
+      decider: { userId: 'usr-2', name: 'Grace' }
+    }
+    await activity.write({ ...req, conversation: { sessionId: 'sid-webchat' } })
+    expect(decideDraft).toHaveBeenCalledWith({ ...req, conversation: { platform: 'webchat', channel: 'conv-1' } })
+    for (const sessionId of ['sid-slack', 'sid-unknown']) {
+      expect(await activity.write({ ...req, conversation: { sessionId } })).toEqual({
+        operation: 'decide-draft',
+        result: 'not-found',
+        status: null,
+        granted: false,
+        failure: null
+      })
+    }
+    expect(decideDraft).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('the Activity view: deciding a draft', () => {
   it('hands the decision to the draft path, names the console decider for grant listings, and bounds the failure', async () => {
     const { s, a, activity, decideDraft } = await setup()
