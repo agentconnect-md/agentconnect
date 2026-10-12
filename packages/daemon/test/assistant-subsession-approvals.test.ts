@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { FakeClock } from '@agentconnect.md/connection'
 import { agentHostKey } from '../src/acp/host-key.js'
+import { REPORT_ANSWER_LANGUAGE } from '../src/collab/coordinator.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
 import { Daemon } from '../src/daemon.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
@@ -852,7 +853,7 @@ describe('through the daemon', () => {
     await vi.waitFor(() => expect(reports).toHaveLength(1), WAIT)
     expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }])
     expect(reports[0]!.text).toBe(
-      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). It sent no result; delegate again if the work is still needed.`
+      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     expect((await d.store.listPermissionRequests('bot-a'))[0]).toMatchObject({
       status: 'denied',

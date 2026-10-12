@@ -24,6 +24,10 @@ const INT_B = '11111111-1111-4111-8111-1111111111b1'
 const MINUTE = 60_000
 const PATROL_OPENING = '[patrol] A scheduled, read-only check'
 const TASK_OPENING = '[approved task]'
+const TASK_LANGUAGE =
+  'Write your report in the language the people in the item’s conversation use; without a message of theirs to ' +
+  'go by, use the language of the item’s title and summary.'
+const ANSWER_LANGUAGE = 'Speak to the people here in the language they use, even when this report is in another.'
 const SENTENCE = 'I want to rebase PR #12 because it conflicts with main.'
 const TASK = 'Rebase PR #12 onto main and push.'
 const FALLBACK = { enabled: true, fallbackConversation: { integrationId: INT_A, channelId: 'C0FALLBACK' } }
@@ -432,6 +436,7 @@ describe('an approved proposal runs once', () => {
     expect(task!.msg.text).toContain(TASK_OPENING)
     expect(task!.msg.text).toContain(`Task: ${TASK}`)
     expect(task!.msg.text).toContain(`Item ${item.id}`)
+    expect(task!.msg.text).toContain(`Do exactly this task, nothing more. ${TASK_LANGUAGE}`)
     expect(task!.callMeta).toMatchObject({
       callFrom: 'bot-a',
       hopCount: 0,
@@ -442,7 +447,9 @@ describe('an approved proposal runs once', () => {
 
     // The agent's own permission mode, not a patrol's read-only one, and the runtime's tools unrestricted.
     const host = h.hosts.find((x) => x.prompt.mock.calls.some((c: any) => JSON.stringify(c).includes(TASK_OPENING)))
-    const taskSession = host.prompt.mock.calls.find((c: any) => JSON.stringify(c).includes(TASK_OPENING))[0]
+    const taskPrompt = host.prompt.mock.calls.find((c: any) => JSON.stringify(c).includes(TASK_OPENING))
+    const taskSession = taskPrompt[0]
+    expect(JSON.stringify(taskPrompt[1])).toContain(TASK_LANGUAGE)
     expect(
       host.setSessionPermissionMode.mock.calls.filter((c: any) => c[0] === taskSession).map((c: any) => c[1])
     ).toEqual(['acceptEdits'])
@@ -498,6 +505,7 @@ describe('an approved proposal runs once', () => {
     await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
     await h.settled()
     expect(h.reports()[0]!.msg.text).toMatch(/^\[sub-session ended\] .* stopped before finishing \(error\)/)
+    expect(h.reports()[0]!.msg.text).toContain(`delegate again if the work is still needed.\n\n${ANSWER_LANGUAGE}`)
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'failed', failure: 'it failed' })
     expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain('ended without reporting back')
     await h.daemon.stop()
@@ -931,6 +939,7 @@ describe('a task cut short by a restart or handover', () => {
     expect(h.reports()).toHaveLength(1)
     expect(h.reports()[0]!.msg.text).toContain('Not sure this went through, please check')
     expect(h.reports()[0]!.msg.text).toContain(`item ${item.id}`)
+    expect(h.reports()[0]!.msg.text).toContain(`Tell the people here to check.\n\n${ANSWER_LANGUAGE}`)
     expect(h.reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: place.coordinate })
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'outcome_unknown' })
     expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: 'failed' })

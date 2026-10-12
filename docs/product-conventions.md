@@ -1039,6 +1039,11 @@ making the main conversation private still makes it private. A sub-session canno
 sub-sessions of its own. Only the assistant-mode agent is told about this form; for every
 other agent, and for every other form, a postless self-call is refused as before.
 
+Reports follow the language of the people in the conversation they report to. The conversation
+tells a sub-session which language they use; a patrol or an approved task, which sees none of
+their messages, goes by its item's title and summary. The conversation then answers them in their
+language whatever language a report arrived in. Fixed text on cards is not translated.
+
 While the console's `assistant-mode` flag is on, the session page of a conversation that
 opened sub-sessions has a Sub-sessions tab in its side panel; no other conversation shows it.
 It lists the sub-sessions that conversation opened, newest first and a page at a time, each

@@ -221,6 +221,10 @@ describe('a report into a Slack parent that appends reaches its runtime', () => 
 
       await vi.waitFor(() => expect(b.prompts).toHaveLength(prompted + 1), WAIT)
       expect(b.prompts[prompted]).toContain(text)
+      // Its framing is English, so the parent is told to answer its people in their own language.
+      expect(b.prompts[prompted]).toContain(
+        'Speak to the people here in the language they use, even when this report is in another.'
+      )
     }
     await b.daemon.stop()
   })

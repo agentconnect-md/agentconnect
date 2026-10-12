@@ -135,6 +135,10 @@ function subsessionEndReportOf(json: string | undefined): SubsessionEndReport | 
   }
 }
 
+/** Closes every daemon-authored report, whose own framing is English, so the parent answers in its people's language. */
+export const REPORT_ANSWER_LANGUAGE =
+  'Speak to the people here in the language they use, even when this report is in another.'
+
 /** The one short report a sub-session that ended without its own gets in its parent. */
 function subsessionEndReport(key: string, end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
   const tail = 'It sent no result; delegate again if the work is still needed.'
@@ -641,7 +645,7 @@ export class CollabCoordinator {
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      text,
+      text: `${text}\n\n${REPORT_ANSWER_LANGUAGE}`,
       // Session-only, never a live conversation post (#966).
       parentReport: true,
       mentionedBots: botUserId ? [botUserId] : [],
