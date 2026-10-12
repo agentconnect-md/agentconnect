@@ -1848,8 +1848,9 @@ and delivery rules are documented in [Pull-request feedback continuation](design
 
 ## Agent model credentials
 
-Provider keys are organization-scoped, encrypted and write-only. Immediately after
-Runs on, a self-hosted agent has one compact Credentials row with two choices:
+Provider keys are organization-scoped, encrypted and write-only. On desktop,
+Runs on and Credentials appear side by side in the same row. A self-hosted agent
+has two credential choices:
 Daemon credentials (the default) and Use saved credential (Beta). Only the saved
 credential choice is Beta. With saved credentials, model pickers offer only models
 whose Anthropic or OpenAI key is configured, including Decision rules and their
