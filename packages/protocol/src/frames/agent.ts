@@ -339,6 +339,10 @@ export const ManagedSkillEntry = z
   .strict()
 export type ManagedSkillEntry = z.infer<typeof ManagedSkillEntry>
 
+/** What people can do in chat: talk only, also approve tool calls, or also change runtime settings; each level includes the one before. */
+export const ChatActions = z.enum(['talk', 'approve', 'settings'])
+export type ChatActions = z.infer<typeof ChatActions>
+
 /**
  * The editable agent definition the CP owns and the daemon needs to run it:
  * prompt + runtime selection. The launch protocol carries this config and the
@@ -382,10 +386,8 @@ export const AgentSpec = z.object({
   showStatusBar: z.boolean().optional(), // render Slack's persistent session status row; absent ⇒ leave agent.json unchanged
   fastMode: z.boolean().optional(), // runtime fast mode (ACP `model_config` toggle); absent ⇒ leave runtime default
   permissionMode: z.string().nullable().optional(), // runtime permission/approval mode (ACP `mode` selector); absent ⇒ leave alone, null ⇒ clear
-  // Explicit opt-in: when false, conversation participants cannot change runtime
-  // settings (model, effort, permission mode, fast mode) or answer approval
-  // requests. Agent editors decide pending requests from the console instead.
-  allowRuntimeChangesInChat: z.boolean().optional(),
+  // What people can do in chat (product-conventions.md); absent ⇒ leave agent.json unchanged, and an agent.json without it reads as 'talk'.
+  chatActions: ChatActions.optional(),
   // Operational message-processing toggle (orthogonal to placement). When true the
   // agent stays placed/connected but the daemon skips ALL turn dispatch (platform,
   // webchat, cron). Optional (not defaulted) so an absent value leaves the on-disk

@@ -208,7 +208,7 @@ describe('AgentSchema defaults', () => {
     expect(parsed.output.mode).toBe('low')
     expect(parsed.output.showFooter).toBe(true)
     expect(parsed.output.showStatusBar).toBe(false)
-    expect(parsed.allowRuntimeChangesInChat).toBe(false)
+    expect(parsed.chatActions).toBe('talk')
     expect(parsed.execution).toBe('host')
     expect(parsed.callPolicy).toBe('all')
     expect(parsed.allowedCallerAgentIds).toEqual([])

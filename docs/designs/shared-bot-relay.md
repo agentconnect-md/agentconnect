@@ -645,7 +645,7 @@ route reads nothing else from its request. The webchat token route is the
 console's alone: a key admitted only for `agent:chat` cannot mint a token, so the
 browser socket's other operations, runtime and permission changes, per-turn
 overrides, `targets`, `mentions`, and MCP App calls, are out of the key holder's
-reach. The daemon's `allowRuntimeChangesInChat` gate is unaffected.
+reach. The daemon's `chatActions` gate is unaffected.
 
 | `rd/chat` output            | UI message stream                                                           | AG-UI                                                     |
 | --------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------- |

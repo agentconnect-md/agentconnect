@@ -285,7 +285,7 @@ describe('an elicitation declined for want of a surface says so in the channel',
   it('says nothing for an MCP approval, which has its own notice on the editor path', async () => {
     const { daemon, notices } = slackTurn()
     // Chat approval enabled, so the request reaches the card path rather than the editor queue.
-    daemon.agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    daemon.agents.set('agent-1', { chatActions: 'settings' })
     await expect(
       daemon.permissions.onAcpElicit(
         'agent-1',

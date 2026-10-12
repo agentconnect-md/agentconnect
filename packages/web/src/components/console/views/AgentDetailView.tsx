@@ -307,6 +307,7 @@ function AgentDetail() {
   const decisions = useMemo(() => decisionsPrototype?.decisions ?? [], [decisionsPrototype])
   const permissionT = useTranslations('Common.permissionModes')
   const strategyT = useTranslations('Common.executionStrategy')
+  const chatActionsT = useTranslations('Common.chatActions')
   const strategyNames = useStrategyNames()
   const { orgPath, activeOrg, myRole } = useOrgs()
   const { me } = useProfile()
@@ -1527,16 +1528,16 @@ function AgentDetail() {
                 )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    {t('runtime.changeInChat')}
+                    {chatActionsT('label')}
                   </span>
                   <span
                     className={
-                      da.allowRuntimeChangesInChat
-                        ? 'badge bg-(--brand-soft) text-(--brand-soft-text) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
-                        : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
+                      da.chatActions === 'talk'
+                        ? 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
+                        : 'badge bg-(--brand-soft) text-(--brand-soft-text) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
                     }
                   >
-                    {da.allowRuntimeChangesInChat ? t('runtime.allowed') : t('off')}
+                    {chatActionsT(`option.${da.chatActions}`)}
                   </span>
                 </div>
                 {/* A pool agent has no strategy to show: its boundary is the pod. */}

@@ -136,7 +136,7 @@ const agent = (over: Record<string, unknown> = {}) => ({
   model: '',
   reasoning: '',
   permissionMode: '',
-  allowRuntimeChangesInChat: true,
+  chatActions: 'settings',
   daemon: 'd1',
   status: 'online',
   icon: null,

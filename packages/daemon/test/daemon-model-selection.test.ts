@@ -90,7 +90,7 @@ function scaffold(chat = false) {
           ]
         : [],
       memory: { provider: 'none' },
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'model-standard' },
       modelSelection: {
         decisionId,
@@ -549,25 +549,29 @@ describe('session-pinned Decision model', () => {
     })
   })
 
-  it.each([true, false])('honors a manual runtime pair only with the chat grant (allowed=%s)', async (allowed) => {
-    const { internal, prompted, executionRuntimes, evaluate } = await start(scaffold())
-    internal.agents.get(agentId).allowRuntimeChangesInChat = allowed
-    const done = vi.fn()
-    await internal.webchatTransport.dispatchWebchatTurn(
-      agentId,
-      'manual',
-      'Opening request',
-      { id: 'example-user' },
-      { output: vi.fn(), done },
-      undefined,
-      undefined,
-      { runtime: 'alternative', model: 'model-manual' }
-    )
-    await vi.waitFor(() => expect(done).toHaveBeenCalledOnce())
-    expect(executionRuntimes).toEqual([allowed ? 'alternative' : 'test'])
-    expect(prompted).toEqual([allowed ? 'model-manual' : 'model-capable'])
-    expect(evaluate).toHaveBeenCalledTimes(allowed ? 0 : 1)
-  })
+  it.each(['settings', 'approve', 'talk'] as const)(
+    'honors a manual runtime pair only at the settings level (%s)',
+    async (level) => {
+      const allowed = level === 'settings'
+      const { internal, prompted, executionRuntimes, evaluate } = await start(scaffold())
+      internal.agents.get(agentId).chatActions = level
+      const done = vi.fn()
+      await internal.webchatTransport.dispatchWebchatTurn(
+        agentId,
+        'manual',
+        'Opening request',
+        { id: 'example-user' },
+        { output: vi.fn(), done },
+        undefined,
+        undefined,
+        { runtime: 'alternative', model: 'model-manual' }
+      )
+      await vi.waitFor(() => expect(done).toHaveBeenCalledOnce())
+      expect(executionRuntimes).toEqual([allowed ? 'alternative' : 'test'])
+      expect(prompted).toEqual([allowed ? 'model-manual' : 'model-capable'])
+      expect(evaluate).toHaveBeenCalledTimes(allowed ? 0 : 1)
+    }
+  )
 
   it('isolates selected runtimes across conversations and retains the pair after configuration changes', async () => {
     const { internal, executionRuntimes, started, evaluate, turn } = await start(scaffold())
@@ -752,7 +756,7 @@ describe('session-pinned Decision model', () => {
       expect(second.internal.cpClient.emitEventSession).toHaveBeenLastCalledWith(
         expect.objectContaining(manualSettings)
       )
-      second.internal.agents.get(agentId).allowRuntimeChangesInChat = false
+      second.internal.agents.get(agentId).chatActions = 'talk'
       await second.turn('first', 'Configured settings')
       expect(second.promptSettings.at(-1)).toEqual(expected)
       expect(second.internal.cpClient.emitEventSession).toHaveBeenLastCalledWith(expect.objectContaining(expected))

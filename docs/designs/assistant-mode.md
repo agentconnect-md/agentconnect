@@ -111,9 +111,9 @@ one exists, and does not pretend to defend against effects it cannot defend agai
   channel, anyone whose own message would start a turn of the agent there; in webchat, whoever may
   continue the conversation, from its pending requests. Approving runs the task with the agent's
   own permissions, which is what asking there gets, so it grants nothing more.
-- A runtime permission request inside the task follows the existing in-chat approval rules: with
-  "allow runtime changes in chat" switched on, anyone who sees the card can click; otherwise the
-  console and the editor DM path. That card offers "always allow this tool".
+- A runtime permission request inside the task follows the existing in-chat approval rules: where
+  "What people can do in chat" includes approving tool calls, anyone who sees the card can click;
+  otherwise the console and the editor DM path. That card offers "always allow this tool".
 - The card leads with one plain sentence; the raw arguments are folded underneath.
 - It acts only after approval and reports back. An uncertain outcome is reported as "not sure this
   went through, please look" — never retried. An expired card is never executed.
@@ -171,7 +171,7 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 | Read-only modes                 | Matched by **name** (`read-only`, else `plan`). Claude Code has `plan`; **OpenCode's `read-only` is a daemon-authored agent injected only on the credential-less dream host**, a normal host has native `plan` with bash allowed; **Codex's `read-only` profile opens the network when the managed credential channel is enabled**, so a "read-only" session can run write calls through that channel with no permission request — both are credential problems, not filesystem ones. Dreams use a credential-less host; **per-turn distillation uses the agent's own host** |
 | Runtime versions                | Managed Codex follows a floating release channel (`version: ''`); only probed versions are known                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Workspace isolation             | `isolation: session` applies to git mode only; **scratch is always `shared`, on the pool too**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| In-chat approval                | The in-conversation card does no per-user authorization, hence off by default behind `allowRuntimeChangesInChat`; otherwise the editor path. Both the card and the editor DM **exist on Slack only**, and both bind to a pending ACP request                                                                                                                                                                                                                                                                                                                                 |
+| In-chat approval                | The in-conversation card does no per-user authorization, hence behind `chatActions` at `approve` or above; otherwise the editor path. Both the card and the editor DM **exist on Slack only**, and both bind to a pending ACP request                                                                                                                                                                                                                                                                                                                                        |
 | Context size                    | The daemon has `contextUsed` (usage snapshots) and infers compaction from it; the reminder path `shouldRemind` already handles first turn, restart and compaction                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Slack auto-join                 | `joiningOnRefusal` joins public channels on demand; the join fires `member_joined_channel` and re-reports from the authoritative snapshot                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Pending cards                   | `OrganizationSuggestion`'s card component is reusable; its review route is owner-only and is not                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -480,8 +480,8 @@ below) have shipped, and so has stopping from the main conversation (§5.8).
      DM, §5.5) as a card through the existing two approval paths and listed in Activity; the card
      offers "always allow this tool". **Shipped**, for delegated and `task` sub-sessions (a patrol
      still refuses, §5.9), as the one pending request every surface settles (slack-approval-dm.md
-     §11): a Slack place gets the in-chat card where `allowRuntimeChangesInChat` lets anyone there
-     answer, otherwise a neutral notice plus the editor DM, the notice rewritten in place to how
+     §11): a Slack place gets the in-chat card where `chatActions` (`approve` or above) lets anyone
+     there answer, otherwise a neutral notice plus the editor DM, the notice rewritten in place to how
      the request settled; the card names the sub-session (its title, else its task), links it
      and says how long it waits. It goes to the parent's own thread, or to the conversation's
      root for an `append` conversation, where reports land too. A webchat place has the console:
@@ -705,8 +705,8 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   by the place's live admission and trigger; never a bot. Approving runs the task with the agent's
   own permissions, which is what asking there gets, so it grants nothing more. For an external
   place, the internal member of §5.5; editors always, in Activity. A draft's approvers stay as
-  §5.5 says. `allowRuntimeChangesInChat` is not read: it guards runtime-setting changes and runtime
-  approval controls in chat, a different decision. Cards exist on Slack only; other platforms use
+  §5.5 says. `chatActions` is not read: it guards runtime approval controls and runtime-setting
+  changes in chat, a different decision. Cards exist on Slack only; other platforms use
   the console.
 - Approval ⇒ CAS to `executing`, record the sub-session id and write the marked inbox row in one
   transaction ⇒ open a normal-permission sub-session.
@@ -999,8 +999,8 @@ channel, anyone whose own message would start a turn of the agent, judged at the
 place's live admission and trigger. This grants nothing new. An approved proposal runs a task with
 the agent's own permissions, which is exactly what a person there gets by typing the request, and
 runtime permission requests inside the task still take the normal path. So the approval does not
-read `allowRuntimeChangesInChat`, which guards runtime-setting changes and runtime approval
-controls in chat, a different kind of decision, and it adds no setting. The first version kept
+read `chatActions`, which guards runtime approval controls and runtime-setting changes in chat, a
+different kind of decision, and it adds no setting. The first version kept
 proposals off the in-place card because that card was bound to an ACP request of the
 conversation's own turn. Since #2913 a conversation shows cards for requests its own turn did not
 raise, so that reason no longer holds. The responsible user and the fallback conversation are now

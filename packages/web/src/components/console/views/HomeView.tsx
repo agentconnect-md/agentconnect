@@ -62,6 +62,7 @@ import {
   type SessionImage
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
+import { chatSettingsAllowed } from '@/lib/session-runtime-controls'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
@@ -287,7 +288,7 @@ export default function HomeView() {
           : null
   const { decisions } = useDecisionsPrototype()
   const selectedRuntime = runtime.runtime ?? agent?.runtime ?? ''
-  const runtimeChangesAllowed = agent?.allowRuntimeChangesInChat === true
+  const runtimeChangesAllowed = chatSettingsAllowed(agent)
   const byDecision = !!agent?.modelSelection && !runtime.model && !runtime.runtime
   const selectedDecision = decisions.find((item) => item.id === agent?.modelSelection?.decisionId)
   const runtimeProfile = modelSource?.runtimeModels.find((r) => r.runtime === selectedRuntime)

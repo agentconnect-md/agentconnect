@@ -454,6 +454,27 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     expect(raw.permissionMode).toBeUndefined()
   })
 
+  it('writes what people can do in chat, and an agent.json without it reads as only talking', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      allowRuntimeChangesInChat: true,
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+    // The retired boolean grants nothing.
+    expect(AgentSchema.parse(readJson(file)).chatActions).toBe('talk')
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ chatActions: 'approve' }), deps)
+    expect(AgentSchema.parse(readJson(file)).chatActions).toBe('approve')
+
+    // Absent leaves the written level alone.
+    writeAgentSpec(dir, 'bot-a', baseSpec({ chatActions: undefined }), deps)
+    expect(readJson(file).chatActions).toBe('approve')
+  })
+
   it('leaves runtimeOverrides.model alone when the spec omits model (absent ≠ clear)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

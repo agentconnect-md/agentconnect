@@ -4815,11 +4815,9 @@ export default function SessionDetailView() {
   // Live controls and status folded into the composer toolbar. Webchat `status`
   // frames are authoritative when they include choices. An idle or restored session
   // may not have a live frame, so fall back to the owning daemon's discovered catalog.
-  const allowRuntimeChangesInChat = owner?.allowRuntimeChangesInChat === true
   // A continuation adds human input but never session-global runtime
   // administration — pills stay hidden (§6.5).
-  const runtimeChangesEnabled =
-    !isContinuable && !continuationBlocked && sessionRuntimeChangesEnabled(allowRuntimeChangesInChat, session)
+  const runtimeChangesEnabled = !isContinuable && !continuationBlocked && sessionRuntimeChangesEnabled(owner, session)
   const runtimeSelection = runtimeSelections[session.id]
   const setRuntimeSelection = (patch: {
     runtime?: string

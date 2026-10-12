@@ -23,8 +23,8 @@ When an ACP runtime asks `session/request_permission` (or Codex maps an MCP
 tool approval onto `elicitation/create`), the daemon's
 `PermissionCoordinator` resolves it on one of two paths:
 
-- **Chat path** — only when the agent opts in
-  (`allowRuntimeChangesInChat`) _and_ the session lives on Slack: an
+- **Chat path** — only when the agent lets people in chat approve tool
+  calls (`chatActions` at `approve` or `settings`) _and_ the session lives on Slack: an
   interactive card with one button per ACP option is posted **into the
   session's own conversation** (`awaitChatPermission`,
   `packages/daemon/src/permissions/coordinator.ts`). Anyone who can see the
@@ -57,7 +57,7 @@ Slack→console identity index (§4.4).
 
 ## 2. The trust model — why a DM is the editor path, not the chat path
 
-The in-conversation card is gated by `allowRuntimeChangesInChat` because it
+The in-conversation card is gated by `chatActions` because it
 performs **no per-user authorization**: any conversation participant can
 click it. The DM card is the opposite: its recipient is chosen by the same
 `canEdit` predicate the console decision route enforces
@@ -67,7 +67,7 @@ an Account API link under the user's own session — never an email guess).
 
 So the DM surface is **the editor path delivered over Slack**, and:
 
-- it is **not** gated by `allowRuntimeChangesInChat`;
+- it is **not** gated by `chatActions`;
 - a click on a DM card is honored only when the acting Slack user **is the
   DM's addressed target** and **still passes both gates at click time**
   (§6.3) — routing-time authorization is not an indefinite grant;
@@ -327,8 +327,8 @@ Deny the first `reject_once` (else `reject_always`, else cancels).
 
 ### 6.3 Actor verification on the DM card
 
-`handlePermissionChoice` currently refuses when
-`allowRuntimeChangesInChat` is off. It learns to distinguish card origin:
+`handlePermissionChoice` refuses an in-conversation click when
+`chatActions` is `talk`. It learns to distinguish card origin:
 for a DM-originated request (the coordinator knows — it posted it), the
 gate is replaced by two checks, both required:
 
@@ -467,7 +467,7 @@ Three things genuinely differ per surface, and each stays with its surface:
   console reaches a request only through the CP proxy (§6.2), because the CP is
   never on the hot path.
 - **Who may answer.** For an in-conversation card, anyone who can see it, and
-  only behind `allowRuntimeChangesInChat` (§2). For a DM card, the addressed
+  only behind `chatActions` at `approve` or above (§2). For a DM card, the addressed
   target, re-verified at click time (§6.3). For the console, an Agent editor,
   which the CP decision route enforces before the frame reaches the daemon.
 - **Rendering limits.** Option caps, surfaces with no buttons that take a

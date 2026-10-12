@@ -221,7 +221,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       permissionMode: null,
       showFooter: true,
       showStatusBar: false,
-      allowRuntimeChangesInChat: false,
+      chatActions: 'talk',
       env: {}, // always shipped — an absent env would read as "leave alone" on the daemon
       secrets: {}, // write-only secrets ride the same wire as env; always shipped (even {})
       // The ordering fence full-map env/secret replacement depends on

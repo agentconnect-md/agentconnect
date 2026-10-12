@@ -10,6 +10,7 @@ import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentModelProvider,
   AgentDecisionIds,
+  ChatActions,
   AssistantModeAdmission,
   AssistantModePolicy,
   AgentModelSelection,
@@ -703,7 +704,7 @@ export const CreateAgentBody = z.object({
   showStatusBar: z.boolean().optional(), // persistent Slack session status row (absent ⇒ default false)
   fastMode: z.boolean().optional(), // runtime fast mode toggle
   permissionMode: z.string().min(1).optional(), // runtime permission/approval mode
-  allowRuntimeChangesInChat: z.boolean().optional(), // explicit opt-in; absent ⇒ false
+  chatActions: ChatActions.optional(), // what people can do in chat; absent ⇒ 'approve'
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
   // The strategy sessions run in (session-executors.md §5), checked against the placement's table; absent ⇒ host where it runs, else the first available sandbox.
@@ -761,7 +762,7 @@ export const UpdateAgentBody = z
     showStatusBar: z.boolean().optional(),
     fastMode: z.boolean().nullable().optional(),
     permissionMode: z.string().min(1).nullable().optional(),
-    allowRuntimeChangesInChat: z.boolean().optional(),
+    chatActions: ChatActions.optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
     execution: ExecutorStrategyName.optional(), // the strategy sessions run in, checked against the placement's table
@@ -867,7 +868,7 @@ export const AgentDto = z.object({
   showStatusBar: z.boolean(),
   fastMode: z.boolean().nullable(), // null ⇒ never set (runtime default)
   permissionMode: z.string().nullable(), // null ⇒ never set (runtime default)
-  allowRuntimeChangesInChat: z.boolean(),
+  chatActions: ChatActions,
   pause: z.boolean().nullable(), // null ⇒ not paused (#288)
   // The agent's OWN variables. Unchanged meaning: a row here may be inactive while
   // a same-key organization entry is assigned (the console marks it "Overridden by

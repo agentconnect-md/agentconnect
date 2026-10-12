@@ -833,7 +833,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const { factory, host } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
-    ;(daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get(AGENT_ID).chatActions = 'settings'
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
 
@@ -863,7 +863,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       const runtime = { model: 'b', effort: 'high', permissionMode: 'plan', fastMode: true }
       const { factory, host } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
       const daemon = new Daemon({
-        root: scaffold(undefined, { allowRuntimeChangesInChat: allowed }),
+        root: scaffold(undefined, { chatActions: allowed ? 'settings' : 'talk' }),
         hostFactory: factory
       })
       await daemon.start()
@@ -906,7 +906,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const firstSessionGate = new Promise<void>((resolve) => (releaseFirstSession = resolve))
     const secondSessionGate = new Promise<void>((resolve) => (releaseSecondSession = resolve))
     const configured = {
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'a' },
       reasoningEffort: 'low',
       permissionMode: 'default',
@@ -935,7 +935,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
         // Re-enable in the narrow gap before recreation so the retry itself carries
         // ultracode; the second disable below must fence that awaited retry too.
         const current = (daemon as any).agents.get(AGENT_ID)
-        ;(daemon as any).agents.set(AGENT_ID, { ...current, allowRuntimeChangesInChat: true })
+        ;(daemon as any).agents.set(AGENT_ID, { ...current, chatActions: 'settings' })
       }),
       modelOptions: vi.fn(() => ({ current: 'a', models: ['a', 'b'] })),
       hasSession: vi.fn(() => true),
@@ -964,12 +964,12 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     )
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
 
-    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    writeAgent(root, { ...configured, chatActions: 'talk' })
     await (daemon as any).reconcile()
     releaseFirstSession()
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(2), WAIT)
 
-    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    writeAgent(root, { ...configured, chatActions: 'talk' })
     await (daemon as any).reconcile()
     releaseSecondSession()
     await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
@@ -1002,7 +1002,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
   it('revokes chat-selected runtime settings from an idle warm session', async () => {
     const configured = {
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       runtimeOverrides: { model: 'a' },
       reasoningEffort: 'low',
       permissionMode: 'default',
@@ -1044,7 +1044,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     host.setSessionFastMode.mockClear()
 
     // Turning the gate off must restore every live session, not only an in-flight turn.
-    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    writeAgent(root, { ...configured, chatActions: 'talk' })
     await (daemon as any).reconcile()
     await vi.waitFor(() => {
       expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'a')
@@ -1067,13 +1067,54 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     )
     await vi.waitFor(() => expect(cp.dones).toHaveLength(2), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
-    expect((daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat).toBe(false)
+    expect((daemon as any).agents.get(AGENT_ID).chatActions).toBe('talk')
     await daemon.stop()
   })
 
+  it.each([
+    { from: 'settings', to: 'approve', cleared: true, restored: true, cardsRetired: false },
+    { from: 'settings', to: 'talk', cleared: true, restored: true, cardsRetired: true },
+    { from: 'approve', to: 'settings', cleared: true, restored: false, cardsRetired: false },
+    { from: 'approve', to: 'talk', cleared: false, restored: false, cardsRetired: true },
+    { from: 'talk', to: 'approve', cleared: false, restored: false, cardsRetired: false }
+  ] as const)(
+    'a level change from $from to $to touches overrides only across settings and cards only below approve',
+    async ({ from, to, cleared, restored, cardsRetired }) => {
+      const configured = { runtimeOverrides: { model: 'a' } }
+      const root = scaffold(undefined, { ...configured, chatActions: from })
+      const { factory, host } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
+      const daemon = new Daemon({ root, hostFactory: factory })
+      await daemon.start()
+      const cp = fakeCpClient()
+      ;(daemon as any).cpClient = cp
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'first',
+        { id: 'webchat', name: 'webchat' },
+        cp.sink
+      )
+      await vi.waitFor(() => expect(cp.dones).toHaveLength(1), WAIT)
+      const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+      await (daemon as any).store.setModelOverride(key, 'b')
+      host.setSessionModel.mockClear()
+      const retire = vi.spyOn((daemon as any).permissions, 'disableChatPermissionSurfaces')
+
+      writeAgent(root, { ...configured, chatActions: to })
+      await (daemon as any).reconcile()
+
+      expect((daemon as any).agents.get(AGENT_ID).chatActions).toBe(to)
+      expect(await (daemon as any).store.getModelOverride(key)).toBe(cleared ? undefined : 'b')
+      if (restored) await vi.waitFor(() => expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'a'), WAIT)
+      else expect(host.setSessionModel).not.toHaveBeenCalled()
+      expect(retire).toHaveBeenCalledTimes(cardsRetired ? 1 : 0)
+      await daemon.stop()
+    }
+  )
+
   it('restores the runtime default model and effort when the Agent leaves them unpinned', async () => {
     const configured = {
-      allowRuntimeChangesInChat: true,
+      chatActions: 'settings',
       permissionMode: 'default',
       fastMode: false
     }
@@ -1123,7 +1164,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     host.setSessionEffort.mockClear()
     host.setSessionFastMode.mockClear()
 
-    writeAgent(root, { ...configured, allowRuntimeChangesInChat: false })
+    writeAgent(root, { ...configured, chatActions: 'talk' })
     await (daemon as any).reconcile()
     await vi.waitFor(() => {
       expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'default')
@@ -2308,7 +2349,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    ;(daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat = true
+    ;(daemon as any).agents.get(AGENT_ID).chatActions = 'settings'
 
     const setModel = vi.spyOn((daemon as any).commands, 'setModelByKey')
     const setEffort = vi.spyOn((daemon as any).commands, 'setEffortByKey')

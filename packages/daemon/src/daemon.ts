@@ -167,6 +167,7 @@ import { sessionRetentionMs, type Config, type RuntimeDef } from './config/confi
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
+import { chatApprovalsAllowed, chatSettingsAllowed } from './agents/chat-actions.js'
 import { diffAgents } from './reconciler/reconciler.js'
 import {
   resolveRoot,
@@ -5322,11 +5323,11 @@ export class Daemon {
       const a = change.agent
       const previous = this.agents.get(a.id)
       const wasPaused = previous?.pause === true
-      const chatRuntimeSettingChanged = previous?.allowRuntimeChangesInChat !== a.allowRuntimeChangesInChat
-      if (chatRuntimeSettingChanged) await this.store.clearRuntimeConfigOverrides(a.id)
-      if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
+      // Crossing into or out of 'settings' clears session overrides; dropping below 'approve' retires in-chat approval cards.
+      const settingsLeft = chatSettingsAllowed(previous) && !chatSettingsAllowed(a)
+      if (chatSettingsAllowed(previous) !== chatSettingsAllowed(a)) await this.store.clearRuntimeConfigOverrides(a.id)
+      if (chatApprovalsAllowed(previous) && !chatApprovalsAllowed(a))
         this.permissions.disableChatPermissionSurfaces(a.id)
-      }
       await this.applyMemoryHomeBinding(previous, a as LoadedAgent)
       if (dreamingPolicyOf(previous)?.enabled && !dreamingPolicyOf(a)?.enabled) this.retireDreamStaging(a.id)
       const removed = change.integrations
@@ -5341,9 +5342,7 @@ export class Daemon {
       // "Always allow" grants end when assistant mode is switched off, and no pending card grants across a switch (§5.5).
       if (assistantModeOn(previous) !== assistantModeOn(a)) await this.store.assistantDrafts.resetGrants(a.id)
       for (const integration of removed) await this.interruptAgentTurns(a.id, 'stop', 'terminal', integration.id)
-      if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
-        await this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
-      }
+      if (settingsLeft) await this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
       let workspaceNeedsColdRecovery = change.workspace
       // A GitHub rename changes only the canonical remote URL for the same
       // App-backed repository. Keep active/queued turns and the cached host only
@@ -15492,7 +15491,7 @@ export class Daemon {
       let launchWorkspaceCwd: string | undefined
       if (this.modelSessions.enabled) {
         const currentAgent = this.sessionAgent(agentId, key) ?? agent
-        const manualModel = currentAgent.allowRuntimeChangesInChat
+        const manualModel = chatSettingsAllowed(currentAgent)
           ? (webchat?.runtime?.model ?? (await this.store.getModelOverride(key)))
           : undefined
         const firstTurnModel = manualModel ?? this.selectedSessionModel(run)
@@ -15544,7 +15543,7 @@ export class Daemon {
         entry.initAbort.signal,
         integrationId,
         callMeta?.originSessionId,
-        agent.allowRuntimeChangesInChat ? webchat?.runtime?.effort : undefined,
+        chatSettingsAllowed(agent) ? webchat?.runtime?.effort : undefined,
         // §5.3: the parent asked to be told how this session ends — prompt assembly turns it into
         // a standing directive naming the origin as the reply target.
         callMeta?.needsReply,
@@ -15722,7 +15721,7 @@ export class Daemon {
     const saved = pinnedDecisionTarget(persisted?.decisionModel)
     if (saved) {
       if (
-        agent.allowRuntimeChangesInChat &&
+        chatSettingsAllowed(agent) &&
         entry.webchat?.runtime?.runtime &&
         entry.webchat.runtime.runtime !== saved.runtime
       )
@@ -15733,14 +15732,14 @@ export class Daemon {
     this.sessionRuntimes.delete(key)
     if (persisted && (await this.store.getObservedModel(key)) !== undefined) {
       if (
-        agent.allowRuntimeChangesInChat &&
+        chatSettingsAllowed(agent) &&
         entry.webchat?.runtime?.runtime &&
         entry.webchat.runtime.runtime !== agent.runtime
       )
         throw new Error('Choose a runtime before starting a new session.')
       return
     }
-    const manual = agent.allowRuntimeChangesInChat ? entry.webchat?.runtime : undefined
+    const manual = chatSettingsAllowed(agent) ? entry.webchat?.runtime : undefined
     if (manual?.runtime) {
       const target = { runtime: manual.runtime, model: manual.model ?? '' }
       if (!this.sessionRuntimeSupported(agent, key, target, await candidates()))
@@ -15756,7 +15755,7 @@ export class Daemon {
     let target: DecisionRuntimeTarget | undefined
     let evidence: import('./decisions/model-selection.js').SessionModelEvaluationEvidence | null = null
     const manualModel =
-      manual?.model ?? (agent.allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined)
+      manual?.model ?? (chatSettingsAllowed(agent) ? await this.store.getModelOverride(key) : undefined)
     if (
       !manualModel &&
       client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE) &&
@@ -16024,8 +16023,7 @@ export class Daemon {
     const { key, entry } = run
     const { agentId, webchat } = entry
     const initializedAgent = this.agents.get(agentId)
-    const stagedRuntime =
-      initializedAgent?.allowRuntimeChangesInChat === true && webchat?.runtime ? webchat.runtime : undefined
+    const stagedRuntime = chatSettingsAllowed(initializedAgent) && webchat?.runtime ? webchat.runtime : undefined
     // The key-server host was started for this very model, so it only ever crosses on the
     // shared static host, which has no per-session start to rebind at — persisting it there
     // would leave the session showing an override no prompt could ever honour.
@@ -16460,9 +16458,9 @@ export class Daemon {
     }
     const host = p.selectedHost.host
     const runtimeAgent = this.sessionAgent(agentId, key)
-    const allowRuntimeChangesInChat = runtimeAgent?.allowRuntimeChangesInChat === true
+    const settingsInChat = chatSettingsAllowed(runtimeAgent)
     // Manual choices win over the model pinned when this session started.
-    const override = allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined
+    const override = settingsInChat ? await this.store.getModelOverride(key) : undefined
     const automaticModel = runtimeAgent ? this.selectedSessionModel(run) : undefined
     const selectedModel = override ?? automaticModel
     if (selectedModel && this.modelSessions.crossesHostProvider(key, agentId, selectedModel)) {
@@ -16473,16 +16471,14 @@ export class Daemon {
     }
     // Apply effort after the model, which determines the offered levels.
     const effortOverride =
-      (allowRuntimeChangesInChat ? await this.store.getEffortOverride(key) : undefined) ??
+      (settingsInChat ? await this.store.getEffortOverride(key) : undefined) ??
       (automaticModel ? runtimeAgent?.reasoningEffort : undefined)
     if (effortOverride) {
       await host
         .setSessionEffort(sessionId, effortOverride)
         .catch((err) => this.log.debug(`effort override "${effortOverride}" not applied: ${(err as Error).message}`))
     }
-    const permissionModeOverride = allowRuntimeChangesInChat
-      ? await this.store.getPermissionModeOverride(key)
-      : undefined
+    const permissionModeOverride = settingsInChat ? await this.store.getPermissionModeOverride(key) : undefined
     // assistant-mode.md §5.9: a patrol runs in the runtime's own read-only mode, never the agent's.
     const patrol = isPatrolCoordinate(p.plan.sessionThread)
     const patrolMode = patrol ? readOnlyExtractionMode(host.permissionModeOptions?.(sessionId)?.modes ?? []) : undefined
@@ -16500,7 +16496,7 @@ export class Daemon {
       }
     }
     const fastOverride =
-      (allowRuntimeChangesInChat ? await this.store.getFastModeOverride(key) : undefined) ??
+      (settingsInChat ? await this.store.getFastModeOverride(key) : undefined) ??
       (automaticModel ? runtimeAgent?.fastMode : undefined)
     if (fastOverride !== undefined) {
       await host
@@ -16511,7 +16507,7 @@ export class Daemon {
     // Fence immediately before prompt; a revoked permission must be restored
     // synchronously here, not by reconcile's fire-and-forget live-session sweep.
     const promptAgent = this.sessionAgent(agentId, key)
-    if (webchat?.runtime && promptAgent?.allowRuntimeChangesInChat !== true) {
+    if (webchat?.runtime && !chatSettingsAllowed(promptAgent)) {
       await this.store.clearRuntimeConfigOverrides(agentId)
       await this.applyConfiguredRuntimeSettings(
         promptAgent ?? agent,
@@ -16520,7 +16516,7 @@ export class Daemon {
         promptAgent ? this.selectedSessionModel(run) : undefined
       )
     }
-    return { host, modelOverride: promptAgent?.allowRuntimeChangesInChat ? override : undefined }
+    return { host, modelOverride: chatSettingsAllowed(promptAgent) ? override : undefined }
   }
 
   /** Capture the model for THIS session/turn after sticky overrides are applied, and observe it
@@ -19008,17 +19004,15 @@ export class Daemon {
     const effort = host?.effortOptions?.()
     const permissionMode = host?.permissionModeOptions?.(acpSessionId)
     const fast = host?.fastModeOption?.()
-    const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
+    const settingsInChat = chatSettingsAllowed(agent)
     // Current model: live selector, then sticky/session default, then the runtime's
     // advertised default. Effort keeps the sticky override first because it is the
     // only way an `ultracode` value (which never appears in the live select) is reflected.
-    const effortOverride = allowRuntimeChangesInChat ? await this.store.getEffortOverride(sessionKey) : undefined
-    const modelOverride = allowRuntimeChangesInChat ? await this.store.getModelOverride(sessionKey) : undefined
-    const permissionModeOverride = allowRuntimeChangesInChat
-      ? await this.store.getPermissionModeOverride(sessionKey)
-      : undefined
-    const fastOverride = allowRuntimeChangesInChat ? await this.store.getFastModeOverride(sessionKey) : undefined
-    const currentPermissionMode = allowRuntimeChangesInChat
+    const effortOverride = settingsInChat ? await this.store.getEffortOverride(sessionKey) : undefined
+    const modelOverride = settingsInChat ? await this.store.getModelOverride(sessionKey) : undefined
+    const permissionModeOverride = settingsInChat ? await this.store.getPermissionModeOverride(sessionKey) : undefined
+    const fastOverride = settingsInChat ? await this.store.getFastModeOverride(sessionKey) : undefined
+    const currentPermissionMode = settingsInChat
       ? (permissionMode?.current ?? agent?.permissionMode)
       : (agent?.permissionMode ?? permissionMode?.current)
     return {
@@ -19048,14 +19042,14 @@ export class Daemon {
         : {}),
       // Selectable models / efforts + whether a fast toggle is offered — the modal's
       // dropdowns + toggle. Plus the session id for the deep link.
-      ...(allowRuntimeChangesInChat && models?.length ? { models } : {}),
-      ...(allowRuntimeChangesInChat && effort?.efforts?.length ? { efforts: effort.efforts } : {}),
+      ...(settingsInChat && models?.length ? { models } : {}),
+      ...(settingsInChat && effort?.efforts?.length ? { efforts: effort.efforts } : {}),
       ...(agent
         ? {
-            permissionModes: allowRuntimeChangesInChat && permissionMode?.modes?.length ? permissionMode.modes : []
+            permissionModes: settingsInChat && permissionMode?.modes?.length ? permissionMode.modes : []
           }
         : {}),
-      ...(allowRuntimeChangesInChat && fast ? { fastModeAvailable: true } : {}),
+      ...(settingsInChat && fast ? { fastModeAvailable: true } : {}),
       // Steerable while this host owns the live session and advertised `_session/steering`.
       ...(this.cfg.features.sessionSteering && modelSessionIsLive && host?.steeringSupported?.() === true
         ? { steerable: true }

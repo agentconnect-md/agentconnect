@@ -197,7 +197,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         outputMode: 'medium',
         showFooter: true,
         showStatusBar: false,
-        allowRuntimeChangesInChat: false,
+        chatActions: 'talk',
         fastMode: true,
         env: { GITHUB_TOKEN: 'ghp_x' },
         secrets: {}, // write-only secrets ride the same wire as env; always shipped (even {})

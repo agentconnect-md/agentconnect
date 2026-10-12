@@ -1069,11 +1069,11 @@ When a background sub-session needs permission to run a tool, whether delegated 
 proposal's task, the request goes to the conversation the work belongs to, and the sub-session
 waits; its turn is not cancelled. A patrol never asks.
 
-- In a Slack conversation where "allow runtime changes in chat" is on, an approval card is posted
-  there, in the conversation's thread or at its top level when it is one long conversation, and
+- In a Slack conversation where "What people can do in chat" includes approving tool calls, an
+  approval card is posted there, in the conversation's thread or at its top level when it is one long conversation, and
   anyone there may answer it. The card says a background sub-session is asking, names and links
   it, and offers the runtime's own choices, "always allow" included where offered.
-- Where that setting is off, the conversation gets a notice that the sub-session is waiting, and an
+- Where it does not, the conversation gets a notice that the sub-session is waiting, and an
   Agent editor gets the request in a direct message, as for any other request.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
   marked as from a background sub-session.
@@ -1130,7 +1130,7 @@ the agent there may approve it: in a direct message, that person; in a channel, 
 message would start a turn of the agent there; never a bot. A click from anyone else does nothing.
 Approving grants nothing that typing the request there would not: the task runs with the agent's
 own permissions, and its permission requests follow "Assistant-mode sub-session permission
-requests". "Allow runtime changes in chat" makes no difference to proposals. A conversation shared
+requests". "What people can do in chat" makes no difference to proposals. A conversation shared
 with another organization, one gated By decision, one the card definitely could not be posted in,
 and conversations on other platforms get the card where drafts go instead: the agent's responsible
 user in a direct message, otherwise its fallback conversation. A post that timed out may still land,

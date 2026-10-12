@@ -212,7 +212,7 @@ route; it is not required or inferred in v1.
 The grant covers sending a human turn. A targeted conversation does **not**
 offer runtime-setting operations in v1. `set_model`, `set_effort`,
 `set_permission_mode`, and `set_fast` are rejected even when
-`allowRuntimeChangesInChat` is true. `cancel` is accepted only for a `turnId`
+`chatActions` is `settings`. `cancel` is accepted only for a `turnId`
 owned by that same targeted conversation's live webchat stream; it is not a
 session-global stop capability.
 
@@ -496,7 +496,7 @@ true`; structural client checks are display-only and cannot widen the server
   conversation id) is unchanged.
 - The read-only `threadUrl` deep link stays — "continue here" and "open in
   Slack" are complementary.
-- Runtime pills follow the existing `allowRuntimeChangesInChat` gating
+- Runtime pills follow the existing `chatActions` gating (`settings`)
   for ordinary webchat only. A continuation hides them in v1; this ingress may
   add human input but does not gain session-global runtime administration.
 

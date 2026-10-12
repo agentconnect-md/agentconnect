@@ -12,6 +12,7 @@ import {
   type AgentModelSelection,
   type AgentModelProvider,
   type AgentRepositorySelector,
+  type ChatActions,
   isCodeHostProvider,
   redactGitUrlSecrets,
   type CodeHostProvider
@@ -191,7 +192,7 @@ type RuntimeOverrides = {
   showStatusBar?: boolean
   fastMode?: boolean
   permissionMode?: string
-  allowRuntimeChangesInChat?: boolean
+  chatActions?: ChatActions
   // Operational message-processing toggle (#288). Stored in the overrides bag for
   // consistency with the sibling boolean toggles; the daemon skips all turn dispatch
   // for a paused agent. Absent ⇒ not paused.
@@ -331,7 +332,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     showStatusBar: ov.showStatusBar ?? false,
     fastMode: ov.fastMode ?? null,
     permissionMode: ov.permissionMode ?? null,
-    allowRuntimeChangesInChat: ov.allowRuntimeChangesInChat ?? false,
+    chatActions: ov.chatActions ?? 'talk',
     pause: ov.pause ?? null,
     env: ov.env ?? {},
     mcpServers: ov.mcpServers ?? [],
@@ -452,45 +453,25 @@ export class PgAgentRepo implements AgentRepo {
           ...placementCreateColumns(input),
           ...(input.managedSkills ? { managedSkills: input.managedSkills } : {}),
           ...(input.repositorySelector ? repositorySelectorColumns(input.repositorySelector) : {}),
-          ...(input.model ||
-          input.modelProvider ||
-          input.reasoningEffort ||
-          input.outputMode ||
-          input.showFooter !== undefined ||
-          input.showStatusBar !== undefined ||
-          input.fastMode !== undefined ||
-          input.permissionMode ||
-          input.allowRuntimeChangesInChat !== undefined ||
-          input.pause !== undefined ||
-          input.env ||
-          input.mcpServers ||
-          input.skills ||
-          input.decisionIds ||
-          input.modelSelection ||
-          input.memory
-            ? {
-                runtimeOverrides: {
-                  ...(input.model ? { model: input.model } : {}),
-                  ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
-                  ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
-                  ...(input.outputMode ? { outputMode: input.outputMode } : {}),
-                  ...(input.showFooter !== undefined ? { showFooter: input.showFooter } : {}),
-                  ...(input.showStatusBar !== undefined ? { showStatusBar: input.showStatusBar } : {}),
-                  ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),
-                  ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
-                  ...(input.allowRuntimeChangesInChat !== undefined
-                    ? { allowRuntimeChangesInChat: input.allowRuntimeChangesInChat }
-                    : {}),
-                  ...(input.pause !== undefined ? { pause: input.pause } : {}),
-                  ...(input.env ? { env: input.env } : {}),
-                  ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
-                  ...(input.skills ? { skills: input.skills } : {}),
-                  ...(input.decisionIds ? { decisionIds: input.decisionIds } : {}),
-                  ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-                  ...(input.memory ? { memory: input.memory } : {})
-                }
-              }
-            : {}),
+          // A new agent's default chat level is 'approve', so every created row carries the bag.
+          runtimeOverrides: {
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
+            ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+            ...(input.outputMode ? { outputMode: input.outputMode } : {}),
+            ...(input.showFooter !== undefined ? { showFooter: input.showFooter } : {}),
+            ...(input.showStatusBar !== undefined ? { showStatusBar: input.showStatusBar } : {}),
+            ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),
+            ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+            chatActions: input.chatActions ?? 'approve',
+            ...(input.pause !== undefined ? { pause: input.pause } : {}),
+            ...(input.env ? { env: input.env } : {}),
+            ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+            ...(input.skills ? { skills: input.skills } : {}),
+            ...(input.decisionIds ? { decisionIds: input.decisionIds } : {}),
+            ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+            ...(input.memory ? { memory: input.memory } : {})
+          },
           // A user-created agent's first "last modification" is its creation, by the
           // same principal — stamp both so the audit pair is coherent from row one.
           ...(input.createdByUserId
@@ -618,7 +599,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.showStatusBar !== undefined ||
       patch.fastMode !== undefined ||
       patch.permissionMode !== undefined ||
-      patch.allowRuntimeChangesInChat !== undefined ||
+      patch.chatActions !== undefined ||
       patch.pause !== undefined ||
       patch.env !== undefined ||
       patch.mcpServers !== undefined ||
@@ -703,9 +684,7 @@ export class PgAgentRepo implements AgentRepo {
         if (patch.permissionMode === null) delete next.permissionMode
         else next.permissionMode = patch.permissionMode
       }
-      if (patch.allowRuntimeChangesInChat !== undefined) {
-        next.allowRuntimeChangesInChat = patch.allowRuntimeChangesInChat
-      }
+      if (patch.chatActions !== undefined) next.chatActions = patch.chatActions
       if (patch.pause !== undefined) {
         if (patch.pause === null) delete next.pause
         else next.pause = patch.pause

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  chatSettingsAllowed,
   sessionAfterModelSelection,
   sessionEffortAfterModelChange,
   sessionEffortChoices,
@@ -42,11 +43,20 @@ const daemon = {
 
 describe('session runtime controls', () => {
   it('allows a fresh Playground to stage runtime changes before its first turn', () => {
-    expect(sessionRuntimeChangesEnabled(true, { platform: 'playground' })).toBe(true)
-    expect(sessionRuntimeChangesEnabled(true, { platform: 'playground', realSessionId: 'session-1' })).toBe(true)
-    expect(sessionRuntimeChangesEnabled(true, { platform: 'webchat' })).toBe(true)
-    expect(sessionRuntimeChangesEnabled(true, { platform: 'slack' })).toBe(false)
-    expect(sessionRuntimeChangesEnabled(false, { platform: 'webchat' })).toBe(false)
+    const settings = { chatActions: 'settings' as const }
+    expect(sessionRuntimeChangesEnabled(settings, { platform: 'playground' })).toBe(true)
+    expect(sessionRuntimeChangesEnabled(settings, { platform: 'playground', realSessionId: 'session-1' })).toBe(true)
+    expect(sessionRuntimeChangesEnabled(settings, { platform: 'webchat' })).toBe(true)
+    expect(sessionRuntimeChangesEnabled(settings, { platform: 'slack' })).toBe(false)
+    expect(sessionRuntimeChangesEnabled({ chatActions: 'talk' }, { platform: 'webchat' })).toBe(false)
+  })
+
+  it('offers runtime changes only when people in chat may also change settings', () => {
+    expect(sessionRuntimeChangesEnabled({ chatActions: 'approve' }, { platform: 'webchat' })).toBe(false)
+    expect(sessionRuntimeChangesEnabled(undefined, { platform: 'webchat' })).toBe(false)
+    expect(chatSettingsAllowed({ chatActions: 'settings' })).toBe(true)
+    expect(chatSettingsAllowed({ chatActions: 'approve' })).toBe(false)
+    expect(chatSettingsAllowed({ chatActions: 'talk' })).toBe(false)
   })
 
   it('preserves a live permission list, including an explicit empty list', () => {

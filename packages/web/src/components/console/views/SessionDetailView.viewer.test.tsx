@@ -46,7 +46,7 @@ const wire = vi.hoisted(() => ({
   runtimeSession: {} as Partial<Session>,
   agentRuntime: 'claude',
   agentModel: 'sonnet',
-  runtimeChanges: false,
+  chatActions: 'talk' as 'talk' | 'approve' | 'settings',
   byDecision: false,
   modelEvaluations: [] as unknown[],
   /** Overrides the session's steps: a playground session renders these instead of fetching a transcript. */
@@ -223,7 +223,7 @@ vi.mock('@/lib/data-context', () => ({
         ...agent,
         runtime: wire.agentRuntime,
         model: wire.agentModel,
-        allowRuntimeChangesInChat: wire.runtimeChanges,
+        chatActions: wire.chatActions,
         modelSelection: wire.byDecision ? { decisionId: 'decision-1', rules: [] } : undefined,
         assistantMode: wire.assistantMode ? { enabled: true } : undefined,
         workspace:
@@ -392,7 +392,7 @@ beforeEach(() => {
   wire.runtimeSession = {}
   wire.agentRuntime = 'claude'
   wire.agentModel = 'sonnet'
-  wire.runtimeChanges = false
+  wire.chatActions = 'talk'
   wire.byDecision = false
   wire.steps = undefined
   wire.drafts = []
@@ -469,57 +469,61 @@ it('does not show the agent fallback model for a session on another runtime', as
   expect(model?.textContent).not.toContain('gpt-6-sol')
 })
 
-it.each([false, true])('keeps Decision runtime details pending until resolved (editable=%s)', async (editable) => {
-  wire.playground = true
-  wire.byDecision = true
-  wire.runtimeChanges = editable
-  wire.steps = []
-  wire.runtimeSession = { runtime: 'claude', model: 'sonnet', effort: 'high', runtimePending: true }
-  await render()
-  const details = () => container?.querySelector('[role="tooltip"]')?.textContent ?? ''
-  const effort = () => document.querySelector('select[aria-label="Effort"]')
-  const approval = () => document.querySelector('select[aria-label="Approval"]')
-  expect(container?.querySelector('[aria-label="Model"]')?.textContent).toBe('By decision')
-  expect(details()).toContain('RuntimeBy decision')
-  await act(async () => container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-  expect(effort()).toBeNull()
-  expect(approval()).toBeNull()
-  await act(async () => container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-
-  wire.steps = [{ kind: 'msg', who: '@you', text: 'Review this change' }]
-  await render()
-  expect(container?.querySelector('[role="status"][aria-label="Model"]')?.textContent).toBe('Pending')
-  expect(details()).toContain('RuntimePending')
-  expect(details()).toContain('ModelPending')
-  expect(details()).not.toContain('sonnet')
-  expect(effort()).toBeNull()
-  expect(approval()).toBeNull()
-
-  wire.runtimeSession = {
-    runtime: 'codex',
-    model: 'model-capable',
-    runtimePending: false,
-    effort: 'high',
-    availableEfforts: ['low', 'high'],
-    permissionMode: 'auto',
-    availablePermissionModes: ['auto']
-  }
-  await render()
-  const model = container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')
-  expect(model?.textContent).toBe('model-capable · High · Auto')
-  expect(details()).toContain('RuntimeCodex')
-  expect(details()).toContain('Modelmodel-capable')
-  expect(details()).not.toContain('Pending')
-  await act(async () => model?.click())
-  if (editable) {
-    expect(effort()).not.toBeNull()
-    expect(approval()).not.toBeNull()
-  } else {
+it.each(['talk', 'approve', 'settings'] as const)(
+  'keeps Decision runtime details pending until resolved (%s)',
+  async (level) => {
+    const editable = level === 'settings'
+    wire.playground = true
+    wire.byDecision = true
+    wire.chatActions = level
+    wire.steps = []
+    wire.runtimeSession = { runtime: 'claude', model: 'sonnet', effort: 'high', runtimePending: true }
+    await render()
+    const details = () => container?.querySelector('[role="tooltip"]')?.textContent ?? ''
+    const effort = () => document.querySelector('select[aria-label="Effort"]')
+    const approval = () => document.querySelector('select[aria-label="Approval"]')
+    expect(container?.querySelector('[aria-label="Model"]')?.textContent).toBe('By decision')
+    expect(details()).toContain('RuntimeBy decision')
+    await act(async () => container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
     expect(effort()).toBeNull()
     expect(approval()).toBeNull()
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Runtime changes are disabled')
+    await act(async () => container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
+
+    wire.steps = [{ kind: 'msg', who: '@you', text: 'Review this change' }]
+    await render()
+    expect(container?.querySelector('[role="status"][aria-label="Model"]')?.textContent).toBe('Pending')
+    expect(details()).toContain('RuntimePending')
+    expect(details()).toContain('ModelPending')
+    expect(details()).not.toContain('sonnet')
+    expect(effort()).toBeNull()
+    expect(approval()).toBeNull()
+
+    wire.runtimeSession = {
+      runtime: 'codex',
+      model: 'model-capable',
+      runtimePending: false,
+      effort: 'high',
+      availableEfforts: ['low', 'high'],
+      permissionMode: 'auto',
+      availablePermissionModes: ['auto']
+    }
+    await render()
+    const model = container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')
+    expect(model?.textContent).toBe('model-capable · High · Auto')
+    expect(details()).toContain('RuntimeCodex')
+    expect(details()).toContain('Modelmodel-capable')
+    expect(details()).not.toContain('Pending')
+    await act(async () => model?.click())
+    if (editable) {
+      expect(effort()).not.toBeNull()
+      expect(approval()).not.toBeNull()
+    } else {
+      expect(effort()).toBeNull()
+      expect(approval()).toBeNull()
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Runtime changes are disabled')
+    }
   }
-})
+)
 
 describe('the composer recalls earlier prompts', () => {
   /** Press a key in the composer the way the browser delivers it, so React's onKeyDown sees it. */

@@ -15,6 +15,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { pinnedDecisionTarget } from '../decisions/model-selection.js'
+import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import type { CpClient } from '../cp/client.js'
 import { createSessionReader } from '../cp/session-reader.js'
 import {
@@ -178,14 +179,14 @@ export class SessionMetadataOutbox {
     // Authorized session overrides win over pinned Decision settings, then the Agent defaults.
     const agent = this.host.agents().get(input.agentId)
     const selected = pinnedDecisionTarget(slot?.decisionModel)
-    const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
+    const settingsInChat = chatSettingsAllowed(agent)
     // The runtime the session's next turn uses.
     const runtime = input.runtime ?? selected?.runtime ?? agent?.runtime
     const sessionRecord = slot
     if (sessionRecord?.workspaceIsolation) event.workspaceIsolation = sessionRecord.workspaceIsolation
     const storeKey = sessionRecord?.key
     const configuredModel =
-      (allowRuntimeChangesInChat && storeKey ? await store.getModelOverride(storeKey) : undefined) ??
+      (settingsInChat && storeKey ? await store.getModelOverride(storeKey) : undefined) ??
       selected?.model ??
       agent?.runtimeOverrides?.model
     // A caller's explicit model was observed on its own runtime; otherwise the last turn's recorded pair.
@@ -206,17 +207,17 @@ export class SessionMetadataOutbox {
       else event.observedModel = null
     }
     const effort =
-      (allowRuntimeChangesInChat && storeKey ? await store.getEffortOverride(storeKey) : undefined) ??
+      (settingsInChat && storeKey ? await store.getEffortOverride(storeKey) : undefined) ??
       selected?.effort ??
       agent?.reasoningEffort
     if (effort !== undefined) event.effort = effort
     const fastMode =
-      (allowRuntimeChangesInChat && storeKey ? await store.getFastModeOverride(storeKey) : undefined) ??
+      (settingsInChat && storeKey ? await store.getFastModeOverride(storeKey) : undefined) ??
       selected?.fastMode ??
       agent?.fastMode
     if (fastMode !== undefined) event.fastMode = fastMode
     const permissionMode =
-      (allowRuntimeChangesInChat && storeKey ? await store.getPermissionModeOverride(storeKey) : undefined) ??
+      (settingsInChat && storeKey ? await store.getPermissionModeOverride(storeKey) : undefined) ??
       selected?.permissionMode ??
       agent?.permissionMode
     if (input.permissionMode !== undefined) event.permissionMode = input.permissionMode
