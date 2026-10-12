@@ -67,7 +67,7 @@ describe('steer admission policy', () => {
   })
 
   const pending = (over: Partial<Pending> = {}): Pending =>
-    ({ plan: { sessionKey: 'slack:C1:T1:bot-a' }, promptInFlight: true, ...over }) as unknown as Pending
+    ({ plan: { sessionKey: 'slack:C1:T1:bot-a' }, entry: {}, promptInFlight: true, ...over }) as unknown as Pending
 
   it('targets the live prompt of the same key, and nothing else', () => {
     const live = pending()
@@ -79,6 +79,9 @@ describe('steer admission policy', () => {
     expect(selectSteerTarget([pending({ promptInFlight: false })], 'slack:C1:T1:bot-a')).toBeUndefined()
     // A paused or loop-tripped turn takes no more input.
     expect(selectSteerTarget([pending({ outputSuppressed: 'pause' })], 'slack:C1:T1:bot-a')).toBeUndefined()
+    // Nor does a turn an interrupt has marked but not yet silenced: what it took would go with it.
+    const marked = pending({ entry: { cancelledReason: 'place turned external' } as never })
+    expect(selectSteerTarget([marked], 'slack:C1:T1:bot-a')).toBeUndefined()
   })
 
   it('stops steering once the per-turn budget is spent', () => {

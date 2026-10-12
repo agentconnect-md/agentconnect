@@ -957,9 +957,11 @@ from every event Slack delivers from the conversation, or a guest or a member of
 organization joining it, found with one user lookup per join. The lookup is made only for an
 agent in assistant mode; no other agent changes. A share is lifted once Slack no longer
 reports it; a guest or an outside member never is. When an enabled place turns external, the
-reply already in progress there is stopped before it can post; messages waiting behind it, and
-everything the agent knows, are kept. Enabling a 1:1 DM trusts the person in it, so a DM never
-turns external.
+reply already in progress there is stopped before it can post; messages waiting behind it or
+arriving while it stops, and everything the agent knows, are kept, and those messages are then
+answered as drafts. Only that place is affected: the agent's other conversations keep running
+and keep taking messages. Enabling a 1:1 DM trusts the person in it, so a DM never turns
+external.
 
 ## Assistant-mode recall in a person's own DM
 
