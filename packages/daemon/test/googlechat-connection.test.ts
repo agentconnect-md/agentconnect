@@ -401,6 +401,23 @@ describe('an ambiguous create reconciles by client id', () => {
     expect(read.url.pathname).toBe(`/v1/${SPACE}/messages/client-abc`)
   })
 
+  it('keeps the thread a reconciled send-tool post landed in, so its session and later parts follow it', async () => {
+    const posts: Call[] = []
+    const { conn } = harness((call) => {
+      if (call.method === 'POST') {
+        posts.push(call)
+        if (posts.length === 1) throw new Error('socket hang up')
+        return created(`${SPACE}/messages/T.part`)
+      }
+      return reply(200, { name: `${SPACE}/messages/T.first`, text: 'x', thread: { name: THREAD } })
+    })
+    const name = await conn.postMessage(SPACE, `${'a'.repeat(20_000)}\n\n${'b'.repeat(20_000)}`)
+    expect(name).toBe(`${SPACE}/messages/T.first`)
+    expect(conn.threadOfPost(name!)).toBe(THREAD)
+    // The second part follows the first into the thread the read-back named.
+    expect(JSON.parse(posts[1]!.body!).thread).toEqual({ name: THREAD })
+  })
+
   it('re-sends the identical request when the read-back proves nothing landed', async () => {
     const posts: Call[] = []
     const { conn } = harness((call) => {

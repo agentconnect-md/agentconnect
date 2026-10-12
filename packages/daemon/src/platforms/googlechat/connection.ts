@@ -728,7 +728,11 @@ export class GoogleChatConnection implements PlatformConnection {
     try {
       const message = await this.request<MessageResource>('GET', name, { retry: 'idempotent' })
       this.noteAppIdentity(message.sender?.name)
-      return { name: message.name ?? name, ...(message.text !== undefined ? { text: message.text } : {}) }
+      return {
+        name: message.name ?? name,
+        ...(message.text !== undefined ? { text: message.text } : {}),
+        ...(message.thread?.name ? { thread: message.thread.name } : {})
+      }
     } catch (err) {
       if (err instanceof GoogleChatApiError && err.kind === 'not_found') return undefined
       throw err
