@@ -94,10 +94,35 @@ describe('classifySession — the §4.2 default rules', () => {
     })
   })
 
-  it('classifies an IM DM private with the three-part identity tuple', () => {
+  it('classifies an IM DM private with the three-part identity tuple where the platform names people', () => {
     expect(
-      classifySession({ platform: 'slack', conversationKind: 'dm', transportScope: 'T024BE7LD', triggeredBy: 'U0123' })
+      classifySession({
+        platform: 'slack',
+        conversationKind: 'dm',
+        transportScope: 'T024BE7LD',
+        triggeredBy: 'U0123',
+        platformNamesPeople: true
+      })
     ).toEqual({ visibility: 'private', ownerIdentity: 'slack:T024BE7LD:U0123', source: 'default' })
+  })
+
+  it('classifies an IM DM org, still recording its sender, where the platform cannot name people', () => {
+    const dm = {
+      conversationKind: 'dm' as const,
+      transportScope: 'S1',
+      triggeredBy: '4242',
+      platformNamesPeople: false
+    }
+    expect(classifySession({ ...dm, platform: 'telegram' })).toEqual({
+      visibility: 'org',
+      ownerIdentity: 'telegram:S1:4242',
+      source: 'default'
+    })
+    expect(classifySession({ ...dm, platform: 'slack' })).toEqual({
+      visibility: 'org',
+      ownerIdentity: 'slack:S1:4242',
+      source: 'default'
+    })
   })
 
   it('classifies group DMs and channels org but still records the initiator', () => {
@@ -169,12 +194,20 @@ describe('classifySession — fail-closed paths', () => {
     })
   })
 
+  it('keeps an IM DM private when whether its platform names people is unknown', () => {
+    expect(
+      classifySession({ platform: 'slack', conversationKind: 'dm', transportScope: 'T1', triggeredBy: 'U1' })
+    ).toEqual({ visibility: 'private', ownerIdentity: 'slack:T1:U1', source: 'default' })
+  })
+
   it('never widens a private default because a lookup failed', () => {
     // Every private-defaulting origin, with its ownership lookup failed.
     const failedLookups = [
       classifySession({ platform: 'webchat', webchatOwnerUserId: null }),
+      classifySession({ platform: 'webchat', webchatOwnerUserId: null, platformNamesPeople: false }),
       classifySession({ launchCorrelationId: 'c1', launchOwnerUserId: null }),
-      classifySession({ platform: 'slack', conversationKind: 'dm' })
+      classifySession({ platform: 'slack', conversationKind: 'dm' }),
+      classifySession({ platform: 'telegram', conversationKind: 'dm', triggeredBy: '4242', platformNamesPeople: false })
     ]
     for (const c of failedLookups) expect(c).toMatchObject({ visibility: 'private' })
   })

@@ -2524,6 +2524,7 @@ export function buildContainer(
     webchatRemoteMcp,
     launch: repos.launch,
     user: repos.user,
+    platforms,
     visibilityPush,
     httpBotDaemonReady: async (daemonId) => {
       await Promise.all([

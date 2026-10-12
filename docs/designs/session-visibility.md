@@ -24,8 +24,9 @@ This design gives every session its own visibility:
 - **`private`** — visible only to the session owner (identity match).
   There is **no org-owner governance override**: a private session is a
   DM-grade transcript, and role grants no
-  access to it. Default for platform **DM** sessions, **Playground /
-  webchat** sessions, and sessions launched through the **Web API**. A
+  access to it. Default for platform **DM** sessions where the platform
+  names its people (§4.2), **Playground / webchat** sessions, and sessions
+  launched through the **Web API**. A
   Feishu/Lark custom-Bot p2p ownership matches through the user's cross-App
   `union_id`.
 - **`org`** — visible to every organization member, independently from the
@@ -104,10 +105,12 @@ visible when `ownerIdentity ∈ identitySet`.
 
 Consequences:
 
-- Before the identity mapping exists for a platform (today: Telegram and
-  Discord), a `private` IM DM session is an **owner-orphan**: no console user
-  matches the stored tuple, so no one sees it. This is accepted — it errs
-  toward hiding a DM rather than exposing it.
+- A DM is `private` only where the platform names its people: the
+  organization syncs that platform's session access and its provider matches
+  chat members (§4.2). Elsewhere, such as Telegram, Discord, QQ, Google Chat,
+  or Slack and Feishu/Lark with sync off, it is `org`, so no DM becomes an
+  **owner-orphan** that no console user matches and no one sees. A `private`
+  DM whose sender has not linked an identity yet stays hidden until they do.
 - When identity linking ships for a platform, those sessions become visible
   to the mapped user **automatically**, with no backfill: the stored
   `ownerIdentity` is already correct; only the viewer's identity set grows.
@@ -284,18 +287,19 @@ The CP classifies once, in the `event/session` ingest path
 (`ws/handlers/event-session.ts` → `session.recordMilestone`), first-wins like
 the other origin scalars:
 
-| Origin (how detected)                                                                                                                                          | `visibility`            | `ownerIdentity`                                                                                                                       |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Webchat or Web API launch owned by a service account ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#service-account-members)); precedes the next two rows | `org`                   | `null`                                                                                                                                |
-| Webchat / Playground (`platform === 'webchat'`)                                                                                                                | `private`               | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed) |
-| Web API session launch (§4.4 correlation)                                                                                                                      | `private`               | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                             |
-| IM DM (`conversationKind` = `dm`)                                                                                                                              | `private`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| Slack or Feishu/Lark group chat with trusted `externalOrigin`                                                                                                  | `org` or `external`     | External source scope; `org` while sync is disabled, `external` while enabled                                                         |
-| Feishu/Lark Bot p2p chat with trusted `externalOrigin`                                                                                                         | `private` or `external` | Owner-only baseline (`union_id` identity match) while sync is disabled; current conversation membership while enabled                 |
-| GitHub hook with an accepted delivery snapshot                                                                                                                 | `org` or `external`     | Repository source scope; `org` while sync is disabled, `external` while enabled                                                       |
-| Other IM group DM / channel (or absent kind)                                                                                                                   | `org`                   | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| Agent-to-agent child (`triggeredBy` is an agent UUID)                                                                                                          | inherits parent         | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                  |
-| Automation without a trusted external destination                                                                                                              | `org`                   | `null`                                                                                                                                |
+| Origin (how detected)                                                                                                                                          | `visibility`        | `ownerIdentity`                                                                                                                       |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Webchat or Web API launch owned by a service account ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#service-account-members)); precedes the next two rows | `org`               | `null`                                                                                                                                |
+| Webchat / Playground (`platform === 'webchat'`)                                                                                                                | `private`           | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed) |
+| Web API session launch (§4.4 correlation)                                                                                                                      | `private`           | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                             |
+| IM DM (`conversationKind` = `dm`) where the platform names people: the org syncs its session access and its provider matches chat members                      | `private`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| Other IM DM: Telegram, Discord, QQ, Google Chat (no sync), or Slack and Feishu/Lark with sync off                                                              | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| Slack or Feishu/Lark group chat with trusted `externalOrigin`                                                                                                  | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                         |
+| Feishu/Lark Bot p2p chat with trusted `externalOrigin`                                                                                                         | `org` or `external` | Initiator as provenance while sync is disabled; current conversation membership while enabled                                         |
+| GitHub hook with an accepted delivery snapshot                                                                                                                 | `org` or `external` | Repository source scope; `org` while sync is disabled, `external` while enabled                                                       |
+| Other IM group DM / channel (or absent kind)                                                                                                                   | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| Agent-to-agent child (`triggeredBy` is an agent UUID)                                                                                                          | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                  |
+| Automation without a trusted external destination                                                                                                              | `org`               | `null`                                                                                                                                |
 
 Notes:
 
@@ -307,7 +311,12 @@ Notes:
   platform tuple (`slack:T…:U…`) lights up retroactively when identity
   linking (§7) grows the viewer's identity set, whereas a `null` owner has
   nothing to match and stays inaccessible unless a separate repair/backfill
-  populates it.
+  populates it. A DM whose platform sync state cannot be read stays `private`.
+- **A DM opens to the org only where no one could be its owner.** The test is
+  the one chat actions use to recognize people
+  ([product-conventions.md](../product-conventions.md#what-people-can-do-in-chat)).
+  It applies to rows classified from then on; earlier rows keep their tier,
+  and §4.3 still lets a recognized sender make an `org` DM private.
 - Webchat `triggeredBy` is the console user's **email** (set in
   `routes/webchat-token.ts`), which degrades under devAuth and is not a stable
   key — hence the `WebchatConversation` lookup rather than trusting the wire
@@ -317,9 +326,8 @@ Notes:
   visibility default: for `org` sessions it is provenance and the anchor for
   §4.3 reclassification rights, not an access gate.
 - A shared provider-bound conversation or repository never uses one initiator
-  as its access owner. A Feishu/Lark Bot p2p is the narrow exception: while
-  sync is disabled its one human participant is the private owner, proven by
-  exact `union_id` identity. With Slack sync enabled,
+  as its access owner. A Feishu/Lark Bot p2p follows the DM rule: `org` while
+  sync is disabled, its current members while enabled. With Slack sync enabled,
   public-channel access follows active
   full workspace membership while restricted conversations and restricted
   users follow current conversation membership. With provider sync disabled,
@@ -807,13 +815,14 @@ is stored.
 identity ([google-chat-integration.md §10.6](google-chat-integration.md)). The
 Google Chat Session-access plugin projects it into every Google Chat app of the
 organization as `googlechat:<projectNumber>:users/<googleAccountId>`, the owner a
-DM records, so a DM's sender opens it after signing in with the same Google
-account. Space sessions keep organization visibility; Google Chat binds no
-external audience.
+DM records. Google Chat has no session access sync, so its DMs are `org` (§4.2);
+the linked identity lets a DM's sender make it private (§4.3). Space sessions keep
+organization visibility; Google Chat binds no external audience.
 
 **Other platform session access (future, separate design).** Telegram and
 Discord still need an explicit verified identity binding before their platform
-identities can enter the session identity set.
+identities can enter the session identity set. Until then their DMs are `org`
+(§4.2).
 
 ## 8. Share-by-link (future, separate design)
 
