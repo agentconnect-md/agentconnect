@@ -43,12 +43,14 @@ export const AgentApprovalRoute = z.object({
   consoleUserId: z.string().min(1).optional(),
   // Decision-time revalidation (§6.3): the clicking actor's pair and the console
   // user the DM addressed. Present ⇒ the reply carries `allowed`, never `target`.
+  // Without `consoleUserId` (`chat-actor-v1`) it asks whether the pair is any editor's linked identity,
+  // and `teamId` may be left to the integration's own workspace.
   verify: z
     .object({
       integrationId: z.string().uuid(),
-      teamId: z.string().min(1),
+      teamId: z.string().min(1).optional(),
       userId: z.string().min(1),
-      consoleUserId: z.string().min(1)
+      consoleUserId: z.string().min(1).optional()
     })
     .optional()
 })
@@ -61,6 +63,8 @@ export const AgentApprovalRouted = z.object({
   requestId: z.string().uuid(),
   target: ApprovalRouteTarget.optional(),
   allowed: z.boolean().optional(),
-  displayName: z.string().min(1).optional()
+  displayName: z.string().min(1).optional(),
+  // A refused anonymous verify: whether the pair is linked to any organization member, when the CP could tell.
+  linked: z.boolean().optional()
 })
 export type AgentApprovalRouted = z.infer<typeof AgentApprovalRouted>

@@ -35,6 +35,7 @@ import type {
   IntegrationBindRule,
   IntegrationSessionMode,
   IntegrationCoreEnvelope,
+  ChatAuthority,
   McpServerSpec,
   MemoryConnectionSpec
 } from '@agentconnect.md/protocol'
@@ -56,7 +57,8 @@ import type {
   BotRecord,
   BotRepo,
   IntegrationChannelRepo,
-  IntegrationChannelRecord
+  IntegrationChannelRecord,
+  SessionRepo
 } from '../persistence/ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import {
@@ -112,6 +114,8 @@ export interface PlacementOrchDeps {
   placement?: Pick<PlacementResolver, 'resolveDirectory'>
   /** Optional structured logger for reconcile-time skips (no live relay). */
   log?: { warn(obj: object, msg: string): void }
+  /** Whether each integration's platform has session access sync on; absent ⇒ no chat authority is projected. */
+  chatAuthority?: ChatAuthoritySource
   // NOTE: icon URL bases moved into the AgentSpecAssembler (it owns spec assembly).
 }
 
@@ -306,6 +310,18 @@ function externalChannelIds(channels: IntegrationChannelRecord[]): string[] {
   return channels.filter((c) => c.externalReason).map((c) => c.channelId)
 }
 
+/** Where the projection reads whether the organization syncs a platform's session access; absent projects no chat authority. */
+export type ChatAuthoritySource = Pick<SessionRepo, 'getExternalAccessPolicy'>
+
+/** Who may take chat actions on an integration: its agent's editors while the organization syncs that platform's session access. */
+export async function chatAuthorityOf(
+  source: ChatAuthoritySource,
+  i: Pick<IntegrationRecord, 'orgId' | 'platform'>
+): Promise<ChatAuthority> {
+  const policy = await source.getExternalAccessPolicy(i.orgId, i.platform)
+  return policy && policy.state !== 'disabled' ? 'editors' : 'participants'
+}
+
 /** The direct-mode {@link IntegrationSpec} (gating and session modes read off `owner`); `null` ⇒ nothing deliverable. Token-bearing: NEVER log. */
 export async function integrationToSpec(
   platforms: CpPlatformRegistry,
@@ -313,7 +329,8 @@ export async function integrationToSpec(
   bot: BotRecord,
   secret: BotSecretMaterial,
   channels: IntegrationChannelRecord[] = [],
-  owner?: SpecOwner
+  owner?: SpecOwner,
+  chatAuthority?: ChatAuthoritySource
 ): Promise<IntegrationSpec | null> {
   const gated = owner ? isGatedAgent(owner) : false
   // A 1:1 DM's On state is already covered by the unscoped dm default. A group DM
@@ -343,7 +360,8 @@ export async function integrationToSpec(
     gated,
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
-    decisions: decisionBundleOf(channels)
+    decisions: decisionBundleOf(channels),
+    ...(chatAuthority ? { chatAuthority: await chatAuthorityOf(chatAuthority, i) } : {})
   }
   return projectSpec(platforms, i, bot, core, secret)
 }
@@ -355,7 +373,8 @@ export async function httpIntegrationToSpec(
   bot: BotRecord,
   secret: BotSecretMaterial,
   channels: IntegrationChannelRecord[] = [],
-  owner?: SpecOwner
+  owner?: SpecOwner,
+  chatAuthority?: ChatAuthoritySource
 ): Promise<IntegrationSpec | null> {
   const gated = owner ? isGatedAgent(owner) : false
   // §6.4 final shape (see integrationToSpec): envelope + opaque config only.
@@ -373,7 +392,8 @@ export async function httpIntegrationToSpec(
     gated,
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
-    decisions: decisionBundleOf(channels)
+    decisions: decisionBundleOf(channels),
+    ...(chatAuthority ? { chatAuthority: await chatAuthorityOf(chatAuthority, i) } : {})
   }
   return projectSpec(platforms, i, bot, httpCore, secret)
 }
@@ -547,9 +567,10 @@ export class Placement implements ReconcileService {
           // reconciles it send-only (no Socket Mode). Socket bots reconcile as direct.
           // Both arms await the SAME provider projector; only the envelope differs.
           const owner = ownerById.get(i.agentId)
+          const policies = this.orch?.chatAuthority
           return bot.transport === 'http'
-            ? await httpIntegrationToSpec(this.platforms, i, bot, secret, channels, owner)
-            : await integrationToSpec(this.platforms, i, bot, secret, channels, owner)
+            ? await httpIntegrationToSpec(this.platforms, i, bot, secret, channels, owner, policies)
+            : await integrationToSpec(this.platforms, i, bot, secret, channels, owner, policies)
         })
       )
     ])

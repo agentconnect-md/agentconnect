@@ -67,10 +67,26 @@ export async function resolveApprovalRoute(
     }
   }
 
+  // A chat member on a synced integration (chat-actor-v1): an editor's linked pair, else whether any member's; over the cap refuses.
+  const verifyChatActor = async (requestId: string, userId: string, teamId: string): Promise<AgentApprovalRouted> => {
+    if (editors.length > MAX_AUDIENCE) return none
+    const scanned = members.length <= MAX_AUDIENCE ? members : editors
+    const matches = await mapLimited(scanned, AUDIENCE_CONCURRENCY, async (m) => {
+      const pair = await pairOf(m.userId)
+      return pair?.teamId === teamId && pair.userId === userId ? m : null
+    })
+    const linked = matches.filter((m): m is OrgMemberRecord => m !== null)
+    const editor = linked.find((m) => editors.includes(m))
+    if (editor) return { requestId, allowed: true, ...(editor.displayName ? { displayName: editor.displayName } : {}) }
+    return { requestId, allowed: false, ...(scanned === members ? { linked: linked.length > 0 } : {}) }
+  }
+
   if (req.verify) {
     const v = req.verify
     const workspace = await workspaceFor(v.integrationId)
-    if (!workspace || workspace !== v.teamId) return none
+    if (!workspace || (v.teamId !== undefined && workspace !== v.teamId)) return none
+    if (v.consoleUserId === undefined) return await verifyChatActor(req.requestId, v.userId, workspace)
+    if (v.teamId === undefined) return none
     // Recheck current membership and edit authority before verifying the linked actor pair.
     const member = editors.find((m) => m.userId === v.consoleUserId)
     if (!member) return none

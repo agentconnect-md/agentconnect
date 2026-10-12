@@ -111,7 +111,9 @@ export async function installNewFeishuBot(
     deps.repos.bot.get(orgId, botId)
   ])
   const spec =
-    secret && botRow ? await integrationToSpec(deps.platforms, integration, botRow, secret, channels, agent) : null
+    secret && botRow
+      ? await integrationToSpec(deps.platforms, integration, botRow, secret, channels, agent, deps.repos.session)
+      : null
   if (spec) {
     await deps.agentDelivery.integrationUpsert(agent, spec, (err, target) => {
       if (!(err instanceof NoConnection)) throw err

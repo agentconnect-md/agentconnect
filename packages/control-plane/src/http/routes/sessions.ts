@@ -54,6 +54,7 @@ import type { ConversationCoordinate, ConversationKey, SessionMetaRecord } from 
 import { GithubApiError } from '../../github/api.js'
 import { GitCredDeniedError } from '../../github/service.js'
 import { ProtocolError } from '../../domain/errors.js'
+import { convergeOrgPlatform } from '../../orchestrator/integrationPush.js'
 import {
   SessionListPageDto,
   ActivityStateEnum,
@@ -736,6 +737,8 @@ export function sessionRoutes(deps: HttpDeps) {
           }
           const result = await deps.repos.session.setExternalAccessEnabled(orgOf(req), provider, req.body.enabled)
           if (result.affected.length > 0) void deps.visibilityPush?.notifySessions(result.affected)
+          // Who may act in chat follows the sync, so the platform's integrations are re-pushed with it.
+          void convergeOrgPlatform(deps, orgOf(req), provider, req.log).catch(() => {})
           return {
             provider,
             available: externalAccessAvailable(provider),

@@ -47,7 +47,15 @@ export function QQCredentialRoutes(deps: HttpDeps): FastifyPluginAsync {
           const agent = await deps.repos.agent.get(orgId, integration.agentId)
           if (!agent) continue
           const channels = await deps.repos.integrationChannel.listForIntegration(integration.id)
-          const spec = await integrationToSpec(deps.platforms, integration, bot, material, channels, agent)
+          const spec = await integrationToSpec(
+            deps.platforms,
+            integration,
+            bot,
+            material,
+            channels,
+            agent,
+            deps.repos.session
+          )
           if (spec)
             await deps.agentDelivery.integrationUpsert(agent, spec, () => {
               req.log.info('QQ credential update will be applied when the agent reconnects')

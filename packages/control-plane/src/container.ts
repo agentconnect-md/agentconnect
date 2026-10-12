@@ -1079,6 +1079,7 @@ export function buildContainer(
     botSecrets: repos.botSecret,
     platforms,
     specs: agentSpecs,
+    chatAuthority: repos.session,
     crons: repos.cron,
     // The `duty/fetch` bundle's MCP + external-memory projections (same seams the
     // reconcile roster below is given, same projector).
@@ -1138,6 +1139,7 @@ export function buildContainer(
       // The duty half of the reconcile roster: pinned-to-me ∪ held-by-me.
       duties: repos.dutyGroup,
       placement: placementResolver,
+      chatAuthority: repos.session,
       log: { warn: (o, m) => http.log.warn(o, m) } // lazy over http.log (assigned below; called at reconcile time)
     }
   )

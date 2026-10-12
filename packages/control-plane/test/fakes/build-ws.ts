@@ -298,7 +298,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
         relayRoster: { entries: async () => relays }
       },
       duties: dutyGroupRepo,
-      placement: placementResolver
+      placement: placementResolver,
+      chatAuthority: repos.session
     }
   )
 
