@@ -190,11 +190,38 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 {{- end -}}
 
-{{/*
-The Source Cache bucket's credential source as the daemon and the control plane read it: mounted static keys, or a web identity.
-*/}}
+{{/* Whether the bundled Source Cache store renders: no external bucket is enabled and the store has a public host. */}}
+{{- define "agentconnect.sourceCacheStore" -}}
+{{- $sourceCache := .Values.sourceCache | default dict }}
+{{- $store := $sourceCache.store | default dict }}
+{{- if and (not $sourceCache.enabled) $store.enabled $store.host }}
+{{- if or (contains "/" $store.host) (contains ":" $store.host) }}
+{{- fail "sourceCache.store.host must be a bare hostname, without a scheme, port or path" }}
+{{- end }}
+{{- print "true" }}
+{{- end }}
+{{- end }}
+
+{{/* The effective sourceCache values as JSON: the values themselves, or the bundled store's bucket, endpoint and key pair Secret. */}}
+{{- define "agentconnect.sourceCache" -}}
+{{- $sourceCache := deepCopy (.Values.sourceCache | default dict) }}
+{{- if include "agentconnect.sourceCacheStore" . }}
+{{- $store := $sourceCache.store }}
+{{- $_ := set $sourceCache "enabled" true }}
+{{- $_ := set $sourceCache "endpoint" (printf "https://%s" $store.host) }}
+{{- $_ := set $sourceCache "publicEndpoint" "" }}
+{{- $_ := set $sourceCache "region" "us-east-1" }}
+{{- $_ := set $sourceCache "bucket" $store.bucket }}
+{{- $_ := set $sourceCache "forcePathStyle" true }}
+{{- $secret := dict "name" (printf "%s-source-cache-store" (include "agentconnect.fullname" .)) "accessKeyIdKey" "AWS_ACCESS_KEY_ID" "secretAccessKeyKey" "AWS_SECRET_ACCESS_KEY" }}
+{{- $_ := set $sourceCache "credentials" (dict "source" "secret" "secret" $secret) }}
+{{- end }}
+{{- toJson $sourceCache }}
+{{- end }}
+
+{{/* The bucket credential source (mounted static keys or a web identity) of the effective sourceCache values passed in. */}}
 {{- define "agentconnect.sourceCacheCredentials" -}}
-{{- $sourceCacheCredentials := .Values.sourceCache.credentials | default dict }}
+{{- $sourceCacheCredentials := .credentials | default dict }}
 {{- if eq $sourceCacheCredentials.source "secret" }}
 {{- $secret := $sourceCacheCredentials.secret | default dict }}
 {{- $_ := required "sourceCache.credentials.secret.name is required for the secret credential source" $secret.name }}

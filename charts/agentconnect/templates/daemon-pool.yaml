@@ -2,7 +2,7 @@
 {{- $dataPlaneSecret := required "daemonPool.dataPlane.existingSecret is required when daemonPool.enabled" .Values.daemonPool.dataPlane.existingSecret }}
 {{- $sandboxNamespace := .Values.daemonPool.sandboxNamespace | default .Release.Namespace }}
 {{- $daemonTag := .Values.daemonPool.tag | default (include "agentconnect.imageTag" .) }}
-{{- $sourceCache := .Values.sourceCache | default dict }}
+{{- $sourceCache := include "agentconnect.sourceCache" . | fromJson }}
 {{- $sourceCacheCredentials := $sourceCache.credentials | default dict }}
 {{- $sourceCacheSecret := and $sourceCache.enabled (eq $sourceCacheCredentials.source "secret") }}
 {{- $sourceCacheIdentity := and $sourceCache.enabled (eq $sourceCacheCredentials.source "serviceAccount") (($sourceCacheCredentials.serviceAccount | default dict).roleArn) }}
@@ -354,7 +354,7 @@ spec:
             {{- $_ := set $document "endpoint" . }}
             {{- end }}
             {{- $_ := set $document "limits" (dict "maxBundleBytes" $limits.maxBundleBytes "orgQuotaBytes" $limits.orgQuotaBytes "pendingReservationSeconds" $limits.pendingReservation "unreadPointerDays" $limits.unreadPointerDays "getUrlSeconds" $limits.getUrlLifetime "putUrlSeconds" $limits.putUrlLifetime) }}
-            {{- $_ := set $document "credentials" (include "agentconnect.sourceCacheCredentials" . | fromJson) }}
+            {{- $_ := set $document "credentials" (include "agentconnect.sourceCacheCredentials" $sourceCache | fromJson) }}
             # Source Cache: bucket config only; credentials stay in mounted files or a projected token, and pods get presigned URLs alone.
             - name: AC_SOURCE_CACHE
               value: {{ toJson $document | quote }}
