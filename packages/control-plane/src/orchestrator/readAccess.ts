@@ -23,8 +23,13 @@ export interface ReadAccessDeps {
   platforms: Pick<CpPlatformRegistry, 'get'>
   /** Absent when the deployment has no sign-in configured — then no chat member is linked. */
   identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> }
-  /** The agent's sessions among `sessionIds` this viewer could see in the console, by the console's own predicate. */
-  sessionsVisible(viewer: ReadAccessViewer, agentId: string, sessionIds: readonly string[]): Promise<string[]>
+  /** The agent's sessions among `sessionIds` this viewer could see in the console; `ownerOnly` keeps only those they own. */
+  sessionsVisible(
+    viewer: ReadAccessViewer,
+    agentId: string,
+    sessionIds: readonly string[],
+    ownerOnly: boolean
+  ): Promise<string[]>
 }
 
 /** The seam the WS handler holds. */
@@ -41,7 +46,9 @@ export async function resolveReadAccess(
   if (!agent || (expectedOrgId && agent.orgId !== expectedOrgId)) return unidentifiable
   const viewer = await viewerOf(req, agent.orgId, deps)
   if (viewer === 'unlinked' || viewer === 'unidentifiable') return { asker: viewer, visibleSessionIds: [] }
-  const visibleSessionIds = req.sessionIds.length ? await deps.sessionsVisible(viewer, req.agentId, req.sessionIds) : []
+  const visibleSessionIds = req.sessionIds.length
+    ? await deps.sessionsVisible(viewer, req.agentId, req.sessionIds, req.ownerOnly === true)
+    : []
   return { asker: 'linked', visibleSessionIds }
 }
 

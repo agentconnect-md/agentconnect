@@ -304,6 +304,42 @@ describe('recall — excerpts', () => {
     expect(result.excerpts).toHaveLength(5)
   })
 
+  it('says it searched only the recent part when a place has more sessions than recall reads', async () => {
+    const recallFrom = async (count: number) => {
+      const sessions = Array.from({ length: count }, (_, i) =>
+        session({
+          key: `s-many-${i}`,
+          platform: 'slack',
+          channel: 'C_MANY',
+          conversationKind: 'channel',
+          updatedAt: 900 - i
+        })
+      )
+      const store: PlaceStore = {
+        ...fakeStore(sessions),
+        transcriptPageForAgent: async (scope) => ({
+          rows: [row(scope.sessionKey, 'U_ALICE', `note from ${scope.sessionKey}`, 30).row],
+          hasMore: false
+        })
+      }
+      return (await executeTool(
+        ctxAt('slack', 'C_MANY'),
+        'recall',
+        { place: 'slack:C_MANY' },
+        makeDeps({ placeStore: store })
+      )) as {
+        excerpts: unknown[]
+        searched?: string
+      }
+    }
+    const nine = await recallFrom(9)
+    expect(nine.excerpts).toHaveLength(8)
+    expect(nine.searched).toBe('only the most recent part of that conversation')
+    const eight = await recallFrom(8)
+    expect(eight.excerpts).toHaveLength(8)
+    expect(eight.searched).toBeUndefined()
+  })
+
   it('says so when nothing matched', async () => {
     expect(
       await executeTool(inDmOfP, 'recall', { place: 'slack:C_DEPLOY', query: 'kubernetes' }, makeDeps())
@@ -483,10 +519,17 @@ interface ConsoleWorld {
   /** Slack member → console user; absent ⇒ every Slack member is linked to `user-<member>`. */
   linked?: Record<string, string>
   visible?: Record<string, string[]>
+  /** Session → the console user recorded as owning it, beside each Slack DM's own person. */
+  owners?: Record<string, string>
 }
 
 /** Every Slack member is linked by default, P as user-p, who sees the Telegram group the console shows as org-visible. */
-function consoleVerdict(world: ConsoleWorld, asker: ReadAsker, sessions: readonly string[]): ConsoleVerdict {
+function consoleVerdict(
+  world: ConsoleWorld,
+  asker: ReadAsker,
+  sessions: readonly string[],
+  ownerOnly: boolean
+): ConsoleVerdict {
   if (asker.kind === 'member' && asker.platform !== 'slack') return { asker: 'unidentifiable' }
   const user =
     asker.kind === 'console'
@@ -498,7 +541,9 @@ function consoleVerdict(world: ConsoleWorld, asker: ReadAsker, sessions: readonl
           : `user-${asker.userId}`
   if (!user) return { asker: 'unlinked' }
   const visible = (world.visible ?? { 'user-p': ['out-s-tg'] })[user] ?? []
-  return { asker: 'linked', visible: new Set(sessions.filter((id) => visible.includes(id))) }
+  const owners: Record<string, string> = { 'out-s-dm-p': 'user-p', 'out-s-dm-q': 'user-q', ...world.owners }
+  const sees = (id: string) => visible.includes(id) && (!ownerOnly || owners[id] === user)
+  return { asker: 'linked', visible: new Set(sessions.filter(sees)) }
 }
 
 interface Live {
@@ -540,8 +585,8 @@ function perAsker(
     listBookmarks: vi.fn(async () => [])
   })
   const tg = fakeGateway()
-  const readAccess = vi.fn(async (_agent: string, asker: ReadAsker, sessions: readonly string[]) =>
-    consoleVerdict(opts.console ?? {}, asker, sessions)
+  const readAccess = vi.fn(async (_agent: string, asker: ReadAsker, sessions: readonly string[], ownerOnly: boolean) =>
+    consoleVerdict(opts.console ?? {}, asker, sessions, ownerOnly)
   )
   const placeMembers = new PlaceMembers({
     now: () => clock.now,
@@ -758,7 +803,14 @@ describe('reads judged by who is asking', () => {
   })
 
   it('reads a webchat conversation only for its owner, from the console or a linked chat identity', async () => {
-    const { deps, asks } = perAsker({ console: { linked: { [P]: 'user-p' }, visible: { 'user-p': ['out-s-web2'] } } })
+    // Both members are shown the conversation; only its owner reads it.
+    const { deps, asks } = perAsker({
+      console: {
+        linked: { [P]: 'user-p' },
+        visible: { 'user-p': ['out-s-web2'], 'user-q': ['out-s-web2'] },
+        owners: { 'out-s-web2': 'user-p' }
+      }
+    })
     asks({ ...fromP, platform: 'webchat', sender: { id: 'user-p', isBot: false } }, { console: true })
     expect(await excerptsOf(ctxAt('webchat', 'chat-1'), 'webchat:chat-2', deps)).toEqual(['webchat budget notes'])
     asks(from(P))
@@ -962,13 +1014,40 @@ describe('across platforms and bots: as the console would show it to the person'
     expect(await executeTool(deploys, 'recall', { place: 'telegram:-9999' }, deps)).toEqual(opaque('telegram:-9999'))
   })
 
-  it('refuses a DM on another platform to anyone but its owner', async () => {
-    const { deps } = perAsker()
+  it('refuses a DM on another platform to anyone but its owner, though the console shows it to every member', async () => {
+    // A Telegram DM is org-visible in the console: user-p sees it, but user-q owns it.
+    const { deps } = perAsker({
+      console: { visible: { 'user-p': ['out-s-tg-dm'] }, owners: { 'out-s-tg-dm': 'user-q' } }
+    })
     expect(await executeTool(inOwnDm, 'recall', { place: 'telegram:tg-dm-q' }, deps)).toEqual(
       opaque('telegram:tg-dm-q')
     )
-    const owner = perAsker({ console: { visible: { 'user-p': ['out-s-tg-dm'] } } })
+    const owner = perAsker({ console: { visible: { 'user-p': ['out-s-tg-dm'] }, owners: { 'out-s-tg-dm': 'user-p' } } })
     expect(await sourceOf(inOwnDm, 'telegram:tg-dm-q', owner.deps)).toContain('the direct message')
+  })
+
+  it('refuses a sync-off Slack DM read through another bot to anyone but its person', async () => {
+    // With sync off the console shows every member the DM; reading it is still its person's alone.
+    const world = {
+      visible: { 'user-p': ['out-s-dm-q'], 'user-U_Q': ['out-s-dm-q'] },
+      owners: { 'out-s-dm-q': 'user-U_Q' }
+    }
+    const { deps, asks, readAccess } = perAsker({ console: world })
+    const otherBot = fakeGateway()
+    const twoBots = { ...deploys, integrations: [...integrations, { id: 'int-slack-2', platform: 'slack' }] }
+    const viaOtherBot: OpsDeps = {
+      ...deps,
+      gatewayFor: (id) => (id === 'int-slack-2' ? otherBot : deps.gatewayFor(id))
+    }
+    const read = () =>
+      executeTool(twoBots, 'getChannelHistory', { channel: 'D_Q', integrationId: 'int-slack-2' }, viaOtherBot)
+    asks(from(P))
+    await expect(read()).rejects.toThrow(NOT_SHARED)
+    expect(readAccess).toHaveBeenCalledWith(AGENT, expect.objectContaining({ userId: P }), ['out-s-dm-q'], true)
+    expect(otherBot.getChannelHistory).not.toHaveBeenCalled()
+    asks(from('U_Q'))
+    await read()
+    expect(otherBot.getChannelHistory).toHaveBeenCalledWith('D_Q', {})
   })
 
   it('refuses every cross-platform read when the Control Plane cannot answer', async () => {

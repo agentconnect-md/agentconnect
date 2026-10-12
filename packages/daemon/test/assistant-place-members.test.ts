@@ -22,8 +22,12 @@ function setup(gateway: Partial<Gateway> = {}, verdict?: () => Promise<ConsoleVe
     ...gateway
   }
   const readAccess = vi.fn(
-    async (_agent: string, _asker: ReadAsker, _sessions: readonly string[]): Promise<ConsoleVerdict> =>
-      verdict ? verdict() : { asker: 'unidentifiable' }
+    async (
+      _agent: string,
+      _asker: ReadAsker,
+      _sessions: readonly string[],
+      _ownerOnly: boolean
+    ): Promise<ConsoleVerdict> => (verdict ? verdict() : { asker: 'unidentifiable' })
   )
   const members = new PlaceMembers({
     now: () => clock.now,
@@ -88,9 +92,12 @@ describe('PlaceMembers.isFullMember and consoleVerdict', () => {
     const asker: ReadAsker = { kind: 'member', platform: 'slack', integrationId: 'int-slack', userId: 'U_P' }
     await expect(members.consoleVerdict('agent-a', asker, ['ses-1'])).rejects.toThrow('offline')
     expect(await members.consoleVerdict('agent-a', asker, ['ses-1'])).toBe(linked)
-    expect(await members.lookupsFor('agent-a').console(asker, ['ses-1'])).toBe(linked)
+    expect(await members.lookupsFor('agent-a').console(asker, ['ses-1'], false)).toBe(linked)
     expect(readAccess).toHaveBeenCalledTimes(2)
-    expect(readAccess).toHaveBeenLastCalledWith('agent-a', asker, ['ses-1'])
+    expect(readAccess).toHaveBeenLastCalledWith('agent-a', asker, ['ses-1'], false)
+    // Asking only for the owner's sessions is a different question, never served from the other's cache.
+    await members.lookupsFor('agent-a').console(asker, ['ses-1'], true)
+    expect(readAccess).toHaveBeenLastCalledWith('agent-a', asker, ['ses-1'], true)
   })
 
   it('confirms nothing on a daemon that cannot ask the console', async () => {

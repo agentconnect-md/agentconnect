@@ -139,9 +139,11 @@ describe('a Slack turn, the sub-sessions it opens, patrols, tasks and schedules'
       }
       const opened = await d.collab.messageAgent(req)
       expect(opened).toMatchObject({ delivered: true, subsession: true })
+      // The live entry can land before the session row does, so wait for both.
       const child = await vi.waitFor(async () => {
-        const rec = await d.store.getSession(opened.targetSession)
         expect(d.activeGateEntries.get(opened.targetSession)).toBeDefined()
+        const rec = await d.store.getSession(opened.targetSession)
+        expect(rec).toBeDefined()
         return rec
       }, WAIT)
       const childCtx: SessionContext = { ...ctx, thread: child.thread }

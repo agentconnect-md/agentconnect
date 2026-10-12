@@ -1,15 +1,20 @@
 // The console's session-visibility verdict for an identified asker, not the caller, for the daemon's read rule (assistant-mode.md §5.5).
 import type { FastifyBaseLogger, FastifyRequest } from 'fastify'
-import { canViewSession } from '../authorization/policy.js'
+import { canViewSession, ownsSession } from '../authorization/policy.js'
 import { OrgId, SessionId } from '../domain/ids.js'
 import type { ReadAccessViewer } from '../orchestrator/readAccess.js'
 import type { SessionMetaRecord } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import { makeSessionAccessResolver } from './session-access.js'
 
-/** Which of an agent's sessions `viewer` could see in the console: the same resolver and predicate the console's own reads use. */
+/** Which of an agent's sessions `viewer` could see in the console; a DM's or a webchat conversation's only if they own it. */
 export function sessionsVisibleTo(deps: HttpDeps, log: () => FastifyBaseLogger) {
-  return async (viewer: ReadAccessViewer, agentId: string, sessionIds: readonly string[]): Promise<string[]> => {
+  return async (
+    viewer: ReadAccessViewer,
+    agentId: string,
+    sessionIds: readonly string[],
+    ownerOnly: boolean
+  ): Promise<string[]> => {
     const rows = (await Promise.all(sessionIds.map((id) => deps.repos.session.getUnscoped(SessionId(id))))).filter(
       (row): row is SessionMetaRecord =>
         row !== null && String(row.orgId) === viewer.orgId && String(row.agentId) === agentId
@@ -24,8 +29,10 @@ export function sessionsVisibleTo(deps: HttpDeps, log: () => FastifyBaseLogger) 
     } as unknown as FastifyRequest
     const access = await makeSessionAccessResolver(deps).forSessions(request, rows)
     const principal = { userId: viewer.userId, role: viewer.role }
+    // Stricter than the console: an org-visible DM is shown to every member, but read only for its recorded owner.
     return rows
       .filter((row) => canViewSession(row, principal, access.identitySet, access.externalAccess))
+      .filter((row) => !(ownerOnly || row.platform === 'webchat') || ownsSession(row, access.identitySet))
       .map((row) => String(row.id))
   }
 }

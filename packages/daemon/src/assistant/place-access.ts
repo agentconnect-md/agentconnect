@@ -54,8 +54,8 @@ export interface ReadLookups {
   member(integrationId: string, channel: string, userId: string): Promise<boolean>
   /** Whether a chat member is a full member of the bot's workspace, not a guest or an outsider. */
   fullMember(integrationId: string, userId: string): Promise<boolean>
-  /** The console's own session visibility for whoever is behind the asker; rejects when the Control Plane cannot answer. */
-  console(asker: ReadAsker, sessionIds: readonly string[]): Promise<ConsoleVerdict>
+  /** The console's own session visibility for whoever is behind the asker, `ownerOnly` for a DM or webchat source; rejects when the Control Plane cannot answer. */
+  console(asker: ReadAsker, sessionIds: readonly string[], ownerOnly: boolean): Promise<ConsoleVerdict>
 }
 
 /** Lookups that confirm nothing, for a host that wires none. */
@@ -121,7 +121,9 @@ export async function askerMayRead(
     return await sameBotMayRead(asker.userId, source, bot, lookups)
   const sessions = source.sessions ?? []
   if (sessions.length === 0) return false
-  const verdict = await lookups.console(asker, sessions)
+  // Stricter than the console: anything but a shared conversation (a DM, webchat, an undescribed place) is its owner's alone.
+  const ownerOnly = source.kind !== 'channel' && source.kind !== 'group_dm'
+  const verdict = await lookups.console(asker, sessions, ownerOnly)
   return verdict.asker === 'linked' && sessions.every((id) => verdict.visible.has(id))
 }
 
@@ -145,7 +147,7 @@ export async function readRefusal(
 export async function askerUnlinked(askers: TurnAskers, lookups: ReadLookups): Promise<boolean> {
   for (const asker of askers.people) {
     if (asker.kind !== 'member') continue
-    const verdict = await lookups.console(asker, []).catch(() => undefined)
+    const verdict = await lookups.console(asker, [], false).catch(() => undefined)
     if (verdict?.asker === 'unlinked') return true
   }
   return false

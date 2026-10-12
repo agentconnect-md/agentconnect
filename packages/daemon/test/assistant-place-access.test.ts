@@ -38,16 +38,28 @@ function lookups(over: Partial<ReadLookups> = {}): ReadLookups {
     D_Q: ['U_Q', 'B_BOT'],
     C_GUESTS: ['U_GUEST']
   }
-  const visibleTo: Record<string, string[]> = { 'user-p': ['ses-tg-group', 'ses-web-p', 'ses-dc-dm-p'] }
+  // The console shows user-p an org-visible DM someone else owns; only its owner may read it.
+  const visibleTo: Record<string, string[]> = {
+    'user-p': ['ses-tg-group', 'ses-web-p', 'ses-web-q', 'ses-dc-dm-p', 'ses-dc-dm-q', 'ses-dm-unowned']
+  }
+  const owners: Record<string, string> = {
+    'ses-web-p': 'user-p',
+    'ses-web-q': 'user-q',
+    'ses-dc-dm-p': 'user-p',
+    'ses-dc-dm-q': 'user-q'
+  }
   return {
     member: vi.fn(async (_bot: string, channel: string, user: string) => members[channel]?.includes(user) === true),
     fullMember: vi.fn(async (_bot: string, user: string) => user === 'U_P' || user === 'U_Q'),
-    console: vi.fn(async (asker: ReadAsker, sessions: readonly string[]): Promise<ConsoleVerdict> => {
-      if (asker.kind === 'member' && asker.platform !== 'slack') return { asker: 'unidentifiable' }
-      const user = asker.kind === 'console' ? asker.userId : asker.userId === 'U_P' ? 'user-p' : undefined
-      if (!user) return { asker: 'unlinked' }
-      return { asker: 'linked', visible: new Set(sessions.filter((id) => visibleTo[user]?.includes(id))) }
-    }),
+    console: vi.fn(
+      async (asker: ReadAsker, sessions: readonly string[], ownerOnly: boolean): Promise<ConsoleVerdict> => {
+        if (asker.kind === 'member' && asker.platform !== 'slack') return { asker: 'unidentifiable' }
+        const user = asker.kind === 'console' ? asker.userId : asker.userId === 'U_P' ? 'user-p' : undefined
+        if (!user) return { asker: 'unlinked' }
+        const sees = (id: string) => visibleTo[user]?.includes(id) === true && (!ownerOnly || owners[id] === user)
+        return { asker: 'linked', visible: new Set(sessions.filter(sees)) }
+      }
+    ),
     ...over
   }
 }
@@ -166,13 +178,29 @@ describe('across platforms and bots: as the console would show it to the person'
     expect(await judge(discordGroup, people(tgUser), lookups(), 'int-dc')).toBe('private')
   })
 
-  it('reads a DM on another platform, and a webchat conversation, only for its owner', async () => {
+  it('reads a DM on another platform only for its owner, even one the console shows every member', async () => {
+    const l = lookups()
     const dcDm: SourcePlace = { platform: 'discord', channel: 'dc-dm', kind: 'dm', sessions: ['ses-dc-dm-p'] }
-    expect(await judge(dcDm, people(P), lookups(), 'int-dc')).toBeUndefined()
-    expect(await judge({ ...dcDm, sessions: ['ses-dc-dm-q'] }, people(P), lookups(), 'int-dc')).toBe('direct')
+    expect(await judge(dcDm, people(P), l, 'int-dc')).toBeUndefined()
+    expect(await judge({ ...dcDm, sessions: ['ses-dc-dm-q'] }, people(P), l, 'int-dc')).toBe('direct')
+    // A DM no one is recorded as owning is nobody's to read.
+    expect(await judge({ ...dcDm, sessions: ['ses-dm-unowned'] }, people(P), l, 'int-dc')).toBe('direct')
+    // An undescribed place is held to the same bar; a shared group is not.
+    expect(await judge({ ...dcDm, kind: undefined, sessions: ['ses-dc-dm-q'] }, people(P), l, 'int-dc')).toBe(
+      'undetermined'
+    )
+    expect(vi.mocked(l.console).mock.calls.map((call) => call[2])).toEqual([true, true, true, true])
+    const group: SourcePlace = { platform: 'discord', channel: 'dc-1', kind: 'channel', sessions: ['ses-tg-group'] }
+    await judge(group, people(P), l, 'int-dc')
+    expect(vi.mocked(l.console).mock.calls.at(-1)?.[2]).toBe(false)
+  })
+
+  it('reads a webchat conversation only for its owner, not for another member the console shows it to', async () => {
     const web: SourcePlace = { platform: 'webchat', channel: 'chat-1', kind: 'webchat', sessions: ['ses-web-p'] }
     expect(await judge(web, people({ kind: 'console', userId: 'user-p' }), lookups(), undefined)).toBeUndefined()
     expect(await judge(web, people({ kind: 'console', userId: 'user-q' }), lookups(), undefined)).toBe('direct')
+    const theirs = { ...web, sessions: ['ses-web-q'] }
+    expect(await judge(theirs, people({ kind: 'console', userId: 'user-p' }), lookups(), undefined)).toBe('direct')
   })
 
   it('judges a console asker by the console alone, wherever the source is', async () => {

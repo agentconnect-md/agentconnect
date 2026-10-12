@@ -1013,7 +1013,8 @@ user already is), and the console must show them the agent's sessions in that co
 member linked to an organization member therefore reads a Telegram or Discord group, whose sessions
 every member sees while that platform's session access sync is off. Someone on a platform the
 console cannot match reads nothing beyond their own platform and bot. A webchat conversation and a
-DM on any platform stay readable only by their owner.
+DM on any platform stay readable only by their owner, even where the console shows them to every
+member.
 
 **Who is asking:**
 
