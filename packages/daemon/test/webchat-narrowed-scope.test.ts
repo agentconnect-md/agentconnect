@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { WebchatPost } from '@agentconnect.md/protocol'
-import { continuationScope, postNamesAgent, webchatReplyScope } from '../src/webchat/narrowed-scope.js'
+import {
+  continuationScope,
+  foldWebchatRouting,
+  initialWebchatRouting,
+  postNamesAgent,
+  webchatReplyScope
+} from '../src/webchat/narrowed-scope.js'
 
 const post = (text: string, addressedAgentIds?: string[]): WebchatPost =>
   ({
@@ -22,6 +28,19 @@ describe('postNamesAgent', () => {
     expect(postNamesAgent('mail ops@helper.test', ['helper'])).toBe(false)
     expect(postNamesAgent('helper should go', ['helper'])).toBe(false)
   })
+
+  it('does not treat a quoted, code or link mention as an invitation', () => {
+    expect(postNamesAgent('> @helper said this earlier\nmy answer', ['helper'])).toBe(false)
+    expect(postNamesAgent('run `@helper deploy` locally', ['helper'])).toBe(false)
+    expect(postNamesAgent('```\nnotify(@helper)\n```\ndone', ['helper'])).toBe(false)
+    expect(postNamesAgent('see https://chat.example.test/@helper/profile', ['helper'])).toBe(false)
+  })
+
+  it('still invites outside those spans, and does not parse negation', () => {
+    expect(postNamesAgent('> quoted line\n@helper please confirm', ['helper'])).toBe(true)
+    // The contract is lexical: a negated mention is still a mention, so the model decides.
+    expect(postNamesAgent('no need for @helper here', ['helper'])).toBe(true)
+  })
 })
 
 describe('continuationScope', () => {
@@ -29,14 +48,15 @@ describe('continuationScope', () => {
     expect(continuationScope(post('hi'), 'agent-b', ['b'])).toEqual({ outsideHumanScope: false })
   })
 
-  it('marks a left-out peer, unless the post @-names it', () => {
+  it('marks a left-out peer without widening the scope, unless the post invites it', () => {
     expect(continuationScope(post('done', ['agent-a']), 'agent-b', ['helper'])).toEqual({
       outsideHumanScope: true,
+      addressedAgentIds: ['agent-a']
+    })
+    expect(continuationScope(post('@Helper over to you', ['agent-a']), 'agent-b', ['helper'])).toEqual({
+      outsideHumanScope: false,
       addressedAgentIds: ['agent-a', 'agent-b']
     })
-    expect(continuationScope(post('@Helper over to you', ['agent-a']), 'agent-b', ['helper']).outsideHumanScope).toBe(
-      false
-    )
   })
 
   it('keeps an addressed peer inside the scope', () => {
@@ -68,5 +88,51 @@ describe('webchatReplyScope', () => {
 
   it('is absent for a turn with no mentions', () => {
     expect(webchatReplyScope({ msg: msg('user', []) })).toBeUndefined()
+  })
+})
+
+describe('foldWebchatRouting', () => {
+  const wake = (from: string, scope: string[] | undefined, outside: boolean) =>
+    ({
+      msg: { source: 'agent', mentionedBots: [], sender: { id: from, isBot: true } },
+      callMeta: {
+        callFrom: from,
+        hopCount: 1,
+        deliveryId: 'd',
+        conversationContinuation: true,
+        ...(scope ? { addressedAgentIds: scope } : {}),
+        ...(outside ? { outsideHumanScope: true } : {})
+      }
+    }) as never
+  const addressed = initialWebchatRouting(wake('agent-a', ['agent-a', 'agent-b'], false))
+  const leftOut = initialWebchatRouting(wake('agent-a', ['agent-a'], true))
+
+  it('an addressed turn ignores a left-out activation for scope, and owes a note naming its author', () => {
+    expect(foldWebchatRouting(addressed, wake('agent-c', ['agent-c'], true))).toEqual({
+      addressed: true,
+      scope: ['agent-a', 'agent-b'],
+      notes: { becameAddressed: false, absorbedOutsideFrom: ['agent-c'] }
+    })
+  })
+
+  it('a left-out turn that absorbs an addressing activation is released into its scope', () => {
+    expect(foldWebchatRouting(leftOut, wake('agent-a', ['agent-a', 'agent-b'], false))).toEqual({
+      addressed: true,
+      scope: ['agent-a', 'agent-b'],
+      notes: { becameAddressed: true, absorbedOutsideFrom: [] }
+    })
+  })
+
+  it('addressing activations merge, and an unscoped one leaves no one out', () => {
+    expect(foldWebchatRouting(addressed, wake('agent-c', ['agent-c', 'agent-b'], false)).scope).toEqual([
+      'agent-a',
+      'agent-b',
+      'agent-c'
+    ])
+    expect(foldWebchatRouting(addressed, wake('agent-c', undefined, false)).scope).toBeUndefined()
+  })
+
+  it('a still-left-out turn stays left out', () => {
+    expect(foldWebchatRouting(leftOut, wake('agent-c', ['agent-c'], true))).toMatchObject({ addressed: false })
   })
 })

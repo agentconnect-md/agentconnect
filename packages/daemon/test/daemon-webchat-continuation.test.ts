@@ -368,6 +368,8 @@ describe('webchat continuation narrowed by a human @mention', () => {
     const { posts, fanOut } = fakeRelay({ current: daemon }, [P1, P2, REF])
     ;(daemon as any).relays = { sendWebchatPost: fanOut, stop: async () => {} }
     const text = `@${P1} what do you think?`
+    // The browser's stream for the kickoff turn: a left-out peer must never reach it.
+    const browserEvents: RdChatEvent[] = []
     const ack = await (daemon as any).handleRelayMsg(
       rd(
         {
@@ -380,7 +382,7 @@ describe('webchat continuation narrowed by a human @mention', () => {
         },
         { agentId: P1, msgId: 'turn-p1' }
       ),
-      () => {}
+      (e: RdChatEvent) => browserEvents.push(e)
     )
     expect(ack).toMatchObject({ accepted: true })
     for (const [peer, msgId] of [
@@ -392,14 +394,30 @@ describe('webchat continuation narrowed by a human @mention', () => {
         () => {}
       )
     }
-    return { daemon, prompts, posts }
+    return { daemon, prompts, posts, browserEvents }
   }
 
-  it('still wakes the left-out peers, telling them the human addressed someone else', async () => {
-    const { daemon, prompts, posts } = await narrowedKickoff({
+  // A peer post injected straight into one participant, the way the relay fans it out.
+  async function deliverPeerPost(daemon: Daemon, to: string, post: WebchatPost, msgId: string) {
+    await (daemon as any).handleRelayMsg(rd({ op: 'context', post }, { agentId: to, msgId }), () => {})
+  }
+  const scopedPost = (author: string, text: string, at: number, postId: string, scope: string[]): WebchatPost => {
+    const post = agentPost(author, text, at, postId, 0)
+    return { ...post, author: { ...post.author, addressedAgentIds: scope } as WebchatPost['author'] }
+  }
+  const gate = () => {
+    let open!: () => void
+    const opened = new Promise<void>((resolve) => (open = resolve))
+    return { open, opened }
+  }
+  const agentOf = (e: RdChatEvent) => (e.kind === 'output' ? e.output.agentId : e.done.agentId)
+
+  it('still wakes the left-out peers, who stay silent in the browser and in every post', async () => {
+    const { daemon, prompts, posts, browserEvents } = await narrowedKickoff({
       [P1]: () => 'here is my answer',
       [P2]: () => NO_RESPONSE,
-      [REF]: () => NO_RESPONSE
+      // Prose that ends in the sentinel is a decline too: it must not leak as a post.
+      [REF]: () => `Sounds right to me.\n${NO_RESPONSE}`
     })
     await vi.waitFor(() => {
       expect(prompts.get(P2)).toHaveLength(1)
@@ -411,6 +429,106 @@ describe('webchat continuation narrowed by a human @mention', () => {
     expect(outsideScope(prompts.get(P2)![0])).toBe(true)
     expect(outsideScope(prompts.get(REF)![0])).toBe(true)
     expect(outsideScope(prompts.get(P1)![0])).toBe(false)
+    expect(browserEvents.length).toBeGreaterThan(0)
+    expect(browserEvents.every((e) => agentOf(e) === P1)).toBe(true)
+    await daemon.stop()
+  })
+
+  it('does not let an uninvited reply widen the scope or end its author’s reminders', async () => {
+    let refTurns = 0
+    const { daemon, prompts, posts } = await narrowedKickoff({
+      [P1]: () => NO_RESPONSE,
+      [P2]: () => NO_RESPONSE,
+      [REF]: () => (++refTurns === 1 ? 'chiming in anyway' : NO_RESPONSE)
+    })
+    // P1 answers the human first, then the referee speaks up despite its reminder.
+    await deliverPeerPost(
+      daemon,
+      REF,
+      scopedPost(P1, 'here is my answer', 2_000, '00000005-0000-4000-8000-000000000005', [P1]),
+      'p1-to-ref'
+    )
+    await vi.waitFor(() => expect(posts.map((p) => p.agentId)).toEqual([REF]), WAIT)
+    await settle()
+    expect(posts[0]!.post.author).toMatchObject({ agentId: REF, addressedAgentIds: [P1] })
+    // Its post wakes P1 inside the scope and P2 outside it, with no widening.
+    await vi.waitFor(() => expect(prompts.get(P2)!.length).toBeGreaterThanOrEqual(1), WAIT)
+    expect(prompts.get(P2)!.every(outsideScope)).toBe(true)
+    await daemon.stop()
+  })
+
+  it('an addressed turn that absorbs a left-out post keeps its scope and is told whose exchange that is', async () => {
+    const release = gate()
+    const drafting = gate()
+    let p2Turns = 0
+    let p1Turns = 0
+    const { daemon, prompts, posts } = await narrowedKickoff({
+      [P1]: () => (++p1Turns === 1 ? `@${P2} your turn` : NO_RESPONSE),
+      [P2]: async () => {
+        if (++p2Turns === 1) {
+          drafting.open()
+          await release.opened
+          return 'first draft'
+        }
+        return 'my turn, revised'
+      },
+      [REF]: () => NO_RESPONSE
+    })
+    await drafting.opened
+    // While P2 drafts its invited reply, the referee's exchange with the human lands on P2 as an out-of-scope wake.
+    await deliverPeerPost(
+      daemon,
+      P2,
+      scopedPost(REF, 'unrelated chatter', 3_000, '00000006-0000-4000-8000-000000000006', [REF]),
+      'ref-to-p2'
+    )
+    release.open()
+    await vi.waitFor(() => expect(posts.some((p) => p.agentId === P2)).toBe(true), WAIT)
+    await settle()
+    const replacement = prompts.get(P2)![1]!
+    expect(replacement).toContain('unrelated chatter')
+    expect(replacement).toContain(`from [${REF}] in this update belong to an exchange the human addressed to other`)
+    expect(outsideScope(replacement)).toBe(false)
+    const reply = posts.find((p) => p.agentId === P2)!
+    expect(reply.post.text).toBe('my turn, revised')
+    expect(reply.post.author).toMatchObject({ addressedAgentIds: [P1, P2] })
+    await daemon.stop()
+  })
+
+  it('a left-out turn that absorbs an invitation is released and joins the scope', async () => {
+    const release = gate()
+    const drafting = gate()
+    let p2Turns = 0
+    const { daemon, prompts, posts } = await narrowedKickoff({
+      [P1]: () => 'here is my answer',
+      [P2]: async () => {
+        if (++p2Turns === 1) {
+          drafting.open()
+          await release.opened
+          return NO_RESPONSE
+        }
+        return 'checked'
+      },
+      [REF]: () => NO_RESPONSE
+    })
+    await drafting.opened
+    expect(outsideScope(prompts.get(P2)![0])).toBe(true)
+    // While P2 holds its reminded wake, P1 explicitly invites it.
+    await deliverPeerPost(
+      daemon,
+      P2,
+      scopedPost(P1, `@${P2} can you check this?`, 3_000, '00000007-0000-4000-8000-000000000007', [P1]),
+      'invite-to-p2'
+    )
+    release.open()
+    await vi.waitFor(() => expect(posts.some((p) => p.agentId === P2)).toBe(true), WAIT)
+    await settle()
+    const replacement = prompts.get(P2)![1]!
+    expect(replacement).toContain('no longer applies')
+    expect(outsideScope(replacement)).toBe(false)
+    const reply = posts.find((p) => p.agentId === P2)!
+    expect(reply.post.text).toBe('checked')
+    expect(reply.post.author).toMatchObject({ addressedAgentIds: [P1, P2] })
     await daemon.stop()
   })
 

@@ -695,7 +695,13 @@ import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-i
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
-import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
+import {
+  ADDRESSED_AFTER_OUTSIDE_SCOPE_REMINDER,
+  OUTSIDE_HUMAN_SCOPE_REMINDER,
+  absorbedOutsideScopeReminder,
+  isNoResponseBody,
+  isNoResponsePrefix
+} from './session/no-response.js'
 import { codeHostReplySnapshot, sessionReplyRoute } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
@@ -948,7 +954,7 @@ import { UUID_RE, type WebchatSink, type WebchatTurnContext } from './webchat/ty
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as webchatTurnOutput from './webchat/turn-output.js'
-import { webchatReplyScope } from './webchat/narrowed-scope.js'
+import { foldWebchatRouting, initialWebchatRouting } from './webchat/narrowed-scope.js'
 import {
   publishWebchatSharedImage,
   resolveSharedImageOriginal,
@@ -12555,13 +12561,14 @@ export class Daemon {
     }
     const { thread, ts } = transcriptCoords(entry.msg)
     const mention = attachmentMention(entry.msg.attachments)
+    const liveKey = sessionKey(entry.msg.platform, entry.msg.channel, thread, entry.agentId, entry.msg.transportScope)
+    // §5.2a: the live webchat turn now also answers this activation, so its routing and reply scope fold it in.
+    const live = [...this.pending.values()].find((p) => p.webchat && p.plan.sessionKey === liveKey)
+    if (live) live.webchatRouting = foldWebchatRouting(live.webchatRouting ?? initialWebchatRouting(live.entry), entry)
     await this.store.appendTranscript({
       channel: transcriptChannelKey(entry.msg.channel, entry.msg.transportScope),
       thread: entry.msg.thread ?? entry.msg.msgId,
-      admission: {
-        agentId: entry.agentId,
-        sessionKey: sessionKey(entry.msg.platform, entry.msg.channel, thread, entry.agentId, entry.msg.transportScope)
-      },
+      admission: { agentId: entry.agentId, sessionKey: liveKey },
       ts,
       sender: entry.msg.sender.id,
       // Carried so a live agent-wake post (postAgentWakeInbound) reconciles against
@@ -16803,7 +16810,8 @@ export class Daemon {
           text: contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents), {
             deliveredPrefix: p.plan.stageAnswer && p.reply.text.length > 0
           })
-        }
+        },
+        ...this.takeWebchatRoutingNotes(p)
       ]
       finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...promptBlocks])
       // The wall-clock budget covers replacement work only. A slow original
@@ -16825,6 +16833,20 @@ export class Daemon {
     }
 
     return { kind: 'answered', stopReason, usage: evaluationUsage ?? usage, finalCaptureInput }
+  }
+
+  /** §5.2a routing facts a webchat replacement prompt owes after coalescing: a still-left-out turn is reminded again, a newly addressed one is released, and absorbed out-of-scope posts are named. */
+  private takeWebchatRoutingNotes(p: Pending): Array<{ type: 'text'; text: string }> {
+    if (!p.webchat) return []
+    const routing = p.webchatRouting ?? initialWebchatRouting(p.entry)
+    const blocks: Array<{ type: 'text'; text: string }> = []
+    if (!routing.addressed) blocks.push({ type: 'text', text: OUTSIDE_HUMAN_SCOPE_REMINDER })
+    else if (routing.notes.becameAddressed) blocks.push({ type: 'text', text: ADDRESSED_AFTER_OUTSIDE_SCOPE_REMINDER })
+    if (routing.addressed && routing.notes.absorbedOutsideFrom.length > 0) {
+      blocks.push({ type: 'text', text: absorbedOutsideScopeReminder(routing.notes.absorbedOutsideFrom) })
+    }
+    p.webchatRouting = { ...routing, notes: { becameAddressed: false, absorbedOutsideFrom: [] } }
+    return blocks
   }
 
   /** Fold the turn's token totals into the status bar and report the session's merged
@@ -16879,7 +16901,7 @@ export class Daemon {
   ): Promise<void> {
     if (!p.webchat) return
     const agentId = p.entry.agentId
-    const scope = hopCount !== undefined ? webchatReplyScope(p.entry) : undefined
+    const scope = hopCount !== undefined ? (p.webchatRouting ?? initialWebchatRouting(p.entry)).scope : undefined
     const replyTs = await webchatTurnOutput.appendWebchatTextRow(
       this.store,
       p.plan.transcriptChannel,

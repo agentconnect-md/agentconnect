@@ -71,6 +71,23 @@ export const OUTSIDE_HUMAN_SCOPE_REMINDER =
   `directly, your entire reply must be exactly ${NO_RESPONSE_SENTINEL}.\n` +
   `</system-reminder>`
 
+/** A replacement generation of a left-out turn now carries an activation addressed to this agent (§5.2a). */
+export const ADDRESSED_AFTER_OUTSIDE_SCOPE_REMINDER =
+  `<system-reminder>\n` +
+  `Routing fact: A newer post in this update is addressed to you, so the earlier instruction to stay out of the ` +
+  `exchange no longer applies. Respond to it normally.\n` +
+  `</system-reminder>`
+
+/** A replacement generation of an addressed turn absorbed posts from an exchange the human addressed to others (§5.2a). */
+export function absorbedOutsideScopeReminder(authors: readonly string[]): string {
+  return (
+    `<system-reminder>\n` +
+    `Routing fact: The newer post(s) from ${authors.map((a) => `[${a}]`).join(', ')} in this update belong to an ` +
+    `exchange the human addressed to other participants. Answer what was asked of you; do not take up theirs.\n` +
+    `</system-reminder>`
+  )
+}
+
 /** True while `trimmedBody` could still become the bare sentinel as more chunks stream
  *  in — i.e. it is a prefix of (or exactly) the sentinel. Convergers use this to HOLD
  *  buffered body instead of posting it, so a streamed sentinel never leaks a partial
