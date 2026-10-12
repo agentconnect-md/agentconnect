@@ -941,8 +941,8 @@ function AgentDetail() {
       </div>
     )
   }
-  // Activity exists only for an assistant-mode agent, behind the flag; a link to it otherwise lands on Integrations.
-  const activityShown = featureFlagEnabled('assistant-mode') && da.assistantMode?.enabled === true
+  // Activity exists only for an assistant-mode agent, whatever the flag (which gates only switching it on); a link to it otherwise lands on Integrations.
+  const activityShown = da.assistantMode?.enabled === true
   const tab: DetailTab = requestedTab === 'activity' && !activityShown ? 'integrations' : requestedTab
   // The owning daemon (if placed in the live fleet). Gates the agent's "online" —
   // an agent can't be online when its daemon is offline — and names the daemon.
@@ -2880,6 +2880,7 @@ function AgentDetail() {
           sandboxed={isPoolPlacementKind(da.placementKind)}
           memberSetPlaced={isSetPlacementKind(da.placementKind)}
           besideSettings={
+            // The flag offers switching the mode on; an agent already on keeps the panel, so it can be switched off.
             (featureFlagEnabled('assistant-mode') || da.assistantMode?.enabled) && (
               <AssistantModePanel
                 agentId={id}

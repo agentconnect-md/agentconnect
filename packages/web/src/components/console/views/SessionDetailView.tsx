@@ -167,7 +167,6 @@ import {
   subsessionsTabStatus,
   type SubsessionsPanelVerdict
 } from '@/components/console/dock/SubsessionsPanel'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   PullRequestPanel,
   pullRequestTabStatus,
@@ -3200,12 +3199,9 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
-  // The conversation whose sub-sessions the dock lists: the focused participant's session, while that agent is in assistant mode and the console offers it.
+  // The conversation whose sub-sessions the dock lists: the focused participant's session, while that agent is in assistant mode.
   const subsessionsAgent = filesAgentId ? agentById.get(filesAgentId) : undefined
-  const subsessionsSessionId =
-    !MOCK_MODE && featureFlagEnabled('assistant-mode') && subsessionsAgent?.assistantMode?.enabled === true
-      ? tasksSessionId
-      : null
+  const subsessionsSessionId = !MOCK_MODE && subsessionsAgent?.assistantMode?.enabled === true ? tasksSessionId : null
   // An isolated session's own wake, with its own agent; the panel presses it only when the read says this session's arm places the watcher.
   const prSessionIsolation =
     currentSessionDetail && currentSessionDetail.id === prSessionId
@@ -5010,11 +5006,10 @@ export default function SessionDetailView() {
     owner &&
     !owner.name.startsWith(MOCK_PREFIX)
   )
-  // A webchat conversation's proposals (assistant-mode.md §5.10): whoever may continue it and editors decide them here; the CP refuses anyone else.
+  // A webchat conversation's proposals, the live Playground's included (assistant-mode.md §5.10): whoever may continue it and editors decide them here; the CP refuses anyone else.
   const conversationProposals = Boolean(
-    isWebchat &&
+    (isWebchat || (isPg && session.realSessionId)) &&
     !readOnlySubsession &&
-    featureFlagEnabled('assistant-mode') &&
     owner?.assistantMode?.enabled === true &&
     !owner.name.startsWith(MOCK_PREFIX)
   )
@@ -5031,9 +5026,15 @@ export default function SessionDetailView() {
         className={className}
       />
     ) : null
+  // The Requests popover keeps an editor's history, this conversation's proposals included.
   const requestsPanel =
     canReviewApprovals && session.agentId ? (
-      <ApprovalRequestsCard bare agentId={session.agentId} sessionId={session.realSessionId ?? session.id} />
+      <ApprovalRequestsCard
+        bare
+        agentId={session.agentId}
+        sessionId={session.realSessionId ?? session.id}
+        proposals={conversationProposals}
+      />
     ) : null
 
   return (

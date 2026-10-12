@@ -967,13 +967,7 @@ export function IntegrationChannelList({
           // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
           agentName: (defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? '',
           padX,
-          // An assistant-mode agent's Off rooms are enabled one by one, behind their warning, never in bulk.
-          siblings: {
-            platform,
-            rows: channelRows
-              .filter((row) => !assistantMode || rowTrigger(row) !== 'off')
-              .map((row) => ({ integrationId, row }))
-          }
+          siblings: { platform, rows: channelRows.map((row) => ({ integrationId, row })), assistantMode }
         })
   const row = (c: IntegrationChannelRow) => {
     // One member is no choice, so the row drops the picker unless the bot's routing owns the row.

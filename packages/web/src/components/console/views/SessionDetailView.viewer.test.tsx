@@ -1417,14 +1417,18 @@ describe('the Sub-sessions tab', () => {
     expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
   })
 
-  it('reads nothing and offers no tab with the console flag off, or for an agent outside assistant mode', async () => {
+  it('keeps the tab with the console flag off for an agent already in assistant mode', async () => {
     wire.assistantMode = true
     wire.subsessions = [child]
     await render()
-    expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
+    expect(wire.subsessionCalls).toHaveLength(1)
+    expect(container?.querySelector('[data-dock-tab="subsessions"]')).not.toBeNull()
+  })
 
+  it('reads nothing and offers no tab for an agent outside assistant mode, flag or not', async () => {
     window.__AC_ENV = { FEATURE_FLAGS: 'assistant-mode' }
     wire.assistantMode = false
+    wire.subsessions = [child]
     await render()
     expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
     expect(container?.querySelector('[data-subsessions-panel]')).toBeNull()
