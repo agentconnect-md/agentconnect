@@ -273,8 +273,11 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     // Right after a restart nothing is known about G1 yet: still skipped, not counted as new activity.
     inner.channelSnapshots.clear()
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
-    // Only the listing reporting it public makes the channel a source.
-    inner.channelSnapshots.set('int-1', { channels: [{ id: 'G1', isPrivate: false }], authoritative: true })
+    // Only the listing reporting it public and not shared makes the channel a source.
+    inner.channelSnapshots.set('int-1', {
+      channels: [{ id: 'G1', isPrivate: false, externalReason: null }],
+      authoritative: true
+    })
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(true)
     await inner.store.close()
   })

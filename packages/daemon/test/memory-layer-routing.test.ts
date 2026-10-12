@@ -10,6 +10,8 @@ import { appendCoordinate } from '../src/session/append-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'bot-a'
+// What a patrol's or another agent's message carries as its sender: an agent's UUID.
+const AGENT_UUID = '0b0b0b0b-0000-4000-8000-000000000001'
 const THREAD = appendCoordinate(1)
 const TENANT = 'T-EXAMPLE'
 
@@ -22,6 +24,8 @@ interface Place {
   snapshot?: Partial<IntegrationChannel>
   /** The CP or a detection marked it external. */
   external?: boolean
+  /** What the platform's own lookup answers for the conversation; an Error makes it fail. */
+  lookup?: Record<string, unknown> | Error
 }
 
 interface Agent {
@@ -76,9 +80,17 @@ function world(place: Place, agent: Agent = {}) {
     const integrationId = platform === 'telegram' ? 'int-2' : 'int-1'
     daemon.channelSnapshots.set(integrationId, { channels: [{ id: channel, ...place.snapshot }], authoritative: true })
   }
+  if (place.lookup !== undefined) {
+    const answer = place.lookup
+    const getChannelInfo = vi.fn(async (id: string) => {
+      if (answer instanceof Error) throw answer
+      return { id, ...answer }
+    })
+    daemon.connForIntegration = (integrationId: string) => (integrationId === 'int-1' ? { getChannelInfo } : undefined)
+  }
   daemon.tenantScopeForIntegration = async () => TENANT
   daemon.linkedConsoleUser = async (_agent: string, _int: string, member: string) => agent.linked?.[member]
-  const captured = async (): Promise<unknown> => {
+  const captured = async (msg?: unknown): Promise<unknown> => {
     daemon.memory.recordTurnForBinding.mockClear()
     await daemon.queueMemoryPostTurn(
       AGENT,
@@ -89,7 +101,8 @@ function world(place: Place, agent: Agent = {}) {
       daemon.agents.get(AGENT).memory,
       undefined,
       'turn-1',
-      { key, outwardSessionId: 'outward-1' }
+      { key, outwardSessionId: 'outward-1' },
+      msg
     )
     await Promise.all(daemon.memoryPostTurnChains.values())
     return daemon.memory.recordTurnForBinding.mock.calls[0]?.[0]
@@ -105,7 +118,10 @@ function world(place: Place, agent: Agent = {}) {
   } as unknown as SessionContext
   const tool = (call: { mode: 'read' | 'write'; layer?: 'shared' | 'person' | 'here' }) =>
     daemon.memoryToolScope(ctx, call)
-  return { daemon, captured, tool, ctx }
+  // What the session manager resolves when a session starts on this message, before its row exists.
+  const start = async (msg: unknown) =>
+    (await daemon.memoryLayerFor(daemon.memoryPlaceOf(AGENT, { platform, channel }, undefined, msg))).scope
+  return { daemon, captured, tool, ctx, start }
 }
 
 const PUBLIC = { isPrivate: false, externalReason: null }
@@ -271,5 +287,82 @@ describe('dreams mine only conversations of the shared layer, for every agent', 
     const places = await w.daemon.dreamPlaces(AGENT)
     expect(places.open).toEqual(['C1'])
     expect(places.platforms).toEqual(expect.arrayContaining(['slack', 'telegram', 'webchat']))
+  })
+})
+
+describe('an automated turn never names the person a DM is with', () => {
+  const patrol = { source: 'agent', sender: { id: AGENT_UUID, isBot: false }, isDm: false }
+
+  it("gives patrol sessions in two people's DMs those two people's layers, not one key", async () => {
+    const one = world({
+      channel: 'D1',
+      conversationKind: 'dm',
+      triggeredBy: AGENT_UUID,
+      lookup: { isIm: true, user: 'U1' }
+    })
+    const two = world({
+      channel: 'D2',
+      conversationKind: 'dm',
+      triggeredBy: AGENT_UUID,
+      lookup: { isIm: true, user: 'U2' }
+    })
+    expect(await one.captured(patrol)).toMatchObject({ personKey: memoryPersonKey(`slack:${TENANT}:U1`) })
+    expect(await two.captured(patrol)).toMatchObject({ personKey: memoryPersonKey(`slack:${TENANT}:U2`) })
+    expect(await one.tool({ mode: 'write' })).toEqual({
+      agentId: AGENT,
+      personKey: memoryPersonKey(`slack:${TENANT}:U1`)
+    })
+  })
+
+  it('keeps each DM to itself when nothing names its person', async () => {
+    const one = world({ channel: 'D1', conversationKind: 'dm', triggeredBy: AGENT_UUID })
+    const two = world({ channel: 'D2', conversationKind: 'dm', triggeredBy: AGENT_UUID })
+    const a = await one.captured(patrol)
+    const b = await two.captured(patrol)
+    expect(a).toMatchObject({ channelKey: memoryChannelKey('D1') })
+    expect(b).toMatchObject({ channelKey: memoryChannelKey('D2') })
+    expect(a).not.toHaveProperty('personKey')
+  })
+
+  it('resolves the same layer at session start and at the tool calls that follow', async () => {
+    const w = world({
+      channel: 'D1',
+      conversationKind: 'dm',
+      triggeredBy: AGENT_UUID,
+      lookup: { isIm: true, user: 'U1' }
+    })
+    const atStart = await w.start(patrol)
+    expect(atStart).toEqual({ agentId: AGENT, personKey: memoryPersonKey(`slack:${TENANT}:U1`) })
+    expect(await w.tool({ mode: 'write' })).toEqual(atStart)
+    expect(await w.captured(patrol)).toMatchObject(atStart)
+  })
+
+  it('names the person from the message they typed, whoever opened the session', async () => {
+    const w = world({ channel: 'D1', conversationKind: 'dm', triggeredBy: AGENT_UUID })
+    const typed = { source: 'user', sender: { id: 'U1', isBot: false }, isDm: true }
+    expect(await w.captured(typed)).toMatchObject({ personKey: memoryPersonKey(`slack:${TENANT}:U1`) })
+  })
+})
+
+describe('a channel shares only where the platform confirms it is not shared', () => {
+  it('keeps a channel the lookup reports shared with another organization to itself', async () => {
+    const w = world({ lookup: { isPrivate: false, externalReason: 'externallyShared' } })
+    const scope = await w.captured()
+    expect(scope).toMatchObject({ channelKey: memoryChannelKey('C1') })
+    expect(scope).not.toHaveProperty('sharedPlace')
+  })
+
+  it('shares a public channel the lookup confirms internal', async () => {
+    expect(await world({ lookup: { isPrivate: false, externalReason: null } }).captured()).toMatchObject({
+      sharedPlace: true
+    })
+  })
+
+  it('keeps a channel to itself when the lookup fails or never says whether it is shared', async () => {
+    for (const lookup of [new Error('ratelimited'), { isPrivate: false }]) {
+      const scope = await world({ lookup }).captured()
+      expect(scope).toMatchObject({ channelKey: memoryChannelKey('C1') })
+      expect(scope).not.toHaveProperty('sharedPlace')
+    }
   })
 })
