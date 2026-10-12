@@ -70,7 +70,7 @@ const create = () => [...host!.querySelectorAll<HTMLButtonElement>('button')].fi
 
 it('lets people in chat also approve tool calls by default', async () => {
   await open()
-  expect(chatActions().textContent).toBe('Also approve tool calls')
+  expect(chatActions().textContent).toBe('Talk and approve tool calls')
   await act(async () => create().click())
   await vi.waitFor(() => expect(mocks.createAgent).toHaveBeenCalled())
   expect(mocks.createAgent.mock.calls[0]![0]).toMatchObject({ chatActions: 'approve' })
@@ -80,7 +80,7 @@ it('creates the agent with the level picked', async () => {
   await open()
   await act(async () => chatActions().click())
   const talk = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
-    (option) => option.textContent === 'Only talk to the agent'
+    (option) => option.textContent === 'Talk to the agent'
   )!
   await act(async () => talk.click())
   await act(async () => create().click())

@@ -36,13 +36,13 @@ it('offers the three levels under one title and reports the pick', async () => {
   const onChange = await render('en')
   expect(host!.querySelector('.fldlbl')?.textContent).toBe('What people can do in chat')
   const trigger = host!.querySelector<HTMLButtonElement>('button[aria-label="What people can do in chat"]')!
-  expect(trigger.textContent).toBe('Also approve tool calls')
+  expect(trigger.textContent).toBe('Talk and approve tool calls')
   await act(async () => trigger.click())
   const options = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
   expect(options.map((option) => option.textContent)).toEqual([
-    'Only talk to the agent',
-    'Also approve tool calls',
-    'Also approve tool calls and change settings'
+    'Talk to the agent',
+    'Talk and approve tool calls',
+    'Talk, approve and change settings'
   ])
   await act(async () => options[2]!.click())
   expect(onChange).toHaveBeenCalledWith('settings')
@@ -53,8 +53,8 @@ it('names the levels in Chinese', async () => {
   expect(host!.querySelector('.fldlbl')?.textContent).toBe('聊天中可以做什么')
   await act(async () => host!.querySelector<HTMLButtonElement>('button[aria-label="聊天中可以做什么"]')!.click())
   expect([...document.querySelectorAll('[role="menuitemradio"]')].map((option) => option.textContent)).toEqual([
-    '只能和 agent 对话',
-    '还能批准工具调用',
-    '还能批准工具调用和修改设置'
+    '和 agent 对话',
+    '对话并批准工具调用',
+    '对话、批准并修改设置'
   ])
 })
