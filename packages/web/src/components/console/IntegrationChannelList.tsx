@@ -614,7 +614,6 @@ function DispatchPicker({
   members,
   viewer,
   disabled,
-  labelled,
   routing,
   onClaim
 }: {
@@ -626,8 +625,6 @@ function DispatchPicker({
   viewer?: MemberAgent
   /** Demo rows (no live integration id) render the control read-only. */
   disabled: boolean
-  /** Name the default beside its mark on desktop too, where the row has room for it. */
-  labelled: boolean
   /** The row's By decision routing and the Decision's name when it owns the row; absent where the platform has no By decision. */
   routing?: DispatchRouting
   onClaim: (agentId: string) => void | Promise<void>
@@ -704,17 +701,9 @@ function DispatchPicker({
             <span className="mono max-w-[180px] truncate text-[11.5px] text-(--text-primary)">{routingName}</span>
           </>
         ) : (
-          <>
-            <span className="av h-4 w-4 rounded-[4px]">
-              <AgentIconView icon={current.icon} runtime={current.runtime} size={16} />
-            </span>
-            {/* The mobile row breaks the control onto its own line, so it is always named there. */}
-            <span
-              className={`mono max-w-[180px] truncate text-[11.5px] text-(--text-primary) ${labelled ? '' : 'desktop:hidden'}`}
-            >
-              {current.label}
-            </span>
-          </>
+          <span className="av h-4 w-4 rounded-[4px]">
+            <AgentIconView icon={current.icon} runtime={current.runtime} size={16} />
+          </span>
         )}
         <Icon name="chevron-down" size={11} color="var(--text-tertiary)" />
       </button>
@@ -726,9 +715,7 @@ function DispatchPicker({
               className="fixed z-[1100] w-max min-w-[200px] max-w-[260px] rounded-lg border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)"
               style={box.style}
             >
-              <div className={heading}>
-                {routing ? translate('dispatch.sendTo') : translate('defaultDispatch.label')}
-              </div>
+              <div className={heading}>{translate('dispatch.sendTo')}</div>
               {members.map((member) => (
                 <button
                   key={member.id}
@@ -1009,7 +996,6 @@ export function IntegrationChannelList({
                 members={members}
                 viewer={viewer}
                 disabled={!integrationId}
-                labelled={decisionTriggers && !isDirectConversation(c.kind)}
                 routing={
                   decisionsOffered && decisionTriggers && botId && !ownGate && !isDirectConversation(c.kind)
                     ? {
