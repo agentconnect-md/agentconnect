@@ -25,6 +25,7 @@ import { buildSubsessionApprovalNotice } from '../src/slack/render.js'
 import { LocalStore, SCHEMA_VERSION, sessionKey } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { pendingTurnKey, type Pending } from '../src/daemon/turn-types.js'
+import { slackApprovalCards } from '../src/platforms/slack/approval-card.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -69,8 +70,8 @@ const approvalElicitation = (): CreateElicitationRequest =>
     _meta: { codex_approval_kind: 'mcp_tool_call' }
   }) as unknown as CreateElicitationRequest
 
-const slackPlace = (over: Partial<Extract<SubsessionApprovalRoute['place'], { kind: 'slack' }>> = {}) => ({
-  kind: 'slack' as const,
+const slackPlace = (over: Partial<Extract<SubsessionApprovalRoute['place'], { kind: 'chat' }>> = {}) => ({
+  kind: 'chat' as const,
   integrationId: 'int-1',
   channel: 'C1',
   thread: '100.1',
@@ -160,6 +161,11 @@ async function world(
     orgForAgent: () => 'org-1',
     sessionLink: (sessionId) => `https://console.example.test/sessions/${sessionId}`,
     slackConnFor: (integrationId) => conns[integrationId] as unknown as SlackConnection | undefined,
+    approvalCardFacet: () => slackApprovalCards,
+    chatCardsAt: (integrationId) => {
+      const conn = conns[integrationId]
+      return conn ? { facet: slackApprovalCards, conn } : undefined
+    },
     approvalDmIntegrations: () => ['int-1'],
     slackDmSessionTarget: (_p, integrationId) => `target:${integrationId}`,
     subsessionApprovalRoute,
@@ -656,11 +662,10 @@ describe('a sub-session’s permission request in the conversation it belongs to
 
     // The process dies; the next one expires the request, and reconnecting the integration settles the notice once.
     const restarted = await world({ database })
-    const conn = restarted.place as unknown as SlackConnection
-    await restarted.coordinator.retireOrphanedSubsessionNotices('int-2', conn)
+    await restarted.coordinator.retireOrphanedSubsessionNotices('int-2')
     expect(restarted.place.updateBlocks).not.toHaveBeenCalled()
-    await restarted.coordinator.retireOrphanedSubsessionNotices('int-1', conn)
-    await restarted.coordinator.retireOrphanedSubsessionNotices('int-1', conn)
+    await restarted.coordinator.retireOrphanedSubsessionNotices('int-1')
+    await restarted.coordinator.retireOrphanedSubsessionNotices('int-1')
     expect(restarted.place.updateBlocks).toHaveBeenCalledTimes(1)
     const [channel, ts, blocks] = restarted.place.updateBlocks.mock.calls[0] as unknown[]
     expect([channel, ts]).toEqual(['C1', '200.1'])

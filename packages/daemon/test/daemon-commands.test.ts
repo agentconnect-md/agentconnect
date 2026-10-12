@@ -16,6 +16,7 @@ import { CHAT_LINK_HINT } from '../src/agents/chat-actions.js'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { elicitOptionToken } from '../src/slack/render.js'
+import { slackApprovalCards } from '../src/platforms/slack/approval-card.js'
 import { slackElicitCards } from '../src/platforms/slack/elicit-card.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -2246,6 +2247,7 @@ describe('Slack interactive status bar', () => {
       params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
       evaluationParams: {},
       chat: {
+        facet: slackApprovalCards,
         conn: { updateBlocks, workspaceId: () => 'T1' },
         channel: 'C1',
         place: { integrationId: 'int-a', channel: 'C1' },

@@ -27,6 +27,7 @@ import {
   type DiscordSelectKind
 } from './render.js'
 import { DISCORD_ELICIT_MODAL, DISCORD_ELICIT_OPEN, parseDiscordElicit } from '../platforms/discord/elicit-card.js'
+import { parseDiscordApproval } from '../platforms/discord/approval-card.js'
 import type {
   ChatRefusal,
   InteractionActor,
@@ -109,8 +110,19 @@ export interface DiscordDeps {
    *  Synchronous by necessity: a modal must be the interaction's FIRST response, and Discord
    *  allows three seconds for it, so there is no room to go and ask. */
   onElicitOpen?: (a: { requestId: string; actor?: InteractionActor }) => unknown | undefined
-  /** A tapped elicitation option, or Dismiss (`token` null). */
-  onElicitChoice?: (a: { requestId: string; token: string | null; actor?: InteractionActor }) => Promise<void>
+  /** A tapped elicitation option, or Dismiss (`token` null); a refusal only the tapper is told comes back. */
+  onElicitChoice?: (a: {
+    requestId: string
+    token: string | null
+    actor?: InteractionActor
+  }) => Promise<string | undefined>
+  /** A clicked permission-card option, by position; a refusal only the clicker is told comes back. */
+  onApprovalChoice?: (a: {
+    requestId: string
+    option: number
+    ts: string
+    actor?: InteractionActor
+  }) => Promise<string | undefined>
   /** One submitted elicitation dialog: every field's value under the id its component carried. */
   onElicitSubmit?: (a: {
     requestId: string
@@ -183,6 +195,12 @@ function discordErrorCode(err: unknown): number | undefined {
   const candidate = e?.code ?? e?.rawError?.code ?? e?.data?.code
   const code = typeof candidate === 'number' ? candidate : Number(candidate)
   return Number.isSafeInteger(code) && code >= 0 ? code : undefined
+}
+
+/** Who clicked a card: their id, the bot flag, and the name the settled card says answered. */
+function cardActor(interaction: ButtonInteraction): InteractionActor {
+  const name = interaction.user.globalName ?? interaction.user.username
+  return { userId: interaction.user.id, isBot: interaction.user.bot, ...(name ? { name } : {}) }
 }
 
 /** The discord.js message-send payload we use (content + optional components). */
@@ -278,6 +296,11 @@ export class DiscordConnection implements PlatformConnection {
         return
       }
       if (!interaction.isButton()) return
+      const approval = parseDiscordApproval(interaction.customId)
+      if (approval) {
+        await this.onApprovalInteraction(interaction, approval)
+        return
+      }
       // Elicitation components are routed BEFORE the ack: opening a modal must be the
       // interaction's FIRST response, and a deferred update has already spent it. They are also
       // routed before the status-key lookup, since an elicitation card is not a status card — its
@@ -364,6 +387,22 @@ export class DiscordConnection implements PlatformConnection {
     }
   }
 
+  /** Route one click on a permission card: acked first, and a refusal told to the clicker alone. */
+  private async onApprovalInteraction(
+    interaction: ButtonInteraction,
+    approval: { requestId: string; option: number }
+  ): Promise<void> {
+    const deferred = interaction.deferUpdate().catch(() => {})
+    const refusal = await this.deps.onApprovalChoice?.({
+      ...approval,
+      ts: interaction.message.id,
+      actor: cardActor(interaction)
+    })
+    if (!refusal) return
+    await deferred
+    await interaction.followUp({ content: refusal, flags: MessageFlags.Ephemeral }).catch(() => {})
+  }
+
   /**
    * A native slash-command invocation. Ack within Discord's 3s window (an ephemeral
    * echo, seen only by the invoker), then reconstruct the `/text` form and feed it
@@ -378,7 +417,7 @@ export class DiscordConnection implements PlatformConnection {
     interaction: ButtonInteraction,
     elicit: { requestId: string; token: string | null }
   ): Promise<void> {
-    const actor: InteractionActor = { userId: interaction.user.id, isBot: interaction.user.bot }
+    const actor = cardActor(interaction)
     if (elicit.token === DISCORD_ELICIT_OPEN) {
       const modal = this.deps.onElicitOpen?.({ requestId: elicit.requestId, actor })
       // Nothing to open — a settled card, or one this surface answers with a tap — so the tap is
@@ -394,8 +433,12 @@ export class DiscordConnection implements PlatformConnection {
         .catch((err: Error) => this.deps.log?.debug(`discord: showModal failed: ${err.message}`))
       return
     }
-    void interaction.deferUpdate().catch(() => {})
-    await this.deps.onElicitChoice?.({ requestId: elicit.requestId, token: elicit.token, actor })
+    const deferred = interaction.deferUpdate().catch(() => {})
+    const refusal = await this.deps.onElicitChoice?.({ requestId: elicit.requestId, token: elicit.token, actor })
+    if (!refusal) return
+    // Only the tapper sees it, and the card stays as everyone else sees it.
+    await deferred
+    await interaction.followUp({ content: refusal, flags: MessageFlags.Ephemeral }).catch(() => {})
   }
 
   /** Read one submitted dialog: every field under the id its component carried, a list where the

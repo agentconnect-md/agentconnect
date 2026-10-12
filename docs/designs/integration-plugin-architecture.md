@@ -523,6 +523,31 @@ Markdown through the shared link sanitizer; it never receives filesystem roots o
 reads core session machinery. The webchat stream and code-host final surface use the
 same resolver, while file access remains fenced by the existing workspace reader.
 
+Two optional members collect a human's answer in the conversation, and both are
+looked up exactly, so webchat, hook and dream turns inherit neither:
+
+- `elicitCards` (`platforms/elicit-card.ts`) draws an ACP `elicitation/create` as a
+  card, including the MCP approval Codex maps onto it. Slack, Telegram, Discord,
+  Feishu/Lark, Google Chat and QQ implement it.
+- `approvalCards` (`platforms/approval-card.ts`) draws a permission request
+  (`session/request_permission`) as a card of the runtime's own choices. It replaced
+  turn-chrome's `chatInputCards` flag and the coordinator's `instanceof SlackConnection`
+  arm; Slack, Telegram and Discord implement it, and its presence is what tells core a
+  surface takes approvals in chat at all. A surface builds the live card, its settled
+  form, a background sub-session's card and notice, and the form a restart's sweep
+  rewrites; it posts on the turn's apply chain (`send`) or into another conversation of
+  the platform (`post`, for a sub-session's request), and rewrites in place. `maxOptions`
+  never exceeds the cap every surface and the console share (#1969). A button carries
+  the option's id where the payload allows (Slack) and its position where it is capped
+  (Telegram's 64-byte `callback_data`); core resolves either against the request.
+
+Core judges every click the same way (the level, then the conversation's
+`chatSurface`, then `chatActor`) and records the clicker as an `InteractionActor`. A
+refusal is said only to the clicker: a surface that can reach them from the card alone
+implements `tellPrivately` (Slack's ephemeral message); otherwise core hands the words
+back to the interaction's own ingress, which answers it privately (Telegram's
+`answerCallbackQuery` alert, Discord's ephemeral follow-up).
+
 ### 7.4 Adapter strategy functions
 
 The ~20 branches that are neither transport nor pre-dispatch capability

@@ -170,7 +170,7 @@ describe('isBuiltinSystemTool — auto-approve the daemon’s own MCP tools', ()
 
 describe('noneSuppressedApprovalSurface — Slack `none` live turns only', () => {
   it('is true only for a `none` Slack live turn', () => {
-    expect(noneSuppressedApprovalSurface('none', { platform: 'slack' })).toBe(true)
+    expect(noneSuppressedApprovalSurface('none', { platform: 'slack' }, true)).toBe(true)
     // Slack, but not a live IM turn:
     expect(noneSuppressedApprovalSurface('none', { platform: 'slack', webchat: { conversationId: 'c' } })).toBe(false)
     expect(noneSuppressedApprovalSurface('none', { platform: 'slack', headless: true })).toBe(false)

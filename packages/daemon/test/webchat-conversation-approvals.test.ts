@@ -119,6 +119,8 @@ async function world(chatActions: ChatActions) {
     orgForAgent: () => 'org-1',
     sessionLink: (sessionId) => `https://console.example.test/sessions/${sessionId}`,
     slackConnFor: () => undefined,
+    approvalCardFacet: () => undefined,
+    chatCardsAt: () => undefined,
     approvalDmIntegrations: () => [],
     slackDmSessionTarget: (_p, integrationId) => `target:${integrationId}`,
     subsessionApprovalRoute: async (p) =>

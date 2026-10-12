@@ -9,13 +9,14 @@
  * manifest axis and rejected by review — correctly: every read happens with a
  * `Pending` in hand, i.e. AFTER dispatch, which is D2's line between a manifest
  * capability and an adapter strategy. The Layer-2 surface family is the home
- * that review named for it; the other four flags are the same shape of fact.
+ * that review named for it; the other flags are the same shape of fact.
  *
  * LOOKUP IS EXACT, NOT CORE-FALLBACK, and the difference is load-bearing:
  * webchat / hook / dream RENDER through the core (Slack-shaped) surface, but
  * they must not inherit Slack's chrome — a hook turn gets no attribution
- * footer, no DM title, no approval cards. An unregistered platform gets `{}`:
- * every flag reads absent, and each site's legacy default arm applies.
+ * footer, no DM title. An unregistered platform gets `{}`: every flag reads
+ * absent, and each site's legacy default arm applies. Approval cards are a
+ * Layer-2 facet now (`TurnOutputSurface.approvalCards`), exact-looked-up too.
  *
  * `statusSurface` is deliberately THREE-state: `'turn-bar'` (Slack's in-place
  * session status row), `'on-demand'` (state answered by `/status`; the emit
@@ -35,12 +36,6 @@ export interface TurnChrome {
    *  thread panel's header in DMs AND channels — a thread becomes eligible once any
    *  agents.sessions call or a card stream registers it (verified live 2026-08-29). */
   readonly sessionTitle?: boolean
-  /** In-chat PERMISSION-approval cards: `session/request_permission` and the MCP-approval
-   *  elicitation Codex maps onto `elicitation/create`. Narrowed to that half by #1794's gap 6 —
-   *  the GENERIC elicitation card is now a Layer-2 facet (`TurnOutputSurface.elicitCards`), which
-   *  declares the kinds a surface can collect rather than one boolean for "has cards". Approval
-   *  still has a single implementer, so it keeps the flag until a second one shapes its member. */
-  readonly chatInputCards?: boolean
   /** Failure notices are posted with a chrome marker (and agent identity) so a
    *  peer daemon's thread backfill skips them. */
   readonly chromeMarkedNotices?: boolean
@@ -63,7 +58,6 @@ const CHROME = new Map<string, TurnChrome>([
       statusSurface: 'turn-bar',
       attributionFooter: true,
       sessionTitle: true,
-      chatInputCards: true,
       chromeMarkedNotices: true,
       noticeMarkup: 'markdown'
     }

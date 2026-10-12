@@ -165,9 +165,9 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     approvalSurfaceSuppressed: noneSuppressedApprovalSurface(
       mode,
       { platform: msg.platform, webchat, headless: msg.headless },
-      // §7.3: a platform with an elicitation-card facet has an in-chat card `none` takes away,
-      // exactly as Slack's permission chrome does. EXACT, so webchat/hook/dream inherit none.
-      turnSurfaces.exact(msg.platform)?.elicitCards !== undefined
+      // §7.3: an approval or elicitation card facet is an in-chat card `none` takes away; EXACT, so webchat/hook/dream inherit none.
+      turnSurfaces.exact(msg.platform)?.elicitCards !== undefined ||
+        turnSurfaces.exact(msg.platform)?.approvalCards !== undefined
     ),
     suppressReplyConn,
     draftReply,

@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
+import { slackApprovalCards } from '../src/platforms/slack/approval-card.js'
 
 const AGENT = 'agent-1'
 const REQUEST = 'req-1'
@@ -36,7 +37,7 @@ function seedPending(daemon: Daemon, chatActions: 'talk' | 'approve' | 'settings
     sessionId: 'acp-1',
     params: { options: [{ optionId: 'allow_once', kind: 'allow_once', name: 'Allow' }] },
     evaluationParams: {},
-    chat: { conn: { postEphemeral }, channel: 'C1' },
+    chat: { facet: slackApprovalCards, conn: { postEphemeral }, channel: 'C1' },
     resolve: () => {}
   })
   return postEphemeral

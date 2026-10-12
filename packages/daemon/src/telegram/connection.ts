@@ -98,6 +98,9 @@ export interface TelegramCallback {
   channel: string
   messageId: number
   userId: string
+  /** Whether the tapper is a bot, and their display name: presentation and the bot rule only, never an identity. */
+  isBot?: boolean
+  name?: string
   topicId?: string
 }
 
@@ -130,11 +133,20 @@ type InlineKeyboardMarkup = { inline_keyboard: { text: string; callback_data: st
  *  carries a keyboard OR a force-reply, never both. */
 type ForceReply = { force_reply: true; input_field_placeholder?: string }
 
+/** A Telegram user's display name: first and last name, else their username. */
+function telegramUserName(from: TelegramCallbackQuery['from']): string | undefined {
+  const full = [from?.first_name, from?.last_name]
+    .filter((part) => part?.trim())
+    .join(' ')
+    .trim()
+  return full || from?.username?.trim() || undefined
+}
+
 /** The raw grammY `callback_query` slice the connection reads. */
 export interface TelegramCallbackQuery {
   id: string
   data?: string
-  from?: { id: number }
+  from?: { id: number; is_bot?: boolean; first_name?: string; last_name?: string; username?: string }
   message?: { message_id: number; chat: { id: number }; message_thread_id?: number }
 }
 
@@ -329,12 +341,15 @@ export class TelegramConnection implements PlatformConnection {
       // A stray tap on a card whose message we can't identify is unactionable — ack it
       // (so the client's spinner clears) and drop it.
       if (!q.message || q.data == null) return
+      const name = telegramUserName(q.from)
       const cb: TelegramCallback = {
         id: q.id,
         data: q.data,
         channel: String(q.message.chat.id),
         messageId: q.message.message_id,
         userId: q.from ? String(q.from.id) : 'unknown',
+        ...(q.from?.is_bot !== undefined ? { isBot: q.from.is_bot } : {}),
+        ...(name ? { name } : {}),
         ...(q.message.message_thread_id != null ? { topicId: String(q.message.message_thread_id) } : {})
       }
       log?.debug(`telegram: callback ch=${cb.channel} user=${cb.userId} data=${JSON.stringify(cb.data)}`)
