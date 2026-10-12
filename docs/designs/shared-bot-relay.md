@@ -687,10 +687,12 @@ code. The daemon marks the turn with its `origin` and treats a protocol in
   selects the runtime's narrowest reject option (an MCP approval declines) and
   no editor ever sees it, so a public client that refuses every approval in
   code never reaches the editors. An allow takes the narrowest allow option when
-  the key's owner could decide the request in the console, a `full` key whose
-  owner may write in the org and edit the agent, which the CP returns as
-  `callerApproves`. Any other allow becomes an ordinary editor request, with its
-  notice on the caller's stream, and the turn waits for that decision.
+  the key's owner could decide the request in the console: a `full` key whose
+  owner may write in the org and edit the agent, or any key while the agent lets
+  people in chat approve tool calls, since its owner owns the conversation. The
+  CP returns this as `callerApproves`. Any other allow becomes an ordinary
+  editor request, with its notice on the caller's stream, and the turn waits for
+  that decision.
 
 Each tool call's `providerMetadata.agentconnect` names the turn and the output
 index it was handed out at, and the AI SDK returns it on the part. A request

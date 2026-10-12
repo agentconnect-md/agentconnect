@@ -5,9 +5,9 @@
 > stacked changes (§9) and the console states (§7, #1704) have shipped. File/line references describe the
 > shipped machinery this design composes.
 >
-> **Scope:** protocol + control-plane + daemon + web. Slack only — it is the
-> one platform with a linked-identity **assertion** (see §4.4) and the one
-> platform with DM-capable read ports today.
+> **Scope:** protocol + control-plane + daemon + web. The DM is Slack only — it is
+> the one platform whose linked identity can address a DM (see §4.4, §10) and the
+> one platform with DM-capable read ports today. §6.5 covers Feishu/Lark too.
 >
 > Related documents:
 > [slack-identity.md](slack-identity.md),
@@ -25,13 +25,13 @@ tool approval onto `elicitation/create`), the daemon's
 
 - **Chat path** — only when the agent lets people in chat approve tool
   calls (`chatActions` at `approve` or `settings`) _and_ the session's platform has
-  an approval card (Slack, Telegram, Discord — the `approvalCards` facet,
-  integration-plugin-architecture.md §7.3): an
-  interactive card with one button per ACP option is posted **into the
+  an approval card (the `approvalCards` facet, integration-plugin-architecture.md
+  §7.3): an interactive card with one button per ACP option is posted **into the
   session's own conversation** (`awaitChatPermission`,
-  `packages/daemon/src/permissions/coordinator.ts`). Anyone who can see the
-  conversation can click it — which is exactly why it is opt-in.
-- **Editor path** — the default: the ACP promise is parked, a durable row
+  `packages/daemon/src/permissions/coordinator.ts`). Outside a synced platform
+  (§6.5), anyone who can see the conversation can click it — which is exactly
+  why the agent's setting gates it.
+- **Editor path** — otherwise: the ACP promise is parked, a durable row
   lands in the daemon's `permission_requests` table
   (`packages/daemon/src/store/local-store.ts`), and chat gets only a notice:
   _"🔒 Permission requested. Ask an Agent editor to allow it from the Agent
@@ -53,16 +53,16 @@ The approval itself keeps living on the web exactly as today, and the
 console's approval cards learn to show **who** decided (§6).
 
 Non-goals: replacing the in-conversation chat card (it stays, unchanged
-behind its opt-in), console notifications (§7, deferred), a server-side
+behind its setting), console notifications (§7, deferred), a server-side
 notification store (§8), any platform other than Slack (§10), and a reverse
 Slack→console identity index (§4.4).
 
 ## 2. The trust model — why a DM is the editor path, not the chat path
 
-The in-conversation card is gated by `chatActions` because it
-performs **no per-user authorization**: any conversation participant can
-click it. The DM card is the opposite: its recipient is chosen by the same
-`canEdit` predicate the console decision route enforces
+The in-conversation card is gated by `chatActions` because, outside a synced
+platform (§6.5), it performs **no per-user authorization**: any conversation
+participant can click it. The DM card is the opposite: its recipient is chosen
+by the same `canEdit` predicate the console decision route enforces
 (`packages/control-plane/src/http/routes/agents.ts`), and the Slack account
 is bound to that console user by a Logto assertion (a Slack OIDC sign-in or
 an Account API link under the user's own session — never an email guess).
@@ -358,7 +358,7 @@ gate is replaced by two checks, both required:
   `consoleUserId` plus the verify's fresh `displayName` are what land in
   `resolvedBy` / `resolvedByName`.
 
-In-thread cards keep their existing gate, plus §6.5 where Slack's session access sync is on.
+In-thread cards keep their existing gate, plus §6.5 where session access is synced.
 
 ### 6.4 Elicitation clicks carry no actor today
 
@@ -587,4 +587,4 @@ rather than from core.
    `instanceof SlackConnection` gates on chat approval with a surface
    capability. The in-conversation card's gate is replaced: it is the
    `approvalCards` facet (integration-plugin-architecture.md §7.3), which
-   Telegram and Discord implement too.
+   other chat platforms implement too.
