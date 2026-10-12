@@ -395,7 +395,9 @@ export interface MessagingDeps extends GatewayDeps {
     ctx: SessionContext,
     name: string
   ) => Promise<{ bytes: Buffer; name: string; mimeType: string } | undefined>
-  /** Set per call when the post must go through approval (assistant-mode.md §5.5): drafts it, or lets a granted one through. */
+  /** Set per call: the write rule on a resolved post target (assistant-mode.md §5.5); throws a refusal, or says the post needs approval. */
+  judgePost?: (target: PostTarget) => Promise<'post' | 'draft'>
+  /** Set per call: drafts a post the write rule sent for an internal member's approval. */
   interceptPost?: (post: InterceptedPost) => Promise<PostInterception>
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
@@ -408,6 +410,14 @@ export interface MessagingDeps extends GatewayDeps {
   ) => Promise<void>
   /** Monotonic-ish clock for synthesizing a message id when the platform doesn't return one. */
   now: () => number
+}
+
+/** Where a post lands once resolved: the conversation on one bot, and a direct message's recipient. */
+export interface PostTarget {
+  platform: string
+  integrationId: string
+  channel: string
+  recipient?: string
 }
 
 /** The posting session's coordinates: what an outbound record is admitted into, and the lineage a seeded session keeps. */
@@ -654,9 +664,11 @@ export async function sendMessage(
       parseArgs(platformField, args.platform) ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
     const wantIntegrationId = parseArgs(integrationIdField, args.integrationId)
     const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
-    // An intercepted post skips the reach rule: an enabled place and a person's approval or grant replace it (§5.5).
-    if (channel !== undefined && !deps.interceptPost) {
-      await assertChannelReachable(ctx, gw, wantPlatform, channel, 'sendMessage')
+    // A platform post passes the write rule before anything reads the target; the agent-to-agent channel form keeps the reach rule.
+    let verdict: 'post' | 'draft' = 'post'
+    if (channel !== undefined) {
+      if (deps.judgePost) verdict = await deps.judgePost({ platform: wantPlatform, integrationId: targetId, channel })
+      else await assertChannelReachable(ctx, gw, wantPlatform, channel, 'sendMessage')
     }
     // §2.4 refusals, all BEFORE the post — an update that cannot be honored must not fall back
     // to the channel root, which loses the message where the caller was looking for it.
@@ -748,6 +760,14 @@ export async function sendMessage(
       if (address) body = `${address} ${message}`
     }
     const postChannel = directMessage ? await openDirectMessage(gw, requestedChannel, wantPlatform) : requestedChannel
+    if (directMessage && deps.judgePost) {
+      verdict = await deps.judgePost({
+        platform: wantPlatform,
+        integrationId: targetId,
+        channel: postChannel,
+        recipient: requestedChannel
+      })
+    }
     const identity: SendIdentity = {
       ...(ctx.agentName ? { username: ctx.agentName } : {}),
       ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
@@ -787,11 +807,12 @@ export async function sendMessage(
           }
         : {})
     }
-    // Assistant mode: a post to another place is drafted for approval here, once its target is fully resolved.
-    if (deps.interceptPost) {
+    // A post the write rule sent for approval is drafted here, once its target is fully resolved.
+    if (verdict === 'draft') {
+      if (!deps.interceptPost) throw new Error('sendMessage: this post needs approval, and none can be asked for here.')
       if (attachment) {
         throw new Error(
-          'sendMessage: a post to another conversation needs approval, and a file cannot be sent for approval. ' +
+          'sendMessage: a post to that conversation needs approval, and a file cannot be sent for approval. ' +
             'Nothing was sent; send the text alone.'
         )
       }

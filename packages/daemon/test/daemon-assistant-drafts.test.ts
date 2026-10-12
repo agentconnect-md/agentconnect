@@ -226,7 +226,7 @@ describe('a reply in an external place', () => {
           choice: 'discard',
           decider: { userId: 'usr-editor', name: 'Grace' }
         })
-      ).toEqual({ operation: 'decide-draft', result: 'decided', status: 'denied', granted: false, failure: null })
+      ).toEqual({ operation: 'decide-draft', result: 'decided', status: 'denied', failure: null })
       expect((await h.drafts())[0]).toMatchObject({ decidedBy: 'user:usr-editor', decidedByName: 'Grace' })
       expect(JSON.stringify(h.conn.updateBlocks.mock.calls.at(-1))).toContain('Discarded by Grace in the console')
       const click = { requestId: draft!.id, optionId: 'approve', actor: { userId: 'U1' } }

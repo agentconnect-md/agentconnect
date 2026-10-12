@@ -7,7 +7,6 @@ import { FakeClock } from '@agentconnect.md/connection'
 import type { CronDef } from '../src/agents/agent-schema.js'
 import { PLACE_SHARE_TTL_MS } from '../src/assistant/place-trust.js'
 import { Daemon } from '../src/daemon.js'
-import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { conversationTrustLevel } from '../src/router/routing-rule.js'
 import { buildSyntheticMessage } from '../src/scheduler/scheduler.js'
@@ -149,27 +148,9 @@ async function boot(assistant = true) {
       }
       await d.dispatch('bot-a', msg, INT, undefined, { callFrom: 'bot-a', hopCount: 1, deliveryId: id })
     },
-    /** `sendMessage` from the asker's DM into a channel, under an "always allow from here to there" grant. */
-    grantedPost: async (channel = 'C_ROOM') => {
-      const here = { platform: 'slack', integrationId: INT, channel: 'D_U1' }
-      await d.store.assistantDrafts.grant('bot-a', here, { ...here, channel }, 'T_FAKE_TEAM:U1', 0)
-      const ctx: SessionContext = {
-        agentId: 'bot-a',
-        platform: 'slack',
-        integrationId: INT,
-        isDm: true,
-        channel: 'D_U1',
-        thread: 'append:dm',
-        tools: []
-      } as unknown as SessionContext
-      return await d.assistantDraftPost(ctx, {
-        platform: 'slack',
-        integrationId: INT,
-        channel,
-        text: 'Heads up: the release is out.',
-        directMessage: false
-      })
-    },
+    /** Whether the write rule holds a post from the asker's DM into a channel for approval as shared. */
+    sharedFromElsewhere: async (channel = 'C_ROOM'): Promise<boolean> =>
+      await d.mcp.deps.targetExternal('bot-a', INT, channel, false),
     drafts: async (): Promise<AssistantDraft[]> => {
       const rows = (await d.store.assistantDrafts.db.query('SELECT id FROM assistant_draft ORDER BY createdAt', []))
         .rows as { id: string }[]
@@ -221,15 +202,13 @@ describe('a channel shared with no event since', () => {
     }
   })
 
-  it('drafts a post another place’s grant would have let through, offering no grant to it', async () => {
+  it('holds a post from another conversation for approval', async () => {
     const h = await boot()
     try {
       h.slack.shared.add('C_ROOM')
-      expect(await h.grantedPost()).toMatchObject({ handled: true })
+      expect(await h.sharedFromElsewhere()).toBe(true)
       expect(h.conn.postMessage).not.toHaveBeenCalled()
-      expect(await h.drafts()).toMatchObject([
-        { kind: 'elsewhere', target: { channel: 'C_ROOM' }, targetExternal: true, offerAlways: false }
-      ])
+      expect(h.trust('C_ROOM')).toBe('external')
     } finally {
       await h.close()
     }
@@ -237,12 +216,12 @@ describe('a channel shared with no event since', () => {
 })
 
 describe('a channel Slack confirms is not shared', () => {
-  it('posts report rounds and granted posts normally, from one lookup across them', async () => {
+  it('posts report rounds and posts from another conversation normally, from one lookup across them', async () => {
     const h = await boot()
     try {
       await h.report()
       await h.report()
-      expect(await h.grantedPost()).toEqual({ handled: false })
+      expect(await h.sharedFromElsewhere()).toBe(false)
       expect(h.conn.postMessage).toHaveBeenCalledTimes(2)
       expect(h.conn.postMessage).toHaveBeenCalledWith('C_ROOM', REPLY, TS, expect.any(Object))
       expect(await h.drafts()).toEqual([])
@@ -259,12 +238,9 @@ describe('a lookup that fails', () => {
     try {
       h.slack.failing = true
       await h.report()
-      expect(await h.grantedPost()).toMatchObject({ handled: true })
+      expect(await h.sharedFromElsewhere()).toBe(true)
       expect(h.conn.postMessage).not.toHaveBeenCalled()
-      expect(await h.drafts()).toMatchObject([
-        { kind: 'reply', text: REPLY, targetExternal: false },
-        { kind: 'elsewhere', targetExternal: false }
-      ])
+      expect(await h.drafts()).toMatchObject([{ kind: 'reply', text: REPLY, targetExternal: false }])
       expect(h.trust('C_ROOM')).toBe('internal')
     } finally {
       await h.close()

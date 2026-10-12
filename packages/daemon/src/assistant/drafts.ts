@@ -1,4 +1,4 @@
-// Assistant-mode drafts (assistant-mode.md §5.5, §5.10): a post or a patrol's proposed task that needs approval is recorded, carded to its approvers, and run once approved.
+// Drafts (assistant-mode.md §5.5, §5.10): a post or a patrol's proposed task that needs approval is recorded, carded to its approvers, and run once approved.
 import { randomUUID } from 'node:crypto'
 import type {
   AgentApprovalRoute,
@@ -20,8 +20,7 @@ import {
   type AssistantDraftLedger,
   type AssistantDraftSource,
   type AssistantDraftStatus,
-  type AssistantDraftTarget,
-  type AssistantGrantPlace
+  type AssistantDraftTarget
 } from '../store/assistant-drafts.js'
 
 /** A pending card or the settled rewrite of one, as the platform's card surface renders it. */
@@ -32,7 +31,6 @@ export type DraftCard =
       /** The session the draft came from, for the click's routing target; absent for a placeless session. */
       sessionKey: string | null
       view: AssistantDraftCardView
-      offerAlways: boolean
       /** Why the last approval did not run, shown under the buttons it keeps. */
       notice?: string
     }
@@ -89,11 +87,7 @@ export interface AssistantDraftsHost {
       }
     | undefined
   gatewayFor(integrationId: string): MessageGateway | undefined
-  /** The agent is enabled in this conversation (conversation gating). */
-  placeEnabled(agentId: string, integrationId: string, channel: string): boolean
   placeExternal(agentId: string, integrationId: string, channel: string): boolean
-  /** Before a post no event from the place triggered: true only once the platform confirms it is not shared now (§5.3). */
-  placeConfirmed?(agentId: string, integrationId: string, channel: string, dm: boolean): Promise<boolean>
   cardPortFor(integrationId: string): DraftCardPort | undefined
   /** The control plane's approval route; undefined without one. */
   approvalRoute?(agentId: string, req: Omit<AgentApprovalRoute, 'agentId'>): Promise<AgentApprovalRouted>
@@ -168,7 +162,6 @@ export type PostInterception = { handled: false } | { handled: true; result: unk
 export interface DraftDecision {
   result: AssistantDraftDecisionResult
   status: AssistantDraftStatus | null
-  granted: boolean
   failure: string | null
 }
 
@@ -187,7 +180,7 @@ const APPROVER_LABEL: Record<ApproverRung, string> = {
 type Routed = { approver: AssistantDraftApprover; rung: ApproverRung }
 
 const isChoice = (optionId: string): optionId is AssistantDraftChoice =>
-  optionId === 'approve' || optionId === 'discard' || optionId === 'always'
+  optionId === 'approve' || optionId === 'discard'
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
@@ -197,38 +190,19 @@ export class AssistantDrafts {
 
   constructor(private readonly host: AssistantDraftsHost) {}
 
-  /** A post to another place (§5.5): refused outside an enabled place, sent under a grant, drafted otherwise. */
+  /** A post the write rule sent for approval (§5.5): one into a shared or unconfirmed conversation, or from a run no person started; an agent outside assistant mode is refused when its asker cannot approve. */
   async interceptPost(
     agentId: string,
     source: AssistantDraftSource,
     post: InterceptedPost,
     asker: DraftAsker | undefined
   ): Promise<PostInterception> {
-    if (!this.host.placeEnabled(agentId, post.integrationId, post.channel)) {
-      throw new Error(
-        'sendMessage: this agent is not enabled in that conversation, so it cannot post there. Nothing was sent.'
-      )
-    }
     const target: AssistantDraftTarget = {
       platform: post.platform,
       integrationId: post.integrationId,
       channel: post.channel,
       thread: post.thread ?? null
     }
-    let external = this.host.placeExternal(agentId, post.integrationId, post.channel)
-    if (
-      !external &&
-      source.place &&
-      (await this.host.ledger().granted(agentId, grantPlace(source), grantPlace(target)))
-    ) {
-      // A grant posts unapproved into a place no event came from, so it holds only once the place is confirmed not shared.
-      const confirmed = this.host.placeConfirmed
-        ? await this.host.placeConfirmed(agentId, post.integrationId, post.channel, post.directMessage)
-        : true
-      if (confirmed) return { handled: false }
-      external = this.host.placeExternal(agentId, post.integrationId, post.channel)
-    }
-    const fromPlace = source.place && !external
     const destination = await this.host
       .describeDestination(target, { dm: post.directMessage, ...(post.recipient ? { recipient: post.recipient } : {}) })
       .catch(() => ({}))
@@ -237,12 +211,12 @@ export class AssistantDrafts {
       kind: 'elsewhere',
       target,
       targetDm: post.directMessage,
-      targetExternal: external,
+      targetExternal: this.host.placeExternal(agentId, post.integrationId, post.channel),
       destination,
       text: post.text,
       source,
       asker,
-      offerAlways: fromPlace
+      requireApprover: true
     })
     return { handled: true, result: draftedResult(draft, rung) }
   }
@@ -263,8 +237,7 @@ export class AssistantDrafts {
       ...input,
       kind: 'reply',
       targetExternal: input.targetExternal ?? true,
-      destination,
-      offerAlways: false
+      destination
     })
     if (!rung)
       this.host.log.warn(`assistant draft ${draft.id}: no approver could be reached for agent "${draft.agentId}"`)
@@ -318,7 +291,7 @@ export class AssistantDrafts {
         draft.target.platform !== conversation.platform ||
         draft.target.channel !== conversation.channel)
     if (!draft || draft.agentId !== input.agentId || elsewhere) {
-      return { result: 'not-found', status: null, granted: false, failure: null }
+      return { result: 'not-found', status: null, failure: null }
     }
     return await this.decide(draft, input.choice, {
       id: consoleDecider(input.decider.userId),
@@ -426,10 +399,17 @@ export class AssistantDrafts {
     text: string
     source: AssistantDraftSource | null
     asker: DraftAsker | undefined
-    offerAlways: boolean
+    /** Outside assistant mode no one else may approve, so a draft no one could approve is refused, never kept. */
+    requireApprover?: boolean
   }): Promise<{ draft: AssistantDraft; rung: ApproverRung | undefined }> {
     const id = randomUUID()
     const routed = await this.route(input.agentId, id, input.asker)
+    if (!routed && input.requireApprover && !this.assistantOn(input.agentId)) {
+      throw new Error(
+        'sendMessage: a post to that conversation needs the approval of an internal member, and the person who asked ' +
+          'cannot be reached for it. Nothing was sent.'
+      )
+    }
     const draft = await this.host.ledger().create({
       id,
       agentId: input.agentId,
@@ -441,7 +421,6 @@ export class AssistantDrafts {
       text: input.text,
       source: input.source,
       approver: routed?.approver ?? null,
-      offerAlways: input.offerAlways,
       now: this.host.now()
     })
     return await this.card(draft, routed)
@@ -485,12 +464,11 @@ export class AssistantDrafts {
       agentId: draft.agentId,
       sessionKey: draft.source?.sessionKey ?? null,
       view: this.viewOf(draft),
-      offerAlways: draft.offerAlways,
       ...(notice ? { notice } : {})
     }
   }
 
-  /** The asker when an internal member, a console asker, the responsible user, then the fallback conversation. */
+  /** The asker when an internal member, a console asker, then in assistant mode the responsible user and the fallback conversation. */
   private async approverFor(
     agentId: string,
     draftId: string,
@@ -502,6 +480,7 @@ export class AssistantDrafts {
       const approver = await this.routeConsoleUser(agentId, draftId, asker.consoleUserId)
       if (approver) return { approver, rung: 'asker' }
     }
+    if (!this.assistantOn(agentId)) return undefined
     const policy = this.host.agent(agentId)?.assistantMode
     if (policy?.responsibleUserId) {
       const approver = await this.routeConsoleUser(agentId, draftId, policy.responsibleUserId)
@@ -615,22 +594,23 @@ export class AssistantDrafts {
     return this.host.admitsAsker(agentId, place.integrationId, place.channel, dmWith !== null) ? { dmWith } : undefined
   }
 
+  private assistantOn(agentId: string): boolean {
+    return this.host.agent(agentId)?.assistantMode?.enabled === true
+  }
+
   /** Approve or discard: the one path a card click and the console share, so one CAS admits one execution. */
   private async decide(
     draft: AssistantDraft,
     choice: AssistantDraftChoice,
     by: { id: string | null; name: string | null }
   ): Promise<DraftDecision> {
-    // A proposal offers no "always allow": either approval only starts it.
-    if (choice !== 'discard')
-      return draft.action === 'task'
-        ? await this.approveTask(draft, by)
-        : await this.approve(draft, by, choice === 'always')
+    if (choice === 'approve')
+      return draft.action === 'task' ? await this.approveTask(draft, by) : await this.approve(draft, by)
     const now = this.host.now()
     if (!(await this.host.ledger().deny(draft.id, by, now))) return await this.refused(draft.id, now)
     await this.rewrite(draft.id)
     if (draft.action === 'task') await this.observeTask({ ...draft, status: 'denied', decidedByName: by.name })
-    return { result: 'decided', status: 'denied', granted: false, failure: null }
+    return { result: 'decided', status: 'denied', failure: null }
   }
 
   /** Start an approved task (§5.10); a full sub-session limit leaves it awaiting review, and a changed record never runs. */
@@ -664,17 +644,17 @@ export class AssistantDrafts {
               this.host.log.warn(`assistant proposal ${draft.id}: card update failed: ${(err as Error).message}`)
             )
         }
-        return { result: 'busy', status: 'awaiting_review', granted: false, failure: started.reason }
+        return { result: 'busy', status: 'awaiting_review', failure: started.reason }
       }
       case 'started':
         await this.rewriteDraft(draft)
         // The approval itself, even when the task already ended and recorded how.
         await this.observeTask({ ...draft, status: 'executing', decidedByName: by.name })
-        return { result: 'decided', status: 'executing', granted: false, failure: null }
+        return { result: 'decided', status: 'executing', failure: null }
       case 'failed': {
         await this.rewriteDraft(draft)
         await this.observeTask({ ...draft, status: 'failed', failure: started.reason, subsessionKey: null })
-        return { result: 'decided', status: 'failed', granted: false, failure: started.reason }
+        return { result: 'decided', status: 'failed', failure: started.reason }
       }
     }
   }
@@ -734,32 +714,13 @@ export class AssistantDrafts {
     await this.rewrite(id)
     const live = await ledger.get(id)
     const result = !live ? 'not-found' : live.status === 'expired' ? 'expired' : 'already-decided'
-    return { result, status: live?.status ?? null, granted: false, failure: null }
+    return { result, status: live?.status ?? null, failure: null }
   }
 
-  private async approve(
-    draft: AssistantDraft,
-    by: { id: string | null; name: string | null },
-    always: boolean
-  ): Promise<DraftDecision> {
+  private async approve(draft: AssistantDraft, by: { id: string | null; name: string | null }): Promise<DraftDecision> {
     const ledger = this.host.ledger()
     const now = this.host.now()
     if (!(await ledger.begin(draft.id, by, now))) return await this.refused(draft.id, now)
-    // Never while assistant mode is off; the store refuses a card from an earlier generation (§5.5).
-    const granted =
-      always &&
-      draft.offerAlways &&
-      draft.source?.place === true &&
-      !draft.targetExternal &&
-      this.host.agent(draft.agentId)?.assistantMode?.enabled === true &&
-      (await ledger.grant(
-        draft.agentId,
-        grantPlace(draft.source),
-        grantPlace(draft.target),
-        by.id,
-        draft.grantEpoch,
-        now
-      ))
     const outcome = await this.execute(draft)
     await ledger.settle(draft.id, outcome.status, outcome.detail, this.host.now())
     // The sent message's bookkeeping, once and after the outcome is recorded: a failure here never re-posts.
@@ -772,8 +733,8 @@ export class AssistantDrafts {
           )
         )
     }
-    await this.rewrite(draft.id, granted)
-    return { result: 'decided', status: outcome.status, granted, failure: outcome.detail.failure ?? null }
+    await this.rewrite(draft.id)
+    return { result: 'decided', status: outcome.status, failure: outcome.detail.failure ?? null }
   }
 
   /** Post the text unchanged. Only a returned message id is success; anything uncertain is never retried. */
@@ -787,9 +748,6 @@ export class AssistantDrafts {
     const agent = this.host.agent(draft.agentId)
     if (!agent) return failed('the agent is no longer here')
     const { target } = draft
-    if (!this.host.placeEnabled(draft.agentId, target.integrationId, target.channel)) {
-      return failed('the agent is no longer enabled in that conversation')
-    }
     const gw = this.host.gatewayFor(target.integrationId)
     if (!gw) return failed('the conversation cannot be reached right now')
     try {
@@ -802,12 +760,12 @@ export class AssistantDrafts {
     }
   }
 
-  private async rewrite(id: string, granted = false): Promise<void> {
+  private async rewrite(id: string): Promise<void> {
     const draft = await this.host.ledger().get(id)
-    if (draft) await this.rewriteDraft(draft, granted)
+    if (draft) await this.rewriteDraft(draft)
   }
 
-  private async rewriteDraft(draft: AssistantDraft, granted = false): Promise<void> {
+  private async rewriteDraft(draft: AssistantDraft): Promise<void> {
     if (draft.action === 'task') return await this.rewriteTaskCard(draft.id)
     const approver = draft.approver
     // A pending card keeps its buttons, and only the click that is posting writes the outcome; a running task drops them.
@@ -816,7 +774,7 @@ export class AssistantDrafts {
     const port = this.host.cardPortFor(approver.integrationId)
     if (!port) return
     const shown = await port
-      .updateCard(approver.channel, draft.cardTs, { view: this.viewOf(draft), outcome: outcomeOf(draft, granted) })
+      .updateCard(approver.channel, draft.cardTs, { view: this.viewOf(draft), outcome: outcomeOf(draft) })
       .catch((err: unknown) => {
         this.host.log.warn(`assistant draft ${draft.id}: card update failed: ${(err as Error).message}`)
         return false
@@ -835,7 +793,7 @@ export class AssistantDrafts {
       if (!port) return
       const shown = await port.updateCard(approver.channel, live.cardTs, {
         view: this.viewOf(live),
-        outcome: outcomeOf(live, false)
+        outcome: outcomeOf(live)
       })
       if (shown !== false) await ledger.markCard(id, live.status)
     }
@@ -901,20 +859,13 @@ const placeApprover = (integrationId: string, channel: string): AssistantDraftAp
   consoleUserId: null
 })
 
-/** A grant's end of a place: integration and conversation, never a thread. */
-function grantPlace(place: { platform: string; integrationId: string | null; channel: string }): AssistantGrantPlace {
-  return { platform: place.platform, integrationId: place.integrationId, channel: place.channel }
-}
-
-function outcomeOf(draft: AssistantDraft, granted: boolean): string {
+function outcomeOf(draft: AssistantDraft): string {
   const where = draft.decidedBy?.startsWith(consoleDecider('')) ? ' in the console' : ''
   const by = draft.decidedByName ? ` by ${draft.decidedByName}${where}` : where
   if (draft.action === 'task') return taskOutcomeOf(draft, by)
   switch (draft.status) {
     case 'succeeded':
-      return granted
-        ? `✅ Posted — approved${by}. Posts from here to there now go out without asking.`
-        : `✅ Posted — approved${by}.`
+      return `✅ Posted — approved${by}.`
     case 'denied':
       return `🗑️ Discarded${by}. Nothing was posted.`
     case 'expired':
@@ -958,7 +909,7 @@ function draftedResult(draft: AssistantDraft, rung: ApproverRung | undefined): R
       ...base,
       approver: null,
       note:
-        'Not posted: a post to another conversation needs approval, and no approver could be reached for this agent. ' +
+        'Not posted: a post to that conversation needs approval, and no approver could be reached for this agent. ' +
         'Nothing was sent; say so here.'
     }
   }

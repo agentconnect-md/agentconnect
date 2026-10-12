@@ -238,6 +238,34 @@ describe('SlackConnection canvases', () => {
     expect(await conn.readCanvas('F1')).toEqual({ id: 'F1', title: 'Plan' })
   })
 
+  it('says which conversations a canvas or a list is in, and when Slack listed only some of them', async () => {
+    const info = vi.fn(async ({ file }: { file: string }) => ({
+      file:
+        file === 'F_SHARED'
+          ? {
+              channels: ['C_PUBLIC'],
+              groups: ['C_PRIVATE'],
+              ims: ['D_ALICE'],
+              linked_channel_id: 'C_TAB',
+              shares: { private: { G_MPIM: [{ ts: '1.1' }] } },
+              org_or_workspace_access: 'read'
+            }
+          : file === 'F_PARTIAL'
+            ? { channels: ['C_PUBLIC'], private_channels_with_file_access_count: 2, groups: ['C_PRIVATE'] }
+            : file === 'F_MORE'
+              ? { channels: ['C_PUBLIC'], has_more_shares: true }
+              : { org_or_workspace_access: 'none' }
+    }))
+    const conn = connWith({ files: { info } })
+    const shared = await conn.documentReach('F_SHARED')
+    expect([...shared.conversations].sort()).toEqual(['C_PRIVATE', 'C_PUBLIC', 'C_TAB', 'D_ALICE', 'G_MPIM'])
+    expect(shared).toMatchObject({ workspace: true, complete: true })
+    expect(await conn.documentReach('F_ALONE')).toEqual({ conversations: [], workspace: false, complete: true })
+    expect(await conn.documentReach('F_PARTIAL')).toMatchObject({ complete: false })
+    expect(await conn.documentReach('F_MORE')).toMatchObject({ complete: false })
+    expect(info).toHaveBeenCalledWith({ file: 'F_SHARED' })
+  })
+
   it('maps edits onto Slack’s change vocabulary', async () => {
     const edit = vi.fn(async () => ({}))
     const conn = connWith({ canvases: { edit } })

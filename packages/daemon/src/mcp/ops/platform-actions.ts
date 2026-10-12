@@ -19,6 +19,7 @@ import { platformLabel } from '../../platforms/read-ports.js'
 import { EPHEMERAL_RESULT_NOTE } from '../../session/ephemeral-results.js'
 import type { SessionContext } from './context.js'
 import { askOnlyWithChannel, resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
+import type { WriteTarget } from './place-gate.js'
 import { optionalBoolean, optionalBoundedInt, optionalString, parseArgs, requiredEnum, requiredString } from './args.js'
 
 /** Slack's own bounds on a scheduled send, and the only ones any platform states. */
@@ -158,6 +159,8 @@ export interface PlatformActionDeps extends GatewayDeps {
    *  the credential it stands for never leaves the platform adapter, because `entry.msg` is
    *  persisted to the durable inbox and replayed. */
   searchOrigin?: (ctx: SessionContext) => string | undefined
+  /** The write rule (assistant-mode.md §5.5), set per call by the dispatcher: a write passes it once its target is resolved, before anything is written. */
+  judgeWrite?: (target: WriteTarget) => Promise<unknown>
 }
 
 /** Resolve the target gateway plus the channel the call acts on, with the current
@@ -170,7 +173,7 @@ function resolveTarget(
   what: string
 ) {
   const platform = ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(
+  const { gw, sameConvo, integrationId } = resolveGatewayForPlatform(
     ctx,
     deps,
     platform,
@@ -179,7 +182,17 @@ function resolveTarget(
   )
   const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
   if (!channel) throw new Error(`channel is required to ${what} on ${platform} (another bot than this session's)`)
-  return { platform, gw, channel }
+  return { platform, gw, channel, integrationId }
+}
+
+/** A write into one conversation on the resolved bot passes the write rule. */
+async function judgeConversation(
+  deps: PlatformActionDeps,
+  platform: string,
+  integrationId: string,
+  channel: string
+): Promise<void> {
+  await deps.judgeWrite?.({ kind: 'conversation', platform, integrationId, channel })
 }
 
 /** The refusal every handler here gives when the resolved connection lacks the facet the
@@ -194,7 +207,8 @@ export async function addReaction(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(ADD_REACTION_ARGS, args)
-  const { platform, gw, channel } = resolveTarget(ctx, deps, parsed, 'react to a message')
+  const { platform, gw, channel, integrationId } = resolveTarget(ctx, deps, parsed, 'react to a message')
+  await judgeConversation(deps, platform, integrationId, channel)
   if (!gw.addReaction) throw unsupported(platform, 'reactions')
   // Slack takes the shortcode bare; a model that wrapped it in colons meant the same thing.
   const emoji = parsed.emoji.replace(/^:|:$/g, '')
@@ -221,7 +235,8 @@ export async function deleteMessage(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(DELETE_MESSAGE_ARGS, args)
-  const { platform, gw, channel } = resolveTarget(ctx, deps, parsed, 'delete a message')
+  const { platform, gw, channel, integrationId } = resolveTarget(ctx, deps, parsed, 'delete a message')
+  await judgeConversation(deps, platform, integrationId, channel)
   if (!gw.deleteMessage) throw unsupported(platform, 'message deletion')
   const deleted = await gw.deleteMessage(channel, parsed.messageTs)
   return { platform, channel, messageTs: parsed.messageTs, deleted }
@@ -267,7 +282,7 @@ export async function addBookmark(
 ): Promise<unknown> {
   const parsed = parseArgs(ADD_BOOKMARK_ARGS, args)
   const platform = ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(
+  const { gw, sameConvo, integrationId } = resolveGatewayForPlatform(
     ctx,
     deps,
     platform,
@@ -276,6 +291,7 @@ export async function addBookmark(
   )
   if (!gw.addBookmark) throw unsupported(platform, 'bookmarks')
   const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
+  await judgeConversation(deps, platform, integrationId, channel)
   const bookmark = await gw.addBookmark(channel, {
     title: parsed.title,
     link: parsed.link,
@@ -291,7 +307,7 @@ export async function removeBookmark(
 ): Promise<unknown> {
   const parsed = parseArgs(REMOVE_BOOKMARK_ARGS, args)
   const platform = ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(
+  const { gw, sameConvo, integrationId } = resolveGatewayForPlatform(
     ctx,
     deps,
     platform,
@@ -300,6 +316,7 @@ export async function removeBookmark(
   )
   if (!gw.removeBookmark) throw unsupported(platform, 'bookmarks')
   const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
+  await judgeConversation(deps, platform, integrationId, channel)
   await gw.removeBookmark(channel, parsed.bookmarkId)
   return { platform, channel, removed: parsed.bookmarkId }
 }
@@ -330,11 +347,12 @@ export async function addListItem(
 ): Promise<unknown> {
   const parsed = parseArgs(ADD_LIST_ITEM_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+  const { gw, integrationId } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
     ask: true,
     purpose: 'add this list item'
   })
   if (!gw.addListItem) throw unsupported(platform, 'lists')
+  await deps.judgeWrite?.({ kind: 'document', platform, integrationId, documentId: parsed.listId })
   return { platform, listId: parsed.listId, item: await gw.addListItem(parsed.listId, parsed.fields) }
 }
 
@@ -345,11 +363,12 @@ export async function updateListItem(
 ): Promise<unknown> {
   const parsed = parseArgs(UPDATE_LIST_ITEM_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+  const { gw, integrationId } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
     ask: true,
     purpose: 'update this list item'
   })
   if (!gw.updateListItem) throw unsupported(platform, 'lists')
+  await deps.judgeWrite?.({ kind: 'document', platform, integrationId, documentId: parsed.listId })
   await gw.updateListItem(parsed.listId, parsed.itemId, parsed.fields)
   return { platform, listId: parsed.listId, itemId: parsed.itemId, updated: true }
 }
@@ -419,11 +438,12 @@ export async function createConversation(
   if (!parsed.name && users.length === 0) throw new Error('pass `name` to create a channel, or `users` to open a DM')
   if (!parsed.name && parsed.isPrivate !== undefined)
     throw new Error('`isPrivate` describes a channel; drop it, or pass `name` to create one')
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+  const { gw, integrationId } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
     ask: true,
     purpose: 'create this conversation'
   })
   if (!gw.createConversation) throw unsupported(platform, 'creating conversations')
+  await deps.judgeWrite?.({ kind: 'new', platform, integrationId, users })
   const conversation = await gw.createConversation({
     ...(parsed.name ? { name: parsed.name } : {}),
     ...(parsed.isPrivate !== undefined ? { isPrivate: parsed.isPrivate } : {}),
@@ -445,7 +465,8 @@ export async function scheduleMessage(
   if (lead < MIN_SCHEDULE_LEAD_MS) throw new Error('postAt must be at least 2 minutes in the future')
   if (lead > MAX_SCHEDULE_HORIZON_MS) throw new Error('postAt must be at most 120 days in the future')
   const postAt = Math.floor(at / 1000)
-  const { platform, gw, channel } = resolveTarget(ctx, deps, parsed, 'schedule a message')
+  const { platform, gw, channel, integrationId } = resolveTarget(ctx, deps, parsed, 'schedule a message')
+  await judgeConversation(deps, platform, integrationId, channel)
   if (!gw.scheduleMessage) throw unsupported(platform, 'scheduled messages')
   const scheduled = await gw.scheduleMessage(channel, parsed.message, postAt)
   return { platform, ...scheduled, postAtIso: new Date(postAt * 1000).toISOString() }
@@ -458,11 +479,16 @@ export async function createCanvas(
 ): Promise<unknown> {
   const parsed = parseArgs(CREATE_CANVAS_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+  const { gw, integrationId } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
     ask: true,
     purpose: 'create this canvas'
   })
   if (!gw.createCanvas) throw unsupported(platform, 'canvases')
+  await deps.judgeWrite?.(
+    parsed.channel
+      ? { kind: 'conversation', platform, integrationId, channel: parsed.channel }
+      : { kind: 'new', platform, integrationId, users: [] }
+  )
   return { platform, canvas: await gw.createCanvas(parsed.title, parsed.markdown, parsed.channel) }
 }
 
@@ -500,11 +526,12 @@ export async function updateCanvas(
       ...(edit.markdown ? { markdown: edit.markdown } : {})
     }
   })
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+  const { gw, integrationId } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
     ask: true,
     purpose: 'update this canvas'
   })
   if (!gw.updateCanvas) throw unsupported(platform, 'canvases')
+  await deps.judgeWrite?.({ kind: 'document', platform, integrationId, documentId: parsed.canvasId })
   await gw.updateCanvas(parsed.canvasId, edits)
   return { platform, canvasId: parsed.canvasId, applied: edits.length }
 }

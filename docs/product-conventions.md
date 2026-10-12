@@ -559,6 +559,9 @@ except the update form, which is the one branch that names an existing thread:
   thread are refused rather than posted at the root. See
   [send-message-routing-rework.md](designs/send-message-routing-rework.md) §2.4.
 
+Where a post may go, and when it waits for approval instead, is in "Writing to other
+conversations".
+
 The visible post is suppressed when the wake would be refused for a locally-decidable
 reason (capability disabled, invalid target id, a postless self-call, hop limit, or a local target that
 disallows the caller), so a rejected hand-off leaves no misleading post. One accepted
@@ -978,7 +981,7 @@ in it. On Slack that is a Slack Connect conversation, read from the membership l
 every event Slack delivers from the conversation, or a guest or a member of another organization
 joining it, found with one user lookup per join. Before posting something no message from the
 conversation prompted, such as a scheduled run and its opening message, a report from background
-work, a reminder, a post allowed from another conversation or an approval card, the agent asks
+work, a reminder, a post from another conversation or an approval card, the agent asks
 Slack whether the conversation is shared now, at most once a minute per conversation; when Slack
 cannot answer, the post waits for approval as in an external place. These lookups are made only
 for an agent in assistant mode; no other agent changes. A share is lifted once Slack no longer
@@ -1042,18 +1045,51 @@ private channel, a group DM, a DM or a webchat conversation comes with a note na
 agent says where it came from in one short clause when it uses it; the note never blocks anything.
 `recall` lists only public conversations the person may read; a private one is read by name.
 
-In assistant mode, once a person's 1:1 DM or webchat conversation has read a private channel or group
-DM, that conversation writes only to itself: it changes no item, sends nothing to any agent, itself
-included, and posts or drafts nothing anywhere else. This holds for every later turn of that
-conversation and across restarts. When it refuses, the agent tells the person that starting a new
-conversation with `!new` lifts it. `!new` lifts it only for a conversation that does not read the
-DM's earlier history back: recalling the DM, or reading its history or a thread in it, while an
-earlier conversation there was restricted restricts the reader too.
+Reading a private conversation restricts nothing afterwards: the conversation that read it still
+writes as "Writing to other conversations" allows, changes items and sends to other agents.
+
+## Writing to other conversations
+
+Every agent, in assistant mode or not, posts or writes wherever the people asking could post
+themselves. The product checks access; what is posted is their call. The rule covers every platform
+write aimed at a conversation: `sendMessage` to a channel, a thread or a person (`toUser`),
+`scheduleMessage`, reactions, message deletion, bookmarks, canvases, lists and `createConversation`.
+The conversation the agent is answering in is always writable.
+
+- **Another conversation** is writable when every person asking may read it, as "Reading other
+  conversations" decides: a private channel or group DM needs them as members, a public channel a
+  full member of that workspace (not a guest or someone from another organization), and another
+  platform or another of the agent's bots what the console shows them. A refusal answers "I can't
+  post there from here." and never says whether the conversation exists. Where the platform can tell
+  nothing about a conversation (Google Chat), only what the console shows the person is writable.
+- **A direct message** (`toUser`) goes only to a member of the organization: on Slack, a full member
+  of the bot's workspace, so a guest or someone from another organization is refused with that
+  reason. Elsewhere the platform's own limits on whom a bot may message apply, as before.
+- **Something new** (a channel or a direct conversation from `createConversation`, a canvas outside
+  any conversation) is made only for a full member of that workspace, and opened only with members
+  of the organization.
+- **A canvas or a list** is written as a write into every conversation it is shared in, and as
+  something new where the whole workspace may open it or no conversation holds it. When the platform
+  cannot say where it is shared, it is not changed.
+- **A conversation shared with another organization** takes a post from another conversation only as
+  a draft an internal member approves (see "Assistant-mode drafts"), for every agent; any other write
+  aimed at it from elsewhere is refused. An agent outside assistant mode cards the draft to the
+  person who asked when they are a full member of the organization, and refuses the post otherwise.
+- **A turn no person is behind** (see "Who is asking") writes only to its own conversation, which
+  for a hook or a schedule anchored to a conversation is that conversation. An agent in assistant
+  mode drafts a post anywhere else for its responsible user or fallback conversation; every other
+  write, and any write of another agent, is refused. A run that reads as a person writes as them.
+
+The agent-to-agent forms of `sendMessage` and the parent-session reply are not platform writes; the
+`toAgent` channel form keeps its own reach (on Slack, a public channel, or a private conversation
+only where the agent was invoked). Whether the bot joins a public Slack channel it is not in still
+follows the bot's "Automatically join public channels" setting.
 
 ## Assistant-mode drafts
 
-An agent in assistant mode posts directly only in the conversation it is answering. Two kinds
-of post wait for an internal member's approval instead:
+An agent in assistant mode posts directly in the conversation it is answering and wherever
+"Writing to other conversations" allows. Two kinds of post wait for an internal member's approval
+instead:
 
 - **A reply in an external place.** In a conversation the platform reports as shared with
   another organization (a Slack Connect channel), the reply is drafted, not posted. The
@@ -1061,11 +1097,15 @@ of post wait for an internal member's approval instead:
   on the message that started the turn, where the platform has reactions, and never text. A
   scheduled run's opening message there is drafted too.
   Other platform writes there are refused; reads are unchanged.
-- **A post to another place.** `sendMessage` to another channel, a direct message, or a thread
-  elsewhere is drafted instead of sent, and only to a conversation where the agent is enabled;
-  any other target is refused. A target that is itself external needs no second approval. A
-  forwarded file cannot be drafted and is refused, and other writes aimed at another place stay
-  refused. The agent-to-agent forms and the parent-session reply are unchanged.
+- **A post into an external place from elsewhere.** `sendMessage` from another conversation into
+  a conversation shared with another organization, or one Slack could not confirm is not shared, is
+  drafted instead of sent; so is a post of a turn no person is behind into any conversation but its
+  own. Its target need not be a conversation where the agent is enabled. A forwarded file cannot be
+  drafted and is refused. The agent-to-agent forms and the parent-session reply are unchanged.
+
+An agent outside assistant mode drafts only the first kind's post from elsewhere, and only to the
+person who asked when they are a full member of the organization (see "Writing to other
+conversations"); it has no Activity view, so the card is where its draft is decided.
 
 The draft goes as a card to one internal member's direct message: the person who asked when
 they are an internal member (on Slack, a full member of the installing workspace, not a guest
@@ -1074,8 +1114,7 @@ fallback conversation. A session with no conversation of its own (a hook or cron
 the responsible user or the fallback conversation. The card leads with one sentence naming the
 actual destination (the conversation by name, the recipient of a direct message, and the
 platform when it is not the card's own) and saying it will post, identifies the conversation and
-any thread, shows the exact text, and offers Approve and Discard; a post to another place also
-offers "Always allow from here to there". Only the addressed member's click
+any thread, shows the exact text, and offers Approve and Discard. Only the addressed member's click
 counts, re-verified like an approval DM's when the responsible user was chosen for it; anyone in
 the fallback conversation may decide. An agent editor may also decide it from the agent's
 Activity view (see "Assistant-mode Activity"), including a draft no one could be reached for.
@@ -1085,12 +1124,8 @@ recorded and threaded like any message the agent sends, so a reply to it reaches
 turn runs for it. Discard drops it. A
 draft expires after 24 hours and is never posted afterwards. A post whose outcome is uncertain
 (no message id came back, the connection failed mid-post, or a restart cut it short) says "not
-sure this went through" on the card and is never retried. "Always allow from here to there" lets
-later posts from the same conversation to the same target go out without a card; it never
-covers another source conversation or an external target, and every grant ends when assistant
-mode is switched off. A card shown before assistant mode was switched off or on grants nothing,
-even when clicked later. Whether a post needs approval follows from its target, never from the
-model's judgment.
+sure this went through" on the card and is never retried. Whether a post needs approval follows
+from its target, never from the model's judgment.
 
 Runtime permission requests in an external place get no card or notice in the conversation; who
 is asked instead is in "What people can do in chat". Draft cards are
@@ -1330,8 +1365,7 @@ else; each list shows the most recent entries, up to a limit, and says when more
   conversation that opened it appear only to someone who may view that conversation.
 - **Waiting for approval** is shown to editors only: each pending draft's target, its exact text,
   who is asked to approve it and when it expires. An editor may approve or discard it here after a
-  confirmation, and approve with "always allow from here to there" where its card offers that. The
-  decision is the card's own: one post at most, whichever comes first, the same grant rules, the
+  confirmation. The decision is the card's own: one post at most, whichever comes first, the
   editor recorded as the decider, and the card rewritten to the outcome. The row then shows how it
   ended: posted, discarded, failed, not sure it went through, expired, or already decided. A
   decision that got no answer keeps its row with a warning; once the draft is no longer waiting,
@@ -1343,8 +1377,6 @@ else; each list shows the most recent entries, up to a limit, and says when more
   sub-session and conversation (named only to someone who may view them), what it asks to run and
   when it is denied unless answered, with the runtime's own choices. An answer here is the same
   decision as the card's, and one answered elsewhere first says it is no longer waiting.
-- **Always allowed** is shown to editors only: each "Always allow from here to there" route. An
-  editor may revoke one after a confirmation; the next post along it waits for approval again.
 
 ## Directional agent visibility
 

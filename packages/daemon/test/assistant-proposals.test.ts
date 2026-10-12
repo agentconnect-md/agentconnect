@@ -81,7 +81,6 @@ describe('a proposal on the approval record', () => {
         itemId: 'item-1',
         itemVersion: 3
       },
-      offerAlways: false,
       status: 'awaiting_review',
       subsessionKey: null,
       createdAt: 1_000,

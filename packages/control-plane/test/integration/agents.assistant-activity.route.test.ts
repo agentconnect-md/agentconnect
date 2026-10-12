@@ -30,7 +30,6 @@ import type { OrgMemberRole } from '../../src/persistence/ports.js'
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd5d5d5d5-dddd-4ddd-8ddd-ddddddddd0a1'
 const AGENT = 'a5a5a5a5-aaaa-4aaa-8aaa-aaaaaaaaa0a1'
-const GRANT = 'c'.repeat(32)
 const CAPABILITIES = {
   platforms: ['slack'],
   runtimes: ['claude'],
@@ -77,7 +76,6 @@ class ActivitySpy {
   decision: Omit<Extract<AssistantActivityWriteResult, { operation: 'decide-draft' }>, 'operation'> = {
     result: 'decided',
     status: 'succeeded',
-    granted: false,
     failure: null
   }
   failure: Error | null = null
@@ -128,7 +126,6 @@ class ActivitySpy {
                 external: false
               },
               text: 'The release is out.',
-              offerAlways: true,
               approver: null,
               createdAt: '2026-10-09T09:00:00.000Z',
               expiresAt: '2026-10-10T09:00:00.000Z'
@@ -136,20 +133,6 @@ class ActivitySpy {
           ],
           truncated: false,
           ...(this.permissions ? { permissions: this.permissions } : {})
-        }
-      case 'grants':
-        return {
-          operation: 'grants',
-          grants: [
-            {
-              id: GRANT,
-              source: { platform: 'webchat', integrationId: null, channel: 'conv-1' },
-              target: { platform: 'slack', integrationId: 'int-1', channel: 'C0SUPPORT' },
-              grantedByName: 'Alice',
-              grantedAt: '2026-10-09T09:00:00.000Z'
-            }
-          ],
-          truncated: false
         }
     }
   }
@@ -209,7 +192,7 @@ const del = (running: HttpApp, path: string) =>
   running.app.inject({ method: 'DELETE', url: `${ORG}/agents/${AGENT}/assistant${path}` })
 
 describe('the assistant Activity routes', () => {
-  it('proxies every section and both edits for an editor, storing nothing', async () => {
+  it('proxies every section and the item delete for an editor, storing nothing', async () => {
     await seedAssistant()
     const control = new ActivitySpy()
     const running = app(control)
@@ -225,39 +208,32 @@ describe('the assistant Activity routes', () => {
     expect((await get(running, '/items/item-2')).statusCode).toBe(404)
     // An agent version that does not list sub-sessions' permission requests has none to show.
     expect((await get(running, '/drafts')).json()).toMatchObject({
-      drafts: [{ id: 'draft-1', text: 'The release is out.', offerAlways: true, target: { name: 'support' } }],
+      drafts: [{ id: 'draft-1', text: 'The release is out.', target: { name: 'support' } }],
       truncated: false,
       permissionRequests: []
     })
-    expect((await get(running, '/grants')).json()).toMatchObject({ grants: [{ id: GRANT, grantedByName: 'Alice' }] })
 
     expect(control.reads).toEqual([
       { agentId: AGENT, operation: 'items', section: 'open', limit: 100 },
       { agentId: AGENT, operation: 'items', section: 'closed', limit: 20 },
       { agentId: AGENT, operation: 'item', itemId: 'item-1' },
       { agentId: AGENT, operation: 'item', itemId: 'item-2' },
-      { agentId: AGENT, operation: 'drafts', limit: 50, proposals: true, permissions: true },
-      { agentId: AGENT, operation: 'grants' }
+      { agentId: AGENT, operation: 'drafts', limit: 50, proposals: true, permissions: true }
     ])
 
     const deleted = await del(running, '/items/item-1')
     expect(deleted.statusCode).toBe(200)
     expect(deleted.json()).toEqual({ ok: true })
-    const revoked = await del(running, `/grants/${GRANT}`)
-    expect(revoked.json()).toEqual({ ok: true })
     control.found = false
     expect((await del(running, '/items/item-1')).statusCode).toBe(404)
-    expect((await del(running, `/grants/${GRANT}`)).statusCode).toBe(404)
     expect(control.writes).toEqual([
       { agentId: AGENT, operation: 'delete-item', itemId: 'item-1' },
-      { agentId: AGENT, operation: 'revoke-grant', grantId: GRANT },
-      { agentId: AGENT, operation: 'delete-item', itemId: 'item-1' },
-      { agentId: AGENT, operation: 'revoke-grant', grantId: GRANT }
+      { agentId: AGENT, operation: 'delete-item', itemId: 'item-1' }
     ])
     expect(await prisma.sessionMeta.count()).toBe(sessionsBefore)
   })
 
-  it('lets a viewer read items and sub-sessions, and keeps drafts, grants and both edits for editors', async () => {
+  it('lets a viewer read items and sub-sessions, and keeps drafts and the item delete for editors', async () => {
     await seedAssistant()
     const viewer = await makeUser(`activity-viewer-${randomUUID()}`, 'viewer')
     const control = new ActivitySpy()
@@ -266,12 +242,7 @@ describe('the assistant Activity routes', () => {
     expect((await get(running, '/items')).statusCode).toBe(200)
     expect((await get(running, '/items/item-1')).statusCode).toBe(200)
     expect((await get(running, '/subsessions')).statusCode).toBe(200)
-    for (const res of [
-      await get(running, '/drafts'),
-      await get(running, '/grants'),
-      await del(running, '/items/item-1'),
-      await del(running, `/grants/${GRANT}`)
-    ]) {
+    for (const res of [await get(running, '/drafts'), await del(running, '/items/item-1')]) {
       expect(res.statusCode).toBe(403)
     }
     expect(control.reads.map((r) => r.operation)).toEqual(['items', 'item', 'subsessions'])
@@ -328,7 +299,7 @@ describe('the assistant Activity routes', () => {
     control.failure = new ProtocolError('BAD_PAYLOAD', 'unknown agent', { details: { reason: 'unknown-agent' } })
     expect((await del(running, '/items/item-1')).statusCode).toBe(404)
     control.failure = new NoConnection(DAEMON)
-    expect((await get(running, '/grants')).json()).toMatchObject({ statusCode: 503, code: 'DAEMON_OFFLINE' })
+    expect((await get(running, '/drafts')).json()).toMatchObject({ statusCode: 503, code: 'DAEMON_OFFLINE' })
   })
 
   it('shows every sub-session’s state, and its conversation only to those who may view it', async () => {
@@ -638,23 +609,22 @@ describe('deciding a draft from the console', () => {
     const control = new ActivitySpy()
     const running = app(control, editor)
 
-    control.decision = { result: 'decided', status: 'succeeded', granted: true, failure: null }
-    const approved = await decide(running, 'approve_always')
+    control.decision = { result: 'decided', status: 'succeeded', failure: null }
+    const approved = await decide(running, 'approve')
     expect(approved.statusCode, approved.body).toBe(200)
-    expect(approved.json()).toEqual({ status: 'succeeded', alwaysAllowed: true, failure: null })
+    expect(approved.json()).toEqual({ status: 'succeeded', failure: null })
 
-    control.decision = { result: 'decided', status: 'outcome_unknown', granted: false, failure: 'socket hang up' }
+    control.decision = { result: 'decided', status: 'outcome_unknown', failure: 'socket hang up' }
     expect((await decide(running, 'approve', 'draft-2')).json()).toEqual({
       status: 'outcome_unknown',
-      alwaysAllowed: false,
       failure: 'socket hang up'
     })
-    control.decision = { result: 'decided', status: 'denied', granted: false, failure: null }
+    control.decision = { result: 'decided', status: 'denied', failure: null }
     expect((await decide(running, 'discard', 'draft-3')).json()).toMatchObject({ status: 'denied' })
 
     const decider = { userId: editor, name: 'Grace' }
     expect(control.writes).toEqual([
-      { agentId: AGENT, operation: 'decide-draft', draftId: 'draft-1', choice: 'always', decider },
+      { agentId: AGENT, operation: 'decide-draft', draftId: 'draft-1', choice: 'approve', decider },
       { agentId: AGENT, operation: 'decide-draft', draftId: 'draft-2', choice: 'approve', decider },
       { agentId: AGENT, operation: 'decide-draft', draftId: 'draft-3', choice: 'discard', decider }
     ])
@@ -664,15 +634,15 @@ describe('deciding a draft from the console', () => {
     await seedAssistant()
     const control = new ActivitySpy()
     const running = app(control)
-    control.decision = { result: 'expired', status: 'expired', granted: false, failure: null }
+    control.decision = { result: 'expired', status: 'expired', failure: null }
     const expired = await decide(running, 'approve')
     expect(expired.statusCode).toBe(409)
     expect(expired.json()).toMatchObject({ code: 'DRAFT_EXPIRED', message: 'the draft expired; nothing was posted' })
-    control.decision = { result: 'already-decided', status: 'executing', granted: false, failure: null }
+    control.decision = { result: 'already-decided', status: 'executing', failure: null }
     expect((await decide(running, 'discard')).json()).toMatchObject({ statusCode: 409, code: 'DRAFT_ALREADY_DECIDED' })
-    control.decision = { result: 'not-found', status: null, granted: false, failure: null }
+    control.decision = { result: 'not-found', status: null, failure: null }
     expect((await decide(running, 'approve')).json()).toMatchObject({ statusCode: 404, code: 'NOT_FOUND' })
-    expect((await decide(running, 'allow_once')).statusCode).toBe(400)
+    expect((await decide(running, 'approve_always')).statusCode).toBe(400)
     expect(control.writes).toHaveLength(3)
   })
 
@@ -680,14 +650,13 @@ describe('deciding a draft from the console', () => {
     await seedAssistant()
     const control = new ActivitySpy()
     const running = app(control)
-    control.decision = { result: 'decided', status: 'executing', granted: false, failure: null }
+    control.decision = { result: 'decided', status: 'executing', failure: null }
     expect((await decide(running, 'approve', 'proposal-1')).json()).toEqual({
       status: 'executing',
-      alwaysAllowed: false,
       failure: null
     })
     const limit = 'bot already has 3 sub-sessions running, the most it runs at once.'
-    control.decision = { result: 'busy', status: 'awaiting_review', granted: false, failure: limit }
+    control.decision = { result: 'busy', status: 'awaiting_review', failure: limit }
     const busy = await decide(running, 'approve', 'proposal-2')
     expect(busy.statusCode).toBe(409)
     expect(busy.json()).toMatchObject({ code: 'SUBSESSION_LIMIT', message: limit })
@@ -748,7 +717,6 @@ const proposalIn = (id: string, platform: string, channel: string): AssistantAct
     external: false
   },
   text: 'Rebase PR #12 onto main and push.',
-  offerAlways: false,
   approver: null,
   proposal: {
     sentence: 'I want to rebase PR #12 because it conflicts with main.',
@@ -838,11 +806,11 @@ describe('a webchat conversation’s proposals', () => {
     const { mine, team } = await seedWebchat(owner)
     const control = new ActivitySpy()
 
-    control.decision = { result: 'decided', status: 'executing', granted: false, failure: null }
+    control.decision = { result: 'decided', status: 'executing', failure: null }
     const approved = await decideIn(app(control, owner), mine, 'approve')
     expect(approved.statusCode, approved.body).toBe(200)
     expect(approved.json()).toEqual({ status: 'executing', failure: null })
-    control.decision = { result: 'decided', status: 'denied', granted: false, failure: null }
+    control.decision = { result: 'decided', status: 'denied', failure: null }
     expect((await decideIn(app(control, editor), team, 'deny', 'proposal-2')).json()).toEqual({
       status: 'denied',
       failure: null
@@ -903,32 +871,32 @@ describe('a webchat conversation’s proposals', () => {
     const control = new ActivitySpy()
     const running = app(control, owner)
 
-    control.decision = { result: 'not-found', status: null, granted: false, failure: null }
+    control.decision = { result: 'not-found', status: null, failure: null }
     expect((await decideIn(running, mine, 'approve', 'proposal-elsewhere')).json()).toMatchObject({
       statusCode: 404,
       code: 'NOT_FOUND'
     })
-    control.decision = { result: 'already-decided', status: 'denied', granted: false, failure: null }
+    control.decision = { result: 'already-decided', status: 'denied', failure: null }
     expect((await decideIn(running, mine, 'approve')).json()).toMatchObject({
       statusCode: 409,
       code: 'DRAFT_ALREADY_DECIDED',
       message: 'the proposal was already decided'
     })
-    control.decision = { result: 'expired', status: 'expired', granted: false, failure: null }
+    control.decision = { result: 'expired', status: 'expired', failure: null }
     expect((await decideIn(running, mine, 'deny')).json()).toMatchObject({
       statusCode: 409,
       code: 'DRAFT_EXPIRED',
       message: 'the proposal expired; nothing was run'
     })
     const limit = 'bot already has 3 sub-sessions running, the most it runs at once.'
-    control.decision = { result: 'busy', status: 'awaiting_review', granted: false, failure: limit }
+    control.decision = { result: 'busy', status: 'awaiting_review', failure: limit }
     expect((await decideIn(running, mine, 'approve')).json()).toMatchObject({
       statusCode: 409,
       code: 'SUBSESSION_LIMIT',
       message: limit
     })
-    // A proposal offers no "always allow".
-    expect((await decideIn(running, mine, 'approve_always')).statusCode).toBe(400)
+    // A proposal is denied, not discarded.
+    expect((await decideIn(running, mine, 'discard')).statusCode).toBe(400)
     expect(control.writes).toHaveLength(4)
   })
 
