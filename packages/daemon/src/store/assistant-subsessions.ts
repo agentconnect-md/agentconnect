@@ -250,6 +250,19 @@ export class AssistantSubsessionIndex {
     return changes > 0
   }
 
+  /** The agent's `open` delegations with no delivery of theirs left in the inbox, oldest first. */
+  async listOpenWithoutInbox(agentId: string): Promise<AssistantSubsession[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_subsession a WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'delegation'
+            AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.sessionKey = a.childSessionKey AND i.completedAt IS NULL)
+          ORDER BY a.createdAt, a.childSessionKey`,
+        [agentId]
+      )
+    ).rows as Row[]
+    return rows.map(subsessionOf)
+  }
+
   /** The agent's rows whose failure report still awaits admission, oldest first. */
   async listReporting(agentId: string): Promise<AssistantSubsession[]> {
     const rows = (

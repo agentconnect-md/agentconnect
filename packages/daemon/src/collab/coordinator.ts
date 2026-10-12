@@ -3,7 +3,12 @@
 // visible channel post) and every ordering below — record-first, CAS, admission barrier — is
 // load-bearing against a fast worker replying before its record exists.
 import { isAppendCoordinate } from '../session/append-coordinate.js'
-import { isSubsessionCoordinate, subsessionCoordinate } from '../session/subsession-coordinate.js'
+import {
+  SUBSESSION_COORDINATE_PREFIX,
+  isSubsessionCoordinate,
+  isTaskCoordinate,
+  subsessionCoordinate
+} from '../session/subsession-coordinate.js'
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import type { HostKey } from '../acp/host-key.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -64,6 +69,8 @@ export const SUBSESSION_LIMIT = 'subsession_limit'
 export const DEFAULT_MAX_CONCURRENT_SUBSESSIONS = 3
 /** How long an `open` row whose session never appeared still counts toward the cap: past it, the wake was lost. */
 export const SUBSESSION_START_GRACE_MS = 10 * 60_000
+/** How long an `open` sub-session may have nothing running for it before the sweep reports it ended (assistant-mode.md §5.7). */
+export const SUBSESSION_IDLE_END_MS = 10 * 60_000
 
 /** How a sub-session's turn, or its refused start, ended (assistant-mode.md §5.7). */
 export interface SubsessionTurnEnd {
@@ -129,7 +136,7 @@ function subsessionEndReportOf(json: string | undefined): SubsessionEndReport | 
 }
 
 /** The one short report a sub-session that ended without its own gets in its parent. */
-function subsessionEndReport(key: string, end: SubsessionTurnEnd): string {
+function subsessionEndReport(key: string, end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
   const tail = 'It sent no result; delegate again if the work is still needed.'
   if (end.outcome === 'completed') return `[sub-session ended] Sub-session ${key} ended without reporting back. ${tail}`
   const why =
@@ -276,6 +283,8 @@ export class CollabCoordinator {
   private readonly subsessionReportLocks = new Map<string, Promise<void>>()
   // Sub-sessions whose failure report is being sent right now, so a sweep or replay does not send it alongside.
   private readonly subsessionReportSends = new Set<string>()
+  // When the sweep first saw an `open` sub-session with nothing running for it, keyed by its session key.
+  private readonly subsessionIdleSince = new Map<string, number>()
 
   /** An agent's channel-directory display name, used to name the caller in the
    *  text delivered to a messaged agent. Resolution order:
@@ -479,6 +488,85 @@ export class CollabCoordinator {
       if (!this.host.servesAgent(agentId)) continue
       for (const row of await index.listReporting(agentId))
         await this.sendSubsessionEndReport(agentId, row.childSessionKey)
+    }
+  }
+
+  /** §5.7 fallback: an `open` delegation with no turn, kept delivery or background wake for {@link SUBSESSION_IDLE_END_MS} is reported ended. */
+  async endIdleSubsessions(agentIds: Iterable<string>): Promise<void> {
+    const index = this.host.store().assistantSubsessions
+    const now = this.host.clock().now()
+    const seen = new Set<string>()
+    for (const agentId of agentIds) {
+      if (this.host.draining()) return
+      if (!this.host.servesAgent(agentId) || this.host.agents().get(agentId)?.pause === true) continue
+      for (const row of await index.listOpenWithoutInbox(agentId)) {
+        const key = row.childSessionKey
+        // An approved task settles its record when it ends, which its own recovery does (§5.10).
+        if (isTaskCoordinate(key.slice(key.indexOf(`:${SUBSESSION_COORDINATE_PREFIX}`) + 1))) continue
+        if (this.subsessionRunning(agentId, key) || (await this.awaitsBackgroundWake(agentId, key))) continue
+        seen.add(key)
+        const since = this.subsessionIdleSince.get(key) ?? now
+        this.subsessionIdleSince.set(key, since)
+        if (now - since >= SUBSESSION_IDLE_END_MS) await this.endIdleSubsession(row)
+      }
+    }
+    for (const key of this.subsessionIdleSince.keys()) if (!seen.has(key)) this.subsessionIdleSince.delete(key)
+  }
+
+  /** A turn of the sub-session is live, queued, or still settling here. */
+  private subsessionRunning(agentId: string, key: string): boolean {
+    if (this.host.activeGateEntries().has(key) || (this.host.serialQueue().get(key)?.length ?? 0) > 0) return true
+    if (this.subsessionInferences.has(key) || this.subsessionReportSends.has(key)) return true
+    for (const p of this.host.pending().values())
+      if (p.entry.agentId === agentId && p.plan.sessionKey === key) return true
+    return false
+  }
+
+  /** Claim and send the failure report of an `open` sub-session nothing is running for any more. */
+  private async endIdleSubsession(row: AssistantSubsession): Promise<void> {
+    const { agentId, childSessionKey: key } = row
+    this.subsessionIdleSince.delete(key)
+    try {
+      const index = this.host.store().assistantSubsessions
+      const caller = await this.subsessionCaller(row)
+      const claimed = await this.withSubsessionReportLock(key, async () => {
+        if ((await index.get(agentId, key))?.state !== 'open' || this.subsessionRunning(agentId, key)) return false
+        if (!caller) {
+          await index.finish(agentId, key, 'failed')
+          this.host
+            .log()
+            .warn(`sub-session ${key} has nothing running, and its place is unknown; settled with no report`)
+          return false
+        }
+        const text = subsessionEndReport(key, { outcome: 'interrupted', reason: 'no longer running' })
+        return await index.claimReport(agentId, key, JSON.stringify({ text, hopCount: 0, caller }))
+      })
+      if (!claimed) return
+      this.host
+        .log()
+        .info(`sub-session ${key} has had nothing running for a while without reporting; reporting it ended`)
+      await this.sendSubsessionEndReport(agentId, key)
+    } catch (err) {
+      this.host.log().warn(`sub-session ${key}: could not end it: ${formatErr(err)}`)
+    }
+  }
+
+  /** A sub-session's coordinates, read from its key against its own session row, else its parent's. */
+  private async subsessionCaller(row: AssistantSubsession): Promise<DaemonReportCaller | undefined> {
+    const store = this.host.store()
+    const rec = (await store.getSession(row.childSessionKey)) ?? (await store.getSession(row.parentSessionKey))
+    if (!rec) return undefined
+    const prefix = `${rec.platform}:${rec.channel}:`
+    const suffix = `:${row.agentId}${rec.transportScope ? `:${rec.transportScope}` : ''}`
+    const key = row.childSessionKey
+    if (!key.startsWith(prefix) || !key.endsWith(suffix)) return undefined
+    const thread = key.slice(prefix.length, key.length - suffix.length)
+    if (sessionKey(rec.platform, rec.channel, thread, row.agentId, rec.transportScope) !== key) return undefined
+    return {
+      platform: rec.platform,
+      channel: rec.channel,
+      thread,
+      ...(rec.transportScope ? { transportScope: rec.transportScope } : {})
     }
   }
 

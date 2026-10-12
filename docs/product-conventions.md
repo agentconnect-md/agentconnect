@@ -1031,7 +1031,9 @@ background sub-session of its own: `sendMessage` with its own agent id and no `c
 Ordinary conversation stays in the main conversation. The main conversation says the work
 has started; the sub-session runs in a session of its own, never the conversation's long
 session; none of its replies is posted anywhere, and it reports back into the conversation
-that opened it when it finishes or fails, which then speaks for it. It takes that
+that opened it when it finishes or fails, which then speaks for it. One that stops without
+reporting is reported as ended, at the latest about ten minutes after nothing is left running for
+it, and then no longer counts toward the agent's concurrent sub-sessions. It takes that
 conversation's visibility and owner, and its visibility cannot be changed on its own;
 making the main conversation private still makes it private. A sub-session cannot open
 sub-sessions of its own. Only the assistant-mode agent is told about this form; for every
