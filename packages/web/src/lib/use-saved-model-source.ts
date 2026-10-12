@@ -31,12 +31,28 @@ export function savedModelSource(source: ModelSource | undefined, configured: re
   }
 }
 
-export function useSavedModelSource(source: ModelSource | undefined, enabled: boolean): ModelSource | undefined {
+export function useSavedModelSource(source: ModelSource | undefined, enabled: boolean) {
   const { activeOrg } = useOrgs()
-  const { data } = useSWR(enabled ? consoleKeys.providerKeys(activeOrg?.id) : null, ([, orgId]) =>
-    fetchProviderKeys(orgId)
+  const { data, error, isValidating, mutate } = useSWR(
+    enabled ? consoleKeys.providerKeys(activeOrg?.id) : null,
+    ([, orgId]) => fetchProviderKeys(orgId)
   )
-  return enabled
-    ? savedModelSource(source, data?.filter((entry) => entry.configured).map((entry) => entry.provider) ?? [])
-    : source
+  const status = !enabled
+    ? 'ready'
+    : (!data && !error) || (error && isValidating)
+      ? 'loading'
+      : error
+        ? 'error'
+        : 'ready'
+  return {
+    source:
+      enabled && data
+        ? savedModelSource(
+            source,
+            data.filter((entry) => entry.configured).map((entry) => entry.provider)
+          )
+        : source,
+    status,
+    retry: () => void mutate()
+  } as const
 }

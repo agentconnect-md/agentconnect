@@ -1946,6 +1946,10 @@ Daemon credentials (the default) and Use saved credential (Beta). Only the saved
 credential choice is Beta. With saved credentials, model pickers offer only models
 whose Anthropic or OpenAI key is configured, including Decision rules and their
 fallback. The daemon matches the key to each session's selected runtime and model.
+While saved credentials load, the form preserves the selected model and blocks saving
+without reporting a missing key. A failed lookup shows a retry action; a successful
+empty lookup asks for a configured key. Save failures remain visible beside the
+dialog's save controls, including when a daemon must be upgraded.
 Cloud keeps its existing
 subscription credentials and ignores this selection, including after a move from
 a self-hosted daemon.
