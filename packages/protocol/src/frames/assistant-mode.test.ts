@@ -1,11 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { AgentSpec } from './agent.js'
 import { AssistantModePolicy } from './assistant-mode.js'
-import {
-  assistantModeDefinitionRefusals,
-  assistantModePermissionModeOnEnable,
-  assistantModeRuntimeAdmitted
-} from '../assistant-mode-admission.js'
+import { assistantModeDefinitionRefusals, assistantModeRuntimeAdmitted } from '../assistant-mode-admission.js'
+import { assistantModePermissionModeOnEnable } from '../assistant-permission-modes.js'
 
 const INTEGRATION_ID = '22222222-2222-4222-8222-222222222222'
 
@@ -121,12 +118,8 @@ describe('assistant mode permission default', () => {
 
   it('falls back to full access without an auto mode, and changes nothing with neither', () => {
     const table = {
-      'example-full': {
-        nativeMemoryDisableable: true,
-        resumesById: true,
-        permissionModes: { ask: 'asks', open: 'full-access' } as const
-      },
-      'example-asks': { nativeMemoryDisableable: true, resumesById: true, permissionModes: { ask: 'asks' } as const }
+      'example-full': { ask: 'asks', open: 'full-access' } as const,
+      'example-asks': { ask: 'asks' } as const
     }
     expect(assistantModePermissionModeOnEnable('example-full', 'ask', table)).toBe('open')
     expect(assistantModePermissionModeOnEnable('example-full', undefined, table)).toBe('open')

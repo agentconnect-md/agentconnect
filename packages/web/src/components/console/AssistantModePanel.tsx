@@ -4,12 +4,8 @@
 
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import {
-  assistantModePermissionModeOnEnable,
-  type AssistantModeAdmission,
-  type AssistantModePolicy,
-  type AssistantModeRefusal
-} from '@agentconnect.md/protocol'
+import type { AssistantModeAdmission, AssistantModePolicy, AssistantModeRefusal } from '@agentconnect.md/protocol'
+import { assistantModePermissionModeOnEnable } from '@agentconnect.md/protocol/assistant-permission-modes'
 import { fetchAgentAssistantModeAdmission, memberDisplayName } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { chatRoomSigil } from '@/lib/platform-labels'
