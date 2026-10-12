@@ -79,7 +79,60 @@ function fakeGateway(over: Partial<MessageGateway> = {}): MessageGateway {
     listChannels: vi.fn(async () => [{ id: 'C1', name: 'general' }]),
     getUserProfile: vi.fn(async (u) => ({ id: u, name: 'alice', isBot: false })),
     downloadFile: vi.fn(async () => Buffer.from('FILEBYTES')),
+    // A canvas or a list the bot made and shared nowhere.
+    documentReach: vi.fn(async () => ({ conversations: [], workspace: false, complete: true })),
     ...over
+  }
+}
+
+/**
+ * A person behind every turn who may write anywhere these tests post: a full member of each bot's workspace and of every
+ * conversation, whom the console shows every session. The write rule's own judgments are mcp-write-rule.test.ts's.
+ */
+const ASKER_WHO_MAY_WRITE: Pick<OpsDeps, 'readAskers' | 'readLookups' | 'placeSnapshot' | 'placeStore'> = {
+  readAskers: async (c) => ({
+    people: [
+      c.integrationId
+        ? { kind: 'member', platform: c.platform, integrationId: c.integrationId, userId: 'U_ASKER' }
+        : { kind: 'console', userId: 'user-asker' }
+    ],
+    nobody: false
+  }),
+  readLookups: () => ({
+    member: async () => true,
+    fullMember: async () => true,
+    console: async (_asker, sessionIds) => ({ asker: 'linked', visible: new Set(sessionIds) })
+  }),
+  placeSnapshot: () => ({ isPrivate: false }),
+  placeStore: sessionsOn()
+}
+
+/** The platform the agent's session in a test conversation is on: these tests name chats of other platforms by their own id shapes. */
+function platformOfChannel(channel: string): string {
+  if (/^-?\d+$/.test(channel) || channel === 'CB') return 'telegram'
+  if (channel.startsWith('spaces/')) return 'googlechat'
+  if (channel.startsWith('oc_')) return 'feishu'
+  return channel === 'C42' || channel === 'D42' ? 'discord' : 'slack'
+}
+
+/** The agent has a session in every conversation, on `platform` or the one its id names, which the console shows the asker. */
+function sessionsOn(platform?: string): NonNullable<OpsDeps['placeStore']> {
+  return {
+    listSessions: async () => [],
+    latestSession: async (agentId, channel) => ({
+      key: `k-${channel}`,
+      agentId,
+      platform: platform ?? platformOfChannel(channel),
+      channel,
+      thread: 't',
+      acpSessionId: null,
+      sessionId: `out-${channel}`,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 0
+    }),
+    transcriptPageForAgent: async () => ({ rows: [], hasMore: false }),
+    getDisplayNames: async () => new Map()
   }
 }
 
@@ -104,6 +157,7 @@ function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
     memory: noMemory,
     recordOutbound: async () => {},
     now: () => 1000,
+    ...ASKER_WHO_MAY_WRITE,
     ...over
   }
 }
@@ -238,7 +292,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       // Fail-closed by absence: an unregistered platform must never quietly fall back to the
       // channel root, which loses the message where the caller was looking for it.
       const gw = gatewayWithThread()
-      const { deps: d } = deps(gw)
+      const d: OpsDeps = { ...deps(gw).deps, placeStore: sessionsOn('telegram') }
       const tgCtx: SessionContext = {
         ...ctx,
         integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }]
@@ -783,9 +837,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     })
 
     it('does not interrogate the platform where the answer cannot change the key', async () => {
-      // Slack and Discord key the same way for DMs and channels, so no send pays for a
-      // lookup it does not need. The ONE Slack lookup here is the reach gate describing a
-      // channel other than the session's own (channel-reach.ts), not a key classification.
+      // Slack and Discord key the same way for DMs and channels, so no send pays for a lookup it does not need; the one here is the write rule describing another conversation.
       const getChannelInfo = vi.fn(async (id: string) => ({ id }))
       const slack = tgDeps({}, { getChannelInfo })
       await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'hi' }, slack.d)
@@ -1116,7 +1168,7 @@ describe('executeTool: read tools', () => {
   })
 
   // Reads pass the read rule (place-gate.ts), a turn with no person behind it reads public channels only; posts keep channel-reach.ts.
-  describe('channel reach beyond the current conversation', () => {
+  describe('another conversation', () => {
     const reply = { sender: 'U1', ts: '100.1', text: 'hello', isBot: false, chrome: false, attachments: [] }
     const describing = (kinds: Record<string, { isPrivate?: boolean; isIm?: boolean }>) =>
       fakeGateway({
@@ -1124,11 +1176,18 @@ describe('executeTool: read tools', () => {
         getChannelHistory: vi.fn(async () => ({ messages: [], hasMore: false })),
         getThreadReplies: vi.fn(async () => [reply])
       })
+    /** A turn no person is behind, judged by what the platform says of each conversation. */
+    const nobody = (gw: MessageGateway): OpsDeps => ({
+      ...deps(gw).deps,
+      readAskers: undefined,
+      placeSnapshot: undefined,
+      placeStore: undefined
+    })
 
-    it('refuses a private channel the session was not started in, on every cross-channel tool', async () => {
+    it('reads nothing private and writes nowhere else for a turn no person is behind', async () => {
       const gw = describing({ G_PRIVATE: { isPrivate: true } })
-      const { deps: d } = deps(gw)
-      const refused = /private Slack conversation/
+      const d = nobody(gw)
+      const refused = /no person started this run/
       await expect(executeTool(ctx, 'getChannelHistory', { channel: 'G_PRIVATE' }, d)).rejects.toThrow(NOT_SHARED)
       await expect(executeTool(ctx, 'getThreadHistory', { channel: 'G_PRIVATE', thread: '1' }, d)).rejects.toThrow(
         NOT_SHARED
@@ -1137,9 +1196,10 @@ describe('executeTool: read tools', () => {
       await expect(
         executeTool(ctx, 'sendMessage', { toUser: ['U1'], channel: 'G_PRIVATE', message: 'hi' }, d)
       ).rejects.toThrow(refused)
+      // The agent-to-agent channel form keeps the reach rule.
       await expect(
         executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'G_PRIVATE', message: 'hi' }, d)
-      ).rejects.toThrow(refused)
+      ).rejects.toThrow(/private Slack conversation/)
       expect(gw.getChannelHistory).not.toHaveBeenCalled()
       expect(gw.getThreadReplies).not.toHaveBeenCalled()
       expect(gw.postMessage).not.toHaveBeenCalled()
@@ -1149,7 +1209,7 @@ describe('executeTool: read tools', () => {
       const gw = describing({ G_PRIVATE: { isPrivate: true }, C_PUBLIC: { isPrivate: false } })
       gw.getReactions = vi.fn(async () => [])
       gw.listBookmarks = vi.fn(async () => [])
-      const { deps: d } = deps(gw)
+      const d = nobody(gw)
       await expect(executeTool(ctx, 'getReactions', { channel: 'G_PRIVATE', messageTs: '1' }, d)).rejects.toThrow(
         NOT_SHARED
       )
@@ -1164,10 +1224,11 @@ describe('executeTool: read tools', () => {
 
     it('refuses a direct message the session was not started in', async () => {
       const gw = describing({ D_OTHER: { isIm: true } })
-      const { deps: d } = deps(gw)
-      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'D_OTHER' }, d)).rejects.toThrow(NOT_SHARED)
-      await expect(executeTool(ctx, 'sendMessage', { channel: 'D_OTHER', message: 'hi' }, d)).rejects.toThrow(
-        /private Slack conversation/
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'D_OTHER' }, nobody(gw))).rejects.toThrow(
+        NOT_SHARED
+      )
+      await expect(executeTool(ctx, 'sendMessage', { channel: 'D_OTHER', message: 'hi' }, nobody(gw))).rejects.toThrow(
+        /no person started this run/
       )
     })
 
@@ -1184,42 +1245,29 @@ describe('executeTool: read tools', () => {
       expect(gw.getChannelInfo).not.toHaveBeenCalledWith('C_CURRENT')
     })
 
-    it('answers a read of a conversation the platform does not know like any closed one, and still posts to it', async () => {
-      // A read never says whether a place exists; a post keeps the platform's own refusal.
-      const gw = fakeGateway({
-        getChannelInfo: vi.fn(async () => {
-          throw Object.assign(new Error('channel_not_found'), { data: { error: 'channel_not_found' } })
-        }),
-        getChannelHistory: vi.fn(async () => {
-          throw new Error('Slack channel history failed: channel_not_found')
+    it('answers a read or a post of a conversation it cannot describe like any closed one', async () => {
+      // Neither says whether a place exists, whether the platform does not know it or could not be asked.
+      for (const failure of [
+        Object.assign(new Error('channel_not_found'), { data: { error: 'channel_not_found' } }),
+        new Error('ratelimited')
+      ]) {
+        const gw = fakeGateway({
+          getChannelInfo: vi.fn(async () => {
+            throw failure
+          }),
+          getChannelHistory: vi.fn(async () => ({ messages: [], hasMore: false }))
         })
-      })
-      const { deps: d } = deps(gw)
-      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_GONE' }, d)).rejects.toThrow(NOT_SHARED)
-      expect(gw.getChannelHistory).not.toHaveBeenCalled()
-      await executeTool(ctx, 'sendMessage', { channel: 'C_GONE', message: 'hi' }, d)
-      expect(gw.postMessage).toHaveBeenCalledWith('C_GONE', 'hi', undefined, authorIdentity)
+        const d: OpsDeps = { ...deps(gw).deps, placeSnapshot: undefined }
+        await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_GONE' }, d)).rejects.toThrow(NOT_SHARED)
+        await expect(executeTool(ctx, 'sendMessage', { channel: 'C_GONE', message: 'hi' }, d)).rejects.toThrow(
+          "I can't post there from here."
+        )
+        expect(gw.getChannelHistory).not.toHaveBeenCalled()
+        expect(gw.postMessage).not.toHaveBeenCalled()
+      }
     })
 
-    it('fails closed when the conversation cannot be classified at all', async () => {
-      // A timeout or rate limit says nothing about privacy, and the bot may be a member of the
-      // private channel behind the id — so the call is refused, not admitted.
-      const gw = fakeGateway({
-        getChannelInfo: vi.fn(async () => {
-          throw new Error('ratelimited')
-        }),
-        getChannelHistory: vi.fn(async () => ({ messages: [], hasMore: false }))
-      })
-      const { deps: d } = deps(gw)
-      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_MAYBE' }, d)).rejects.toThrow(NOT_SHARED)
-      await expect(executeTool(ctx, 'sendMessage', { channel: 'C_MAYBE', message: 'hi' }, d)).rejects.toThrow(
-        /could not determine/
-      )
-      expect(gw.getChannelHistory).not.toHaveBeenCalled()
-      expect(gw.postMessage).not.toHaveBeenCalled()
-    })
-
-    it('does not gate a platform that declares no public-only reach', async () => {
+    it('refuses a private group on a platform whose member listing cannot say who is in it', async () => {
       const tgSession: SessionContext = {
         ...ctx,
         platform: 'telegram',
@@ -1228,10 +1276,15 @@ describe('executeTool: read tools', () => {
         thread: 'tg:100',
         integrations: [{ id: 'int-tg', platform: 'telegram' }]
       }
-      const gw = describing({ '-100999': { isPrivate: true } })
-      const { deps: d } = deps(gw)
-      await executeTool(tgSession, 'sendMessage', { channel: '-100999', message: 'hi' }, d)
-      expect(gw.postMessage).toHaveBeenCalledWith('-100999', 'hi', undefined, authorIdentity)
+      const gw = describing({ '-100999': { isPrivate: true }, '-100888': { isPrivate: false } })
+      const d: OpsDeps = { ...deps(gw).deps, placeSnapshot: undefined }
+      await expect(executeTool(tgSession, 'sendMessage', { channel: '-100999', message: 'hi' }, d)).rejects.toThrow(
+        "I can't post there from here."
+      )
+      // A public group needs no listing.
+      await executeTool(tgSession, 'sendMessage', { channel: '-100888', message: 'hi' }, d)
+      expect(gw.postMessage).toHaveBeenCalledTimes(1)
+      expect(gw.postMessage).toHaveBeenCalledWith('-100888', 'hi', undefined, authorIdentity)
     })
   })
 
@@ -1444,7 +1497,12 @@ describe('executeTool: getThreadHistory', () => {
     )
     // Off the session's own bot, a turn nobody is behind reads nothing, before any port is probed.
     await expect(
-      executeTool(twoBots, 'getThreadHistory', { integrationId: 'int-1b', channel: 'C_OTHER', thread: '1' }, d)
+      executeTool(
+        twoBots,
+        'getThreadHistory',
+        { integrationId: 'int-1b', channel: 'C_OTHER', thread: '1' },
+        { ...d, readAskers: undefined }
+      )
     ).rejects.toThrow(NOT_SHARED)
     const portless: OpsDeps = { ...base, gatewayFor: () => otherBot }
     await expect(

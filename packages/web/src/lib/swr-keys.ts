@@ -158,8 +158,6 @@ export const consoleKeys = {
   /** One webchat conversation's proposals, for its pending-requests strip. */
   assistantConversationProposals: (orgId: string | null | undefined, agentId: string, sessionId: string) =>
     consoleKey(orgId, 'assistant-conversation-proposals', agentId, sessionId),
-  assistantGrants: (orgId: string | null | undefined, agentId: string) =>
-    consoleKey(orgId, 'assistant-grants', agentId),
   /** The org's sessions waiting on an approval — the bell's feed (slack-approval-dm.md §7). */
   pendingApprovals: (orgId: string | null | undefined) => consoleKey(orgId, 'session-approvals'),
   hookRuns: (orgId: string | null | undefined, hookId: string) => consoleKey(orgId, 'hook-runs', hookId)

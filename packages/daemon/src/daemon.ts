@@ -3953,21 +3953,16 @@ export class Daemon {
       // Only a complete membership listing confirms a channel public; an observed row's `false` is asked again.
       placeSnapshot: (integrationId, channel) => this.readPlaceSnapshot(integrationId, channel),
       placeStore: this.store,
-      // Assistant mode's drafts (assistant-mode.md §5.5): an external place refuses other writes, a post elsewhere is drafted.
+      // An assistant-mode agent writes nothing but its drafted reply in an external place (assistant-mode.md §5.5).
       placeExternal: (ctx) => this.assistantPlaceExternal(ctx.agentId, ctx.integrationId, ctx.channel),
-      assistantDraftPost: (ctx, post) => this.assistantDraftPost(ctx, post),
-      // The read rule (assistant-mode.md §5.5): who is asking on the live turn, and the lookups that judge them.
+      // A write's target shared with another organization; assistant mode asks the platform first (§5.3).
+      targetExternal: async (agentId, integrationId, channel, dm) =>
+        this.assistantPlaceExternal(agentId, integrationId, channel) ||
+        !(await this.assistantPlaceConfirmed(agentId, integrationId, channel, { dm })),
+      draftPost: (ctx, post) => this.draftPost(ctx, post),
+      // The read and write rules (assistant-mode.md §5.5): who is asking on the live turn, and the lookups that judge them.
       readAskers: async (ctx) => this.readAskersFor(ctx),
       readLookups: (agentId) => this.placeMembers.lookupsFor(agentId),
-      widenedSession: {
-        mark: async (ctx) => {
-          const place = { platform: ctx.platform, channel: ctx.channel }
-          await this.store.assistantWidened.mark(ctx.agentId, this.sessionKeyOf(ctx), place, this.clock.now())
-          return true
-        },
-        marked: (ctx) => this.store.assistantWidened.has(ctx.agentId, this.sessionKeyOf(ctx)),
-        placeMarked: (ctx) => this.store.assistantWidened.placeMarked(ctx.agentId, ctx.platform, ctx.channel)
-      },
       attachmentReaderFor: (integrationId) =>
         this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
@@ -5419,8 +5414,6 @@ export class Daemon {
         for (const integration of a.integrations) await this.store.setIntegrationRemoved(a.id, integration.id, false)
       }
       this.agents.set(a.id, a as LoadedAgent)
-      // "Always allow" grants end when assistant mode is switched off, and no pending card grants across a switch (§5.5).
-      if (assistantModeOn(previous) !== assistantModeOn(a)) await this.store.assistantDrafts.resetGrants(a.id)
       for (const integration of removed) await this.interruptAgentTurns(a.id, 'stop', 'terminal', integration.id)
       if (settingsLeft) await this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
       let workspaceNeedsColdRecovery = change.workspace
@@ -5525,8 +5518,7 @@ export class Daemon {
       await this.syncAgentSchedules(a)
       // Dreaming may have been turned off while this daemon did not hold the agent.
       if (!dreamingPolicyOf(a)?.enabled) this.retireDreamStaging(a.id)
-      // So may assistant mode; and a draft post the previous holder was making stays unknown, never retried.
-      if (!assistantModeOn(a)) await this.store.assistantDrafts.resetGrants(a.id)
+      // A draft post the previous holder was making stays unknown, never retried.
       await this.drafts.recover([a.id])
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
@@ -8075,13 +8067,7 @@ export class Daemon {
         }
       },
       gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
-      placeEnabled: (agentId, integrationId, channel) => {
-        const int = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)
-        return int !== undefined && conversationAdmitted(integrationRouting(int), channel)
-      },
       placeExternal: (agentId, integrationId, channel) => this.assistantPlaceExternal(agentId, integrationId, channel),
-      placeConfirmed: (agentId, integrationId, channel, dm) =>
-        this.assistantPlaceConfirmed(agentId, integrationId, channel, { dm }),
       cardPortFor: (integrationId) => {
         const conn = this.connByIntegration.get(integrationId)
         return conn ? slackDraftCardPort(conn, integrationId) : undefined
@@ -8640,8 +8626,8 @@ export class Daemon {
     return !(await this.assistantPlaceConfirmed(agentId, integrationId, msg.channel, { dm, spare: key }))
   }
 
-  /** A post `sendMessage` aimed at another place goes through approval unless a grant covers the pair (§5.5). */
-  private async assistantDraftPost(ctx: SessionContext, post: InterceptedPost): Promise<PostInterception> {
+  /** A post the write rule sent for an internal member's approval (§5.5). */
+  private async draftPost(ctx: SessionContext, post: InterceptedPost): Promise<PostInterception> {
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
     const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
     const source: AssistantDraftSource = {
@@ -8652,19 +8638,30 @@ export class Daemon {
       transportScope: ctx.transportScope ?? null,
       sessionKey: key,
       sessionId: live?.outwardSessionId ?? null,
-      // A hook or cron run with no conversation, or an agent call's synthetic one, has no place to grant from.
+      // A hook or cron run with no conversation, or an agent call's synthetic one, is in no place.
       place: (ctx.integrationId !== undefined || ctx.platform === 'webchat') && !isSyntheticA2aChannel(ctx.channel)
     }
-    return await this.drafts.interceptPost(ctx.agentId, source, post, this.assistantDraftAsker(ctx, live?.entry.msg))
+    const askers = await this.readAskersFor(ctx).catch(() => NOBODY)
+    return await this.drafts.interceptPost(ctx.agentId, source, post, this.draftAskerOf(ctx, askers, live?.entry.msg))
   }
 
-  /** The person whose message started the live turn, as a draft approver candidate. */
-  private assistantDraftAsker(ctx: SessionContext, msg: NormalizedMessage | undefined): DraftAsker | undefined {
-    if (!msg || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id) return undefined
-    if (msg.platform === 'webchat') return { consoleUserId: msg.sender.id, trusted: true }
-    if (!ctx.integrationId) return undefined
-    const trusted = !this.assistantPlaceExternal(ctx.agentId, ctx.integrationId, ctx.channel)
-    return { integrationId: ctx.integrationId, userId: msg.sender.id, trusted }
+  /** The person the write rule judged the turn by, as a draft approver candidate; only an enabled assistant-mode place trusts its own sender (§5.3). */
+  private draftAskerOf(
+    ctx: SessionContext,
+    askers: TurnAskers,
+    msg: NormalizedMessage | undefined
+  ): DraftAsker | undefined {
+    // The turn's own message comes first, so a schedule's, a sub-session's or an item's person stands in where no one typed.
+    const asker = askers.people[0]
+    if (!asker) return undefined
+    if (asker.kind === 'console') return { consoleUserId: asker.userId, trusted: true }
+    const spokeHere =
+      msg?.source === 'user' && msg.sender.id === asker.userId && asker.integrationId === ctx.integrationId
+    const trusted =
+      spokeHere &&
+      assistantModeOn(this.agents.get(ctx.agentId)) &&
+      !this.assistantPlaceExternal(ctx.agentId, ctx.integrationId, ctx.channel)
+    return { integrationId: asker.integrationId, userId: asker.userId, trusted }
   }
 
   /** Draft the turn's reply in an external place (assistant-mode.md §5.5); contained, so it never fails the turn. */

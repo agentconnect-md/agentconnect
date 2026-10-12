@@ -1,6 +1,6 @@
 'use client'
 
-// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): its items, sub-sessions, what waits for approval, and post grants.
+// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): its items, sub-sessions and what waits for approval.
 import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -11,17 +11,14 @@ import {
   decideAssistantDraft,
   deleteAssistantItem,
   fetchAssistantDrafts,
-  fetchAssistantGrants,
   fetchAssistantItem,
   fetchAssistantItems,
   fetchAssistantSubsessions,
   memberDisplayName,
-  revokeAssistantGrant,
   type AgentPermissionOptionDto,
   type AssistantDraftDecision,
   type AssistantDraftDto,
   type AssistantDraftOutcomeDto,
-  type AssistantGrantDto,
   type AssistantItemDto,
   type AssistantItemStatus,
   type AssistantPermissionRequestDto,
@@ -149,24 +146,12 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
     ([, , , id]) => fetchAssistantDrafts(id as string),
     { refreshInterval: REFRESH_MS, shouldRetryOnError: false }
   )
-  const grants = useSWR(
-    canEdit ? consoleKeys.assistantGrants(orgId, agentId) : null,
-    ([, , , id]) => fetchAssistantGrants(id as string),
-    { shouldRetryOnError: false }
-  )
 
   const removeItem = async (itemId: string) => {
     await deleteAssistantItem(agentId, itemId)
     const drop = (page?: { items: AssistantItemDto[]; truncated: boolean }) =>
       page && { ...page, items: page.items.filter((item) => item.id !== itemId) }
     await Promise.all([open.mutate(drop, { revalidate: false }), closed.mutate(drop, { revalidate: false })])
-  }
-
-  const revokeGrant = async (grantId: string) => {
-    await revokeAssistantGrant(agentId, grantId)
-    await grants.mutate((page) => page && { ...page, grants: page.grants.filter((grant) => grant.id !== grantId) }, {
-      revalidate: false
-    })
   }
 
   // A decided or unconfirmed draft keeps its row and what happened, even after a refresh stops listing it.
@@ -325,21 +310,6 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
                 pending={pendingIds.has(draft.id)}
                 onDecide={decideDraft}
               />
-            ))}
-          </Listing>
-        </Section>
-      ) : null}
-
-      {canEdit ? (
-        <Section title={t('grants.title')} count={grants.data?.grants.length} kind="grants">
-          <Listing
-            state={grants}
-            count={grants.data?.grants.length}
-            truncated={grants.data?.truncated}
-            empty={t('grants.empty')}
-          >
-            {grants.data?.grants.map((grant, i) => (
-              <GrantRow key={grant.id} agentId={agentId} grant={grant} first={i === 0} onRevoke={revokeGrant} />
             ))}
           </Listing>
         </Section>
@@ -715,7 +685,7 @@ function DraftRow({
       ? t('dmWith', { name: draft.target.name })
       : `${chatRoomSigil(draft.target.platform)}${draft.target.name}`
     : placeLabel(draft.target)
-  // A proposal runs its task in the item's conversation once approved; it offers no "always allow".
+  // A proposal runs its task in the item's conversation once approved.
   const proposal = draft.kind === 'task' ? draft.proposal : undefined
   const approver = draft.approver
   const member = approver?.consoleUserId ? members.find((m) => m.userId === approver.consoleUserId) : undefined
@@ -802,7 +772,7 @@ function DraftRow({
                 : t('drafts.proposal.approveConfirm', { place: target })
               : confirming === 'discard'
                 ? t('drafts.discardConfirm')
-                : t(confirming === 'approve' ? 'drafts.approveConfirm' : 'drafts.approveAlwaysConfirm', { target })
+                : t('drafts.approveConfirm', { target })
           }
           confirm={
             confirming !== 'discard' ? t('drafts.approve') : proposal ? t('drafts.proposal.deny') : t('drafts.discard')
@@ -821,11 +791,6 @@ function DraftRow({
           <Button variant="secondary" size="xs" onClick={() => setConfirming('discard')}>
             {proposal ? t('drafts.proposal.deny') : t('drafts.discard')}
           </Button>
-          {draft.offerAlways && !proposal ? (
-            <Button variant="secondary" size="xs" onClick={() => setConfirming('approve_always')}>
-              {t('drafts.approveAlways')}
-            </Button>
-          ) : null}
         </div>
       )}
       {failure && canDecide ? (
@@ -881,17 +846,15 @@ function DraftOutcome({
         ? t('drafts.proposal.outcome.failed', { reason: failure ?? t('drafts.outcome.unknownReason') })
         : t(`drafts.proposal.outcome.${status}`, { place: proposalPlace })
   } else {
-    const { status, alwaysAllowed, failure } = result.outcome
+    const { status, failure } = result.outcome
     tone = OUTCOME_CLASS[status]
     text =
-      status === 'succeeded' && alwaysAllowed
-        ? t('drafts.outcome.succeededAlways')
-        : status === 'failed'
-          ? t('drafts.outcome.failed', { reason: failure ?? t('drafts.outcome.unknownReason') })
-          : // A post is never left running by its decision; read it as still settling.
-            status === 'executing'
-            ? t('drafts.outcome.unconfirmedWaiting')
-            : t(`drafts.outcome.${status}`)
+      status === 'failed'
+        ? t('drafts.outcome.failed', { reason: failure ?? t('drafts.outcome.unknownReason') })
+        : // A post is never left running by its decision; read it as still settling.
+          status === 'executing'
+          ? t('drafts.outcome.unconfirmedWaiting')
+          : t(`drafts.outcome.${status}`)
   }
   return (
     <div
@@ -900,80 +863,6 @@ function DraftOutcome({
       data-assistant-draft-outcome
     >
       {text}
-    </div>
-  )
-}
-
-function GrantRow({
-  agentId,
-  grant,
-  first,
-  onRevoke
-}: {
-  agentId: string
-  grant: AssistantGrantDto
-  first: boolean
-  onRevoke: (grantId: string) => Promise<void>
-}) {
-  const t = useTranslations('Agents.detail.activity')
-  const format = useFormatter()
-  const placeLabel = usePlaceLabel(agentId)
-  const [confirming, setConfirming] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState(false)
-  const granted = format.dateTime(new Date(grant.grantedAt), { dateStyle: 'medium' })
-
-  const revoke = async () => {
-    setBusy(true)
-    setFailed(false)
-    try {
-      await onRevoke(grant.id)
-    } catch {
-      setFailed(true)
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className={`px-4 py-3 ${first ? '' : 'border-t border-(--border-subtle)'}`} data-assistant-grant={grant.id}>
-      <div className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-            <span className="break-words">{placeLabel(grant.source)}</span>
-            <Icon name="arrow-right" size={13} color="var(--text-tertiary)" />
-            <span className="break-words">{placeLabel(grant.target)}</span>
-          </div>
-          <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            {grant.grantedByName
-              ? t('grants.grantedBy', { name: grant.grantedByName, date: granted })
-              : t('grants.granted', { date: granted })}
-          </div>
-          {confirming ? (
-            <ConfirmStrip
-              prompt={t('grants.revokeConfirm')}
-              confirm={t('grants.revoke')}
-              keep={t('keep')}
-              busy={busy}
-              onConfirm={() => void revoke()}
-              onKeep={() => setConfirming(false)}
-            />
-          ) : null}
-          {failed ? (
-            <div role="alert" className="mt-1 font-sans text-[12px] text-(--status-error)">
-              {t('grants.revokeFailed')}
-            </div>
-          ) : null}
-        </div>
-        <Button
-          variant="secondary"
-          size="xs"
-          className="flex-none"
-          disabled={busy || confirming}
-          onClick={() => setConfirming(true)}
-        >
-          {t('grants.revoke')}
-        </Button>
-      </div>
     </div>
   )
 }

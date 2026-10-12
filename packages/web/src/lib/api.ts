@@ -3961,8 +3961,6 @@ export interface AssistantDraftDto {
     external: boolean
   }
   text: string
-  /** The card offers "always allow from here to there". */
-  offerAlways: boolean
   approver: {
     kind: 'member' | 'conversation'
     integrationId: string
@@ -3978,27 +3976,12 @@ export interface AssistantDraftDto {
   expiresAt: string
 }
 
-export type AssistantDraftDecision = 'approve' | 'approve_always' | 'discard'
+export type AssistantDraftDecision = 'approve' | 'discard'
 
 /** What a decision did: `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted; an approved proposal is `executing`. */
 export interface AssistantDraftOutcomeDto {
   status: 'succeeded' | 'failed' | 'outcome_unknown' | 'denied' | 'executing'
-  alwaysAllowed: boolean
   failure: string | null
-}
-
-export interface AssistantGrantPlaceDto {
-  platform: string
-  integrationId: string | null
-  channel: string
-}
-
-export interface AssistantGrantDto {
-  id: string
-  source: AssistantGrantPlaceDto
-  target: AssistantGrantPlaceDto
-  grantedByName: string | null
-  grantedAt: string
 }
 
 const assistantBase = (agentId: string) => `${orgBase()}/agents/${encodeURIComponent(agentId)}/assistant`
@@ -4100,16 +4083,6 @@ export async function decideAssistantConversationProposal(
     `${assistantBase(agentId)}/conversations/${encodeURIComponent(sessionId)}/proposals/${encodeURIComponent(draftId)}/decision`,
     { decision }
   )
-}
-
-export async function fetchAssistantGrants(
-  agentId: string
-): Promise<{ grants: AssistantGrantDto[]; truncated: boolean }> {
-  return apiGet(`${assistantBase(agentId)}/grants`)
-}
-
-export async function revokeAssistantGrant(agentId: string, grantId: string): Promise<void> {
-  await apiDelete(`${assistantBase(agentId)}/grants/${encodeURIComponent(grantId)}`)
 }
 
 /** The icon upload/delete result — the new descriptor + resolved display URL. */

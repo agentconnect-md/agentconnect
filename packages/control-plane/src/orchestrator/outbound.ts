@@ -1383,7 +1383,7 @@ export class ControlSender {
     })
   }
 
-  /** An editor's delete of a ledger item, revoke of a post grant or decision on a draft, applied on the daemon that holds them. */
+  /** An editor's delete of a ledger item or decision on a draft, applied on the daemon that holds them. */
   async assistantActivityWrite(
     daemonId: string,
     req: AssistantActivityWriteReq

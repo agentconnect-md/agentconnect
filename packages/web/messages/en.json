@@ -3156,17 +3156,14 @@
           "noApprover": "No one reachable",
           "inConversation": "anyone who may continue the conversation",
           "approve": "Approve",
-          "approveAlways": "Approve and always allow from here to there",
           "discard": "Discard",
           "cancel": "Cancel",
           "approveConfirm": "Post this to {target} now?",
-          "approveAlwaysConfirm": "Post this to {target} now, and always allow from here to there?",
           "discardConfirm": "Discard this draft? Nothing is posted.",
           "decideFailed": "Couldn’t decide. Try again.",
           "upgradeDaemon": "Upgrade this agent’s daemon to decide drafts here.",
           "outcome": {
             "succeeded": "Posted.",
-            "succeededAlways": "Posted. Posts from here to there now go out without asking.",
             "denied": "Discarded. Nothing was posted.",
             "failed": "Couldn’t post: {reason}. Nothing was sent.",
             "unknownReason": "unknown error",
@@ -3212,15 +3209,6 @@
             "denied": "Denied.",
             "gone": "No longer waiting for approval."
           }
-        },
-        "grants": {
-          "title": "Always allowed",
-          "empty": "No routes are always allowed.",
-          "grantedBy": "Allowed by {name} on {date}",
-          "granted": "Allowed on {date}",
-          "revoke": "Revoke",
-          "revokeConfirm": "Revoke? The next post on this route waits for approval again.",
-          "revokeFailed": "Couldn’t revoke the grant."
         }
       },
       "dreamSchedule": {

@@ -374,23 +374,6 @@ describe('stopSubsession in a Slack DM main conversation', () => {
     }
   })
 
-  it('still stops its own sub-session after a read only the person here may see', async () => {
-    const h = await boot()
-    try {
-      const dm = await conversation(h, DM)
-      await liveTurn(h, dm)
-      const child = await delegate(h, dm)
-      await h.d.store.assistantWidened.mark(AGENT, dm.key, { platform: 'slack', channel: DM }, Date.now())
-      // The mark bars sending to an agent, which a stop is not.
-      await expect(executeTool(dm.ctx, 'sendMessage', { toAgent: AGENT, text: 'more work' }, h.deps)).rejects.toThrow(
-        'it now writes only here'
-      )
-      expect(await stop(h, dm, child)).toMatchObject({ result: 'stopped', sessionId: child })
-    } finally {
-      await h.close()
-    }
-  })
-
   it('is refused in a sub-session, which may stop nothing', async () => {
     const h = await boot()
     try {

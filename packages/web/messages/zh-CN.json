@@ -3156,17 +3156,14 @@
           "noApprover": "无人可审批",
           "inConversation": "可以继续该对话的人",
           "approve": "批准",
-          "approveAlways": "批准，并始终允许从这里发到那里",
           "discard": "丢弃",
           "cancel": "取消",
           "approveConfirm": "现在发到 {target}？",
-          "approveAlwaysConfirm": "现在发到 {target}，并始终允许从这里发到那里？",
           "discardConfirm": "丢弃这份草稿？不会发送任何内容。",
           "decideFailed": "操作失败，请重试。",
           "upgradeDaemon": "升级此 Agent 的 Daemon 后才能在这里处理草稿。",
           "outcome": {
             "succeeded": "已发送。",
-            "succeededAlways": "已发送。之后从这里发到那里不再需要批准。",
             "denied": "已丢弃，没有发送任何内容。",
             "failed": "发送失败：{reason}。没有发送任何内容。",
             "unknownReason": "未知错误",
@@ -3212,15 +3209,6 @@
             "denied": "已拒绝。",
             "gone": "已不在等待批准。"
           }
-        },
-        "grants": {
-          "title": "始终允许",
-          "empty": "没有始终允许的路线。",
-          "grantedBy": "{name} 于 {date} 允许",
-          "granted": "于 {date} 允许",
-          "revoke": "撤销",
-          "revokeConfirm": "撤销？这条路线的下一次发送会重新等待批准。",
-          "revokeFailed": "撤销失败。"
         }
       },
       "dreamSchedule": {

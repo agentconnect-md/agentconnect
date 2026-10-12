@@ -21,7 +21,6 @@ export const ASSISTANT_ACTIVITY_RESULT_BYTES = 192 * 1024
 export const ASSISTANT_ACTIVITY_ITEMS_MAX = 100
 export const ASSISTANT_ACTIVITY_SUBSESSIONS_MAX = 50
 export const ASSISTANT_ACTIVITY_DRAFTS_MAX = 50
-export const ASSISTANT_ACTIVITY_GRANTS_MAX = 200
 export const ASSISTANT_ACTIVITY_PERMISSIONS_MAX = 50
 /** Distinct follower places carried per item. */
 export const ASSISTANT_ACTIVITY_PLACES_MAX = 20
@@ -120,8 +119,6 @@ export const AssistantActivityDraft = z.object({
     external: z.boolean()
   }),
   text: z.string().min(1).max(40_000),
-  /** The card offers "always allow from here to there". */
-  offerAlways: z.boolean().default(false),
   approver: z
     .object({
       kind: z.enum(['member', 'conversation']),
@@ -163,24 +160,6 @@ export const AssistantActivityPermission = z.object({
 })
 export type AssistantActivityPermission = z.infer<typeof AssistantActivityPermission>
 
-/** One end of a grant; webchat has no integration. */
-export const AssistantActivityGrantPlace = z.object({
-  platform: z.string().min(1).max(64),
-  integrationId: ref.nullable(),
-  channel: ref
-})
-export type AssistantActivityGrantPlace = z.infer<typeof AssistantActivityGrantPlace>
-
-/** "Always allow from here to there", named by a digest of its pair of places. */
-export const AssistantActivityGrant = z.object({
-  id: z.string().regex(/^[0-9a-f]{32}$/),
-  source: AssistantActivityGrantPlace,
-  target: AssistantActivityGrantPlace,
-  grantedByName: name,
-  grantedAt: time
-})
-export type AssistantActivityGrant = z.infer<typeof AssistantActivityGrant>
-
 /** C→D REQ: one section of the view. `items` lists the open ones (active, waiting) or the closed ones (done, dropped). */
 export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
   z.object({
@@ -207,8 +186,7 @@ export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
     permissions: z.boolean().optional(),
     /** Only this webchat conversation's proposals, no posts and no permission requests; an older daemon ignores it. */
     conversation: AssistantActivityConversation.optional()
-  }),
-  z.object({ agentId, operation: z.literal('grants') })
+  })
 ])
 export type AssistantActivityReadReq = z.infer<typeof AssistantActivityReadReq>
 
@@ -233,17 +211,12 @@ export const AssistantActivityReadResult = z.discriminatedUnion('operation', [
     truncated: z.boolean(),
     /** Present only when asked for, oldest first. */
     permissions: z.array(AssistantActivityPermission).max(ASSISTANT_ACTIVITY_PERMISSIONS_MAX).optional()
-  }),
-  z.object({
-    operation: z.literal('grants'),
-    grants: z.array(AssistantActivityGrant).max(ASSISTANT_ACTIVITY_GRANTS_MAX),
-    truncated: z.boolean()
   })
 ])
 export type AssistantActivityReadResult = z.infer<typeof AssistantActivityReadResult>
 
-/** How an editor decides a draft; `always` also allows later posts from here to there, where the card offers it. */
-export const AssistantDraftChoice = z.enum(['approve', 'always', 'discard'])
+/** How an editor decides a draft. */
+export const AssistantDraftChoice = z.enum(['approve', 'discard'])
 export type AssistantDraftChoice = z.infer<typeof AssistantDraftChoice>
 
 export const AssistantDraftStatus = z.enum([
@@ -257,10 +230,9 @@ export const AssistantDraftStatus = z.enum([
 ])
 export type AssistantDraftStatus = z.infer<typeof AssistantDraftStatus>
 
-/** C→D REQ: an editor deleting an item, revoking a grant or deciding a draft, someone who may continue a webchat conversation deciding its proposal, or one who may continue a sub-session stopping it; the Control Plane has already checked the caller. */
+/** C→D REQ: an editor deleting an item or deciding a draft, someone who may continue a webchat conversation deciding its proposal, or one who may continue a sub-session stopping it; the Control Plane has already checked the caller. */
 export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
   z.object({ agentId, operation: z.literal('delete-item'), itemId: ref }),
-  z.object({ agentId, operation: z.literal('revoke-grant'), grantId: z.string().regex(/^[0-9a-f]{32}$/) }),
   z.object({
     agentId,
     operation: z.literal('decide-draft'),
@@ -290,16 +262,13 @@ export type AssistantDraftDecisionResult = z.infer<typeof AssistantDraftDecision
 export const AssistantSubsessionStopResult = z.enum(['stopped', 'not-running', 'not-found'])
 export type AssistantSubsessionStopResult = z.infer<typeof AssistantSubsessionStopResult>
 
-/** D→C REP: `found` is false when there was nothing to delete or revoke; a decision reports the draft's status after it. */
+/** D→C REP: `found` is false when there was nothing to delete; a decision reports the draft's status after it. */
 export const AssistantActivityWriteResult = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('delete-item'), found: z.boolean() }),
-  z.object({ operation: z.literal('revoke-grant'), found: z.boolean() }),
   z.object({
     operation: z.literal('decide-draft'),
     result: AssistantDraftDecisionResult,
     status: AssistantDraftStatus.nullable(),
-    /** This decision recorded "always allow from here to there". */
-    granted: z.boolean(),
     failure: z.string().max(2_000).nullable()
   }),
   z.object({ operation: z.literal('stop-subsession'), result: AssistantSubsessionStopResult })
