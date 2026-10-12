@@ -316,6 +316,7 @@ import {
 } from './assistant/drafts.js'
 import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
+import { assistantSubsessionToolsFor, type SubsessionStopper } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
 import { PlaceMembers } from './assistant/place-members.js'
 import { personCouldActivate } from './assistant/place-askers.js'
@@ -4114,6 +4115,17 @@ export class Daemon {
         },
         now: () => this.clock.now()
       },
+      // A main conversation's stop of its own sub-session (assistant-mode.md §5.8), through the console's Stop core.
+      assistantSubsessions: {
+        enabled: (agentId) => assistantModeOn(this.agents.get(agentId)),
+        stopper: async (ctx) => this.subsessionStopper(ctx),
+        find: async (agentId, id) =>
+          (await this.store.assistantSubsessions.get(agentId, id)) ??
+          (await this.store
+            .getSessionByOutwardId(id, agentId)
+            .then((child) => (child ? this.store.assistantSubsessions.get(agentId, child.key) : undefined))),
+        stopSession: (key, actor) => this.stopSessionByKey(key, actor)
+      },
       memoryScope: (ctx) => ({
         ...this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
         sourceTurnId: this.activeMemorySourceTurns.get(
@@ -4444,6 +4456,8 @@ export class Daemon {
         tools = [...tools, ...assistantItemToolsFor(agent)]
         // Its reminders (§5.9), in a platform conversation of the session's own only.
         tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
+        // Stopping a sub-session it opened (§5.8), in a place's main conversation only.
+        tools = [...tools, ...assistantSubsessionToolsFor(agent, { platform, channel, thread, integrationId })]
         // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
         const managedRepo = this.managedWorkspaceRepo(agent.id)
         if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
@@ -8413,6 +8427,25 @@ export class Daemon {
   /** The session's live turn, the same entry the bridge's turn gate admits tools against; it ends with the turn. */
   private liveTurn(ctx: SessionContext): QueueEntry | undefined {
     return this.activeGateEntries.get(this.sessionKeyOf(ctx))
+  }
+
+  /** The console's Stop and the main conversation's `stopSubsession` alike: the `!cancel` core, logged with who asked. */
+  private async stopSessionByKey(key: string, actor?: InteractionActor): Promise<boolean> {
+    const applied = await this.commands.cancelSessionByKey(key, actor)
+    if (applied) this.commands.logSessionAction('cancel', key, actor)
+    return applied
+  }
+
+  /** The person whose own message started the live turn, held to today's `!stop` sender rule (assistant-mode.md §5.8). */
+  private subsessionStopper(ctx: SessionContext): SubsessionStopper {
+    const msg = this.liveTurn(ctx)?.msg
+    if (!msg || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id) return { ok: false, reason: 'no-person' }
+    const actor = { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
+    // Webchat has no `!stop`; the Control Plane admitted this message only from someone who may continue the conversation.
+    if (ctx.platform === 'webchat') return { ok: true, actor }
+    if (!ctx.integrationId || !this.commands.commandSenderAllowed(ctx.agentId, ctx.integrationId, msg))
+      return { ok: false, reason: 'sender' }
+    return { ok: true, actor }
   }
 
   /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */
@@ -24553,11 +24586,7 @@ export class Daemon {
       listBackgroundTasks: (req) => this.listBackgroundTasks(req),
       decideAssistantDraft: (input) => this.drafts.decideFromConsole(input),
       pendingSubsessionApprovals: (agentId) => this.permissions.pendingSubsessionApprovals(agentId),
-      cancelSessionByKey: async (key, actor) => {
-        const applied = await this.commands.cancelSessionByKey(key, actor)
-        if (applied) this.commands.logSessionAction('cancel', key, actor)
-        return applied
-      },
+      cancelSessionByKey: (key, actor) => this.stopSessionByKey(key, actor),
       autoMerge: () => this.autoMergeWatcher,
       sandboxHolds: () => this.sandboxHolds,
       withWorkspaceFileWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>

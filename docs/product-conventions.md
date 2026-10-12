@@ -1003,6 +1003,18 @@ transcript with no composer and no composer stop, since nothing sent from there 
 sub-session. An agent whose daemon cannot list one conversation's sub-sessions says to upgrade
 it.
 
+A person can also ask the conversation that opened a sub-session to stop it, on any platform:
+"stop the one writing the release notes". The agent first confirms in one sentence which one is
+meant, then stops it the way the console's Stop does, with the same answer: stopped, or nothing
+was running, and that a process it started in the background may keep running. Its transcript
+names the person who asked. Only that conversation can stop it, only on a turn a person there
+started, and only for someone `!stop` accepts there; in webchat, anyone who may continue the
+conversation. A sub-session of another conversation is refused in the same words as one that
+does not exist. A sub-session, patrol, approved task, hook or scheduled run cannot stop one. The
+agent is reminded which sub-sessions its conversation has running, by id and label, and the
+reminder is refreshed on the next turn after one starts or ends. An agent outside assistant mode
+has no such tool and no such reminder.
+
 ## Assistant-mode sub-session permission requests
 
 When a background sub-session needs permission to run a tool, whether delegated or an approved

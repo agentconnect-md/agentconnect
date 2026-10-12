@@ -306,6 +306,27 @@ export class AssistantSubsessionIndex {
     return rows.map(subsessionOf)
   }
 
+  /** One parent session's still `open` sub-sessions, newest first, at most `limit`, with how many there are in all. */
+  async listOpenForParent(
+    agentId: string,
+    parent: { sessionId: string; key: string },
+    limit: number
+  ): Promise<{ rows: AssistantSubsession[]; total: number }> {
+    const where = `WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ? AND state = 'open'`
+    const params = [agentId, parent.sessionId, parent.key]
+    const count = (await this.db.query(`SELECT COUNT(*) AS n FROM assistant_subsession ${where}`, params)).rows[0] as
+      Row | undefined
+    const total = Number(count?.n ?? 0)
+    if (total === 0) return { rows: [], total }
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_subsession ${where} ORDER BY createdAt DESC, childSessionKey LIMIT ?`,
+        [...params, limit]
+      )
+    ).rows as Row[]
+    return { rows: rows.map(subsessionOf), total }
+  }
+
   async deleteForAgent(agentId: string): Promise<number> {
     return (await this.db.query('DELETE FROM assistant_subsession WHERE agentId = ?', [agentId])).changes
   }

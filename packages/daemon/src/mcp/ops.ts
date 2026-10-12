@@ -158,6 +158,11 @@ import {
   ASSISTANT_REMINDER_HANDLERS,
   type AssistantReminderDeps
 } from './ops/assistant-reminders.js'
+import {
+  ASSISTANT_SUBSESSION_ARG_SCHEMAS,
+  ASSISTANT_SUBSESSION_HANDLERS,
+  type AssistantSubsessionDeps
+} from './ops/assistant-subsessions.js'
 
 export type { McpContentResult, MessageGateway, SendIdentity, SessionContext } from './ops/context.js'
 export type { ChannelAgentsRequest } from './ops/directory.js'
@@ -204,7 +209,8 @@ export interface OpsDeps
     PlatformActionDeps,
     PlaceAccessDeps,
     AssistantItemDeps,
-    AssistantReminderDeps {
+    AssistantReminderDeps,
+    AssistantSubsessionDeps {
   /** Rejected tool arguments are logged here at debug, key names only — the sole trace of them (#1921). */
   log?: Pick<Logger, 'debug'>
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
@@ -308,7 +314,8 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['updateCanvas', updateCanvas],
   ['recall', recall],
   ...ASSISTANT_ITEM_HANDLERS,
-  ...ASSISTANT_REMINDER_HANDLERS
+  ...ASSISTANT_REMINDER_HANDLERS,
+  ...ASSISTANT_SUBSESSION_HANDLERS
 ])
 
 /**
@@ -379,6 +386,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['recall', RECALL_ARGS],
   ...ASSISTANT_ITEM_ARG_SCHEMAS,
   ...ASSISTANT_REMINDER_ARG_SCHEMAS,
+  ...ASSISTANT_SUBSESSION_ARG_SCHEMAS,
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.

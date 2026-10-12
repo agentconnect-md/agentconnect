@@ -233,14 +233,23 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           const child = await store.getSessionByOutwardId(req.sessionId, req.agentId)
           const row = child ? await store.assistantSubsessions.get(req.agentId, child.key) : undefined
           if (!child || !row) return { operation: 'stop-subsession', result: 'not-found' }
-          if (row.state !== 'open') return { operation: 'stop-subsession', result: 'not-running' }
           const { userId, name } = req.actor
-          const stopped = await deps.stopSession(child.key, { userId, ...(name ? { name } : {}) })
-          return { operation: 'stop-subsession', result: stopped ? 'stopped' : 'not-running' }
+          const result = await stopIndexedSubsession(row, deps.stopSession, { userId, ...(name ? { name } : {}) })
+          return { operation: 'stop-subsession', result }
         }
       }
     }
   }
+}
+
+/** The Stop every surface shares (assistant-mode.md §5.8): an indexed sub-session's current turn, only while it is open. */
+export async function stopIndexedSubsession(
+  row: Pick<AssistantSubsession, 'childSessionKey' | 'state'>,
+  stopSession: AssistantActivityDeps['stopSession'],
+  actor: { userId: string; name?: string }
+): Promise<'stopped' | 'not-running'> {
+  if (row.state !== 'open') return 'not-running'
+  return (await stopSession(row.childSessionKey, actor)) ? 'stopped' : 'not-running'
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString()
