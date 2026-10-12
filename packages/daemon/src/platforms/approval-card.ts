@@ -26,6 +26,8 @@ export interface ApprovalCardAsk {
   readonly params: RequestPermissionRequest
   /** The opaque target a relay-forwarded click carries back to this daemon; ignored where ingress is the daemon's own. */
   readonly sessionTarget?: string
+  /** The agent and integration the card is posted through, for a surface whose relay routes a click by the target it names. */
+  readonly via?: { readonly agentId: string; readonly integrationId: string }
   /** Set when a background sub-session asks: the card names and links it above the request. */
   readonly subsession?: SubsessionAsker
 }

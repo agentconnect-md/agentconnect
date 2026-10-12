@@ -1,4 +1,5 @@
 // Feishu/Lark's approval-card facet (§7.3): a CardKit card of buttons whose callback names the request and the option's position, rewritten in place.
+import type { WireFeishuCardActionTarget } from '@agentconnect.md/protocol'
 import type {
   ApprovalCardAsk,
   ApprovalCardDraft,
@@ -19,7 +20,7 @@ import {
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import type { FeishuConnection } from '../../feishu/connection.js'
-import { FEISHU_MESSAGE_LIMIT } from '../../feishu/render.js'
+import { FEISHU_MESSAGE_LIMIT, feishuCardTarget } from '../../feishu/render.js'
 import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
 import {
   FEISHU_ELICIT_MAX_OPTIONS,
@@ -38,9 +39,13 @@ export const FEISHU_APPROVAL_ACTION = 'agentconnect_approval'
 /** How much of a settlement's words the card echoes. */
 const FEISHU_APPROVAL_DECISION_CAP = 300
 
-/** One option button's callback payload: the request and the option's position. Pure. */
-export function feishuApprovalValue(requestId: string, option: number): Record<string, string> {
-  return { action: FEISHU_APPROVAL_ACTION, request: requestId, option: String(option) }
+/** One option button's callback payload: the request, the option's position, and the integration the relay routes it to. Pure. */
+export function feishuApprovalValue(
+  requestId: string,
+  option: number,
+  target?: WireFeishuCardActionTarget
+): Record<string, unknown> {
+  return { action: FEISHU_APPROVAL_ACTION, request: requestId, option: String(option), ...(target ? { target } : {}) }
 }
 
 /** A clicked permission button: its request and option position; null for a payload this scheme did not mint. Pure. */
@@ -86,11 +91,12 @@ export const feishuApprovalCards: ApprovalCardFacet = {
   build(ask: ApprovalCardAsk): ApprovalCardDraft | null {
     const options = ask.params.options
     if (!options.length || options.length > FEISHU_APPROVAL_MAX_OPTIONS) return null
+    const target = ask.via && feishuCardTarget(ask.via.agentId, ask.via.integrationId)
     const buttons = options.map((o, i) => ({
       tag: 'button',
       text: { tag: 'plain_text', content: clampTo(o.name, FEISHU_LABEL_CAP) },
       type: typeOf(o.kind),
-      behaviors: [{ type: 'callback', value: feishuApprovalValue(ask.requestId, i) }]
+      behaviors: [{ type: 'callback', value: feishuApprovalValue(ask.requestId, i, target) }]
     }))
     const head = ask.subsession ? intro(ask.subsession) : []
     const card = feishuCard([

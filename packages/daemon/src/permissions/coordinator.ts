@@ -981,7 +981,11 @@ export class PermissionCoordinator {
     this.recordedWrites.delete(requestId)
     // Settled while the row was being written: never post a card for a request already resolved.
     if (!this.pendingApprovals.has(requestId)) return await result
-    const draft = facet.build({ requestId, params, sessionTarget: this.host.httpSlackSessionTarget(p) }, chat.conn)
+    const via = p.plan.integrationId ? { via: { agentId, integrationId: p.plan.integrationId } } : {}
+    const draft = facet.build(
+      { requestId, params, sessionTarget: this.host.httpSlackSessionTarget(p), ...via },
+      chat.conn
+    )
     // The gate above admits only a list this card can offer whole; a null card is treated as never posting, not trusted away.
     const ts = draft ? await facet.send(this.elicitCardHost, p, draft) : undefined
     const live = this.pendingApprovals.get(requestId)
@@ -1262,6 +1266,7 @@ export class PermissionCoordinator {
               requestId,
               params: permission.params,
               sessionTarget: this.host.slackDmSessionTarget(p, at.integrationId),
+              via: { agentId, integrationId: at.integrationId },
               subsession: asker
             },
             conn

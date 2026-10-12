@@ -5,7 +5,8 @@ import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentc
 import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
-  GOOGLE_CHAT_ELICIT_FUNCTION
+  GOOGLE_CHAT_ELICIT_FUNCTION,
+  WireFeishuCardActionValue
 } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import { agentHostKey } from '../src/acp/host-key.js'
@@ -17,6 +18,8 @@ import { FeishuConnection } from '../src/feishu/connection.js'
 import { feishuEventToMessageLike, normalizeFeishuMessage } from '../src/feishu/normalize.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { PermissionCoordinator, type PermissionHost } from '../src/permissions/coordinator.js'
+import { parseFeishuApproval } from '../src/platforms/feishu/approval-card.js'
+import { parseFeishuElicit } from '../src/platforms/feishu/elicit-card.js'
 import type { SubsessionApprovalRoute } from '../src/permissions/subsession-approval.js'
 import { applyGoogleChatAction, type GoogleChatTurnState } from '../src/platforms/googlechat/turn-output.js'
 import { applyQQAction, type QQTurnState } from '../src/platforms/qq/turn-output.js'
@@ -30,8 +33,10 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 type Platform = 'feishu' | 'googlechat'
 type Core = Record<string, unknown>
 
-const AGENT = 'agent-1'
-const INT = 'int-1'
+// UUIDs, as the relay's card-target schema requires of the ids a Feishu callback names.
+const AGENT = '11111111-1111-4111-8111-111111111111'
+const INT = '22222222-2222-4222-8222-222222222222'
+const OTHER_INT = '33333333-3333-4333-8333-333333333333'
 const EVENTS_URL = 'https://events.example.test/googlechat'
 const ADA = { userId: 'ou_ada', name: 'Ada Example', memberId: 'on_ada' }
 
@@ -540,7 +545,11 @@ describe('synced Feishu/Lark takes chat actions only from the agent’s editors,
 })
 
 /** A coordinator holding one background sub-session's turn, whose parent conversation is on `platform`. */
-async function subsessionWorld(platform: Platform, over: { chatOn: boolean; database?: DatabaseSync }) {
+async function subsessionWorld(
+  platform: Platform,
+  over: { chatOn: boolean; database?: DatabaseSync; placeIntegration?: string }
+) {
+  const at = over.placeIntegration ?? INT
   const store = await LocalStore.open({
     database: SqliteAsyncDatabase.adopt(over.database ?? new DatabaseSync(':memory:'))
   })
@@ -573,7 +582,7 @@ async function subsessionWorld(platform: Platform, over: { chatOn: boolean; data
   const route: SubsessionApprovalRoute = {
     parentSessionId: 'sid-parent',
     title: 'Fix the flaky test',
-    place: { kind: 'chat', integrationId: INT, ...PLACE[platform], external: false },
+    place: { kind: 'chat', integrationId: at, ...PLACE[platform], external: false },
     waitHours: 12
   }
   const host = {
@@ -590,7 +599,7 @@ async function subsessionWorld(platform: Platform, over: { chatOn: boolean; data
     postCardSerialized: vi.fn(async () => undefined),
     elicitCardFacet: () => undefined,
     approvalCardFacet: () => facet,
-    chatCardsAt: (integrationId: string) => (integrationId === INT && facet ? { facet, conn: fake.conn } : undefined),
+    chatCardsAt: (integrationId: string) => (integrationId === at && facet ? { facet, conn: fake.conn } : undefined),
     httpSlackSessionTarget: () => undefined,
     maskAgentSecrets: (_agentId: string, payload: unknown) => payload,
     logSessionAction: vi.fn(),
@@ -723,6 +732,78 @@ describe('Feishu/Lark card actions', () => {
     await expect(
       taken.conn.handleCardAction(event({ action: 'agentconnect_approval', request: 'req-1', option: '0' }))
     ).resolves.toBeUndefined()
+  })
+})
+
+/** Every callback value a CardKit card's buttons carry, wherever they sit in it. */
+function callbackValues(card: unknown): unknown[] {
+  const out: unknown[] = []
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child)
+      return
+    }
+    if (!node || typeof node !== 'object') return
+    const o = node as Record<string, unknown>
+    if (o.type === 'callback' && 'value' in o) out.push(o.value)
+    for (const child of Object.values(o)) walk(child)
+  }
+  walk(card)
+  return out
+}
+
+describe('Feishu/Lark card callbacks name the integration a shared app’s relay routes them to', () => {
+  const routed = { v: 1, agentId: AGENT, integrationId: INT }
+  const twoFields = {
+    sessionId: 's1',
+    mode: 'form',
+    message: 'Pick a branch and say why',
+    requestedSchema: {
+      type: 'object',
+      properties: { branch: { type: 'string', enum: ['main', 'dev'] }, reason: { type: 'string' } },
+      required: ['branch']
+    }
+  } as unknown as CreateElicitationRequest
+  const postedValues = (conn: { postElicitCard: { mock: { calls: unknown[][] } } }): unknown[] =>
+    callbackValues(conn.postElicitCard.mock.calls[0]![2])
+
+  it('on the turn’s own permission card, every option still read as its request', async () => {
+    const w = await world('feishu', { level: 'approve' })
+    void w.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
+    const values = postedValues(w.conn)
+    expect(values).toHaveLength(3)
+    values.forEach((value, option) => {
+      expect(WireFeishuCardActionValue.parse(value).target).toEqual(routed)
+      expect(parseFeishuApproval(value)).toEqual({ requestId: w.onlyRequest(), option })
+    })
+    await w.store.close()
+  })
+
+  it('on the elicitation cards, an MCP approval’s buttons and a form’s Confirm and Dismiss alike', async () => {
+    for (const params of [mcpApproval, twoFields]) {
+      const w = await world('feishu', { level: 'approve' })
+      void w.permissions.onAcpElicit(AGENT, 's1', params)
+      await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
+      const values = postedValues(w.conn)
+      expect(values.length).toBeGreaterThan(1)
+      for (const value of values) {
+        expect(WireFeishuCardActionValue.parse(value).target).toEqual(routed)
+        expect(parseFeishuElicit(value)).toMatchObject({ requestId: w.onlyRequest() })
+      }
+      await w.store.close()
+    }
+  })
+
+  it('on a sub-session’s card, the integration it is posted through', async () => {
+    const w = await subsessionWorld('feishu', { chatOn: true, placeIntegration: OTHER_INT })
+    void w.coordinator.onAcpPermission(agentHostKey(AGENT), 'acp-sub', subParams())
+    await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
+    const values = postedValues(w.conn)
+    expect(values).toHaveLength(3)
+    for (const value of values)
+      expect(WireFeishuCardActionValue.parse(value).target).toEqual({ ...routed, integrationId: OTHER_INT })
+    await w.store.close()
   })
 })
 

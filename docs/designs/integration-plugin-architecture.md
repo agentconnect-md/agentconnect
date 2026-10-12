@@ -543,7 +543,11 @@ looked up exactly, so webchat, hook and dream turns inherit neither:
   never exceeds the cap every surface and the console share (#1969). A button carries
   the option's id where the payload allows (Slack) and its position where it is capped
   (Telegram's 64-byte `callback_data`, and Discord's, Feishu/Lark's and Google Chat's
-  for uniformity); core resolves either against the request.
+  for uniformity); core resolves either against the request. Core also hands the card
+  the agent and integration it is posted through (`via`): Feishu/Lark's callbacks, its
+  elicitation cards' included, name them as its reply cards do, so the relay routes a
+  click on an app shared by several agents to that integration rather than to a sole one.
+  A Google Chat app serves one agent, so its relay needs no such target.
 
 Core judges every click the same way (the level, then the conversation's
 `chatSurface`, then `chatActor`) and records the clicker as an `InteractionActor`. A
