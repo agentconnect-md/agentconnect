@@ -1043,7 +1043,8 @@ While the console's `assistant-mode` flag is on, the session page of a conversat
 opened sub-sessions has a Sub-sessions tab in its side panel; no other conversation shows it.
 It lists the sub-sessions that conversation opened, newest first and a page at a time, each
 with its state and start. A title and a link to its own session appear only to someone who may
-view that session, as in the Activity view. Whoever may continue a running sub-session's
+view that session, as in the Activity view. A delegated sub-session is titled by its task, as its
+cards name it, until its runtime gives it a title. Whoever may continue a running sub-session's
 session may stop it there: Stop interrupts its current turn as the composer's stop does,
 mutes nothing and undoes nothing it already did, and a process its runtime started in the
 background may keep running. The sub-session then reports to the conversation that it ended,
