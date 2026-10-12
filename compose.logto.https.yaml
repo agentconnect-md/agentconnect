@@ -30,8 +30,8 @@ services:
       PUBLIC_WEB_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
       PUBLIC_RELAY_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/relay'
       CORS_ORIGIN: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
-      # Console file transfer through the bundled object store, signed for its Caddy origin (docs/designs/source-cache-file-transfer.md §7).
-      AC_FILE_TRANSFER: '{"version":1,"endpoint":"https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_OBJECT_STORE_HTTPS_PORT:?set AGENTCONNECT_OBJECT_STORE_HTTPS_PORT before enabling HTTPS}","region":"us-east-1","bucket":"agentconnect","forcePathStyle":true,"credentials":{"source":"static","dir":"/run/secrets","accessKeyIdKey":"object_store_access_key_id","secretAccessKeyKey":"object_store_secret_access_key"}}'
+      # Console file transfer through the bundled object store (docs/designs/source-cache-file-transfer.md §7): URLs are signed for the public origin, while the Control Plane reaches the store at Caddy's in-network name.
+      AC_FILE_TRANSFER: '{"version":1,"endpoint":"https://object-store.internal:9443","publicEndpoint":"https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_OBJECT_STORE_HTTPS_PORT:?set AGENTCONNECT_OBJECT_STORE_HTTPS_PORT before enabling HTTPS}","region":"us-east-1","bucket":"agentconnect","forcePathStyle":true,"credentials":{"source":"static","dir":"/run/secrets","accessKeyIdKey":"object_store_access_key_id","secretAccessKeyKey":"object_store_secret_access_key"}}'
       # The Control Plane reads the bucket through Caddy, so it trusts Caddy's internal root.
       NODE_EXTRA_CA_CERTS: /caddy-root/root.crt
     depends_on:
@@ -148,8 +148,10 @@ services:
       - caddy_data:/data
       - caddy_runtime_config:/config
     networks:
-      - default
-      - admin
+      default:
+        # The Control Plane's own route to the store, independent of how clients name the host.
+        aliases: [object-store.internal]
+      admin:
 
 configs:
   # One setup script for Compose and the chart.
@@ -188,6 +190,12 @@ configs:
 
       # The S3 API keeps the client's Host header, which every SigV4 signature covers.
       https://${AGENTCONNECT_HTTPS_HOST}:9443 {
+          tls internal
+          reverse_proxy object-store:9000
+      }
+
+      # The Control Plane's in-network route to the same store; the host may be localhost, which inside a container is the container itself.
+      https://object-store.internal:9443 {
           tls internal
           reverse_proxy object-store:9000
       }
