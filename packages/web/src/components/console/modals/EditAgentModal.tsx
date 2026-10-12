@@ -792,8 +792,10 @@ export default function EditAgentModal({
                   />
                 </div>
                 {/* Placement belongs to Basics; runtime and model are configured together below. */}
-                <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px]">
-                  <div className="fld">
+                <div
+                  className={`desktop:col-span-2 grid grid-cols-1 gap-[14px] ${daemonId !== POOL_PLACEMENT ? 'desktop:grid-cols-2' : ''}`}
+                >
+                  <div className="fld min-w-0">
                     <div className="flex items-center justify-between gap-3">
                       <span className="fldlbl">{t('runsOn')}</span>
                       {!!initialDaemonId.current && !daemonChanged && (
@@ -814,8 +816,7 @@ export default function EditAgentModal({
                       options={daemonOptions}
                       placeholder={t('edit.noDaemon')}
                       onChange={(nextDaemonId) => {
-                        // Chaining through ModalProvider replaces this dialog; Continue reopens it
-                        // with the fresh daemon listed (same path as the unplaced agent's chip).
+                        // Continue reopens this dialog with the fresh daemon listed.
                         if (nextDaemonId === ADD_DAEMON) {
                           openModal('daemon', agent, { focusSection: 'basics' })
                           return
@@ -826,9 +827,12 @@ export default function EditAgentModal({
                       }}
                     />
                   </div>
+                  {daemonId !== POOL_PLACEMENT && (
+                    <ModelProviderField value={modelProvider} onChange={setModelProvider} />
+                  )}
                   {/* Keep the placement warning with the daemon selector. */}
                   {sourceDaemon && sourceUnavailable && (
-                    <div className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
+                    <div className="col-span-full flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
                       <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
                       <div className="min-w-0 flex-1">
                         <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
@@ -850,9 +854,6 @@ export default function EditAgentModal({
                         )}
                       </div>
                     </div>
-                  )}
-                  {daemonId !== POOL_PLACEMENT && (
-                    <ModelProviderField value={modelProvider} onChange={setModelProvider} />
                   )}
                 </div>
               </div>

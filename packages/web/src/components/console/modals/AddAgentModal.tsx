@@ -1035,8 +1035,10 @@ export default function AddAgentModal({
                 />
               </div>
               {/* Placement belongs to Basics; runtime and model are configured together below. */}
-              <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px]">
-                <div className="fld">
+              <div
+                className={`desktop:col-span-2 grid grid-cols-1 gap-[14px] ${placement?.kind !== 'pool' ? 'desktop:grid-cols-2' : ''}`}
+              >
+                <div className="fld min-w-0">
                   <span className="fldlbl">{t('runsOn')}</span>
                   <DaemonSelect value={effectiveDaemonId} options={daemonOptions} onChange={setDaemonId} />
                 </div>
