@@ -291,8 +291,10 @@ const COLLAB_NO_DIRECT_SELF = `A direct \`toAgent\` call without \`channel\` may
 const COLLAB_SELF_DELEGATION =
   `A direct \`toAgent\` call to yourself without \`channel\` opens a background SUB-SESSION for long work ` +
   `("fix this bug and open a PR"): it works on its own, posts nothing, and reports back into this conversation ` +
-  `when it finishes or fails, so say it has started and end your turn. Keep ordinary conversation here — ` +
-  `questions, lookups and short answers never need one. A sub-session cannot open sub-sessions of its own. `
+  `when it finishes or fails, so say it has started and end your turn. Say in its task which language the people ` +
+  `here use, so it reports in that language, and answer them in it whatever language a report comes back in. ` +
+  `Keep ordinary conversation here — questions, lookups and short answers never need one. A sub-session cannot ` +
+  `open sub-sessions of its own. `
 const COLLAB_AFTER_SELF =
   `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
   `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +

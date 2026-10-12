@@ -532,8 +532,10 @@ recovery (§5.10). The failure report waits on the sub-session's index row as `r
 is admitted: a refused admission is retried on the minute sweep, three attempts in all, a drain or
 restart leaves it to be re-sent on the next start, and a fixed delivery id with the inbox's
 receipt keeps a re-send from arriving twice. Like patrol and task reports, it goes to the current
-session of the parent's place (after `!new`, the new conversation), else the recorded parent. The
-outbox below is the deferred target.
+session of the parent's place (after `!new`, the new conversation), else the recorded parent. Every
+report the daemon sends ends by telling that session to answer its people in their language,
+since its framing is English; patrols and tasks are asked to write their report in it, and a
+delegating conversation tells its sub-session which it is. The outbox below is the deferred target.
 
 Implemented as a **persistent per-place outbox** (a table shaped like `orchestration_subtask`:
 agent-owned, CAS-claimed, duty-gated, re-armed on `agentsGained`):

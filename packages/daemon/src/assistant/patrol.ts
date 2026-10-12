@@ -181,7 +181,9 @@ export function patrolPrompt(item: AssistantItem, due: AssistantPatrolDue): stri
       'your normal permissions carries out once a person approves it. You do not do it yourself, and you do not also ' +
       'report it. Otherwise, only when something changed since the latest observation that the people following the ' +
       'item should know, add `report` with one short message; the conversation the item was taken in passes it on. ' +
-      'Otherwise leave `report` out: nothing is said. The item gets its observation either way.',
+      'Otherwise leave `report` out: nothing is said. The item gets its observation either way. Write `report` and ' +
+      '`propose`’s sentence in the language the people in the item’s conversation use; without a message of theirs ' +
+      'to go by, use the language of the item’s title and summary.',
     '4. A report says what you found and promises nothing: no later message, no time anyone will hear back, no next ' +
       'check. When the item should be looked at again, set `nextCheck`; the people following the item are not told ' +
       'about it.',

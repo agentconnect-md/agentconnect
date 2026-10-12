@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
-import { SUBSESSION_IDLE_END_MS } from '../src/collab/coordinator.js'
+import { REPORT_ANSWER_LANGUAGE, SUBSESSION_IDLE_END_MS } from '../src/collab/coordinator.js'
 import { PATROL_SWEEP_INTERVAL_MS } from '../src/assistant/patrol.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
@@ -255,7 +255,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     expect(report!.agentId).toBe('bot-a')
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
     expect(report!.msg.text).toBe(
-      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (${reason}). It sent no result; delegate again if the work is still needed.`
+      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (${reason}). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     // It continues the delegation's hop chain and comes from the sub-session, under a delivery id of its own.
     expect(report!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
@@ -785,7 +785,7 @@ describe('an open sub-session nothing runs for any more', () => {
     const [report] = reports()
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
     expect(report!.msg.text).toBe(
-      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (no longer running). It sent no result; delegate again if the work is still needed.`
+      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (no longer running). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await sweepAcrossTheWait(d, clock)

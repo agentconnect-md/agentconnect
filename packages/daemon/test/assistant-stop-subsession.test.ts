@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { REPORT_ANSWER_LANGUAGE } from '../src/collab/coordinator.js'
 import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
@@ -264,7 +265,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
         await vi.waitFor(
           () =>
             expect(h.reports()).toContain(
-              `[sub-session ended] Sub-session ${key} stopped before finishing (cancel). It sent no result; delegate again if the work is still needed.`
+              `[sub-session ended] Sub-session ${key} stopped before finishing (cancel). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
             ),
           WAIT
         )
