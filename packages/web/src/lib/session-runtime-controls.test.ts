@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  chatApprovalsAllowed,
   chatSettingsAllowed,
   sessionAfterModelSelection,
   sessionEffortAfterModelChange,
@@ -57,6 +58,17 @@ describe('session runtime controls', () => {
     expect(chatSettingsAllowed({ chatActions: 'settings' })).toBe(true)
     expect(chatSettingsAllowed({ chatActions: 'approve' })).toBe(false)
     expect(chatSettingsAllowed({ chatActions: 'talk' })).toBe(false)
+  })
+
+  it('offers them in webchat to the agent’s editors and the conversation’s owner, and keeps them while the owner is unknown', () => {
+    const viewer = { chatActions: 'settings' as const, canEdit: false }
+    expect(sessionRuntimeChangesEnabled(viewer, { platform: 'webchat' }, true)).toBe(true)
+    expect(sessionRuntimeChangesEnabled(viewer, { platform: 'webchat' }, false)).toBe(false)
+    expect(sessionRuntimeChangesEnabled(viewer, { platform: 'webchat' }, undefined)).toBe(true)
+    expect(sessionRuntimeChangesEnabled({ ...viewer, canEdit: true }, { platform: 'webchat' }, false)).toBe(true)
+    expect(chatApprovalsAllowed({ chatActions: 'approve' })).toBe(true)
+    expect(chatApprovalsAllowed({ chatActions: 'settings' })).toBe(true)
+    expect(chatApprovalsAllowed({ chatActions: 'talk' })).toBe(false)
   })
 
   it('preserves a live permission list, including an explicit empty list', () => {

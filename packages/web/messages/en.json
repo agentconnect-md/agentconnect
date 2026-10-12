@@ -2661,6 +2661,7 @@
         "lowerLatency": "Lower latency",
         "imageBinaryMissing": "Binary not installed in image",
         "readOnly": "Runtime changes are disabled for this chat.",
+        "readOnlyOwner": "Only an Agent editor or this conversation’s owner can change the runtime.",
         "model": "Model",
         "decision": "Decision",
         "fallback": "Fallback",

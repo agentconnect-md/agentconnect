@@ -3405,6 +3405,8 @@ export const SessionDetailDto = z.object({
   continuationUnavailableReason: z
     .enum(['unauthorized', 'content_purged', 'unsupported_platform', 'agent_moved', 'daemon_offline', 'unavailable'])
     .nullable(),
+  /** Whether THIS caller owns this webchat conversation, whatever their role: what people can do in chat at the agent's level is theirs here. Server-computed. */
+  ownsConversation: z.boolean(),
   accessSyncDegraded: z.boolean(),
   accessIssues: z.array(SessionAccessIssueDto).optional(),
   /** Live multi-agent webchat roster in pick order (§3.1), also kept when removals shrank it to one (§3.1a); null otherwise, and `name` is null only for an unresolvable Agent. */

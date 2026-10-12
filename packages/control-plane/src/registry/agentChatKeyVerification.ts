@@ -1,8 +1,9 @@
 // The relay's check of an API key on the agent chat API (shared-bot-relay.md §10.4): the HTTP key checks, then the caller's chat id resolved to its conversation.
 import { createHash } from 'node:crypto'
-import { AGENT_CHAT_KEY_REFUSAL, type RcVerifyResult } from '@agentconnect.md/protocol'
+import { AGENT_CHAT_KEY_REFUSAL, type ChatActions, type RcVerifyResult } from '@agentconnect.md/protocol'
 import { AuthorizationAction, can, canEdit, canView } from '../authorization/policy.js'
 import { isAgentLevelPermission, keyAdmitted, selectionCovers } from '../domain/api-key-permission.js'
+import { chatApprovalsAllowed } from '../domain/chat-actions.js'
 import { AgentId, OrgId, type SessionId } from '../domain/ids.js'
 import type { IconStore } from '../icons/icon-store.js'
 import { resolveProfilePictureUrl } from '../icons/icon-store.js'
@@ -22,7 +23,11 @@ export interface AgentChatKeyVerificationDeps extends Omit<
   'tokens' | 'agents' | 'conversations'
 > {
   keys: { authenticateUser(token: string): Promise<UserKeyPrincipal | null> }
-  agents: { getUnscoped(agentId: AgentId): Promise<(ResolvableAgent & Shareable & { orgId: string }) | null> }
+  agents: {
+    getUnscoped(
+      agentId: AgentId
+    ): Promise<(ResolvableAgent & Shareable & { orgId: string; chatActions?: ChatActions }) | null>
+  }
   conversations: WebchatVerificationDeps['conversations'] & {
     resumeBinding(conversationId: string, orgId: OrgId): Promise<WebchatResumeBinding | null>
     ensure(binding: WebchatConversationBinding, apiKeyId: string): Promise<void>
@@ -127,9 +132,12 @@ export function createAgentChatKeyVerifier(
       return refuse(AGENT_CHAT_KEY_REFUSAL.agentUnavailable)
     }
     if (!verdict.ok) return verdict
-    // Exactly the console's decision route: a full key whose owner may write in the org and edit the agent.
+    // The console's decision route (a full key whose owner may write in the org and edit the agent), or the conversation's owner where people in chat may approve: the key's owner always is.
     const callerApproves =
-      key.permission === 'full' && can(ctx, { action: AuthorizationAction.OrganizationWrite }) && canEdit(agent, ctx)
+      (key.permission === 'full' &&
+        can(ctx, { action: AuthorizationAction.OrganizationWrite }) &&
+        canEdit(agent, ctx)) ||
+      chatApprovalsAllowed(agent)
     return { ...verdict, callerApproves }
   }
 }

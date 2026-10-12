@@ -143,6 +143,9 @@ export const consoleKeys = {
     consoleKey(orgId, 'gitlab-accounts', bindings),
   agentPermissionRequests: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-permission-requests', agentId) : null,
+  /** One webchat conversation's requests, as its owner reads them. */
+  sessionPermissionRequests: (orgId: string | null | undefined, sessionId: string) =>
+    consoleKey(orgId, 'session-permission-requests', sessionId),
   /** The assistant-mode Activity view's sections, each its own read so a collapsed one costs nothing. */
   assistantItems: (orgId: string | null | undefined, agentId: string, section: 'open' | 'closed') =>
     consoleKey(orgId, 'assistant-items', agentId, section),

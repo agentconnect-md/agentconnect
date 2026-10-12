@@ -33,6 +33,7 @@ import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { CodeHostRoutingFamily, DecisionAnswer, DecisionQuestion } from '../decision.js'
 import { AgentApiProtocolName } from '../agent-api.js'
+import { ChatCallerRole } from './agent.js'
 import { DECISION_ROUTING_FORWARD_V1_FEATURE } from './decision.js'
 
 /**
@@ -233,7 +234,9 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     // The chat API the turn came through; the daemon evaluates that API's Decision gate before admitting it.
     origin: AgentApiProtocolName.optional(),
     // The author's browser time zone, so an assistant-mode agent reasons in their local time; an older daemon ignores it.
-    timeZone: WebchatTimeZone.optional()
+    timeZone: WebchatTimeZone.optional(),
+    // Stamped by the relay from the verified verdict; absent from an older relay or Control Plane.
+    callerRole: ChatCallerRole.optional()
   }),
   // A conversation post another participant produced (a user turn targeted
   // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's
@@ -270,10 +273,15 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
   // the stream's turnId + current resume generation, and the browser follows with an
   // ordinary `resume` from scratch; nothing rebinds until that resume lands.
   z.object({ op: z.literal('attach'), agentId: z.string().uuid().optional() }),
-  z.object({ op: z.literal('set_model'), model: z.string() }),
-  z.object({ op: z.literal('set_effort'), effort: z.string() }),
-  z.object({ op: z.literal('set_permission_mode'), permissionMode: z.string() }),
-  z.object({ op: z.literal('set_fast'), fastMode: z.boolean() }),
+  // Each runtime change carries the author's verified role, stamped as a turn's is.
+  z.object({ op: z.literal('set_model'), model: z.string(), callerRole: ChatCallerRole.optional() }),
+  z.object({ op: z.literal('set_effort'), effort: z.string(), callerRole: ChatCallerRole.optional() }),
+  z.object({
+    op: z.literal('set_permission_mode'),
+    permissionMode: z.string(),
+    callerRole: ChatCallerRole.optional()
+  }),
+  z.object({ op: z.literal('set_fast'), fastMode: z.boolean(), callerRole: ChatCallerRole.optional() }),
   // `agentId` cancels one participant's live turn; absent ⇒ every live turn in
   // the conversation (and the sole agent's, in a single-agent conversation).
   z.object({ op: z.literal('cancel'), agentId: z.string().uuid().optional() }),
