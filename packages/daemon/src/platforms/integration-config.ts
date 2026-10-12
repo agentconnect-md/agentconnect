@@ -26,6 +26,7 @@ import type { z, ZodType } from 'zod'
 import {
   EMPTY_DECISION_BUNDLE,
   IntegrationQQConfig,
+  type ChatAuthority,
   type DecisionBundle,
   type IntegrationSessionMode
 } from '@agentconnect.md/protocol'
@@ -90,6 +91,8 @@ export interface IntegrationCore {
   externalChannels: string[]
   /** The By decision bundle (decisions.md §7.1); normalized to empty so a hand-assembled integration binds nothing. */
   decisions: DecisionBundle
+  /** Who may take chat actions: the agent's editors where the organization syncs this platform's permissions; normalized to `participants`. */
+  chatAuthority: ChatAuthority
 }
 
 /**
@@ -165,7 +168,8 @@ export function integrationCore(int: Integration): IntegrationCore {
     gated: core?.gated ?? false,
     sessionModes: core?.sessionModes ?? [],
     externalChannels: core?.externalChannels ?? [],
-    decisions: core?.decisions ?? EMPTY_DECISION_BUNDLE
+    decisions: core?.decisions ?? EMPTY_DECISION_BUNDLE,
+    chatAuthority: core?.chatAuthority ?? 'participants'
   }
 }
 

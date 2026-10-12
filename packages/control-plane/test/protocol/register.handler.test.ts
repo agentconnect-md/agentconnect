@@ -765,6 +765,43 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
     ])
   })
 
+  it('reconcile roster names who may act in chat by each platform’s session access sync', async () => {
+    await seedReconcileState()
+    const install = async (platform: 'slack' | 'telegram', botId: string, integrationId: string) => {
+      await prisma.bot.create({ data: { id: botId, orgId: DEFAULT_ORG_ID, platform, name: `${platform}-bot` } })
+      await prisma.botSecret.create({
+        data: { botId, botToken: platform === 'slack' ? 'xoxb-1' : '123456:AAE-xyz', appToken: 'xapp-1' }
+      })
+      await prisma.integration.create({
+        data: {
+          id: integrationId,
+          orgId: DEFAULT_ORG_ID,
+          agentId: AGENT,
+          botId,
+          platform,
+          name: platform,
+          status: 'active'
+        }
+      })
+    }
+    const SLACK_INTEG = '2e2e2e2e-2e2e-4e2e-8e2e-2e2e2e2e2e2e'
+    const TG_INTEG = '3e3e3e3e-3e3e-4e3e-8e3e-3e3e3e3e3e3e'
+    await install('slack', 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1', SLACK_INTEG)
+    await install('telegram', 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', TG_INTEG)
+    await prisma.sessionExternalAccessPolicy.create({
+      data: { orgId: DEFAULT_ORG_ID, provider: 'slack', state: 'enabled' }
+    })
+
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+    stub.inject('register', registerPayload(), { id: REG_ID })
+    const ok = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+    const authority = (id: string) => ok.payload.integrations.find((i) => i.integrationId === id)?.core.chatAuthority
+    expect(authority(SLACK_INTEG)).toBe('editors')
+    expect(authority(TG_INTEG)).toBe('participants')
+  })
+
   it('re-sending register is idempotent (same snapshot)', async () => {
     await seedReconcileState()
     const h = buildWsHarness(prisma)

@@ -69,9 +69,19 @@ before it:
 
 Who counts as "people" depends on whether the product can tell who someone is:
 
-- **A platform whose permissions are synced with the console** (for example Slack with
+- **A platform whose permissions are synced with the console** (Slack with the organization's
   session access sync on): only people whose console permissions allow the action, that is,
-  the agent's editors. Anyone else is told who can answer and where.
+  the agent's editors, recognized by the Slack account they linked under Sign-in methods in
+  their console Profile. Anyone else, a guest or an editor who has not linked included, is told
+  privately who can answer and where, and someone linked to no console account is also told how
+  to link one; the card stays as it is. Where people may approve tool calls, a permission
+  request's card also goes to an Agent editor in a direct message unless the person who asked is
+  one, so a request never waits on a conversation with no editor in it; the first answer decides.
+  When who someone is cannot be checked, because the Control Plane cannot be reached or the agent
+  has more than 200 editors, the action is refused. Switching the sync changes who may act from
+  then on; settings already changed from chat stay. Feishu/Lark has the sync too, but a chat
+  member there cannot be matched to a console account yet, so it stays a platform without that
+  sync for this setting.
 - **A platform without that sync**: anyone who can talk to the agent in that conversation.
 - **Webchat** always knows who someone is: the agent's editors, and at the second and third
   levels also the conversation's owner, even one whose role only lets them view. The owner
@@ -89,7 +99,8 @@ Every level keeps these rules:
 - In a conversation shared with another organization, an approval goes to an internal member
   instead, as an assistant-mode draft does: where people may approve tool calls, the person who
   asked, in their own direct message, when they are a full member of the installing workspace;
-  otherwise the agent's editors.
+  otherwise the agent's editors. Where permissions are synced it goes to an Agent editor's
+  direct message, the person who asked first when they are one.
 - On a platform with no interactive cards, the conversation gets a notice and the approval is
   answered in the console.
 - The first answer from any surface decides, and the request is rewritten to say who answered
@@ -1103,7 +1114,8 @@ waits; its turn is not cancelled. A patrol never asks.
 
 - In a Slack conversation where "What people can do in chat" includes approving tool calls, an
   approval card is posted there, in the conversation's thread or at its top level when it is one long conversation, and
-  anyone there may answer it. The card says a background sub-session is asking, names and links
+  anyone there may answer it; where permissions are synced, only an Agent editor, and an editor
+  also gets it in a direct message. The card says a background sub-session is asking, names and links
   it, and offers the runtime's own choices, "always allow" included where offered.
 - Where it does not, or the conversation is closed (switched off, admitted per message by a
   Decision, or routed), the conversation gets a notice that the sub-session is waiting, and an
@@ -1111,7 +1123,8 @@ waits; its turn is not cancelled. A patrol never asks.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
   marked as from a background sub-session.
 - A conversation shared with another organization gets no card. It goes to the agent's
-  responsible user in a direct message, or to its fallback conversation, as drafts do.
+  responsible user in a direct message, or to its fallback conversation, as drafts do; where
+  permissions are synced, only an Agent editor answers the card there.
 - Editors can also answer it on the sub-session's own page and in the Activity view.
 
 The first answer from any of these places decides it, and the other cards show that decision. If

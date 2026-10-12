@@ -1350,7 +1350,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 46
+export const SCHEMA_VERSION = 47
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1914,6 +1914,20 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     )
     if (columns.length > 0 && !columns.includes('cardShows'))
       await db.exec('ALTER TABLE assistant_draft ADD COLUMN cardShows TEXT')
+  },
+  // v47 keeps the editor DM sent beside a stored card on its own handle, so a restart's sweep retires both.
+  async (db, store) => {
+    const added = ['besideIntegrationId', 'besideChannel', 'besideTs']
+    if (store.postgres) {
+      for (const column of added)
+        await db.exec(`ALTER TABLE permission_requests ADD COLUMN IF NOT EXISTS ${column} TEXT`)
+      return
+    }
+    const columns = ((await db.query('PRAGMA table_info(permission_requests)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    for (const column of added)
+      if (!columns.includes(column)) await db.exec(`ALTER TABLE permission_requests ADD COLUMN ${column} TEXT`)
   }
 ]
 
@@ -2375,7 +2389,10 @@ export class LocalStore {
         notifyTs TEXT,
         noticeIntegrationId TEXT,
         noticeChannel TEXT,
-        noticeTs TEXT
+        noticeTs TEXT,
+        besideIntegrationId TEXT,
+        besideChannel TEXT,
+        besideTs TEXT
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
@@ -3020,19 +3037,52 @@ export class LocalStore {
       .run(agentId, id)
   }
 
-  /** Settled rows whose DM card was never rewritten (daemon died first) — returned
-   *  once, handles cleared, so a reconnect sweep rewrites each orphan exactly once. */
-  async takeOrphanedPermissionNotices(integrationId: string, limit = 20): Promise<PermissionNoticeRow[]> {
-    const rows = (await this.db
+  /** Record the editor DM sent beside a card whose own handle is the notify one; false if the row already settled. */
+  async setPermissionRequestBeside(
+    agentId: string,
+    id: string,
+    integrationId: string,
+    channel: string,
+    ts: string
+  ): Promise<boolean> {
+    const result = await this.db
       .prepare(
-        `SELECT id, agentId, status, command, resolvedByName, notifyChannel, notifyTs
-         FROM permission_requests
-         WHERE notifyIntegrationId = ? AND notifyTs IS NOT NULL AND status != 'pending'
-         ORDER BY resolvedAt DESC LIMIT ?`
+        `UPDATE permission_requests SET besideIntegrationId = ?, besideChannel = ?, besideTs = ?
+         WHERE agentId = ? AND id = ? AND status = 'pending'`
       )
-      .all(integrationId, Math.max(1, Math.min(100, limit)))) as unknown as PermissionNoticeRow[]
-    for (const row of rows) await this.clearPermissionRequestNotify(row.agentId, row.id)
-    return rows
+      .run(integrationId, channel, ts, agentId, id)
+    return Number(result.changes) === 1
+  }
+
+  /** Drop the beside DM's handle after its card has been rewritten to a terminal state. */
+  async clearPermissionRequestBeside(agentId: string, id: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE permission_requests SET besideIntegrationId = NULL, besideChannel = NULL, besideTs = NULL
+         WHERE agentId = ? AND id = ?`
+      )
+      .run(agentId, id)
+  }
+
+  /** Settled rows whose DM or in-conversation card, or the DM beside one, was never rewritten (daemon died first) —
+   *  each returned once with its handle cleared, so a reconnect sweep rewrites each orphan exactly once. */
+  async takeOrphanedPermissionNotices(integrationId: string, limit = 20): Promise<PermissionNoticeRow[]> {
+    const bounded = Math.max(1, Math.min(100, limit))
+    const take = async (handle: 'notify' | 'beside'): Promise<PermissionNoticeRow[]> => {
+      const rows = (await this.db
+        .prepare(
+          `SELECT id, agentId, status, command, resolvedByName, ${handle}Channel AS notifyChannel, ${handle}Ts AS notifyTs
+           FROM permission_requests
+           WHERE ${handle}IntegrationId = ? AND ${handle}Ts IS NOT NULL AND status != 'pending'
+           ORDER BY resolvedAt DESC LIMIT ?`
+        )
+        .all(integrationId, bounded)) as unknown as PermissionNoticeRow[]
+      for (const row of rows)
+        if (handle === 'notify') await this.clearPermissionRequestNotify(row.agentId, row.id)
+        else await this.clearPermissionRequestBeside(row.agentId, row.id)
+      return rows
+    }
+    return [...(await take('notify')), ...(await take('beside'))]
   }
 
   /** Record a pending sub-session request's notice handle in its conversation; false if the row already settled. */

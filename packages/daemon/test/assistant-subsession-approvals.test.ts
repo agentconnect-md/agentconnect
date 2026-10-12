@@ -93,6 +93,8 @@ async function world(
     chatOn?: boolean
     surface?: ChatSurface
     database?: DatabaseSync
+    /** Only the agent's editors may answer in chat: these members are its linked editors. */
+    editors?: string[]
   } = {}
 ) {
   const store = await LocalStore.open({
@@ -162,7 +164,10 @@ async function world(
     slackDmSessionTarget: (_p, integrationId) => `target:${integrationId}`,
     subsessionApprovalRoute,
     assistantApprover,
-    chatSurface: () => over.surface ?? 'open'
+    chatSurface: () => over.surface ?? 'open',
+    chatEditorsOnly: () => over.editors !== undefined,
+    chatActor: async (_agentId, _integrationId, actor) =>
+      !over.editors || over.editors.includes(actor?.userId ?? '') ? 'allowed' : 'not-editor'
   }
   const coordinator = new PermissionCoordinator(host)
   /** The one request the sub-session has waiting, once it is listed. */
@@ -425,6 +430,64 @@ describe('a sub-session’s permission request in the conversation it belongs to
     await w.store.close()
   })
 
+  it('where only editors may answer, DMs an editor beside the card and takes only an editor’s click', async () => {
+    const w = await world({ chatOn: true, editors: ['U-ed2'] })
+    const decided = vi.fn()
+    void w.coordinator.onAcpPermission(OWNER, ACP, params()).then(decided)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    expect((w.place.postBlocks.mock.calls[0] as unknown[])[0]).toBe('C1')
+    expect(blocksOf(w.place)).toContain('"actions"')
+    expect((w.place.postBlocks.mock.calls[1] as unknown[])[0]).toBe('D-ed')
+
+    // Anyone else is told privately who can answer, and the card stays live.
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U9' } })
+    expect(w.place.postEphemeral).toHaveBeenCalledWith(
+      'C1',
+      'U9',
+      expect.stringContaining('Only an Agent editor can answer this request.'),
+      '100.1'
+    )
+    expect(w.place.updateBlocks).not.toHaveBeenCalled()
+    expect(decided).not.toHaveBeenCalled()
+
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U-ed2' } })
+    await vi.waitFor(() =>
+      expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
+    )
+    expect((await rows(w.store))[0]).toMatchObject({ status: 'allowed', resolvedBy: 'slack:T1:U-ed2' })
+    // The card and the DM both say how it settled.
+    expect(rewritesOf(w.place, '200.1')).toHaveLength(1)
+    expect(rewritesOf(w.place, '200.2')).toHaveLength(1)
+    await w.store.close()
+  })
+
+  it('takes only an editor’s click on a card in the fallback conversation where only editors may answer', async () => {
+    const w = await world({
+      chatOn: true,
+      editors: ['U-ed2'],
+      route: routeTo(slackPlace({ external: true })),
+      approver: { kind: 'conversation', integrationId: 'int-2', channel: 'C-fallback' }
+    })
+    const decided = vi.fn()
+    void w.coordinator.onAcpPermission(OWNER, ACP, params()).then(decided)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.other.postBlocks).toHaveBeenCalledTimes(1))
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U9' } })
+    expect(w.other.postEphemeral).toHaveBeenCalledWith(
+      'C-fallback',
+      'U9',
+      expect.stringContaining('Only an Agent editor'),
+      undefined
+    )
+    expect(decided).not.toHaveBeenCalled()
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U-ed2' } })
+    await vi.waitFor(() =>
+      expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
+    )
+    await w.store.close()
+  })
+
   it('denies after the wait cap, records why, and stops the sub-session', async () => {
     const w = await world({ chatOn: true, route: routeTo(slackPlace(), 2) })
     const decided = w.coordinator.onAcpPermission(OWNER, ACP, params())
@@ -530,6 +593,42 @@ describe('a sub-session’s permission request in the conversation it belongs to
     ])
     expect(restarted.cancelTurn).not.toHaveBeenCalled()
     await restarted.store.close()
+  })
+
+  it('keeps both the card and the editor DM beside it on the row, so the sweep after a restart retires both', async () => {
+    const database = new DatabaseSync(':memory:')
+    const w = await world({ chatOn: true, editors: ['U-ed2'], database })
+    void w.coordinator.onAcpPermission(OWNER, ACP, params())
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    await vi.waitFor(async () =>
+      expect(
+        (await w.store.listPermissionRequests(AGENT)).length > 0 && w.coordinator.dmNotifiedVia(id, AGENT, 'int-1')
+      ).toBe(true)
+    )
+
+    // The process dies: the next one expires the request, and reconnecting the integration finds both cards.
+    const restarted = await world({ chatOn: true, editors: ['U-ed2'], database })
+    expect((await rows(restarted.store))[0]).toMatchObject({ id, status: 'expired' })
+    const orphans = await restarted.store.takeOrphanedPermissionNotices('int-1')
+    expect(orphans.map((o) => [o.notifyChannel, o.notifyTs]).sort()).toEqual([
+      ['C1', '200.1'],
+      ['D-ed', '200.2']
+    ])
+    // Each is retired once.
+    expect(await restarted.store.takeOrphanedPermissionNotices('int-1')).toEqual([])
+    await restarted.store.close()
+  })
+
+  it('clears both handles when the request settles while the process lives', async () => {
+    const w = await world({ chatOn: true, editors: ['U-ed2'] })
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP, params())
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U-ed2' } })
+    await decided
+    expect(await w.store.takeOrphanedPermissionNotices('int-1')).toEqual([])
+    await w.store.close()
   })
 
   it('settles a notice a restart left behind once its integration reconnects', async () => {

@@ -11,7 +11,7 @@
  * pushes `integration/remove`. An offline daemon (NoConnection) never fails the
  * request. GET /bots surfaces the durable identities for the console picker.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, seedDutyGroup, defaultAgentName } from '../fixtures/seed.js'
@@ -132,6 +132,34 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       // §6.4 emission flip: credentials ride the opaque config envelope.
       config: { botToken: SLACK.botToken, appToken: SLACK.appToken }
     })
+  })
+
+  it('re-pushes a platform’s installs with who may act in chat when its session access sync is switched', async () => {
+    const agentId = await placedAgent()
+    const spy = new SpyControl()
+    const app = buildHttpApp(prisma, {}, undefined, spy as unknown as ControlSender, {
+      sessionAccessPlugins: [
+        { provider: 'slack', available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
+      ]
+    })
+    running = app
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'acme-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(res.statusCode).toBe(201)
+    expect(spy.upserts.at(-1)!.u.core.chatAuthority).toBe('participants')
+
+    const toggle = async (enabled: boolean, expected: 'editors' | 'participants') => {
+      const pushed = spy.upserts.length
+      const put = await app.app.inject({ method: 'PUT', url: `${ORG}/session-access/slack`, payload: { enabled } })
+      expect(put.statusCode).toBe(200)
+      await vi.waitFor(() => expect(spy.upserts.length).toBeGreaterThan(pushed))
+      expect(spy.upserts.at(-1)!.u).toMatchObject({ integrationId: res.json().id, core: { chatAuthority: expected } })
+    }
+    await toggle(true, 'editors')
+    await toggle(false, 'participants')
   })
 
   it('POST a socket bot with shareable:true degrades — the flag is coerced off (never a shareable Socket Mode bot)', async () => {

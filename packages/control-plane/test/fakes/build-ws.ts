@@ -280,6 +280,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     repos.integrationChannel,
     repos.bot,
     PLATFORMS,
+    repos.session,
     {
       registry: connReg,
       sender,
@@ -381,7 +382,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
             integration: repos.integration,
             bot: repos.bot,
             botSecret: repos.botSecret,
-            integrationChannel: repos.integrationChannel
+            integrationChannel: repos.integrationChannel,
+            session: repos.session
           },
           agentDelivery: new AgentDelivery({ control: sender, specs, placement: placementResolver }),
           httpBot,

@@ -1079,6 +1079,7 @@ export function buildContainer(
     botSecrets: repos.botSecret,
     platforms,
     specs: agentSpecs,
+    chatAuthority: repos.session,
     crons: repos.cron,
     // The `duty/fetch` bundle's MCP + external-memory projections (same seams the
     // reconcile roster below is given, same projector).
@@ -1116,6 +1117,7 @@ export function buildContainer(
     repos.integrationChannel,
     repos.bot,
     platforms,
+    repos.session,
     {
       registry: connReg,
       sender,

@@ -208,6 +208,10 @@ export function mergePlaceExternalReason(
   return reported
 }
 
+/** Who may take chat actions on an integration: its agent's editors, by linked console identity, when the organization syncs that platform's permissions; else anyone in an open conversation. */
+export const ChatAuthority = z.enum(['editors', 'participants'])
+export type ChatAuthority = z.infer<typeof ChatAuthority>
+
 // §6.3 core routing envelope: the platform-independent routing, gating, and ingress knobs core reads, never duplicated in `config`.
 export const IntegrationCoreEnvelope = z.object({
   mode: z.enum(['direct', 'shared']).default('direct'),
@@ -218,7 +222,9 @@ export const IntegrationCoreEnvelope = z.object({
   // Conversations the platform detected as external (assistant-mode.md §5.3); every other enabled one is internal.
   externalChannels: z.array(z.string()).optional(),
   // Emitted unconditionally and stripped by readers that predate it; an empty bundle clears every binding.
-  decisions: DecisionBundle.default(EMPTY_DECISION_BUNDLE)
+  decisions: DecisionBundle.default(EMPTY_DECISION_BUNDLE),
+  // Absent reads as 'participants': an older CP projects no sync, and an older daemon strips the field.
+  chatAuthority: ChatAuthority.optional()
 })
 export type IntegrationCoreEnvelope = z.infer<typeof IntegrationCoreEnvelope>
 

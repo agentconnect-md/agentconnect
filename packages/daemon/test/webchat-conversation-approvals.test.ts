@@ -101,6 +101,8 @@ async function world(chatActions: ChatActions) {
     agents: () => new Map([[AGENT, { id: AGENT, name: 'Butler', chatActions } as never]]),
     // Webchat has no integration, so no chat surface: its answers come through the conversation's page.
     chatSurface: () => 'closed',
+    chatEditorsOnly: () => false,
+    chatActor: async () => 'allowed' as const,
     pending: () => pending,
     evalHooks: () => ({ emit: vi.fn() }) as never,
     memoryExtraction: () => undefined,

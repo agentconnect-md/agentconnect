@@ -105,7 +105,9 @@ function world(over: WorldOptions = {}) {
     slackConnFor: () => undefined,
     approvalDmIntegrations: () => [],
     slackDmSessionTarget: () => 'encoded-target',
-    chatSurface: () => 'open'
+    chatSurface: () => 'open',
+    chatEditorsOnly: () => false,
+    chatActor: async () => 'allowed' as const
   }
   const events = (): any[] => sink.output.mock.calls.map(([o]: any[]) => o.event)
   return { store, sink, events, enqueueApply, coordinator: new PermissionCoordinator(host), p }

@@ -17,6 +17,7 @@ import type { BotProfileIconAgent } from '../../http/bot-profile-icon.js'
 import type { BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { IntegrationDiscordConfig } from '@agentconnect.md/protocol'
+import { NO_SESSION_SYNC } from '../../../test/fakes/no-session-sync.js'
 
 /** A restricted owner: the projection's gated arm. */
 const RESTRICTED: SpecOwner = { visibility: 'restricted' }
@@ -281,7 +282,7 @@ describe('discord projection equivalence with the live integrationToSpec path', 
   // GOLDEN: the literal payload the PRE-ADOPTION `integrationToSpec` discord arm
   // emitted — the Gateway authenticates with the single bot token (no appToken).
   it('emits the byte-identical payload the pre-adoption discord arm produced', async () => {
-    const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, [
+    const spec = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, BOT, SECRET, [
       channel('C1', 'any'),
       channel('C2', 'mention'),
       channel('C3', 'off')
@@ -303,7 +304,8 @@ describe('discord projection equivalence with the live integrationToSpec path', 
         gated: false,
         sessionModes: [],
         externalChannels: [],
-        decisions: { bindings: [], definitions: [] }
+        decisions: { bindings: [], definitions: [] },
+        chatAuthority: 'participants'
       },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
       // ride the core envelope, never the config payload.
@@ -317,6 +319,7 @@ describe('discord projection equivalence with the live integrationToSpec path', 
     it(`routes the live path through the discord projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(
         PLATFORMS,
+        NO_SESSION_SYNC,
         INTEGRATION,
         BOT,
         SECRET,

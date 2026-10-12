@@ -6,13 +6,14 @@ import type {
   BotSecretStore,
   IntegrationChannelRepo,
   IntegrationRecord,
-  IntegrationRepo
+  IntegrationRepo,
+  SessionRepo
 } from '../persistence/ports.js'
 import { NoConnection } from './outbound.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { integrationToSpec } from './placement.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
-import { AgentId, type IntegrationId } from '../domain/ids.js'
+import { AgentId, type IntegrationId, type OrgId } from '../domain/ids.js'
 
 export interface GatingPushDeps {
   repos: {
@@ -20,6 +21,8 @@ export interface GatingPushDeps {
     bot: BotRepo
     botSecret: BotSecretStore
     integrationChannel: IntegrationChannelRepo
+    /** Whether the organization syncs a platform's session access, for each spec's chat authority. */
+    session: Pick<SessionRepo, 'getExternalAccessPolicy'>
   }
   agentDelivery: AgentDelivery
   httpBot: { syncBot(botId: string): Promise<void> }
@@ -68,6 +71,22 @@ export async function convergeDecisionConsumers(
   }
 }
 
+/** Re-push every active integration of one platform in an organization once its session access sync is switched, so its chat authority follows; best-effort. */
+export async function convergeOrgPlatform(
+  deps: GatingPushDeps & { repos: { agent: Pick<AgentRepo, 'getUnscoped'> } },
+  orgId: OrgId,
+  platform: string,
+  log?: { warn(obj: unknown, msg?: string): void }
+): Promise<void> {
+  const integrations = await deps.repos.integration.listForOrg(orgId)
+  const syncedBots = new Set<string>()
+  for (const i of integrations) {
+    if (i.platform !== platform || i.status !== 'active') continue
+    const agent = await deps.repos.agent.getUnscoped(i.agentId)
+    if (agent) await convergeIntegration(deps, i, agent, syncedBots, log)
+  }
+}
+
 /** One integration's convergence: an http bot recompiles once per bot, a direct install gets a fresh spec. */
 async function convergeIntegration(
   deps: GatingPushDeps,
@@ -98,7 +117,7 @@ async function convergeIntegration(
     // Every daemon serving the agent, not just its placement: a gating flip that
     // reaches only the placement leaves a holder admitting conversations the
     // agent's new visibility forbids.
-    const spec = await integrationToSpec(deps.platforms, i, bot, secret, channels, agent)
+    const spec = await integrationToSpec(deps.platforms, deps.repos.session, i, bot, secret, channels, agent)
     // No deliverable payload ⇒ nothing to converge; the reconcile roster prunes it, like a
     // missing secret. Pushing a config-less spec would only be refused and ignored by the daemon.
     if (!spec) return

@@ -13,6 +13,9 @@ import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { AUDIENCE_CONCURRENCY, MAX_AUDIENCE, mapLimited } from './linkedDm.js'
 import { canEdit } from '../authorization/policy.js'
 
+/** Whether a chat member's linked identity can be checked on this platform: Slack only, for linkedDm.ts's reason. */
+export const checksChatMembers = (platform: string): boolean => platform === 'slack'
+
 export interface ApprovalRouteDeps {
   agent: Pick<AgentRepo, 'getUnscoped'>
   session: Pick<SessionRepo, 'getUnscoped'>
@@ -44,7 +47,7 @@ export async function resolveApprovalRoute(
   if (editors.length === 0) return none
 
   const owned = await deps.integration.activeForAgents([req.agentId])
-  const slackOwned = new Map(owned.filter((i) => i.platform === 'slack').map((i) => [String(i.id), i]))
+  const slackOwned = new Map(owned.filter((i) => checksChatMembers(i.platform)).map((i) => [String(i.id), i]))
   // The integration's workspace anchor. `teamId` is written by platform-app installs only;
   // a token-installed (direct) bot carries the same fact as `workspaceId`, reported by the
   // owning daemon's auth.test — the provenance `ownerIdentity`'s transportScope already has,
@@ -67,10 +70,26 @@ export async function resolveApprovalRoute(
     }
   }
 
+  // A chat member on a synced integration (chat-actor-v1): an editor's linked pair, else whether any member's; over the cap refuses.
+  const verifyChatActor = async (requestId: string, userId: string, teamId: string): Promise<AgentApprovalRouted> => {
+    if (editors.length > MAX_AUDIENCE) return none
+    const scanned = members.length <= MAX_AUDIENCE ? members : editors
+    const matches = await mapLimited(scanned, AUDIENCE_CONCURRENCY, async (m) => {
+      const pair = await pairOf(m.userId)
+      return pair?.teamId === teamId && pair.userId === userId ? m : null
+    })
+    const linked = matches.filter((m): m is OrgMemberRecord => m !== null)
+    const editor = linked.find((m) => editors.includes(m))
+    if (editor) return { requestId, allowed: true, ...(editor.displayName ? { displayName: editor.displayName } : {}) }
+    return { requestId, allowed: false, ...(scanned === members ? { linked: linked.length > 0 } : {}) }
+  }
+
   if (req.verify) {
     const v = req.verify
     const workspace = await workspaceFor(v.integrationId)
-    if (!workspace || workspace !== v.teamId) return none
+    if (!workspace || (v.teamId !== undefined && workspace !== v.teamId)) return none
+    if (v.consoleUserId === undefined) return await verifyChatActor(req.requestId, v.userId, workspace)
+    if (v.teamId === undefined) return none
     // Recheck current membership and edit authority before verifying the linked actor pair.
     const member = editors.find((m) => m.userId === v.consoleUserId)
     if (!member) return none

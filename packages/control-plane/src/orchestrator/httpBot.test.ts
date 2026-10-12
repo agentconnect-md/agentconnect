@@ -358,11 +358,12 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       integrationRemove: async (daemonId: string, r: { integrationId: string }) =>
         void removals.push({ daemonId, integrationId: r.integrationId })
     }
-    const sessions: Pick<SessionRepo, 'findThreadOwner'> = {
+    const sessions: Pick<SessionRepo, 'findThreadOwner' | 'getExternalAccessPolicy'> = {
       findThreadOwner: async (botId, channel, thread) => {
         threadOwnerLookup = { botId, channel, thread }
         return threadOwner
-      }
+      },
+      getExternalAccessPolicy: async () => null
     }
     // The credential writer is the transaction owner in prod; here it stands in
     // for that one atomic step — CAS, then (only if it applied) the integration

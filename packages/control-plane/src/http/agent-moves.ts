@@ -20,6 +20,7 @@ export function buildAgentMoves(deps: HttpDeps, log: FastifyBaseLogger): AgentMo
     botSecrets: deps.repos.botSecret,
     platforms: deps.platforms,
     specs: deps.agentSpecs,
+    chatAuthority: deps.repos.session,
     crons: deps.repos.cron,
     control: deps.control,
     hooks: deps.hooks,

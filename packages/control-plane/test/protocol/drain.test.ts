@@ -46,6 +46,7 @@ import { InMemoryDaemonStub } from '../fakes/daemon-stub.js'
 import { DaemonId } from '../../src/domain/ids.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
 import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
+import { NO_SESSION_SYNC } from '../fakes/no-session-sync.js'
 
 const DAEMON_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const DAEMON_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -205,6 +206,7 @@ function build(): Built {
     // §9 spec projection. This suite seeds no integrations, so only the registry's
     // presence matters; slack alone keeps the fixture minimal.
     buildCpPlatformRegistry([createSlackCpProvider({})]),
+    NO_SESSION_SYNC,
     {
       registry: connReg,
       sender,

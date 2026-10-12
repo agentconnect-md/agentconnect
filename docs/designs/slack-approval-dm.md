@@ -176,6 +176,13 @@ forward lookup instead of a scan. Routing is best-effort (§4.3);
 verification is not — it authorizes an action, so an unanswerable verify
 fails closed.
 
+A verify that names no console user (`chat-actor-v1`) asks whether a chat member is any
+editor's linked identity, for the in-conversation card where the organization syncs Slack's
+session access (§6.5). `teamId` may be left to the integration's own workspace. It runs the same
+capped forward scan, over the editors, and when the membership is within the cap over every
+member too, so a refusal can say whether the member is linked to anyone; over the editor cap it
+refuses.
+
 A third form serves assistant-mode drafts ([assistant-mode.md](assistant-mode.md)
 §5.5): `agent/approval-route` with `consoleUserId` set asks for exactly that
 console user's linked Slack account, never the chain. The reply names that
@@ -349,7 +356,7 @@ gate is replaced by two checks, both required:
   `consoleUserId` plus the verify's fresh `displayName` are what land in
   `resolvedBy` / `resolvedByName`.
 
-In-thread cards keep their existing gate unchanged.
+In-thread cards keep their existing gate, plus §6.5 where Slack's session access sync is on.
 
 ### 6.4 Elicitation clicks carry no actor today
 
@@ -362,6 +369,26 @@ scope for this delivery (§9) — actor on the Socket Mode handler, an
 acting-user field on the relay frame, and the §6.3 checks in
 `handleElicitChoice` for DM-originated cards — so both request kinds get
 identical interactive DMs; the two runtimes must not diverge here.
+
+### 6.5 The in-conversation card where session access is synced
+
+Where the organization syncs Slack's session access, "What people can do in chat" admits only
+the agent's editors (product-conventions.md). The CP projects `chatAuthority: 'editors'` onto
+each Slack integration spec while the sync is on, and re-pushes the platform's integrations when
+it is switched. A click on the in-conversation card, approval elicitations and sub-session cards
+included, is then honored only when the clicker's pair is an editor's linked identity, asked with
+the anonymous verify of §4.2 and cached on the daemon (an editor two minutes, a refusal thirty
+seconds, an unanswered question never). An unreachable CP, one without `chat-actor-v1`, or an
+agent over the editor cap refuses the click; it is told only to the clicker, with the console
+link and, for a member linked to no console account, how to link one, and the card stays live.
+Beside a permission request's card, the editor DM of §5 goes out too unless the turn owner is an
+editor, and the first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
+here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
+(§11.4); editors answer it there or in the console. A conversation shared with another
+organization takes the editor path instead of the asker's DM. A sub-session's card keeps the
+row's `notify*` handle, so the DM beside it keeps its own (`besideIntegrationId`,
+`besideChannel`, `besideTs`), and the reconnect sweep of §5.4 retires both. §4.4 holds: the check
+is a forward scan from the console side, never a reverse index.
 
 ## 7. Console notification states
 
@@ -467,7 +494,8 @@ Three things genuinely differ per surface, and each stays with its surface:
   console reaches a request only through the CP proxy (§6.2), because the CP is
   never on the hot path.
 - **Who may answer.** For an in-conversation card, anyone who can see it, and
-  only behind `chatActions` at `approve` or above (§2). For a DM card, the addressed
+  only behind `chatActions` at `approve` or above (§2); only an editor where session
+  access is synced (§6.5). For a DM card, the addressed
   target, re-verified at click time (§6.3). For the console, an Agent editor,
   which the CP decision route enforces before the frame reaches the daemon.
 - **Rendering limits.** Option caps, surfaces with no buttons that take a
