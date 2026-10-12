@@ -90,7 +90,8 @@ Every level keeps these rules:
   answered in the console.
 - The first answer from any surface decides, and the request is rewritten to say who answered
   and how.
-- A refusal names who can answer instead, or where to go.
+- A refusal names who can answer instead, or where to go. A refused click or tap is told only to
+  the person who made it, and leaves the card as everyone else sees it.
 - The setting does not change the agent's permission policy. Which tool calls need approval is
   set in the console, and an agent that allows every tool call never asks.
 

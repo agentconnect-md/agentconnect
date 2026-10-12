@@ -56,6 +56,8 @@ export type ElicitCardDraft = unknown
 export interface ElicitCardHandle {
   readonly conn: unknown
   readonly channel: string
+  /** The platform thread it was posted into, where a thread is not a channel of its own (Slack's). */
+  readonly thread?: string
   ts?: string
   /** The card's OWN opaque state slot, written by the surface that assembles an answer over
    *  several taps (§7.3, the same shape `turnState` takes). Core never reads it; it exists so a
@@ -205,4 +207,8 @@ export interface ElicitCardFacet {
    *  resolver so it is globally unique. Absent where the surface's user ids already are — a
    *  Telegram user id names one account across every chat, a Slack one only within its workspace. */
   answerScope?(handle: ElicitCardHandle): string | undefined
+  /** Tell only `userId`, beside the card, why their tap was not taken (Slack's ephemeral message). Absent ⇒ nothing is said. */
+  tellPrivately?(handle: ElicitCardHandle, userId: string, text: string): void
+  /** A tapping member's display name, for a tap that carried none (a relayed Slack click); undefined when unknown. */
+  nameOf?(handle: ElicitCardHandle, userId: string): Promise<string | undefined>
 }

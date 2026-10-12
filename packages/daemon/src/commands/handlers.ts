@@ -41,11 +41,11 @@ import { loopGuardScope, loopGuardScopeFromCoords } from '../daemon/loop-guard-s
 import type { PlatformConnection } from '../platforms/connection-reconciler.js'
 import { parseTelegramSelect, telegramSelectButtons } from '../platforms/telegram/command-chrome.js'
 import type { TelegramCallback, TelegramConnection } from '../telegram/connection.js'
-import type { InteractionActor } from '../platforms/contract.js'
+import type { ChatRefusal, InteractionActor } from '../platforms/contract.js'
 import type { StatusBarInfo } from '../slack/render.js'
 import { buildDiscordSelectComponents, type DiscordComponents } from '../discord/render.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
-import { chatSettingsAllowed, type ChatSurface } from '../agents/chat-actions.js'
+import { chatSettingsAllowed, settingsRefusalText, type ChatSurface } from '../agents/chat-actions.js'
 import {
   pendingTurnKey,
   QueueFullError,
@@ -95,6 +95,8 @@ export interface CommandHost {
   replyConnFor(agentId: string, integrationId?: string): PlatformConnection | undefined
   /** Takes the session's OUTWARD id (session-concept.md §1.1), which {@link outwardSessionId} resolves. */
   sessionLink(sessionId: string, source?: string): string
+  /** The agent's console page, where an Agent editor changes its runtime settings. */
+  agentLink(agentId: string): string
   outwardSessionId(agentId: string, acpSessionId: string): Promise<string | undefined>
   sessionLinkSource(platform: string, integrationId?: string): string | undefined
   /** Thread affinity for the routing ladder a command reuses. */
@@ -348,9 +350,7 @@ export class CommandHandlers {
     await this.refreshStatusBarForKey(key)
     return true // reports whether the override was recorded (nothing else reads it)
   }
-  /** Route a Slack status-bar Block Kit interaction (the model / effort / fast selects, or
-   *  a cancel raised by the native Stop) to the shared key-based cores. `sessionKey` rides
-   *  the block; no-op on an unknown key. */
+  /** Route a status-bar or controls-modal action to the key-based cores; a refused settings change returns what only its actor is told. */
   async handleStatusAction(a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
@@ -360,11 +360,14 @@ export class CommandHandlers {
     permissionMode?: string
     fastMode?: boolean
     outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
-  }): Promise<void> {
-    // Who tapped is recorded here, where every ingress funnels, and only when the verb applied.
+  }): Promise<ChatRefusal | undefined> {
+    // Who acted is recorded here, where every ingress funnels, and only for a change that applied.
     let applied = false
     // A bot never changes a setting; cancelling follows the stop rule instead.
-    if (a.kind !== 'cancel' && a.actor?.isBot) return
+    if (a.kind !== 'cancel' && a.actor?.isBot) return undefined
+    const runtimeSetting = a.kind !== 'cancel' && a.kind !== 'set-output'
+    const refusal = runtimeSetting ? await this.runtimeSettingsRefusal(a.sessionKey) : undefined
+    if (refusal) return refusal
     if (a.kind === 'cancel') applied = await this.cancelSessionByKey(a.sessionKey, a.actor)
     else if (a.kind === 'set-model') {
       if (a.model) applied = await this.setModelByKey(a.sessionKey, a.model)
@@ -378,28 +381,40 @@ export class CommandHandlers {
       if (a.outputMode) applied = await this.setOutputModeByKey(a.sessionKey, a.outputMode)
     }
     if (applied) this.logSessionAction(a.kind, a.sessionKey, a.actor)
+    return undefined
   }
 
-  /** A tapped Discord select-card button: apply the option and return the re-rendered card; undefined when the session is gone or the option stale. */
+  /** What only the person behind a refused runtime-settings change is told; undefined when this conversation takes it from chat. */
+  private async runtimeSettingsRefusal(key: string): Promise<ChatRefusal | undefined> {
+    const rec = await this.host.store().getSession(key)
+    if (!rec || (await this.chatRuntimeSession(key))) return undefined
+    return { text: settingsRefusalText(this.host.agentLink(rec.agentId)), channel: rec.channel, thread: rec.thread }
+  }
+
+  /** A tapped Discord select-card button: the card redrawn on the value in force, a refusal's private `notice`, or undefined to leave it. */
   async handleDiscordSelect(a: {
     kind: SelectKind
     index: number
     sessionKey: string
     actor?: InteractionActor
-  }): Promise<{ text: string; components: DiscordComponents } | undefined> {
+  }): Promise<{ text: string; components: DiscordComponents } | { notice: string } | undefined> {
     if (a.actor?.isBot) return undefined
     const rec = await this.host.store().getSession(a.sessionKey)
     if (!rec) return undefined
+    const refusal = await this.runtimeSettingsRefusal(a.sessionKey)
+    if (refusal) return { notice: refusal.text }
     const info = await this.host.statusInfoFrom(rec.agentId, a.sessionKey, rec.acpSessionId ?? undefined)
-    const { options } = selectOptions(a.kind, info)
+    const { current, options } = selectOptions(a.kind, info)
     const value = options[a.index]
     if (value === undefined) return undefined
-    // Recorded only once the choice applied; the card is re-rendered either way.
-    if (await applySelect(a.kind, a.sessionKey, value, this.selectSetters))
-      this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
-    const components = buildDiscordSelectComponents(a.kind, value, options)
+    // Recorded only once the choice applied: a refused select changed nothing.
+    const applied = await applySelect(a.kind, a.sessionKey, value, this.selectSetters)
+    if (applied) this.logSessionAction(`select:${a.kind}`, a.sessionKey, a.actor)
+    // A choice that did not apply leaves the card on the value really in force.
+    const shown = applied ? value : current
+    const components = buildDiscordSelectComponents(a.kind, shown, options)
     if (!components) return undefined
-    return { text: selectCardText(a.kind, value), components }
+    return { text: selectCardText(a.kind, shown), components }
   }
   async isSessionMuted(key: string): Promise<boolean> {
     return await this.host.store().isSessionMuted(key)
@@ -1067,7 +1082,8 @@ export class CommandHandlers {
       return
     }
     if (!(await this.chatRuntimeSession(session.key))) {
-      void conn.answerCallback(cb.id, 'Ask an Agent editor to change runtime settings.')
+      // Answered on the tap itself, which only its tapper sees.
+      void conn.answerCallback(cb.id, settingsRefusalText(this.host.agentLink(session.agentId)), { alert: true })
       return
     }
     const info = await this.host.statusInfoFrom(session.agentId, session.key, session.acpSessionId)

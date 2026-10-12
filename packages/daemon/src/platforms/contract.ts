@@ -49,6 +49,13 @@ export interface InteractionActor {
   name?: string
 }
 
+/** A refused chat action, said only to whoever acted; `channel`/`thread` locate its session for a surface that answers by posting. */
+export interface ChatRefusal {
+  text: string
+  channel: string
+  thread?: string
+}
+
 /**
  * What a reaction placed on an INBOUND message means.
  *

@@ -28,6 +28,7 @@ import {
 } from './render.js'
 import { DISCORD_ELICIT_MODAL, DISCORD_ELICIT_OPEN, parseDiscordElicit } from '../platforms/discord/elicit-card.js'
 import type {
+  ChatRefusal,
   InteractionActor,
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
@@ -88,26 +89,21 @@ export function consolidateDiscord(agents: Agent[]): Map<string, ConsolidatedDis
 export interface DiscordDeps {
   group: ConsolidatedDiscordGroup
   onMessage: (msg: NormalizedMessage) => void
-  /** Fired when a user taps a status-bar button (message component). `sessionKey`
-   *  is resolved by the connection from the button's message (channel+message_id →
-   *  session key, registered when the status bar was posted). */
+  /** A status-bar button tap, its session found by the button's message; a refused change returns what only the tapper is told. */
   onStatusAction?: (a: {
     kind: 'cancel' | 'set-fast'
     sessionKey: string
     fastMode?: boolean
     /** Who tapped it, so the daemon can record the operator behind a session change. */
     actor?: InteractionActor
-  }) => void
-  /** Fired when a user taps a select-card button (`/models` `/effort` `/permission`).
-   *  Applies the choice for `sessionKey` and returns the re-rendered card so the
-   *  connection edits the tapped message in place (the current option now flagged).
-   *  Returns undefined to leave the card unchanged (no session / stale option). */
+  }) => void | Promise<ChatRefusal | undefined>
+  /** A select-card tap: the card to redraw in place, a `notice` only the tapper is told, or undefined to leave it. */
   onSelectAction?: (a: {
     kind: DiscordSelectKind
     index: number
     sessionKey: string
     actor?: InteractionActor
-  }) => Promise<{ text: string; components: DiscordComponents } | undefined>
+  }) => Promise<{ text: string; components: DiscordComponents } | { notice: string } | undefined>
   /** The DIALOG one elicitation card's Answer button opens (§7.3) — Discord's modal, built by
    *  core from the card's own params. Undefined ⇒ nothing to open, and the tap is merely acked.
    *  Synchronous by necessity: a modal must be the interaction's FIRST response, and Discord
@@ -291,25 +287,7 @@ export class DiscordConnection implements PlatformConnection {
         await this.onElicitInteraction(interaction, elicit)
         return
       }
-      void interaction.deferUpdate().catch(() => {})
-      const channel = interaction.channelId
-      const sessionKey = this.statusKeys.get(`${channel}:${interaction.message.id}`)
-      if (!sessionKey) return
-      const actor: InteractionActor = { userId: interaction.user.id, isBot: interaction.user.bot }
-      // Status-bar verbs (Cancel / Fast) — fire-and-forget onto the session.
-      const status = parseDiscordCallback(interaction.customId)
-      if (status) {
-        if (status.kind === 'cancel') this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, actor })
-        else this.deps.onStatusAction?.({ kind: 'set-fast', sessionKey, fastMode: status.fastMode, actor })
-        return
-      }
-      // Select-card taps (model / effort / permission): apply + re-render the card in place.
-      const sel = parseDiscordSelect(interaction.customId)
-      if (sel && this.deps.onSelectAction) {
-        const rendered = await this.deps.onSelectAction({ kind: sel.kind, index: sel.index, sessionKey, actor })
-        if (rendered)
-          void this.updateMessage(channel, interaction.message.id, rendered.text, { keyboard: rendered.components })
-      }
+      await this.onStatusButton(interaction)
     })
 
     client.on(Events.Error, (err) => log?.debug(`discord: client error: ${err.message}`))
@@ -346,6 +324,43 @@ export class DiscordConnection implements PlatformConnection {
         `discord: slash-command registration failed — is the bot invited with the ` +
           `applications.commands scope? (${(err as Error).message})`
       )
+    }
+  }
+
+  /** Route one status-bar or select-card tap onto its session; a refused change is told only to the tapper, ephemerally. */
+  private async onStatusButton(interaction: ButtonInteraction): Promise<void> {
+    const deferred = interaction.deferUpdate().catch(() => {})
+    const tell = async (text: string) => {
+      await deferred
+      await interaction.followUp({ content: text, flags: MessageFlags.Ephemeral }).catch(() => {})
+    }
+    const channel = interaction.channelId
+    const sessionKey = this.statusKeys.get(`${channel}:${interaction.message.id}`)
+    if (!sessionKey) return
+    const actor: InteractionActor = { userId: interaction.user.id, isBot: interaction.user.bot }
+    // Status-bar verbs (Cancel / Fast) onto the session; only a settings change can be refused.
+    const status = parseDiscordCallback(interaction.customId)
+    if (status?.kind === 'cancel') {
+      void this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, actor })
+      return
+    }
+    if (status) {
+      const refusal = await this.deps.onStatusAction?.({
+        kind: 'set-fast',
+        sessionKey,
+        fastMode: status.fastMode,
+        actor
+      })
+      if (refusal) await tell(refusal.text)
+      return
+    }
+    // Select-card taps (model / effort / permission): apply + re-render the card in place.
+    const sel = parseDiscordSelect(interaction.customId)
+    if (sel && this.deps.onSelectAction) {
+      const rendered = await this.deps.onSelectAction({ kind: sel.kind, index: sel.index, sessionKey, actor })
+      if (rendered && 'notice' in rendered) await tell(rendered.notice)
+      else if (rendered)
+        void this.updateMessage(channel, interaction.message.id, rendered.text, { keyboard: rendered.components })
     }
   }
 

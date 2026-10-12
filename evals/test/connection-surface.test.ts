@@ -56,6 +56,7 @@ const EXEMPT: Record<string, string> = {
   canvasSections: 'private canvases.sections.lookup behind readCanvas',
   rememberSearchToken: 'private ingress-side credential parking, behind rememberInboundSearchToken',
   searchTokenFor: 'private credential lookup behind searchPublicMessages',
+  changeSetting: 'private status-action refusal delivery behind the Bolt select handlers',
   // The Arena's transport receives no provider events, so nothing ever parks a credential
   // for it — and `searchPublicMessages` (which the virtual DOES implement) refuses regardless.
   rememberInboundSearchToken: 'HTTP-arm credential handoff; the Arena has no relay ingress',

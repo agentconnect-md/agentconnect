@@ -115,7 +115,12 @@ import {
   type SubsessionApprover
 } from './subsession-approval.js'
 import type { MemoryWriteAsk } from '../mcp/ops/memory.js'
-import { chatApprovalsAllowed, type ChatSurface } from '../agents/chat-actions.js'
+import {
+  approvalRefusalText,
+  CHAT_APPROVALS_OFF,
+  chatApprovalsAllowed,
+  type ChatSurface
+} from '../agents/chat-actions.js'
 import type { AskerApprover } from '../assistant/drafts.js'
 import {
   memoryWriteApprovalChoices,
@@ -277,12 +282,11 @@ function formAnswerLabel(
 /** How a card the turn ended under is labelled: nothing was decided, so it says so. */
 const ELICIT_CANCELLED: ElicitCardLabel = { mark: 'waiting', text: 'Cancelled', fallback: 'Cancelled' }
 
-/** How a card is re-labelled once chat approval is no longer allowed: the ask is still open, but
- *  only an Agent editor can settle it now. */
-const ELICIT_EDITOR_ONLY: ElicitCardLabel = {
+/** How an approval card reads for everyone once approving in chat is turned off: still open, for an editor. */
+const ELICIT_CHAT_APPROVALS_OFF: ElicitCardLabel = {
   mark: 'blocked',
-  text: 'Ask an Agent editor to allow it',
-  fallback: 'Permission requires an Agent editor'
+  text: CHAT_APPROVALS_OFF,
+  fallback: 'Approving in chat was turned off'
 }
 
 /** How many consented URL elicitations wait for an `elicitation/complete` that may never come. */
@@ -406,6 +410,8 @@ interface DmNotice {
 interface ChatPermissionCard {
   conn: SlackConnection
   channel: string
+  /** The Slack thread it was posted into, where a refused click is answered privately. */
+  thread?: string
   /** The conversation the card was posted in, rechecked when it is clicked. */
   place: ChatPlace
   ts?: string
@@ -899,6 +905,7 @@ export class PermissionCoordinator {
     const chat: ChatPermissionCard = {
       conn,
       channel: p.plan.channel,
+      ...(p.plan.thread ? { thread: p.plan.thread } : {}),
       place: { integrationId: p.plan.integrationId, channel: p.plan.channel }
     }
     this.pendingApprovals.set(requestId, {
@@ -968,6 +975,8 @@ export class PermissionCoordinator {
       return await result
     }
     chat.ts = ts
+    // Approving in chat was turned off while it posted: retire it as the switch retired the others.
+    if (!chatApprovalsAllowed(this.host.agents().get(agentId))) this.retireChatApprovalsOffCard(live)
     return await this.trackHumanApprovalWait(p, result)
   }
 
@@ -1223,6 +1232,7 @@ export class PermissionCoordinator {
     permission.chat = {
       conn,
       channel: at.channel,
+      ...(at.thread ? { thread: at.thread } : {}),
       place: { integrationId: at.integrationId, channel: at.channel },
       ts,
       intro,
@@ -1648,62 +1658,77 @@ export class PermissionCoordinator {
     if (!this.chatAnswerOpen(rec.agentId, rec.chat.place)) {
       // Refused, so it decided nothing — recorded as an attempt, never as the decision.
       this.host.logSessionAction(`permission:${input.optionId} (refused)`, rec.sessionId, input.actor)
-      if (rec.chat.ts) {
-        void rec.chat.conn
-          .updateBlocks(
-            rec.chat.channel,
-            rec.chat.ts,
-            chatCardBlocks(
-              rec.chat,
-              buildPermissionResolvedCard(rec.params, 'Ask an Agent editor to allow it', undefined)
-            ),
-            'Permission requires an Agent editor',
-            true
-          )
-          .catch(() => {})
-      }
+      // Only the clicker is told; the card stays as everyone else sees it.
+      if (input.actor)
+        void rec.chat.conn.postEphemeral(
+          rec.chat.channel,
+          input.actor.userId,
+          approvalRefusalText(this.approvalConsoleLink(rec)),
+          rec.chat.thread
+        )
       return
     }
     const picked = choiceById(permissionChoices(rec.params), input.optionId)
     if (!picked) return
     const team = rec.chat.conn.workspaceId()
-    const by = input.actor
-      ? { resolvedBy: team ? `slack:${team}:${input.actor.userId}` : null, resolvedByName: input.actor.name ?? null }
+    const actor = input.actor
+    // A relayed click carries only the member's id, so the settled card names them by a lookup.
+    const name = actor ? (actor.name ?? (await this.slackMemberName(rec.chat.conn, actor.userId))) : undefined
+    const by = actor
+      ? { resolvedBy: team ? `slack:${team}:${actor.userId}` : null, resolvedByName: name ?? null }
       : undefined
     await this.settle(input.requestId, rec, picked, by, 'chat', input.actor)
+  }
+
+  /** A Slack member's name for a click that carried none; a failed lookup names nobody and never blocks the decision. */
+  private async slackMemberName(conn: SlackConnection, userId: string): Promise<string | undefined> {
+    try {
+      return await conn.memberName(userId)
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Where an Agent editor answers a request in the console: its session's page, while its turn is live. */
+  private approvalConsoleLink(rec: { owner: HostKey; sessionId: string }): string | undefined {
+    const p = this.host.pending().get(pendingTurnKey(rec.owner, rec.sessionId))
+    return p ? this.host.sessionLink(p.outwardSessionId, 'slack') : undefined
+  }
+
+  /** Rewrite one in-chat permission card for everyone once approving in chat is turned off; its request stays pending for editors. */
+  private retireChatApprovalsOffCard(rec: PendingApproval): void {
+    if (rec.kind !== 'permission' || !rec.chat?.ts) return
+    void rec.chat.conn
+      .updateBlocks(
+        rec.chat.channel,
+        rec.chat.ts,
+        chatCardBlocks(rec.chat, buildPermissionResolvedCard(rec.params, CHAT_APPROVALS_OFF, undefined)),
+        'Approving in chat was turned off',
+        true
+      )
+      .catch(() => {})
   }
 
   /** Retire in-chat Allow/Deny controls once the agent no longer lets people approve in chat; the requests stay pending for editors. */
   disableChatPermissionSurfaces(agentId: string): void {
     for (const pending of this.pendingApprovals.values()) {
-      const dm = pending.agentId === agentId && pending.notify?.asker ? pending.notify : undefined
+      if (pending.agentId !== agentId) continue
       // The asker's own card for an external place was a chat-side answer too.
+      const dm = pending.notify?.asker ? pending.notify : undefined
       if (dm) {
         const blocks =
           pending.kind === 'permission'
-            ? buildPermissionResolvedCard(pending.params, 'Ask an Agent editor to allow it', undefined)
-            : buildElicitationResolvedCard(pending.params, ':lock: Ask an Agent editor to allow it')
+            ? buildPermissionResolvedCard(pending.params, CHAT_APPROVALS_OFF, undefined)
+            : buildElicitationResolvedCard(pending.params, CHAT_APPROVALS_OFF)
         void dm.conn
-          .updateBlocks(dm.channel, dm.ts, [...dm.intro, ...blocks], 'Permission requires an Agent editor', true)
+          .updateBlocks(dm.channel, dm.ts, [...dm.intro, ...blocks], 'Approving in chat was turned off', true)
           .catch(() => {})
       }
-      if (pending.kind !== 'permission' || pending.agentId !== agentId || !pending.chat?.ts) continue
-      void pending.chat.conn
-        .updateBlocks(
-          pending.chat.channel,
-          pending.chat.ts,
-          chatCardBlocks(
-            pending.chat,
-            buildPermissionResolvedCard(pending.params, 'Ask an Agent editor to allow it', undefined)
-          ),
-          'Permission requires an Agent editor',
-          true
-        )
-        .catch(() => {})
+      this.retireChatApprovalsOffCard(pending)
     }
     for (const pending of this.pendingElicits.values()) {
       if (pending.agentId !== agentId || !pending.approval || pending.surface !== 'chat' || !pending.ts) continue
-      pending.facet.settle(pending, elicitSettlement(pending.params, false, ELICIT_EDITOR_ONLY))
+      pending.facet.settle(pending, elicitSettlement(pending.params, false, ELICIT_CHAT_APPROVALS_OFF))
     }
   }
 
@@ -2116,6 +2141,7 @@ export class PermissionCoordinator {
       // Where the card actually LANDS, which is not always the turn's channel: a Discord thread is
       // a channel of its own, and a card edited against its parent is a card never edited at all.
       channel: facet.cardChannel?.(p) ?? p.plan.channel,
+      ...(p.plan.thread ? { thread: p.plan.thread } : {}),
       answerConv: p.plan.transcriptChannel,
       // An MCP approval keeps its durable record in `permission_requests` and its own console
       // surface, so it is not also a transcript card.
@@ -2175,7 +2201,12 @@ export class PermissionCoordinator {
       live.resolve({ action: 'cancel' })
       return await result
     }
-    if (live.surface === 'chat') live.ts = ts
+    if (live.surface === 'chat') {
+      live.ts = ts
+      // Approving in chat was turned off while it posted: retire it as the switch retired the others.
+      if (isApproval && !chatApprovalsAllowed(this.host.agents().get(agentId)))
+        facet.settle(live, elicitSettlement(params, false, ELICIT_CHAT_APPROVALS_OFF))
+    }
     return isApproval ? await this.trackHumanApprovalWait(p, result) : await result
   }
 
@@ -2735,7 +2766,10 @@ export class PermissionCoordinator {
     // A bot never answers an approval; one whose level was lowered or whose conversation closed takes no answer from chat.
     if (rec.approval && a.actor?.isBot) return
     if (rec.approval && !(rec.place && this.chatAnswerOpen(rec.agentId, rec.place))) {
-      if (rec.surface === 'chat') rec.facet.settle(rec, elicitSettlement(rec.params, false, ELICIT_EDITOR_ONLY))
+      // Refused, so it decided nothing: only the clicker is told, and the card stays as everyone else sees it.
+      this.host.logSessionAction('permission:elicit (refused)', rec.sessionId, a.actor)
+      if (rec.surface === 'chat' && a.actor)
+        rec.facet.tellPrivately?.(rec, a.actor.userId, approvalRefusalText(this.approvalConsoleLink(rec)))
       return
     }
     let res: CreateElicitationResponse
@@ -2771,12 +2805,14 @@ export class PermissionCoordinator {
       mark = 'answered'
       decisionText = rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : String(answer)
     }
+    // Who answered an approval, by name, which its settled card says beside the answer.
+    let decider: string | undefined
     if (rec.approval) {
-      // A chat approval's actor id is scoped the way its own surface scopes one (undefined where
-      // the surface's ids are already global), so a recorded resolver is unique either way.
+      if (a.actor && rec.surface === 'chat') decider = await this.chatDeciderName(rec, a.actor)
+      // A chat approval's actor id is scoped as its surface scopes one, so a recorded resolver is unique.
       const by =
         a.actor && rec.surface === 'chat'
-          ? { resolvedBy: surfaceActorId(rec, a.actor.userId), resolvedByName: a.actor.name ?? null }
+          ? { resolvedBy: surfaceActorId(rec, a.actor.userId), resolvedByName: decider ?? null }
           : undefined
       if (
         !(await this.resolveStoredPermissionRequest(
@@ -2794,8 +2830,24 @@ export class PermissionCoordinator {
     this.settleElicitRow(rec, outcome, answered)
     if (rec.surface === 'webchat') {
       this.emitWebchatElicitResolved(rec, a.requestId, outcome, answered)
-    } else this.settleChatCard(rec, a.requestId, false, { mark, text: decisionText, fallback: 'Input received' })
+    } else {
+      const text = decider ? `${decisionText} — ${decider}` : decisionText
+      this.settleChatCard(rec, a.requestId, false, { mark, text, fallback: 'Input received' })
+    }
     rec.resolve(res)
+  }
+
+  /** Who answered a chat card, by name: the click's own, else the surface's lookup; a failed lookup names nobody. */
+  private async chatDeciderName(
+    rec: PendingElicit & { surface: 'chat' },
+    actor: InteractionActor
+  ): Promise<string | undefined> {
+    if (actor.name) return actor.name
+    try {
+      return await rec.facet.nameOf?.(rec, actor.userId)
+    } catch {
+      return undefined
+    }
   }
 
   /**

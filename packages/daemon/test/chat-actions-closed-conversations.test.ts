@@ -89,6 +89,7 @@ async function world(opts: { level: 'talk' | 'approve' | 'settings'; core?: Core
   let ts = 0
   conn.postBlocks = vi.fn(async () => `ts-${++ts}`)
   conn.updateBlocks = vi.fn(async () => true)
+  conn.postEphemeral = vi.fn(async () => true)
   conn.workspaceId = () => 'T1'
   conn.openDirectMessage = vi.fn(async (user: string) => `D-${user}`)
   conn.isFullMember = vi.fn(async (user: string) => user !== 'U-GUEST')
@@ -202,7 +203,14 @@ describe('a closed conversation gets no approval card at any level', () => {
     await w.permissions.handlePermissionChoice({ requestId: id, optionId: 'allow', actor: { userId: 'U-ANY' } })
     expect(w.permissions.pendingApprovals.has(id)).toBe(true)
     expect(decided).not.toHaveBeenCalled()
-    expect(JSON.stringify(w.conn.updateBlocks.mock.calls.at(-1))).toContain('Ask an Agent editor to allow it')
+    // Only the clicker is told, and the card stays as everyone else sees it.
+    expect(w.conn.updateBlocks).not.toHaveBeenCalled()
+    expect(w.conn.postEphemeral).toHaveBeenCalledWith(
+      'C1',
+      'U-ANY',
+      expect.stringContaining('Only an Agent editor can answer this request'),
+      '100.1'
+    )
     await w.store.close()
   })
 

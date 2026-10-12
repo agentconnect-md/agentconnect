@@ -1147,6 +1147,157 @@ describe('what people can do in chat decides whether the conversation gets an ap
   })
 })
 
+describe('a refused approval click is told only to the clicker, and an answer names who gave it', () => {
+  const THREAD = '1700000000.000100'
+  const req = {
+    sessionId: 's1',
+    options: [
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+    ],
+    toolCall: { toolCallId: 'tc-1', title: 'Write example.txt' }
+  } as unknown as RequestPermissionRequest
+
+  /** A Slack turn at `approve` whose card connection records private notices and answers name lookups. */
+  function chatTurn(profile?: (id: string) => Promise<{ id: string; realName?: string; name?: string }>) {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { pending, posted, updated } = slackPending(daemon)
+    pending.plan.thread = THREAD
+    pending.outwardSessionId = 'session-out-1'
+    const notices: unknown[][] = []
+    pending.conn.postEphemeral = async (...args: unknown[]) => {
+      notices.push(args)
+      return true
+    }
+    pending.conn.getUserProfile = profile ?? (async (id: string) => ({ id, realName: 'Ada Example', name: 'ada' }))
+    ;(daemon as any).agents.set('agent-1', chatAgent('approve'))
+    ;(daemon as any).sessionLink = (id: string) => `https://console.example.test/sessions/${id}`
+    const permissions = (daemon as any).permissions
+    const store = (daemon as any).store
+    return { daemon, pending, permissions, store, posted, updated, notices }
+  }
+  const cardText = (blocks: unknown[]) => JSON.stringify(blocks)
+
+  async function permissionCard(t: ReturnType<typeof chatTurn>) {
+    const decided = t.permissions.onAcpPermission('agent-1', 's1', req)
+    await vi.waitFor(() => expect(t.posted).toHaveLength(1))
+    const [requestId] = t.permissions.pendingApprovals.keys()
+    await vi.waitFor(() => expect(t.permissions.pendingApprovals.get(requestId).chat.ts).toBe('ts-1'))
+    return { requestId: requestId as string, decided }
+  }
+
+  async function approvalCard(t: ReturnType<typeof chatTurn>) {
+    const decided = t.permissions.onAcpElicit('agent-1', 's1', elicitation('call-1'))
+    await vi.waitFor(() => expect(t.posted).toHaveLength(1))
+    const [requestId] = t.permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect(t.permissions.pendingElicits.get(requestId).ts).toBe('ts-1'))
+    return { requestId: requestId as string, decided }
+  }
+
+  it('answers a refused permission click privately and leaves the card live for everyone else', async () => {
+    const t = chatTurn()
+    const { requestId } = await permissionCard(t)
+    ;(t.daemon as any).agents.set('agent-1', chatAgent('talk'))
+    await t.permissions.handlePermissionChoice({ requestId, optionId: 'allow', actor: { userId: 'U-BOB' } })
+    expect(t.updated).toEqual([])
+    expect(t.notices).toEqual([['test', 'U-BOB', expect.any(String), THREAD]])
+    const text = t.notices[0]![2] as string
+    expect(text).toContain('Only an Agent editor can answer this request.')
+    expect(text).toContain('/sessions/session-out-1')
+    expect(t.permissions.pendingApprovals.has(requestId)).toBe(true)
+  })
+
+  it('answers a refused tool-approval click privately and leaves the card live for everyone else', async () => {
+    const t = chatTurn()
+    const { requestId } = await approvalCard(t)
+    ;(t.daemon as any).agents.set('agent-1', chatAgent('talk'))
+    await t.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0), actor: { userId: 'U-BOB' } })
+    expect(t.updated).toEqual([])
+    expect(t.notices).toEqual([['test', 'U-BOB', expect.stringContaining('Only an Agent editor'), THREAD]])
+    expect(t.notices[0]![2]).toContain('/sessions/session-out-1')
+    expect(t.permissions.pendingElicits.has(requestId)).toBe(true)
+  })
+
+  it('retires every card for everyone when approving in chat is turned off, and says so', async () => {
+    const t = chatTurn()
+    await permissionCard(t)
+    t.posted.length = 0
+    await approvalCard(t)
+    ;(t.daemon as any).agents.set('agent-1', chatAgent('talk'))
+    t.permissions.disableChatPermissionSurfaces('agent-1')
+    await vi.waitFor(() => expect(t.updated).toHaveLength(2))
+    for (const blocks of t.updated) expect(cardText(blocks)).toContain('Approving in chat was turned off.')
+    expect(t.permissions.pendingApprovals.size).toBe(1)
+    expect(t.permissions.pendingElicits.size).toBe(1)
+  })
+
+  it('retires a card that finished posting after approving in chat was turned off', async () => {
+    const t = chatTurn()
+    let post!: (ts: string) => void
+    t.pending.conn.postBlocks = (_c: string, blocks: unknown[]) => {
+      t.posted.push(blocks)
+      return new Promise<string>((resolve) => (post = resolve))
+    }
+    void t.permissions.onAcpPermission('agent-1', 's1', req)
+    await vi.waitFor(() => expect(t.posted).toHaveLength(1))
+    ;(t.daemon as any).agents.set('agent-1', chatAgent('talk'))
+    t.permissions.disableChatPermissionSurfaces('agent-1')
+    post('ts-1')
+    await vi.waitFor(() => expect(t.updated).toHaveLength(1))
+    expect(cardText(t.updated[0]!)).toContain('Approving in chat was turned off.')
+  })
+
+  it('names the member a relayed permission click came from, looked up by id', async () => {
+    const t = chatTurn()
+    const { requestId, decided } = await permissionCard(t)
+    await t.permissions.handlePermissionChoice({ requestId, optionId: 'allow', actor: { userId: 'U-ADA' } })
+    await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    expect(t.store.resolvePermissionRequest).toHaveBeenCalledWith('agent-1', requestId, 'allowed', expect.any(Number), {
+      resolvedBy: 'slack:T1:U-ADA',
+      resolvedByName: 'Ada Example'
+    })
+    await vi.waitFor(() => expect(t.updated).toHaveLength(1))
+    expect(cardText(t.updated[0]!)).toContain('Allow — Ada Example')
+  })
+
+  it('names the member a relayed tool-approval click came from, looked up by id', async () => {
+    const t = chatTurn(async (id) => ({ id, name: 'ada' }))
+    const { requestId, decided } = await approvalCard(t)
+    await t.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0), actor: { userId: 'U-ADA' } })
+    await expect(decided).resolves.toMatchObject({ action: 'accept' })
+    expect(t.store.resolvePermissionRequest).toHaveBeenCalledWith('agent-1', requestId, 'allowed', expect.any(Number), {
+      resolvedBy: 'slack:T1:U-ADA',
+      resolvedByName: 'ada'
+    })
+    await vi.waitFor(() => expect(t.updated).toHaveLength(1))
+    expect(cardText(t.updated[0]!)).toContain('— ada')
+  })
+
+  it('still decides when the name lookup fails, naming nobody', async () => {
+    const t = chatTurn(async () => {
+      throw new Error('users.info unavailable')
+    })
+    const { requestId, decided } = await permissionCard(t)
+    await t.permissions.handlePermissionChoice({ requestId, optionId: 'deny', actor: { userId: 'U-ADA' } })
+    await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+    expect(t.store.resolvePermissionRequest).toHaveBeenCalledWith('agent-1', requestId, 'denied', expect.any(Number), {
+      resolvedBy: 'slack:T1:U-ADA',
+      resolvedByName: null
+    })
+
+    const approval = chatTurn(async () => {
+      throw new Error('users.info unavailable')
+    })
+    const card = await approvalCard(approval)
+    await approval.permissions.handleElicitChoice({
+      requestId: card.requestId,
+      value: elicitOptionToken(0),
+      actor: { userId: 'U-ADA' }
+    })
+    await expect(card.decided).resolves.toMatchObject({ action: 'accept' })
+  })
+})
+
 describe('a Slack card offers every option or none', () => {
   // The seven-option enum of the issue: five buttons went out, the reader never saw the last two,
   // and whichever they picked came back as `accept` on the whole question.

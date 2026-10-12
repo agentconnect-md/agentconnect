@@ -385,7 +385,7 @@ import {
   platformIds,
   platformIntegrationConfig
 } from './platforms/integration-config.js'
-import type { InteractionActor } from './platforms/contract.js'
+import type { ChatRefusal, InteractionActor } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
 import {
   rootPostNeedsThreadMaterialization,
@@ -2361,6 +2361,7 @@ export class Daemon {
       },
       replyConnFor: (agentId, integrationId) => this.commandConnFor(agentId, integrationId),
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
+      agentLink: (agentId) => this.agentLink(agentId),
       outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       sessionLinkSource: (platform, integrationId) => this.sessionLinkSource(platform, integrationId),
       threadOwner: async (channel, thread, transportScope) =>
@@ -11525,9 +11526,10 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: false, reason: 'stale' }
     }
 
-    // The relay forwards the tapping user when it knows one; an older relay omits it
-    // and the action records as an unknown actor rather than a guessed one.
+    // An older relay omits the tapping user, who is then recorded as unknown rather than guessed.
     const actor = msg.userId ? { userId: msg.userId } : undefined
+    // A refused settings change is told only to whoever made it, in its session's conversation.
+    let refusal: ChatRefusal | undefined
     if (payload.kind === 'open-config') {
       const privateMetadata = encodeSharedSlackStatusTarget({
         agentId: msg.agentId,
@@ -11538,28 +11540,28 @@ export class Daemon {
       // connection catches/logs Web API failures; rd/ack is only the relay receipt.
       void conn.openStatusModal(payload.triggerId, msg.sessionKey, privateMetadata)
     } else if (payload.kind === 'set-model') {
-      await this.commands.handleStatusAction({
+      refusal = await this.commands.handleStatusAction({
         kind: payload.kind,
         sessionKey: msg.sessionKey,
         model: payload.model,
         actor
       })
     } else if (payload.kind === 'set-effort') {
-      await this.commands.handleStatusAction({
+      refusal = await this.commands.handleStatusAction({
         kind: payload.kind,
         sessionKey: msg.sessionKey,
         effort: payload.effort,
         actor
       })
     } else if (payload.kind === 'set-permission-mode') {
-      await this.commands.handleStatusAction({
+      refusal = await this.commands.handleStatusAction({
         kind: payload.kind,
         sessionKey: msg.sessionKey,
         permissionMode: payload.permissionMode,
         actor
       })
     } else if (payload.kind === 'set-fast') {
-      await this.commands.handleStatusAction({
+      refusal = await this.commands.handleStatusAction({
         kind: payload.kind,
         sessionKey: msg.sessionKey,
         fastMode: payload.fastMode,
@@ -11585,6 +11587,7 @@ export class Daemon {
     } else {
       await this.commands.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
     }
+    if (refusal && actor) void conn.postEphemeral(refusal.channel, actor.userId, refusal.text, refusal.thread)
     return { msgId: msg.msgId, accepted: true }
   }
 
