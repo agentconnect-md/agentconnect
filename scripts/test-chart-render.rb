@@ -779,4 +779,54 @@ abort('a disabled Source Cache must give the control plane no transfer bucket') 
   abort("Source Cache refusal must say #{expected}:\n#{refused}") unless refused.include?(expected)
 end
 
+# ── Bundled store: absent until it has a host, then members and the Control Plane use it through the client Secret alone ──
+store_name = 'example-agentconnect-source-cache-store'
+store_docs_of = ->(docs) { docs.select { |doc| doc.dig('metadata', 'name').to_s.start_with?(store_name) } }
+abort('the bundled store must not render without a host') unless store_docs_of.call(documents).empty? && store_docs_of.call(defaults_documents).empty?
+store_rendered, store_error, store_status = Open3.capture3(
+  *command, '--set', 'sourceCache.store.host=objects.example.test', '--set', 'sourceCache.prefix=agentconnect',
+  '--set', 'publicUrl=https://console.example.test'
+)
+abort("helm template (bundled store) failed:\n#{store_error}") unless store_status.success?
+store_documents = YAML.load_stream(store_rendered).compact
+store_kinds = store_docs_of.call(store_documents).map { |doc| [doc['kind'], doc.dig('metadata', 'name')] }.sort
+abort("unexpected bundled store objects: #{store_kinds}") unless store_kinds == [
+  ['HTTPRoute', store_name], ['Job', "#{store_name}-setup"], ['Secret', "#{store_name}-client"],
+  ['Secret', "#{store_name}-root"], ['Service', store_name], ['StatefulSet', store_name]
+].sort
+store_bucket = {
+  'version' => 1, 'endpoint' => 'https://objects.example.test', 'region' => 'us-east-1',
+  'bucket' => 'agentconnect-source-cache', 'prefix' => 'agentconnect', 'forcePathStyle' => true,
+  'credentials' => {
+    'source' => 'static', 'dir' => '/var/run/ac-source-cache',
+    'accessKeyIdKey' => 'AWS_ACCESS_KEY_ID', 'secretAccessKeyKey' => 'AWS_SECRET_ACCESS_KEY'
+  }
+}
+store_pod, store_member = pool_member.call(store_documents)
+store_member_doc = JSON.parse(store_member.fetch('env').find { |item| item['name'] == 'AC_SOURCE_CACHE' }&.fetch('value') ||
+                              abort('the bundled store must turn the Source Cache on for members'))
+abort("unexpected bundled store member document: #{store_member_doc}") unless store_member_doc.reject { |k, _| k == 'limits' } == store_bucket
+store_cp_pod, store_cp = control_plane_of.call(store_documents)
+abort("unexpected bundled store transfer document: #{transfer_doc_of.call(store_cp)}") unless
+  transfer_doc_of.call(store_cp)&.reject { |k, _| k == 'limits' } == store_bucket
+client_volume = { 'name' => 'source-cache-credentials', 'secret' => { 'secretName' => "#{store_name}-client", 'defaultMode' => 0o400 } }
+abort('members and the Control Plane must mount the store client Secret') unless
+  store_pod.fetch('volumes').include?(client_volume) && store_cp_pod.fetch('volumes').include?(client_volume)
+abort('only the store and its setup Job may read the root Secret') unless
+  store_documents.select { |doc| doc.to_json.include?("#{store_name}-root\"") && doc['kind'] != 'Secret' }
+                 .map { |doc| doc['kind'] }.sort == %w[Job StatefulSet]
+store_route = store_documents.find { |doc| doc['kind'] == 'HTTPRoute' && doc.dig('metadata', 'name') == store_name }
+abort('the store route must serve its host from the store Service') unless
+  store_route.dig('spec', 'hostnames') == ['objects.example.test'] &&
+  store_route.dig('spec', 'rules', 0, 'backendRefs') == [{ 'name' => store_name, 'port' => 9000 }]
+store_set = store_documents.find { |doc| doc['kind'] == 'StatefulSet' && doc.dig('metadata', 'name') == store_name }
+store_cors = store_set.dig('spec', 'template', 'spec', 'containers', 0, 'env').find { |item| item['name'] == 'MINIO_API_CORS_ALLOW_ORIGIN' }
+abort('the store must admit the console origin') unless store_cors && store_cors['value'] == 'https://console.example.test'
+# An external bucket takes precedence over the bundled store.
+external_rendered, external_error, external_status = Open3.capture3(*source_cache_base, '--set', 'sourceCache.store.host=objects.example.test')
+abort("helm template (external over store) failed:\n#{external_error}") unless external_status.success?
+abort('an external bucket must leave the bundled store unrendered') unless store_docs_of.call(YAML.load_stream(external_rendered).compact).empty?
+_, store_refused, store_refused_status = Open3.capture3(*command, '--set', 'sourceCache.store.host=https://objects.example.test')
+abort('a store host with a scheme must be refused') if store_refused_status.success? || !store_refused.include?('bare hostname')
+
 puts 'chart render contract: ok'

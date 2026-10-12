@@ -100,14 +100,56 @@ kubectl -n agentconnect port-forward deployment/agentconnect-setup-server 8091:8
 The full self-hosting walkthrough (authentication, public URLs, provider apps, image
 pinning) is the [AgentConnect OSS guide](https://www.agentconnect.md/docs/self-hosting).
 
-## Source Cache (optional)
+## Source Cache
 
 The Source Cache lets a new sandbox pod start its Git clone from a bundle in an
 S3-compatible bucket rather than fetching the whole repository from its origin
-([design](../../docs/designs/source-cache.md)). It is off by default. The `sourceCache.*`
-values are rendered into the daemon-pool members only, never into the runtime
-SandboxTemplate or the orphan reconciler. Sandbox pods only ever receive short-lived
-presigned URLs, each for one object and one verb.
+([design](../../docs/designs/source-cache.md)). The bucket settings reach the daemon-pool
+members only, never the runtime SandboxTemplate or the orphan reconciler. Sandbox pods
+only ever receive short-lived presigned URLs, each for one object and one verb.
+
+The chart turns the Source Cache on with a bundled store once `sourceCache.store.host` is
+set. To use an external bucket instead, set `sourceCache.enabled: true` and the bucket
+values described under [External bucket](#external-bucket). An external bucket takes
+precedence over the bundled store.
+
+### Bundled store
+
+`sourceCache.store` (on by default) runs one MinIO pod on a PersistentVolumeClaim. The
+image is built from the MinIO commit CI tests the signer against
+([`docker/minio.Dockerfile`](../../docker/minio.Dockerfile)), because MinIO no longer
+publishes images. Presigned URLs must be `https://`, so the store is reached through the
+Gateway on its own host:
+
+```yaml
+publicUrl: https://console.example.test
+sourceCache:
+  store:
+    host: objects.example.test
+```
+
+Provision that host's DNS, edge TLS and Gateway listener the same way as `apiHost`. Pool
+members, the Control Plane, sandbox pods and browsers all use `https://<host>`. The edge
+must pass request bodies up to `limits.maxBundleBytes` and must keep the `Host` header,
+because every signature covers it.
+
+The chart generates two Secrets and reuses their values on upgrade:
+
+- `<release>-source-cache-store-root` holds the MinIO root user. Only MinIO and the setup
+  Job read it.
+- `<release>-source-cache-store-client` holds a client limited to the grants listed
+  below. Members and the Control Plane mount it as their bucket credentials.
+
+A post-install and post-upgrade Job creates the bucket, applies the
+[lifecycle rules](#bucket-lifecycle-rules), creates the client and attaches its policy.
+It is safe to run repeatedly. MinIO admits the `publicUrl` origin for browser CORS.
+Members check the lifecycle rules at start. A member that started before the Job's first
+run writes no bundles until its next check, up to 6 hours later. Restart the pool after the
+first install to start writing at once.
+
+### External bucket
+
+The bucket values below apply when `sourceCache.enabled` is true.
 
 The endpoint must be `https://`, because the sandbox shim admits only an https bundle URL.
 Leave `endpoint` empty to use AWS's regional S3 endpoint.
@@ -160,9 +202,9 @@ Credentials come from one of two sources:
   ```
 
 Set `forcePathStyle: true` for MinIO and most self-hosted stores. A dotted bucket name or
-an IP-address endpoint uses path-style addressing anyway. MinIO serves as a test fixture,
-not a recommended store: its community edition is archived. AWS S3 has not yet been
-verified against this signer (design §14).
+an IP-address endpoint uses path-style addressing anyway. MinIO's community edition is
+archived, so the bundled store suits single-cluster installs rather than large production
+fleets. AWS S3 has not yet been verified against this signer (design §14).
 
 | Value                        | Default | Meaning                                                   |
 | ---------------------------- | ------- | --------------------------------------------------------- |
@@ -179,9 +221,10 @@ verified against this signer (design §14).
 
 Every member sweeps the cache: it deletes abandoned uploads, retags bundles no
 pointer names `ac-cache=unreferenced`, and drops pointers unread for
-`limits.unreadPointerDays`. The bucket must then expire the tagged objects. Neither the
-chart nor the daemon writes these rules, because `PutBucketLifecycleConfiguration`
-replaces the bucket's whole configuration; apply them once yourself. Scope them to
+`limits.unreadPointerDays`. The bucket must then expire the tagged objects. The bundled
+store's setup Job writes these rules into its own bucket. For an external bucket, neither
+the chart nor the daemon writes them, because `PutBucketLifecycleConfiguration` replaces
+the bucket's whole configuration; apply them once yourself. Scope them to
 `<prefix>/src/` and never to `snapshots/`. For the prefix `agentconnect`, save this as
 `source-cache-lifecycle.json`:
 

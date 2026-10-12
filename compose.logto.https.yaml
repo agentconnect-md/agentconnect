@@ -30,6 +30,20 @@ services:
       PUBLIC_WEB_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
       PUBLIC_RELAY_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/relay'
       CORS_ORIGIN: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
+      # Console file transfer through the bundled object store, signed for its Caddy origin (docs/designs/source-cache-file-transfer.md §7).
+      AC_FILE_TRANSFER: '{"version":1,"endpoint":"https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_OBJECT_STORE_HTTPS_PORT:?set AGENTCONNECT_OBJECT_STORE_HTTPS_PORT before enabling HTTPS}","region":"us-east-1","bucket":"agentconnect","forcePathStyle":true,"credentials":{"source":"static","dir":"/run/secrets","accessKeyIdKey":"object_store_access_key_id","secretAccessKeyKey":"object_store_secret_access_key"}}'
+      # The Control Plane reads the bucket through Caddy, so it trusts Caddy's internal root.
+      NODE_EXTRA_CA_CERTS: /caddy-root/root.crt
+    depends_on:
+      object-store-setup:
+        condition: service_completed_successfully
+      caddy-ca:
+        condition: service_completed_successfully
+    secrets:
+      - object_store_access_key_id
+      - object_store_secret_access_key
+    volumes:
+      - caddy_root_ca:/caddy-root:ro
 
   relay:
     ports: !reset []
@@ -58,21 +72,81 @@ services:
       ADMIN_ENDPOINT: 'http://localhost:${AGENTCONNECT_LOGTO_ADMIN_PORT:-3002}'
       TRUST_PROXY_HEADER: 'true'
 
+  # S3-compatible store for console file transfers. Reachable only through Caddy's HTTPS origin, because signed URLs must be https://.
+  object-store:
+    image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/minio:${AGENTCONNECT_MINIO_VERSION:-RELEASE.2025-10-15T17-29-55Z}
+    platform: linux/amd64
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: docker/minio.Dockerfile
+    environment:
+      MINIO_ROOT_USER: agentconnect-admin
+      MINIO_ROOT_PASSWORD: '${AGENTCONNECT_OBJECT_STORE_ROOT_PASSWORD:?set AGENTCONNECT_OBJECT_STORE_ROOT_PASSWORD before enabling HTTPS}'
+      # Browsers PUT and GET signed URLs straight from the console origin.
+      MINIO_API_CORS_ALLOW_ORIGIN: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
+      MINIO_BROWSER: 'off'
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:9000/minio/health/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - object-store-data:/data
+    restart: unless-stopped
+
+  # Creates the bucket, its lifecycle rules and the Control Plane's scoped client; safe to rerun on every start.
+  object-store-setup:
+    image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/minio:${AGENTCONNECT_MINIO_VERSION:-RELEASE.2025-10-15T17-29-55Z}
+    platform: linux/amd64
+    pull_policy: missing
+    command: ['ac-object-store-setup']
+    depends_on:
+      object-store:
+        condition: service_healthy
+    environment:
+      AC_STORE_URL: http://object-store:9000
+      AC_STORE_BUCKET: agentconnect
+      MINIO_ROOT_USER: agentconnect-admin
+      MINIO_ROOT_PASSWORD: '${AGENTCONNECT_OBJECT_STORE_ROOT_PASSWORD:?set AGENTCONNECT_OBJECT_STORE_ROOT_PASSWORD before enabling HTTPS}'
+      AC_STORE_CLIENT_ACCESS_KEY: '${AGENTCONNECT_OBJECT_STORE_ACCESS_KEY:?set AGENTCONNECT_OBJECT_STORE_ACCESS_KEY before enabling HTTPS}'
+      AC_STORE_CLIENT_SECRET_KEY: '${AGENTCONNECT_OBJECT_STORE_SECRET_KEY:?set AGENTCONNECT_OBJECT_STORE_SECRET_KEY before enabling HTTPS}'
+    restart: 'no'
+
+  # Publishes Caddy's internal root certificate, and never its key, for the Control Plane to trust at process start.
+  caddy-ca:
+    image: caddy:2-alpine
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        root=/data/caddy/pki/authorities/local/root.crt
+        for _ in $$(seq 60); do
+          if [ -s "$$root" ]; then
+            install -m 0644 "$$root" /caddy-root/root.crt
+            exit 0
+          fi
+          sleep 1
+        done
+        echo 'Caddy did not create its internal root CA' >&2
+        exit 1
+    depends_on:
+      caddy:
+        condition: service_started
+    volumes:
+      - caddy_data:/data:ro
+      - caddy_root_ca:/caddy-root
+    restart: 'no'
+
+  # Caddy starts first so the Control Plane can trust its root; its upstreams answer 502 until they are healthy.
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    depends_on:
-      web:
-        condition: service_healthy
-      control-plane:
-        condition: service_healthy
-      relay:
-        condition: service_healthy
-      logto:
-        condition: service_healthy
     ports:
       - '${AGENTCONNECT_HTTPS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_HTTPS_PORT}:443'
       - '${AGENTCONNECT_HTTPS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_LOGTO_HTTPS_PORT}:8443'
+      - '${AGENTCONNECT_HTTPS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_OBJECT_STORE_HTTPS_PORT:?set AGENTCONNECT_OBJECT_STORE_HTTPS_PORT before enabling HTTPS}:9443'
       - '127.0.0.1:${AGENTCONNECT_LOGTO_ADMIN_PORT:-3002}:3002'
       - '127.0.0.1:${AGENTCONNECT_SETUP_PORT:-8091}:8091'
     configs:
@@ -117,6 +191,12 @@ configs:
           }
       }
 
+      # The S3 API keeps the client's Host header, which every SigV4 signature covers.
+      https://${AGENTCONNECT_HTTPS_HOST}:9443 {
+          tls internal
+          reverse_proxy object-store:9000
+      }
+
       http://:3002 {
           reverse_proxy logto:3002
       }
@@ -125,6 +205,14 @@ configs:
           reverse_proxy setup-server:8091
       }
 
+secrets:
+  object_store_access_key_id:
+    environment: AGENTCONNECT_OBJECT_STORE_ACCESS_KEY
+  object_store_secret_access_key:
+    environment: AGENTCONNECT_OBJECT_STORE_SECRET_KEY
+
 volumes:
   caddy_data:
   caddy_runtime_config:
+  caddy_root_ca:
+  object-store-data:

@@ -1,0 +1,236 @@
+{{- /* Bundled Source Cache store (chart README "Bundled store"): MinIO, its setup Job, the client and root Secrets, and the https route. */ -}}
+{{- if include "agentconnect.sourceCacheStore" . }}
+{{- $fullname := include "agentconnect.fullname" . }}
+{{- $sourceCache := .Values.sourceCache }}
+{{- $store := $sourceCache.store }}
+{{- $name := printf "%s-source-cache-store" $fullname }}
+{{- $image := printf "%s/%s:%s" .Values.image.registry $store.image $store.tag }}
+{{- $rootSecret := printf "%s-root" $name }}
+{{- $clientSecret := printf "%s-client" $name }}
+{{- /* Generated once and read back on upgrade, so the keys stay stable across releases. */}}
+{{- $rootPassword := randAlphaNum 40 }}
+{{- with lookup "v1" "Secret" .Release.Namespace $rootSecret }}
+{{- $rootPassword = index .data "MINIO_ROOT_PASSWORD" | b64dec }}
+{{- end }}
+{{- $clientKey := randAlphaNum 40 }}
+{{- with lookup "v1" "Secret" .Release.Namespace $clientSecret }}
+{{- $clientKey = index .data "AWS_SECRET_ACCESS_KEY" | b64dec }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $rootSecret }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store") | nindent 4 }}
+type: Opaque
+data:
+  MINIO_ROOT_USER: {{ "agentconnect-admin" | b64enc | quote }}
+  MINIO_ROOT_PASSWORD: {{ $rootPassword | b64enc | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $clientSecret }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store") | nindent 4 }}
+type: Opaque
+data:
+  AWS_ACCESS_KEY_ID: {{ "agentconnect-source-cache" | b64enc | quote }}
+  AWS_SECRET_ACCESS_KEY: {{ $clientKey | b64enc | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store") | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "source-cache-store") | nindent 4 }}
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store") | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "source-cache-store") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store") | nindent 8 }}
+      annotations:
+        # A rotated root password only takes effect when MinIO restarts.
+        checksum/root: {{ $rootPassword | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: minio
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ['minio', 'server', '/data']
+          ports:
+            - name: s3
+              containerPort: 9000
+          envFrom:
+            - secretRef:
+                name: {{ $rootSecret }}
+          env:
+            # Browsers PUT and GET signed URLs straight from the console origin.
+            - name: MINIO_API_CORS_ALLOW_ORIGIN
+              value: {{ .Values.publicUrl | trimSuffix "/" | default "*" | quote }}
+            - name: MINIO_BROWSER
+              value: 'off'
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: s3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ['ALL']
+          resources:
+            {{- toYaml $store.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        {{- with $store.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $store.persistence.size | quote }}
+---
+# Idempotent bucket setup after every install and upgrade; members re-read the lifecycle rules at start and every 6 hours.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-setup
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store-setup") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    # Kept after it finishes so its log stays readable until the next upgrade replaces it.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store-setup") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: setup
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ['ac-object-store-setup']
+          envFrom:
+            - secretRef:
+                name: {{ $rootSecret }}
+          env:
+            - name: AC_STORE_URL
+              value: {{ printf "http://%s:9000" $name | quote }}
+            - name: AC_STORE_BUCKET
+              value: {{ $store.bucket | quote }}
+            - name: AC_STORE_PREFIX
+              value: {{ $sourceCache.prefix | default "" | quote }}
+            - name: AC_STORE_CLIENT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $clientSecret }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: AC_STORE_CLIENT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $clientSecret }}
+                  key: AWS_SECRET_ACCESS_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ['ALL']
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+{{- if .Values.route.enabled }}
+---
+# The store's https:// origin: TLS terminates at the edge, and the S3 API keeps the client's Host, which every signature covers.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "source-cache-store") | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.route.gateway.name }}
+      namespace: {{ .Values.route.gateway.namespace }}
+      sectionName: {{ .Values.route.gateway.sectionName }}
+  hostnames:
+    - {{ $store.host | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ $name }}
+          port: 9000
+{{- end }}
+{{- end }}

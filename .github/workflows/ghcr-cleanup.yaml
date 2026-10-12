@@ -25,7 +25,7 @@ jobs:
       - name: Prune release candidates and unreferenced manifests
         uses: dataaxiom/ghcr-cleanup-action@v1.2.2
         with:
-          # prisma-cli is pushed by hand under the tag compose.yaml pins, so it is left out.
+          # prisma-cli and minio are pushed by hand under the tags Compose and the chart pin, so they are left out.
           packages: control-plane,web,relay,daemon,memory-plugin-mem0,mem0-server,runtime-sandbox,runtime-sandbox-full,charts/agentconnect
           use-regex: true
           # Kept forever: stable releases, latest, rc, build caches and the digest-pinned runtime bases; other tags age out.
