@@ -181,6 +181,71 @@ describe('assistant mode', () => {
     expect(fixed.json()).toMatchObject({ assistantMode: ON })
   })
 
+  // assistant-mode.md §1.8: background work nobody watches should not stop for approval, so turning on defaults the mode.
+  it("moves an asking permission mode to the runtime's auto mode as it turns on, and keeps later choices", async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      daemonId: DAEMON,
+      runtime: 'claude-acp',
+      runtimeOverrides: { permissionMode: 'default', chatActions: 'talk', model: 'sonnet' }
+    })
+    const { app, spy } = withSpy()
+    const overrides = async () =>
+      (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).runtimeOverrides as Record<string, unknown>
+
+    const on = await patch(app, agentId, { assistantMode: ON })
+    expect(on.statusCode, on.body).toBe(200)
+    expect(on.json()).toMatchObject({ assistantMode: ON, permissionMode: 'auto' })
+    expect(await overrides()).toEqual({ permissionMode: 'auto', chatActions: 'talk', model: 'sonnet' })
+    expect(spy.upserts.at(-1)?.spec).toMatchObject({ permissionMode: 'auto', assistantMode: ON })
+
+    // The editor's later choice sticks while the mode stays on.
+    expect((await patch(app, agentId, { permissionMode: 'default' })).json()).toMatchObject({
+      permissionMode: 'default'
+    })
+    const edited = await patch(app, agentId, { assistantMode: { ...ON, instructions: 'Keep it short.' } })
+    expect(edited.json()).toMatchObject({ permissionMode: 'default' })
+
+    // Switching off keeps the mode; switching on again defaults it again.
+    expect((await patch(app, agentId, { assistantMode: { enabled: false } })).json()).toMatchObject({
+      permissionMode: 'default'
+    })
+    expect((await patch(app, agentId, { assistantMode: ON })).json()).toMatchObject({ permissionMode: 'auto' })
+  })
+
+  it('keeps an unattended mode and a mode set in the same edit, and defaults an unset one', async () => {
+    const { app } = withSpy()
+    const seeded = async (runtimeOverrides?: Record<string, unknown>) => {
+      const id = randomUUID()
+      await seedAgent(prisma, id, { runtime: 'claude-acp', ...(runtimeOverrides ? { runtimeOverrides } : {}) })
+      return id
+    }
+
+    const fullAccess = await seeded({ permissionMode: 'bypassPermissions' })
+    expect((await patch(app, fullAccess, { assistantMode: ON })).json()).toMatchObject({
+      permissionMode: 'bypassPermissions'
+    })
+    const denies = await seeded({ permissionMode: 'dontAsk' })
+    expect((await patch(app, denies, { assistantMode: ON })).json()).toMatchObject({ permissionMode: 'dontAsk' })
+    const chosen = await seeded({ permissionMode: 'plan' })
+    expect((await patch(app, chosen, { assistantMode: ON, permissionMode: 'acceptEdits' })).json()).toMatchObject({
+      permissionMode: 'acceptEdits'
+    })
+    const unset = await seeded()
+    const unsetOn = await patch(app, unset, { assistantMode: ON })
+    expect(unsetOn.statusCode, unsetOn.body).toBe(200)
+    expect(unsetOn.json()).toMatchObject({ permissionMode: 'auto' })
+
+    // A refused switch changes nothing.
+    const codex = randomUUID()
+    await seedAgent(prisma, codex, { runtime: 'codex-acp', runtimeOverrides: { permissionMode: 'read-only' } })
+    expect((await patch(app, codex, { assistantMode: ON })).statusCode).toBe(409)
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: codex } })).runtimeOverrides as object).toEqual({
+      permissionMode: 'read-only'
+    })
+  })
+
   it('keeps the definition admitted while it is on, but never refuses switching it off', async () => {
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { runtime: 'claude-acp' })

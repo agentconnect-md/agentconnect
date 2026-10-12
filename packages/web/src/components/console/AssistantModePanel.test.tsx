@@ -88,6 +88,7 @@ async function mount(props: Partial<Parameters<typeof AssistantModePanel>[0]> = 
         runtime="claude-acp"
         memoryProvider="managed"
         placement="daemon:edge"
+        permissionMode=""
         askEveryTime={false}
         {...props}
       />
@@ -252,5 +253,21 @@ describe('AssistantModePanel', () => {
     const host = await mount({ askEveryTime: true, assistantMode: { enabled: true, responsibleUserId: 'usr_1' } })
     expect(host.querySelector('[data-assistant-mode-ask-warning]')?.textContent).toContain('wait for approval')
     expect(host.textContent).toContain('Responsible: Ada')
+  })
+
+  // assistant-mode.md §1.8: turning on moves an asking mode to the runtime's auto mode, so only a kept mode warns first.
+  it('warns while turning on only when the runtime keeps the asking mode', async () => {
+    const turningOn = async (props: Partial<Parameters<typeof AssistantModePanel>[0]>) => {
+      const host = await mount({ askEveryTime: true, permissionMode: 'default', ...props })
+      await clickButton(host, 'Edit')
+      await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click())
+      const warned = host.querySelector('[data-assistant-mode-ask-warning]') !== null
+      await act(async () => root?.unmount())
+      root = undefined
+      return warned
+    }
+    expect(await turningOn({})).toBe(false)
+    expect(await turningOn({ permissionMode: '' })).toBe(false)
+    expect(await turningOn({ runtime: 'example-runtime' })).toBe(true)
   })
 })
