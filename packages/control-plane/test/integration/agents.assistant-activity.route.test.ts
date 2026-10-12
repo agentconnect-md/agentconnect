@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
   ASSISTANT_ACTIVITY_FEATURE,
+  ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
   SUBSESSION_COORDINATE_PREFIX,
   TASK_LIST_FEATURE,
+  type AssistantActivityDraft,
   type AssistantActivityPermission,
   type AssistantSubsessionStopResult,
   type AssistantActivityReadReq,
@@ -33,7 +35,12 @@ const CAPABILITIES = {
   platforms: ['slack'],
   runtimes: ['claude'],
   acp: true,
-  features: [ASSISTANT_ACTIVITY_FEATURE, ASSISTANT_DRAFT_DECISION_FEATURE, ASSISTANT_SUBSESSION_PANEL_FEATURE]
+  features: [
+    ASSISTANT_ACTIVITY_FEATURE,
+    ASSISTANT_DRAFT_DECISION_FEATURE,
+    ASSISTANT_SUBSESSION_PANEL_FEATURE,
+    ASSISTANT_CONVERSATION_PROPOSALS_FEATURE
+  ]
 }
 const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
@@ -63,6 +70,8 @@ class ActivitySpy {
   nextCursor: string | null = null
   /** Unset: the daemon predates listing sub-sessions' permission requests. */
   permissions: AssistantActivityPermission[] | undefined
+  /** What a read narrowed to one conversation answers. */
+  conversationDrafts: AssistantActivityDraft[] = []
   stopResult: AssistantSubsessionStopResult = 'stopped'
   found = true
   decision: Omit<Extract<AssistantActivityWriteResult, { operation: 'decide-draft' }>, 'operation'> = {
@@ -102,6 +111,7 @@ class ActivitySpy {
             }
           : { operation: 'subsessions', subsessions: this.subsessions, truncated: false }
       case 'drafts':
+        if (req.conversation) return { operation: 'drafts', drafts: this.conversationDrafts, truncated: false }
         return {
           operation: 'drafts',
           drafts: [
@@ -721,5 +731,220 @@ describe('deciding a draft from the console', () => {
       details: { reason: 'assistant-mode-off' }
     })
     expect((await decide(app(control), 'approve')).json()).toMatchObject({ code: 'ASSISTANT_MODE_OFF' })
+  })
+})
+
+/** A proposal as the daemon lists it, for an item taken in `channel` of `platform`. */
+const proposalIn = (id: string, platform: string, channel: string): AssistantActivityDraft => ({
+  id,
+  kind: 'task',
+  target: {
+    platform,
+    integrationId: platform === 'webchat' ? null : 'int-1',
+    channel,
+    thread: null,
+    name: null,
+    dm: false,
+    external: false
+  },
+  text: 'Rebase PR #12 onto main and push.',
+  offerAlways: false,
+  approver: null,
+  proposal: {
+    sentence: 'I want to rebase PR #12 because it conflicts with main.',
+    why: 'The check found a merge conflict.',
+    itemId: 'item-1',
+    itemTitle: 'Land PR #12'
+  },
+  inConversation: platform === 'webchat',
+  createdAt: '2026-10-09T09:00:00.000Z',
+  expiresAt: '2026-10-10T09:00:00.000Z'
+})
+
+/** A webchat conversation only its owner may continue, one open to the organization, and sessions that are not webchat conversations of the agent. */
+async function seedWebchat(owner: string) {
+  const [mine, team, slack, sub, foreign] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()]
+  const webchat = { daemonId: DAEMON, platform: 'webchat' }
+  await seedSessionMeta(prisma, mine, AGENT, {
+    ...webchat,
+    channel: 'conv-mine',
+    visibility: 'private',
+    ownerIdentity: `user:${owner}`
+  })
+  await seedSessionMeta(prisma, team, AGENT, { ...webchat, channel: 'conv-team' })
+  await seedSessionMeta(prisma, slack, AGENT, { daemonId: DAEMON, channel: 'C0SUPPORT', thread: 'append:1' })
+  await seedSessionMeta(prisma, sub, AGENT, { ...webchat, channel: 'conv-team', thread: subsessionThread('9') })
+  const otherAgent = randomUUID()
+  await seedAgent(prisma, otherAgent, { daemonId: DAEMON })
+  await seedSessionMeta(prisma, foreign, otherAgent, { ...webchat, channel: 'conv-team' })
+  return { mine, team, slack, sub, foreign }
+}
+
+const proposals = (running: HttpApp, sessionId: string) =>
+  running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/assistant/conversations/${sessionId}/proposals` })
+const decideIn = (running: HttpApp, sessionId: string, decision: string, draftId = 'proposal-1') =>
+  running.app.inject({
+    method: 'POST',
+    url: `${ORG}/agents/${AGENT}/assistant/conversations/${sessionId}/proposals/${draftId}/decision`,
+    payload: { decision }
+  })
+
+describe('a webchat conversation’s proposals', () => {
+  it('lists them for the conversation’s owner and for editors, and nothing the daemon answers for elsewhere', async () => {
+    await seedAssistant()
+    const owner = await makeUser(`proposals-owner-${randomUUID()}`, 'collaborator')
+    const editor = await makeUser(`proposals-editor-${randomUUID()}`, 'collaborator')
+    const { mine, team } = await seedWebchat(owner)
+    const control = new ActivitySpy()
+    // A daemon that answers for another conversation or another place is not believed.
+    control.conversationDrafts = [
+      proposalIn('proposal-1', 'webchat', 'conv-mine'),
+      proposalIn('proposal-2', 'webchat', 'conv-team'),
+      proposalIn('proposal-3', 'slack', 'conv-mine')
+    ]
+
+    const asOwner = await proposals(app(control, owner), mine)
+    expect(asOwner.statusCode, asOwner.body).toBe(200)
+    expect(asOwner.json()).toEqual({
+      proposals: [
+        {
+          id: 'proposal-1',
+          sentence: 'I want to rebase PR #12 because it conflicts with main.',
+          why: 'The check found a merge conflict.',
+          task: 'Rebase PR #12 onto main and push.',
+          itemId: 'item-1',
+          itemTitle: 'Land PR #12',
+          createdAt: '2026-10-09T09:00:00.000Z',
+          expiresAt: '2026-10-10T09:00:00.000Z'
+        }
+      ],
+      truncated: false
+    })
+    const asEditor = await proposals(app(control, editor), team)
+    expect(asEditor.statusCode, asEditor.body).toBe(200)
+    expect(asEditor.json().proposals.map((p: { id: string }) => p.id)).toEqual(['proposal-2'])
+    expect(control.reads).toEqual([
+      { agentId: AGENT, operation: 'drafts', limit: 50, proposals: true, conversation: { sessionId: mine } },
+      { agentId: AGENT, operation: 'drafts', limit: 50, proposals: true, conversation: { sessionId: team } }
+    ])
+  })
+
+  it('decides one for the owner and for an editor under their own identity, bound to the conversation', async () => {
+    await seedAssistant()
+    const owner = await makeUser(`proposals-decider-${randomUUID()}`, 'collaborator')
+    await new PgUserRepo(prisma).updateProfile(owner, { displayName: 'Alice' })
+    const editor = await makeUser(`proposals-editor-${randomUUID()}`, 'collaborator')
+    await new PgUserRepo(prisma).updateProfile(editor, { displayName: 'Grace' })
+    const { mine, team } = await seedWebchat(owner)
+    const control = new ActivitySpy()
+
+    control.decision = { result: 'decided', status: 'executing', granted: false, failure: null }
+    const approved = await decideIn(app(control, owner), mine, 'approve')
+    expect(approved.statusCode, approved.body).toBe(200)
+    expect(approved.json()).toEqual({ status: 'executing', failure: null })
+    control.decision = { result: 'decided', status: 'denied', granted: false, failure: null }
+    expect((await decideIn(app(control, editor), team, 'deny', 'proposal-2')).json()).toEqual({
+      status: 'denied',
+      failure: null
+    })
+    expect(control.writes).toEqual([
+      {
+        agentId: AGENT,
+        operation: 'decide-draft',
+        draftId: 'proposal-1',
+        choice: 'approve',
+        decider: { userId: owner, name: 'Alice' },
+        conversation: { sessionId: mine }
+      },
+      {
+        agentId: AGENT,
+        operation: 'decide-draft',
+        draftId: 'proposal-2',
+        choice: 'discard',
+        decider: { userId: editor, name: 'Grace' },
+        conversation: { sessionId: team }
+      }
+    ])
+  })
+
+  it('refuses a member who may not continue the conversation, and a session that is not one of its webchat conversations', async () => {
+    await seedAssistant()
+    const owner = await makeUser(`proposals-mine-${randomUUID()}`, 'collaborator')
+    const member = await makeUser(`proposals-member-${randomUUID()}`, 'collaborator')
+    const viewer = await makeUser(`proposals-viewer-${randomUUID()}`, 'viewer')
+    const { mine, team, slack, sub, foreign } = await seedWebchat(owner)
+    const control = new ActivitySpy()
+
+    // A viewer sees the team conversation but may neither continue it nor edit the agent.
+    for (const res of [
+      await proposals(app(control, viewer), team),
+      await decideIn(app(control, viewer), team, 'approve')
+    ])
+      expect(res.statusCode).toBe(403)
+    // Another member's own conversation is not theirs to see, so it reads as absent.
+    for (const res of [
+      await proposals(app(control, member), mine),
+      await decideIn(app(control, member), mine, 'approve')
+    ])
+      expect(res.statusCode).toBe(404)
+    // A Slack conversation, a sub-session's page, another agent's conversation and none at all are no webchat conversation of the agent.
+    for (const id of [slack, sub, foreign, randomUUID()]) {
+      expect((await proposals(app(control), id)).statusCode).toBe(404)
+      expect((await decideIn(app(control), id, 'approve')).statusCode).toBe(404)
+    }
+    expect(control.reads).toEqual([])
+    expect(control.writes).toEqual([])
+  })
+
+  it('refuses a proposal of another conversation, one already decided or expired, and keeps one waiting at the limit', async () => {
+    await seedAssistant()
+    const owner = await makeUser(`proposals-refused-${randomUUID()}`, 'collaborator')
+    const { mine } = await seedWebchat(owner)
+    const control = new ActivitySpy()
+    const running = app(control, owner)
+
+    control.decision = { result: 'not-found', status: null, granted: false, failure: null }
+    expect((await decideIn(running, mine, 'approve', 'proposal-elsewhere')).json()).toMatchObject({
+      statusCode: 404,
+      code: 'NOT_FOUND'
+    })
+    control.decision = { result: 'already-decided', status: 'denied', granted: false, failure: null }
+    expect((await decideIn(running, mine, 'approve')).json()).toMatchObject({
+      statusCode: 409,
+      code: 'DRAFT_ALREADY_DECIDED',
+      message: 'the proposal was already decided'
+    })
+    control.decision = { result: 'expired', status: 'expired', granted: false, failure: null }
+    expect((await decideIn(running, mine, 'deny')).json()).toMatchObject({
+      statusCode: 409,
+      code: 'DRAFT_EXPIRED',
+      message: 'the proposal expired; nothing was run'
+    })
+    const limit = 'bot already has 3 sub-sessions running, the most it runs at once.'
+    control.decision = { result: 'busy', status: 'awaiting_review', granted: false, failure: limit }
+    expect((await decideIn(running, mine, 'approve')).json()).toMatchObject({
+      statusCode: 409,
+      code: 'SUBSESSION_LIMIT',
+      message: limit
+    })
+    // A proposal offers no "always allow".
+    expect((await decideIn(running, mine, 'approve_always')).statusCode).toBe(400)
+    expect(control.writes).toHaveLength(4)
+  })
+
+  it('refuses a daemon that cannot narrow proposals to one conversation, before any daemon I/O', async () => {
+    await seedAssistant({
+      features: [ASSISTANT_ACTIVITY_FEATURE, ASSISTANT_DRAFT_DECISION_FEATURE, ASSISTANT_SUBSESSION_PANEL_FEATURE]
+    })
+    const owner = await makeUser(`proposals-old-${randomUUID()}`, 'collaborator')
+    const { mine } = await seedWebchat(owner)
+    const control = new ActivitySpy()
+    for (const res of [
+      await proposals(app(control, owner), mine),
+      await decideIn(app(control, owner), mine, 'approve')
+    ])
+      expect(res.json()).toMatchObject({ statusCode: 409, code: 'DAEMON_FEATURE_MISSING' })
+    expect(control.reads).toEqual([])
+    expect(control.writes).toEqual([])
   })
 })

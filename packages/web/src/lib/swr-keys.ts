@@ -152,6 +152,9 @@ export const consoleKeys = {
     consoleKey(orgId, 'assistant-subsessions', agentId),
   assistantDrafts: (orgId: string | null | undefined, agentId: string) =>
     consoleKey(orgId, 'assistant-drafts', agentId),
+  /** One webchat conversation's proposals, for its pending-requests strip. */
+  assistantConversationProposals: (orgId: string | null | undefined, agentId: string, sessionId: string) =>
+    consoleKey(orgId, 'assistant-conversation-proposals', agentId, sessionId),
   assistantGrants: (orgId: string | null | undefined, agentId: string) =>
     consoleKey(orgId, 'assistant-grants', agentId),
   /** The org's sessions waiting on an approval — the bell's feed (slack-approval-dm.md §7). */

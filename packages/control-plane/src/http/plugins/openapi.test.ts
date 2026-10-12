@@ -158,6 +158,18 @@ describe('openapi plane', () => {
         ['/subsessions/{sessionId}/stop', 'post', 'stopAssistantSubsession', /continue that sub-session/],
         ['/drafts', 'get', 'listAssistantDrafts', true],
         ['/drafts/{draftId}/decision', 'post', 'decideAssistantDraft', true],
+        [
+          '/conversations/{sessionId}/proposals',
+          'get',
+          'listAssistantConversationProposals',
+          /continue that conversation, or who can edit the agent/
+        ],
+        [
+          '/conversations/{sessionId}/proposals/{draftId}/decision',
+          'post',
+          'decideAssistantConversationProposal',
+          /continue that conversation, or who can edit the agent/
+        ],
         ['/grants', 'get', 'listAssistantPostGrants', true],
         ['/grants/{grantId}', 'delete', 'revokeAssistantPostGrant', true]
       ]

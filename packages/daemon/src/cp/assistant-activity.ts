@@ -18,8 +18,9 @@ import {
   type AssistantDraftChoice
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
-import type { DraftDecision } from '../assistant/drafts.js'
+import type { DecisionConversation, DraftDecision } from '../assistant/drafts.js'
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
+import { isSubsessionCoordinate } from '../session/subsession-coordinate.js'
 import type { AssistantDraft, AssistantDraftLedger } from '../store/assistant-drafts.js'
 import type {
   AssistantItemLedger,
@@ -56,12 +57,13 @@ export interface AssistantActivityDeps {
   store(): AssistantActivityStore
   agent(agentId: string): Pick<Agent, 'assistantMode'> | undefined
   now(): number
-  /** The draft decision a card click runs, entered from the console. */
+  /** The draft decision a card click runs, entered from the console; `conversation` binds it to one webchat conversation's proposals. */
   decideDraft(input: {
     agentId: string
     draftId: string
     choice: AssistantDraftChoice
     decider: { userId: string; name: string | null }
+    conversation?: DecisionConversation
   }): Promise<DraftDecision>
   /** The `!cancel` core every stop surface shares; true when it interrupted a turn. */
   stopSession(key: string, actor: { userId: string; name?: string }): Promise<boolean>
@@ -87,6 +89,16 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
     if (!agent) throw new AssistantActivityViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
     if (!assistantModeOn(agent))
       throw new AssistantActivityViolationError(`agent "${agentId}" is not in assistant mode`, 'assistant-mode-off')
+  }
+  // The agent's own webchat conversation by its session's outward id; a sub-session's page is none.
+  const webchatConversation = async (
+    store: AssistantActivityStore,
+    agentId: string,
+    sessionId: string
+  ): Promise<DecisionConversation | undefined> => {
+    const rec = await store.getSessionByOutwardId(sessionId, agentId)
+    if (rec?.agentId !== agentId || rec.platform !== 'webchat' || isSubsessionCoordinate(rec.thread)) return undefined
+    return { platform: rec.platform, channel: rec.channel }
   }
 
   return {
@@ -144,10 +156,18 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           }
         }
         case 'drafts': {
+          // One webchat conversation's proposals only, and none for a session that is not one.
+          const place = req.conversation
+            ? await webchatConversation(store, req.agentId, req.conversation.sessionId)
+            : undefined
           // Proposals only for a Control Plane that asked: an older one cannot read them.
-          const rows = await store.assistantDrafts.listPending(req.agentId, req.limit + 1, deps.now(), {
-            tasks: req.proposals === true
-          })
+          const rows =
+            req.conversation && !place
+              ? []
+              : await store.assistantDrafts.listPending(req.agentId, req.limit + 1, deps.now(), {
+                  tasks: req.proposals === true,
+                  ...(place ? { place } : {})
+                })
           const page = rows.slice(0, req.limit)
           const names = await store.getDisplayNames(
             page.flatMap((d) => (d.approver?.userId ? [d.approver.userId] : []))
@@ -159,8 +179,9 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
               titles.set(itemId, (await store.assistantItems.get(req.agentId, itemId))?.title ?? null)
           }
           const { kept, trimmed } = withinBudget(page.map((draft) => draftOf(draft, names, titles)))
-          // Permission requests only for a Control Plane that asked, as proposals are.
-          const permissions = req.permissions === true ? (deps.pendingPermissions?.(req.agentId) ?? []) : undefined
+          // Permission requests only for a Control Plane that asked, as proposals are, and never with one conversation's proposals.
+          const permissions =
+            req.permissions === true && !req.conversation ? (deps.pendingPermissions?.(req.agentId) ?? []) : undefined
           return {
             operation: 'drafts',
             drafts: kept,
@@ -196,10 +217,15 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
             found: await store.assistantDrafts.revokeGrant(req.agentId, req.grantId)
           }
         case 'decide-draft': {
+          // Bound to one webchat conversation: a session that is not one has no proposal to decide.
+          const { conversation: bound, ...decide } = req
+          const conversation = bound ? await webchatConversation(store, req.agentId, bound.sessionId) : undefined
+          if (bound && !conversation)
+            return { operation: 'decide-draft', result: 'not-found', status: null, granted: false, failure: null }
           const { userId, name } = req.decider
           // Names the decider wherever a grant they made is listed; best effort, like every name-cache write.
           if (name) await store.setDisplayName(userId, name, deps.now()).catch(() => undefined)
-          const decision = await deps.decideDraft(req)
+          const decision = await deps.decideDraft({ ...decide, ...(conversation ? { conversation } : {}) })
           return { operation: 'decide-draft', ...decision, failure: clipText(decision.failure, 1_000) }
         }
         case 'stop-subsession': {
@@ -282,7 +308,9 @@ function draftOf(
   names: Map<string, string>,
   titles: Map<string, string | null>
 ): AssistantActivityDraft {
-  const approver = draft.approver
+  // A webchat place has no integration to name: its people decide on the conversation's page.
+  const inConversation = draft.approver?.kind === 'place' && draft.approver.integrationId === ''
+  const approver = inConversation ? null : draft.approver
   const proposal = draft.proposal
   return {
     id: draft.id,
@@ -319,6 +347,7 @@ function draftOf(
           }
         }
       : {}),
+    ...(inConversation ? { inConversation } : {}),
     createdAt: iso(draft.createdAt),
     expiresAt: iso(draft.expiresAt)
   }

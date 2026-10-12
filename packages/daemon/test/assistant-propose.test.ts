@@ -715,6 +715,163 @@ describe('a proposal in the conversation its item belongs to', () => {
   })
 })
 
+describe('a proposal in a webchat conversation', () => {
+  const CONVERSATION = 'sid-webchat-bot-a'
+
+  /** A webchat conversation's one session, which an item taken there reports into and whose page decides its proposals. */
+  async function seedWebchat(d: any, channel: string, sessionId: string) {
+    const thread = `webchat:${channel}`
+    await d.store.upsertSession({
+      key: sessionKey('webchat', channel, thread, 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'webchat',
+      channel,
+      thread,
+      acpSessionId: `acp-${sessionId}`,
+      sessionId,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+  }
+
+  /** One proposal from a patrol of an item taken in the webchat conversation `conv-1`. */
+  async function proposedInWebchat(h: Awaited<ReturnType<typeof boot>>) {
+    await seedWebchat(h.d, 'conv-1', CONVERSATION)
+    const item = await h.d.store.assistantItems.create({
+      agentId: 'bot-a',
+      title: 'Land PR #12',
+      doneWhen: 'PR #12 is merged',
+      nextCheck: Date.now() - MINUTE,
+      origin: { platform: 'webchat', channel: 'conv-1', transportScope: null },
+      summary: 'Alice asked in webchat to see PR #12 through.'
+    })
+    const results: unknown[] = []
+    h.behavior.patrol = proposing(h.deps, results)
+    await h.d.patrols.sweep()
+    await vi.waitFor(() => expect(h.patrols()).toHaveLength(1), WAIT)
+    await h.settled()
+    const [record] = await h.records()
+    return { item, results, record: record! }
+  }
+
+  /** A decision made on a conversation's page, as the Control Plane forwards it for whoever may continue it. */
+  const decideIn = (
+    h: Awaited<ReturnType<typeof boot>>,
+    draftId: string,
+    sessionId = CONVERSATION,
+    choice: 'approve' | 'discard' = 'approve'
+  ) =>
+    h.activity.write({
+      agentId: 'bot-a',
+      operation: 'decide-draft',
+      draftId,
+      choice,
+      decider: { userId: 'usr-owner', name: 'Alice' },
+      conversation: { sessionId }
+    }) as Promise<any>
+
+  const listIn = async (h: Awaited<ReturnType<typeof boot>>, sessionId: string) =>
+    (
+      (await h.activity.read({
+        agentId: 'bot-a',
+        operation: 'drafts',
+        limit: 10,
+        proposals: true,
+        conversation: { sessionId }
+      })) as any
+    ).drafts.map((d: any) => d.id)
+
+  it('waits on the conversation’s page, listed there only, and is carded to no one', async () => {
+    const h = await boot(scaffold())
+    const { record, results } = await proposedInWebchat(h)
+    await seedPlace(h.d)
+
+    expect(record).toMatchObject({
+      status: 'awaiting_review',
+      target: { platform: 'webchat', integrationId: '', channel: 'conv-1' },
+      approver: { kind: 'place', integrationId: '', channel: 'conv-1' },
+      cardTs: null
+    })
+    expect(results[0]).toMatchObject({ approver: 'the people in the conversation the item was taken in' })
+    // Neither the responsible user nor the fallback conversation is carded.
+    expect(h.cards.post).not.toHaveBeenCalled()
+
+    expect(await listIn(h, CONVERSATION)).toEqual([record.id])
+    for (const other of ['sid-parent-bot-a', 'sid-unknown']) expect(await listIn(h, other)).toEqual([])
+    // Editors still see it in Activity, decided in its conversation rather than by a named approver.
+    const activity = (await h.activity.read({
+      agentId: 'bot-a',
+      operation: 'drafts',
+      limit: 10,
+      proposals: true
+    })) as any
+    expect(activity.drafts).toEqual([
+      expect.objectContaining({ id: record.id, kind: 'task', approver: null, inConversation: true })
+    ])
+    await h.daemon.stop()
+  })
+
+  it('starts its task once when decided there, and refuses a decision naming another conversation', async () => {
+    const h = await boot(scaffold())
+    const { record } = await proposedInWebchat(h)
+    await seedPlace(h.d)
+    await seedWebchat(h.d, 'conv-2', 'sid-webchat-other')
+    // A Slack proposal is not one of the webchat conversation's either.
+    const slack = await h.d.store.assistantDrafts.createTask({
+      agentId: 'bot-a',
+      target: { platform: 'slack', integrationId: INT_A, channel: 'C1', thread: null },
+      task: TASK,
+      sentence: SENTENCE,
+      why: '',
+      itemId: 'item-slack',
+      itemVersion: 1,
+      source: record.source!
+    })
+
+    for (const sessionId of ['sid-parent-bot-a', 'sid-webchat-other', 'sid-unknown'])
+      expect(await decideIn(h, record.id, sessionId)).toMatchObject({ result: 'not-found', status: null })
+    expect(await decideIn(h, slack.id)).toMatchObject({ result: 'not-found' })
+    expect((await h.d.store.assistantDrafts.get(record.id)).status).toBe('awaiting_review')
+    expect((await h.d.store.assistantDrafts.get(slack.id)).status).toBe('awaiting_review')
+
+    h.behavior.task = 'hang'
+    expect(await decideIn(h, record.id)).toMatchObject({ result: 'decided', status: 'executing' })
+    await vi.waitFor(() => expect(h.tasks()).toHaveLength(1), WAIT)
+    expect(h.tasks()[0]!.msg).toMatchObject({ platform: 'webchat', channel: 'conv-1', headless: true })
+    expect(h.tasks()[0]!.callMeta).toMatchObject({ originSessionId: CONVERSATION })
+    expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({
+      status: 'executing',
+      decidedBy: 'user:usr-owner',
+      decidedByName: 'Alice'
+    })
+    // Decided again there or in Activity, it runs nothing more.
+    expect(await decideIn(h, record.id)).toMatchObject({ result: 'already-decided' })
+    expect(await h.decide(record.id)).toMatchObject({ result: 'already-decided' })
+    expect(await listIn(h, CONVERSATION)).toEqual([])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(h.tasks()).toHaveLength(1)
+    expect(h.cards.post).not.toHaveBeenCalled()
+    await h.d.interruptAgentTurns('bot-a', 'stop')
+    await h.settled()
+    await h.daemon.stop()
+  })
+
+  it('takes the first answer from any surface: one denied in Activity is not approved on the page', async () => {
+    const h = await boot(scaffold())
+    const { item, record } = await proposedInWebchat(h)
+
+    expect(await h.decide(record.id, 'discard')).toMatchObject({ result: 'decided', status: 'denied' })
+    expect(await decideIn(h, record.id)).toMatchObject({ result: 'already-decided', status: 'denied' })
+    await h.settled()
+    expect(h.tasks()).toHaveLength(0)
+    expect((await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toContain(
+      `Proposal "${SENTENCE}" was denied by Grace; nothing was run.`
+    )
+    await h.daemon.stop()
+  })
+})
+
 describe('the user’s sub-session limit', () => {
   it('refuses an approval while the limit is full, keeps it waiting, and runs it once a place frees', async () => {
     const h = await boot(scaffold({ limits: { maxConcurrentSubsessions: 1 } }))

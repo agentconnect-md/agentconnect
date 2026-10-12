@@ -79,6 +79,7 @@ import {
   ASSISTANT_ACTIVITY_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
+  ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   AUTO_MERGE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
   SANDBOX_KEEP_ALIVE_FEATURE,
@@ -7574,6 +7575,8 @@ export class Daemon {
       ASSISTANT_DRAFT_DECISION_FEATURE,
       // Lists one conversation's sub-sessions and stops one through the `!cancel` core; static.
       ASSISTANT_SUBSESSION_PANEL_FEATURE,
+      // Lists one webchat conversation's proposals and decides one only for that conversation; static.
+      ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
       ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
@@ -7989,7 +7992,7 @@ export class Daemon {
     return this.assistantTaskService
   }
 
-  /** A patrol's proposal (assistant-mode.md §5.10): run in the item's place once approved, carded like a draft with no asker. */
+  /** A patrol's proposal (assistant-mode.md §5.10): run in the item's place once approved, carded there or decided on a webchat conversation's page. */
   private async proposeFromPatrol(
     run: { agentId: string; key: string; item: AssistantItem },
     input: ProposeInput
@@ -8035,7 +8038,8 @@ export class Daemon {
       source,
       ...(integrationId
         ? { place: { integrationId, channel: origin.channel, ...(placeThread ? { thread: placeThread } : {}) } }
-        : {})
+        : {}),
+      ...(origin.platform === 'webchat' ? { webchat: true } : {})
     })
     const expiresAt = new Date(draft.expiresAt).toISOString()
     return {

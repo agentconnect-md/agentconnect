@@ -239,6 +239,42 @@ describe('assistant/activity frames', () => {
     ).toBe(true)
   })
 
+  it('narrows a read and a decision to one webchat conversation, and either side may predate it', () => {
+    const read = { agentId: AGENT_ID, operation: 'drafts', limit: 50, proposals: true }
+    expect(decodes('assistant/activity/read', { ...read, conversation: { sessionId: 'sid-webchat' } })).toBe(true)
+    expect(decodes('assistant/activity/read', { ...read, conversation: { sessionId: '' } })).toBe(false)
+    const decide = {
+      agentId: AGENT_ID,
+      operation: 'decide-draft',
+      draftId: 'proposal-1',
+      choice: 'approve',
+      decider: { userId: 'usr-1', name: null }
+    }
+    expect(decodes('assistant/activity/write', { ...decide, conversation: { sessionId: 'sid-webchat' } })).toBe(true)
+    expect(decodes('assistant/activity/write', { ...decide, conversation: {} })).toBe(false)
+    const proposal = {
+      id: 'proposal-1',
+      kind: 'task',
+      target: {
+        platform: 'webchat',
+        integrationId: null,
+        channel: 'conv-1',
+        thread: null,
+        name: null,
+        dm: false,
+        external: false
+      },
+      text: 'Rebase PR #12 onto main and push.',
+      approver: null,
+      proposal: { sentence: 'I want to rebase PR #12.', why: '', itemId: 'item-1', itemTitle: null },
+      createdAt: '2026-10-09T09:00:00.000Z',
+      expiresAt: '2026-10-10T09:00:00.000Z'
+    }
+    // A daemon that marks a proposal decided in its conversation, and one that predates the mark.
+    expect(AssistantActivityDraft.parse({ ...proposal, inConversation: true }).inConversation).toBe(true)
+    expect(AssistantActivityDraft.parse(proposal)).not.toHaveProperty('inConversation')
+  })
+
   it('carries sub-sessions’ permission requests beside the drafts, and either side may predate them', () => {
     const permission = {
       requestId: '22222222-2222-4222-8222-222222222222',
