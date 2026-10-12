@@ -14,16 +14,16 @@ where, and the agents run code on machines the organization chooses. It is a pnp
 
 ## Components
 
-| Package                                                                         | Role                                                                                                                                                                                                           |
-| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `control-plane` (CP)                                                            | Fastify + Prisma/Postgres. Orchestration, registry, human auth, the REST/SSE surface behind the console (`src/http/`), the daemon and relay WebSocket endpoints (`src/ws/`).                                   |
-| `daemon`                                                                        | The execution unit. Owns direct platform connections, routing, provider egress, workspaces, and the agent runtime over ACP; dials out to the CP over one WebSocket.                                            |
-| `relay`                                                                         | Optional public ingress. Terminates Slack/Feishu/Google Chat/Linear HTTP callbacks, GitHub/GitLab/Gitea webhooks, generic webhooks, the MCP proxy, and webchat; forwards to the owning daemon. Stores nothing. |
-| `setup`                                                                         | Loopback-bound Setup Server for self-hosting: Logto and provider-app administration against the deployment database.                                                                                           |
-| `web`                                                                           | Next.js console. A pure client of the CP's REST surface; no server-side secrets.                                                                                                                               |
-| `protocol`, `message`, `connection`                                             | The wire contract (zod frames, org-scoping rules in `frame-scope.ts`), pure platform normalization, and the WS primitives shared by the three services.                                                        |
-| `cli`, `k8s-client`, `observability`, `memory-plugin-mem0`, `activation-policy` | The `agentconnect` bin, the bare-REST Kubernetes client the pool driver uses, OTel bootstrap with span-name hygiene, the Mem0 MCP wrapper, trigger-policy evaluation.                                          |
-| `daemon/src/shim/`                                                              | The in-sandbox shim: the half-trusted process inside a sandbox pod or VM that executes what the daemon asks over a bound channel (`cluster-spawn-and-shim.md`).                                                |
+| Package                                                                                         | Role                                                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control-plane` (CP)                                                                            | Fastify + Prisma/Postgres. Orchestration, registry, human auth, the REST/SSE surface behind the console (`src/http/`), the daemon and relay WebSocket endpoints (`src/ws/`).                                         |
+| `daemon`                                                                                        | The execution unit. Owns direct platform connections, routing, provider egress, workspaces, and the agent runtime over ACP; dials out to the CP over one WebSocket.                                                  |
+| `relay`                                                                                         | Optional public ingress. Terminates Slack/Feishu/Google Chat/Linear HTTP callbacks, GitHub/GitLab/Gitea webhooks, generic webhooks, the MCP proxy, and webchat; forwards to the owning daemon. Stores nothing.       |
+| `setup`                                                                                         | Loopback-bound Setup Server for self-hosting: Logto and provider-app administration against the deployment database.                                                                                                 |
+| `web`                                                                                           | Next.js console. A pure client of the CP's REST surface; no server-side secrets.                                                                                                                                     |
+| `protocol`, `message`, `connection`                                                             | The wire contract (zod frames, org-scoping rules in `frame-scope.ts`), pure platform normalization, and the WS primitives shared by the three services.                                                              |
+| `cli`, `k8s-client`, `object-store`, `observability`, `memory-plugin-mem0`, `activation-policy` | The `agentconnect` bin, the bare-REST Kubernetes client the pool driver uses, the S3 signing and lifecycle-check primitives, OTel bootstrap with span-name hygiene, the Mem0 MCP wrapper, trigger-policy evaluation. |
+| `daemon/src/shim/`                                                                              | The in-sandbox shim: the half-trusted process inside a sandbox pod or VM that executes what the daemon asks over a bound channel (`cluster-spawn-and-shim.md`).                                                      |
 
 The ACP adapters (`claude-agent-acp`, `codex-acp`) and the model runtimes are separate projects.
 
@@ -82,8 +82,13 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
    path containment is re-checked on the shim side, the `read` channel walks descriptors with
    `O_NOFOLLOW`, and `ShimBindingRegistry.authorize` is the single predicate for credential, expiry,
    generation and per-operation grant.
-9. **Operator-supplied uploads and config**: agent/org icon uploads (`sharp`, `@resvg/resvg-js`),
-   Slack manifests, integration credentials entered in the console or Setup Server.
+9. **Console file transfer** (`control-plane/src/file-transfer/`, `object-store`,
+   `source-cache-file-transfer.md`): the CP holds the bucket credentials and presigns every URL; browsers
+   and out-of-cluster daemons PUT and GET the bucket directly at `publicEndpoint`. A PUT is bound to its
+   length, SHA-256 and `pending` tag; a daemon may sign only a PUT its CP ticket allows; an agent's GET is
+   a short-lived bearer URL that may leave the cluster through the model provider.
+10. **Operator-supplied uploads and config**: agent/org icon uploads (`sharp`, `@resvg/resvg-js`),
+    Slack manifests, integration credentials entered in the console or Setup Server.
 
 ## Invariants worth attacking
 
