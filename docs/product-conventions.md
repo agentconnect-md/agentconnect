@@ -898,9 +898,21 @@ a channel cannot reset a later operator choice.
 
 An agent in assistant mode answers only where an editor enabled it, whatever its
 visibility: its conversations are gated exactly like a Restricted agent's. Turning the
-mode on resets nothing — every conversation already enabled, DMs included, stays enabled
+mode on resets no conversation — every conversation already enabled, DMs included, stays enabled
 — and new conversations start Off. Switching it off restores the agent's ordinary
 defaults.
+
+Turning the mode on also sets the agent's permission mode, so background work nobody is watching
+does not stop to wait for approval: a mode that asks for approval or only reads, or no mode at
+all, becomes the runtime's auto mode (Claude Code's Auto, Codex's Auto review), or its full-access
+mode where the runtime has no auto mode. An auto or full-access mode, Claude Code's Don't ask, and
+a mode chosen in the same edit are kept, and a runtime with neither keeps its mode. This happens
+whether the mode is turned on in the console or through the API, and the agent's permission mode
+row shows the result with no extra text. It is a default, not a requirement: an editor may pick
+another mode afterwards and it stays while the mode is on. With Manual chosen, the assistant mode
+panel warns that background work will often wait for approval; while the switch is being turned
+on, it warns only when the runtime keeps the mode. Turning the mode off leaves the permission mode
+as it is.
 
 Each enabled place keeps one long session while the mode is on: every room, and a 1:1 DM
 on a platform whose DMs otherwise open a session per message. A conversation gated By
@@ -1191,6 +1203,16 @@ external after a reminder was set, the text goes to an internal member for appro
 reply there (see "Assistant-mode drafts"). Background sessions, patrols and webchat cannot set
 reminders. A DM that read a private conversation for its person can still set them, since they
 post only in that DM.
+
+## Assistant-mode local time
+
+An agent in assistant mode reasons about "now", "today" and "this Friday" in the people's time
+zone, never its host's. Every turn it takes is told the current local date, weekday and time and
+the zone they are in: the zone of the person whose message started the turn, from their Slack
+profile or, in the console, their browser. A background sub-session, a patrol, a task, a report,
+or a person whose zone is unknown takes the zone last seen from a person in that conversation.
+When none was ever seen, as on platforms that report no zone, the agent is told it is UTC and that
+the local zone is unknown. An agent outside assistant mode is told nothing.
 
 ## Assistant-mode Activity
 

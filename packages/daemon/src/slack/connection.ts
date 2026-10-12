@@ -24,6 +24,7 @@ import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEve
 import { SLACK_LIFECYCLE_EVENTS, slackLifecycleRevocation } from './lifecycle.js'
 import type { CredentialRevocation } from '../platforms/credential-revocation.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
+import { profileTimeZone } from '../messages/time-zone.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
@@ -503,6 +504,9 @@ type SlackUserResult = {
   real_name?: string
   is_bot?: boolean
   profile?: { real_name?: string; display_name?: string; image_48?: string; image_72?: string }
+  /** The member's IANA zone, and its offset in seconds east of UTC. */
+  tz?: string
+  tz_offset?: number
 }
 
 /** The subset of a Block Kit `block_actions` payload we read: the interacted element
@@ -2687,15 +2691,17 @@ export class SlackConnection implements PlatformConnection {
 
   async getUserProfile(
     user: string
-  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }> {
+  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string; timeZone?: string }> {
     const res = await this.app.client.users.info({ user })
     const u = res.user ?? {}
+    const timeZone = profileTimeZone(u.tz, u.tz_offset)
     return {
       id: u.id ?? user,
       name: u.name,
       realName: u.real_name ?? u.profile?.real_name,
       isBot: u.is_bot,
-      avatarUrl: u.profile?.image_72 ?? u.profile?.image_48
+      avatarUrl: u.profile?.image_72 ?? u.profile?.image_48,
+      ...(timeZone ? { timeZone } : {})
     }
   }
 

@@ -61,7 +61,7 @@ const acceptsMcpServers = (id, params) => {
 
 const acceptsSessionMeta = (id, params) => {
   const expected = process.env.AC_EXPECT_SESSION_META
-  if (expected === undefined || JSON.stringify(params._meta) === expected) return true
+  if (expected === undefined || JSON.stringify(params._meta ?? null) === expected) return true
   send({ jsonrpc: '2.0', id, error: { code: -32602, message: 'unexpected session metadata' } })
   return false
 }
@@ -155,7 +155,10 @@ rl.on('line', async (line) => {
       result: {
         protocolVersion: 1,
         agentCapabilities: agentCapabilities(),
-        ...(steeringEnabled ? { _meta: { steering: { supported: true } } } : {})
+        _meta: {
+          ...(steeringEnabled ? { steering: { supported: true } } : {}),
+          ...(process.env.AC_INIT_META ? JSON.parse(process.env.AC_INIT_META) : {})
+        }
       }
     })
   } else if (method === '_session/steering') {

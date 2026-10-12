@@ -1,5 +1,6 @@
 import {
   assistantModeDefinitionRefusals,
+  assistantModePermissionModeOnEnable,
   type AgentMemoryBinding,
   type AssistantModeAdmission,
   type AssistantModePolicy,
@@ -38,6 +39,17 @@ export function assistantModeEditNeedsAdmission(
   changesDefinition: boolean
 ): boolean {
   return after?.enabled === true && (before?.enabled !== true || changesDefinition)
+}
+
+/** The permission mode an edit sets as it turns assistant mode on (§1.8); undefined keeps the mode, as does an edit that sets one itself. */
+export function assistantModePermissionModeForEdit(
+  before: AssistantModePolicy | null | undefined,
+  after: AssistantModePolicy | null | undefined,
+  agent: { runtime: string | null | undefined; permissionMode: string | null | undefined },
+  editSetsPermissionMode: boolean
+): string | undefined {
+  if (before?.enabled === true || after?.enabled !== true || editSetsPermissionMode) return undefined
+  return assistantModePermissionModeOnEnable(agent.runtime, agent.permissionMode)
 }
 
 /** The definition checks, as the row-locked write runs them. */

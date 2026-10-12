@@ -2888,6 +2888,7 @@ function AgentDetail() {
                 runtime={da.runtime}
                 memoryProvider={da.memoryProvider}
                 placement={`${da.placementKind ?? 'daemon'}:${da.setId ?? da.daemon}`}
+                permissionMode={da.permissionMode}
                 askEveryTime={
                   (da.permissionMode ||
                     capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog

@@ -187,6 +187,12 @@ export const WebchatRuntimeConfig = z.object({
 })
 export type WebchatRuntimeConfig = z.infer<typeof WebchatRuntimeConfig>
 
+/** A browser's IANA time zone name (`Asia/Shanghai`), shape-checked only; the daemon checks it against its own Intl. */
+export const WebchatTimeZone = z
+  .string()
+  .max(64)
+  .regex(/^[A-Za-z0-9_+\-/]+$/)
+
 export const RelayWebchatOp = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('turn'),
@@ -225,7 +231,9 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     // own queue, so the daemon steers it into that turn or refuses `busy` — never parks it.
     steer: z.boolean().optional(),
     // The chat API the turn came through; the daemon evaluates that API's Decision gate before admitting it.
-    origin: AgentApiProtocolName.optional()
+    origin: AgentApiProtocolName.optional(),
+    // The author's browser time zone, so an assistant-mode agent reasons in their local time; an older daemon ignores it.
+    timeZone: WebchatTimeZone.optional()
   }),
   // A conversation post another participant produced (a user turn targeted
   // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's

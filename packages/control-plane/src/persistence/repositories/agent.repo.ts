@@ -61,7 +61,11 @@ import {
   resolveMemoryBindingOnUpdate
 } from '../../agent-memory/home.js'
 import { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './agent-memory.repo.js'
-import { assertAssistantModeDefinition, assistantModeEditNeedsAdmission } from '../../agents/assistant-mode.js'
+import {
+  assertAssistantModeDefinition,
+  assistantModeEditNeedsAdmission,
+  assistantModePermissionModeForEdit
+} from '../../agents/assistant-mode.js'
 import { PgHookRepo } from './hook.repo.js'
 import { joinGiteaBindingFence } from './gitea-binding-fence.js'
 import { lockAgentPlacement, settlePlacementChange } from './agent-placement.js'
@@ -741,7 +745,7 @@ export class PgAgentRepo implements AgentRepo {
       }
       overrides = next
     }
-    // Assistant mode admission (assistant-mode.md §4.1), decided against the locked row: a concurrent runtime or memory edit cannot slip past it.
+    // Assistant mode admission (assistant-mode.md §4.1) and permission default (§1.8), against the locked row so no concurrent edit slips past.
     if (patch.assistantMode !== undefined || patch.runtime !== undefined || overrides !== undefined) {
       const rows = await tx.$queryRaw<
         Array<{ runtime: string | null; runtimeOverrides: unknown; assistantMode: unknown }>
@@ -760,6 +764,14 @@ export class PgAgentRepo implements AgentRepo {
         if (assistantModeEditNeedsAdmission(before, after, changesDefinition)) {
           assertAssistantModeDefinition({ runtime, memory })
         }
+        const base = overrides ?? (row.runtimeOverrides as RuntimeOverrides | null) ?? {}
+        const permissionMode = assistantModePermissionModeForEdit(
+          before,
+          after,
+          { runtime, permissionMode: base.permissionMode },
+          patch.permissionMode !== undefined
+        )
+        if (permissionMode) overrides = { ...base, permissionMode }
       }
     }
     const a = await tx.agent.update({

@@ -346,17 +346,7 @@ export function buildParentReplyAppend(
   )
 }
 
-/**
- * Assemble one turn's standing context — the agent meta block, the collaboration
- * guidance, the parent-reply obligation, the standing no-response rule, and the memory
- * index — from an already-resolved input. Pure: same input, same bytes out.
- *
- * `resumeSystemContext` carries the durable rules session/load re-asserts in a fresh
- * runtime process without treating them as a user turn; `sessionContext` is the
- * fresh-session form that additionally carries the memory index. Claude-shaped hosts
- * carry it via `_meta.systemPrompt` (`metaContext`); other runtimes inline it as the
- * first prompt block.
- */
+/** Build standing instructions for native session metadata when supported, or the first prompt block otherwise. */
 export function buildStandingContext(input: StandingContextInput): StandingContext {
   const memoryAppend = buildMemoryAppend(input.memoryIndex)
   const agentMeta = buildAgentMeta(input)
