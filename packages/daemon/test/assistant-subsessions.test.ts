@@ -224,6 +224,24 @@ describe('the failure report a sub-session index row holds (assistant-mode.md §
     expect(await index.listReporting(a)).toEqual([])
     expect(await index.countReportAttempt(a, childKey(a, '1'))).toBeUndefined()
   })
+
+  it('lists the open delegations with no delivery left in the inbox, oldest first', async () => {
+    const s = await open()
+    const [a, b] = [agent(), agent()]
+    const index = s.assistantSubsessions
+    await index.open({ ...row(a, '1'), now: 2_000 })
+    for (const id of ['2', '3', '4']) await index.open(row(a, id))
+    await index.openPatrol(row(a, 'patrol-5'), { startedSince: 0, staleBefore: 0 })
+    await index.open(row(b, '6'))
+    await index.finish(a, childKey(a, '3'), 'done')
+    const kept = `inbox-${a}`
+    await s.appendInbox({ id: kept, sessionKey: childKey(a, '4'), agentId: a, msg: '{}', enqueuedAt: '1' })
+
+    const listed = async () => (await index.listOpenWithoutInbox(a)).map((r) => r.childSessionKey)
+    expect(await listed()).toEqual([childKey(a, '2'), childKey(a, '1')])
+    await s.removeInbox(kept)
+    expect(await listed()).toEqual([childKey(a, '2'), childKey(a, '4'), childKey(a, '1')])
+  })
 })
 
 describe.skipIf(usingPostgresStore())('the v43 → v44 failure report columns on SQLite', () => {

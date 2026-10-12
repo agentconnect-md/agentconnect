@@ -522,12 +522,18 @@ below) have shipped, and so has stopping from the main conversation (§5.8).
 
 In P0b a sub-session reports through the existing parent-report path, and when it ends without a
 report — an error, `!stop`, pause, the stall watchdog — the daemon sends one short failure report
-instead, never two; an interruption that will be replayed sends none. The failure report waits on
-the sub-session's index row as `reporting` until it is admitted: a refused admission is retried on
-the minute sweep, three attempts in all, a drain or restart leaves it to be re-sent on the next
-start, and a fixed delivery id with the inbox's receipt keeps a re-send from arriving twice. Like
-patrol and task reports, it goes to the current session of the parent's place (after `!new`, the
-new conversation), else the recorded parent. The outbox below is the deferred target.
+instead, never two; an interruption that will be replayed sends none. When that replay never runs
+the turn — a same-process replay finds its message already carried by the prompt that was cut, or a
+purge drops the kept delivery — no turn end reports it, and its `open` row would hold a slot under
+the cap for good. So the minute sweep reports it ended, as no longer running, once it has seen
+nothing run for it for ten minutes: no live or queued turn, no delivery left in the inbox, no
+background task owing it a wake, and the agent not paused. An approved task is left to its own
+recovery (§5.10). The failure report waits on the sub-session's index row as `reporting` until it
+is admitted: a refused admission is retried on the minute sweep, three attempts in all, a drain or
+restart leaves it to be re-sent on the next start, and a fixed delivery id with the inbox's
+receipt keeps a re-send from arriving twice. Like patrol and task reports, it goes to the current
+session of the parent's place (after `!new`, the new conversation), else the recorded parent. The
+outbox below is the deferred target.
 
 Implemented as a **persistent per-place outbox** (a table shaped like `orchestration_subtask`:
 agent-owned, CAS-claimed, duty-gated, re-armed on `agentsGained`):
@@ -1027,3 +1033,11 @@ meant before it stops one. To name one, the standing summary of a main conversat
 sub-sessions it opened that are running now (§5.4). That block is re-injected on the next turn
 after one starts or ends. Stop leaves P0b's deferred list; listing as a tool and steering stay
 deferred.
+
+**Twenty-first revision (2026-10-12)**: a sub-session that nothing will run again is reported
+ended. A sub-session turn cut for a handover or a runtime respawn and replayed in the same process
+was folded away, its message already carried by the cut prompt, so neither a replayed turn nor a
+failure report settled its row, and the row held one of the agent's concurrent slots for good.
+Now the minute sweep reports such a sub-session ended once nothing has run for it for ten minutes
+(§5.7), through the existing failure report, which also frees the slot. Why the same-process replay
+folds the turn away is not changed here.

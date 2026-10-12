@@ -8136,7 +8136,7 @@ export class Daemon {
     }
   }
 
-  /** Once a minute, the duty holder's patrol and reminder sweeps (assistant-mode.md §5.9) and failure-report retries (§5.7). */
+  /** Once a minute, the duty holder's patrol and reminder sweeps (assistant-mode.md §5.9), failure-report retries and idle sub-sessions (§5.7). */
   private armPatrolSweep(): void {
     this.patrolSweepTimer = this.clock.setTimeout(async () => {
       this.patrolSweepTimer = undefined
@@ -8146,6 +8146,10 @@ export class Daemon {
       await this.collab
         .resendSubsessionReports([...this.agents.keys()])
         .catch((err) => this.log.warn(`sub-session report retry failed: ${formatErr(err)}`))
+      // An open sub-session nothing runs for any more, which no turn end will report, is reported here (§5.7).
+      await this.collab
+        .endIdleSubsessions([...this.agents.keys()])
+        .catch((err) => this.log.warn(`idle sub-session sweep failed: ${formatErr(err)}`))
       if (!this.draining) this.armPatrolSweep()
     }, PATROL_SWEEP_INTERVAL_MS)
   }
