@@ -18,6 +18,7 @@
  */
 import {
   AGENT_MODEL_PROVIDER_FEATURE,
+  AGENT_MODEL_PROVIDER_AUTO_FEATURE,
   CODE_HOST_PROVIDERS,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
@@ -70,6 +71,7 @@ export function requiredDaemonFeatures(
 ): readonly string[] {
   const features: string[] = []
   if (agent.modelProvider) features.push(AGENT_MODEL_PROVIDER_FEATURE)
+  if (agent.modelProvider === 'auto') features.push(AGENT_MODEL_PROVIDER_AUTO_FEATURE)
   if (agent.modelSelection?.steps?.length) features.push(DECISION_CHAIN_V1_FEATURE)
   for (const provider of CODE_HOST_PROVIDERS) {
     const host = codeHosts[provider].features

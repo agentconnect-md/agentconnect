@@ -2,6 +2,7 @@ import { memorySourceTurnId } from './memory/source-turn.js'
 import {
   MEMORY_ENTRIES_V1_FEATURE,
   AGENT_MODEL_PROVIDER_FEATURE,
+  AGENT_MODEL_PROVIDER_AUTO_FEATURE,
   type ProviderCredential,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
@@ -598,6 +599,7 @@ import {
   configuredCodexSessionFloor,
   configuredModelCredentials,
   modelProviderTarget,
+  organizationModelProvider,
   type ModelCredential,
   type ModelProviderTarget
 } from './runtimes/model-provider-config.js'
@@ -6975,21 +6977,22 @@ export class Daemon {
     await this.stopHost(agentId)
   }
 
-  // Fetch only the selected provider; failures never fall back to a different billing source.
+  // Match saved credentials to the launch's runtime and model; failures never change billing source.
   private async requestModelProviderCredential(agent: LoadedAgent): Promise<ProviderCredential | undefined> {
     if (this.k8s || !agent.modelProvider) return undefined
     if (!this.cpClient) throw new Error('Provider API keys require a control-plane connection')
+    const runtime = this.runtimes[agent.runtime]
+    const provider = organizationModelProvider(agent.modelProvider, runtime && modelProviderTarget(agent, runtime))
     let credentials: ProviderCredential | null
     try {
       ;({ credentials } = await this.cpClient.requestProviderCredentials({
         agentId: agent.id,
-        provider: agent.modelProvider
+        provider
       }))
     } catch {
       throw new Error('Could not load the selected provider API key; check the control-plane connection')
     }
-    if (!credentials)
-      throw new Error(`Configure the ${agent.modelProvider} API key in Providers before starting this agent`)
+    if (!credentials) throw new Error(`Configure the ${provider} API key in Providers before starting this agent`)
     return credentials
   }
 
@@ -7531,6 +7534,7 @@ export class Daemon {
   private registrationFeatures(): string[] {
     return [
       AGENT_MODEL_PROVIDER_FEATURE,
+      AGENT_MODEL_PROVIDER_AUTO_FEATURE,
       PROVIDER_CREDENTIALS_V1_FEATURE,
       DECISION_PREVIEW_V1_FEATURE,
       DECISION_PREVIEW_RAW_V1_FEATURE,

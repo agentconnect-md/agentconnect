@@ -69,6 +69,22 @@ describe('organization model credentials', () => {
       }
     })
   })
+
+  it('automatically binds OpenCode to the selected model provider and rejects unsupported providers', () => {
+    const env: Record<string, string> = {}
+    const target = modelProviderTarget(agent('opencode', 'anthropic/claude-sonnet-4'), runtime('opencode', ['acp']))
+    applyOrganizationModelCredential('auto', target, env, { apiKey: 'example-key', endpoint: null, headers: {} })
+    expect(env.ANTHROPIC_API_KEY).toBe('example-key')
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!).enabled_providers).toEqual(['anthropic'])
+    expect(() =>
+      applyOrganizationModelCredential(
+        'auto',
+        { provider: 'openai', runtime: 'opencode', opencodeProvider: 'openrouter' },
+        {},
+        { apiKey: 'example-key', endpoint: null, headers: {} }
+      )
+    ).toThrow(/do not match/)
+  })
 })
 
 describe('modelProviderTarget', () => {

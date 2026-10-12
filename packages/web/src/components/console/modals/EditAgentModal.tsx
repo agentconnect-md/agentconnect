@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentModelProvider } from '@agentconnect.md/protocol'
 import { ModelProviderField } from '@/components/console/ModelProviderField'
+import { useSavedModelSource } from '@/lib/use-saved-model-source'
 import { useTranslations } from 'next-intl'
 import {
   FALLBACK_RUNTIME_IDS,
@@ -411,7 +412,10 @@ export default function EditAgentModal({
   // Only a strategy that starts the image's install reads its image-binary warning.
   const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(execution)
   // Models come from the chosen strategy's catalog: the host install's for host and srt, the image's for a VM.
-  const modelSource = daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : execution)
+  const strategySource =
+    daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : execution)
+  const savedCredentials = daemonId !== POOL_PLACEMENT && modelProvider !== null
+  const modelSource = useSavedModelSource(strategySource, savedCredentials)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
     // With the flag off the picker offers Cloud only to an agent already ON it — same rule
@@ -498,7 +502,11 @@ export default function EditAgentModal({
   // Preserve the configured runtime while keeping the selected daemon's reported choices authoritative.
   const reportedRuntimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : []
   const runtimeIds = daemon ? reportedRuntimeIds : FALLBACK_RUNTIME_IDS
-  const runtimeOptions = runtime && !runtimeIds.includes(runtime) ? [runtime, ...runtimeIds] : runtimeIds
+  const runtimeOptions = savedCredentials
+    ? selectableRuntimeIds(modelSource!, runtime)
+    : runtime && !runtimeIds.includes(runtime)
+      ? [runtime, ...runtimeIds]
+      : runtimeIds
   const runtimeMeta = acpRuntime(acpRegistry, runtime)
   // Models are only what the daemon reports for this runtime — advertised ids
   // verbatim, never a synthesized "Default" entry: an agent without an explicit
@@ -510,7 +518,9 @@ export default function EditAgentModal({
   const runtimeProfile = modelSource?.runtimeModels.find((r) => r.runtime === runtime)
   const reportedModels = runtimeProfile?.models ?? []
   const selectedModel =
-    model && (reportedModels.includes(model) || daemonChanged) ? model : preferredModelFor(modelSource, runtime)
+    model && (savedCredentials || reportedModels.includes(model) || daemonChanged)
+      ? model
+      : preferredModelFor(modelSource, runtime)
   const runtimeUnavailable = daemonChanged && reportedRuntimeIds.length > 0 && !reportedRuntimeIds.includes(runtime)
   const modelUnavailable =
     daemonChanged && !!selectedModel && reportedModels.length > 0 && !reportedModels.includes(selectedModel)
@@ -519,6 +529,8 @@ export default function EditAgentModal({
     execution !== initialExecution.current && !!model && !!selectedModel && selectedModel !== model
       ? selectedModel
       : undefined
+  const credentialModel =
+    savedCredentials && modelProvider !== initialModelProvider.current && !model ? selectedModel : undefined
 
   // Agent-call reachability, computed with THIS agent's in-progress policy so the
   // "X of Y" hints track the pending edits (same graph the standalone card built).
@@ -564,6 +576,7 @@ export default function EditAgentModal({
   const secretsChanged = Object.keys(secretsPatch).length > 0
   const modelSelectionChanged = JSON.stringify(modelSelection) !== JSON.stringify(initialModelSelection.current)
   const validateModelSelection =
+    savedCredentials ||
     modelSelectionChanged ||
     model !== initialModel.current ||
     runtime !== initialRuntime.current ||
@@ -574,8 +587,8 @@ export default function EditAgentModal({
     ...(normalizedDisplayName !== (initialDisplayName.current.trim() || null)
       ? { displayName: normalizedDisplayName }
       : {}),
-    ...(strategyModel
-      ? { model: strategyModel }
+    ...(strategyModel || credentialModel
+      ? { model: strategyModel || credentialModel }
       : model !== initialModel.current
         ? { model: model || (modelSelection ? selectedModel : null) }
         : {}),
@@ -849,13 +862,18 @@ export default function EditAgentModal({
               <ModelSelectionField
                 agentId={agent.id}
                 value={modelSelection}
-                onChange={setModelSelection}
+                onChange={(value) => {
+                  setModelSelection(value)
+                  if (savedCredentials) setModelProvider('auto')
+                }}
                 onValidityChange={setModelSelectionValid}
                 fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
                 source={modelSource}
                 runtimes={runtimeOptions}
                 readsImage={readsImage}
+                requireAvailableModel={savedCredentials}
                 onFallbackChange={(target) => {
+                  if (savedCredentials) setModelProvider('auto')
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)
                   setModel((stored) => storedModelAfterPick(target, runtime, selectedModel, stored))
                   setEffort(

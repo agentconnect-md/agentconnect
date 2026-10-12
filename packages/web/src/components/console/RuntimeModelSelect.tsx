@@ -280,7 +280,7 @@ export function RuntimeModelSelect({
             {...hover.triggerProps}
             onClick={() => {
               hover.hide()
-              setProvider(value.runtime)
+              setProvider(ids.includes(value.runtime) ? value.runtime : (ids[0] ?? ''))
               setSearch('')
               toggle()
             }}

@@ -71,6 +71,9 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect(await d.requestModelProviderCredential(agent)).toBeUndefined()
       expect(requestProviderCredentials).not.toHaveBeenCalled()
       agent.modelProvider = 'anthropic'
+      await d.requestModelProviderCredential(agent)
+      expect(requestProviderCredentials).toHaveBeenLastCalledWith({ agentId: 'bot-a', provider: 'anthropic' })
+      agent.modelProvider = 'auto'
       const credentials = await d.requestModelProviderCredential(agent)
       expect(requestProviderCredentials).toHaveBeenCalledWith({ agentId: 'bot-a', provider: 'anthropic' })
       const { host } = d.buildAcpHost(agent, d.cfg, {
@@ -103,6 +106,25 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect(() =>
         d.buildAcpHost(agent, d.cfg, { hostKey: agentHostKey(agent.id), strategy: 'host', cwd: agent.workspace.path })
       ).toThrow(/must be loaded/)
+      d.runtimes.opencode = { command: 'opencode', args: ['acp'], env: [] }
+      await d.requestModelProviderCredential({
+        ...agent,
+        runtime: 'opencode',
+        runtimeOverrides: { model: 'openai/gpt-5' }
+      })
+      expect(requestProviderCredentials).toHaveBeenLastCalledWith({ agentId: 'bot-a', provider: 'openai' })
+      await expect(
+        d.requestModelProviderCredential({
+          ...agent,
+          runtime: 'opencode',
+          runtimeOverrides: { model: 'openrouter/anthropic/claude-sonnet-4' }
+        })
+      ).rejects.toThrow(/do not match/)
+      d.k8s = {}
+      requestProviderCredentials.mockClear()
+      expect(await d.requestModelProviderCredential(agent)).toBeUndefined()
+      expect(requestProviderCredentials).not.toHaveBeenCalled()
+      d.k8s = undefined
     } finally {
       d.cpClient = undefined
       await daemon.stop()

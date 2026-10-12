@@ -4,7 +4,10 @@ export const ProviderKeyProvider = z.enum(['typesafe', 'openrouter', 'cloudflare
 export type ProviderKeyProvider = z.infer<typeof ProviderKeyProvider>
 
 export const AGENT_MODEL_PROVIDER_FEATURE = 'agent-model-provider-v1'
-export const AgentModelProvider = ProviderKeyProvider.extract(['anthropic', 'openai'])
+export const AGENT_MODEL_PROVIDER_AUTO_FEATURE = 'agent-model-provider-auto-v1'
+export const AgentModelKeyProvider = ProviderKeyProvider.extract(['anthropic', 'openai'])
+export type AgentModelKeyProvider = z.infer<typeof AgentModelKeyProvider>
+export const AgentModelProvider = z.enum([...AgentModelKeyProvider.options, 'auto'])
 export type AgentModelProvider = z.infer<typeof AgentModelProvider>
 
 export const PROVIDER_KEY_PROFILES: Record<

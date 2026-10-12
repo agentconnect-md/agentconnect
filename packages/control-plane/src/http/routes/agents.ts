@@ -1,6 +1,5 @@
 import { DecisionBindingDenied, ModelSelectionInvalid } from '../../persistence/decision-binding-fence.js'
 import {
-  AGENT_MODEL_PROVIDER_FEATURE,
   DecisionToolDefinition,
   modelSelectionDecisionIds,
   MemoryEntryCreateRequest,
@@ -96,7 +95,7 @@ import {
 } from './workspace-credential.js'
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, IntegrationId, OrgId, SessionId } from '../../domain/ids.js'
-import { advertises } from '../../domain/daemon-features.js'
+import { advertises, requiredDaemonFeatures } from '../../domain/daemon-features.js'
 import { UNPLACED, placementStrategies, resolveExecution } from '../../domain/execution.js'
 import { codeHostProviders, codeHostsOf } from '../../codehost/registry.js'
 import {
@@ -1916,7 +1915,10 @@ export function agentRoutes(deps: HttpDeps) {
           req.body.modelProvider &&
           !wantsSet &&
           placedDaemon &&
-          !advertises(placedDaemon.capabilities.features, [AGENT_MODEL_PROVIDER_FEATURE])
+          !advertises(
+            placedDaemon.capabilities.features,
+            requiredDaemonFeatures({ modelProvider: req.body.modelProvider })
+          )
         ) {
           return conflict('upgrade the selected daemon before using a provider API key')
         }
@@ -2610,7 +2612,8 @@ export function agentRoutes(deps: HttpDeps) {
             }
             const serving = await deps.agentDelivery.daemonsFor(existing)
             const daemons = await Promise.all(serving.map((id) => deps.registry.getAvailable(orgOf(req), DaemonId(id))))
-            if (daemons.some((daemon) => !advertises(daemon?.capabilities.features, [AGENT_MODEL_PROVIDER_FEATURE]))) {
+            const required = requiredDaemonFeatures({ modelProvider: req.body.modelProvider })
+            if (daemons.some((daemon) => !advertises(daemon?.capabilities.features, required))) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,

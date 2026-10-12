@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   GITLAB_COM_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
+  AGENT_MODEL_PROVIDER_FEATURE,
+  AGENT_MODEL_PROVIDER_AUTO_FEATURE,
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
@@ -21,6 +23,13 @@ const SELF_MANAGED = 'https://gitlab.example.test'
 const workspace = (mode: string) => ({ workspace: { mode } as AgentRecord['workspace'] })
 
 describe('§17.3 snapshot projection gate predicate', () => {
+  it('requires automatic credential selection support only for the automatic source', () => {
+    expect(daemonSupportsAgent({ modelProvider: 'anthropic' }, [AGENT_MODEL_PROVIDER_FEATURE])).toBe(true)
+    expect(daemonSupportsAgent({ modelProvider: 'auto' }, [AGENT_MODEL_PROVIDER_FEATURE])).toBe(false)
+    expect(
+      daemonSupportsAgent({ modelProvider: 'auto' }, [AGENT_MODEL_PROVIDER_FEATURE, AGENT_MODEL_PROVIDER_AUTO_FEATURE])
+    ).toBe(true)
+  })
   it('requires chain support only for model selections with additional steps', () => {
     expect(daemonSupportsAgent({ modelSelection: {} }, [])).toBe(true)
     const agent = { modelSelection: { steps: [{ id: 'next' }] } }
