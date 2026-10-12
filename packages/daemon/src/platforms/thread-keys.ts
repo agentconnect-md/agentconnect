@@ -20,6 +20,8 @@
  *    one continuous conversation keyed by their channel id.
  *  - A DM is one continuous conversation, keyed `dm` on Telegram and by the
  *    chat on Feishu. A post into one joins it; it never starts a second.
+ *  - A Google Chat Space post keys on the thread Google put it in, which the
+ *    gateway reports (`threadOfPost`); a Google Chat DM is keyed by its Space.
  *
  * Whether the target is a DM is not derivable from the id, so callers pass what
  * the platform reports (`isIm` from `getChannelInfo`), defaulting to a non-DM
@@ -49,7 +51,9 @@ const STRATEGIES = new Map<string, ThreadKeyStrategy>([
   // namespace; DMs are one continuous conversation.
   ['telegram', { key: (_channel, ts, isDm) => (isDm ? 'dm' : /^\d+$/.test(ts) ? `tg:${ts}` : ts), dmSensitive: true }],
   // Group chats thread off the post; a DM is keyed by the chat itself.
-  ['feishu', { key: (channel, ts, isDm) => (isDm ? channel : ts), dmSensitive: true }]
+  ['feishu', { key: (channel, ts, isDm) => (isDm ? channel : ts), dmSensitive: true }],
+  // A Space keys on the post's `spaces/…/threads/…` (the gateway's `threadOfPost`), a DM on the Space itself.
+  ['googlechat', { key: (channel, thread, isDm) => (isDm ? channel : thread), dmSensitive: true }]
 ])
 
 /** Whether the platform's root-post session key depends on DM classification. */
