@@ -299,7 +299,7 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
   external, and that detection is never lifted by a later listing.
 - **Output no event triggered asks first.** A place learns of a share from its next event, so
   before a post no event from that place triggered — a scheduled or hook run and its anchor
-  message, a report round, a post a grant lets through from another place, a reminder, a
+  message, a report round, a post from another place, a reminder, a
   sub-session's permission card, a patrol's proposal card — the daemon asks the platform whether
   the place is shared now, for assistant-mode agents only: on Slack the share flags of
   `conversations.info`, read through the channel lookup a platform module declares
@@ -379,11 +379,12 @@ line is context, not an instruction; no tool's parameters change, and instants t
 > **Read**: judged by who is asking, for every agent (§5.5 "Reads"): a source is readable when the
 > person behind the request may see it, and whether to bring it into this conversation is that
 > person's call. A turn no person is behind reads only public channels on its own bot.
-> **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
-> act directly only on **the current place**; a post to another place is a draft the asker
-> approves (below). Item and report traffic across places goes through §5.7 as structured fields.
-> The agent-to-agent forms of `sendMessage` are unchanged, except in a session marked by a
-> private read in a 1:1 conversation (below).
+> **Write**: judged by who is asking, for every agent (§5.5 "Writes"): a platform write tool
+> (`sendMessage`, `scheduleMessage`, reactions, bookmarks, canvases, lists, `createConversation`…)
+> acts on the current place and wherever every person asking could post themselves; a post into an
+> external place from elsewhere is a draft an internal member approves (below). Item and report
+> traffic across places goes through §5.7 as structured fields. The agent-to-agent forms of
+> `sendMessage` are unchanged.
 > **External**: an external place reads like an internal one; what it posts is a draft.
 
 | Current place                | Readable sources                                             | Memory / knowledge | Output                                                |
@@ -410,22 +411,64 @@ below), so opening it everywhere does not reopen what the read rule closes.
 - Any other card that would land in an external place (a runtime permission request, a
   `propose`) goes to the same DM instead: a card is output too.
 
-**Posts to another place:**
+**Posts from another place into an external one:**
 
-- Asked to post somewhere other than the current place — another channel, a DM, a conversation
-  on another platform — the agent drafts the post instead of sending it. Only places where this
-  agent is enabled can be targets.
-- The draft goes to the same approver as an external place's draft, showing the target and the
-  exact text; **approve** posts it unchanged, **discard** drops it. A target that is itself
-  external needs no second approval.
-- The card offers **"always allow from here to there"**, keyed by the pair of places: a route used
-  often (a DM to the support channel) stops asking, and a grant never covers another source
-  place. Grants live in the daemon store beside the approval records and end when assistant mode
-  is switched off; listing and revoking them comes with Activity (P1).
+- A post into an external place from another conversation, or into one the platform could not
+  confirm is not shared now, is drafted to the same approver as an external place's draft, showing
+  the target and the exact text; **approve** posts it unchanged, **discard** drops it. Any other
+  write aimed at an external place from elsewhere is refused.
 - Whether a post needs approval follows from where it goes, never from the model's own judgment
   of how sensitive it is — a judgment a message in the conversation could talk it out of.
-- A session with no place of its own (a hook, a cron run) drafts every platform post, approved by
-  the responsible user or in the fallback conversation.
+- A session no person is behind (a hook, a cron run that records no person) drafts every platform
+  post aimed outside its own conversation, approved by the responsible user or in the fallback
+  conversation.
+
+**Writes — judged by who is asking (issue #2979, items B1 and B2):**
+
+- **The change.** Until now an assistant-mode agent drafted every post to another place, for the
+  asker to approve, and refused every other write there; "always allow from here to there" grants
+  let a route stop asking. Agents outside assistant mode had only a Slack reach rule (a public
+  channel, or a private one only where the agent was invoked) and nothing on other platforms or for
+  the other write tools. The product owner's rule replaces both: the agent may post wherever the
+  person asking could post, what is posted is that person's call, and the machine only checks
+  access. Drafting a post the asker could have made themselves only made the agent slower than
+  their own copy and paste, so internal posts are no longer drafted and the grants are removed:
+  their table is no longer created or read, and existing rows are left unread rather than migrated.
+  The rule itself is in [product-conventions.md](../product-conventions.md), "Writing to other
+  conversations".
+- **One choke point.** `judgePlaceWrite` in `mcp/ops/place-gate.ts` judges every platform write
+  once its target is resolved: `sendMessage` through `judgePost` (before the platform is read for
+  a named thread, so no error tells a closed place from a missing one), and `scheduleMessage`,
+  `addReaction`, `deleteMessage`, the bookmark, canvas and list writes and `createConversation`
+  through `judgeWrite`, which the dispatcher hands every handler. Another conversation is judged by
+  the read rule's `askerMayRead` for every person on the turn, so B3's asker resolution and its
+  owner-only console check apply unchanged.
+- **Direct messages** go only to a member of the organization: where the platform declares
+  `workspaceMembers` (Slack), a full member of the target bot's workspace; elsewhere the platform's
+  own limits stand. A new conversation is opened only with such members, and made only for a full
+  member. A canvas or a list is judged by the conversations it is shared in, from a new read port
+  `documentReach` (Slack's `files.info`); one the platform cannot fully list is not changed.
+- **External targets.** A post into an external place from elsewhere is drafted for every agent:
+  the drafts machinery (record, Slack card, expiry sweep, click handling) is not assistant-only, so
+  an agent outside assistant mode uses it with one change, routing only to the asker when they are
+  a full member and refusing the post otherwise, since it has no responsible user, fallback
+  conversation or Activity view. In assistant mode a post from elsewhere first asks Slack whether the
+  target is shared now (§5.3), as a granted post did; outside it, the integration's recorded
+  external conversations decide.
+- **No person behind the turn** writes only to its own conversation, which for an anchored hook or
+  schedule is its configured target; assistant mode drafts other posts as before, and every other
+  agent is refused.
+- **The enabled-target requirement is removed**: a drafted post no longer needs its target to be a
+  conversation where the agent is enabled, since the write rule already decides where the people
+  asking may post. It is a separate change so that it can be reverted alone.
+- **The 1:1 write bar is removed.** A DM or webchat conversation that read a private place under the
+  person's access no longer refuses posts elsewhere, item changes or agent-to-agent sends until
+  `!new`: posts follow the rule above, the item ledger keeps recording only who asked for what, and
+  an agent-to-agent child session keeps the DM's visibility. The mark's table is no longer created
+  or read.
+- **Unchanged**: replies inside an external place (B4), joining a public Slack channel (the bot's
+  `joinPublicChannels` setting), memory, and the agent-to-agent forms of `sendMessage`, whose
+  channel form keeps the Slack reach rule.
 
 **Reads — judged by who is asking (issue #2979, item B3):**
 
@@ -469,19 +512,8 @@ below), so opening it everywhere does not reopen what the read rule closes.
   console account is also told how linking opens reads across platforms and bots, on every refusal,
   so the hint never tells a closed place from a missing one. A read of a private source carries a
   `privateSource` note naming it, and the model is asked to mention the source in one short clause.
-- **A 1:1 conversation that read a private channel or group DM in assistant mode writes only to
-  itself.** The trigger and scope are those of the earlier per-asker widening (P's DM; a webchat
-  conversation, the console's 1:1, alike), and B3 does not extend it to shared conversations; its
-  future belongs to B1. The recalled content stays in the long-session context, so the restriction
-  follows the session, not the turn: from the first such read until the session is retired (`!new`,
-  or a rollover that starts a fresh context), every turn in it is refused ledger writes (taking,
-  updating or following an item: item summaries and observations are team-visible and feed every
-  place's standing summary), self-delegation, posts or drafts aimed at any other place, and every
-  agent-to-agent send. The mark is stored with the session so it survives a restart or handover,
-  and the refusal tells P that starting a new conversation lifts it. Any session that reads the
-  DM's own history back while a session there was marked is marked too, a sub-session or patrol
-  included. This is a refusal by tool, not an output filter; writes that leave through other tools
-  are an open question (§9).
+- **A read restricts nothing afterwards.** The 1:1 write bar B3 kept is removed by B1/B2 (§5.5
+  "Writes").
 - **Revocation**: after P leaves a place, excerpts already in a conversation's context stay there;
   new reads are refused once the cached membership expires.
 - **"Ask me in a DM"** is retired: a DM is readable from anywhere by its own person, and nothing
@@ -809,12 +841,11 @@ conversation only raises an unread badge.
 The first version (#2876) shows what exists today, for assistant-mode agents only, read and
 changed through the daemon without anything persisted on the Control Plane:
 
-| Section                                         | Who sees it                                                                                                                                                          | Who may change it                                                                                                                                       |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Items (open, then done and dropped)             | anyone who can view the agent; the places an item is followed from, never who follows it or what was said; the next check, which wakes a patrol (§5.9)               | editors delete an item                                                                                                                                  |
-| Sub-sessions                                    | anyone who can view the agent sees state and start time; the title, the session link and the conversation that opened it only where the viewer may open that session | —                                                                                                                                                       |
-| Pending drafts                                  | editors                                                                                                                                                              | editors approve, approve and always allow, or discard (#2880) — the same decision path as the card, so a card click and a console decision execute once |
-| Post grants ("always allow from here to there") | editors                                                                                                                                                              | editors revoke a grant                                                                                                                                  |
+| Section                             | Who sees it                                                                                                                                                          | Who may change it                                                                                                            |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Items (open, then done and dropped) | anyone who can view the agent; the places an item is followed from, never who follows it or what was said; the next check, which wakes a patrol (§5.9)               | editors delete an item                                                                                                       |
+| Sub-sessions                        | anyone who can view the agent sees state and start time; the title, the session link and the conversation that opened it only where the viewer may open that session | —                                                                                                                            |
+| Pending drafts                      | editors                                                                                                                                                              | editors approve or discard (#2880) — the same decision path as the card, so a card click and a console decision execute once |
 
 Deleting an item drops it from the standing summary at the next reminder; its followers are not
 told. A console decision that cannot be confirmed keeps its row and tells the editor to check the
@@ -896,10 +927,8 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 7. **Wording of item summaries**: the restatement when an item is taken is the only review point
    for what becomes team-visible.
 8. Whether distillation on a normal OpenCode host runs under `plan` (live, unverified).
-9. **Other writes from a session marked by a private read**: code-host comments and issues, MCP
-   tools and a shell with network access are not refused, so recalled content can still leave
-   P's DM through them, on P's request or in a later turn. Closing them means a restricted tool
-   set for marked sessions, which would leave the DM little more than read-only until `!new`.
+9. **Settled by B1/B2**: with no marked sessions left (§5.5 "Writes"), what a person's request
+   sends out of a conversation is that person's call, through any tool.
 
 ---
 
@@ -1122,3 +1151,12 @@ Control Plane, so no second rule exists to drift from it. Runs a person started 
 a sub-session as its opener, a patrol or a task as its item's asker, a schedule as its last editor.
 The 1:1 write bar keeps its trigger and is not extended to shared conversations; writes, memory and
 the item ledger are unchanged.
+
+**Twenty-fifth revision (2026-10-13)**: writes are judged by who is asking, for every agent (issue
+#2979, items B1 and B2; §5.5 "Writes"). The same principle as the read rule: the agent may post
+wherever the person asking could post, and what is posted is their call. Posts to internal places
+are no longer drafted, so the "always allow from here to there" grants and their Activity section
+are removed, and so is the requirement that a drafted post's target be an enabled place. A post
+into an external place from elsewhere is still drafted, now for every agent. The 1:1 write bar is
+removed: it refused a person writes they could make themselves. A turn no person is behind writes
+only to its own conversation.
