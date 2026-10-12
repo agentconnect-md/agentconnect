@@ -705,8 +705,8 @@ export class TelegramConnection implements PlatformConnection {
       id: String(c.id ?? channel),
       name: (c.title ?? c.username ?? privateName) || undefined,
       isIm: c.type === 'private',
-      // A group/supergroup without a public @username is effectively private.
-      isPrivate: c.type === 'group' || c.type === 'supergroup' ? !c.username : c.type !== 'channel'
+      // Only a group or channel with a public @username is open to anyone.
+      isPrivate: c.type === 'private' || !c.username
     }
   }
 

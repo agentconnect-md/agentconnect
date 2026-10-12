@@ -38,7 +38,9 @@ export const CronUpsert = z.object({
   timezone: z.string().min(1), // resolved IANA timezone; daemon converts ticks to UTC instants
   target: CronTarget.optional(), // absent ⇒ headless fire
   trigger: z.string(), // synthetic prompt text injected on fire
-  enabled: z.boolean().default(true)
+  enabled: z.boolean().default(true),
+  // The console user its runs read as (assistant-mode.md §5.5): its last human editor, else its creator; absent ⇒ no person.
+  askerUserId: z.string().min(1).max(256).optional()
 })
 export type CronUpsert = z.infer<typeof CronUpsert>
 

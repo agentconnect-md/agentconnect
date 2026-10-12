@@ -57,6 +57,7 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
+  READ_ACCESS_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
@@ -329,7 +330,8 @@ import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { assistantSubsessionToolsFor, type SubsessionStopper } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
-import { PlaceMembers } from './assistant/place-members.js'
+import { askerOfFollower, PlaceMembers, turnAskers, type TurnMessage } from './assistant/place-members.js'
+import { NOBODY, type ConsoleVerdict, type ReadAsker, type TurnAskers } from './assistant/place-access.js'
 import { personCouldActivate } from './assistant/place-askers.js'
 import { AssistantPatrols, PATROL_SWEEP_INTERVAL_MS, patrolTools, type PatrolParent } from './assistant/patrol.js'
 import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
@@ -1812,11 +1814,14 @@ export class Daemon {
   private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
   // A conversation's privacy as its platform reported it on a channel lookup (`PlatformChannelInfo.isPrivate`), by id.
   private readonly conversationPrivacy = new Map<string, boolean>()
-  /** Live membership behind assistant mode's per-asker reads (assistant-mode.md §5.5). */
+  /** The live lookups behind every agent's cross-place reads (assistant-mode.md §5.5). */
   private readonly placeMembers = new PlaceMembers({
     now: () => this.clock.now(),
-    gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId)
+    gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
+    readAccess: (agentId, asker, sessionIds) => this.readAccess(agentId, asker, sessionIds)
   })
+  /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
+  private readonly subsessionOpeners = new Map<string, TurnAskers>()
   /** Places of assistant-mode agents turning external, and the transition that follows (assistant-mode.md §5.3). */
   private readonly placeTrust = new PlaceTrust({
     integration: (integrationId) => this.integrationConfigById(integrationId),
@@ -3927,16 +3932,15 @@ export class Daemon {
       assistantModeFor: (agentId) => this.agents.get(agentId)?.assistantMode?.enabled === true,
       placeIntegrationFor: (agentId, platform, transportScope) =>
         this.integrationIdForTransportScope(agentId, platform, transportScope),
-      // The membership listing and observed chats already carry each conversation's `isPrivate`.
-      placeSnapshot: (integrationId, channel) =>
-        this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel),
+      // Only a complete membership listing confirms a channel public; an observed row's `false` is asked again.
+      placeSnapshot: (integrationId, channel) => this.readPlaceSnapshot(integrationId, channel),
       placeStore: this.store,
       // Assistant mode's drafts (assistant-mode.md §5.5): an external place refuses other writes, a post elsewhere is drafted.
       placeExternal: (ctx) => this.assistantPlaceExternal(ctx.agentId, ctx.integrationId, ctx.channel),
       assistantDraftPost: (ctx, post) => this.assistantDraftPost(ctx, post),
-      // Per-asker scoping (assistant-mode.md §5.5): the DM's own counterpart asking, and their live membership elsewhere.
-      placeAsker: (ctx) => this.placeMembers.askerIn(ctx, this.liveTurn(ctx)?.msg),
-      placeMember: (integrationId, channel, userId) => this.placeMembers.isMember(integrationId, channel, userId),
+      // The read rule (assistant-mode.md §5.5): who is asking on the live turn, and the lookups that judge them.
+      readAskers: async (ctx) => this.readAskersFor(ctx),
+      readLookups: (agentId) => this.placeMembers.lookupsFor(agentId),
       widenedSession: {
         mark: async (ctx) => {
           const place = { platform: ctx.platform, channel: ctx.channel }
@@ -8623,6 +8627,101 @@ export class Daemon {
     return this.activeGateEntries.get(this.sessionKeyOf(ctx))
   }
 
+  /** Who is asking on a session's live turn: its message's sender and every message folded into it (assistant-mode.md §5.5). */
+  private async readAskersFor(ctx: SessionContext): Promise<TurnAskers> {
+    const key = this.sessionKeyOf(ctx)
+    return this.askersOfKey(key, ctx.integrationId, await this.openerOf(ctx, key))
+  }
+
+  /** Whom a sub-session's messages no person sent speak for: a patrol's or a task's item asker, else whoever opened it. */
+  private async openerOf(ctx: SessionContext, key: string): Promise<TurnAskers | undefined> {
+    if (isPatrolCoordinate(ctx.thread))
+      return await this.itemAskers(ctx.agentId, await this.patrols.itemFor(ctx.agentId, key))
+    if (isTaskCoordinate(ctx.thread)) {
+      const task = await this.store.assistantDrafts.taskBySubsession(ctx.agentId, key).catch(() => undefined)
+      return await this.itemAskers(ctx.agentId, task?.proposal?.itemId)
+    }
+    return isSubsessionCoordinate(ctx.thread) ? (this.subsessionOpeners.get(key) ?? NOBODY) : undefined
+  }
+
+  /** The person recorded as having asked for an item: its first follower, on the bot the item came through. */
+  private async itemAskers(agentId: string, itemId: string | undefined): Promise<TurnAskers> {
+    const item = itemId ? await this.store.assistantItems.get(agentId, itemId).catch(() => undefined) : undefined
+    const first = item?.followers[0]
+    if (!first) return NOBODY
+    const bot = this.integrationIdForTransportScope(agentId, first.place.platform, first.place.transportScope)
+    const asker = askerOfFollower(first.identity, first.place.platform, bot)
+    return asker ? { people: [asker], nobody: false } : NOBODY
+  }
+
+  private askersOfKey(key: string, bot: string | undefined, opener?: TurnAskers): TurnAskers {
+    const live = this.activeGateEntries.get(key)
+    if (!live) return NOBODY
+    return turnAskers([this.turnMessageOf(live), ...(live.foldedMessages ?? [])], bot ?? live.integrationId, opener)
+  }
+
+  /** The read rule's view of a queued message: its bot, whether the console sent it, and a schedule's recorded person. */
+  private turnMessageOf(entry: QueueEntry): TurnMessage {
+    const cronId = entry.msg.source === 'cron' ? entry.msg.cronRun?.cronId : undefined
+    const userId = cronId ? this.cpCrons?.askerOf(cronId) : undefined
+    return {
+      msg: entry.msg,
+      ...(entry.integrationId ? { integrationId: entry.integrationId } : {}),
+      ...(entry.webchat && entry.webchat.initiator !== 'agent' ? { console: true } : {}),
+      ...(userId ? { person: { kind: 'console' as const, userId } } : {})
+    }
+  }
+
+  /** A message folded into the live turn joins the people it reads for; recorded before the model can see it. */
+  private noteFoldedMessage(key: string, entry: QueueEntry): void {
+    const live = this.activeGateEntries.get(key)
+    if (live && live !== entry) (live.foldedMessages ??= []).push(this.turnMessageOf(entry))
+  }
+
+  /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */
+  private noteSubsessionOpener(childKey: string, parentKey: string): void {
+    this.subsessionOpeners.delete(childKey)
+    this.subsessionOpeners.set(childKey, this.askersOfKey(parentKey, undefined))
+    if (this.subsessionOpeners.size > 512) {
+      const oldest = this.subsessionOpeners.keys().next().value
+      if (oldest !== undefined) this.subsessionOpeners.delete(oldest)
+    }
+  }
+
+  /** The console's session visibility for whoever is behind the asker; rejects when the Control Plane cannot be asked. */
+  private async readAccess(agentId: string, asker: ReadAsker, sessionIds: readonly string[]): Promise<ConsoleVerdict> {
+    const cp = this.cpClient
+    if (cp?.supportsServerFeature?.(READ_ACCESS_V1_FEATURE) !== true) throw new Error('read access unavailable')
+    const res = await cp.readAccess(
+      {
+        agentId,
+        asker:
+          asker.kind === 'console'
+            ? { consoleUserId: asker.userId }
+            : { integrationId: asker.integrationId, memberId: asker.userId },
+        sessionIds: [...sessionIds]
+      },
+      this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+    )
+    return res.asker === 'linked' ? { asker: 'linked', visible: new Set(res.visibleSessionIds) } : { asker: res.asker }
+  }
+
+  /** A snapshot row for the read rule: its privacy only from a complete listing, or when it says private. */
+  private readPlaceSnapshot(
+    integrationId: string,
+    channel: string
+  ): { kind?: 'channel' | 'im' | 'mpim'; isPrivate?: boolean; name?: string } | undefined {
+    const snapshot = this.channelSnapshots.get(integrationId)
+    const row = snapshot?.channels.find((c) => c.id === channel)
+    if (!row) return undefined
+    const confirmed = snapshot?.authoritative === true || row.isPrivate === true
+    return {
+      ...(row.kind ? { kind: row.kind } : {}),
+      ...(confirmed && row.isPrivate !== undefined ? { isPrivate: row.isPrivate } : {}),
+      ...(row.name ? { name: row.name } : {})
+    }
+  }
+
   /** The console's Stop and the main conversation's `stopSubsession` alike: the `!cancel` core, logged with who asked. */
   private async stopSessionByKey(key: string, actor?: InteractionActor): Promise<boolean> {
     const applied = await this.commands.cancelSessionByKey(key, actor)
@@ -12921,6 +13020,7 @@ export class Daemon {
    *  as coalesced instead of queueing it. Returns false when nothing absorbed this message. */
   private async coalesceLateAdmission(key: string, entry: QueueEntry): Promise<boolean> {
     if (!this.claimAbsorbedContext(key, transcriptCoords(entry.msg).ts)) return false
+    this.noteFoldedMessage(key, entry)
     const sessionId = [...this.pending.values()].find((p) => p.plan.sessionKey === key)?.acpSessionId
     await this.coalesceEntryIntoTurn(entry, sessionId ?? null)
     defaultTurnOutputMetrics.queueCoalesced(entry.msg.platform, 1)
@@ -12989,6 +13089,8 @@ export class Daemon {
     if (!host?.steeringSupported?.()) return false
     // Attempts, not successes: a runtime that keeps declining is not asked without bound.
     target.steerCount = (target.steerCount ?? 0) + 1
+    // Before the runtime has it, so no read in the live turn can run without its sender; a declined steer only narrows.
+    this.noteFoldedMessage(key, entry)
     let outcome: Awaited<ReturnType<AcpHost['steer']>>
     try {
       // `promptRequired`: a steer that races the turn end is declined, never a turn we did not admit.
@@ -13035,6 +13137,7 @@ export class Daemon {
         continue
       }
       count += 1
+      this.noteFoldedMessage(key, entry)
       await this.coalesceEntryIntoTurn(entry, sessionId)
     }
     if (kept.length > 0) this.serialQueue.set(key, kept)
@@ -13514,6 +13617,7 @@ export class Daemon {
       draining: () => this.draining,
       serialQueue: () => this.serialQueue,
       activeGateEntries: () => this.activeGateEntries,
+      noteSubsessionOpened: (childKey, parentKey) => this.noteSubsessionOpener(childKey, parentKey),
       sdkLease: () => this.sdkLease,
       safetyDrained: (agentId) => this.waitForSafetyDrain(agentId),
       cpClient: () => this.cpClient,

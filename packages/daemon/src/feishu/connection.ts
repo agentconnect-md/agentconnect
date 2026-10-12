@@ -222,10 +222,14 @@ export interface FeishuApi {
   /** im.message.create/reply (msg_type 'image') for an already-hosted `image_key`. */
   createImage(chatId: string, imageKey: string): Promise<{ messageId?: string }>
   replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string }>
-  /** im.chat.get. */
-  getChat(chatId: string): Promise<{ id: string; name?: string; chatMode?: string }>
+  /** im.chat.get; `chatType` is `public` or `private`, and `external` a chat shared with another tenant. */
+  getChat(
+    chatId: string
+  ): Promise<{ id: string; name?: string; chatMode?: string; chatType?: string; external?: boolean }>
   /** im.chatMembers.get (capped). */
   listChatMembers(chatId: string, cap: number): Promise<{ id: string; name?: string; isBot?: boolean }[]>
+  /** One page of im.chatMembers.get by union_id, the id a message sender carries. */
+  listChatMemberUnionIds?(chatId: string, pageToken?: string): Promise<{ ids: string[]; nextPageToken?: string }>
   /** im.chat.list (capped). */
   listChats(cap: number): Promise<{ id: string; name?: string }[]>
   /** contact.user.get. */
@@ -432,10 +436,16 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
     },
     async getChat(chatId) {
       const res = (await client.im.chat.get({ path: { chat_id: chatId } })) as {
-        data?: { name?: string; chat_mode?: string }
+        data?: { name?: string; chat_mode?: string; chat_type?: string; external?: boolean }
       }
       const d = res?.data ?? {}
-      return { id: chatId, ...(d.name ? { name: d.name } : {}), ...(d.chat_mode ? { chatMode: d.chat_mode } : {}) }
+      return {
+        id: chatId,
+        ...(d.name ? { name: d.name } : {}),
+        ...(d.chat_mode ? { chatMode: d.chat_mode } : {}),
+        ...(d.chat_type ? { chatType: d.chat_type } : {}),
+        ...(typeof d.external === 'boolean' ? { external: d.external } : {})
+      }
     },
     async listChatMembers(chatId, cap) {
       const res = (await client.im.chatMembers.get({
@@ -445,6 +455,22 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
       return (res?.data?.items ?? [])
         .slice(0, cap)
         .map((i) => ({ id: i.member_id ?? '', ...(i.name ? { name: i.name } : {}) }))
+    },
+    async listChatMemberUnionIds(chatId, pageToken) {
+      const res = assertApiSuccess(
+        (await client.im.chatMembers.get({
+          path: { chat_id: chatId },
+          params: { member_id_type: 'union_id', page_size: 100, ...(pageToken ? { page_token: pageToken } : {}) }
+        })) as {
+          code?: number
+          msg?: string
+          data?: { items?: { member_id?: string }[]; has_more?: boolean; page_token?: string }
+        },
+        'im.chatMembers.get'
+      )
+      const ids = (res.data?.items ?? []).flatMap((i) => (i.member_id ? [i.member_id] : []))
+      const next = res.data?.has_more === true ? res.data.page_token : undefined
+      return { ids, ...(next ? { nextPageToken: next } : {}) }
     },
     async listChats(cap) {
       const res = (await client.im.chat.list({ params: { page_size: cap } })) as {
@@ -515,6 +541,8 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 /** Cap on channels/members enumerated per read call (bounds the response). */
 const CHANNEL_CAP = 200
 const MEMBER_CAP = 50
+/** Pages of 100 a full member listing may take before it is given up as unfinished. */
+const MEMBER_ID_PAGES = 100
 const FEISHU_CHANNEL_HISTORY_DEFAULT_LIMIT = 50
 const FEISHU_CHANNEL_HISTORY_MAX_LIMIT = 50
 const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
@@ -1387,8 +1415,8 @@ export class FeishuConnection implements PlatformConnection {
         id: channel,
         ...(c.name ? { name: c.name } : {}),
         isIm: c.chatMode === 'p2p',
-        // A chat's visibility isn't reported cheaply here; treat as non-private best-effort.
-        isPrivate: false
+        // Only a public group of this tenant is public; a chat whose type was not reported stays undetermined.
+        ...(c.chatType ? { isPrivate: c.chatType !== 'public' || c.external === true } : {})
       }
     } catch (err) {
       this.rememberPermissionIssue(err, channel)
@@ -1405,6 +1433,24 @@ export class FeishuConnection implements PlatformConnection {
       this.deps.log?.debug(`feishu: listMembers failed (ch=${channel}): ${(err as Error).message}`)
       return []
     }
+  }
+
+  /** Every member's union_id, all pages; a repeated page token is a failure, never a short answer. */
+  async listMemberIds(channel: string): Promise<string[]> {
+    const list = this.handle.api.listChatMemberUnionIds
+    if (!list) throw new Error('feishu: no member listing on this client')
+    const ids: string[] = []
+    const seen = new Set<string>()
+    let token: string | undefined
+    for (let page = 0; page < MEMBER_ID_PAGES; page += 1) {
+      const res = await list.call(this.handle.api, channel, token)
+      ids.push(...res.ids)
+      if (!res.nextPageToken) return ids
+      if (seen.has(res.nextPageToken)) break
+      seen.add(res.nextPageToken)
+      token = res.nextPageToken
+    }
+    throw new Error('feishu: the member listing did not finish')
   }
 
   async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {

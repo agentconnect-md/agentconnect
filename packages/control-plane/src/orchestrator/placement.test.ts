@@ -7,9 +7,15 @@
  */
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { httpIntegrationToSpec, integrationToSpec, isGatedAgent, type SpecOwner } from './placement.js'
+import { cronToUpsert, httpIntegrationToSpec, integrationToSpec, isGatedAgent, type SpecOwner } from './placement.js'
 import { agentRecordToSpec } from './agentSpecAssembler.js'
-import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
+import type {
+  AgentRecord,
+  BotRecord,
+  CronRecord,
+  IntegrationChannelRecord,
+  IntegrationRecord
+} from '../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
 import { buildCpPlatformRegistry } from '../platforms/registry.js'
 import { createSlackCpProvider } from '../platforms/slack/provider.js'
@@ -1093,5 +1099,40 @@ describe('agentRecordToSpec runtime overrides', () => {
 
     expect(agentRecordToSpec(base, { API_KEY: 'sk-1' })).toMatchObject({ secrets: { API_KEY: 'sk-1' } })
     expect(agentRecordToSpec(base, {})).toMatchObject({ secrets: {} })
+  })
+})
+
+describe('cronToUpsert asker (assistant-mode.md §5.5)', () => {
+  const cron = (over: Partial<CronRecord>): CronRecord =>
+    ({
+      id: '55555555-5555-4555-8555-555555555555',
+      orgId: OrgId('org-1'),
+      agentId: AgentId('66666666-6666-4666-8666-666666666666'),
+      name: null,
+      schedule: '0 9 * * 1-5',
+      timezone: 'UTC',
+      targetPlatform: 'slack',
+      targetChannel: null,
+      targetIntegrationId: null,
+      trigger: 'report',
+      enabled: true,
+      lastRunAt: null,
+      createdBy: null,
+      createdByUserId: null,
+      visibility: 'org',
+      sharedWith: [],
+      createdAt: new Date(0),
+      lastModifiedAt: new Date(0),
+      lastModifiedBy: null,
+      ...over
+    }) as CronRecord
+
+  it('reads as the last human editor, else the creator, and as nobody when neither is recorded', () => {
+    const editor = { userId: 'user-editor', displayName: null, email: 'e@example.test' }
+    expect(cronToUpsert(cron({ createdByUserId: 'user-creator', lastModifiedBy: editor }))?.askerUserId).toBe(
+      'user-editor'
+    )
+    expect(cronToUpsert(cron({ createdByUserId: 'user-creator' }))?.askerUserId).toBe('user-creator')
+    expect(cronToUpsert(cron({}))).not.toHaveProperty('askerUserId')
   })
 })

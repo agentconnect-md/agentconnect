@@ -1,30 +1,31 @@
 // `recall` (assistant-mode.md §5.4 ③): this agent's own transcript from another place, under the read rule of §5.5.
 import { z } from 'zod'
 import {
-  checkPlaceRead,
+  askerMayRead,
+  askerUnlinked,
+  CLOSED_LOOKUPS,
+  NOBODY,
   NOT_SHARED_HERE,
-  placeReadRefusal,
-  placeRefusalMessage,
+  NOT_SHARED_UNLINKED,
+  readRefusal,
   samePlace,
+  sourceClass,
   type PlaceKind,
-  type PlaceRef
+  type PlaceRef,
+  type SourcePlace,
+  type TurnAskers
 } from '../../assistant/place-access.js'
 import { transcriptChannelKey, type SessionRecord, type TranscriptRow } from '../../store/local-store.js'
 import { optionalString, parseArgs } from './args.js'
 import type { SessionContext } from './context.js'
 import { knownIntegrations } from './gateway.js'
-import {
-  askerMembership,
-  carryPlaceMark,
-  describePlace,
-  kindFromRows,
-  type PlaceAccessDeps,
-  type PlaceStore
-} from './place-gate.js'
+import { describePlace, judgePlaceRead, kindFromRows, type PlaceAccessDeps, type PlaceStore } from './place-gate.js'
 
 export const RECALL_ARGS = z.object({ place: optionalString('place'), query: optionalString('query') })
 
 const DESCRIBED_PLACES = 40
+/** The sessions of a place recall reads, newest first: the ones a cross-platform read is checked against. */
+const RECALLED_SESSIONS = 8
 const LISTED_PLACES = 30
 const SCANNED_ROWS = 600
 const PAGE_ROWS = 100
@@ -64,22 +65,21 @@ async function placesOf(ctx: SessionContext, store: PlaceStore): Promise<Place[]
 const integrationOf = (ctx: SessionContext, place: Place, deps: PlaceAccessDeps) =>
   deps.placeIntegrationFor?.(ctx.agentId, place.platform, place.sessions[0]?.transportScope)
 
-function describe(ctx: SessionContext, place: Place, deps: PlaceAccessDeps) {
-  return describePlace(place, rowKindOf(place), integrationOf(ctx, place, deps), deps)
+/** The sessions recall reads there; a cross-platform read checks them all, and one without an outward id is never shown. */
+const recalledSessions = (place: Place): SessionRecord[] => place.sessions.slice(0, RECALLED_SESSIONS)
+
+async function describe(ctx: SessionContext, place: Place, deps: PlaceAccessDeps, name?: string): Promise<SourcePlace> {
+  const described = await describePlace(place, rowKindOf(place), integrationOf(ctx, place, deps), deps)
+  const ids = recalledSessions(place).map((s) => s.sessionId)
+  const sessions = ids.every((id): id is string => !!id) ? ids : []
+  return { ...described, ...(name ? { name } : {}), sessions }
 }
 
-/** The bot a private place opens through for the asker: the DM's own, and only when every session there came through it. */
-function askerBotOf(ctx: SessionContext, place: Place, deps: PlaceAccessDeps): string | undefined {
-  const scope = ctx.transportScope ?? null
-  if (place.sessions.some((s) => (s.transportScope ?? null) !== scope)) return undefined
-  return integrationOf(ctx, place, deps)
-}
-
-/** What every refusal but a DM's returns, and an unknown place too, so no answer tells a private place from none. */
-const notSharedHere = (handle: string) => ({
+/** What every refusal returns, and an unknown place too, so no answer tells a closed place from none. */
+const notSharedHere = (handle: string, unlinked = false) => ({
   place: handle,
   refused: true,
-  answer: NOT_SHARED_HERE,
+  answer: unlinked ? NOT_SHARED_UNLINKED : NOT_SHARED_HERE,
   note: 'Call recall without `place` to list the conversations you can recall from here.'
 })
 
@@ -95,18 +95,24 @@ const iso = (ms: number): string | undefined => (Number.isFinite(ms) && ms > 0 ?
 async function listing(ctx: SessionContext, places: Place[], deps: PlaceAccessDeps, names: Map<string, string>) {
   const current: PlaceRef = { platform: ctx.platform, channel: ctx.channel }
   const listed: Record<string, unknown>[] = []
+  let askers: TurnAskers | undefined
+  const lookups = deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS
   let described = 0
   for (const place of places) {
     if (listed.length >= LISTED_PLACES) break
     const here = samePlace(current, place)
     let kind = rowKindOf(place)
     if (!here) {
-      // A direct conversation elsewhere is never recallable, so it costs no platform call.
+      // A direct conversation is never listed, so it costs no platform call.
       if (kind === 'dm' || kind === 'webchat' || described >= DESCRIBED_PLACES) continue
       described += 1
       const source = await describe(ctx, place, deps)
-      // A private place is never listed, even to a member: only a read of it by name widens, and marks (§5.5).
-      if (placeReadRefusal(current, source)) continue
+      // Only public sources every asker may read are listed: a private one is read by name, never offered (§5.5).
+      if (sourceClass(source) !== 'public') continue
+      askers ??= deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
+      const bot = integrationOf(ctx, place, deps)
+      const ownBot = place.platform === ctx.platform && bot !== undefined && bot === ctx.integrationId
+      if (await readRefusal(source, askers, (asker) => askerMayRead(asker, source, bot, lookups), ownBot)) continue
       kind = source.kind
     }
     const name = nameOf(place, names)
@@ -145,7 +151,7 @@ async function placeRows(
   const rows: TranscriptRow[] = []
   const seen = new Set<number>()
   let budget = SCANNED_ROWS
-  for (const session of place.sessions) {
+  for (const session of recalledSessions(place)) {
     const scope = {
       transcriptChannel: transcriptChannelKey(session.channel, session.transportScope),
       coordinate: session.thread,
@@ -242,21 +248,21 @@ export async function recall(
   const names = await store.getDisplayNames(places.map((p) => p.channel))
   if (handle === undefined) return await listing(ctx, places, deps, names)
   const place = resolvePlace(handle, places, names)
-  if (!place) return notSharedHere(handle)
-  const current: PlaceRef = { platform: ctx.platform, channel: ctx.channel }
-  if (!samePlace(current, place)) {
-    const member = askerMembership(ctx, deps)
-    const refusal = await checkPlaceRead('recall', current, await describe(ctx, place, deps), () =>
-      member(place, askerBotOf(ctx, place, deps))
-    )
-    if (refusal === 'direct') return { place: handle, refused: true, answer: placeRefusalMessage(refusal) }
-    if (refusal) return notSharedHere(handle)
-  } else {
-    // Its earlier sessions may hold what a widened read answered there.
-    await carryPlaceMark(ctx, 'recall', deps)
+  // An unknown place answers as a closed one, link hint included, so the answer never tells them apart.
+  if (!place) {
+    const askers = deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
+    return notSharedHere(handle, await askerUnlinked(askers, deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS))
   }
   const name = nameOf(place, names)
+  const here = samePlace({ platform: ctx.platform, channel: ctx.channel }, place)
+  // The same choke point as the platform reads; the current place only takes on its mark (§5.5).
+  const source: SourcePlace = here
+    ? { platform: place.platform, channel: place.channel }
+    : await describe(ctx, place, deps, name)
+  const verdict = await judgePlaceRead(ctx, 'recall', source, integrationOf(ctx, place, deps), deps)
+  if (verdict.refused) return notSharedHere(handle, verdict.unlinked === true)
   return {
+    ...(verdict.privateSource ? { privateSource: verdict.privateSource } : {}),
     place: placeId(place),
     ...(name ? { name } : {}),
     ...(query ? { query } : {}),

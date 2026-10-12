@@ -2761,7 +2761,7 @@ export class SlackConnection implements PlatformConnection {
         !u.deleted
       )
     } catch (err) {
-      this.deps.log?.debug(`slack: users.info failed for a draft approver: ${(err as Error).message}`)
+      this.deps.log?.debug(`slack: users.info failed for a workspace-member check: ${(err as Error).message}`)
       return false
     }
   }

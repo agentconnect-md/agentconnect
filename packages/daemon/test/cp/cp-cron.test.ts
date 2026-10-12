@@ -33,6 +33,17 @@ describe('CpCronRegistry (memory-only)', () => {
     ])
   })
 
+  it('keeps the console user its runs read as, through a replace and a converge (assistant-mode.md §5.5)', () => {
+    const { reg } = makeReg()
+    reg.upsert(cron('c1', A1, { askerUserId: 'user-editor' }))
+    expect(reg.askerOf('c1')).toBe('user-editor')
+    reg.upsert(cron('c1'))
+    expect(reg.askerOf('c1')).toBeUndefined()
+    reg.converge([cron('c2', A1, { askerUserId: 'user-creator' })])
+    expect(reg.askerOf('c2')).toBe('user-creator')
+    expect(reg.askerOf('missing')).toBeUndefined()
+  })
+
   it('preserves platform/integration targets in the in-memory definition', () => {
     const { reg } = makeReg()
     reg.upsert(cron('c1', A1, { target: { platform: 'discord', channel: 'C1', integrationId: 'i1' } }))

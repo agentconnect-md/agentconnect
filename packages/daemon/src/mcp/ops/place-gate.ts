@@ -1,16 +1,27 @@
-// Assistant mode's place rules on the bridge (assistant-mode.md §5.5): reads pass the place rule, writes stay here.
+// The place rules on the bridge (assistant-mode.md §5.5): every agent's cross-place reads pass the read rule; assistant mode's writes stay here.
 import {
+  askerMayRead,
+  askerUnlinked,
   checkPlaceRead,
-  placeRefusalMessage,
+  CLOSED_LOOKUPS,
+  isPrivateSource,
+  NOBODY,
+  NOT_SHARED_HERE,
+  NOT_SHARED_UNLINKED,
+  placeReadMetrics,
+  privateSourceNote,
   samePlace,
-  type PlaceAsker,
+  sourceClass,
   type PlaceKind,
+  type PlaceReadMetrics,
   type PlaceReadTool,
   type PlaceRef,
-  type SourcePlace
+  type PlaceRefusal,
+  type ReadLookups,
+  type SourcePlace,
+  type TurnAskers
 } from '../../assistant/place-access.js'
 import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
-import { membersAuthoritative } from '../../platforms/read-ports.js'
 import type { SessionRecord, TranscriptRow, TranscriptSessionScope } from '../../store/local-store.js'
 import type { SessionContext } from './context.js'
 import { knownIntegrations, type GatewayDeps } from './gateway.js'
@@ -27,10 +38,11 @@ export interface PlaceStore {
   getDisplayNames(ids: string[]): Promise<Map<string, string>>
 }
 
-/** One conversation in an integration's snapshot (membership listing and observed chats): its kind and `isPrivate`. */
+/** One conversation in an integration's snapshot (membership listing and observed chats): its kind, `isPrivate` and name. */
 export interface PlaceSnapshotRow {
   kind?: 'channel' | 'im' | 'mpim'
   isPrivate?: boolean
+  name?: string
 }
 
 export interface PlaceAccessDeps extends GatewayDeps {
@@ -45,11 +57,11 @@ export interface PlaceAccessDeps extends GatewayDeps {
   placeExternal?: (ctx: SessionContext) => boolean
   /** Drafts a post to another place for approval, or lets a granted one through; absent ⇒ such a post is refused. */
   assistantDraftPost?: (ctx: SessionContext, post: InterceptedPost) => Promise<PostInterception>
-  /** The DM's counterpart when the session is their own 1:1 DM and their own message started the live turn (§5.5). */
-  placeAsker?: (ctx: SessionContext) => Promise<PlaceAsker | undefined>
-  /** Whether a person is a current member of a conversation on that bot, confirmed live; false when it cannot be. */
-  placeMember?: (integrationId: string, channel: string, userId: string) => Promise<boolean>
-  /** The session's durable mark for a read the asker's membership opened (§5.5); it ends when the session is retired. */
+  /** Who is asking on the session's live turn; absent ⇒ nobody, so only public sources are read. */
+  readAskers?: (ctx: SessionContext) => Promise<TurnAskers>
+  /** The live lookups the read rule asks for one agent; absent ⇒ none confirms anything. */
+  readLookups?: (agentId: string) => ReadLookups
+  /** The session's durable mark for a private channel or group DM an assistant-mode 1:1 conversation read (§5.5); it ends when the session is retired. */
   widenedSession?: {
     mark(ctx: SessionContext): Promise<boolean>
     marked(ctx: SessionContext): Promise<boolean>
@@ -73,8 +85,8 @@ export async function carryPlaceMark(ctx: SessionContext, tool: string, deps: Pl
   throw new Error(`${tool}: this conversation's history could not be read right now. Nothing was read; retry.`)
 }
 
-/** The gate's word on a call it lets through: `draft` sends the post through approval, `memberRead` is a private place the asker's membership opened (§5.5). */
-export type PlaceVerdict = { draft?: true; memberRead?: PlaceRef } | undefined
+/** The gate's word on a call it lets through: `draft` sends the post through approval (§5.5). */
+export type PlaceVerdict = { draft?: true } | undefined
 
 const KIND_STRICTNESS: Record<PlaceKind, number> = { channel: 1, group_dm: 2, dm: 3, webchat: 3 }
 const SNAPSHOT_KINDS: Record<NonNullable<PlaceSnapshotRow['kind']>, PlaceKind> = {
@@ -110,40 +122,22 @@ export async function describePlace(
   const snapshot = integrationId ? deps.placeSnapshot?.(integrationId, place.channel) : undefined
   let kind = stricter(rowKind, snapshot?.kind ? SNAPSHOT_KINDS[snapshot.kind] : undefined)
   let isPrivate = snapshot?.isPrivate
+  let name = snapshot?.name
   if (kind === undefined || (shared(kind) && isPrivate === undefined)) {
     const gw = integrationId ? deps.gatewayFor(integrationId) : undefined
     const info = gw ? await gw.getChannelInfo(place.channel).catch(() => undefined) : undefined
     if (info) {
       kind = stricter(kind, info.isIm ? 'dm' : info.isMpim ? 'group_dm' : 'channel')
       if (isPrivate === undefined && typeof info.isPrivate === 'boolean') isPrivate = info.isPrivate
+      name ??= info.name
     }
   }
   return {
     platform: place.platform,
     channel: place.channel,
     ...(kind ? { kind } : {}),
-    ...(shared(kind) && isPrivate !== undefined ? { private: isPrivate } : {})
-  }
-}
-
-/** Per-asker scoping (§5.5): in the asker's own 1:1 DM, a private place on that DM's bot opens to a confirmed current member, and marks the session. */
-export function askerMembership(
-  ctx: SessionContext,
-  deps: Pick<PlaceAccessDeps, 'placeAsker' | 'placeMember' | 'widenedSession'>
-): (source: PlaceRef, integrationId: string | undefined) => Promise<boolean> {
-  let asker: Promise<PlaceAsker | undefined> | undefined
-  return async (source, integrationId) => {
-    const own = ctx.integrationId
-    // The same platform and bot (so the same workspace), on a platform whose member listing is complete.
-    if (!ctx.isDm || own === undefined || integrationId !== own || source.platform !== ctx.platform) return false
-    const { placeAsker, placeMember, widenedSession } = deps
-    if (!membersAuthoritative(source.platform) || !placeAsker || !placeMember || !widenedSession) return false
-    asker ??= placeAsker(ctx).catch(() => undefined)
-    const who = await asker
-    if (who?.integrationId !== own) return false
-    if (!(await placeMember(own, source.channel, who.userId).catch(() => false))) return false
-    // Opened only once the session durably carries the mark that keeps its writes in this DM.
-    return await widenedSession.mark(ctx).catch(() => false)
+    ...(shared(kind) && isPrivate !== undefined ? { private: isPrivate } : {}),
+    ...(name ? { name } : {})
   }
 }
 
@@ -232,39 +226,83 @@ export function writeElsewhere(ctx: SessionContext, name: string, args: Record<s
   }
 }
 
-/** A channel-addressed read must pass the place rule; the session's own conversation always does. Returns a private place the asker's membership opened. */
-async function assertReadableHere(
+/** A refused read, `unlinked` when an asker may be told how cross-platform reads open; or one let through with a private source's note. */
+export type ReadVerdict =
+  { refused: PlaceRefusal; unlinked?: true } | { refused?: undefined; unlinked?: undefined; privateSource?: string }
+
+/** The one choke point every cross-place read passes, for every agent: refused, or let through with a private source's note. */
+export async function judgePlaceRead(
   ctx: SessionContext,
   tool: PlaceReadTool,
+  source: SourcePlace,
+  bot: string | undefined,
+  deps: PlaceAccessDeps,
+  recorder: PlaceReadMetrics = placeReadMetrics
+): Promise<ReadVerdict> {
+  const assistant = deps.assistantModeFor?.(ctx.agentId) === true
+  const current: PlaceRef = { platform: ctx.platform, channel: ctx.channel }
+  if (samePlace(current, source)) {
+    if (assistant) await carryPlaceMark(ctx, tool, deps)
+    return {}
+  }
+  const askers = deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
+  const lookups = deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS
+  const ownBot = source.platform === ctx.platform && bot !== undefined && bot === ctx.integrationId
+  const refusal = await checkPlaceRead(
+    tool,
+    current,
+    source,
+    askers,
+    (asker) => askerMayRead(asker, source, bot, lookups),
+    ownBot,
+    recorder
+  )
+  if (refusal)
+    return { refused: refusal, ...((await askerUnlinked(askers, lookups)) ? { unlinked: true as const } : {}) }
+  if (!isPrivateSource(source)) return {}
+  // An assistant-mode 1:1 conversation that reads a private channel or group DM writes only there until `!new` (§5.5); no mark, no read.
+  if (assistant && ctx.isDm && sourceClass(source) === 'members') {
+    if (!(await deps.widenedSession?.mark(ctx).catch(() => false))) {
+      recorder.refused(tool, 'private')
+      return { refused: 'private' }
+    }
+  }
+  return { privateSource: privateSourceNote(source) }
+}
+
+/** A channel-addressed platform read passes the read rule; returns the private-source note for its result. */
+export async function assertPlaceRead(
+  ctx: SessionContext,
+  name: string,
   args: Record<string, unknown>,
   deps: PlaceAccessDeps
-): Promise<PlaceRef | undefined> {
+): Promise<string | undefined> {
+  const tool = PLACE_READS.get(name)
   // A malformed channel never reaches the platform: the handler's own argument check refuses it.
-  if (!absent(args.channel) && typeof args.channel !== 'string') return undefined
-  const current: PlaceRef = { platform: ctx.platform, channel: ctx.channel }
+  if (!tool || (!absent(args.channel) && typeof args.channel !== 'string')) return undefined
   const source: PlaceRef = {
     platform: ctx.platform,
     channel: typeof args.channel === 'string' ? args.channel : ctx.channel
   }
-  if (samePlace(current, source)) {
-    await carryPlaceMark(ctx, tool, deps)
-    return undefined
-  }
   const named = typeof args.integrationId === 'string' ? args.integrationId : ctx.integrationId
-  const integrationId = knownIntegrations(ctx).some((i) => i.id === named && i.platform === ctx.platform)
-    ? named
-    : undefined
-  const row = await deps.placeStore?.latestSession(ctx.agentId, source.channel)
-  const rowKind = row?.platform === ctx.platform ? kindFromRows(ctx.platform, [row.conversationKind]) : undefined
-  const described = await describePlace(source, rowKind, integrationId, deps)
-  const member = askerMembership(ctx, deps)
-  const refusal = await checkPlaceRead(tool, current, described, () => member(source, integrationId))
-  if (refusal) throw new Error(`${tool}: ${placeRefusalMessage(refusal)}`)
-  // A private place passes only through the asker's membership.
-  return described.private === true ? source : undefined
+  const bot = knownIntegrations(ctx).some((i) => i.id === named && i.platform === ctx.platform) ? named : undefined
+  let described: SourcePlace = source
+  if (!samePlace({ platform: ctx.platform, channel: ctx.channel }, source)) {
+    const row = await deps.placeStore?.latestSession(ctx.agentId, source.channel)
+    const own = row?.platform === ctx.platform ? row : undefined
+    const rowKind = own ? kindFromRows(ctx.platform, [own.conversationKind]) : undefined
+    // A read off the asker's own bot is judged by the console's view of the agent's newest session there.
+    described = {
+      ...(await describePlace(source, rowKind, bot, deps)),
+      sessions: own?.sessionId ? [own.sessionId] : []
+    }
+  }
+  const verdict = await judgePlaceRead(ctx, tool, described, bot, deps)
+  if (verdict.refused) throw new Error(`${tool}: ${verdict.unlinked ? NOT_SHARED_UNLINKED : NOT_SHARED_HERE}`)
+  return verdict.privateSource
 }
 
-/** The assistant-mode gate before every bridge tool: a post elsewhere is drafted, other writes stay here, reads pass the rule. */
+/** The assistant-mode gate before every bridge tool: a post elsewhere is drafted and other writes stay here. */
 export async function assertAssistantPlaceAccess(
   ctx: SessionContext,
   name: string,
@@ -295,7 +333,5 @@ export async function assertAssistantPlaceAccess(
         'member for approval and other writes here are refused. Nothing was changed. Put it in your reply instead.'
     )
   }
-  const read = PLACE_READS.get(name)
-  const memberRead = read ? await assertReadableHere(ctx, read, args, deps) : undefined
-  return memberRead ? { memberRead } : undefined
+  return undefined
 }

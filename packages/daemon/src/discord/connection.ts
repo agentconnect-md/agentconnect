@@ -1,9 +1,11 @@
 import {
+  ChannelType,
   Client,
   GatewayIntentBits,
   Partials,
   Events,
   MessageFlags,
+  PermissionFlagsBits,
   type Message,
   type Channel,
   type ChatInputCommandInteraction,
@@ -216,6 +218,22 @@ type Sendable = Channel & {
   send: (payload: SendPayload) => Promise<Message>
   sendTyping?: () => Promise<void>
   messages?: { fetch: (id: string) => Promise<Message> }
+}
+
+/** What a guild channel exposes for deciding who may view it. */
+interface DiscordViewable {
+  type?: ChannelType
+  guild?: { roles?: { everyone?: unknown } } | null
+  permissionsFor?: (role: never) => { has(flag: bigint): boolean } | null
+}
+
+/** A guild channel is public when `@everyone` may view it and a private thread never is; nothing when that cannot be read. */
+export function privacyOf(c: DiscordViewable | null | undefined): { isPrivate?: boolean } {
+  if (!c) return {}
+  if (c.type === ChannelType.PrivateThread) return { isPrivate: true }
+  const everyone = c.guild?.roles?.everyone
+  const perms = everyone && typeof c.permissionsFor === 'function' ? c.permissionsFor(everyone as never) : null
+  return perms ? { isPrivate: !perms.has(PermissionFlagsBits.ViewChannel) } : {}
 }
 
 export class DiscordConnection implements PlatformConnection {
@@ -961,9 +979,7 @@ export class DiscordConnection implements PlatformConnection {
       ...(spaceId ? { spaceId } : {}),
       ...(spaceName ? { spaceName } : {}),
       isIm,
-      // A guild channel's visibility depends on role overwrites we don't resolve here;
-      // treat non-DM guild channels as non-private best-effort.
-      isPrivate: false
+      ...(isIm ? {} : privacyOf(ch as DiscordViewable | null))
     }
   }
 
@@ -1002,7 +1018,7 @@ export class DiscordConnection implements PlatformConnection {
       for (const guild of this.client.guilds.cache.values()) {
         for (const ch of guild.channels.cache.values()) {
           if (!ch.isTextBased()) continue
-          out.push({ id: ch.id, name: ch.name, isPrivate: false })
+          out.push({ id: ch.id, name: ch.name, ...privacyOf(ch as DiscordViewable) })
           if (out.length >= CHANNEL_CAP) return out
         }
       }

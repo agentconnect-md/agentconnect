@@ -6,7 +6,15 @@ import { toCronDef, type WriteCronDeps } from '../agents/write-cron.js'
 interface Entry {
   agentId: string
   cron: CronDef
+  /** The console user its runs read as (assistant-mode.md §5.5). */
+  askerUserId?: string
 }
+
+const entryOf = (cron: CronUpsert): Entry => ({
+  agentId: cron.agentId,
+  cron: toCronDef(cron),
+  ...(cron.askerUserId ? { askerUserId: cron.askerUserId } : {})
+})
 
 export class CpCronRegistry {
   private readonly entries = new Map<string, Entry>()
@@ -18,7 +26,7 @@ export class CpCronRegistry {
   ) {}
 
   upsert(cron: CronUpsert): void {
-    this.entries.set(cron.cronId, { agentId: cron.agentId, cron: toCronDef(cron) })
+    this.entries.set(cron.cronId, entryOf(cron))
     this.onChange()
   }
 
@@ -27,12 +35,17 @@ export class CpCronRegistry {
   }
 
   converge(crons: CronUpsert[]): void {
-    for (const cron of crons ?? []) this.entries.set(cron.cronId, { agentId: cron.agentId, cron: toCronDef(cron) })
+    for (const cron of crons ?? []) this.entries.set(cron.cronId, entryOf(cron))
     this.onChange()
   }
 
   agentForCron(cronId: string): string | undefined {
     return this.entries.get(cronId)?.agentId
+  }
+
+  /** The console user a schedule's runs read as; undefined when its row records no person. */
+  askerOf(cronId: string): string | undefined {
+    return this.entries.get(cronId)?.askerUserId
   }
 
   forAgent(agentId: string): CronDef[] {

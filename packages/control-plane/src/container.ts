@@ -199,6 +199,8 @@ import { AgentMemoryStoreService } from './agent-memory/store.service.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
 import { resolveApprovalRoute, type ApprovalRouteResolver } from './orchestrator/approvalRoute.js'
+import { resolveReadAccess } from './orchestrator/readAccess.js'
+import { sessionsVisibleTo } from './http/read-access.js'
 import { convergeIntegrationGating } from './orchestrator/integrationPush.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
@@ -2551,6 +2553,22 @@ export function buildContainer(
     slackSessionAccess,
     gatedDmSeeds: gatedDmSeedResolver,
     approvalRoute,
+    // The console's own session visibility for whoever asks a cross-platform read; lazy over the HTTP deps built above.
+    readAccess: (req, expectedOrgId) =>
+      resolveReadAccess(
+        req,
+        {
+          agent: repos.agent,
+          integration: repos.integration,
+          bot: repos.bot,
+          org: repos.org,
+          users: repos.user,
+          platforms,
+          ...(logtoIdentity ? { identity: logtoIdentity } : {}),
+          sessionsVisible: sessionsVisibleTo(httpDeps, () => http.log)
+        },
+        expectedOrgId
+      ),
     // §14.8: the report path can now create an ENABLED row, so it needs the same
     // re-converge a visibility flip performs — the reporter's own bindRules predate it.
     integrationConverge: (agent) =>

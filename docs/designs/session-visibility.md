@@ -581,6 +581,15 @@ Invariants preserved:
 - 404, never 403, for invisible sessions (no existence oracle).
 - A `?triggeredBy=` / `?channel=` query filter remains a filter, not an
   authorization boundary; the predicate is applied regardless.
+- An agent's read of another conversation for a console user, or across
+  platforms and bots, is judged by this same predicate
+  ([assistant-mode.md](assistant-mode.md) §5.5 "Reads"). The daemon asks
+  through `agent/read-access` (feature `read-access-v1`): the CP resolves a chat
+  member to the one organization member who linked that identity, or takes a
+  console user directly, and answers which of the agent's named sessions that
+  user could see, through the same resolver and `canViewSession` the console's
+  own reads use (`http/read-access.ts`). The daemon fails the read closed when
+  the CP cannot answer.
 
 ### 5.1 Agent-scoped memory is a bypass — must be plugged
 

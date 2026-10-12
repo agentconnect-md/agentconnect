@@ -56,6 +56,7 @@ import { handleRepoCandidates } from './repo-candidates.js'
 import { handleHookStart } from './hook-start.js'
 import { handleHookPreparing } from './hook-preparing.js'
 import { handleApprovalRoute } from './approval-route.js'
+import { handleReadAccess } from './read-access.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleSharedImageGet, handleSharedImagePut } from './shared-image.js'
 import { handleTransferGet, handleTransferSign } from './file-transfer.js'
@@ -112,6 +113,7 @@ export class FrameRouter {
       'hook/preparing': handleHookPreparing,
       'hook/start': handleHookStart,
       'agent/approval-route': handleApprovalRoute,
+      'agent/read-access': handleReadAccess,
       'github/review-authorize': handleGithubReviewAuthorize,
       'transfer/sign': handleTransferSign,
       'transfer/get': handleTransferGet,
