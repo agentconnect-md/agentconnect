@@ -848,6 +848,12 @@ Defaults, all Helm values:
 A bundle over the cap is not written, and that repository keeps cloning from the
 origin.
 
+Console file transfers ([source-cache-file-transfer.md](source-cache-file-transfer.md))
+share the bucket but bypass this ledger: no `source_cache_object` row tracks them, so
+they count toward neither the org total nor the sweep. Their only bound is the per-file
+cap (`limits.transferMaxBytes`) × `WEBCHAT_FILES_MAX` (4) files per turn, collected by the
+2-day `pending` rule. A per-org transfer budget is an open item.
+
 Accounting lives in the data-plane Postgres, in a new pool-store table
 `source_cache_object`: org, key, kind (`bundle` | `pointer`), state (`pending` |
 `committed`), bytes (reserved or actual), repository URL hash, ref hash, created,

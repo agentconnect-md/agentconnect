@@ -68,6 +68,11 @@ cannot prove its bytes, so it is uploaded again.
   store accepts exactly the declared bytes.
 - **The agent's GET for an upload.** The CP `HEAD`s the object first and requires the
   declared length, and the declared checksum when the store returns one.
+- **The agent's GET is a bearer URL.** Anyone holding it can read that one object on the
+  origin its network names until it expires. The agent may pass it to the model provider's API,
+  so it can leave the cluster for up to `limits.urlSeconds`.
+- **An upload is org-scoped, not agent-bound.** Any daemon serving any agent in the org can
+  `transfer/get` an upload given its uuid, size and SHA-256; the unguessable uuid is the guard.
 - **A daemon may sign only what it was asked to upload.** `transfer/sign` names a ticket
   the CP minted for one `workspace/upload` to that daemon. The ticket is bound to:
   - the object key;
