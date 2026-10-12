@@ -67,6 +67,10 @@ let pgAnswerElicitation: ReturnType<typeof usePlayground>['pgAnswerElicitation']
 let pgAppRpc: ReturnType<typeof usePlayground>['pgAppRpc']
 let getPgSession: ReturnType<typeof usePlayground>['getPgSession']
 let pgStageRuntime: ReturnType<typeof usePlayground>['pgStageRuntime']
+let pgSetModel: ReturnType<typeof usePlayground>['pgSetModel']
+let pgSetEffort: ReturnType<typeof usePlayground>['pgSetEffort']
+let pgSetPermissionPreset: ReturnType<typeof usePlayground>['pgSetPermissionPreset']
+let pgSetFast: ReturnType<typeof usePlayground>['pgSetFast']
 let markSessionTarget: ReturnType<typeof usePlayground>['markSessionTarget']
 let getBusyLaneAgentIds: ReturnType<typeof usePlayground>['getBusyLaneAgentIds']
 
@@ -88,6 +92,10 @@ function Probe() {
   pgAppRpc = pg.pgAppRpc
   getPgSession = pg.getPgSession
   pgStageRuntime = pg.pgStageRuntime
+  pgSetModel = pg.pgSetModel
+  pgSetEffort = pg.pgSetEffort
+  pgSetPermissionPreset = pg.pgSetPermissionPreset
+  pgSetFast = pg.pgSetFast
   markSessionTarget = pg.markSessionTarget
   getBusyLaneAgentIds = pg.getBusyLaneAgentIds
   return null
@@ -202,6 +210,67 @@ describe('Decision runtime startup', () => {
     expect(getPgSession(id)?.runtimePending).toBe(true)
     act(() => pgStageRuntime(id, { fastMode: true }))
     expect(getPgSession(id)?.runtimePending).toBe(true)
+  })
+})
+
+// A runtime change sent before the daemon has a session is refused, so a fresh playground carries it on its first turn.
+describe('Runtime changes before the first turn', () => {
+  const agent = { id: 'agent-1', name: 'Echo', runtime: 'claude', model: 'model-standard' } as unknown as Agent
+
+  class RuntimeSocket extends StubSocket {
+    static instances: RuntimeSocket[] = []
+    onopen?: () => void
+    onmessage?: (event: { data: string }) => void
+    constructor() {
+      super()
+      RuntimeSocket.instances.push(this)
+    }
+  }
+
+  const sent = (socket: RuntimeSocket) =>
+    socket.send.mock.calls.map(([frame]) => JSON.parse(String(frame)) as Record<string, unknown>)
+
+  afterEach(async () => {
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockRejectedValue(new Error('no relay in this test'))
+  })
+
+  it('sends no set_* frame until the daemon reports a session, then sends them', async () => {
+    RuntimeSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', RuntimeSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    let id = ''
+    await act(async () => {
+      id = openPlayground(agent)
+      pgSetModel(id, agent.id, 'model-capable')
+      pgSetEffort(id, agent.id, 'high')
+      pgSetPermissionPreset(id, agent.id, 'auto')
+      pgSetFast(id, agent.id, true)
+      pgSend(id, agent.id, 'echo')
+    })
+    const socket = RuntimeSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    const [turn, ...rest] = sent(socket)
+    expect(rest).toEqual([])
+    expect(turn).toMatchObject({
+      text: 'echo',
+      runtime: { model: 'model-capable', effort: 'high', permissionMode: 'auto', fastMode: true }
+    })
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId: turn!.turnId, agentId: agent.id, index: 0, status: { sessionId: 'session-1' } }
+        })
+      })
+    })
+    await act(async () => pgSetModel(id, agent.id, 'model-standard'))
+    expect(sent(socket).at(-1)).toEqual({ type: 'set_model', model: 'model-standard' })
   })
 })
 

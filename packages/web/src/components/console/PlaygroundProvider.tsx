@@ -2388,6 +2388,17 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  // A fresh playground has no daemon session for a set_* to bind to — its staged runtime rides the first turn instead.
+  const sendRuntimeChange = useCallback(
+    (id: string, agentForId: string, conversationId: string | undefined, frame: Record<string, unknown>): void => {
+      if (id.startsWith(PG_PREFIX) && !conversationId && !agentSessionIds.current.has(id)) return
+      connect(id, agentForId, conversationId)
+        .ready.then((ws) => ws.send(JSON.stringify(frame)))
+        .catch(() => {})
+    },
+    [connect]
+  )
+
   /** Switch the session's model (fire-and-forget over the conversation socket). Updates
    *  the local model optimistically so the dropdown reflects the choice at once; the
    *  daemon confirms via the next status frame. */
@@ -2395,11 +2406,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, agentForId: string, model: string, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: sessionAfterModelSelection(cur[id]!, model) } : cur))
       stageRuntimeChange(id, { model })
-      connect(id, agentForId, conversationId)
-        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_model', model })))
-        .catch(() => {})
+      sendRuntimeChange(id, agentForId, conversationId, { type: 'set_model', model })
     },
-    [connect, stageRuntimeChange]
+    [sendRuntimeChange, stageRuntimeChange]
   )
 
   /** Switch the session's reasoning effort (fire-and-forget). Optimistically updates the
@@ -2409,11 +2418,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, agentForId: string, effort: string, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, effort } } : cur))
       stageRuntimeChange(id, { effort })
-      connect(id, agentForId, conversationId)
-        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_effort', effort })))
-        .catch(() => {})
+      sendRuntimeChange(id, agentForId, conversationId, { type: 'set_effort', effort })
     },
-    [connect, stageRuntimeChange]
+    [sendRuntimeChange, stageRuntimeChange]
   )
 
   /** Switch the session's composite permission preset (fire-and-forget), optimistic
@@ -2422,11 +2429,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, agentForId: string, permissionPreset: string, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, permissionMode: permissionPreset } } : cur))
       stageRuntimeChange(id, { permissionMode: permissionPreset })
-      connect(id, agentForId, conversationId)
-        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_permission_mode', permissionMode: permissionPreset })))
-        .catch(() => {})
+      sendRuntimeChange(id, agentForId, conversationId, {
+        type: 'set_permission_mode',
+        permissionMode: permissionPreset
+      })
     },
-    [connect, stageRuntimeChange]
+    [sendRuntimeChange, stageRuntimeChange]
   )
 
   /** Toggle the session's fast mode (fire-and-forget), optimistic like pgSetEffort. */
@@ -2434,11 +2442,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, agentForId: string, fastMode: boolean, conversationId?: string) => {
       setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, fastMode } } : cur))
       stageRuntimeChange(id, { fastMode })
-      connect(id, agentForId, conversationId)
-        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_fast', fastMode })))
-        .catch(() => {})
+      sendRuntimeChange(id, agentForId, conversationId, { type: 'set_fast', fastMode })
     },
-    [connect, stageRuntimeChange]
+    [sendRuntimeChange, stageRuntimeChange]
   )
 
   /** Answer an in-band elicitation card (fire-and-forget) — `value: null` is Dismiss.
