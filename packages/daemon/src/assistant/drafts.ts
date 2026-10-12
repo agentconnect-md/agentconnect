@@ -57,6 +57,14 @@ export interface DraftCardPort {
   updateCard(channel: string, ts: string, card: DraftCard): Promise<boolean | void>
 }
 
+/** The internal member who asked, in their own DM: an external place's approval goes there as a draft's would (§5.5). */
+export interface AskerApprover {
+  integrationId: string
+  teamId: string
+  userId: string
+  channel: string
+}
+
 /** Who asked for the post. */
 export interface DraftAsker {
   /** A platform member, reached through the integration the turn came in on. */
@@ -381,6 +389,14 @@ export class AssistantDrafts {
     return { kind: 'member', channel: approver.channel, target: { integrationId, teamId, userId, consoleUserId } }
   }
 
+  /** The asker's own DM when they are an internal member, the first approver a draft tries; undefined otherwise. */
+  async askerApprover(asker: DraftAsker): Promise<AskerApprover | undefined> {
+    const approver = await this.askerRung(asker).catch(() => undefined)
+    if (!approver?.userId || !approver.teamId) return undefined
+    const { integrationId, teamId, userId, channel } = approver
+    return { integrationId, teamId, userId, channel }
+  }
+
   /** A task's sub-session ended or was cut: the card shows the outcome and the item records it. */
   async taskSettled(draft: AssistantDraft): Promise<void> {
     await this.rewriteDraft(draft)
@@ -467,24 +483,8 @@ export class AssistantDrafts {
     draftId: string,
     asker: DraftAsker | undefined
   ): Promise<Routed | undefined> {
-    if (asker?.integrationId && asker.userId) {
-      const port = this.host.cardPortFor(asker.integrationId)
-      const internal = port && (asker.trusted || (await port.isFullMember?.(asker.userId)) === true)
-      const channel = internal ? await port.openDirectMessage(asker.userId).catch(() => undefined) : undefined
-      if (port && channel) {
-        return {
-          rung: 'asker',
-          approver: {
-            kind: 'member',
-            integrationId: asker.integrationId,
-            channel,
-            userId: asker.userId,
-            teamId: port.scope?.() ?? null,
-            consoleUserId: null
-          }
-        }
-      }
-    }
+    const own = await this.askerRung(asker)
+    if (own) return { rung: 'asker', approver: own }
     if (asker?.consoleUserId) {
       const approver = await this.routeConsoleUser(agentId, draftId, asker.consoleUserId)
       if (approver) return { approver, rung: 'asker' }
@@ -509,6 +509,23 @@ export class AssistantDrafts {
       }
     }
     return undefined
+  }
+
+  /** The platform asker's own DM when they are internal: trusted by their place, or a full member of the installing organization. */
+  private async askerRung(asker: DraftAsker | undefined): Promise<AssistantDraftApprover | undefined> {
+    if (!asker?.integrationId || !asker.userId) return undefined
+    const port = this.host.cardPortFor(asker.integrationId)
+    const internal = port && (asker.trusted || (await port.isFullMember?.(asker.userId)) === true)
+    const channel = internal ? await port.openDirectMessage(asker.userId).catch(() => undefined) : undefined
+    if (!port || !channel) return undefined
+    return {
+      kind: 'member',
+      integrationId: asker.integrationId,
+      channel,
+      userId: asker.userId,
+      teamId: port.scope?.() ?? null,
+      consoleUserId: null
+    }
   }
 
   /** A console user's linked member on one of the agent's card-capable integrations, chosen by the control plane. */

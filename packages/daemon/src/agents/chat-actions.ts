@@ -1,4 +1,6 @@
 import type { ChatActions } from '@agentconnect.md/protocol'
+import type { Integration } from './agent-schema.js'
+import { conversationAdmitted, conversationTrustLevel, integrationRouting } from '../router/routing-rule.js'
 
 type ChatActionsHolder = { readonly chatActions?: ChatActions } | null | undefined
 
@@ -24,4 +26,16 @@ export function approvalRefusalText(consoleUrl?: string): string {
 /** What only the person whose runtime-settings change was refused is told: who can change them, and where. */
 export function settingsRefusalText(consoleUrl: string): string {
   return `Only an Agent editor can change runtime settings. They can change them in the console: ${consoleUrl}`
+}
+
+/** Whether a conversation takes chat-side answers and setting changes: `closed` keeps everyone out, `external` sends approvals to an internal member. */
+export type ChatSurface = 'open' | 'closed' | 'external'
+
+/** Closed when switched off, admitted per message by a Decision, routed, or unknown; external when shared with another organization. */
+export function chatSurfaceOf(int: Integration | undefined, channel: string, externallyShared = false): ChatSurface {
+  if (!int) return 'closed'
+  const routing = integrationRouting(int)
+  if (!conversationAdmitted(routing, channel) || routing.decisionBound(channel) || routing.routingFor(channel))
+    return 'closed'
+  return externallyShared || conversationTrustLevel(int, channel) === 'external' ? 'external' : 'open'
 }

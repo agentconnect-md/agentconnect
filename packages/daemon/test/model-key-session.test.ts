@@ -218,7 +218,7 @@ describe('daemon model-key session lifecycle', () => {
     expect(h.issue).toHaveBeenCalledWith(expect.objectContaining({ provider: 'anthropic' }))
 
     // Live SDK work: the switch is recorded, but the running host keeps its binding.
-    h.daemon.store.getSession = () => ({ agentId: 'agent-a', acpSessionId: 'acp-1' })
+    h.daemon.store.getSession = () => ({ agentId: 'agent-a', platform: 'webchat', acpSessionId: 'acp-1' })
     h.daemon.sdkLease.set(sdkLeaseKey(sessionHostKey('agent-a', 'session-a'), 'acp-1'), {
       agentId: 'agent-a',
       tasks: new Map([['task-1', {}]]),
@@ -261,7 +261,10 @@ describe('daemon model-key session lifecycle', () => {
     daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
     daemon.agents.set('agent-a', opencodeAgent)
     const setModelOverride = vi.fn()
-    daemon.store = { getSession: () => ({ agentId: 'agent-a', acpSessionId: null }), setModelOverride }
+    daemon.store = {
+      getSession: () => ({ agentId: 'agent-a', platform: 'webchat', acpSessionId: null }),
+      setModelOverride
+    }
 
     expect(await daemon.commands.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(false)
     expect(setModelOverride).not.toHaveBeenCalled()
@@ -283,7 +286,10 @@ describe('daemon model-key session lifecycle', () => {
     daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
     daemon.agents.set('agent-a', opencodeAgent)
     const setModelOverride = vi.fn()
-    daemon.store = { getSession: () => ({ agentId: 'agent-a', acpSessionId: null }), setModelOverride }
+    daemon.store = {
+      getSession: () => ({ agentId: 'agent-a', platform: 'webchat', acpSessionId: null }),
+      setModelOverride
+    }
 
     // Without injected provider credentials, the runtime owns authentication and switching.
     expect(await daemon.commands.setModelByKey('session-a', 'anthropic/claude-opus-4')).toBe(true)

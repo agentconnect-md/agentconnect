@@ -90,7 +90,8 @@ function world(apiProtocol: string | undefined = 'ai-sdk-ui') {
     sessionLink: (sessionId) => `https://console.example.test/sessions/${sessionId}`,
     slackConnFor: () => undefined,
     approvalDmIntegrations: () => [],
-    slackDmSessionTarget: () => 'encoded-target'
+    slackDmSessionTarget: () => 'encoded-target',
+    chatSurface: () => 'open'
   }
   const events = (): any[] => sink.output.mock.calls.map(([o]: any[]) => o.event)
   return { store, events, timers, cancelTurn, coordinator: new PermissionCoordinator(host) }

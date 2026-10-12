@@ -79,9 +79,13 @@ Who counts as "people" depends on whether the product can tell who someone is:
 Every level keeps these rules:
 
 - The setting never opens what a conversation keeps closed. A conversation switched off, or
-  admitted per message by a Decision, stays closed, and a bot never answers.
+  admitted per message by a Decision, stays closed, and a bot never answers. A closed
+  conversation gets what the first level gives it, and a card posted before it closed decides
+  nothing.
 - In a conversation shared with another organization, an approval goes to an internal member
-  instead, as an assistant-mode draft does.
+  instead, as an assistant-mode draft does: where people may approve tool calls, the person who
+  asked, in their own direct message, when they are a full member of the installing workspace;
+  otherwise the agent's editors.
 - On a platform with no interactive cards, the conversation gets a notice and the approval is
   answered in the console.
 - The first answer from any surface decides, and the request is rewritten to say who answered
@@ -996,8 +1000,9 @@ mode is switched off. A card shown before assistant mode was switched off or on 
 even when clicked later. Whether a post needs approval follows from its target, never from the
 model's judgment.
 
-Runtime permission requests in an external place take the editor path: no card or notice
-appears in the conversation, and the approval DM goes to an agent editor. Draft cards are
+Runtime permission requests in an external place get no card or notice in the conversation.
+Their approval DM goes to the person who asked when they are an internal member and "What people
+can do in chat" includes approving tool calls, and otherwise to an agent editor. Draft cards are
 delivered on Slack; when no member or conversation can be reached the draft is kept until it
 expires, nothing is sent, and for a post it attempted the agent is told so.
 
@@ -1094,7 +1099,8 @@ waits; its turn is not cancelled. A patrol never asks.
   approval card is posted there, in the conversation's thread or at its top level when it is one long conversation, and
   anyone there may answer it. The card says a background sub-session is asking, names and links
   it, and offers the runtime's own choices, "always allow" included where offered.
-- Where it does not, the conversation gets a notice that the sub-session is waiting, and an
+- Where it does not, or the conversation is closed (switched off, admitted per message by a
+  Decision, or routed), the conversation gets a notice that the sub-session is waiting, and an
   Agent editor gets the request in a direct message, as for any other request.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
   marked as from a background sub-session.

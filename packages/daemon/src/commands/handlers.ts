@@ -45,7 +45,7 @@ import type { ChatRefusal, InteractionActor } from '../platforms/contract.js'
 import type { StatusBarInfo } from '../slack/render.js'
 import { buildDiscordSelectComponents, type DiscordComponents } from '../discord/render.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
-import { chatSettingsAllowed, settingsRefusalText } from '../agents/chat-actions.js'
+import { chatSettingsAllowed, settingsRefusalText, type ChatSurface } from '../agents/chat-actions.js'
 import {
   pendingTurnKey,
   QueueFullError,
@@ -122,6 +122,15 @@ export interface CommandHost {
   srcIntegrationIds(conn: unknown): string[]
   /** `!resume` re-arms this member's own loop-scope enforcement. */
   clearEnforcedLoopScope(scope: string): void
+  /** Whether people in a conversation may change settings there ("What people can do in chat"); an unknown one is closed. */
+  chatSurface(
+    agentId: string,
+    integrationId: string | undefined,
+    channel: string,
+    externallyShared?: boolean
+  ): ChatSurface
+  /** The same for a session's own conversation. */
+  sessionChatSurfaceOpen(rec: SessionRecord): boolean
 }
 
 /** What a handled command did: a durable effect completed before returning, a reply or refusal with nothing durable to prove, or a `!queue` whose admission the caller awaits. */
@@ -194,10 +203,12 @@ export class CommandHandlers {
     this.host.log().info(`session ${sessionKey}: "${verb}" by ${who}`)
   }
 
-  /** Resolve a session only while its Agent explicitly permits chat-side runtime changes. */
+  /** Resolve a session only while its Agent permits chat-side runtime changes and its conversation is open to them. */
   async chatRuntimeSession(key: string) {
     const rec = await this.host.store().getSession(key)
-    return rec && chatSettingsAllowed(this.host.agents().get(rec.agentId)) ? rec : undefined
+    return rec && chatSettingsAllowed(this.host.agents().get(rec.agentId)) && this.host.sessionChatSurfaceOpen(rec)
+      ? rec
+      : undefined
   }
 
   /** Switch a session's model by its local key — the core shared by the webchat
@@ -352,6 +363,8 @@ export class CommandHandlers {
   }): Promise<ChatRefusal | undefined> {
     // Who acted is recorded here, where every ingress funnels, and only for a change that applied.
     let applied = false
+    // A bot never changes a setting; cancelling follows the stop rule instead.
+    if (a.kind !== 'cancel' && a.actor?.isBot) return undefined
     const runtimeSetting = a.kind !== 'cancel' && a.kind !== 'set-output'
     const refusal = runtimeSetting ? await this.runtimeSettingsRefusal(a.sessionKey) : undefined
     if (refusal) return refusal
@@ -371,10 +384,10 @@ export class CommandHandlers {
     return undefined
   }
 
-  /** What only the person behind a refused runtime-settings change is told; undefined when the session's agent takes it from chat. */
+  /** What only the person behind a refused runtime-settings change is told; undefined when this conversation takes it from chat. */
   private async runtimeSettingsRefusal(key: string): Promise<ChatRefusal | undefined> {
     const rec = await this.host.store().getSession(key)
-    if (!rec || chatSettingsAllowed(this.host.agents().get(rec.agentId))) return undefined
+    if (!rec || (await this.chatRuntimeSession(key))) return undefined
     return { text: settingsRefusalText(this.host.agentLink(rec.agentId)), channel: rec.channel, thread: rec.thread }
   }
 
@@ -385,6 +398,7 @@ export class CommandHandlers {
     sessionKey: string
     actor?: InteractionActor
   }): Promise<{ text: string; components: DiscordComponents } | { notice: string } | undefined> {
+    if (a.actor?.isBot) return undefined
     const rec = await this.host.store().getSession(a.sessionKey)
     if (!rec) return undefined
     const refusal = await this.runtimeSettingsRefusal(a.sessionKey)
@@ -645,8 +659,13 @@ export class CommandHandlers {
     }
 
     const entry = this.registry[command.kind]
-    // The Agent-level chat-changes guard, applied for every runtime-setting command before its handler runs.
-    if (entry.runtimeChange && !chatSettingsAllowed(this.host.agents().get(target.agentId))) {
+    // The Agent-level chat-changes guard, applied for every runtime-setting command before its handler runs; a closed conversation takes none.
+    if (
+      entry.runtimeChange &&
+      (!chatSettingsAllowed(this.host.agents().get(target.agentId)) ||
+        this.host.chatSurface(target.agentId, target.integrationId, msg.channel, msg.externallyShared === true) !==
+          'open')
+    ) {
       reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
       return 'consumed'
     }
@@ -1062,7 +1081,7 @@ export class CommandHandlers {
       void conn.answerCallback(cb.id, 'No active session here.')
       return
     }
-    if (!chatSettingsAllowed(this.host.agents().get(session.agentId))) {
+    if (!(await this.chatRuntimeSession(session.key))) {
       // Answered on the tap itself, which only its tapper sees.
       void conn.answerCallback(cb.id, settingsRefusalText(this.host.agentLink(session.agentId)), { alert: true })
       return

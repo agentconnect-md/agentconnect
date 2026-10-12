@@ -167,7 +167,7 @@ import { sessionRetentionMs, type Config, type RuntimeDef } from './config/confi
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
-import { chatApprovalsAllowed, chatSettingsAllowed } from './agents/chat-actions.js'
+import { chatApprovalsAllowed, chatSettingsAllowed, chatSurfaceOf, type ChatSurface } from './agents/chat-actions.js'
 import { diffAgents } from './reconciler/reconciler.js'
 import {
   resolveRoot,
@@ -2376,7 +2376,10 @@ export class Daemon {
       srcIntegrationIds: (conn) => this.srcIntegrationIds(conn),
       clearEnforcedLoopScope: (scope) => {
         this.enforcedLoopScopes.delete(scope)
-      }
+      },
+      chatSurface: (agentId, integrationId, channel, externallyShared) =>
+        this.chatSurface(agentId, integrationId, channel, externallyShared),
+      sessionChatSurfaceOpen: (rec) => this.sessionChatSurfaceOpen(rec)
     }
   }
 
@@ -7960,12 +7963,8 @@ export class Daemon {
   /** Whether a person's own message in a conversation would start a turn of this agent (assistant-mode.md §5.10): the routing ladder over its live rules; a verdict-gated or external place never says yes. */
   private admitsAsker(agentId: string, integrationId: string, channel: string, isDm: boolean): boolean {
     const int = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)
-    if (!int) return false
-    const routing = integrationRouting(int)
     // A By decision or routed conversation admits a message only on a verdict, which a click never has.
-    if (!conversationAdmitted(routing, channel) || routing.decisionBound(channel) || routing.routingFor(channel))
-      return false
-    if (this.assistantPlaceExternal(agentId, integrationId, channel)) return false
+    if (!int || this.chatSurface(agentId, integrationId, channel) !== 'open') return false
     return personCouldActivate(this.mergedRulesForSource([integrationId]), {
       agentId,
       integrationId,
@@ -7973,6 +7972,26 @@ export class Daemon {
       channel,
       isDm
     })
+  }
+
+  /** Whether people in a conversation may answer approvals or change settings there ("What people can do in chat"); an unknown one is closed. */
+  private chatSurface(
+    agentId: string,
+    integrationId: string | undefined,
+    channel: string,
+    externallyShared = false
+  ): ChatSurface {
+    const int = integrationId ? this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId) : undefined
+    return chatSurfaceOf(int, channel, externallyShared)
+  }
+
+  /** The same for a session's own conversation; a webchat session's settings are the console's, not a platform conversation's. */
+  private sessionChatSurfaceOpen(
+    rec: Pick<SessionRecord, 'agentId' | 'platform' | 'channel' | 'transportScope'>
+  ): boolean {
+    if (rec.platform === 'webchat') return true
+    const integrationId = this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope)
+    return this.chatSurface(rec.agentId, integrationId, rec.channel) === 'open'
   }
 
   /** Approved proposals (assistant-mode.md §5.10), built on first use over the live store. */
@@ -13210,7 +13229,20 @@ export class Daemon {
       slackDmSessionTarget: (p, integrationId) =>
         encodeSharedSlackStatusTarget({ agentId: p.plan.agentId, integrationId, sessionKey: p.plan.sessionKey }),
       subsessionApprovalRoute: (p) => this.subsessionApprovalRoute(p),
-      assistantApprover: (agentId, requestId) => this.drafts.cardApprover(agentId, requestId)
+      assistantApprover: (agentId, requestId) => this.drafts.cardApprover(agentId, requestId),
+      chatSurface: (agentId, integrationId, channel, externallyShared) =>
+        this.chatSurface(agentId, integrationId, channel, externallyShared),
+      externalAskerDm: async (p) => {
+        const msg = p.entry.msg
+        // Only a person's own platform message names an asker; a webchat turn's sender is a console user.
+        if (p.webchat || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id || !p.plan.integrationId)
+          return undefined
+        return await this.drafts.askerApprover({
+          integrationId: p.plan.integrationId,
+          userId: msg.sender.id,
+          trusted: false
+        })
+      }
     }
   }
 
@@ -18996,7 +19028,7 @@ export class Daemon {
     agentId: string,
     sessionKey: string,
     acpSessionId?: string,
-    opts: { breakdown?: boolean } = {}
+    opts: { breakdown?: boolean; settingsClosed?: boolean } = {}
   ): Promise<StatusBarInfo> {
     const saved = pinnedDecisionTarget((await this.store.getSession(sessionKey))?.decisionModel)
     if (saved) this.sessionRuntimes.set(sessionKey, saved)
@@ -19027,6 +19059,8 @@ export class Daemon {
     const permissionMode = host?.permissionModeOptions?.(acpSessionId)
     const fast = host?.fastModeOption?.()
     const settingsInChat = chatSettingsAllowed(agent)
+    // A closed conversation shows the settings without offering a change.
+    const offerSettings = settingsInChat && opts.settingsClosed !== true
     // Current model: live selector, then sticky/session default, then the runtime's
     // advertised default. Effort keeps the sticky override first because it is the
     // only way an `ultracode` value (which never appears in the live select) is reflected.
@@ -19062,16 +19096,15 @@ export class Daemon {
             outputMode: (await this.store.getOutputModeOverride(sessionKey)) ?? agent?.output?.mode
           }
         : {}),
-      // Selectable models / efforts + whether a fast toggle is offered — the modal's
-      // dropdowns + toggle. Plus the session id for the deep link.
-      ...(settingsInChat && models?.length ? { models } : {}),
-      ...(settingsInChat && effort?.efforts?.length ? { efforts: effort.efforts } : {}),
+      // The modal's dropdowns and fast toggle, plus the session id for the deep link.
+      ...(offerSettings && models?.length ? { models } : {}),
+      ...(offerSettings && effort?.efforts?.length ? { efforts: effort.efforts } : {}),
       ...(agent
         ? {
-            permissionModes: settingsInChat && permissionMode?.modes?.length ? permissionMode.modes : []
+            permissionModes: offerSettings && permissionMode?.modes?.length ? permissionMode.modes : []
           }
         : {}),
-      ...(settingsInChat && fast ? { fastModeAvailable: true } : {}),
+      ...(offerSettings && fast ? { fastModeAvailable: true } : {}),
       // Steerable while this host owns the live session and advertised `_session/steering`.
       ...(this.cfg.features.sessionSteering && modelSessionIsLive && host?.steeringSupported?.() === true
         ? { steerable: true }
@@ -19094,7 +19127,10 @@ export class Daemon {
   ): Promise<{ info: StatusBarInfo; identity: StatusModalIdentity; link?: string } | undefined> {
     const rec = await this.store.getSession(sessionKey)
     if (!rec) return undefined
-    const info = await this.statusInfoFrom(rec.agentId, sessionKey, rec.acpSessionId ?? undefined, { breakdown: true })
+    const info = await this.statusInfoFrom(rec.agentId, sessionKey, rec.acpSessionId ?? undefined, {
+      breakdown: true,
+      settingsClosed: !this.sessionChatSurfaceOpen(rec)
+    })
     const agent = this.agents.get(rec.agentId)
     const name = agent?.displayName?.trim() || agent?.name || rec.agentId
     const sessionTitle = rec.title?.trim() ? await this.displayTitle(rec.title.trim()) : undefined
