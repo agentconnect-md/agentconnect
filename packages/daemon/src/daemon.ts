@@ -16656,6 +16656,8 @@ export class Daemon {
         finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...deltaBlocks])
       }
       await this.coalesceQueuedContext(key, sessionId, representedEventTs)
+      // This turn is its own message's activation: a same-process replay of it, once cut, must run, not coalesce.
+      this.claimAbsorbedContext(key, transcriptCoords(msg).ts)
       baseRevision = await this.store.threadTranscriptRevision(this.planReadScope(p.plan))
       providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
     }
