@@ -68,6 +68,7 @@ import { toDbPlatform } from '../platform.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../../domain/ids.js'
+import { openConversationTrigger } from '../../domain/conversation-defaults.js'
 
 // The bot row plus its joined creator and current installs (for `agentIds` /
 // `inUseByAgentId`). A shareable bot fans out to many active integrations, so we
@@ -941,21 +942,7 @@ async function channelRecords(
 export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   constructor(private readonly db: PrismaLike) {}
 
-  // Converge to a daemon channel report: refresh supplied metadata on known
-  // conversations (PRESERVING the operator's trigger), insert new ones (trigger =
-  // `defaultTrigger`, otherwise On for a 1:1 DM and Mention for a room), and, for an
-  // authoritative membership snapshot, drop channel rows that are no longer present.
-  // DM rows and rows omitted from a non-authoritative observed-conversation report
-  // are retained.
-  //
-  // The channel→DM transition is decided INSIDE the write, off the row's committed kind,
-  // never off a prior read. Channel reports are fire-and-forget and their handlers run
-  // concurrently — the daemon's own startup emits a kind-less snapshot and the resolver's
-  // later `saveScope` emits the same conversation as `im`. Two such writes racing with a
-  // read-then-write would both see "no row": the first creates channel/mention, the
-  // second flips the kind and inherits that trigger, landing exactly on the fail-open
-  // state above. `ON CONFLICT … DO UPDATE` re-reads the row under the write's own lock,
-  // so the conversion cannot be missed however the reports interleave.
+  // Converge to a channel report (known rows keep their trigger, new ones take the seed); the channel→DM conversion is decided under the write's own lock, never off a prior read.
   async replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
@@ -997,14 +984,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       // downgrade an established 'im' row.
       const setName = authoritative || c.name !== undefined
       const setPrivate = authoritative || c.isPrivate !== undefined
-      // Direct conversations are observed rather than enumerated. Restricted installs
-      // pass `defaultTrigger:'off'`; Everyone installs default a 1:1 DM On and a group
-      // DM to Mention. An authoritative channel snapshot cannot delete either kind.
+      // Direct conversations are observed rather than enumerated; an authoritative channel snapshot cannot delete either kind.
       const direct = c.kind === 'im' || c.kind === 'mpim'
-      // A per-conversation seed (§14.8) outranks the install-wide default; both seed a
-      // NEW row only, and a late channel→direct conversion re-applies whichever won.
+      // A per-conversation seed (§14.8) outranks the install-wide default (restricted 'off'), which outranks the open one (§14.9); all seed a NEW row only.
       const createTrigger: SeedTrigger =
-        opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? (c.kind === 'im' ? 'any' : 'mention')
+        opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? openConversationTrigger(c)
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "key", "url",
@@ -1120,9 +1104,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         isPrivate: conversation.isPrivate ?? false,
         kind: conversation.kind ?? 'channel',
         dmUserId: conversation.dmUserId ?? null,
-        // Restricted installs supply Off. Otherwise 1:1 DMs start On and rooms use
-        // Mention, matching replaceSnapshot and the controls shown in the Console.
-        trigger: opts?.defaultTrigger ?? (conversation.kind === 'im' ? 'any' : 'mention')
+        externalReason: conversation.externalReason ?? null,
+        // Restricted installs supply Off; otherwise the same open default replaceSnapshot seeds (§14.9).
+        trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation)
       },
       // Refresh only known metadata; trigger/agentId stay operator-owned.
       update: {

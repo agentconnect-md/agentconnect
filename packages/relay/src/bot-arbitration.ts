@@ -91,9 +91,7 @@ export interface BotAssignment {
    *  — thread continuity, the unscoped keyword slug, `defaultAgentId` — so Off is a
    *  fence rather than an omission: a muted channel resolves to nothing. */
   mutedChannels?: string[]
-  /** The muted channels whose owner is GATED (§14 never enabled them). They resolve to
-   *  nothing like any mute, but unlike an operator's mute they keep the one-time notice:
-   *  someone who could not know the agent is private must not meet a dead bot. */
+  /** The muted channels nobody enabled (a gated owner's, or an undecided external one, §14.9): fenced like any mute, but they keep the one-time notice. */
   gatedOffChannels?: string[]
   /** §14.3: the relayId deterministically responsible for this bot's one-time
    *  CHANNEL gating notices (stamped by the CP from the connected roster). */
@@ -404,8 +402,7 @@ export class BotArbitrationRouter {
     return this.bots.get(botId)?.mutedChannels?.includes(channelId) ?? false
   }
 
-  /** True iff `channelId` is Off because §14 never enabled its gated owner — the one
-   *  muted case that still speaks, once, to say the agent is private. */
+  /** True iff `channelId` is Off because nobody enabled it (§14 gated owner, §14.9 external default) — the muted case that still speaks once. */
   channelGatedOff(botId: string, channelId: string): boolean {
     return this.bots.get(botId)?.gatedOffChannels?.includes(channelId) ?? false
   }

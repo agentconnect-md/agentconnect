@@ -97,6 +97,8 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
         mode: 'direct',
         bindRules,
         mutedChannels: ['C9'],
+        // An older control plane sends no pending list, which reads as none (resource-visibility.md §14.9).
+        pendingChannels: [],
         gated: true,
         sessionModes: [],
         externalChannels: [],

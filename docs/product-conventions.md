@@ -746,6 +746,12 @@ had no way to know it was private. A channel switched Off says nothing at all: a
 operator already decided, and pointing the room at an admin would be both wrong and
 noise. Off is silence; the gate is a closed door with a sign on it.
 
+A place the platform marks as shared outside the organization (a Slack Connect channel)
+starts Off for every agent, because "Everyone" means the organization
+([resource-visibility.md](designs/resource-visibility.md) §14.9, with the detection in
+[assistant-mode.md](designs/assistant-mode.md) §5.3). Nobody chose that Off, so it is the
+closed door with a sign, not silence, until an editor picks a trigger for the row.
+
 ## Leaving a conversation and removing its row
 
 Three different things can end a conversation, and the Console must not blur them:
@@ -881,7 +887,8 @@ routing fence, not merely display state.
 Visibility determines the initial state, not whether the control exists:
 
 - An **Everyone** agent's newly observed 1:1 DM starts **On**, preserving the normal
-  open-DM behavior while making it explicitly reversible.
+  open-DM behavior while making it explicitly reversible, unless the platform marks it
+  external, which starts it Off.
 - A **Restricted** agent's newly observed 1:1 DM starts **Off** and remains unroutable
   until a Console editor enables it.
 

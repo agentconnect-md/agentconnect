@@ -1320,22 +1320,12 @@ export class RelayIngressManager {
       }
     }
     if (!tgt && conversationTargets.length === 0) {
-      // Conversation gating (resource-visibility §14.3): an explicitly-addressed
-      // message (DM, or @bot mention) that arbitration could not place, on a bot
-      // that backs ≥1 gated agent, must not look silently dead — answer once per
-      // conversation (the DM row itself was already reported above, independently
-      // of the routing outcome).
-      //
-      // Every Off channel arrives here unroutable, and the two kinds answer
-      // differently. A channel an OPERATOR silenced says nothing: they already
-      // decided, and "ask an admin to enable it" would be the opposite of what
-      // happened. A channel that is Off because §14 never enabled its gated owner
-      // still speaks once — the person asking had no way to know the agent is
-      // private. Only ownership separates them (they share a trigger value), so the
-      // CP marks the gated ones and the fence and the notice stay independent.
+      // §14.3: an addressed message nothing could place answers once per conversation where nobody enabled the agent; an operator's Off stays silent.
       const muted = this.router.channelMuted(botId, msg.channel)
-      const speaks = !muted || this.router.channelGatedOff(botId, msg.channel)
-      if (!msg.sender.isBot && hasGatedMembers && speaks) {
+      const gatedOff = this.router.channelGatedOff(botId, msg.channel)
+      // A bot with gated members speaks in unrouted places too; any bot speaks where the CP marks the Off undecided (§14.9).
+      const speaks = gatedOff || (hasGatedMembers && !muted)
+      if (!msg.sender.isBot && speaks) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
           // §8 relayOwnsEgress, derived from the egress FACET: an ingest without

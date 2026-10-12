@@ -296,6 +296,52 @@ describe('integrationToSpec externalChannels', () => {
   })
 })
 
+// resource-visibility.md §14.9: an ungated integration's undecided Off on an external place still owes the §14.3 notice.
+describe('integrationToSpec pendingChannels', () => {
+  const external = (
+    channelId: string,
+    trigger: 'off' | 'mention',
+    triggerChosen = false
+  ): IntegrationChannelRecord => ({
+    ...channel(channelId, trigger),
+    triggerChosen,
+    externalReason: 'externallyShared'
+  })
+
+  it('lists the undecided external Off conversations, each also muted', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [
+      external('C1', 'off'),
+      external('C2', 'off', true),
+      external('C3', 'mention'),
+      channel('C4', 'off')
+    ])
+    expect(spec.core.mutedChannels).toEqual(['C1', 'C2', 'C4'])
+    expect(spec.core.pendingChannels).toEqual(['C1'])
+  })
+
+  it('is absent when nothing is pending, so an older daemon reads the spec exactly as before', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), external('C2', 'mention')])
+    expect(spec.core).not.toHaveProperty('pendingChannels')
+  })
+
+  it('stays absent for a gated integration, whose notice needs no list', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [external('C1', 'off')], RESTRICTED)
+    expect(spec.core).not.toHaveProperty('pendingChannels')
+  })
+
+  it('ships for a relay-managed bot too', async () => {
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      [external('C1', 'off')]
+    )
+    expect(spec?.core.pendingChannels).toEqual(['C1'])
+  })
+})
+
 describe('integrationToSpec chatAuthority', () => {
   /** An organization whose session access sync is on (in any of its states) for exactly `synced` platforms. */
   const policies = (synced: Record<string, 'enabling' | 'enabled' | 'degraded' | 'disabled'>) => ({
