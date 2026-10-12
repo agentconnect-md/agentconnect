@@ -1,4 +1,4 @@
-{{- $sourceCache := .Values.sourceCache | default dict }}
+{{- $sourceCache := include "agentconnect.sourceCache" . | fromJson }}
 {{- $sourceCacheCredentials := $sourceCache.credentials | default dict }}
 {{- $transferSecret := and $sourceCache.enabled (eq $sourceCacheCredentials.source "secret") }}
 {{- $transferIdentity := and $sourceCache.enabled (eq $sourceCacheCredentials.source "serviceAccount") (($sourceCacheCredentials.serviceAccount | default dict).roleArn) }}
@@ -236,7 +236,7 @@ spec:
             {{- $_ := set $document "publicEndpoint" . }}
             {{- end }}
             {{- $_ := set $document "limits" (dict "maxBytes" ($limits.transferMaxBytes | default "512Mi") "urlSeconds" ($limits.transferUrlLifetime | default "30m") "putUrlSeconds" ($limits.putUrlLifetime | default "15m")) }}
-            {{- $_ := set $document "credentials" (include "agentconnect.sourceCacheCredentials" . | fromJson) }}
+            {{- $_ := set $document "credentials" (include "agentconnect.sourceCacheCredentials" $sourceCache | fromJson) }}
             # Console file transfer: the Control Plane signs every URL for the Source Cache bucket; bytes never cross it.
             - name: AC_FILE_TRANSFER
               value: {{ toJson $document | quote }}

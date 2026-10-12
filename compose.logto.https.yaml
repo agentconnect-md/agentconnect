@@ -30,6 +30,20 @@ services:
       PUBLIC_WEB_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
       PUBLIC_RELAY_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}/relay'
       CORS_ORIGIN: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
+      # Console file transfer through the bundled object store, signed for its Caddy origin (docs/designs/source-cache-file-transfer.md §7).
+      AC_FILE_TRANSFER: '{"version":1,"endpoint":"https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_OBJECT_STORE_HTTPS_PORT:?set AGENTCONNECT_OBJECT_STORE_HTTPS_PORT before enabling HTTPS}","region":"us-east-1","bucket":"agentconnect","forcePathStyle":true,"credentials":{"source":"static","dir":"/run/secrets","accessKeyIdKey":"object_store_access_key_id","secretAccessKeyKey":"object_store_secret_access_key"}}'
+      # The Control Plane reads the bucket through Caddy, so it trusts Caddy's internal root.
+      NODE_EXTRA_CA_CERTS: /caddy-root/root.crt
+    depends_on:
+      object-store-setup:
+        condition: service_completed_successfully
+      caddy-ca:
+        condition: service_completed_successfully
+    secrets:
+      - object_store_access_key_id
+      - object_store_secret_access_key
+    volumes:
+      - caddy_root_ca:/caddy-root:ro
 
   relay:
     ports: !reset []
@@ -58,21 +72,73 @@ services:
       ADMIN_ENDPOINT: 'http://localhost:${AGENTCONNECT_LOGTO_ADMIN_PORT:-3002}'
       TRUST_PROXY_HEADER: 'true'
 
+  # RustFS, an S3-compatible store for console file transfers. Reachable only through Caddy's HTTPS origin, because signed URLs must be https://.
+  object-store:
+    image: rustfs/rustfs:${AGENTCONNECT_RUSTFS_VERSION:-1.0.1}
+    environment:
+      RUSTFS_ACCESS_KEY: '${AGENTCONNECT_OBJECT_STORE_ACCESS_KEY:?set AGENTCONNECT_OBJECT_STORE_ACCESS_KEY before enabling HTTPS}'
+      RUSTFS_SECRET_KEY: '${AGENTCONNECT_OBJECT_STORE_SECRET_KEY:?set AGENTCONNECT_OBJECT_STORE_SECRET_KEY before enabling HTTPS}'
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', '-o', '/dev/null', 'http://127.0.0.1:9000/health']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - object-store-data:/data
+    restart: unless-stopped
+
+  # Creates the bucket, its lifecycle rules and browser CORS; safe to rerun on every start.
+  object-store-setup:
+    image: rustfs/rustfs:${AGENTCONNECT_RUSTFS_VERSION:-1.0.1}
+    entrypoint: ['sh', '/object-store-setup.sh']
+    depends_on:
+      object-store:
+        condition: service_healthy
+    environment:
+      AC_STORE_URL: http://object-store:9000
+      AC_STORE_BUCKET: agentconnect
+      AC_STORE_CORS_ORIGIN: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
+      RUSTFS_ACCESS_KEY: '${AGENTCONNECT_OBJECT_STORE_ACCESS_KEY:?set AGENTCONNECT_OBJECT_STORE_ACCESS_KEY before enabling HTTPS}'
+      RUSTFS_SECRET_KEY: '${AGENTCONNECT_OBJECT_STORE_SECRET_KEY:?set AGENTCONNECT_OBJECT_STORE_SECRET_KEY before enabling HTTPS}'
+    configs:
+      - source: object-store-setup
+        target: /object-store-setup.sh
+    restart: 'no'
+
+  # Publishes Caddy's internal root certificate, and never its key, for the Control Plane to trust at process start.
+  caddy-ca:
+    image: caddy:2-alpine
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        root=/data/caddy/pki/authorities/local/root.crt
+        for _ in $$(seq 60); do
+          if [ -s "$$root" ]; then
+            install -m 0644 "$$root" /caddy-root/root.crt
+            exit 0
+          fi
+          sleep 1
+        done
+        echo 'Caddy did not create its internal root CA' >&2
+        exit 1
+    depends_on:
+      caddy:
+        condition: service_started
+    volumes:
+      - caddy_data:/data:ro
+      - caddy_root_ca:/caddy-root
+    restart: 'no'
+
+  # Caddy starts first so the Control Plane can trust its root; its upstreams answer 502 until they are healthy.
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    depends_on:
-      web:
-        condition: service_healthy
-      control-plane:
-        condition: service_healthy
-      relay:
-        condition: service_healthy
-      logto:
-        condition: service_healthy
     ports:
       - '${AGENTCONNECT_HTTPS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_HTTPS_PORT}:443'
       - '${AGENTCONNECT_HTTPS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_LOGTO_HTTPS_PORT}:8443'
+      - '${AGENTCONNECT_HTTPS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_OBJECT_STORE_HTTPS_PORT:?set AGENTCONNECT_OBJECT_STORE_HTTPS_PORT before enabling HTTPS}:9443'
       - '127.0.0.1:${AGENTCONNECT_LOGTO_ADMIN_PORT:-3002}:3002'
       - '127.0.0.1:${AGENTCONNECT_SETUP_PORT:-8091}:8091'
     configs:
@@ -86,6 +152,9 @@ services:
       - admin
 
 configs:
+  # One setup script for Compose and the chart.
+  object-store-setup:
+    file: ./charts/agentconnect/files/object-store-setup.sh
   caddyfile:
     content: |
       {
@@ -117,6 +186,12 @@ configs:
           }
       }
 
+      # The S3 API keeps the client's Host header, which every SigV4 signature covers.
+      https://${AGENTCONNECT_HTTPS_HOST}:9443 {
+          tls internal
+          reverse_proxy object-store:9000
+      }
+
       http://:3002 {
           reverse_proxy logto:3002
       }
@@ -125,6 +200,14 @@ configs:
           reverse_proxy setup-server:8091
       }
 
+secrets:
+  object_store_access_key_id:
+    environment: AGENTCONNECT_OBJECT_STORE_ACCESS_KEY
+  object_store_secret_access_key:
+    environment: AGENTCONNECT_OBJECT_STORE_SECRET_KEY
+
 volumes:
   caddy_data:
   caddy_runtime_config:
+  caddy_root_ca:
+  object-store-data:

@@ -18,12 +18,13 @@ with the address or DNS name of the Docker host.
 | `https://192.0.2.10:1443/cp/*`    | Control Plane                 |
 | `https://192.0.2.10:1443/relay/*` | Relay HTTP and WebSocket      |
 | `https://192.0.2.10:1444/*`       | Logto sign-in                 |
+| `https://192.0.2.10:1445/*`       | Object store (S3 API)         |
 | `http://localhost:8091`           | Setup, through an SSH tunnel  |
 | `http://localhost:3002`           | Logto Admin, through a tunnel |
 
 Setup and Logto Admin never bind to a LAN interface. PostgreSQL, Web, Control
-Plane, Relay, and Logto do not publish host ports. Caddy publishes the two HTTPS
-origins and owns the two loopback-only operator ports.
+Plane, Relay, Logto, and the object store do not publish host ports. Caddy
+publishes the three HTTPS origins and owns the two loopback-only operator ports.
 
 ## Prerequisites
 
@@ -43,6 +44,7 @@ do not initialize with the defaults and try to rotate them afterward.
 AGENTCONNECT_HTTPS_HOST=192.0.2.10
 AGENTCONNECT_HTTPS_PORT=1443
 AGENTCONNECT_LOGTO_HTTPS_PORT=1444
+AGENTCONNECT_OBJECT_STORE_HTTPS_PORT=1445
 AGENTCONNECT_HTTPS_BIND_ADDRESS=0.0.0.0
 
 AGENTCONNECT_SETUP_PORT=8091
@@ -52,10 +54,13 @@ AGENTCONNECT_POSTGRES_PASSWORD=<random-password>
 LOGTO_POSTGRES_PASSWORD=<random-url-safe-password>
 AGENTCONNECT_API_KEY_PEPPER=<random-32+-character-value>
 AGENTCONNECT_RELAY_TOKEN=<random-token>
+
+AGENTCONNECT_OBJECT_STORE_ACCESS_KEY=agentconnect-store
+AGENTCONNECT_OBJECT_STORE_SECRET_KEY=<random-password>
 ```
 
 Generate a different value for every credential. For example,
-`openssl rand -hex 32` produces values accepted by all four settings.
+`openssl rand -hex 32` produces values accepted by all of these settings.
 
 The overlay derives the AgentConnect and Logto public URLs from these host and
 port settings. No additional identity-provider URL is required in `.env`.
@@ -163,6 +168,7 @@ docker compose \
 curl -k https://192.0.2.10:1443/cp/readyz
 curl -k https://192.0.2.10:1443/relay/readyz
 curl -k https://192.0.2.10:1444/oidc/.well-known/openid-configuration
+curl -k https://192.0.2.10:1445/health
 ```
 
 The endpoints should return HTTP 200. Only Caddy should show host port
@@ -184,6 +190,31 @@ Setup preserves the `/cp` and `/relay` prefixes when it generates Slack and
 GitHub provider manifests, so their callbacks and webhooks use the same public
 service mounts shown above. No Control Plane or Relay routes are exposed at the
 gateway root.
+
+## Object store and file transfer
+
+The overlay runs a [RustFS](https://rustfs.com) object store for console file transfers
+([design](designs/source-cache-file-transfer.md)). Webchat attachments upload
+straight from the browser into the store, and large workspace files download
+from it, so neither passes through the Control Plane. Signed URLs must be
+`https://`, so browsers and daemons reach the store only through Caddy on
+`AGENTCONNECT_OBJECT_STORE_HTTPS_PORT`.
+
+On every start, `object-store-setup` creates the `agentconnect` bucket, its
+lifecycle rules, and a CORS rule that admits only the console origin. The store
+starts with the access key pair from `.env`, and the Control Plane uses the same
+pair. The Control Plane signs URLs for that origin and reads the bucket
+through it. To trust Caddy's certificate, it uses the root certificate that
+`caddy-ca` copies out of Caddy's data volume. The private key is not copied.
+For this reason Caddy starts before the AgentConnect services, and its routes
+answer `502` until those services are healthy.
+
+Clients that download a file follow a link to the store's origin. Browsers and
+daemons must therefore trust the Caddy CA for that port as well as for the
+console.
+
+The Source Cache for Git bundles is a feature of the Kubernetes daemon pool.
+Compose runs no pool members, so this overlay enables file transfer only.
 
 ## Trust the Caddy internal CA
 
