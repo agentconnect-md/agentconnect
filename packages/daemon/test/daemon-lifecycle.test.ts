@@ -3703,6 +3703,35 @@ describe('Daemon session retention GC (#485)', () => {
       }
     })
 
+    it('lets admitted work keep its own leaf only: one session that never settles does not hold the rest', async () => {
+      const daemon = await startDaemon()
+      const store = (daemon as any).store
+      // A delivery admitted for a row that rejects it at every replay stays pending for good; it pins its session, not its agent.
+      await seedSession(daemon, 'stuck', 'idle', (daemon as any).clock.now())
+      await store.appendInbox({ id: 'm-stuck', sessionKey: 'stuck', agentId: 'bot-a', msg: '{}', enqueuedAt: '1' })
+      // Admitted work with no row yet — a durable inbox row, a gate-owned key, a planned turn — keeps the leaf its key names.
+      await store.appendInbox({
+        id: 'm-admitted',
+        sessionKey: 'admitted',
+        agentId: 'bot-a',
+        msg: '{}',
+        enqueuedAt: '2'
+      })
+      ;(daemon as any).activeGateEntries.set('gated', { agentId: 'bot-a' })
+      ;(daemon as any).pending.set('planned', { plan: { agentId: 'bot-a', sessionKey: 'planned' } })
+      const kept = ['stuck', 'admitted', 'gated', 'planned'].map((key) => sessionDirOf(daemon, key))
+      const orphan = sessionDirOf(daemon, 'purged')
+      try {
+        await sweepRetention(daemon)
+        expect(existsSync(orphan)).toBe(false)
+        for (const dir of kept) expect(existsSync(dir)).toBe(true)
+      } finally {
+        ;(daemon as any).activeGateEntries.delete('gated')
+        ;(daemon as any).pending.delete('planned')
+        await daemon.stop()
+      }
+    })
+
     it('leaves every directory alone while the manager of a sandboxed agent is down', async () => {
       const daemon = await startDaemon()
       const orphan = sessionDirOf(daemon, 'purged')

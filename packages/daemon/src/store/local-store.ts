@@ -4652,6 +4652,14 @@ export class LocalStore {
     return row !== undefined
   }
 
+  /** The session keys of an agent's PENDING inbox rows — admitted work that will run in those sessions, whether or not their rows exist yet; the per-session form of agentHasPendingInboxRows. */
+  async pendingInboxSessionKeys(agentId: string): Promise<string[]> {
+    const rows = (await this.db
+      .prepare('SELECT DISTINCT sessionKey FROM inbox WHERE agentId = ? AND completedAt IS NULL')
+      .all(agentId)) as Array<{ sessionKey: string }>
+    return rows.map((row) => row.sessionKey)
+  }
+
   /** Retention-GC delete (#485): remove one session row and its dependent rows —
    *  mute, memory-capture gate, durable inbox, permission-request history.
    *  Two deliberate survivors:

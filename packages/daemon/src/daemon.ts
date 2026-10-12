@@ -23039,10 +23039,10 @@ export class Daemon {
       try {
         const kept = await this.keptSessionLeaves(agentId)
         const orphans = ids.filter((id) => !kept.has(id.slice(agentId.length + 1)))
-        if (orphans.length === 0 || (await this.agentWorkspaceActive(agentId))) continue
+        if (orphans.length === 0 || this.orphanSweepHeld(agentId)) continue
         await this.withWorkspaceAdmissionFence(agentId, async () => {
           const agent = this.agents.get(agentId)
-          if (!agent || (await this.agentWorkspaceActive(agentId))) return
+          if (!agent || this.orphanSweepHeld(agentId)) return
           for (const id of orphans) {
             if (this.draining) return
             // Re-judged inside the fence, which holds turn admission: a session reopened under the same key keeps its VM.
@@ -23065,15 +23065,36 @@ export class Daemon {
     return retired
   }
 
-  /** The session leaves of an agent that something may still use: one per stored row, per dream and per host held here. */
+  /** The session leaves of an agent that something may still use: one per stored row, per dream, per host held here, and per turn admitted but not yet bound to a host — gate-owned, planned, or waiting in the durable inbox. */
   private async keptSessionLeaves(agentId: string): Promise<Set<string>> {
     const keys = [
       ...(await this.store.sessionKeysForAgent(agentId)).map((key) => sessionHostKey(agentId, key)),
       // A dream's host starts before its execution row exists, and a dream that fails first never writes one.
       ...(await this.store.dreamIdsForAgent(agentId)).map((dreamId) => this.dreamOwnerKey(agentId, dreamId)),
-      ...this.hostKeysForAgent(agentId)
+      ...this.hostKeysForAgent(agentId),
+      // An admitted turn may write the row and the directory in either order, so its key alone keeps the leaf.
+      ...this.admittedSessionKeys(agentId).map((key) => sessionHostKey(agentId, key)),
+      ...(await this.store.pendingInboxSessionKeys(agentId)).map((key) => sessionHostKey(agentId, key))
     ]
     return new Set(keys.map((key) => hostKeyDirName(key)))
+  }
+
+  /** The session keys of an agent's turns this process admitted and has not finished: gate-owned or planned. */
+  private admittedSessionKeys(agentId: string): string[] {
+    const keys: string[] = []
+    for (const [key, entry] of this.activeGateEntries) if (entry.agentId === agentId) keys.push(key)
+    for (const turn of this.pending.values()) if (turn.plan.agentId === agentId) keys.push(turn.plan.sessionKey)
+    return keys
+  }
+
+  /** The orphan sweeps' exclusion: an agent not served here, or draining. Its live sessions pin their own leaves through the kept set, so one session that never settles cannot hold every rowless directory of its agent (#2283). */
+  private orphanSweepHeld(agentId: string): boolean {
+    return (
+      !this.servesAgent(agentId) ||
+      this.draining ||
+      this.drainingAgents.has(agentId) ||
+      this.safetyDrainingAgents.has(agentId)
+    )
   }
 
   /** Remove session directories no row names, as a purge that could not judge them leaves them (#2283); dirty or unpushed work keeps one. */
@@ -23084,11 +23105,10 @@ export class Daemon {
     for (const agent of [...this.agents.values()]) {
       if (this.draining) break
       try {
-        if ((await this.orphanSessionLeaves(agent)).length === 0 || (await this.agentWorkspaceActive(agent.id)))
-          continue
+        if ((await this.orphanSessionLeaves(agent)).length === 0 || this.orphanSweepHeld(agent.id)) continue
         await this.withWorkspaceAdmissionFence(agent.id, async () => {
           const current = this.agents.get(agent.id)
-          if (!current || (await this.agentWorkspaceActive(agent.id))) return
+          if (!current || this.orphanSweepHeld(agent.id)) return
           // Re-judged inside the fence, which holds turn admission: a session reopened under the same key keeps its directory.
           for (const leaf of await this.orphanSessionLeaves(current)) {
             if (this.draining) return
