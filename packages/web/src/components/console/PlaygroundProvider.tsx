@@ -399,6 +399,16 @@ type WebchatRuntimeConfig = {
   fastMode?: boolean
 }
 
+/** The reader's IANA time zone, which an assistant-mode agent reasons in; omitted when the browser names none. */
+function browserTimeZone(): { timeZone?: string } {
+  try {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return timeZone ? { timeZone } : {}
+  } catch {
+    return {}
+  }
+}
+
 /** A steer on the wire (see sendSteer): its send args for a requeue, its frame for a reconnect re-send. */
 type PendingSteer = {
   agentId: string
@@ -2090,7 +2100,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           ...(files?.length ? { files } : {}),
           // Runtime staging is a single-agent affordance — multi-agent conversations expose no runtime controls (§9.1/§9.3).
           ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {}),
-          ...(roster.length <= 1 && stagedWorktree.current.has(id) ? { worktree: stagedWorktree.current.get(id) } : {})
+          ...(roster.length <= 1 && stagedWorktree.current.has(id) ? { worktree: stagedWorktree.current.get(id) } : {}),
+          ...browserTimeZone()
         })
         // Re-send only one-target turns; retrying several targets could duplicate the relay's canonical post.
         if (targets.length <= 1)
@@ -2161,7 +2172,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         agentId: agentForId,
         text,
         seq,
-        frame: JSON.stringify({ text, turnId, steer: true }),
+        frame: JSON.stringify({ text, turnId, steer: true, ...browserTimeZone() }),
         ...(conversationId ? { conversationId } : {})
       }
       const bucket = steerTurns.current.get(id) ?? new Map<string, PendingSteer>()

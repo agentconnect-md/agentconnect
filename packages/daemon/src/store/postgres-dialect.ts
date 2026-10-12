@@ -186,6 +186,7 @@ export const canonicalColumns = [
   'terminalReport',
   'tenantScope',
   'threadUrl',
+  'timeZone',
   'toAgentId',
   'toolCallId',
   'touchedAt',

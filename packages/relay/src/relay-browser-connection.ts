@@ -5,7 +5,7 @@
  * different daemons.
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
- * `{text, turnId, mentions?, targets?, attachments?, runtime?}` (a turn) or
+ * `{text, turnId, mentions?, targets?, attachments?, runtime?, timeZone?}` (a turn) or
  * `{type:'resume'|'attach'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
  * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'attached'|'post'|'error'}`.
  * A turn fans out as one pre-addressed `rd/msg(webchat)` per targeted agent's
@@ -26,6 +26,7 @@ import {
   type RdWebchatPost,
   type RdWebchatImageUpdate,
   WEBCHAT_IMAGES_FEATURE,
+  WebchatTimeZone,
   type WebchatPost,
   type WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
@@ -123,7 +124,9 @@ export function parseBrowserFrame(
       ...(m.files !== undefined ? { files: m.files } : {}),
       ...(m.runtime !== undefined ? { runtime: m.runtime } : {}),
       ...(m.worktree !== undefined ? { worktree: m.worktree } : {}),
-      ...(m.steer === true ? { steer: true } : {})
+      ...(m.steer === true ? { steer: true } : {}),
+      // A malformed zone is left out rather than costing the turn.
+      ...(WebchatTimeZone.safeParse(m.timeZone).success ? { timeZone: m.timeZone as string } : {})
     })
     if (!parsed.success || parsed.data.op !== 'turn') return null
     const targets = m.targets !== undefined ? uuidArray(m.targets, 16) : undefined

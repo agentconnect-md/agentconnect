@@ -31,6 +31,8 @@ import { openRuntimeSession } from './turn/runtime-session.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
 import { runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
+import { renderLocalNow } from '../assistant/local-time.js'
+import { knownTimeZone } from '../messages/time-zone.js'
 import { assistantMainConversation } from '../mcp/ops/assistant-subsessions.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
@@ -240,6 +242,10 @@ export class SessionManager {
        *  cannot tell that a multi-mention message addresses it — the
        *  response-choice rule then misfires into AC_NO_RESPONSE. */
       slackBotUserIdFor?: (integrationId: string) => string | undefined
+      /** The time zone in the turn's sender's platform profile, for an assistant-mode turn's local time (assistant-mode.md §5.4). */
+      senderTimeZoneFor?: (msg: NormalizedMessage, integrationId?: string) => Promise<string | undefined>
+      /** The clock the local-time line reads; Date.now when absent. */
+      now?: () => number
       /** Sandbox/runtime defaults used to detect config-file pointer conflicts, as at spawn. */
       runtimeEnvFor?: (agent: Agent) => Record<string, string>
       /**
@@ -996,6 +1002,12 @@ export class SessionManager {
       if (running) this.runningSubsessionsShown.set(key, running.shown)
       if (running?.text) promptPrelude.push({ type: 'text', text: running.text })
     }
+    // Every turn of an assistant-mode agent is told the people's local time, current now (§5.4).
+    if (assistantModeOn(agent))
+      promptPrelude.push({
+        type: 'text',
+        text: await abortable(() => this.localNow(agentId, msg, integrationId), signal)
+      })
     // A trusted direct agent call is addressed to this agent regardless of names
     // or quoted mentions in its body. State that routing fact per turn so the
     // generic no-response rule cannot mistake the caller label for an addressee.
@@ -1034,6 +1046,22 @@ export class SessionManager {
       ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {}),
       ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {})
     }
+  }
+
+  /** The local-time line: the zone of the person who started the turn, else the last one seen in its place, else UTC. */
+  private async localNow(agentId: string, msg: NormalizedMessage, integrationId?: string): Promise<string> {
+    const now = (this.deps.now ?? Date.now)()
+    const place = { platform: msg.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
+    const zones = this.deps.store.assistantTimeZones
+    // A zone that cannot be read or kept costs the line its precision, never the turn.
+    const person =
+      msg.source === 'user' && !msg.sender.isBot
+        ? knownTimeZone(
+            msg.senderTimeZone ?? (await this.deps.senderTimeZoneFor?.(msg, integrationId).catch(() => undefined))
+          )
+        : undefined
+    if (person) await zones.note(agentId, place, person, now).catch(() => undefined)
+    return renderLocalNow(now, person ?? (await zones.get(agentId, place).catch(() => undefined)))
   }
 
   /** Decide whether to re-inject the compact no-response reminder on a later turn,

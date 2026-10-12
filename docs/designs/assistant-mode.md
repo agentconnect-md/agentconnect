@@ -256,8 +256,8 @@ place, count as internal unless the platform detects them as external (§5.3), s
 the enable warning for them; DMs auto-enabled by §14.8 for `sharedWith` members count as internal
 (that person is an organization member). In the same row-locked write, an unset, asking or
 read-only permission mode becomes the runtime's auto mode, else its full-access mode, unless the
-edit sets a mode itself (§1.8); which mode is which comes from the `permissionModes` map each
-runtime carries in the admission list. Workspace isolation is untouched.
+edit sets a mode itself (§1.8); which mode is which comes from a per-runtime map kept beside the
+admission list. Workspace isolation is untouched.
 
 ### 5.2 Places and long conversations
 
@@ -343,6 +343,18 @@ none is running.
 
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
 another place, under §5.5.
+
+**④ The people's local time**: unlike the summary, this rides every turn of an assistant-mode
+agent — main conversations, sub-sessions, patrols, tasks and report rounds — as one line in the
+turn prelude, current at that turn: `Now: 2026-10-12 Mon 04:20 (Asia/Shanghai, UTC+08:00).` The
+zone is the one the person who started the turn reported: on Slack their profile's (`users.info`
+`tz`, else `tz_offset`), read from the profile lookup their message already starts and cached per
+user; in webchat the browser's, sent with the turn. A turn no person started, or whose person
+reported none, takes the zone last seen from a person in its place, which the daemon store keeps
+per agent and place; with none, the line says UTC and that the local zone is unknown. Other
+platforms report no zone. The runtime host's clock is never presented as the people's time. The
+line is context, not an instruction; no tool's parameters change, and instants the agent writes
+(`nextCheck`, `remind`) still carry their own offset.
 
 ### 5.5 Permission rules
 
@@ -1058,11 +1070,20 @@ Now the minute sweep reports such a sub-session ended once nothing has run for i
 (§5.7), through the existing failure report, which also frees the slot. Why the same-process replay
 folds the turn away is not changed here.
 
-**Twenty-second revision (2026-10-12)**: switching assistant mode on sets a default permission mode.
+**Twenty-second revision (2026-10-12)**: assistant-mode turns are told the people's local time. In
+a test, an agent in a Slack DM with a person in UTC+8, at 04:20 on a Monday, said today was Sunday
+and called that same Monday "tomorrow". The times it scheduled carried the right offset, but its
+sense of today followed the runtime host's clock, which is UTC. Now every turn of an assistant-mode
+agent opens with one line naming the current local date, weekday, time, zone and offset (§5.4 ④).
+The zone is the sender's Slack profile zone or the console browser's; a turn no person started
+takes the zone last seen from a person in its place; otherwise the line says UTC and that the local
+zone is unknown. No tool changes, and an agent outside assistant mode gets no line.
+
+**Twenty-third revision (2026-10-12)**: switching assistant mode on sets a default permission mode.
 In a test, nearly every background task stopped to wait for approval of a file write, and nobody
 was watching. Now the edit that switches the mode on, from the console or the API, moves an unset,
 asking or read-only mode to the runtime's auto mode, or to its full-access mode where the runtime
-has no auto mode (§1.8). Which mode is which is a per-runtime map in the admission list: Claude
+has no auto mode (§1.8). Which mode is which is a per-runtime map beside the admission list: Claude
 Code gets `auto` and Codex gets `agent`, its "Auto review"; OpenCode has neither and keeps its
 mode. An auto or full-access mode, Claude Code's `dontAsk` and a mode set in the same edit are
 kept. It is a default, not an admission check: an editor may pick another mode afterwards, the
