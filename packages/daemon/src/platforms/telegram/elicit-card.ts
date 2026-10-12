@@ -44,7 +44,7 @@ import type {
   ElicitCardTurn
 } from '../elicit-card.js'
 import type { InlineButton, TelegramConnection } from '../../telegram/connection.js'
-import { TELEGRAM_MESSAGE_LIMIT } from '../../telegram/render.js'
+import { TELEGRAM_CALLBACK_ANSWER_LIMIT, TELEGRAM_MESSAGE_LIMIT } from '../../telegram/render.js'
 import type { TelegramTurnState } from './turn-output.js'
 import {
   clampTo,
@@ -490,6 +490,8 @@ function telegramFoldForm(
 export const telegramElicitCards: ElicitCardFacet = {
   platform: 'telegram',
   reduction: TELEGRAM_ELICIT_SURFACE,
+  // A refused tap is told in the tap's own answer, an alert of at most 200 characters.
+  privateTextLimit: TELEGRAM_CALLBACK_ANSWER_LIMIT,
 
   build(_host: ElicitCardHost, _turn: ElicitCardTurn, ask: ElicitCardAsk): ElicitCardDraft | null {
     // No consent control: an inline `url` button fires no callback_query, so consent could never

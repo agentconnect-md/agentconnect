@@ -7,6 +7,7 @@ import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import { isTelegramMembershipServiceMessage, normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
+import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from './render.js'
 import type { PlatformConnection, PlatformReactionIntent } from '../platforms/contract.js'
 
 /** Core names the intent; Telegram's alphabet is a fixed set of literal emoji. */
@@ -596,8 +597,11 @@ export class TelegramConnection implements PlatformConnection {
 
   /** Acknowledge an inline-keyboard tap; `text` shows as a toast, or a dialog with `alert`, to the tapper alone. */
   async answerCallback(callbackId: string, text?: string, opts: { alert?: boolean } = {}): Promise<void> {
-    // Telegram refuses an answer past 200 characters, so a longer one is cut rather than lost.
-    const shown = text && text.length > 200 ? `${text.slice(0, 199)}…` : text
+    // Telegram refuses a longer answer, so one is cut rather than lost; a refusal is already built to fit.
+    const shown =
+      text && text.length > TELEGRAM_CALLBACK_ANSWER_LIMIT
+        ? `${text.slice(0, TELEGRAM_CALLBACK_ANSWER_LIMIT - 1)}…`
+        : text
     try {
       await this.bot.api.answerCallbackQuery(
         callbackId,
