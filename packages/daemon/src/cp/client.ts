@@ -1827,6 +1827,7 @@ export class CpClient {
         (value): value is string => typeof value === 'string'
       )
       if (agentId) orgId = this.deps.orgForAgent?.(agentId)
+      else if (typeof p.integrationId === 'string') orgId = this.deps.orgForIntegration?.(p.integrationId)
     }
     if (this.organizationMode === 'frame' && !orgId) {
       throw new WireError('SCOPE_DENIED', `cannot resolve organization for ${type}`, false)
