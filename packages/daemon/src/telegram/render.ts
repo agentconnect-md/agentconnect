@@ -59,6 +59,9 @@ export type TelegramAction =
 /** Telegram single-message hard cap (4096 chars) — vs Slack's 12000-char block. */
 export const TELEGRAM_MESSAGE_LIMIT = 4096
 
+/** The most characters a callback query's answer (its toast or alert) may carry. */
+export const TELEGRAM_CALLBACK_ANSWER_LIMIT = 200
+
 /**
  * The continue-the-topic footer appended to the last message of an agent turn.
  *

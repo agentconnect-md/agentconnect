@@ -99,6 +99,8 @@ export interface ApprovalCardFacet {
   rewrite(handle: ApprovalCardHandle, draft: ApprovalCardDraft): void
   /** Tell only `userId`, beside the card, why their click was not taken. Absent ⇒ core hands the words back to the click's own ingress, which answers the interaction privately. */
   tellPrivately?(handle: ApprovalCardHandle, userId: string, text: string): void
+  /** The most characters a refusal said only to the clicker can carry here, by either path; absent ⇒ no limit core must fit. */
+  readonly privateTextLimit?: number
   /** The namespace a clicker's id is scoped to; absent where the platform's user ids are already global. */
   answerScope?(handle: ApprovalCardHandle): string | undefined
   /** A clicker's display name, for a click that carried none. */

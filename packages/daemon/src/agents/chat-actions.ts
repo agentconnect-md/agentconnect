@@ -24,23 +24,34 @@ export type ChatActorVerdict = 'allowed' | 'not-editor' | 'unlinked' | 'unavaila
 export const CHAT_LINK_HINT =
   'If you are an Agent editor, link this account under Sign-in methods in your console Profile and try again. Otherwise, ask an Agent editor.'
 
-/** What only the person whose approval answer was refused is told: who can answer instead, and where. */
-export function approvalRefusalText(consoleUrl?: string, verdict?: ChatActorVerdict): string {
-  const where = consoleUrl ? `in the console: ${consoleUrl}` : 'in the console.'
-  return withLinkHint(`Only an Agent editor can answer this request. They can answer it ${where}`, verdict)
+/** What only the person whose approval answer was refused is told: who can answer instead, and where, within `limit` characters. */
+export function approvalRefusalText(consoleUrl?: string, verdict?: ChatActorVerdict, limit?: number): string {
+  const where = (url?: string) => (url ? `in the console: ${url}` : 'in the console.')
+  return fitRefusal((url) => `Only an Agent editor can answer this request. They can answer it ${where(url)}`, {
+    consoleUrl,
+    verdict,
+    limit
+  })
 }
 
-/** What only the person whose runtime-settings change was refused is told: who can change them, and where. */
-export function settingsRefusalText(consoleUrl: string, verdict?: ChatActorVerdict): string {
-  return withLinkHint(
-    `Only an Agent editor can change runtime settings. They can change them in the console: ${consoleUrl}`,
-    verdict
-  )
+/** What only the person whose runtime-settings change was refused is told: who can change them, and where, within `limit` characters. */
+export function settingsRefusalText(consoleUrl: string, verdict?: ChatActorVerdict, limit?: number): string {
+  const where = (url?: string) => (url ? `in the console: ${url}` : 'in the console.')
+  return fitRefusal((url) => `Only an Agent editor can change runtime settings. They can change them ${where(url)}`, {
+    consoleUrl,
+    verdict,
+    limit
+  })
 }
 
-/** The link hint goes on its own line, so it never runs into the console link. */
-function withLinkHint(text: string, verdict: ChatActorVerdict | undefined): string {
-  return verdict === 'unlinked' ? `${text}\n${CHAT_LINK_HINT}` : text
+/** A refusal within `limit`: the console link is dropped whole rather than cut, then the link hint; the hint goes on its own line. */
+function fitRefusal(
+  text: (consoleUrl?: string) => string,
+  o: { consoleUrl: string | undefined; verdict: ChatActorVerdict | undefined; limit: number | undefined }
+): string {
+  const hint = (t: string) => (o.verdict === 'unlinked' ? `${t}\n${CHAT_LINK_HINT}` : t)
+  const forms = [hint(text(o.consoleUrl)), hint(text()), text()]
+  return forms.find((form) => o.limit === undefined || form.length <= o.limit) ?? text()
 }
 
 /** Whether a conversation takes chat-side answers and setting changes: `closed` keeps everyone out, `external` sends approvals to an internal member. */

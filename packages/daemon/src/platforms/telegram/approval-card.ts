@@ -19,7 +19,7 @@ import {
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import type { InlineButton, TelegramConnection } from '../../telegram/connection.js'
-import { TELEGRAM_MESSAGE_LIMIT } from '../../telegram/render.js'
+import { TELEGRAM_CALLBACK_ANSWER_LIMIT, TELEGRAM_MESSAGE_LIMIT } from '../../telegram/render.js'
 import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
 import { TELEGRAM_BUTTON_LABEL_CAP, TELEGRAM_ELICIT_MAX_BUTTONS } from './elicit-card.js'
 import type { TelegramTurnState } from './turn-output.js'
@@ -68,6 +68,8 @@ function anchorOf(place: ApprovalCardPlace): { threadTs?: string; replyTo?: numb
 export const telegramApprovalCards: ApprovalCardFacet = {
   platform: 'telegram',
   maxOptions: TELEGRAM_APPROVAL_MAX_OPTIONS,
+  // A refused tap is told in the tap's own answer, an alert of at most 200 characters.
+  privateTextLimit: TELEGRAM_CALLBACK_ANSWER_LIMIT,
 
   build(ask: ApprovalCardAsk): ApprovalCardDraft | null {
     const options = ask.params.options

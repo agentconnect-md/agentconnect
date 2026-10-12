@@ -711,6 +711,25 @@ describe('session-control cards (/models tappable buttons)', () => {
     expect(await (daemon as any).store.getModelOverride(key)).toBeUndefined()
   })
 
+  it('says where to change it without a console link that would not fit the alert', async () => {
+    const daemon = await boot()
+    ;(daemon as any).agents.get('bot-a').chatActions = 'approve'
+    ;(daemon as any).cfg.webAppUrl = `https://console.example.test/${'a'.repeat(160)}`
+    const conn = makeTelegramRoutable(daemon)
+    injectHost(daemon)
+    await seedSession(daemon, '-100', 'tg:100')
+
+    await (daemon as any).commands.handleTelegramCallback(
+      { id: 'cb-long', data: 'm:1', channel: '-100', messageId: 55, userId: 'U-DANA' },
+      conn
+    )
+    expect(conn.answerCallback).toHaveBeenCalledWith(
+      'cb-long',
+      'Only an Agent editor can change runtime settings. They can change them in the console.',
+      { alert: true }
+    )
+  })
+
   it('applies a callback only to a session owned by the bot that delivered the tap', async () => {
     const daemon = await boot()
     const { agentA, agentB, connB } = makeScopedTelegramPair(daemon)

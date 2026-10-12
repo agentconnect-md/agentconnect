@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { FakeClock } from '@agentconnect.md/connection'
 import { agentHostKey } from '../src/acp/host-key.js'
+import { approvalRefusalText, CHAT_LINK_HINT, settingsRefusalText } from '../src/agents/chat-actions.js'
 import { Daemon } from '../src/daemon.js'
 import { pendingTurnKey, type Pending } from '../src/daemon/turn-types.js'
 import { DiscordConnection } from '../src/discord/connection.js'
@@ -362,6 +363,19 @@ describe.each(['telegram', 'discord'] as const)('%s permission cards', (platform
     await w.store.close()
   })
 
+  it('never cuts the console link in a refusal: a surface that cannot fit it says where without it', async () => {
+    const w = await world(platform, { level: 'approve' })
+    w.daemon.cfg.webAppUrl = `https://console.example.test/${'a'.repeat(150)}`
+    void w.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
+    w.agent.chatActions = 'talk'
+    const told = await w.click(1)
+    if (platform === 'telegram')
+      expect(told).toBe('Only an Agent editor can answer this request. They can answer it in the console.')
+    else expect(told).toContain(`https://console.example.test/${'a'.repeat(150)}/sessions/sid-1`)
+    await w.store.close()
+  })
+
   it('declines a list longer than every surface shows, with the notice, and posts nothing', async () => {
     const w = await world(platform, { level: 'approve' })
     await expect(w.permissions.onAcpPermission(AGENT, 's1', permission(26))).resolves.toEqual({
@@ -386,6 +400,33 @@ describe.each(['telegram', 'discord'] as const)('%s permission cards', (platform
     await vi.waitFor(() => expect(w.rewrites()).toHaveLength(1))
     expect(w.rewrites()[0]!.text).toContain('Ada Example')
     await w.store.close()
+  })
+})
+
+describe('a refusal said within a limit', () => {
+  const url = `https://console.example.test/${'a'.repeat(150)}/sessions/sid-1`
+
+  it('keeps the link where it fits, and drops it whole where it does not', () => {
+    expect(approvalRefusalText('https://console.example.test/s', undefined, 200)).toBe(
+      'Only an Agent editor can answer this request. They can answer it in the console: https://console.example.test/s'
+    )
+    expect(approvalRefusalText(url, undefined, 200)).toBe(
+      'Only an Agent editor can answer this request. They can answer it in the console.'
+    )
+    expect(settingsRefusalText(url, undefined, 200)).toBe(
+      'Only an Agent editor can change runtime settings. They can change them in the console.'
+    )
+    // No limit, no change.
+    expect(approvalRefusalText(url)).toContain(url)
+  })
+
+  it('keeps the link hint where it fits, else drops it too', () => {
+    const roomy = approvalRefusalText(url, 'unlinked', 400)
+    expect(roomy).not.toContain(url)
+    expect(roomy).toContain(CHAT_LINK_HINT)
+    expect(approvalRefusalText(url, 'unlinked', 200)).toBe(
+      'Only an Agent editor can answer this request. They can answer it in the console.'
+    )
   })
 })
 
