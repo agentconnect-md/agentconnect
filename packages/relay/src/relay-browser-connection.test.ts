@@ -50,7 +50,13 @@ function build(
     ack?: RdAck
     remoteMcp?: WebchatRemoteMcpEntitlement
     log?: Logger
-    participants?: Array<{ agentId: string; daemonId?: string; primary?: boolean; targetSessionId?: string }>
+    participants?: Array<{
+      agentId: string
+      daemonId?: string
+      primary?: boolean
+      targetSessionId?: string
+      callerRole?: 'editor' | 'owner' | 'participant'
+    }>
     targetSessionId?: string
     supports?: boolean
   } = {}
@@ -350,6 +356,49 @@ describe('RelayBrowserConnection', () => {
     expect(transport.last('image_update')).toEqual({ type: 'image_update', update })
     conn.onImageUpdate({ ...update, conversationId: AGENT, revision: 2 })
     expect(transport.last('image_update')).toEqual({ type: 'image_update', update })
+  })
+
+  it('stamps the verified role on each participant’s turns and runtime changes, never one the browser sent', async () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    const { transport, sent } = build({
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true, callerRole: 'owner' },
+        { agentId: PEER, daemonId: DAEMON, callerRole: 'participant' }
+      ]
+    })
+    transport.feed({ text: 'both of you', targets: [AGENT, PEER], callerRole: 'editor' })
+    transport.feed({ type: 'set_model', model: 'b', callerRole: 'editor' })
+    transport.feed({ type: 'cancel', agentId: AGENT })
+    await tick()
+    const stamped = sent.map((frame) => [
+      frame.agentId,
+      frame.payload.op,
+      'callerRole' in frame.payload ? frame.payload.callerRole : undefined
+    ])
+    expect(stamped).toEqual([
+      [AGENT, 'turn', 'owner'],
+      [PEER, 'turn', 'participant'],
+      [AGENT, 'set_model', 'owner'],
+      [AGENT, 'cancel', undefined]
+    ])
+  })
+
+  it('stamps no role from a verdict that carries none', async () => {
+    const { transport, sent } = build()
+    transport.feed({ type: 'set_fast', fastMode: true })
+    await tick()
+    expect(sent[0]?.payload).toEqual({ op: 'set_fast', fastMode: true })
+  })
+
+  it('tells only this browser why a runtime change was refused', async () => {
+    const reason = 'Only an Agent editor or the owner of this conversation can change its runtime settings.'
+    const { transport } = build({ ack: { msgId: 'm', accepted: false, reason } })
+    transport.feed({ type: 'set_effort', effort: 'high' })
+    await tick()
+    expect(transport.last('refused')).toEqual({
+      type: 'refused',
+      refused: { op: 'set_effort', agentId: AGENT, reason }
+    })
   })
 
   it('stamps the verdict targetSessionId verbatim onto every rd/msg — turn and close alike', async () => {

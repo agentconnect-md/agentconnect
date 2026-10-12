@@ -22,6 +22,7 @@ import {
 } from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { PullRequestFeedbackSignal } from './session.js'
+import { ChatCallerRole } from './agent.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
 /**
@@ -192,7 +193,9 @@ export const RcWebchatParticipant = z.object({
   recordedDaemonId: z.string().uuid().optional(),
   primary: z.boolean().optional(),
   // This participant's own CP-selected continuation target, stamped on its rd/msg only; set on the peers a hook target's conversation brings (#2500).
-  targetSessionId: z.string().min(1).optional()
+  targetSessionId: z.string().min(1).optional(),
+  // Who the token's user is to this participant; the relay stamps it on the turns and runtime changes it sends there.
+  callerRole: ChatCallerRole.optional()
 })
 export type RcWebchatParticipant = z.infer<typeof RcWebchatParticipant>
 

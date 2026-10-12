@@ -61,11 +61,11 @@ it can tell who someone is.
 Each agent has one setting, **What people can do in chat**. Each level includes the one
 before it:
 
-| Level                                               | People in a conversation may                                                                                                                                     |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Only talk to the agent**                          | Talk to the agent. A tool call that needs approval goes to the agent's editors, in the console or, where the platform supports it, in their own direct messages. |
-| **Also approve tool calls** (a new agent's default) | Also answer a tool call that the agent's permission policy asks about: allow it once, always allow that tool, or deny it.                                        |
-| **Also approve tool calls and change settings**     | Also change the agent's runtime settings from chat: model, effort, permission mode and fast mode.                                                                |
+| Level                                                   | People in a conversation may                                                                                                                                     |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Talk to the agent**                                   | Talk to the agent. A tool call that needs approval goes to the agent's editors, in the console or, where the platform supports it, in their own direct messages. |
+| **Talk and approve tool calls** (a new agent's default) | Also answer a tool call that the agent's permission policy asks about: allow it once, always allow that tool, or deny it.                                        |
+| **Talk, approve and change settings**                   | Also change the agent's runtime settings from chat: model, effort, permission mode and fast mode.                                                                |
 
 Who counts as "people" depends on whether the product can tell who someone is:
 
@@ -74,7 +74,11 @@ Who counts as "people" depends on whether the product can tell who someone is:
   the agent's editors. Anyone else is told who can answer and where.
 - **A platform without that sync**: anyone who can talk to the agent in that conversation.
 - **Webchat** always knows who someone is: the agent's editors, and at the second and third
-  levels also the conversation's owner.
+  levels also the conversation's owner, even one whose role only lets them view. The owner
+  answers the conversation's approvals, its background sub-sessions' included, among its pending
+  requests above the composer. Anyone else who tries to change a setting there is told, on their
+  own screen only, who may. A conversation started through the agent's chat API belongs to the
+  API key's owner.
 
 Every level keeps these rules:
 
@@ -1844,8 +1848,9 @@ and delivery rules are documented in [Pull-request feedback continuation](design
 
 ## Agent model credentials
 
-Provider keys are organization-scoped, encrypted and write-only. Immediately after
-Runs on, a self-hosted agent has one compact Credentials row with two choices:
+Provider keys are organization-scoped, encrypted and write-only. On desktop,
+Runs on and Credentials appear side by side in the same row. A self-hosted agent
+has two credential choices:
 Daemon credentials (the default) and Use saved credential (Beta). Only the saved
 credential choice is Beta. With saved credentials, model pickers offer only models
 whose Anthropic or OpenAI key is configured, including Decision rules and their

@@ -81,6 +81,7 @@ import {
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
+  CONVERSATION_PERMISSION_REQUESTS_FEATURE,
   AUTO_MERGE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
   SANDBOX_KEEP_ALIVE_FEATURE,
@@ -955,6 +956,7 @@ import {
 } from './daemon/turn-types.js'
 import { UUID_RE, type WebchatSink, type WebchatTurnContext } from './webchat/types.js'
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
+import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/caller-role.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as webchatTurnOutput from './webchat/turn-output.js'
 import {
@@ -7591,6 +7593,8 @@ export class Daemon {
       ASSISTANT_SUBSESSION_PANEL_FEATURE,
       // Lists one webchat conversation's proposals and decides one only for that conversation; static.
       ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
+      // Lists one conversation's approval requests and decides one only for that conversation; static.
+      CONVERSATION_PERMISSION_REQUESTS_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
       ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
@@ -12217,6 +12221,14 @@ export class Daemon {
           break // resume/cancel/close fall through to the ordinary handlers
       }
     }
+    // At the level that lets people change settings, a webchat participant who neither edits the agent nor owns the conversation may not.
+    if (
+      (op.op === 'set_model' || op.op === 'set_effort' || op.op === 'set_permission_mode' || op.op === 'set_fast') &&
+      !webchatRoleChangesSettings(op.callerRole) &&
+      chatSettingsAllowed(this.agents.get(msg.agentId))
+    ) {
+      return { msgId: msg.msgId, accepted: false, reason: WEBCHAT_SETTINGS_REFUSAL }
+    }
     switch (op.op) {
       case 'turn': {
         const ack = await this.webchatTransport.dispatchWebchatTurn(
@@ -12227,7 +12239,8 @@ export class Daemon {
           sink,
           op.turnId,
           op.attachments,
-          op.runtime,
+          // The runtime choices a turn stages are a runtime change too.
+          webchatRoleChangesSettings(op.callerRole) ? op.runtime : undefined,
           msg.remoteMcp,
           op.mentions,
           op.post,

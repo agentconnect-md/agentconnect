@@ -219,9 +219,7 @@ it('changes a rule without changing sibling or fallback run settings', async () 
       />
     )
   )
-  await act(async () =>
-    container.querySelector<HTMLButtonElement>('[aria-label="Provider and model for rule 1"]')!.click()
-  )
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Model for rule 1"]')!.click())
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
   expect(onChange.mock.calls[0]![0].rules).toEqual([
     {
@@ -242,9 +240,7 @@ it('changes a rule without changing sibling or fallback run settings', async () 
     }
   ])
   expect(onFallbackChange).not.toHaveBeenCalled()
-  await act(async () =>
-    container.querySelector<HTMLButtonElement>('[aria-label="Provider and model for rule 1"]')!.click()
-  )
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Model for rule 1"]')!.click())
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Provider and model"]')!.click())
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
   expect(onFallbackChange).toHaveBeenCalledWith({
@@ -391,7 +387,7 @@ it('lists Yes and No and splits a shared Boolean rule when one answer gets its o
   expect(container.querySelectorAll('[data-testid="model-rule"]')).toHaveLength(2)
   expect(container.querySelector('button[aria-label="Add rule"]')).toBeNull()
   await act(async () =>
-    container.querySelector<HTMLButtonElement>('[aria-label="Provider and model when the answer is No"]')!.click()
+    container.querySelector<HTMLButtonElement>('[aria-label="Model when the answer is No"]')!.click()
   )
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Fast mode"]')!.click())
   expect(onChange.mock.calls[0]![0].rules).toEqual([

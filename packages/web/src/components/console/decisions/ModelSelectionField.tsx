@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, type DragEvent } from 'react'
+import { useEffect, useState, type DragEvent, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
@@ -93,7 +93,8 @@ export function ModelSelectionField({
   source,
   runtimes,
   readsImage,
-  requireAvailableModel = false
+  requireAvailableModel = false,
+  aside
 }: {
   agentId?: string
   value: AgentModelSelection | null
@@ -106,6 +107,8 @@ export function ModelSelectionField({
   /** Whether the agent's strategy starts the image's runtime install, so a profile's image-binary warning applies. */
   readsImage?: boolean
   requireAvailableModel?: boolean
+  /** A field shown beside the fixed picker, or under the Decision chain. */
+  aside?: ReactNode
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
   const tDecisions = useTranslations('Decisions')
@@ -636,14 +639,19 @@ export function ModelSelectionField({
         )}
       </div>
       {!active ? (
-        <div className="fld">
-          <span className="fldlbl">{t('providerModel')}</span>
-          <div className="w-[340px] max-w-full">{fallbackPicker(false)}</div>
-          {requireAvailableModel && !fallbackAvailable && (
-            <div role="alert" className="text-[12px] text-(--status-error)">
-              {t('savedModelUnavailable')}
-            </div>
-          )}
+        <div className="grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
+          <div className="fld min-w-0">
+            <span className="fldlbl" title={t('providerModelTitle')}>
+              {t('providerModel')}
+            </span>
+            {fallbackPicker(false)}
+            {requireAvailableModel && !fallbackAvailable && (
+              <div role="alert" className="text-[12px] text-(--status-error)">
+                {t('savedModelUnavailable')}
+              </div>
+            )}
+          </div>
+          {aside}
         </div>
       ) : (
         <>
@@ -692,6 +700,7 @@ export function ModelSelectionField({
             </div>
           )}
           <p className="m-0 text-[12px] text-(--text-tertiary)">{t('help')}</p>
+          {aside}
         </>
       )}
       {error && (

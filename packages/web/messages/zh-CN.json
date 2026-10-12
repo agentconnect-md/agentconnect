@@ -19,10 +19,16 @@
     },
     "chatActions": {
       "label": "聊天中可以做什么",
+      "title": "“人”指：权限已和控制台同步的平台上是 agent 的编辑者，其他平台上是会话里的任何人。Webchat 始终按控制台权限。",
       "option": {
-        "talk": "只能和 agent 对话",
-        "approve": "还能批准工具调用",
-        "settings": "还能批准工具调用和修改设置"
+        "talk": "和 agent 对话",
+        "approve": "对话并批准工具调用",
+        "settings": "对话、批准并修改设置"
+      },
+      "optionTitle": {
+        "talk": "需要批准的工具调用交给 agent 的编辑者，在控制台或各自的私信里处理。",
+        "approve": "回答权限策略询问的工具调用：允许一次、始终允许该工具，或拒绝。",
+        "settings": "还能在聊天里修改模型、推理强度、权限模式和快速模式。"
       }
     },
     "executionStrategy": {
@@ -2559,13 +2565,14 @@
         "retained": "你已无法查看此 Decision，现有规则会保留。选择其他 Decision 可替换规则。",
         "rule": "规则 {index}",
         "removeRule": "删除规则 {index}",
-        "ruleModel": "规则 {index} 的 Provider 和模型",
+        "ruleModel": "规则 {index} 的模型",
         "addRule": "添加规则",
         "invalidRules": "请检查条件：每个答案只能分配一次，Score 区间不能重叠，且至少保留一条规则。",
-        "missingModel": "请为每条规则和兜底配置选择可用的运行时与模型。",
+        "missingModel": "请为每条规则和兜底配置选择可用的模型。",
         "savedModelUnavailable": "请选择已在 Providers 中配置 key 的模型。",
         "fallback": "没有规则匹配，或评估不可用时使用。",
-        "providerModel": "Provider · 模型",
+        "providerModel": "模型",
+        "providerModelTitle": "每个新会话启动时使用的 runtime 和模型，以及它的推理强度、权限模式和快速模式。",
         "chooseDecision": "选择 Decision",
         "nextDecision": "继续判断下一个 Decision",
         "editNext": "编辑下一步 Decision：{name}",
@@ -2581,7 +2588,7 @@
         "yes": "是",
         "no": "否",
         "answer": "规则 {index} 的答案",
-        "answerModel": "答案为 {answer} 时的 Provider 和模型",
+        "answerModel": "答案为 {answer} 时的模型",
         "useFallback": "答案为 {answer} 时使用兜底配置",
         "probability": "规则 {index} 的概率",
         "intervalStart": "规则 {index} 的区间起点",
@@ -2589,7 +2596,7 @@
         "choiceHelp": "达到阈值的答案中，概率最高者优先；相同概率按规则顺序。",
         "intervalHelp": "每个答案只能分配一次，评分区间不能重叠。",
         "reorder": "调整规则 {index} 的顺序：拖动，或使用方向键",
-        "fallbackTitle": "兜底 Provider 和模型",
+        "fallbackTitle": "兜底模型",
         "sample": {
           "title": "试用样例",
           "badge": "示例数据",
@@ -2610,7 +2617,7 @@
           "fallback": "兜底",
           "notNeeded": "无需使用",
           "continued": "规则匹配",
-          "fallbackUsed": "使用兜底 Provider 和模型",
+          "fallbackUsed": "使用兜底模型",
           "startsOn": "Session 将使用",
           "booleanResult": "{value} · true 的概率为 {probability}%",
           "text4": "评估暂时不可用",
@@ -2661,6 +2668,7 @@
         "lowerLatency": "更低延迟",
         "imageBinaryMissing": "镜像中未安装此运行时",
         "readOnly": "当前聊天不允许修改 Runtime。",
+        "readOnlyOwner": "只有 Agent 的编辑者或此对话的所有者可以修改 Runtime。",
         "model": "模型",
         "decision": "Decision",
         "fallback": "兜底",

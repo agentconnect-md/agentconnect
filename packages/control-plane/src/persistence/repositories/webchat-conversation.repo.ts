@@ -273,12 +273,12 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
     return { conversationId }
   }
 
-  async target(conversationId: string): Promise<{ targetSessionId: string | null } | null> {
+  async target(conversationId: string): Promise<{ targetSessionId: string | null; ownerUserId: string } | null> {
     if (!UUID_RE.test(conversationId)) return null
     const row = await this.db.webchatConversation.findUnique({
       where: { id: conversationId },
-      select: { targetSessionId: true }
+      select: { targetSessionId: true, userId: true }
     })
-    return row ? { targetSessionId: row.targetSessionId } : null
+    return row ? { targetSessionId: row.targetSessionId, ownerUserId: row.userId } : null
   }
 }

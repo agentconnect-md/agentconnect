@@ -192,6 +192,29 @@ describe('openapi plane', () => {
     }
   })
 
+  it('names, tags and describes a webchat conversation’s approval routes, and who may be refused', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const base = '/api/v1/orgs/{orgId}/sessions/{sessionId}/permission-requests'
+      const expected: Array<[string, 'get' | 'post', string]> = [
+        [base, 'get', 'listSessionPermissionRequests'],
+        [`${base}/{requestId}/decision`, 'post', 'decideSessionPermissionRequest']
+      ]
+      for (const [path, method, operationId] of expected) {
+        const op = doc.paths?.[path]?.[method]
+        expect(op, `${method} ${path}`).toMatchObject({ tags: ['Sessions'], operationId })
+        expect(op?.summary, path).toBeTruthy()
+        expect(op?.description, path).toMatch(/edit the agent[\s\S]*conversation’s owner/)
+        expect(Object.keys(op?.responses ?? {}), path).toEqual(
+          expect.arrayContaining(['200', '403', '404', '409', '503'])
+        )
+      }
+    } finally {
+      await app.close()
+    }
+  })
+
   it('documents the session file download as raw bytes, not JSON', async () => {
     const app = await buildReady()
     try {

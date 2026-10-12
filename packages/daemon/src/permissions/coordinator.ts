@@ -24,7 +24,8 @@ import {
   API_CALLER_ANSWER_PROTOCOLS,
   API_CALLER_ANSWER_TIMEOUT_MS,
   ASSISTANT_ACTIVITY_PERMISSIONS_MAX,
-  elicitFormBlockId
+  elicitFormBlockId,
+  PERMISSION_REQUEST_NOT_IN_CONVERSATION
 } from '@agentconnect.md/protocol'
 import type { Clock, TimerHandle } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
@@ -108,6 +109,7 @@ import {
 import { pendingTurnKey, turnState, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
 import { isPatrolCoordinate, isSubsessionCoordinate } from '../session/subsession-coordinate.js'
+import { inConversation, requestConversation } from './request-conversation.js'
 import {
   subsessionLabel,
   waitExpiredDecider,
@@ -475,6 +477,10 @@ interface ElicitationApproval extends ApprovalEntry<CreateElicitationRequest, Cr
 
 type PendingApproval = PermissionApproval | ElicitationApproval
 
+/** What a webchat conversation is told while its owner may answer the request on its page. */
+const WEBCHAT_OWNER_APPROVAL_NOTICE =
+  '🔒 Permission requested. The conversation’s owner or an Agent editor can answer it on its Session page.'
+
 /** Who settled an approval, as `permission_requests` records it. */
 type Decider = { resolvedBy: string | null; resolvedByName: string | null }
 
@@ -628,11 +634,13 @@ export class PermissionCoordinator {
     const text = '🔒 Permission requested. Ask an Agent editor to allow it from the Agent or Session page.'
     try {
       if (p.webchat) {
+        // A webchat conversation's owner answers it there too once people in chat may approve.
+        const owner = !p.webchat.continuation && chatApprovalsAllowed(this.host.agents().get(agentId))
         p.webchat.sink.output({
           conversationId: p.webchat.conversationId,
           turnId: p.webchat.turnId,
           index: p.webchat.index++,
-          event: { kind: 'message', text }
+          event: { kind: 'message', text: owner ? WEBCHAT_OWNER_APPROVAL_NOTICE : text }
         })
       }
       // A continuation turn notifies the origin platform thread too (§5.2). The turn's own
@@ -1586,6 +1594,8 @@ export class PermissionCoordinator {
   async decideEditorPermission(req: AgentPermissionDecision): Promise<Ack> {
     const decidedBy = { resolvedBy: req.decidedBy ?? null, resolvedByName: req.decidedByName ?? null }
     const gone = { ok: false as const, reason: 'permission request is no longer pending' }
+    if (req.conversation && (await this.askedElsewhere(req.agentId, req.requestId, req.conversation.sessionId)))
+      return { ok: false, reason: PERMISSION_REQUEST_NOT_IN_CONVERSATION }
     const rec = this.pendingApprovals.get(req.requestId)
     if (rec?.agentId === req.agentId) {
       if (rec.kind === 'permission') {
@@ -1629,6 +1639,14 @@ export class PermissionCoordinator {
     }
     elicitation.resolve(picked.response)
     return { ok: true }
+  }
+
+  /** Whether a pending request of this agent was asked outside that conversation and its background sub-sessions; one no longer pending is left to the decision to refuse. */
+  private async askedElsewhere(agentId: string, requestId: string, sessionId: string): Promise<boolean> {
+    const asked = this.pendingApprovals.get(requestId) ?? this.pendingElicits.get(requestId)
+    if (asked?.agentId !== agentId) return false
+    const where = await requestConversation(this.host.store(), agentId, asked.sessionId, this.host.clock().now())
+    return !inConversation(where, sessionId)
   }
 
   /** A permission card's button, from the conversation or from an approval DM. */

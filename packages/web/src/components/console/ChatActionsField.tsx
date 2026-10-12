@@ -17,11 +17,17 @@ export function ChatActionsField({
   const t = useTranslations('Common.chatActions')
   return (
     <div className={className ? `fld min-w-0 ${className}` : 'fld min-w-0'}>
-      <span className="fldlbl">{t('label')}</span>
+      <span className="fldlbl" title={t('title')}>
+        {t('label')}
+      </span>
       <FieldSelect
         ariaLabel={t('label')}
         value={value}
-        options={LEVELS.map((level) => ({ value: level, label: t(`option.${level}`) }))}
+        options={LEVELS.map((level) => ({
+          value: level,
+          label: t(`option.${level}`),
+          title: t(`optionTitle.${level}`)
+        }))}
         onChange={onChange}
       />
     </div>

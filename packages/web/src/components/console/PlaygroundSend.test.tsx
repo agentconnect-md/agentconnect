@@ -959,6 +959,19 @@ describe('reconnect after an unacked turn', () => {
     expect(texts.some((text) => /busy|no live daemon/.test(text))).toBe(false)
   })
 
+  it('tells this reader why the agent refused their runtime change, and keeps it standing', async () => {
+    const { first } = await sendAndOpen()
+    const reason = 'Only an Agent editor or the owner of this conversation can change its runtime settings.'
+    await act(async () => {
+      first.onmessage?.({
+        data: JSON.stringify({ type: 'refused', refused: { op: 'set_model', agentId: 'agent-1', reason } })
+      })
+    })
+    expect(getLiveSteps('s1')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'notice', text: `🔒 ${reason}`, standing: true })])
+    )
+  })
+
   // The relay mints the canonical post identity per received frame, so a re-sent multi-agent turn
   // partially admitted the first time would duplicate the user message on the rest of the roster.
   it('never re-sends a multi-agent turn — those lanes resume as before', async () => {

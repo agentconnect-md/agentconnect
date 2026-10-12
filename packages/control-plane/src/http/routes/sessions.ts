@@ -24,6 +24,7 @@ import {
   canContinueSession,
   canView,
   canViewSession,
+  ownsSession,
   type SubsessionFacts
 } from '../../authorization/policy.js'
 import {
@@ -1147,6 +1148,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ),
           canContinue: continuationUnavailableReason === null,
           continuationUnavailableReason,
+          ownsConversation: s.platform === 'webchat' && ownsSession(s, access.identitySet),
           accessSyncDegraded: access.degraded || relatedAccess.degraded,
           accessIssues,
           contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null,
