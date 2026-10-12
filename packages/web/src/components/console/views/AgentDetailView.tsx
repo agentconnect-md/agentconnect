@@ -2866,7 +2866,6 @@ function AgentDetail() {
           canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
           memoryProvider={da.memoryProvider}
           autoDistill={da.memoryAutoDistill}
-          memoryScope={da.memoryScope}
           memoryHome={da.memoryHome}
           memoryHomeMigration={da.memoryHomeMigration}
           memoryDreaming={da.memoryDreaming}

@@ -213,6 +213,9 @@ export const WEBCHAT_SESSION_CONTINUATION_FEATURE = 'webchat_session_continuatio
  */
 export const WEBCHAT_HOOK_CONTINUATION_FEATURE = 'webchat_hook_continuation_v1'
 
+/** Daemon reads a console user's own memory layer (`personUserId` on `memory/list` and `memory/read`); the CP sends it to no other daemon. */
+export const MEMORY_PERSON_LAYER_FEATURE = 'memory-person-layer-v1'
+
 /** Daemon and Control Plane support Organization Knowledge, Dream suggestions,
  * and immutable managed-skill bundle retrieval. */
 export const ORGANIZATION_KNOWLEDGE_FEATURE = 'organization-knowledge-v1'

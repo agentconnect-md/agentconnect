@@ -47,6 +47,9 @@ import type {
   CanonicalMemoryRecord
 } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { MEMORY_PERSON_LAYER_FEATURE } from '@agentconnect.md/protocol'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { DEFAULT_DAEMON_CAPABILITIES } from '../fixtures/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 
@@ -844,4 +847,77 @@ it('refuses viewer mutations before daemon I/O', async () => {
   const capabilities = await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/capabilities` })
   expect(capabilities.statusCode).toBe(200)
   expect(capabilities.json()).toMatchObject({ operations: ['list', 'get'], exactCreate: false, exactEdit: false })
+})
+
+describe("GET /agents/:id/memory/mine/* (the caller's own layer)", () => {
+  async function member(sub: string, role: 'collaborator' | 'viewer'): Promise<string> {
+    const users = new PgUserRepo(prisma)
+    const email = `${sub}@example.test`
+    const { userId } = await users.provisionOidcUser({ oidcSubject: sub, email, emailVerified: true })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, email, role)
+    return userId
+  }
+  const placed = async (features: string[] = [MEMORY_PERSON_LAYER_FEATURE]) => {
+    await seedDaemon(prisma, DAEMON, { capabilities: { ...DEFAULT_DAEMON_CAPABILITIES, features } })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+  }
+  const as = (userId: string, s: SpyControl) => {
+    running = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId }, LIVE, s as unknown as ControlSender)
+    return running
+  }
+
+  it('reads the signed-in caller’s layer and no one else’s, whatever the request names', async () => {
+    await placed()
+    const viewer = await member('person-viewer', 'viewer')
+    const s = spy({
+      list: {
+        agentId: AGENT,
+        exists: true,
+        entries: [{ name: 'prefs.md', size: 12, mtime: '2026-07-07T00:00:00.000Z' }]
+      }
+    })
+    const app = as(viewer, s)
+    const files = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/mine/files` })
+    expect(files.statusCode).toBe(200)
+    expect((files.json() as { files: { name: string }[] }).files.map((f) => f.name)).toEqual(['prefs.md'])
+    // A query naming another person or a place layer changes nothing: the layer is the caller's.
+    const other = await member('person-other', 'collaborator')
+    const read = await app.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/memory/mine/file?path=prefs.md&personUserId=${other}&channelKey=room-1`
+    })
+    expect(read.statusCode).toBe(200)
+    expect(s.listCalls[0]!.req).toEqual({ agentId: AGENT, personUserId: viewer })
+    expect(s.readCalls[0]!.req).toEqual({
+      agentId: AGENT,
+      personUserId: viewer,
+      path: 'prefs.md',
+      offset: 0,
+      limit: 65536
+    })
+  })
+
+  it('gives an editor their own layer only: the shared routes never carry a person', async () => {
+    await placed()
+    const editor = await member('person-editor', 'collaborator')
+    const s = spy()
+    const app = as(editor, s)
+    await app.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/mine/files` })
+    await app.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/files?personUserId=someone-else` })
+    await app.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/memory/file?path=a.md&personUserId=someone-else`
+    })
+    expect(s.listCalls.map((c) => c.req)).toEqual([{ agentId: AGENT, personUserId: editor }, { agentId: AGENT }])
+    expect(s.readCalls.map((c) => c.req.personUserId)).toEqual([undefined])
+  })
+
+  it('refuses rather than read the shared layer on a daemon that predates person layers', async () => {
+    await placed([])
+    const viewer = await member('person-old-daemon', 'viewer')
+    const s = spy()
+    const res = await as(viewer, s).app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/mine/files` })
+    expect(res.statusCode).toBe(503)
+    expect(s.listCalls).toEqual([])
+  })
 })

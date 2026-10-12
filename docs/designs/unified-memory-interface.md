@@ -282,6 +282,8 @@ Proposed additive routes under the existing agent resource:
 - `DELETE /agents/:id/memory/entries/:ref`
 - `GET /agents/:id/memory/entries/:ref/history` when available
 
+A layer picker above the browser offers the shared layer, the signed-in user's own person layer, and every place layer that holds memory. The person layer is read through its own routes, `GET /agents/:id/memory/mine/files` and `GET /agents/:id/memory/mine/file`, which take no person argument: the CP names the authenticated caller as `personUserId` on `memory/list` and `memory/read`, only toward a daemon advertising `memory-person-layer-v1`, so a daemon that would read the shared layer instead is never asked. The person view is read-only, and no route lists person layers.
+
 Add versioned request/reply frames for daemon-owned operations; bounded BFF responses keep current locality and authorization rules. Respect the existing CP-home ownership. No new automatic CP persistence of external memory bodies. Use route schemas/OpenAPI and a negotiated feature bit for mixed-version daemons; do not repurpose old frames with different response shapes.
 
 ## 9. Compatibility matrix for the first release

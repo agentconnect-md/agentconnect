@@ -49,6 +49,7 @@ import {
   writeMemoryFile,
   listChannelMemoryKeys,
   readChannelMemoryMeta,
+  memoryPersonKey,
   CHANNEL_MEMORY_DIRNAME,
   MEMORY_DIRNAME,
   MemoryPathError,
@@ -179,10 +180,14 @@ export function createMemoryReader(
     return surface
   }
 
-  const scopeFor = (agentId: string, channelKey?: string): MemoryScope => ({
-    agentId,
-    ...(channelKey ? { channelKey } : {})
-  })
+  const scopeFor = (agentId: string, channelKey?: string, personUserId?: string): MemoryScope => {
+    // A console user's own layer, alone: the CP names only the signed-in caller, and never beside a place layer.
+    if (personUserId) {
+      if (channelKey) throw new MemoryViolationError('a memory read names one layer')
+      return { agentId, personKey: memoryPersonKey(`user:${personUserId}`), alone: true }
+    }
+    return { agentId, ...(channelKey ? { channelKey } : {}) }
+  }
 
   return {
     async channels(req) {
@@ -204,7 +209,7 @@ export function createMemoryReader(
 
     async list(req) {
       const surface = requireFileSurface(req.agentId)
-      const files = await surface.list(scopeFor(req.agentId, req.channelKey))
+      const files = await surface.list(scopeFor(req.agentId, req.channelKey, req.personUserId))
       // Providers return [] for a missing/empty store; the console shows that as
       // `exists:false`, preserving the legacy file-frame contract.
       return { agentId: req.agentId, exists: files.length > 0, entries: files }
@@ -212,7 +217,7 @@ export function createMemoryReader(
 
     async read(req) {
       const surface = requireFileSurface(req.agentId)
-      const scope = scopeFor(req.agentId, req.channelKey)
+      const scope = scopeFor(req.agentId, req.channelKey, req.personUserId)
       const notFound = { agentId: req.agentId, path: req.path, exists: false }
 
       const files = await surface.list(scope)

@@ -1574,8 +1574,8 @@ folder beneath the shared layer.
 Per-turn distillation and an explicit "remember this" write to the session's layer with no
 card. "Remember this for everyone" writes to the shared layer. A person may read their own
 layer with a memory tool from any conversation, as the one asking; it is injected only in
-their own DM or console conversation, and nobody else sees it in the console, editors
-included. Dreams consolidate the shared layer only, mining only the conversations that use
+their own DM or console conversation. In the console the person sees their own layer under
+Your memory on the agent's Memory page; nobody else sees it, editors included. Dreams consolidate the shared layer only, mining only the conversations that use
 it; person and place layers are not dreamed. External memory is the shared layer alone: it
 captures only from conversations that use the shared layer, has no person layer, and saves
 an explicit write from anywhere else only when the person asks to remember it for everyone.
@@ -1660,12 +1660,15 @@ Present storage backends in the order `Managed`, `Native`, `External`, followed 
 visually separated `Off` choice. `Off` is the user-facing label for the protocol's
 `none` value: it is the absence of persistent memory, not another storage backend.
 
-The agent Memory page offers a `Scope` choice only for managed memory: `Agent`, one
-memory shared by everyone who talks to the agent, or `Channel`, a per-channel overlay
-over that shared base with Dreaming turned off. External and native memory stay
-agent-scoped and show no scope selector. The help text must explain that agent-scoped
-memory is shared across every user who interacts with that agent; the console must not
-imply that memories are isolated per user.
+The agent Memory page offers no scope choice: managed memory is layered by audience
+(see [Memory layers](#memory-layers)). The managed backend's description says so plainly:
+what the agent learns in public channels is shared across the people it serves, a person's
+DMs stay theirs, and each private conversation keeps its own. A layer picker above the
+memory browser offers the shared layer, **Your memory** (the signed-in user's own person
+layer, read-only), and every conversation whose place layer holds memory. The place layers
+are shown to whoever may see the agent's memory; a person layer is never listed, and the
+route behind Your memory reads only the caller's own layer, so nobody can open another
+person's, editors included.
 
 An existing agent's memory settings are edited as one explicit draft. Selecting a
 backend, changing managed distillation, switching an external connection, or editing
@@ -1675,8 +1678,8 @@ settings. Content and records continue to reflect the active backend until Save
 succeeds.
 
 On the agent Memory page the settings form is collapsed by default behind a one-line
-summary of the persisted backend (backend name, its key policy values, and the fixed
-Agent scope) so the memory content itself stays the page's focus. Expanding the form
+summary of the persisted backend (backend name and its key policy values) so the memory
+content itself stays the page's focus. Expanding the form
 edits the draft; closing or cancelling it discards the draft, so a collapsed form
 always describes the persisted settings. A successful save collapses the form again.
 
