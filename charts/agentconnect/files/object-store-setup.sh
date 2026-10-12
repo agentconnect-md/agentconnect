@@ -15,7 +15,7 @@ s3() {
 }
 
 deadline=$(($(date +%s) + ${AC_STORE_WAIT_SECONDS:-300}))
-until curl -fsS -o /dev/null "${AC_STORE_URL}/health" 2>/dev/null; do
+until curl -fsS -o /dev/null "${AC_STORE_URL}/health" 2> /dev/null; do
   if [ "$(date +%s)" -ge "$deadline" ]; then
     echo "object store at ${AC_STORE_URL} did not become ready" >&2
     exit 1
@@ -23,7 +23,7 @@ until curl -fsS -o /dev/null "${AC_STORE_URL}/health" 2>/dev/null; do
   sleep 2
 done
 
-if ! s3 -o /dev/null -I "$bucket_url" 2>/dev/null; then
+if ! s3 -o /dev/null -I "$bucket_url" 2> /dev/null; then
   s3 -o /dev/null -X PUT "$bucket_url"
 fi
 
