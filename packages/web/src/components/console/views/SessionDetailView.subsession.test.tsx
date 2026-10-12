@@ -13,7 +13,8 @@ const wire = vi.hoisted(() => ({
   rows: [] as unknown[],
   detail: null as unknown,
   messages: [] as unknown[],
-  busy: false
+  busy: false,
+  draft: 'more please'
 }))
 const spies = vi.hoisted(() => ({ pgAttach: vi.fn(), pgCancel: vi.fn() }))
 
@@ -141,7 +142,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     getPgInput: () => 'more please',
     subscribePgDraft: () => () => {}
   }
-  return { usePlayground: () => playground, usePgDraft: () => 'more please', usePgDraftHasText: () => true }
+  return { usePlayground: () => playground, usePgDraft: () => wire.draft, usePgDraftHasText: () => wire.draft !== '' }
 })
 
 import SessionDetailView from './SessionDetailView'
@@ -275,6 +276,7 @@ beforeEach(() => {
   wire.detail = null
   wire.messages = [message(1, 'agent-1', 'TRANSCRIPT MARKER')]
   wire.busy = false
+  wire.draft = 'more please'
   spies.pgAttach.mockClear()
   spies.pgCancel.mockClear()
   setViewport(false)
@@ -313,6 +315,8 @@ describe.each([
 
   it.each(SUBSESSIONS)('offers no composer stop for %s while its turn runs', async (_name, origin) => {
     wire.busy = true
+    // Empty, so the composer would show Stop if it were offered at all.
+    wire.draft = ''
     await open(origin)
 
     expect(button('Stop response')).toBeNull()
@@ -341,6 +345,8 @@ describe.each([
 
   it('keeps a webchat conversation’s composer, its stop and its socket', async () => {
     wire.busy = true
+    // Stop replaces Send only while the composer is empty.
+    wire.draft = ''
     await open(WEBCHAT)
 
     expect(composer()).not.toBeNull()

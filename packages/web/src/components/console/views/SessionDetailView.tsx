@@ -463,14 +463,16 @@ function ComposerSendButton({
 }) {
   const t = useTranslations('Sessions.detail')
   const hasText = usePgDraftHasText(sessionId)
+  // Stop only while the composer is empty; a drafted follow-up still sends (queued or steered) mid-turn.
+  const stop = busy && !hasText && !hasImage
   return (
     <button
       className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
-      aria-label={busy ? t('stopResponse') : t('sendMessage')}
-      onClick={() => (busy ? onStop() : onSend())}
-      disabled={!busy && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
+      aria-label={stop ? t('stopResponse') : t('sendMessage')}
+      onClick={() => (stop ? onStop() : onSend())}
+      disabled={!stop && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
     >
-      <Icon name={busy ? 'square' : 'arrow-up'} size={busy ? 10 : 14} />
+      <Icon name={stop ? 'square' : 'arrow-up'} size={stop ? 10 : 14} />
     </button>
   )
 }
