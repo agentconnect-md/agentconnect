@@ -213,6 +213,29 @@ describe('TelegramConnection.start', () => {
       isPrivate: true
     })
   })
+
+  it('reports a group→supergroup upgrade from either side and never forwards it', async () => {
+    const onChatMigrated = vi.fn()
+    const { conn, state, received } = makeConn({ onChatMigrated })
+    await conn.start()
+
+    state.onMessage!({
+      message_id: 8,
+      chat: { id: -300, type: 'group', title: 'ops' },
+      from: { id: 3, username: 'ada' },
+      migrate_to_chat_id: -1003
+    })
+    state.onMessage!({
+      message_id: 1,
+      chat: { id: -1003, type: 'supergroup', title: 'ops' },
+      from: { id: 3, username: 'ada' },
+      migrate_from_chat_id: -300
+    })
+
+    expect(received).toHaveLength(0)
+    const migration = { from: '-300', to: '-1003', name: 'ops', isPrivate: true }
+    expect(onChatMigrated.mock.calls).toEqual([[migration], [migration]])
+  })
 })
 
 describe('TelegramConnection outbound chrome', () => {

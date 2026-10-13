@@ -934,8 +934,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       defaultTriggerByChannel?: ReadonlyMap<string, SeedTrigger>
       authoritative?: boolean
       removed?: string[]
+      migrated?: readonly { from: string; to: string }[]
     }
-  ): Promise<{ externalChanged: boolean }> {
+  ): Promise<{ externalChanged: boolean; migrated?: boolean }> {
     // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
     const before = new Map(
       (
@@ -1051,6 +1052,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
           "updatedAt" = NOW()
       `
     }
+    // After the upserts, so a target the report just seeded takes the source's settings.
+    let migrated = false
+    for (const { from, to } of opts?.migrated ?? []) {
+      if (from !== to && !removed.has(to) && (await this.migrateConversation(integrationId, from, to))) migrated = true
+    }
     // Retractions last: a conversation the reporter says it left is gone whatever
     // its kind, including a DM row that no authoritative snapshot could ever delete.
     if (removed.size > 0) {
@@ -1058,7 +1064,40 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, channelId: { in: [...removed] } }
       })
     }
-    return { externalChanged }
+    return migrated ? { externalChanged, migrated } : { externalChanged }
+  }
+
+  // Move one conversation's operator-owned settings to its new platform id and drop the old row; false when there was nothing to move.
+  private async migrateConversation(integrationId: IntegrationId, from: string, to: string): Promise<boolean> {
+    return withAmbientTx(this.db, async (tx) => {
+      const old = await tx.integrationChannel.findUnique({
+        where: { integrationId_channelId: { integrationId, channelId: from } }
+      })
+      if (!old) return false
+      const target = await tx.integrationChannel.findUnique({
+        where: { integrationId_channelId: { integrationId, channelId: to } }
+      })
+      const settings = {
+        trigger: old.trigger,
+        sessionMode: old.sessionMode,
+        triggerChosen: old.triggerChosen,
+        decisionBinding: old.decisionBinding === null ? Prisma.DbNull : (old.decisionBinding as Prisma.InputJsonValue),
+        decisionId: old.decisionId,
+        decisionNeedsReview: old.decisionNeedsReview
+      }
+      if (!target) {
+        const { firstSeenAt: _seen, updatedAt: _updated, integrationId: _owner, channelId: _id, ...rest } = old
+        await tx.integrationChannel.create({ data: { ...rest, ...settings, integrationId, channelId: to } })
+      } else if (!target.triggerChosen) {
+        // A choice an editor already made on the new id outranks the carried one.
+        await tx.integrationChannel.update({
+          where: { integrationId_channelId: { integrationId, channelId: to } },
+          data: { ...settings, agentId: target.agentId ?? old.agentId, name: target.name ?? old.name }
+        })
+      }
+      await tx.integrationChannel.deleteMany({ where: { integrationId, channelId: from } })
+      return true
+    })
   }
 
   async deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean> {

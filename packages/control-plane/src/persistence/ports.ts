@@ -5507,7 +5507,7 @@ export interface ReportedChannel {
  * both internal trust domains (§4).
  */
 export interface IntegrationChannelRepo {
-  /** Converge to a channel report: known rows keep their trigger, new ones take `defaultTrigger` or the open default (§14.9); an authoritative snapshot drops absent channel rows, `removed` deletes outright. */
+  /** Converge to a channel report: known rows keep their trigger, new ones take `defaultTrigger` or the open default (§14.9); an authoritative snapshot drops absent channel rows, `removed` deletes outright, `migrated` re-keys a conversation. */
   replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
@@ -5518,8 +5518,10 @@ export interface IntegrationChannelRepo {
       defaultTriggerByChannel?: ReadonlyMap<string, SeedTrigger>
       authoritative?: boolean
       removed?: string[]
+      /** Conversations whose platform id changed: `from`'s settings move onto `to` unless an editor already chose `to`'s, then `from` is deleted. */
+      migrated?: readonly { from: string; to: string }[]
     }
-  ): Promise<{ externalChanged: boolean }>
+  ): Promise<{ externalChanged: boolean; migrated?: boolean }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */
