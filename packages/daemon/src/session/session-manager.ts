@@ -2,7 +2,6 @@ import { agentWithRuntime } from '../decisions/model-selection.js'
 import { isAppendCoordinate } from './append-coordinate.js'
 import { isPatrolCoordinate, isSubsessionCoordinate } from './subsession-coordinate.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../runtime-defs/claude-runtime.js'
-import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
@@ -663,8 +662,7 @@ export class SessionManager {
           usesMeta,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
           // standing, so it never lands as a leading user block or a transcript row.
-          ...(platformStanding ? { platformStanding } : {}),
-          ...(assistantModeOn(agent) ? { assistantMode: true } : {})
+          ...(platformStanding ? { platformStanding } : {})
         }))())
 
     // Born titled: the ingress title when the platform minted one (GitHub/GitLab hooks), else
@@ -991,8 +989,8 @@ export class SessionManager {
       const summary = await standingSummaryFor(this.deps.store.assistantItems, agent, place)
       if (summary) promptPrelude.push({ type: 'text', text: summary })
     }
-    // A main conversation's running sub-sessions ride the same points, and any turn after that list changed (§5.6).
-    if (assistantModeOn(agent) && rec.sessionId && assistantMainConversation(place)) {
+    // Every agent's main conversation: its running sub-sessions ride the same points, and any turn after that list changed (§5.6).
+    if (rec.sessionId && assistantMainConversation(place)) {
       // A list that cannot be read is left for a later turn, never a reason to fail this one.
       const running = await runningSubsessionsBlock(
         this.deps.store,

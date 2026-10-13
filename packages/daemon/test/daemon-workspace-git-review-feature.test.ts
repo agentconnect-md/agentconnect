@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   TASK_LIST_FEATURE,
+  ACTIVITY_EVERY_AGENT_V1_FEATURE,
   ASSISTANT_ACTIVITY_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
@@ -71,8 +72,9 @@ describe('registrationFeatures — the console dock reads (git review + write + 
     // `task/list` is likewise unconditional daemon code — whether the agent's runtime actually
     // emits the SDK lifecycle feed is data the REP reports (`tracked`), not a register-time promise.
     expect(features).toContain(TASK_LIST_FEATURE)
-    // The Activity view is store code too; the read itself refuses an agent outside assistant mode.
+    // The Activity view is store code too, for an agent outside assistant mode as well.
     expect(features).toContain(ASSISTANT_ACTIVITY_FEATURE)
+    expect(features).toContain(ACTIVITY_EVERY_AGENT_V1_FEATURE)
     expect(features).toContain(ASSISTANT_SUBSESSION_PANEL_FEATURE)
     // So is deciding a draft from it: the decision runs the card's own path.
     expect(features).toContain(ASSISTANT_DRAFT_DECISION_FEATURE)

@@ -7,7 +7,6 @@ import {
   isTaskCoordinate,
   subsessionCoordinate
 } from '../session/subsession-coordinate.js'
-import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import type { HostKey } from '../acp/host-key.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type { Clock } from '@agentconnect.md/connection'
@@ -292,16 +291,12 @@ export class CollabCoordinator {
     return cached?.displayName?.trim() || cached?.name || agentId
   }
 
-  /** assistant-mode.md §5.6, the one gate of self-delegation: an assistant-mode caller, itself as target, the postless form. */
+  /** assistant-mode.md §5.6, the one gate of self-delegation, for every agent: itself as target, the postless form. */
   selfDelegation(req: MessageAgentReq): boolean {
-    return (
-      req.toAgentId === req.callerAgentId &&
-      req.postless === true &&
-      assistantModeOn(this.host.agents().get(req.callerAgentId))
-    )
+    return req.toAgentId === req.callerAgentId && req.postless === true
   }
 
-  /** assistant-mode.md §5.6: how many sub-sessions the agent may have running at once. */
+  /** assistant-mode.md §5.6: how many sub-sessions the agent may have running at once, its assistant-mode limit else the default. */
   private subsessionLimit(agentId: string): number {
     return (
       this.host.agents().get(agentId)?.assistantMode?.limits?.maxConcurrentSubsessions ??
@@ -737,10 +732,7 @@ export class CollabCoordinator {
     // BEFORE the local-target lookup so it also decides a REMOTE target and an id that is
     // in no directory at all (previously the latter fell through to a misleading
     // 'offline'). Fails closed on an absent/stale snapshot, as before.
-    // A visible channel-root self wake is not an inter-agent policy edge. The successful
-    // platform post proves the caller can write the named conversation; coordinate integrity
-    // below still proves the resulting child may be keyed there. Other postless self calls never
-    // reach this branch — the explicit self guard rejects those before authorization.
+    // A self wake, channel-root or a delegation (§5.6), is no inter-agent policy edge; coordinate integrity below still applies.
     if (!selfWake && !this.host.cpCollab().admits(req.callerAgentId, req.toAgentId)) {
       return { rejection: 'not_allowed' }
     }
@@ -780,12 +772,8 @@ export class CollabCoordinator {
     if (isPlatformMemberId(platform, req.toAgentId)) {
       return 'invalid_target'
     }
-    // `sendMessage(toAgent=self, channel=...)` preflights before the root post exists, so
-    // absence of the postless marker is the trusted indication that this is the visible form.
-    // messageAgent performs the stronger post-ts + pairing-id check before dispatch.
-    const selfDelegation = this.selfDelegation(req)
-    if (req.toAgentId === req.callerAgentId && req.postless === true && !selfDelegation) return 'self'
-    if (selfDelegation && isSubsessionCoordinate(req.callerThread)) return SUBSESSION_NESTING
+    // A channel-root self wake preflights before its post exists; messageAgent checks the post and its pairing id.
+    if (this.selfDelegation(req) && isSubsessionCoordinate(req.callerThread)) return SUBSESSION_NESTING
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -848,9 +836,7 @@ export class CollabCoordinator {
         reason: 'invalid_target'
       })
     }
-    // A self wake is valid only when `sendMessage` has already published the paired channel-root
-    // post and can anchor the child to its real provider coordinate. Postless self calls — and
-    // any internal caller that merely omits the marker without proving a post — remain loops.
+    // A self wake is a postless delegation (§5.6) or a channel-root wake whose post `sendMessage` published; one without either is a loop.
     const pairedChannelRootSelfWake =
       req.toAgentId === req.callerAgentId &&
       req.postless !== true &&

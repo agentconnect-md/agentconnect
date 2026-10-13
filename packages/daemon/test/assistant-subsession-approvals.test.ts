@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import { APPROVAL_DM_ROUTE_V1_FEATURE, ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import { agentHostKey } from '../src/acp/host-key.js'
 import type { ChatSurface } from '../src/agents/chat-actions.js'
@@ -674,7 +675,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     await main.coordinator.releaseApprovals(OWNER, ACP)
     await main.store.close()
 
-    // The daemon answers no route for an agent out of assistant mode: the request takes today's path.
+    // The daemon answers no route for a sub-session it has not indexed: the request takes today's path.
     const plain = await world({ thread: taskCoordinate('700.7'), route: undefined })
     void plain.coordinator.onAcpPermission(OWNER, ACP, params())
     await vi.waitFor(() => expect(plain.place.postBlocks).toHaveBeenCalledTimes(1))
@@ -822,8 +823,8 @@ describe('the v44 → v45 notice handle on SQLite', () => {
 
 const ORG = '00000000-0000-0000-0000-0000000000a1'
 
-/** One Slack assistant-mode agent appending in `C1`, beside one that is not in assistant mode. */
-function scaffold(): string {
+/** One Slack assistant-mode agent appending in `C1` with a one-hour wait, beside one that is not in assistant mode. */
+function scaffold(opts: { external?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-subperm-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -848,7 +849,11 @@ function scaffold(): string {
           {
             id: `int-${id}`,
             platform: 'slack',
-            core: { bindRules: [{ match: { kind: 'mention' } }], sessionModes: [{ channel: 'C1', mode: 'append' }] },
+            core: {
+              bindRules: [{ match: { kind: 'mention' } }],
+              sessionModes: [{ channel: 'C1', mode: 'append' }],
+              ...(opts.external ? { externalChannels: ['C1'] } : {})
+            },
             config: { botToken: `xoxb-${id}`, appToken: `xapp-${id}` }
           }
         ],
@@ -861,115 +866,157 @@ function scaffold(): string {
   return root
 }
 
+/** Boot both agents; `agentId`'s main conversation in `C1` delegates to itself, and its sub-session asks for permission. */
+async function delegateAndAsk(agentId: string, opts: { external?: boolean } = {}) {
+  const clock = new FakeClock(Date.now())
+  const answers: unknown[] = []
+  // The runtime reaches back into the daemon it runs under, which exists only once it is built.
+  const live: { d?: any } = {}
+  const hostFactory = () => {
+    let cancelled: (() => void) | undefined
+    return {
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => `acp-${randomUUID()}`),
+      prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
+        if (!JSON.stringify(blocks).includes('background sub-session')) return 'end_turn'
+        const d = live.d
+        const owner = [...d.pending.values()].find((p: Pending) => p.acpSessionId === sessionId)!.hostKey
+        answers.push(await d.permissions.onAcpPermission(owner, sessionId, params(sessionId)))
+        // A runtime keeps working after an answer until the stop reaches it.
+        return await new Promise((resolve) => (cancelled = () => resolve('cancelled')))
+      }),
+      cancel: vi.fn(async () => cancelled?.()),
+      stop: vi.fn(async () => {})
+    } as any
+  }
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(opts), hostFactory, clock })
+  await daemon.start()
+  const d = (live.d = daemon as any)
+  const placements = [...d.agents.values()].map((agent: any) => ({
+    agentId: agent.id,
+    daemonId: 'local-daemon',
+    name: agent.name,
+    callPolicy: agent.callPolicy,
+    allowedCallerAgentIds: agent.allowedCallerAgentIds,
+    outboundPolicy: agent.outboundPolicy,
+    allowedTargetAgentIds: agent.allowedTargetAgentIds
+  }))
+  d.cpCollab.replace({
+    generation: 0,
+    channels: [{ orgId: ORG, platform: 'slack', channelId: 'C1', agents: placements }],
+    agents: placements.map((placement: any) => ({ ...placement, orgId: ORG }))
+  })
+  // A Control Plane that routes approval DMs and names the agent's responsible user.
+  const approvalRoute = vi.fn(async (req: { requestId: string; responsible?: true }) => ({
+    requestId: req.requestId,
+    target: {
+      integrationId: `int-${agentId}`,
+      teamId: 'T0EXAMPLE',
+      userId: req.responsible ? 'U0RESP' : 'U0EDITOR',
+      consoleUserId: req.responsible ? 'usr-resp' : 'usr-editor'
+    }
+  }))
+  const supported = [APPROVAL_DM_ROUTE_V1_FEATURE, ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE]
+  if (opts.external)
+    d.cpClient = { supportsServerFeature: (f: string) => supported.includes(f), approvalRoute, stop() {} }
+  const reports: NormalizedMessage[] = []
+  const dispatch = d.dispatch.bind(d)
+  d.dispatch = (id: string, msg: NormalizedMessage, ...rest: unknown[]) => {
+    if (msg.parentReport === true) reports.push(msg)
+    return dispatch(id, msg, ...rest)
+  }
+  const post = vi.spyOn(d.connByIntegration.get(`int-${agentId}`) as SlackConnection, 'postBlocks')
+
+  const scope = d.transportScopeForIntegrationIds([`int-${agentId}`])
+  const coordinate = await d.store.resolveAppendCoordinate(agentId, 'C1', scope, 1)
+  await d.store.upsertSession({
+    key: sessionKey('slack', 'C1', coordinate, agentId, scope),
+    agentId,
+    platform: 'slack',
+    channel: 'C1',
+    thread: coordinate,
+    transportScope: scope,
+    acpSessionId: 'acp-parent-1',
+    sessionId: 'sid-parent-1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: Date.now()
+  })
+  const res = await d.collab.messageAgent({
+    callerAgentId: agentId,
+    platform: 'slack',
+    callerChannel: 'C1',
+    callerThread: coordinate,
+    callerTransportScope: scope,
+    toAgentId: agentId,
+    text: 'fix the flaky test and open a PR',
+    channel: 'C1',
+    thread: '100.1',
+    postless: true
+  })
+  expect(res).toMatchObject({ delivered: true, subsession: true })
+  await vi.waitFor(() => expect(post).toHaveBeenCalled(), WAIT)
+  return { daemon, d, clock, answers, reports, post, approvalRoute, res }
+}
+
 describe('through the daemon', () => {
-  it('cards the parent’s Slack conversation, then the wait cap denies, stops and reports into it', async () => {
-    const clock = new FakeClock(Date.now())
-    const answers: unknown[] = []
-    // The runtime reaches back into the daemon it runs under, which exists only once it is built.
-    const live: { d?: any } = {}
-    const hostFactory = () => {
-      let cancelled: (() => void) | undefined
-      return {
-        __started: true,
-        start: vi.fn(async () => {}),
-        newSession: vi.fn(async () => `acp-${randomUUID()}`),
-        prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
-          if (!JSON.stringify(blocks).includes('background sub-session')) return 'end_turn'
-          const d = live.d
-          const owner = [...d.pending.values()].find((p: Pending) => p.acpSessionId === sessionId)!.hostKey
-          answers.push(await d.permissions.onAcpPermission(owner, sessionId, params(sessionId)))
-          // A runtime keeps working after an answer until the stop reaches it.
-          return await new Promise((resolve) => (cancelled = () => resolve('cancelled')))
-        }),
-        cancel: vi.fn(async () => cancelled?.()),
-        stop: vi.fn(async () => {})
-      } as any
+  it.each([
+    ['in assistant mode, after its configured hour', 'bot-a', 1, 'within 1 hour,', 'No answer within 1 hour'],
+    ['outside assistant mode, after the default 12 hours', 'bot-b', 12, 'within 12 hours,', 'No answer within 12 hours']
+  ])(
+    'cards the parent’s Slack conversation %s, then the wait cap denies, stops and reports into it',
+    async (_label, agentId, hours, cardWait, deniedBy) => {
+      const { daemon, d, clock, answers, reports, post, res } = await delegateAndAsk(agentId)
+
+      // An append conversation has no platform thread of its own, so the card goes to its root, as its reports do.
+      const [channel, blocks, , thread] = post.mock.calls[0]!
+      expect([channel, thread]).toEqual(['C1', undefined])
+      expect(JSON.stringify(blocks)).toContain('background sub-session')
+      expect(JSON.stringify(blocks)).toContain(cardWait)
+      expect(JSON.stringify(blocks)).toContain('Always allow')
+      // Named by its task, not by the wrapper its first message carries.
+      expect(JSON.stringify(blocks)).toContain('“fix the flaky test and open a PR”')
+      expect(JSON.stringify(blocks)).not.toContain('From your own main conversation')
+      expect(d.permissions.pendingSubsessionApprovals(agentId)).toMatchObject([
+        { parentSessionId: 'sid-parent-1', tool: 'Write src/app.ts' }
+      ])
+
+      // Nothing is decided a moment before the cap.
+      clock.advance(hours * HOUR - 1)
+      expect(answers).toEqual([])
+      clock.advance(1)
+      await vi.waitFor(() => expect(reports).toHaveLength(1), WAIT)
+      expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }])
+      expect(reports[0]!.text).toBe(
+        `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
+      )
+      expect((await d.store.listPermissionRequests(agentId))[0]).toMatchObject({
+        status: 'denied',
+        resolvedByName: deniedBy
+      })
+      await vi.waitFor(
+        async () => expect((await d.store.assistantSubsessions.get(agentId, res.targetSession))?.state).toBe('failed'),
+        WAIT
+      )
+      await daemon.stop()
     }
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory, clock })
-    await daemon.start()
-    const d = (live.d = daemon as any)
-    const placements = [...d.agents.values()].map((agent: any) => ({
-      agentId: agent.id,
-      daemonId: 'local-daemon',
-      name: agent.name,
-      callPolicy: agent.callPolicy,
-      allowedCallerAgentIds: agent.allowedCallerAgentIds,
-      outboundPolicy: agent.outboundPolicy,
-      allowedTargetAgentIds: agent.allowedTargetAgentIds
-    }))
-    d.cpCollab.replace({
-      generation: 0,
-      channels: [{ orgId: ORG, platform: 'slack', channelId: 'C1', agents: placements }],
-      agents: placements.map((placement: any) => ({ ...placement, orgId: ORG }))
-    })
-    const reports: NormalizedMessage[] = []
-    const dispatch = d.dispatch.bind(d)
-    d.dispatch = (agentId: string, msg: NormalizedMessage, ...rest: unknown[]) => {
-      if (msg.parentReport === true) reports.push(msg)
-      return dispatch(agentId, msg, ...rest)
-    }
-    const post = vi.spyOn(d.connByIntegration.get('int-bot-a') as SlackConnection, 'postBlocks')
+  )
 
-    // The main conversation in C1 delegates to itself.
-    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
-    const coordinate = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1)
-    await d.store.upsertSession({
-      key: sessionKey('slack', 'C1', coordinate, 'bot-a', scope),
-      agentId: 'bot-a',
-      platform: 'slack',
-      channel: 'C1',
-      thread: coordinate,
-      transportScope: scope,
-      acpSessionId: 'acp-parent-1',
-      sessionId: 'sid-parent-1',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: Date.now()
-    })
-    const res = await d.collab.messageAgent({
-      callerAgentId: 'bot-a',
-      platform: 'slack',
-      callerChannel: 'C1',
-      callerThread: coordinate,
-      callerTransportScope: scope,
-      toAgentId: 'bot-a',
-      text: 'fix the flaky test and open a PR',
-      channel: 'C1',
-      thread: '100.1',
-      postless: true
-    })
+  it('sends an external place’s request of an agent outside assistant mode to its responsible user, never a card there', async () => {
+    const { daemon, d, clock, reports, post, approvalRoute } = await delegateAndAsk('bot-b', { external: true })
 
-    // An append conversation has no platform thread of its own, so the card goes to its root, as its reports do.
-    await vi.waitFor(() => expect(post).toHaveBeenCalled(), WAIT)
-    const [channel, blocks, , thread] = post.mock.calls[0]!
-    expect([channel, thread]).toEqual(['C1', undefined])
-    expect(JSON.stringify(blocks)).toContain('background sub-session')
-    expect(JSON.stringify(blocks)).toContain('within 1 hour,')
-    // Named by its task, not by the wrapper its first message carries.
-    expect(JSON.stringify(blocks)).toContain('“fix the flaky test and open a PR”')
-    expect(JSON.stringify(blocks)).not.toContain('From your own main conversation')
-    expect(d.permissions.pendingSubsessionApprovals('bot-a')).toMatchObject([
-      { parentSessionId: 'sid-parent-1', tool: 'Write src/app.ts' }
-    ])
-    // The agent out of assistant mode gets no route, so its requests keep today's path.
-    expect(
-      await d.subsessionApprovalRoute({ plan: { agentId: 'bot-b', sessionKey: res.targetSession } })
-    ).toBeUndefined()
-
-    clock.advance(HOUR)
+    expect(approvalRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'bot-b', responsible: true }),
+      expect.anything()
+    )
+    // Only the direct message: nothing is posted into the conversation shared with another organization.
+    await vi.waitFor(() => expect(post.mock.calls.map((call) => call[0])).toEqual(['D_FAKE']), WAIT)
+    expect(JSON.stringify(post.mock.calls[0]![1])).toContain('background sub-session')
+    expect(d.permissions.pendingSubsessionApprovals('bot-b')).toMatchObject([{ parentSessionId: 'sid-parent-1' }])
+    // Unanswered, it ends at the default cap like any other.
+    clock.advance(12 * HOUR)
     await vi.waitFor(() => expect(reports).toHaveLength(1), WAIT)
-    expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }])
-    expect(reports[0]!.text).toBe(
-      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
-    )
-    expect((await d.store.listPermissionRequests('bot-a'))[0]).toMatchObject({
-      status: 'denied',
-      resolvedByName: 'No answer within 1 hour'
-    })
-    await vi.waitFor(
-      async () => expect((await d.store.assistantSubsessions.get('bot-a', res.targetSession))?.state).toBe('failed'),
-      WAIT
-    )
     await daemon.stop()
   })
 })

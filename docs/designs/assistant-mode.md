@@ -69,6 +69,8 @@ does not pretend to defend against effects it cannot defend against.
 
 - A sub-session is an **implicit background session opened on demand** — "fix this bug and open a
   PR". Ordinary conversation stays in the main conversation.
+- Every agent has them, in assistant mode or not (§5.6). Patrols and approved proposals, which
+  open sub-sessions of their own, stay assistant mode's.
 - In an IM: the main conversation says "started", then reports the result with a console link.
   Nothing extra appears on the platform.
 - Stopping goes through the main conversation: "stop the PR one". Steering ("change the PR task
@@ -410,9 +412,9 @@ items; capped at 30; injected through the existing reminder path (`shouldRemind`
 handles first turn, restart and compaction); every internal place receives the same summary. Incremental injection (`lastInjectedVersion`) is not in P0.
 An external place (§5.3) receives none, sub-sessions born there included: the ledger is internal,
 and nobody there asked for it. The item tools still answer there when someone asks (#2979, B4).
-A main conversation's summary also lists the sub-sessions that conversation opened which are
-running now, each by its id and label, at most 10 and then a count. The block is omitted when
-none runs. It rides the same points and is re-injected on the next turn after one starts or
+Every agent's main conversation, in assistant mode or not, is also told which sub-sessions it
+opened are running now, each by its id and label, at most 10 and then a count. The block is
+omitted when none runs. It rides the same points and is re-injected on the next turn after one starts or
 ends, so the list the model holds stays current (§5.8); after the last one ends, that turn says
 none is running. It is kept in an external place: it names only work that conversation itself
 started.
@@ -659,6 +661,13 @@ member (below).
 
 ### 5.6 Sub-sessions
 
+**Every agent has sub-sessions**, in assistant mode or not: a postless self-call opens one, with
+the coordinate, inheritance, no nesting, reports, failure report, permission routing, wait cap,
+stop and running block described here and in §5.7–§5.8. An agent with an assistant mode policy
+takes its `limits`; any other agent takes the defaults (`maxConcurrentSubsessions` 3,
+`permissionWaitHours` 12), and there is no new setting. Patrols (§5.9) and approved proposals'
+tasks (§5.10) open sub-sessions too, and stay assistant mode's.
+
 **P0b ships the minimal form**: self-delegation as below, a failure report the daemon sends when a
 sub-session ends without reporting (§5.7), and a concurrency cap that refuses beyond
 `maxConcurrentSubsessions` (default 3). Reports use the existing parent-report path
@@ -694,10 +703,11 @@ below) have shipped, and so has stopping from the main conversation (§5.8).
      and says how long it waits. It goes to the parent's own thread, or to the conversation's
      root for an `append` conversation, where reports land too. A webchat place has the console:
      the request carries its conversation (`parentSessionId`), whose page lists it among its own.
-     An external place's card goes where drafts route theirs: the responsible user's DM (a click is
-     verified like any approval DM), else an editor's DM as for any other request; Activity lists it
-     either way. Approval elicitations take the
-     notice and editor path, since a chat card for them needs a live turn's surface.
+     An external place's card goes to the responsible user's DM (a click is verified like any
+     approval DM), for every agent, since the Control Plane derives that person whatever the mode,
+     else an editor's DM as for any other request; Activity lists it either way. Approval
+     elicitations take the notice and editor path, since a chat card for them needs a live turn's
+     surface.
   3. **Waiting is waiting**: the ACP request stays open and the turn is not cancelled — the card
      and both approval paths are bound to that pending request; cancelling it expires the card,
      and a later "continue" grants nothing to the re-triggered request. Host and concurrency slot
@@ -714,7 +724,8 @@ below) have shipped, and so has stopping from the main conversation (§5.8).
   4. Switching assistant mode on moves an asking mode to the runtime's auto mode, else its
      full-access mode (§1.8), so requests come only from what that mode still escalates or from
      an asking mode an editor picks afterwards (asking every time gets the warning in §1.8).
-     Nothing else changes the permission mode.
+     Nothing else changes the permission mode: an agent outside assistant mode keeps its own, so
+     its sub-sessions ask as often as that mode does.
 - **Webchat**: the session-detail dock's Sub-sessions panel (#2885) lists the sub-sessions a
   conversation opened (patrols included) and stops a running one; who may stop is whoever may
   continue that session today. A sub-session's own page is read-only (#2893): talking to one
@@ -789,11 +800,11 @@ on `agentsGained`):
 | Stop one piece of work (named, or in webchat) | Interrupts that sub-session's current turn                                                                      | same, for whoever started the turn / whoever may continue that session in the console |
 | **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission                                                             |
 
-**Stopping a named piece of work** is the `stopSubsession` tool, given the sub-session's id. Only
-an assistant-mode agent's main conversations are offered it: never a sub-session, patrol, task,
-hook or cron run. It stops only a sub-session whose parent in the persistent index is the calling
-conversation. Any other id is refused with the same words as an unknown one, so nothing about
-another conversation is revealed. The turn must have been started by a person's own message, and
+**Stopping a named piece of work** is the `stopSubsession` tool, given the sub-session's id. Every
+agent's main conversations are offered it, in assistant mode or not: never a sub-session, patrol,
+task, hook or cron run. It stops only a sub-session whose parent in the persistent index is the
+calling conversation. Any other id is refused with the same words as an unknown one, so nothing
+about another conversation is revealed. The turn must have been started by a person's own message, and
 that person must pass today's `!stop` sender rule there; in webchat, the Control Plane admitted
 the message only from someone who may continue the conversation. A report round, a reminder or a
 scheduled run is refused. The stop itself is the console's Stop: the same daemon core, logged
@@ -975,7 +986,12 @@ session records, read from the daemon through the BFF proxy. A background report
 conversation only raises an unread badge.
 
 The first version (#2876) shows what exists today, for assistant-mode agents only, read and
-changed through the daemon without anything persisted on the Control Plane:
+changed through the daemon without anything persisted on the Control Plane. A daemon that
+advertises `activity-every-agent-v1` answers the same read for an agent outside assistant mode:
+its sub-sessions' pending permission requests, its sub-sessions and its drafts, with no items and
+with patrols and proposals left out. It also stops such an agent's sub-session and decides its
+drafts from the console, and refuses an item delete or a proposal decision (`assistant-mode-off`);
+an older daemon refuses every request for such an agent:
 
 | Section                             | Who sees it                                                                                                                                                          | Who may change it                                                                                                            |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -1419,3 +1435,17 @@ approval whatever the mode; an agent created through the API or MCP is unchanged
 refuses a visibility change on any agent's own sub-session (§5.6), recognised by its reserved
 coordinate and its parent's agent, no longer only on an assistant-mode agent's; only a daemon that
 opens sub-sessions for every agent can create such a session outside assistant mode.
+
+**Thirty-seventh revision (2026-10-13)**: every agent has sub-sessions (issues #2979, #2810; §1.3,
+§5.4 ②, §5.6–§5.8, §5.11). Self-delegation needed nothing only the mode has: its coordinate,
+inheritance, no-nesting rule, reports and failure report, cap, permission routing and wait cap, and
+stopping were all keyed by the sub-session index, not the mode. A postless self-call of any agent
+now opens a sub-session, `sendMessage` and `listAgents` describe it to every agent, and every
+agent's main conversation gets `stopSubsession` and the running-sub-sessions block. Limits come
+from an assistant mode policy's `limits` when the agent has one, otherwise from the defaults (3
+running, 12 hours to wait for approval); there is no new setting. A sub-session's permission
+request is routed for every agent as for an assistant-mode agent, an external place's to the
+responsible user, whom the Control Plane derives whatever the mode. The daemon's Activity read
+answers every agent (`activity-every-agent-v1`) with permission requests, sub-sessions and drafts,
+and so do its console stop of a sub-session and its draft decisions; items, patrols, proposals and
+reminders stay assistant mode's.

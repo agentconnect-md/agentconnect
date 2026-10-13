@@ -1,4 +1,4 @@
-// Assistant-mode sub-session safeguards (assistant-mode.md §5.6/§5.7): a failure is reported too, and a concurrency cap.
+// Sub-session safeguards for every agent (assistant-mode.md §5.6/§5.7): a failure is reported too, and a concurrency cap.
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -266,6 +266,25 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     // Settled, it is not sent again.
     await d.collab.resendSubsessionReports(['bot-a'])
     expect(reports()).toHaveLength(1)
+    await daemon.stop()
+  })
+
+  it('reports the failure of an agent outside assistant mode the same way', async () => {
+    const { daemon, d, rt, reports, settled } = await boot(scaffold([{ id: 'bot-a' }]))
+    const caller = await seedCaller(d)
+    rt.behavior.sub = 'throw'
+
+    const res = await d.collab.messageAgent(delegation(caller))
+    expect(res).toMatchObject({ delivered: true, subsession: true })
+    await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
+    await settled()
+
+    expect(reports()[0]!.msg).toMatchObject({
+      channel: 'C1',
+      sessionThread: caller.coordinate,
+      text: `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (error). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
+    })
+    expect(await stateOf(d, res.targetSession)).toBe('failed')
     await daemon.stop()
   })
 
@@ -651,27 +670,34 @@ describe('a sub-session’s own report and the daemon’s end report never both 
 })
 
 describe('the sub-session cap', () => {
-  it('refuses the fourth running sub-session by default, and admits one once another has settled', async () => {
-    const { daemon, d, dispatched } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]), { spy: true })
-    const caller = await seedCaller(d)
+  it.each<[string, Record<string, unknown> | undefined]>([
+    ['in assistant mode', ON],
+    ['outside assistant mode', undefined]
+  ])(
+    'refuses the fourth running sub-session by default %s, and admits one once another has settled',
+    async (_mode, assistantMode) => {
+      const agent = { id: 'bot-a', ...(assistantMode ? { assistantMode } : {}) }
+      const { daemon, d, dispatched } = await boot(scaffold([agent]), { spy: true })
+      const caller = await seedCaller(d)
 
-    const opened = []
-    for (let i = 0; i < 3; i++) opened.push(await d.collab.messageAgent(delegation(caller)))
-    expect(opened.map((r) => r.delivered)).toEqual([true, true, true])
-    const refused = await d.collab.messageAgent(delegation(caller))
-    expect(refused).toMatchObject({
-      delivered: false,
-      reason: 'subsession_limit',
-      message: 'You already have 3 sub-sessions running, the limit. Finish this here or wait for one to report.'
-    })
-    expect(await stateOf(d, refused.targetSession)).toBeUndefined()
-    expect(d.collab.childSessionLinks.has(refused.targetSession)).toBe(false)
-    expect(dispatched).toHaveLength(3)
+      const opened = []
+      for (let i = 0; i < 3; i++) opened.push(await d.collab.messageAgent(delegation(caller)))
+      expect(opened.map((r) => r.delivered)).toEqual([true, true, true])
+      const refused = await d.collab.messageAgent(delegation(caller))
+      expect(refused).toMatchObject({
+        delivered: false,
+        reason: 'subsession_limit',
+        message: 'You already have 3 sub-sessions running, the limit. Finish this here or wait for one to report.'
+      })
+      expect(await stateOf(d, refused.targetSession)).toBeUndefined()
+      expect(d.collab.childSessionLinks.has(refused.targetSession)).toBe(false)
+      expect(dispatched).toHaveLength(3)
 
-    await d.store.assistantSubsessions.finish('bot-a', opened[0].targetSession, 'done')
-    expect(await d.collab.messageAgent(delegation(caller))).toMatchObject({ delivered: true, subsession: true })
-    await daemon.stop()
-  })
+      await d.store.assistantSubsessions.finish('bot-a', opened[0].targetSession, 'done')
+      expect(await d.collab.messageAgent(delegation(caller))).toMatchObject({ delivered: true, subsession: true })
+      await daemon.stop()
+    }
+  )
 
   it('honors a configured limit, and tells the model through sendMessage', async () => {
     const policy = { ...ON, limits: { maxConcurrentSubsessions: 1 } }

@@ -87,8 +87,6 @@ export type StandingContextInput = {
   usesMeta: boolean
   /** The platform module's own standing block (`NormalizedMessage.standingContext`), if any. */
   platformStanding?: string
-  /** The agent is in assistant mode, whose direct self-call opens a sub-session (assistant-mode.md §5.6). */
-  assistantMode?: boolean
 }
 
 /** The assembled standing-context strings for one turn. */
@@ -286,8 +284,7 @@ const COLLAB_BEFORE_SELF =
   `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
   `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
   `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. `
-const COLLAB_NO_DIRECT_SELF = `A direct \`toAgent\` call without \`channel\` may not target yourself. `
-// assistant-mode.md §5.6: an assistant-mode agent's direct self-call opens a background sub-session instead.
+// assistant-mode.md §5.6: every agent's direct self-call opens a background sub-session.
 const COLLAB_SELF_DELEGATION =
   `A direct \`toAgent\` call to yourself without \`channel\` opens a background SUB-SESSION for long work ` +
   `("fix this bug and open a PR"): it works on its own, posts nothing, and reports back into this conversation ` +
@@ -318,10 +315,8 @@ const COLLAB_AFTER_SELF =
   `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
   `yourself back or broadcast to everyone.`
 
-/** The collaboration guidance; only an assistant-mode agent is told its direct self-call opens a sub-session. */
-export function buildCollabAppend(assistantMode: boolean): string {
-  return COLLAB_BEFORE_SELF + (assistantMode ? COLLAB_SELF_DELEGATION : COLLAB_NO_DIRECT_SELF) + COLLAB_AFTER_SELF
-}
+/** The collaboration guidance, the same for every agent. */
+export const COLLAB_APPEND = COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLAB_AFTER_SELF
 
 // The parent asked to be told how this session ends (`toAgent.needsReply`). Standing, not a
 // user turn — the obligation outlives the waking turn, so it belongs beside the collaboration
@@ -353,13 +348,12 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
-  const collabAppend = buildCollabAppend(input.assistantMode === true)
   const parentReplyAppend = buildParentReplyAppend(input.needsReplyToParent, input.parentSessionId)
   const resumeSystemContext = [
     agentMeta,
     workspaceRootsAppend,
     platformAppend,
-    collabAppend,
+    COLLAB_APPEND,
     parentReplyAppend,
     NO_RESPONSE_RULE
   ]
@@ -371,7 +365,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     agentMeta,
     workspaceRootsAppend,
     platformAppend,
-    collabAppend,
+    collabAppend: COLLAB_APPEND,
     parentReplyAppend,
     resumeSystemContext,
     sessionContext,

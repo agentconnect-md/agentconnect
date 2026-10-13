@@ -8,6 +8,7 @@ import { REPORT_ANSWER_LANGUAGE } from '../src/collab/coordinator.js'
 import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
+import { ASSISTANT_ITEM_TOOLS } from '../src/mcp/ops/assistant-items.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -401,7 +402,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
 })
 
 describe('who is offered stopSubsession', () => {
-  it('is a place’s main conversation of an assistant-mode agent, on any platform, and nothing else', async () => {
+  it('is a place’s main conversation of every agent, on any platform, and nothing else', async () => {
     const h = await boot()
     try {
       const tool = (agent: Record<string, unknown>, session: Record<string, unknown>) => {
@@ -454,21 +455,73 @@ describe('who is offered stopSubsession', () => {
         false
       )
       expect(offered(on, { channel: 'cron:c-1', thread: 'cron:c-1:t-1', integrationId: undefined })).toBe(false)
-      // An agent outside assistant mode is offered nothing new.
-      expect(offered({}, {})).toBe(false)
-      expect(offered({ assistantMode: { enabled: false } }, {})).toBe(false)
+      // An agent outside assistant mode is offered the same tool.
+      expect(tool({}, {})).toEqual(tool(on, {}))
+      expect(tool({ assistantMode: { enabled: false } }, {})).toEqual(tool(on, {}))
+      expect(offered({}, { thread: 'subsession:d-1' })).toBe(false)
     } finally {
       await h.close()
     }
   })
 
-  it('is refused for an agent outside assistant mode even if called', async () => {
+  it('offers the same tools in or out of assistant mode, but for the item tools and one sentence of remind', async () => {
+    const h = await boot()
+    try {
+      const toolsOf = (agent: Record<string, unknown>, thread: string) => {
+        const [server] = h.d.sessions.deps.mcpServersFor({
+          agent: { ...h.d.agents.get(AGENT), assistantMode: undefined, ...agent },
+          platform: 'slack',
+          channel: DM,
+          thread,
+          deliveryThread: '1700000000.000100',
+          integrationId: INT,
+          isDm: true,
+          sessionKey: `slack:${DM}:${thread}:${AGENT}`
+        })
+        const token = server!.env.find((entry: { name: string }) => entry.name === 'AC_MCP_TOKEN')!.value
+        return h.d.mcp.sessions.get(token)!.tools as { name: string; description: string }[]
+      }
+      const items = new Set(ASSISTANT_ITEM_TOOLS.map((t) => t.name))
+      for (const thread of ['append:1', 'subsession:d-1']) {
+        const on = toolsOf({ assistantMode: ON }, thread)
+        const off = toolsOf({}, thread)
+        expect(toolsOf({ assistantMode: { enabled: false } }, thread)).toEqual(off)
+        expect(on.filter((t) => items.has(t.name)).map((t) => t.name)).toEqual(ASSISTANT_ITEM_TOOLS.map((t) => t.name))
+        expect(off.filter((t) => items.has(t.name))).toEqual([])
+        const shared = on.filter((t) => !items.has(t.name))
+        expect(shared.map((t) => t.name)).toEqual(off.map((t) => t.name))
+        const differing = shared.filter((t, i) => JSON.stringify(t) !== JSON.stringify(off[i]))
+        // A sub-session has no reminders, so nothing but the item tools sets it apart.
+        expect(differing.map((t) => t.name)).toEqual(thread === 'append:1' ? ['remind'] : [])
+        for (const remind of differing)
+          expect(remind.description.replace(/; for something to be checked on at a time, take an item[^.]*/, '')).toBe(
+            off.find((t) => t.name === 'remind')!.description
+          )
+      }
+      expect(toolsOf({}, 'append:1').map((t) => t.name)).toContain('stopSubsession')
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('stops a sub-session of an agent outside assistant mode the same way', async () => {
     const h = await boot({ assistantMode: false })
     try {
       const dm = await conversation(h, DM)
+      await liveTurn(h, dm)
+      const child = await delegate(h, dm)
+      expect(await stop(h, dm, child)).toMatchObject({ result: 'stopped', sessionId: child })
+      await vi.waitFor(async () => expect(await stateOf(h, child)).toBe('failed'), WAIT)
+      await vi.waitFor(
+        () =>
+          expect(h.reports()).toContain(
+            `[sub-session ended] Sub-session ${child} stopped before finishing (cancel). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
+          ),
+        WAIT
+      )
       expect(await stop(h, dm, 'slack:D0ALICE:subsession:x:bot-a')).toEqual({
         result: 'refused',
-        reason: 'Only an agent in assistant mode can stop a sub-session. Nothing was stopped.'
+        reason: 'This conversation opened no sub-session with that id. Nothing was stopped.'
       })
     } finally {
       await h.close()

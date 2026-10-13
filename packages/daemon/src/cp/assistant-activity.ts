@@ -1,4 +1,4 @@
-// The console's Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11), answered from this daemon's store.
+// The console's Activity view of an agent (assistant-mode.md §1.7, §5.11), answered from this daemon's store; items, patrols and proposals only in assistant mode.
 import {
   ASSISTANT_ACTIVITY_OBSERVATIONS_MAX,
   ASSISTANT_ACTIVITY_PLACES_MAX,
@@ -43,7 +43,7 @@ export class AssistantActivityViolationError extends Error {
 /** What the view reads and edits; every query is scoped by the agent the request names. */
 export interface AssistantActivityStore {
   assistantItems: Pick<AssistantItemLedger, 'list' | 'get' | 'delete'>
-  assistantDrafts: Pick<AssistantDraftLedger, 'listPending'>
+  assistantDrafts: Pick<AssistantDraftLedger, 'listPending' | 'get'>
   assistantSubsessions: Pick<AssistantSubsessionIndex, 'list' | 'listForParent' | 'get'>
   getSession(key: string): Promise<SessionRecord | undefined>
   getSessionByOutwardId(sessionId: string, agentId?: string): Promise<SessionRecord | undefined>
@@ -80,12 +80,19 @@ const CLOSED: AssistantItemStatus[] = ['done', 'dropped']
 const ANSWER_OVERHEAD_BYTES = 1_024
 
 export function createAssistantActivity(deps: AssistantActivityDeps): AssistantActivity {
-  // Only an agent this daemon holds, and only while it is in assistant mode: the view exists for nothing else.
-  const admit = (agentId: string): void => {
+  // Only an agent this daemon holds; true while it is in assistant mode, whose items, patrols and proposals the view adds.
+  const admit = (agentId: string): boolean => {
     const agent = deps.agent(agentId)
     if (!agent) throw new AssistantActivityViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
-    if (!assistantModeOn(agent))
-      throw new AssistantActivityViolationError(`agent "${agentId}" is not in assistant mode`, 'assistant-mode-off')
+    return assistantModeOn(agent)
+  }
+  // An item or a proposal changed outside assistant mode is refused, as every write once was.
+  const modeOff = (agentId: string): AssistantActivityViolationError =>
+    new AssistantActivityViolationError(`agent "${agentId}" is not in assistant mode`, 'assistant-mode-off')
+  // Whether the draft is one of the agent's proposals.
+  const isProposal = async (store: AssistantActivityStore, agentId: string, draftId: string): Promise<boolean> => {
+    const draft = await store.assistantDrafts.get(draftId)
+    return draft?.agentId === agentId && draft.action === 'task'
   }
   // The agent's own webchat conversation by its session's outward id; a sub-session's page is none.
   const webchatConversation = async (
@@ -100,10 +107,11 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
 
   return {
     async read(req) {
-      admit(req.agentId)
+      const assistant = admit(req.agentId)
       const store = deps.store()
       switch (req.operation) {
         case 'items': {
+          if (!assistant) return { operation: 'items', items: [], truncated: false }
           const rows = await store.assistantItems.list(req.agentId, {
             status: req.section === 'open' ? OPEN : CLOSED,
             limit: req.limit + 1
@@ -112,7 +120,7 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           return { operation: 'items', items: kept, truncated: rows.length > req.limit || trimmed }
         }
         case 'item': {
-          const item = await store.assistantItems.get(req.agentId, req.itemId)
+          const item = assistant ? await store.assistantItems.get(req.agentId, req.itemId) : undefined
           if (!item) return { operation: 'item', item: null }
           const observations = item.observations
             .slice(-ASSISTANT_ACTIVITY_OBSERVATIONS_MAX)
@@ -131,15 +139,18 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
               createdAt: iso(row.createdAt)
             }
           }
+          // Patrols are listed only in assistant mode.
+          const delegationsOnly = !assistant
           if (!req.parent) {
-            const rows = await store.assistantSubsessions.list(req.agentId, req.limit + 1)
+            const rows = await store.assistantSubsessions.list(req.agentId, req.limit + 1, { delegationsOnly })
             const subsessions = await Promise.all(rows.slice(0, req.limit).map(subsessionOf))
             return { operation: 'subsessions', subsessions, truncated: rows.length > req.limit }
           }
           const after = req.parent.cursor === undefined ? undefined : cursorPosition(req.parent.cursor)
           const rows = await store.assistantSubsessions.listForParent(req.agentId, req.parent.sessionId, {
             limit: req.limit + 1,
-            ...(after ? { after } : {})
+            ...(after ? { after } : {}),
+            delegationsOnly
           })
           const page = rows.slice(0, req.limit)
           const subsessions = await Promise.all(page.map(subsessionOf))
@@ -153,16 +164,17 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           }
         }
         case 'drafts': {
-          // One webchat conversation's proposals only, and none for a session that is not one.
-          const place = req.conversation
-            ? await webchatConversation(store, req.agentId, req.conversation.sessionId)
-            : undefined
+          // One webchat conversation's proposals only, none for a session that is not one, and none outside assistant mode.
+          const place =
+            req.conversation && assistant
+              ? await webchatConversation(store, req.agentId, req.conversation.sessionId)
+              : undefined
           // Proposals only for a Control Plane that asked: an older one cannot read them.
           const rows =
             req.conversation && !place
               ? []
               : await store.assistantDrafts.listPending(req.agentId, req.limit + 1, deps.now(), {
-                  tasks: req.proposals === true,
+                  tasks: assistant && req.proposals === true,
                   ...(place ? { place } : {})
                 })
           const page = rows.slice(0, req.limit)
@@ -190,14 +202,16 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
     },
 
     async write(req) {
-      admit(req.agentId)
+      const assistant = admit(req.agentId)
       const store = deps.store()
       switch (req.operation) {
         case 'delete-item':
+          if (!assistant) throw modeOff(req.agentId)
           return { operation: 'delete-item', found: await store.assistantItems.delete(req.agentId, req.itemId) }
         case 'decide-draft': {
           // Bound to one webchat conversation: a session that is not one has no proposal to decide.
           const { conversation: bound, ...decide } = req
+          if (!assistant && (bound || (await isProposal(store, req.agentId, req.draftId)))) throw modeOff(req.agentId)
           const conversation = bound ? await webchatConversation(store, req.agentId, bound.sessionId) : undefined
           if (bound && !conversation)
             return { operation: 'decide-draft', result: 'not-found', status: null, failure: null }

@@ -765,7 +765,7 @@ For a fan-out, a busy, offline, or unplaced target fails fast with a typed
 This section lists collaboration-side mechanisms only. See [`loop-breaker-design.md`](loop-breaker-design.md) for unified platform feedback loops, durable latches, restart/replay, and recovery permissions.
 
 - **hopCount:** Increment every agent-to-agent delivery and reject at or above the shared `MAX_AGENT_CALL_HOPS` threshold, preventing an A <-> B wake loop.
-- **Self-delivery protection:** Reject `messageAgent(toAgentId == self)` to avoid self-wake loops.
+- **Self-delivery protection:** Reject `messageAgent(toAgentId == self)` to avoid self-wake loops, except the paired channel-root form and a postless delegation, which opens a sub-session one level deep under a concurrency cap ([assistant-mode.md](assistant-mode.md) §5.6).
 
 ### 4.6 Current Surface and Remaining Limits
 

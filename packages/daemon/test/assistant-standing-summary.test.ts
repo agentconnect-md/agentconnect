@@ -293,27 +293,33 @@ describe('a main conversation’s running sub-sessions in the standing summary',
     )
   })
 
-  it('is shown again after a sub-session starts and after it ends, and not on a turn in between', async () => {
-    const { s, manager, delegate } = await harness(ON)
-    const sm = manager()
-    expect(runningOf((await sm.handle('bot-a', dm('200.1'), undefined, INT)).blocks)).toBeUndefined()
-    expect(runningOf((await sm.handle('bot-a', dm('200.2'), undefined, INT)).blocks)).toBeUndefined()
+  it.each([
+    ['in assistant mode', ON],
+    ['outside assistant mode', undefined]
+  ])(
+    'is shown %s again after a sub-session starts and after it ends, and not on a turn in between',
+    async (_mode, assistantMode) => {
+      const { s, manager, delegate } = await harness(assistantMode)
+      const sm = manager()
+      expect(runningOf((await sm.handle('bot-a', dm('200.1'), undefined, INT)).blocks)).toBeUndefined()
+      expect(runningOf((await sm.handle('bot-a', dm('200.2'), undefined, INT)).blocks)).toBeUndefined()
 
-    const child = await delegate(DM_KEY, 'd-1', 1_000, 'write the release notes')
-    expect(runningOf((await sm.handle('bot-a', dm('200.3'), undefined, INT)).blocks)).toBe(
-      `<system-reminder>\n${HEAD}\n- ${child} — write the release notes\n</system-reminder>`
-    )
-    expect(runningOf((await sm.handle('bot-a', dm('200.4'), undefined, INT)).blocks)).toBeUndefined()
+      const child = await delegate(DM_KEY, 'd-1', 1_000, 'write the release notes')
+      expect(runningOf((await sm.handle('bot-a', dm('200.3'), undefined, INT)).blocks)).toBe(
+        `<system-reminder>\n${HEAD}\n- ${child} — write the release notes\n</system-reminder>`
+      )
+      expect(runningOf((await sm.handle('bot-a', dm('200.4'), undefined, INT)).blocks)).toBeUndefined()
 
-    await s.assistantSubsessions.finish('bot-a', child, 'failed')
-    expect(runningOf((await sm.handle('bot-a', dm('200.5'), undefined, INT)).blocks)).toBe(NONE)
-    expect(runningOf((await sm.handle('bot-a', dm('200.6'), undefined, INT)).blocks)).toBeUndefined()
-  })
+      await s.assistantSubsessions.finish('bot-a', child, 'failed')
+      expect(runningOf((await sm.handle('bot-a', dm('200.5'), undefined, INT)).blocks)).toBe(NONE)
+      expect(runningOf((await sm.handle('bot-a', dm('200.6'), undefined, INT)).blocks)).toBeUndefined()
+    }
+  )
 
-  it('is absent outside assistant mode, in a sub-session, and in a session with no conversation of its own', async () => {
+  it('is absent in a sub-session and in a session with no conversation of its own', async () => {
     const cases: [typeof ON | undefined, NormalizedMessage, string | undefined][] = [
-      [undefined, dm('200.2'), INT],
       [ON, dm('200.2', { sessionThread: 'subsession:d-1' }), INT],
+      [undefined, dm('200.2', { sessionThread: 'subsession:d-1' }), INT],
       [ON, dm('200.2', { channel: 'cron:c-1', sessionThread: 'cron:c-1:t-1', source: 'cron' }), undefined]
     ]
     for (const [mode, message, integrationId] of cases) {

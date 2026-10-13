@@ -174,10 +174,7 @@ export class CpCollabRoutes {
     const target = this.byAgent.get(targetAgentId)
     if (!caller || !target) return false
     if (caller.orgId !== target.orgId) return false
-    // A caller always resolves ITSELF: an agent with outboundPolicy 'selected' does
-    // not normally list itself in its own allow-list, yet it must still see itself in
-    // a directory listing. Postless self-wakes are rejected by the delivery path; a
-    // paired channel-root self-wake intentionally uses this self admission.
+    // A caller always resolves itself, whatever its own allow-list: a listing shows it, and its self wakes need no edge.
     if (callerAgentId === targetAgentId) return true
     if (caller.outboundPolicy === 'selected' && !caller.allowedTargetAgentIds.includes(targetAgentId)) return false
     if (target.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(callerAgentId)) return false

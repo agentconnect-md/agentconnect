@@ -432,7 +432,7 @@ describe('toolsForIntegrations', () => {
     expect(listAgents.description).toContain('`toAgent` + `channel`')
     expect(agent.description).toContain('channel-root form may target YOURSELF')
     expect(agent.description).toContain('own AgentConnect ID from the # Agent block')
-    expect(agent.description).toContain('direct form may not target yourself')
+    expect(agent.description).toContain('The direct form with your own ID opens a background SUB-SESSION')
     expect(user.description).toContain('never an AgentConnect agent or your own bot identity')
   })
 

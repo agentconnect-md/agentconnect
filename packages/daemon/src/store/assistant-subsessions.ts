@@ -51,6 +51,9 @@ class ClaimRefused extends Error {}
 
 type Row = Record<string, unknown>
 
+// A listing's filter that leaves patrols out (assistant-mode.md §5.9).
+const DELEGATIONS = " AND kind = 'delegation'"
+
 type OpenInput = Omit<AssistantSubsession, 'state' | 'createdAt' | 'kind' | 'endReport' | 'reportAttempts'> & {
   now?: number
 }
@@ -284,11 +287,11 @@ export class AssistantSubsessionIndex {
     return row ? subsessionOf(row) : undefined
   }
 
-  /** The agent's sub-sessions: open ones first, then the newest. */
-  async list(agentId: string, limit: number): Promise<AssistantSubsession[]> {
+  /** The agent's sub-sessions: open ones first, then the newest; `delegationsOnly` leaves patrols out. */
+  async list(agentId: string, limit: number, opts: { delegationsOnly?: boolean } = {}): Promise<AssistantSubsession[]> {
     const rows = (
       await this.db.query(
-        `SELECT * FROM assistant_subsession WHERE agentId = ?
+        `SELECT * FROM assistant_subsession WHERE agentId = ?${opts.delegationsOnly ? DELEGATIONS : ''}
          ORDER BY CASE WHEN state = 'open' THEN 0 ELSE 1 END, createdAt DESC, childSessionKey LIMIT ?`,
         [agentId, limit]
       )
@@ -296,18 +299,18 @@ export class AssistantSubsessionIndex {
     return rows.map(subsessionOf)
   }
 
-  /** The sub-sessions one conversation opened, newest first, from just past `after` when it names a row. */
+  /** The sub-sessions one conversation opened, newest first, from just past `after` when it names a row; `delegationsOnly` leaves patrols out. */
   async listForParent(
     agentId: string,
     parentSessionId: string,
-    page: { limit: number; after?: { createdAt: number; childSessionKey: string } }
+    page: { limit: number; after?: { createdAt: number; childSessionKey: string }; delegationsOnly?: boolean }
   ): Promise<AssistantSubsession[]> {
     const after = page.after
     const rows = (
       await this.db.query(
         `SELECT * FROM assistant_subsession WHERE agentId = ? AND parentSessionId = ?${
-          after ? ' AND (createdAt < ? OR (createdAt = ? AND childSessionKey > ?))' : ''
-        } ORDER BY createdAt DESC, childSessionKey LIMIT ?`,
+          page.delegationsOnly ? DELEGATIONS : ''
+        }${after ? ' AND (createdAt < ? OR (createdAt = ? AND childSessionKey > ?))' : ''} ORDER BY createdAt DESC, childSessionKey LIMIT ?`,
         [
           agentId,
           parentSessionId,

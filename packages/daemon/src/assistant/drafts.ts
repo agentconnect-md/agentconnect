@@ -342,9 +342,12 @@ export class AssistantDrafts {
     return { draft: carded.draft, approver: carded.rung ? APPROVER_LABEL[carded.rung] : null }
   }
 
-  /** Where another card for an external place goes instead (§5.5), routed as a proposal's is: the responsible user's DM. */
+  /** Where any agent's sub-session request for an external place goes instead (§5.5, §5.6): the responsible user's DM. */
   async cardApprover(agentId: string, requestId: string): Promise<SubsessionApprover | undefined> {
-    const approver = (await this.route(agentId, requestId, undefined))?.approver
+    const approver = await this.routeConsoleUser(agentId, requestId, undefined).catch((err: unknown) => {
+      this.host.log.warn(`sub-session request ${requestId}: approver lookup failed: ${(err as Error).message}`)
+      return undefined
+    })
     if (!approver?.userId || !approver.teamId || !approver.consoleUserId) return undefined
     const { integrationId, teamId, userId, consoleUserId } = approver
     return { channel: approver.channel, target: { integrationId, teamId, userId, consoleUserId } }

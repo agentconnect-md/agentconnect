@@ -1164,9 +1164,9 @@ re-checks the mode, and the asker is the sender of the message that started the 
 session of such an agent with a platform conversation of its own also gets `remind`,
 `listReminders` and `cancelReminder` (`src/mcp/ops/assistant-reminders.ts`, §5.9): the daemon's
 patrol sweep posts a due reminder's text into that conversation, with no turn. A place's main
-conversation, webchat included, also gets `stopSubsession` (`src/mcp/ops/assistant-subsessions.ts`,
-§5.8): it stops a sub-session that conversation opened through the console's own Stop core, on
-a turn a person there started.
+conversation of every agent, webchat included and in assistant mode or not, also gets
+`stopSubsession` (`src/mcp/ops/assistant-subsessions.ts`, §5.8): it stops a sub-session that
+conversation opened through the console's own Stop core, on a turn a person there started.
 
 A second group is gated by a **declared port** rather than by a platform name
 (`platforms/read-ports.ts`, §7.1 of

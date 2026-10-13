@@ -1,4 +1,4 @@
-// The console's Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11), answered from the daemon's own store.
+// The console's Activity view of an agent (assistant-mode.md §1.7, §5.11), answered from the daemon's own store.
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -64,7 +64,7 @@ async function setup() {
     })
   )
   const stopSession = vi.fn(async (_key: string, _actor: { userId: string; name?: string }) => true)
-  const pendingPermissions = vi.fn((agentId: string) => (agentId === a ? [PERMISSION] : []))
+  const pendingPermissions = vi.fn((agentId: string) => (agentId === a || agentId === off ? [PERMISSION] : []))
   const activity = createAssistantActivity({
     store: () => s,
     agent: (id) => agents.get(id),
@@ -567,27 +567,92 @@ describe('the Activity view: deciding a draft', () => {
     })
   })
 
-  it('never reaches the draft path for an agent it does not hold or one outside assistant mode', async () => {
-    const { off, activity, decideDraft } = await setup()
-    for (const agentId of [randomUUID(), off]) {
-      const write = activity.write({
-        agentId,
-        operation: 'decide-draft',
-        draftId: 'draft-1',
-        choice: 'approve',
-        decider: { userId: 'usr-2', name: 'Grace' }
-      })
-      await expect(write).rejects.toBeInstanceOf(AssistantActivityViolationError)
-    }
+  it('never reaches the draft path for an agent it does not hold', async () => {
+    const { activity, decideDraft } = await setup()
+    const write = activity.write({
+      agentId: randomUUID(),
+      operation: 'decide-draft',
+      draftId: 'draft-1',
+      choice: 'approve',
+      decider: { userId: 'usr-2', name: 'Grace' }
+    })
+    await expect(write).rejects.toBeInstanceOf(AssistantActivityViolationError)
     expect(decideDraft).not.toHaveBeenCalled()
+  })
+
+  it('decides an agent’s draft outside assistant mode too, but refuses its proposals', async () => {
+    const { s, off, activity, decideDraft } = await setup()
+    await s.upsertSession({
+      key: sessionKey('webchat', 'conv-1', 'webchat:conv-1', off),
+      agentId: off,
+      platform: 'webchat',
+      channel: 'conv-1',
+      thread: 'webchat:conv-1',
+      transportScope: null,
+      acpSessionId: 'acp-webchat',
+      sessionId: 'sid-webchat',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    const req = {
+      agentId: off,
+      operation: 'decide-draft' as const,
+      draftId: 'draft-1',
+      choice: 'approve' as const,
+      decider: { userId: 'usr-2', name: 'Grace' }
+    }
+    const draft = await s.assistantDrafts.create({ ...draftInput(off), now: 1_000 })
+    expect(await activity.write({ ...req, draftId: draft.id })).toMatchObject({
+      operation: 'decide-draft',
+      result: 'decided'
+    })
+    expect(decideDraft).toHaveBeenCalledWith({ ...req, draftId: draft.id })
+    // An unknown draft is the draft path's to call not found.
+    await activity.write(req)
+    expect(decideDraft).toHaveBeenCalledTimes(2)
+    // A proposal, by its conversation or by its id, is assistant mode's.
+    const proposal = await s.assistantDrafts.createTask({
+      agentId: off,
+      target: { platform: 'webchat', integrationId: '', channel: 'conv-1', thread: null },
+      task: 'Rebase PR #12 onto main and push.',
+      sentence: 'I want to rebase PR #12.',
+      why: 'It conflicts with main.',
+      itemId: 'item-1',
+      itemVersion: 1,
+      source: {
+        platform: 'webchat',
+        integrationId: null,
+        channel: 'conv-1',
+        thread: 'subsession:patrol-1',
+        transportScope: null,
+        sessionKey: null,
+        sessionId: null,
+        place: false
+      },
+      approver: {
+        kind: 'place',
+        integrationId: '',
+        channel: 'conv-1',
+        userId: null,
+        teamId: null,
+        consoleUserId: null
+      },
+      now: 1_000
+    })
+    for (const write of [
+      { ...req, draftId: proposal.id },
+      { ...req, draftId: proposal.id, conversation: { sessionId: 'sid-webchat' } }
+    ])
+      await expect(activity.write(write)).rejects.toMatchObject({ reason: 'assistant-mode-off' })
+    expect(decideDraft).toHaveBeenCalledTimes(2)
   })
 })
 
 describe('the Activity view: who it answers', () => {
-  it('refuses an agent it does not hold, and one not in assistant mode, before touching the store', async () => {
-    const { s, a, off, activity } = await setup()
-    const item = await createItem(s, off)
-    await createItem(s, a, { origin: WEBCHAT, followers: [] })
+  it('refuses an agent it does not hold before touching the store', async () => {
+    const { s, a, activity } = await setup()
+    const item = await createItem(s, a)
     const refusal = async (run: () => Promise<unknown>) => {
       const err = await run().then(
         () => undefined,
@@ -603,23 +668,135 @@ describe('the Activity view: who it answers', () => {
     expect(await refusal(() => activity.write({ agentId: unknown, operation: 'delete-item', itemId: item.id }))).toBe(
       'unknown-agent'
     )
-    for (const operation of ['drafts', 'subsessions'] as const) {
-      expect(await refusal(() => activity.read({ agentId: off, operation, limit: 10 }))).toBe('assistant-mode-off')
-    }
-    expect(await refusal(() => activity.read({ agentId: off, operation: 'items', section: 'open', limit: 10 }))).toBe(
-      'assistant-mode-off'
-    )
-    expect(await refusal(() => activity.write({ agentId: off, operation: 'delete-item', itemId: item.id }))).toBe(
-      'assistant-mode-off'
-    )
-    expect(await s.assistantItems.get(off, item.id)).toBeDefined()
-    const stopOff = activity.write({
-      agentId: off,
+    const stopUnknown = activity.write({
+      agentId: unknown,
       operation: 'stop-subsession',
       sessionId: 'sid-child',
       actor: { userId: 'usr-1', name: null }
     })
-    expect(await refusal(() => stopOff)).toBe('assistant-mode-off')
+    expect(await refusal(() => stopUnknown)).toBe('unknown-agent')
+    expect(await s.assistantItems.get(a, item.id)).toBeDefined()
+  })
+
+  it('answers an agent outside assistant mode with its permission requests, sub-sessions and drafts, and no items, patrols or proposals', async () => {
+    const { s, off, activity, stopSession } = await setup()
+    // What the agent kept from a time it was in assistant mode stays out of view.
+    const item = await createItem(s, off)
+    const parentKey = sessionKey('webchat', 'conv-1', 'webchat:conv-1', off)
+    await s.upsertSession({
+      key: parentKey,
+      agentId: off,
+      platform: 'webchat',
+      channel: 'conv-1',
+      thread: 'webchat:conv-1',
+      transportScope: null,
+      acpSessionId: 'acp-parent',
+      sessionId: 'sid-parent',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    const child = (id: string) => sessionKey('webchat', 'conv-1', subsessionCoordinate(id), off)
+    const open = { agentId: off, parentSessionId: 'sid-parent', parentSessionKey: parentKey }
+    await s.assistantSubsessions.open({ ...open, childSessionKey: child('delegated'), now: 1_000 })
+    await s.assistantSubsessions.openPatrol(
+      { ...open, childSessionKey: child('patrol-1'), now: 2_000 },
+      { startedSince: 0, staleBefore: 0 }
+    )
+    await s.upsertSession({
+      key: child('delegated'),
+      agentId: off,
+      platform: 'webchat',
+      channel: 'conv-1',
+      thread: subsessionCoordinate('delegated'),
+      transportScope: null,
+      acpSessionId: 'acp-delegated',
+      sessionId: 'sid-delegated',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    const post = await s.assistantDrafts.create({ ...draftInput(off), now: 1_000 })
+    await s.assistantDrafts.createTask({
+      agentId: off,
+      target: { platform: 'webchat', integrationId: '', channel: 'conv-1', thread: null },
+      task: 'Rebase PR #12 onto main and push.',
+      sentence: 'I want to rebase PR #12.',
+      why: 'It conflicts with main.',
+      itemId: item.id,
+      itemVersion: 1,
+      source: {
+        platform: 'webchat',
+        integrationId: null,
+        channel: 'conv-1',
+        thread: 'subsession:patrol-1',
+        transportScope: null,
+        sessionKey: null,
+        sessionId: null,
+        place: false
+      },
+      approver: {
+        kind: 'place',
+        integrationId: '',
+        channel: 'conv-1',
+        userId: null,
+        teamId: null,
+        consoleUserId: null
+      },
+      now: 1_000
+    })
+
+    expect(await read(activity, { agentId: off, operation: 'items', section: 'open', limit: 10 })).toEqual({
+      operation: 'items',
+      items: [],
+      truncated: false
+    })
+    expect(await read(activity, { agentId: off, operation: 'item', itemId: item.id })).toEqual({
+      operation: 'item',
+      item: null
+    })
+    expect(await read(activity, { agentId: off, operation: 'subsessions', limit: 10 })).toEqual({
+      operation: 'subsessions',
+      subsessions: [
+        {
+          sessionId: 'sid-delegated',
+          parentSessionId: 'sid-parent',
+          state: 'open',
+          createdAt: '1970-01-01T00:00:01.000Z'
+        }
+      ],
+      truncated: false
+    })
+    expect(
+      await read(activity, { agentId: off, operation: 'subsessions', limit: 10, parent: { sessionId: 'sid-parent' } })
+    ).toMatchObject({ subsessions: [{ sessionId: 'sid-delegated' }], truncated: false, nextCursor: null })
+    const drafts = await read(activity, {
+      agentId: off,
+      operation: 'drafts',
+      limit: 10,
+      proposals: true,
+      permissions: true
+    })
+    expect(drafts.drafts.map((d) => d.id)).toEqual([post.id])
+    expect(drafts.permissions).toEqual([PERMISSION])
+    expect(
+      await read(activity, { agentId: off, operation: 'drafts', limit: 10, conversation: { sessionId: 'sid-parent' } })
+    ).toEqual({ operation: 'drafts', drafts: [], truncated: false })
+
+    // Deleting an item is refused; a sub-session stops as any agent's does.
+    await expect(activity.write({ agentId: off, operation: 'delete-item', itemId: item.id })).rejects.toMatchObject({
+      reason: 'assistant-mode-off'
+    })
+    expect(await s.assistantItems.get(off, item.id)).toBeDefined()
+    expect(
+      await activity.write({
+        agentId: off,
+        operation: 'stop-subsession',
+        sessionId: 'sid-delegated',
+        actor: { userId: 'usr-1', name: null }
+      })
+    ).toEqual({ operation: 'stop-subsession', result: 'stopped' })
+    expect(stopSession).toHaveBeenCalledWith(child('delegated'), { userId: 'usr-1' })
   })
 })
 
