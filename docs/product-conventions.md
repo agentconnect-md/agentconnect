@@ -1122,6 +1122,9 @@ answer: it returns at once, saying whom it asked, and the answer arrives in the 
 - **No one to ask.** A turn no person is behind never joins, and neither does a run whose person no
   card can reach: the call fails with "the bot is not in #channel; invite it, or ask from a
   conversation".
+- **A configured target.** A target an editor configured for a schedule or a hook counts as
+  consent: when the run posts into it and it is a public channel the bot is not in, the bot joins it
+  without asking. Only that target; any other conversation the run reaches follows the rules above.
 
 A card still waiting when the daemon restarts is rewritten as expired once its integration
 reconnects, and its conversation's agent is told that nothing was read or sent. The `toAgent` channel form asks nothing: where the bot is not in the channel, the

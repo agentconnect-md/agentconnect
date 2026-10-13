@@ -261,7 +261,8 @@ import { WorkBoundary } from './messages/message-boundary.js'
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { ADMIN_MCP_SERVER_NAME, RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
-import type { CodeHostEffectReq, SessionContext } from './mcp/ops.js'
+import type { CodeHostEffectReq, MessageGateway, SessionContext } from './mcp/ops.js'
+import { notJoinedChannel } from './platforms/not-joined.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
@@ -25386,9 +25387,11 @@ export class Daemon {
               })
             : undefined
           postAttempted = true
-          const ts = options
-            ? await (conn as SlackConnection).postMessage(target.channel, anchorText, undefined, options)
-            : await conn.postMessage(target.channel, anchorText)
+          const ts = await this.postIntoConfiguredTarget(conn, target.channel, label, () =>
+            options
+              ? (conn as SlackConnection).postMessage(target.channel!, anchorText, undefined, options)
+              : conn.postMessage(target.channel!, anchorText)
+          )
           if (ts) {
             const mustMaterializeThread = !isDmTarget && rootPostNeedsThreadMaterialization(msg.platform)
             let thread: string | undefined
@@ -25428,6 +25431,24 @@ export class Daemon {
       }
     }
     return { message: msg, postAttempted }
+  }
+
+  /** A cron's or hook's own post into the target an editor configured: that target counts as consent, so a public channel the bot is not in is joined without asking (#2979). */
+  private async postIntoConfiguredTarget<T>(
+    conn: unknown,
+    channel: string,
+    label: string,
+    post: () => Promise<T>
+  ): Promise<T> {
+    try {
+      return await post()
+    } catch (err) {
+      const join = (conn as Pick<MessageGateway, 'joinChannel'>).joinChannel
+      if (!join || notJoinedChannel(err) !== channel) throw err
+      await join.call(conn, channel)
+      this.log.info(`${label}: joined its configured target ${channel}`)
+      return await post()
+    }
   }
 
   private async fireTrigger(

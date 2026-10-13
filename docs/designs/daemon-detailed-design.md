@@ -1370,7 +1370,9 @@ from a console asker (`decidedBy`); the chat level of "What people can do in cha
 The card's handle is on its `permission_requests` row, so the reconnect sweep
 (`retireOrphanedCards`) rewrites a card a restart left pending as expired and, from the row's
 `joinAsk` (local store v48), tells its session in the timeout's words that the call did nothing; a
-session that is gone is skipped. Parallel calls for one
+session that is gone is skipped. A schedule's or hook's own anchor post into its configured target
+joins without asking (`postIntoConfiguredTarget` in `anchorTrigger`): a target an editor configured
+counts as consent, and the run's output then lands in a channel the bot is in. Parallel calls for one
 channel in one turn share one card. The bot's former `joinPublicChannels` setting is retired: the
 control plane no longer reads `Bot.platformConfig.joinPublicChannels` or sends the field, and the
 daemon's `IntegrationSlackConfig` no longer has it (an older daemon reads its absence as on).
