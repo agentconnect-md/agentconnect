@@ -1343,13 +1343,23 @@ a tagged refusal on a public channel (`describeConversation`, `sourceClass` publ
 that offers `joinChannel` re-checks that every person behind the turn may read it (`askerMayRead`),
 then calls `confirmJoin`; on `join` it joins and runs the one refused call once more, and any other
 answer fails the call with a `JoinRefused` that says the bot did not join. A turn no person is
-behind is never asked. The daemon's `confirmJoin` finds the live turn and calls
+behind is never asked. The call does not block on the answer: once the card is up (`offered`),
+`parkingOnJoin` returns the tool call at once with whom it asked, and the handler finishes in the
+background; `deliverJoinOutcome` hands its result, or why it did nothing, to the session as a new
+message (`joinOutcomeText`). Blocking was not an option because runtimes bound an MCP tool call on
+their own: Codex gives each MCP server 60 seconds by default, and codex-acp builds the server it is
+handed from ACP's `McpServerStdio` alone, which carries no timeout, so the daemon cannot raise it;
+Claude Code's stdio limit is 30 minutes of silence, and other runtimes differ again. The card's
+request outlives the turn that asked (`releaseApprovals` skips it) and never counts as the turn
+waiting for a person. The daemon's `confirmJoin` finds the live turn and calls
 `PermissionCoordinator.askToJoin` (`permissions/join-confirmation.ts` holds its request, labels and
 the 10-minute `JOIN_ASK_TIMEOUT_MS`, the API caller's answer window): a permission request whose
 `join` marks it as the daemon's own, rendered by the turn surface's approval-card facet in an open
 conversation of the turn, else delivered to a person's DM through `AssistantDrafts.personApprover`
 (a member's own DM, a console user's linked one through the named `agent/approval-route`), or
-listed as a webchat conversation's pending request. A click is taken only from a person behind the
+listed as a webchat conversation's pending request (`kind: 'join'` with its console askers, which the
+Control Plane uses to let the conversation's owner list and answer their own join confirmations at
+any chat level, and never sends to the console). A click is taken only from a person behind the
 turn (a member asker on that integration, a console asker verified through `agent/approval-route`
 `verify`), anyone else is refused through the facet's `tellPrivately`, and a console decision only
 from a console asker (`decidedBy`); the chat level of "What people can do in chat" does not apply.

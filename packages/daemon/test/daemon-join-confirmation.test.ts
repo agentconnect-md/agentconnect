@@ -1,4 +1,4 @@
-// The daemon's join confirmation (#2979): the live turn's conversation carries one card, whichever platform it is on.
+// The daemon's join confirmation (#2979): one card in the live turn's conversation, and a parked call's outcome back in its session.
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
@@ -103,9 +103,14 @@ async function world() {
 describe('the daemon’s join confirmation', () => {
   it('cards the live turn’s conversation once for parallel calls, and only its asker answers', async () => {
     const w = await world()
-    const first = w.daemon.confirmJoin(w.ctx, w.ask)
-    const second = w.daemon.confirmJoin(w.ctx, w.ask)
+    const offeredFirst = vi.fn()
+    const offeredSecond = vi.fn()
+    const first = w.daemon.confirmJoin(w.ctx, w.ask, offeredFirst)
+    const second = w.daemon.confirmJoin(w.ctx, w.ask, offeredSecond)
     await vi.waitFor(() => expect(w.conn.postCard).toHaveBeenCalledTimes(1), WAIT)
+    // Both parked calls hear the one offer, so both can return before the answer.
+    await vi.waitFor(() => expect(offeredSecond).toHaveBeenCalledTimes(1), WAIT)
+    expect(offeredFirst).toHaveBeenCalledTimes(1)
     const [channel, text, buttons, anchor] = w.conn.postCard.mock.calls[0] as [string, string, unknown[][], object]
     expect(channel).toBe(CHAT)
     expect(anchor).toMatchObject({ replyTo: 50 })
@@ -129,8 +134,41 @@ describe('the daemon’s join confirmation', () => {
   it('asks nothing without a live turn', async () => {
     const w = await world()
     w.daemon.pending.clear()
-    await expect(w.daemon.confirmJoin(w.ctx, w.ask)).resolves.toBe('unavailable')
+    await expect(w.daemon.confirmJoin(w.ctx, w.ask, vi.fn())).resolves.toBe('unavailable')
     expect(w.conn.postCard).not.toHaveBeenCalled()
+    await w.store.close()
+  })
+
+  it('hands a parked call’s late outcome to its session as a new message', async () => {
+    const w = await world()
+    const key = sessionKey('telegram', CHAT, THREAD, AGENT)
+    await w.store.upsertSession({
+      key,
+      agentId: AGENT,
+      platform: 'telegram',
+      channel: CHAT,
+      thread: THREAD,
+      acpSessionId: 's1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const dispatch = vi.fn(async () => {})
+    w.daemon.dispatch = dispatch
+    const call = { tool: 'getChannelHistory', name: 'general', purpose: 'read' as const, to: 'Ada Example' }
+    await w.daemon.deliverJoinOutcome(w.ctx, { ...call, result: { messages: [{ text: 'hello' }] } })
+    await w.daemon.deliverJoinOutcome(w.ctx, { ...call, error: 'getChannelHistory: the bot did not join #general.' })
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    const [agentId, joined] = dispatch.mock.calls[0] as unknown as [
+      string,
+      { channel: string; text: string; source: string }
+    ]
+    expect(agentId).toBe(AGENT)
+    expect(joined).toMatchObject({ channel: CHAT, source: 'agent' })
+    expect(joined.text).toContain('ran once the bot joined')
+    expect(joined.text).toContain('"text": "hello"')
+    const [, refused] = dispatch.mock.calls[1] as unknown as [string, { text: string }]
+    expect(refused.text).toContain('did nothing. getChannelHistory: the bot did not join #general.')
     await w.store.close()
   })
 })

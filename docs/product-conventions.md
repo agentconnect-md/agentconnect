@@ -1089,24 +1089,26 @@ only where the agent was invoked).
 ## Joining a public channel
 
 A bot joins a channel only when a person says so. When a read or a write the rules above allow needs
-the bot in a public channel it has not joined, the agent asks first, and the call waits for the
-answer as a tool call waits for an approval. Only a platform whose bot can enter a public channel by
-itself asks this; today that is Slack.
+the bot in a public channel it has not joined, the agent asks first. Only a platform whose bot can
+enter a public channel by itself asks this; today that is Slack. The tool call does not wait for the
+answer: it returns at once, saying whom it asked, and the answer arrives in the conversation later.
 
 - **Where it asks.** A card in the conversation the request came from, in the turn's thread, reads
   "Let <agent> join #channel to read it?" (or "to post there?") with **Join** and **Don't join**. A
   run that reads as a person (a schedule's, an item's, a sub-session's) asks in its own conversation
   or, when it has none, in that person's direct message, routed as a draft's approver is. A
   conversation shared with another organization gets no card naming the channel; the person's direct
-  message does. A webchat conversation lists it among its pending requests, as approvals are listed
-  for its owner.
+  message does. A webchat conversation lists it among its pending requests, where its owner answers
+  it at every level of "What people can do in chat", "Talk to the agent" included; the owner still
+  sees no tool-call approval at that level.
 - **Who answers.** Only a person behind the turn, whatever "What people can do in chat" allows.
   Anyone else who clicks is refused privately and the card stays as it is, and a bot never answers.
   The first valid answer decides, and the card is rewritten to "✅ Joined #channel — Name" or "Not
   joined — Name", its buttons gone. There is no "always join".
-- **What happens.** Join: the bot joins and the call goes on. Don't join, or no answer within 10
-  minutes, the window an API caller has to answer the agent's question: the call fails saying the
-  bot did not join, and nothing was read or sent.
+- **What happens.** Join: the bot joins, the read or post runs as the agent asked for it, and its
+  result reaches the agent as a message in that conversation, starting a turn there. Don't join, or
+  no answer within 10 minutes, the window an API caller has to answer the agent's question: the bot
+  does not join, nothing is read or sent, and the agent is told so the same way.
 - **No one to ask.** A turn no person is behind never joins, and neither does a run whose person no
   card can reach: the call fails with "the bot is not in #channel; invite it, or ask from a
   conversation".

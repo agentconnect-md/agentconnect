@@ -156,7 +156,7 @@ import {
   type PlaceAccessDeps
 } from './ops/place-gate.js'
 import { recall, RECALL_ARGS } from './ops/recall.js'
-import { askingToJoin, type JoinAskDeps } from './ops/join-ask.js'
+import { askingToJoin, parkingOnJoin, type JoinAskDeps, type JoinParked } from './ops/join-ask.js'
 import { ASSISTANT_ITEM_ARG_SCHEMAS, ASSISTANT_ITEM_HANDLERS, type AssistantItemDeps } from './ops/assistant-items.js'
 import {
   ASSISTANT_REMINDER_ARG_SCHEMAS,
@@ -469,13 +469,19 @@ function writeDeps(ctx: SessionContext, name: string, args: Record<string, unkno
 }
 
 /** A handler's gateways ask before the bot joins a channel a call was refused in; the agent-to-agent forms keep their own reach. */
-function joinDeps(ctx: SessionContext, name: string, args: Record<string, unknown>, deps: OpsDeps): OpsDeps {
+function joinDeps(
+  ctx: SessionContext,
+  name: string,
+  args: Record<string, unknown>,
+  deps: OpsDeps,
+  parked?: (call: JoinParked) => void
+): OpsDeps {
   if (name === 'sendMessage' && !isPlatformPost(args)) return deps
   return {
     ...deps,
     gatewayFor: (integrationId) => {
       const gw = deps.gatewayFor(integrationId)
-      return gw && askingToJoin(ctx, name, integrationId, gw, deps)
+      return gw && askingToJoin(ctx, name, integrationId, gw, deps, parked)
     }
   }
 }
@@ -499,7 +505,10 @@ async function executeRegisteredTool(
   const privateSource = await assertPlaceRead(ctx, name, args, deps)
   const handler = HANDLERS.get(name)
   if (handler) {
-    const result = await handler(ctx, args, joinDeps(ctx, name, args, writeDeps(ctx, name, args, deps)))
+    const judged = writeDeps(ctx, name, args, deps)
+    const result = await parkingOnJoin(ctx, deps, async (parked) =>
+      handler(ctx, args, joinDeps(ctx, name, args, judged, parked))
+    )
     return privateSource ? withPrivateSource(result, privateSource) : result
   }
 

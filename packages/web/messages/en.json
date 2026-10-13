@@ -2827,6 +2827,7 @@
         "approvalRequests": "Approval requests",
         "pendingRequests": "Pending requests",
         "fromSubsession": "Background sub-session",
+        "joinRequest": "Join a channel",
         "pendingCount": "{count} pending",
         "requestUpdateError": "This approval request could not be updated. Try again.",
         "loadingRequests": "Loading requests…",

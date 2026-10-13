@@ -779,7 +779,7 @@ import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
 import { PermissionCoordinator, type PermissionHost } from './permissions/coordinator.js'
 import { JOIN_ASK_TIMEOUT_MS, type JoinOutcome } from './permissions/join-confirmation.js'
-import type { JoinRequest } from './mcp/ops/join-ask.js'
+import { joinOutcomeText, type JoinDelivery, type JoinFlight, type JoinRequest } from './mcp/ops/join-ask.js'
 import {
   DEFAULT_PERMISSION_WAIT_HOURS,
   platformThread,
@@ -1849,7 +1849,7 @@ export class Daemon {
   /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
   private readonly subsessionOpeners = new Map<string, TurnAskers>()
   /** Join confirmations in flight, by session, bot and channel, so parallel calls share one card (#2979). */
-  private readonly joinAsks = new Map<string, Promise<JoinOutcome>>()
+  private readonly joinAsks = new Map<string, JoinFlight>()
   /** Places of assistant-mode agents turning external, and the transition that follows (assistant-mode.md §5.3). */
   private readonly placeTrust = new PlaceTrust({
     integration: (integrationId) => this.integrationConfigById(integrationId),
@@ -3970,7 +3970,8 @@ export class Daemon {
         !(await this.assistantPlaceConfirmed(agentId, integrationId, channel, { dm })),
       draftPost: (ctx, post) => this.draftPost(ctx, post),
       // A call refused because the bot is not in a public channel asks a person behind the turn first (#2979).
-      confirmJoin: (ctx, ask) => this.confirmJoin(ctx, ask),
+      confirmJoin: (ctx, ask, offered) => this.confirmJoin(ctx, ask, offered),
+      deliverJoinOutcome: (ctx, outcome) => void this.deliverJoinOutcome(ctx, outcome),
       // The read and write rules (assistant-mode.md §5.5): who is asking on the live turn, and the lookups that judge them.
       readAskers: async (ctx) => this.readAskersFor(ctx),
       readLookups: (agentId) => this.placeMembers.lookupsFor(agentId),
@@ -8749,16 +8750,59 @@ export class Daemon {
   }
 
   /** Ask a person behind the live turn before the bot joins a public channel; parallel calls for one channel share one card. */
-  private async confirmJoin(ctx: SessionContext, ask: JoinRequest): Promise<JoinOutcome> {
+  private async confirmJoin(
+    ctx: SessionContext,
+    ask: JoinRequest,
+    offered: (to: string | null) => void
+  ): Promise<JoinOutcome> {
     const key = this.sessionKeyOf(ctx)
+    const flightKey = [key, ask.integrationId, ask.channel].join('\u001f')
+    const flying = this.joinAsks.get(flightKey)
+    if (flying) {
+      if (flying.offered) offered(flying.offered.to)
+      else flying.waiters.push(offered)
+      return await flying.answer
+    }
     const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
     if (!live) return 'unavailable'
-    const flight = [key, ask.integrationId, ask.channel].join('\u001f')
-    const asked =
-      this.joinAsks.get(flight) ??
-      this.permissions.askToJoin(live, ask, JOIN_ASK_TIMEOUT_MS).finally(() => this.joinAsks.delete(flight))
-    this.joinAsks.set(flight, asked)
-    return await asked
+    const flight: JoinFlight = { waiters: [offered], answer: Promise.resolve<JoinOutcome>('unavailable') }
+    flight.answer = this.permissions
+      .askToJoin(live, ask, JOIN_ASK_TIMEOUT_MS, (to) => {
+        flight.offered = { to }
+        for (const waiter of flight.waiters.splice(0)) waiter(to)
+      })
+      .finally(() => this.joinAsks.delete(flightKey))
+    this.joinAsks.set(flightKey, flight)
+    return await flight.answer
+  }
+
+  /** A call that waited on a join confirmation finished after it returned: its session hears how, as a message. */
+  private async deliverJoinOutcome(ctx: SessionContext, outcome: JoinDelivery): Promise<void> {
+    const rec = await this.store.getSession(this.sessionKeyOf(ctx))
+    if (!rec) return void this.log.debug(`join outcome for ${outcome.tool} dropped: no session row`)
+    const integrationId = this.integrationIdForSessionTransport(ctx.agentId, rec.platform, rec.transportScope)
+    const traceId = randomUUID()
+    const msg: NormalizedMessage = {
+      msgId: `join:${rec.channel}:${traceId}`,
+      transcriptTs: monotonicTs(),
+      traceId: `join:${traceId}`,
+      source: 'agent',
+      platform: rec.platform,
+      channel: rec.channel,
+      ...(isAppendCoordinate(rec.thread) ? { sessionThread: rec.thread } : rec.thread ? { thread: rec.thread } : {}),
+      ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
+      sender: { id: 'join-confirmation', isBot: true },
+      text: joinOutcomeText(outcome),
+      mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
+      isDm: rec.conversationKind === 'dm',
+      ...(rec.conversationKind === 'group_dm' ? { isGroupDm: true } : {})
+    }
+    void this.dispatch(
+      ctx.agentId,
+      msg,
+      integrationId,
+      this.webchatTransport.webchatWakeContext(rec.platform, rec.channel)
+    ).catch((err) => this.log.error(`join outcome dispatch failed for "${ctx.agentId}": ${formatErr(err)}`))
   }
 
   /** A card button: a draft's when its id names one, else a permission request's. */
@@ -25015,6 +25059,7 @@ export class Daemon {
       applyDutyRevoke: (revocations) => this.dutyCoordinator.applyDutyRevoke(revocations),
       decideEditorPermission: (req) => this.permissions.decideEditorPermission(req),
       pendingPermissionOptions: (agentId, requestId) => this.permissions.pendingPermissionOptions(agentId, requestId),
+      pendingJoinAskers: (agentId, requestId) => this.permissions.pendingJoinAskers(agentId, requestId),
       leaveConversation: (leave) => this.connections.leaveConversation(leave),
       retractChannels: (integrationId, channelIds) =>
         this.observedChannelsSync.retractChannels(integrationId, channelIds),

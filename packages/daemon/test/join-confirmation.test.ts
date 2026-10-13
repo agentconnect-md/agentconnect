@@ -129,13 +129,14 @@ async function world(
     ...(over.personDm ? { personDm: over.personDm } : {})
   }
   const coordinator = new PermissionCoordinator(host)
+  const offered = vi.fn((_to: string | null) => {})
   const requestId = async (): Promise<string> => {
     await vi.waitFor(async () => expect(await store.listPermissionRequests(AGENT)).toHaveLength(1), WAIT)
     return (await store.listPermissionRequests(AGENT))[0]!.id
   }
   const posted = (call = 0) => slack.postBlocks.mock.calls[call] as unknown[]
   const rewrites = () => slack.updateBlocks.mock.calls.map((call) => JSON.stringify(call[2]))
-  return { store, clock, slack, cp, p, output, coordinator, requestId, posted, rewrites }
+  return { store, clock, slack, cp, p, output, coordinator, offered, host, requestId, posted, rewrites }
 }
 
 /** A person's DM through the routing drafts use: a console user reaches the chat account they linked. */
@@ -170,7 +171,7 @@ function draftsRouting(slack: ReturnType<typeof fakeSlack>): AssistantDrafts {
 describe('the card in the conversation the request came from', () => {
   it('asks in the turn’s thread, and the asker’s Join lets the call go on', async () => {
     const w = await world()
-    const asked = w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS)
+    const asked = w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS, w.offered)
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     const [channel, blocks, , thread] = w.posted()
@@ -179,6 +180,8 @@ describe('the card in the conversation the request came from', () => {
     expect(card).toContain('Let Butler join #general to read it?')
     expect(card).toContain('"text":"Join"')
     expect(card).toContain('"text":"Don’t join"')
+    // The call is told whom it asked as soon as the card is up, so it can return before the answer.
+    await vi.waitFor(() => expect(w.offered).toHaveBeenCalledTimes(1), WAIT)
 
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
     await expect(asked).resolves.toBe('join')
@@ -191,7 +194,7 @@ describe('the card in the conversation the request came from', () => {
 
   it('reads “Not joined — Name” after Don’t join, and the call does not join', async () => {
     const w = await world()
-    const asked = w.coordinator.askToJoin(w.p, ask({ purpose: 'post' }), JOIN_ASK_TIMEOUT_MS)
+    const asked = w.coordinator.askToJoin(w.p, ask({ purpose: 'post' }), JOIN_ASK_TIMEOUT_MS, w.offered)
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     expect(JSON.stringify(w.posted()[1])).toContain('Let Butler join #general to post there?')
@@ -201,9 +204,24 @@ describe('the card in the conversation the request came from', () => {
     await w.store.close()
   })
 
+  it('outlives the turn that asked, and never holds it as a wait for a person', async () => {
+    const w = await world()
+    const asked = w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS, w.offered)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.offered).toHaveBeenCalledTimes(1), WAIT)
+    expect(w.coordinator.awaitingHuman(OWNER, ACP)).toBe(false)
+    expect(w.host.emitApprovalActivity).not.toHaveBeenCalled()
+    // The turn ends with the call already returned; the card stays answerable.
+    await w.coordinator.releaseApprovals(OWNER, ACP)
+    expect(w.rewrites()).toEqual([])
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
+    await expect(asked).resolves.toBe('join')
+    await w.store.close()
+  })
+
   it('ends unjoined when nobody answers within the approval wait, and rewrites the card', async () => {
     const w = await world()
-    const asked = w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS)
+    const asked = w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS, w.offered)
     await w.requestId()
     await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     w.clock.advance(JOIN_ASK_TIMEOUT_MS - 1)
@@ -218,7 +236,9 @@ describe('the card in the conversation the request came from', () => {
   it('refuses anyone else privately and leaves the card live; a bot decides nothing', async () => {
     const w = await world()
     const decided = vi.fn()
-    const asked = w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS).then((outcome) => (decided(), outcome))
+    const asked = w.coordinator
+      .askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS, w.offered)
+      .then((outcome) => (decided(), outcome))
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
 
@@ -240,7 +260,7 @@ describe('the card in the conversation the request came from', () => {
 
   it('takes the answer of a console person behind the turn through the chat account they linked', async () => {
     const w = await world()
-    const asked = w.coordinator.askToJoin(w.p, ask({ askers: [ADA_CONSOLE] }), JOIN_ASK_TIMEOUT_MS)
+    const asked = w.coordinator.askToJoin(w.p, ask({ askers: [ADA_CONSOLE] }), JOIN_ASK_TIMEOUT_MS, w.offered)
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
@@ -264,7 +284,7 @@ describe('where else the card goes', () => {
         holder.drafts!.personApprover(agentId, requestId, asker)
     })
     holder.drafts = draftsRouting(w.slack)
-    const asked = w.coordinator.askToJoin(w.p, ask({ askers: [ADA_CONSOLE] }), JOIN_ASK_TIMEOUT_MS)
+    const asked = w.coordinator.askToJoin(w.p, ask({ askers: [ADA_CONSOLE] }), JOIN_ASK_TIMEOUT_MS, w.offered)
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     expect(w.posted()[0]).toBe('D-U-ada')
@@ -281,7 +301,7 @@ describe('where else the card goes', () => {
       channel: 'D-U-ada'
     }))
     const w = await world({ surface: 'external', personDm })
-    const asked = w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS)
+    const asked = w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS, w.offered)
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     expect(w.posted()[0]).toBe('D-U-ada')
@@ -294,7 +314,7 @@ describe('where else the card goes', () => {
 
   it('asks nobody when no card can reach a person behind the turn', async () => {
     const w = await world({ conversation: false, personDm: async () => undefined })
-    await expect(w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS)).resolves.toBe('unavailable')
+    await expect(w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS, w.offered)).resolves.toBe('unavailable')
     expect(w.slack.postBlocks).not.toHaveBeenCalled()
     expect(await w.store.listPermissionRequests(AGENT)).toEqual([])
     await w.store.close()
@@ -302,7 +322,12 @@ describe('where else the card goes', () => {
 
   it('lists a webchat asker’s confirmation among the conversation’s pending requests, for them alone', async () => {
     const w = await world({ webchat: true })
-    const asked = w.coordinator.askToJoin(w.p, ask({ askers: [ADA_CONSOLE], purpose: 'post' }), JOIN_ASK_TIMEOUT_MS)
+    const asked = w.coordinator.askToJoin(
+      w.p,
+      ask({ askers: [ADA_CONSOLE], purpose: 'post' }),
+      JOIN_ASK_TIMEOUT_MS,
+      w.offered
+    )
     const id = await w.requestId()
     expect(w.slack.postBlocks).not.toHaveBeenCalled()
     expect(w.output).toHaveBeenCalledWith(
@@ -316,7 +341,8 @@ describe('where else the card goes', () => {
         store: () => w.store,
         clock: () => w.clock,
         pendingPermissionOptions: (agentId: string, requestId: string) =>
-          w.coordinator.pendingPermissionOptions(agentId, requestId)
+          w.coordinator.pendingPermissionOptions(agentId, requestId),
+        pendingJoinAskers: (agentId: string, requestId: string) => w.coordinator.pendingJoinAskers(agentId, requestId)
       } as never,
       { agentId: AGENT, limit: 50 }
     )
@@ -325,6 +351,8 @@ describe('where else the card goes', () => {
         id,
         status: 'pending',
         command: 'Let Butler join #general to post there?',
+        kind: 'join',
+        joinAskers: ['cu-ada'],
         options: [expect.objectContaining({ optionId: 'join' }), expect.objectContaining({ optionId: 'dont-join' })]
       })
     ])
@@ -357,7 +385,7 @@ describe('a restart', () => {
   it('leaves a pending card to the reconnect sweep, which rewrites it as expired', async () => {
     const database = new DatabaseSync(':memory:')
     const w = await world({ database })
-    void w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS)
+    void w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS, w.offered)
     const id = await w.requestId()
     // Its handle is on the row, as a sub-session's card's is.
     const handle = () =>

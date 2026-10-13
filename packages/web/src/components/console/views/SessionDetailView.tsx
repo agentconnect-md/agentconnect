@@ -195,7 +195,6 @@ import {
 import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
 import {
-  chatApprovalsAllowed,
   sessionEffortAfterModelChange,
   sessionEffortChoicesForSelection,
   sessionPermissionChoices,
@@ -4996,13 +4995,12 @@ export default function SessionDetailView() {
   // max-desktop:), never JS-forked.
   // The approval strip rides the sticky composer footer on a live session (the top slot otherwise) while something waits; the Requests popover keeps the history.
   const canReviewApprovals = Boolean(owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId)
-  // Where people in chat may approve, a webchat conversation's owner answers its own requests here too, through the conversation.
+  // A webchat conversation's owner answers its requests here through the conversation: all of them where people in chat may approve, else the join confirmations that ask them, as the CP narrows the list.
   const ownerApprovals = Boolean(
     !canReviewApprovals &&
     (isWebchat || (isPg && session.realSessionId)) &&
     !readOnlySubsession &&
     ownsThisConversation === true &&
-    chatApprovalsAllowed(owner) &&
     owner &&
     !owner.name.startsWith(MOCK_PREFIX)
   )

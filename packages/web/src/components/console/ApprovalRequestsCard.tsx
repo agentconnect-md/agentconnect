@@ -242,6 +242,9 @@ export function ApprovalRequestsCard({
                     <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                       {formatApprovalTime(request.createdAt)}
                     </span>
+                    {request.kind === 'join' ? (
+                      <span className="badge bg-(--surface-active) text-(--text-secondary)">{t('joinRequest')}</span>
+                    ) : null}
                     {fromSubsession(request) && request.sessionId ? (
                       <Link
                         className="lnk font-sans text-[11px] font-medium leading-normal"
@@ -257,8 +260,11 @@ export function ApprovalRequestsCard({
                       </span>
                     )}
                   </div>
+                  {/* A join confirmation is a question to a person, not a command, so it reads in the body face. */}
                   <div
-                    className="mt-[2px] line-clamp-2 break-words font-mono text-[11.5px] leading-[1.45] text-(--text-secondary)"
+                    className={`mt-[2px] line-clamp-2 break-words text-[11.5px] leading-[1.45] text-(--text-secondary) ${
+                      request.kind === 'join' ? 'font-sans' : 'font-mono'
+                    }`}
                     title={request.command}
                   >
                     {request.command}

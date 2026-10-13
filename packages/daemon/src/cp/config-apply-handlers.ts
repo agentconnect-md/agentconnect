@@ -178,6 +178,7 @@ export interface ConfigApplyControlHost {
   applyDutyRevoke(revocations: DutyRevoke['revocations']): void
   decideEditorPermission(req: AgentPermissionDecision): Promise<Ack>
   pendingPermissionOptions(agentId: string, requestId: string): AgentPermissionOption[] | undefined
+  pendingJoinAskers?(agentId: string, requestId: string): string[] | undefined
   leaveConversation(leave: IntegrationLeave): Promise<IntegrationLeaveOk>
   retractChannels(integrationId: string, channelIds: readonly string[]): Promise<void>
   runCronNow(cronId: string): Ack
@@ -788,7 +789,7 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
 }
 
 export async function listAgentPermissionRequests(
-  host: ConfigApplyCoreHost & Pick<ConfigApplyControlHost, 'pendingPermissionOptions'>,
+  host: ConfigApplyCoreHost & Pick<ConfigApplyControlHost, 'pendingPermissionOptions' | 'pendingJoinAskers'>,
   { agentId, limit, conversation }: AgentPermissionRequestList
 ): Promise<AgentPermissionRequestPage> {
   const listed = await Promise.all(
@@ -805,6 +806,8 @@ export async function listAgentPermissionRequests(
       .map(({ request, where }) => {
         const options =
           request.status === 'pending' ? host.pendingPermissionOptions(request.agentId, request.id) : undefined
+        const joinAskers =
+          request.status === 'pending' ? host.pendingJoinAskers?.(request.agentId, request.id) : undefined
         return {
           id: request.id,
           agentId: request.agentId,
@@ -818,7 +821,8 @@ export async function listAgentPermissionRequests(
           resolvedBy: request.resolvedBy ?? null,
           resolvedByName: request.resolvedByName ?? null,
           ...(options ? { options } : {}),
-          ...(where.parentSessionId ? { parentSessionId: where.parentSessionId } : {})
+          ...(where.parentSessionId ? { parentSessionId: where.parentSessionId } : {}),
+          ...(joinAskers ? { kind: 'join' as const, joinAskers } : {})
         }
       })
   }

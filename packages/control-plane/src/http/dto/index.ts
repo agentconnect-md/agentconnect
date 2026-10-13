@@ -940,8 +940,17 @@ export const AgentListDto = z.array(AgentDto)
 export const AssistantModeAdmissionDto = AssistantModeAdmission
 
 /** Live, daemon-owned approval queue exposed only to editors of the Agent. */
-export const AgentPermissionRequestDto = AgentPermissionRequestRecord
+/** A request as the console reads it: a join confirmation's askers decide who may answer, and never leave the Control Plane. */
+export const AgentPermissionRequestDto = AgentPermissionRequestRecord.omit({ joinAskers: true })
 export const AgentPermissionRequestPageDto = z.object({ requests: z.array(AgentPermissionRequestDto) })
+
+/** A daemon's request without the join askers the console never sees. */
+export function toPermissionRequestDto(
+  request: z.infer<typeof AgentPermissionRequestRecord>
+): z.infer<typeof AgentPermissionRequestDto> {
+  const { joinAskers: _askers, ...dto } = request
+  return dto
+}
 export const AgentPermissionDecisionBody = z
   .object({ decision: z.enum(['allow', 'deny']), optionId: AgentPermissionDecision.shape.optionId })
   .strict()

@@ -1,4 +1,4 @@
-// Asking before the bot joins a channel (#2979): a call refused because the bot is not in a public channel waits for a person behind the turn.
+// Asking before the bot joins a channel (#2979): a call refused because the bot is not in a public channel waits for a person behind the turn, after the tool call returned.
 import { askerMayRead, CLOSED_LOOKUPS, NOBODY, sourceClass } from '../../assistant/place-access.js'
 import { JOIN_ASK_WAIT_TEXT, type JoinAsk, type JoinOutcome } from '../../permissions/join-confirmation.js'
 import { notJoinedChannel } from '../../platforms/not-joined.js'
@@ -11,9 +11,23 @@ export interface JoinRequest extends JoinAsk {
   integrationId: string
 }
 
+/** A call waiting on a join confirmation, as its tool result names it. */
+export interface JoinParked {
+  tool: string
+  name: string
+  purpose: JoinRequest['purpose']
+  /** Who was asked, when known. */
+  to: string | null
+}
+
+/** A parked call's late outcome: what it returned, or why it did nothing. */
+export type JoinDelivery = JoinParked & ({ result: unknown } | { error: string })
+
 export interface JoinAskDeps {
-  /** Ask a person behind the turn whether the bot may join; absent ⇒ the bot never joins. */
-  confirmJoin?: (ctx: SessionContext, ask: JoinRequest) => Promise<JoinOutcome>
+  /** Ask a person behind the turn whether the bot may join, calling `offered` once a card is up; absent ⇒ the bot never joins. */
+  confirmJoin?: (ctx: SessionContext, ask: JoinRequest, offered: (to: string | null) => void) => Promise<JoinOutcome>
+  /** Hand a parked call's outcome to its session as a message; absent ⇒ the call waits for the answer instead. */
+  deliverJoinOutcome?: (ctx: SessionContext, outcome: JoinDelivery) => void
 }
 
 /** The reads that ask to read a channel; every other tool asks to post there. */
@@ -48,7 +62,8 @@ async function joinAfterAsking(
   integrationId: string,
   channel: string,
   join: (channel: string) => Promise<void>,
-  deps: PlaceAccessDeps & JoinAskDeps
+  deps: PlaceAccessDeps & JoinAskDeps,
+  parked?: (call: JoinParked) => void
 ): Promise<boolean> {
   const purpose = READ_TOOLS.has(tool) ? 'read' : 'post'
   const platform = knownIntegrations(ctx).find((i) => i.id === integrationId)?.platform ?? ctx.platform
@@ -64,7 +79,9 @@ async function joinAfterAsking(
     if (!(await askerMayRead(asker, place, integrationId, lookups).catch(() => false)))
       throw refused(tool, notInChannelText(name, purpose))
   const answer = await deps
-    .confirmJoin(ctx, { integrationId, channel, name, purpose, askers: askers.people })
+    .confirmJoin(ctx, { integrationId, channel, name, purpose, askers: askers.people }, (to) =>
+      parked?.({ tool, name, purpose, to })
+    )
     .catch((): JoinOutcome => 'unavailable')
   if (answer !== 'join') throw refused(tool, ANSWERED[answer](name, purpose))
   await join(channel).catch(() => {
@@ -79,7 +96,8 @@ export function askingToJoin(
   tool: string,
   integrationId: string,
   gw: MessageGateway,
-  deps: PlaceAccessDeps & JoinAskDeps
+  deps: PlaceAccessDeps & JoinAskDeps,
+  parked?: (call: JoinParked) => void
 ): MessageGateway {
   const join = gw.joinChannel?.bind(gw)
   if (!join) return gw
@@ -88,7 +106,8 @@ export function askingToJoin(
       return await call()
     } catch (err) {
       const channel = notJoinedChannel(err)
-      if (channel === undefined || !(await joinAfterAsking(ctx, tool, integrationId, channel, join, deps))) throw err
+      if (channel === undefined || !(await joinAfterAsking(ctx, tool, integrationId, channel, join, deps, parked)))
+        throw err
       return await call()
     }
   }
@@ -105,7 +124,7 @@ export function askingToJoin(
           uploadFile: async (channel, ...rest): Promise<UploadOutcome> => {
             const first = await gw.uploadFile!(channel, ...rest)
             if (first.ok || first.notJoined !== true) return first
-            if (!(await joinAfterAsking(ctx, tool, integrationId, channel, join, deps))) return first
+            if (!(await joinAfterAsking(ctx, tool, integrationId, channel, join, deps, parked))) return first
             return await gw.uploadFile!(channel, ...rest)
           }
         }
@@ -118,4 +137,72 @@ export function askingToJoin(
       return typeof value === 'function' ? value.bind(target) : value
     }
   })
+}
+
+/** One join confirmation in flight for a session's channel: its later answer, whom it was offered to, and calls waiting to hear that. */
+export interface JoinFlight {
+  answer: Promise<JoinOutcome>
+  offered?: { to: string | null }
+  waiters: ((to: string | null) => void)[]
+}
+
+/** The most of a late result handed back in one message. */
+const DELIVERED_RESULT_MAX = 40_000
+
+/** The message a parked call's session reads once the call finished. */
+export function joinOutcomeText(outcome: JoinDelivery): string {
+  const head = `[join confirmation] Your ${outcome.tool} call that waited on #${outcome.name}`
+  const tail = 'This is a daemon notification, not a message from anyone.'
+  if ('error' in outcome) return `${head} did nothing. ${outcome.error}\n\n${tail}`
+  const result = JSON.stringify(outcome.result ?? null, null, 2)
+  const shown =
+    result.length > DELIVERED_RESULT_MAX ? `${result.slice(0, DELIVERED_RESULT_MAX)}\n… (truncated)` : result
+  return (
+    `${head} ran once the bot joined. Its result:\n\n${shown}\n\n${tail} Finish what you needed it for; ` +
+    'if nothing is left to do, stay silent.'
+  )
+}
+
+/** What the runtime reads at once: who was asked, and that the outcome follows as a message. */
+function parkedResult(call: JoinParked): Record<string, unknown> {
+  const who = call.to ?? 'the person who asked'
+  const done = call.purpose === 'read' ? 'read' : 'sent'
+  return {
+    joinRequested: true,
+    channel: `#${call.name}`,
+    note:
+      `Asked ${who} to let the bot join #${call.name}; nothing was ${done} yet. The result follows in this ` +
+      `conversation as a message once they answer, or after ${JOIN_ASK_WAIT_TEXT} with no answer. Do not repeat ` +
+      'this call: say you asked, and end your turn if nothing else is left.'
+  }
+}
+
+/** Run a handler, returning at once when a join confirmation is offered; the call then finishes in the background and its outcome reaches the session. */
+export async function parkingOnJoin(
+  ctx: SessionContext,
+  deps: JoinAskDeps,
+  run: (parked?: (call: JoinParked) => void) => Promise<unknown>
+): Promise<unknown> {
+  const deliver = deps.deliverJoinOutcome
+  if (!deliver) return await run()
+  let park!: (call: JoinParked) => void
+  const parkedAt = new Promise<JoinParked>((resolve) => (park = resolve))
+  const running = run(park)
+  const first = await Promise.race([
+    running.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error })
+    ),
+    parkedAt.then((call) => ({ call }))
+  ])
+  if ('call' in first) {
+    const call = first.call
+    void running.then(
+      (result) => deliver(ctx, { ...call, result }),
+      (err: unknown) => deliver(ctx, { ...call, error: (err as Error).message })
+    )
+    return parkedResult(call)
+  }
+  if ('error' in first) throw first.error
+  return first.value
 }

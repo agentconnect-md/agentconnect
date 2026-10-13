@@ -523,6 +523,9 @@ interface ElicitationApproval extends ApprovalEntry<CreateElicitationRequest, Cr
 
 type PendingApproval = PermissionApproval | ElicitationApproval
 
+/** Whether an approval holds its turn: a join confirmation outlives it, answered after the call returned. */
+const holdsTurn = (e: PendingApproval): boolean => !(e.kind === 'permission' && e.join)
+
 /** What a webchat conversation is told while its owner may answer the request on its page. */
 const WEBCHAT_OWNER_APPROVAL_NOTICE =
   '🔒 Permission requested. The conversation’s owner or an Agent editor can answer it on its Session page.'
@@ -591,7 +594,8 @@ export class PermissionCoordinator {
 
   /** Any answerable request for the session across both pending maps (approval elicitations only). */
   private hasPendingApproval(owner: HostKey, sessionId: string): boolean {
-    for (const e of this.pendingApprovals.values()) if (e.owner === owner && e.sessionId === sessionId) return true
+    for (const e of this.pendingApprovals.values())
+      if (holdsTurn(e) && e.owner === owner && e.sessionId === sessionId) return true
     for (const e of this.pendingElicits.values())
       if (e.approval && e.owner === owner && e.sessionId === sessionId) return true
     return false
@@ -742,7 +746,7 @@ export class PermissionCoordinator {
   awaitingHuman(owner: HostKey, sessionId: string): boolean {
     const mine = (pending: { owner: HostKey; sessionId: string }): boolean =>
       pending.owner === owner && pending.sessionId === sessionId
-    for (const pending of this.pendingApprovals.values()) if (mine(pending)) return true
+    for (const pending of this.pendingApprovals.values()) if (holdsTurn(pending) && mine(pending)) return true
     for (const pending of this.pendingElicits.values()) if (mine(pending)) return true
     for (const pending of this.pendingCallerApprovals.values()) if (mine(pending)) return true
     return false
@@ -751,7 +755,7 @@ export class PermissionCoordinator {
   /** When the session's oldest unanswered request or question was asked, or undefined when none waits. */
   oldestHumanWaitAskedAt(owner: HostKey, sessionId: string): number | undefined {
     let oldest: number | undefined
-    for (const pending of [...this.pendingApprovals.values(), ...this.pendingElicits.values()]) {
+    for (const pending of [...[...this.pendingApprovals.values()].filter(holdsTurn), ...this.pendingElicits.values()]) {
       if (pending.owner !== owner || pending.sessionId !== sessionId) continue
       if (oldest === undefined || pending.askedAt < oldest) oldest = pending.askedAt
     }
@@ -1030,8 +1034,13 @@ export class PermissionCoordinator {
     return await this.trackHumanApprovalWait(p, result)
   }
 
-  /** Ask a person behind the turn before the bot joins a public channel (#2979): the turn's conversation, else their DM, or a webchat's pending requests. */
-  async askToJoin(p: Pending, ask: JoinAsk, waitMs: number): Promise<JoinOutcome> {
+  /** Ask a person behind the turn before the bot joins a public channel (#2979); `offered` names whom once a card is up, and the answer may come after the turn ended. */
+  async askToJoin(
+    p: Pending,
+    ask: JoinAsk,
+    waitMs: number,
+    offered: (to: string | null) => void
+  ): Promise<JoinOutcome> {
     const { hostKey: owner, acpSessionId: sessionId } = p
     const agentId = hostKeyAgentId(owner)
     // A patrol never asks (assistant-mode.md §5.9).
@@ -1057,7 +1066,6 @@ export class PermissionCoordinator {
       resolve: resolveResult
     }
     this.pendingApprovals.set(requestId, entry)
-    this.syncApprovalActivity(owner, sessionId)
     const recorded = this.noteEditorPermissionRequest(
       requestId,
       agentId,
@@ -1072,19 +1080,17 @@ export class PermissionCoordinator {
       requesterName = (await recorded).requesterName
     } catch (err) {
       this.pendingApprovals.delete(requestId)
-      this.syncApprovalActivity(owner, sessionId, { id: requestId })
       throw err
     } finally {
       this.recordedWrites.delete(requestId)
     }
-    const wait = this.trackHumanApprovalWait(p, result)
     if (this.pendingApprovals.get(requestId) === entry) {
       join.timer = this.host.clock().setTimeout(() => {
         void this.expireJoinAsk(requestId, entry).catch((err) =>
           this.host.log().warn(`join confirmation for "${p.plan.sessionKey}" did not settle: ${formatErr(err)}`)
         )
       }, waitMs)
-      const offered = webchat
+      const posted = webchat
         ? this.noticeWebchatJoin(p, params)
         : facet
           ? await this.postJoinCard(requestId, entry, p, facet)
@@ -1096,9 +1102,10 @@ export class PermissionCoordinator {
                 return false
               }
             ))
-      if (!offered) await this.abandonJoinAsk(requestId, entry)
+      if (!posted) await this.abandonJoinAsk(requestId, entry)
+      else offered(dm?.target.displayName ?? requesterName)
     }
-    const res = await wait
+    const res = await result
     if (res.outcome.outcome === 'selected') return res.outcome.optionId === JOIN_OPTION ? 'join' : 'declined'
     return join.ended ?? 'unavailable'
   }
@@ -1203,7 +1210,6 @@ export class PermissionCoordinator {
     if (this.pendingApprovals.get(id) !== rec) return
     this.pendingApprovals.delete(id)
     rec.join.ended = 'expired'
-    this.syncApprovalActivity(rec.owner, rec.sessionId, { id })
     this.retireApprovalCards(id, rec, JOIN_EXPIRED_TEXT, undefined, { kind: 'cancelled' })
     rec.resolve({ outcome: { outcome: 'cancelled' } })
   }
@@ -1213,7 +1219,6 @@ export class PermissionCoordinator {
     if (this.pendingApprovals.get(id) !== rec) return
     this.pendingApprovals.delete(id)
     this.clearJoinWait(rec)
-    this.syncApprovalActivity(rec.owner, rec.sessionId, { id })
     await this.resolveStoredPermissionRequest(rec.agentId, id, 'expired')
     rec.resolve({ outcome: { outcome: 'cancelled' } })
   }
@@ -1718,7 +1723,7 @@ export class PermissionCoordinator {
     this.pendingApprovals.delete(id)
     this.clearSubsessionWait(rec)
     this.clearJoinWait(rec)
-    this.syncApprovalActivity(rec.owner, rec.sessionId, { id, allowed: picked.allow })
+    if (holdsTurn(rec)) this.syncApprovalActivity(rec.owner, rec.sessionId, { id, allowed: picked.allow })
     if (rec.kind === 'permission') {
       this.permissionEvaluationDetails.set(rec.evaluationParams, {
         reason: surface === 'chat' ? 'chat_user' : 'agent_editor'
@@ -1926,6 +1931,13 @@ export class PermissionCoordinator {
       })
   }
 
+  /** A pending join confirmation's console askers, the only console users it takes an answer from; undefined for any other request. */
+  pendingJoinAskers(agentId: string, requestId: string): string[] | undefined {
+    const rec = this.pendingApprovals.get(requestId)
+    if (rec?.agentId !== agentId || rec.kind !== 'permission' || !rec.join) return undefined
+    return rec.join.askers.flatMap((asker) => (asker.kind === 'console' ? [asker.userId] : []))
+  }
+
   /** The options a live approval offers the console; undefined once it is settled or when it offers no choices (#1969). */
   pendingPermissionOptions(agentId: string, requestId: string): AgentPermissionOption[] | undefined {
     const rec = this.pendingApprovals.get(requestId)
@@ -2124,10 +2136,10 @@ export class PermissionCoordinator {
     for (const caller of this.pendingCallerApprovals.values())
       if (caller.owner === owner && caller.sessionId === sessionId) caller.cancel()
     for (const [id, pending] of this.pendingApprovals) {
-      if (pending.owner !== owner || pending.sessionId !== sessionId) continue
+      // A join confirmation outlives the turn that asked: its own wait ends it.
+      if (pending.owner !== owner || pending.sessionId !== sessionId || !holdsTurn(pending)) continue
       this.pendingApprovals.delete(id)
       this.clearSubsessionWait(pending)
-      this.clearJoinWait(pending)
       this.syncApprovalActivity(owner, sessionId, { id })
       await this.resolveStoredPermissionRequest(agentId, id, 'expired')
       // Dead buttons must not survive the request (§5.4): retire every card in place.

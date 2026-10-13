@@ -3841,6 +3841,8 @@ export interface AgentPermissionRequestDto {
   options?: AgentPermissionOptionDto[]
   /** Set on a background sub-session's request: the conversation it belongs to, which shows it too. */
   parentSessionId?: string
+  /** A pending confirmation before the bot joins a channel, answered only by a person behind its turn, at any chat level. */
+  kind?: 'join'
 }
 
 export interface AgentPermissionOptionDto {

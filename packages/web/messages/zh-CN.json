@@ -2827,6 +2827,7 @@
         "approvalRequests": "审批请求",
         "pendingRequests": "待处理请求",
         "fromSubsession": "后台子会话",
+        "joinRequest": "加入频道",
         "pendingCount": "{count} 个待处理",
         "requestUpdateError": "无法更新此审批请求，请重试。",
         "loadingRequests": "正在加载请求…",
