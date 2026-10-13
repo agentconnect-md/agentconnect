@@ -1,4 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
+import { once } from 'node:events'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { encodeSlackStatusOverflowValue, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
 import { consolidate, SlackConnection } from '../src/slack/connection.js'
 import { notJoinedChannel } from '../src/platforms/not-joined.js'
@@ -77,6 +80,58 @@ describe('SlackConnection initialization', () => {
     expect(receiverWebClient.retryConfig).toMatchObject({ retries: 2 })
     expect(receiverWebClient.timeout).toBe(30_000)
   })
+
+  it.each([true, false])(
+    'uses a consistent HTTP transport for bootstrap and uploads (sendOnly=%s)',
+    async (sendOnly) => {
+      const requests: { contentType?: string; body: string }[] = []
+      const server = createServer(async (request, response) => {
+        const chunks: Buffer[] = []
+        for await (const chunk of request) chunks.push(chunk)
+        requests.push({ contentType: request.headers['content-type'], body: Buffer.concat(chunks).toString() })
+        response
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ ok: true, user_id: 'UBOT', bot_id: 'BBOT' }))
+      })
+      server.listen(0, '127.0.0.1')
+      await once(server, 'listening')
+      const slackApiUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/`
+      const nativeFetch = vi.fn().mockRejectedValue(new Error('native fetch unavailable'))
+      vi.stubGlobal('fetch', nativeFetch)
+      vi.stubEnv('HTTPS_PROXY', undefined)
+      vi.stubEnv('HTTP_PROXY', undefined)
+      try {
+        const conn = new SlackConnection({ ...deps(), sendOnly } as any)
+        const app = (conn as any).app
+        app.client.slackApiUrl = slackApiUrl
+        app.client.retryConfig = { retries: 0 }
+        app.start = vi.fn(async () => undefined)
+
+        await conn.start()
+        expect(conn.botUserId).toBe('UBOT')
+        if (!sendOnly) {
+          const receiverWebClient = app.receiver.client.webClient
+          receiverWebClient.slackApiUrl = slackApiUrl
+          receiverWebClient.retryConfig = { retries: 0 }
+          await receiverWebClient.apps.connections.open()
+        }
+        expect(requests).toHaveLength(sendOnly ? 1 : 3)
+        expect(requests.at(-1)?.body).toBe('')
+
+        await app.client.chat.postMessage({ channel: 'CEXAMPLE', text: 'hello' })
+        expect(new URLSearchParams(requests.at(-1)?.body).get('text')).toBe('hello')
+        await app.client.apiCall('example.upload', { file: Buffer.from('payload') })
+        expect(requests.at(-1)?.contentType).toMatch(/^multipart\/form-data; boundary=/)
+        expect(requests.at(-1)?.body).toContain('payload')
+        expect(nativeFetch).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllGlobals()
+        vi.unstubAllEnvs()
+        server.closeAllConnections()
+        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+      }
+    }
+  )
 
   it('caches Bolt authorization across repeated events', async () => {
     const conn = new SlackConnection(deps() as any)

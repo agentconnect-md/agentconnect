@@ -1,6 +1,12 @@
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt'
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
-import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
+import {
+  Agent as HttpAgent,
+  fetch as undiciFetch,
+  FormData as UndiciFormData,
+  ProxyAgent,
+  type Dispatcher
+} from 'undici'
 import {
   buildSlackAppHomeView,
   decodeSlackStatusOverflowValue,
@@ -952,17 +958,27 @@ function proxyDispatcher(): ProxyAgent | undefined {
   return url ? new ProxyAgent(url) : undefined
 }
 
-function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
-  return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
+// Keep Slack independent of the Undici version that claims the process-wide dispatcher.
+const directSlackDispatcher = new HttpAgent()
+
+function fetchWithDispatcher(dispatcher: Dispatcher = directSlackDispatcher): FetchFunction {
+  return (url, init) => {
+    const options = { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher }
+    // The SDK builds native FormData, which bundled Undici does not recognize as multipart.
+    if (init?.body instanceof FormData) {
+      const form = new UndiciFormData()
+      for (const [name, value] of init.body) form.append(name, value)
+      options.body = form
+    }
+    return undiciFetch(url, options)
+  }
 }
 
-/** Build the send-only {@link AppLike}: a real Slack `WebClient` (xoxb) for the send
- *  surface + inert event/start/stop members (shared-bot-relay.md §11). Same proxy +
- *  timeout/retry tuning as the socket-mode factory. */
+/** Send-only WebClient with the same transport and request bounds as Socket Mode (shared-bot-relay.md §11). */
 function sendOnlyApp(botToken: string): AppLike {
   const dispatcher = proxyDispatcher()
   const client = new WebClient(botToken, {
-    ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
+    fetch: fetchWithDispatcher(dispatcher),
     timeout: SLACK_API_TIMEOUT_MS,
     retryConfig: { retries: 2 }
   })
@@ -983,16 +999,11 @@ export type SlackAppFactory = (opts: { token: string; appToken: string }) => App
 
 /** The production socket-mode app: a real Bolt/`WebClient` pair that reaches slack.com. */
 function realSocketModeApp(o: { token: string; appToken: string }, boltDebug?: boolean): AppLike {
-  // If HTTPS_PROXY or HTTP_PROXY is set, route all Slack API calls and
-  // WebSocket connections through that proxy.
+  // Route Slack API calls and WebSocket connections through HTTPS_PROXY/HTTP_PROXY when configured.
   const dispatcher = proxyDispatcher()
   const clientOptions: WebClientOptions = {
-    ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
-    // Bound the Web API per-request time + retries. The @slack/web-api default
-    // "10 retries over ~30 minutes" would, combined with our serial send-queue,
-    // let one transient failure block all delivery for a whole turn. 30s is a
-    // compromise: long enough for auth.test and sends to survive a slow/VPN link,
-    // yet still bounded so a stuck call cannot wedge the queue indefinitely.
+    fetch: fetchWithDispatcher(dispatcher),
+    // Bound retries and request time so one transient failure cannot block the serial send queue indefinitely.
     timeout: SLACK_API_TIMEOUT_MS,
     retryConfig: { retries: 2 }
   }
