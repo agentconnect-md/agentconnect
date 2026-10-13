@@ -271,6 +271,11 @@ conversation. Each place has exactly one long session:
   (§5.5), internal unless the platform detects it as external. Its console-side default of `org`
   visibility is a session-visibility matter tracked separately.
 - **Webchat**: one conversation is already one session.
+- **A new place**: one session from its first message. The Control Plane lists every known row of
+  an assistant-mode agent, its own-mode rows included, and the daemon gives a conversation it does
+  not list yet `append` where the platform appends the message's kind, so a message that arrives
+  before the row's projection does not open a thread session of its own
+  ([channel-session-mode.md](channel-session-mode.md)).
 
 Long sessions are kept per §4.2. Context relies on the runtime's own compaction; the standing
 summary rides the existing reminder path (§5.4). The trigger for an automatic rollover (reopening
@@ -299,7 +304,11 @@ needed an editor. An assistant-mode agent now takes the defaults of its visibili
 agent's new room answers @-mentions, a member's new 1:1 DM starts On, a conversation shared with
 another organization starts Off ([resource-visibility.md](resource-visibility.md) §14.9), and it
 can be a shared bot's default member; a restricted one stays gated. Rows already Off stay Off:
-nothing is migrated or re-seeded.
+nothing is migrated or re-seeded. An Off nobody chose keeps the one-time notice for every agent
+([resource-visibility.md](resource-visibility.md) §14.9), so a room seeded Off under the old gating
+still tells a person who mentions the agent there; an Off an editor chose is silent. Without the
+gate, a new place can be answered before its row reaches the daemon, so the daemon keys an
+unlisted place on one session from its first message (§5.2).
 
 - Slack: a Slack Connect channel is external. The share is read from the existing membership
   listing (`is_ext_shared` / `is_pending_ext_shared`) and from the flag every event envelope
@@ -1257,4 +1266,5 @@ and reads judged by who is asking and memory layered by audience have taken that
 assistant-mode agent now takes the conversation defaults of its visibility and can be a shared
 bot's default member; the enable warning, the turn-on warning that named enabled rooms, the
 one-room-at-a-time rule for Apply to all and the console banner are removed. Rows already Off stay
-Off. One session per place (§5.2) and the permission-mode default (§1.8) are unchanged.
+Off, and an Off nobody chose keeps the one-time notice for every agent. A place's first message
+already keys its one session (§5.2). The permission-mode default (§1.8) is unchanged.

@@ -929,8 +929,8 @@ remains forbidden for gated agents.
     than Off and must not receive the gated-owner notice.
 - Because the relay fence covers both, it also has to say which Off conversations
   still deserve the §14.3 notice. `gatedOffChannels` carries that subset — the
-  muted conversations whose owner is gated, i.e. Off because nobody has enabled them
-  rather than because an operator silenced them. The relay posts the notice only
+  muted conversations whose owner is gated, or whose Off nobody chose (§14.9), i.e. Off
+  because nobody has enabled them rather than because an operator silenced them. The relay posts the notice only
   for those; an operator's Off is silent (see "Per-conversation trigger" in
   product-conventions.md). The two states share a trigger value and the relay
   cannot infer conversation ownership from a table that holds no route for them, so
@@ -1130,8 +1130,8 @@ and wins.
 
 **Pending, not chosen.** Off already fences every path, because it is `mutedChannels` on
 both arbiters (thread affinity, explicit targets and agent-authored recipients included),
-so the change adds no fence. What it adds is which Off still answers. An external Off that
-nobody chose behaves like the gate: an addressed message (an @-mention or a DM) gets the
+so the change adds no fence. What it adds is which Off still answers. An Off that nobody
+chose behaves like the gate, for every agent and every place: an addressed message (an @-mention or a DM) gets the
 §14.3 one-time notice through the existing notice paths. An Off an editor chose stays
 silent. The edge learns the difference from a subset of the muted set:
 
@@ -1139,12 +1139,16 @@ silent. The edge learns the difference from a subset of the muted set:
   ungated integration's direct and send-only specs. `maybeGatedNotice` speaks for a
   listed conversation as it does for a gated integration.
 - **Relay:** the existing `gatedOffChannels` set also carries these conversations, read
-  conversation-wide (any row's choice, any row's detection), and the relay posts the notice
+  conversation-wide (any row's choice), and the relay posts the notice
   for a listed conversation even on a bot with no gated member.
 
-Pending also requires the place to still be marked external: an Off from before
-`triggerChosen` existed reads as unchosen and may well be an operator's, so an internal one
-stays silent. The Console lists the row Off, as it does a gated agent's undecided row.
+Pending first also required the place to still be marked external, because an Off from
+before `triggerChosen` existed reads as unchosen and may well be an operator's. Issue #2979
+(item B7) dropped that condition: rows seeded Off while assistant mode gated an Everyone agent
+are Offs nobody chose, and without the notice a person mentioning the agent there got no answer
+and no hint. The accepted cost is that an operator's internal Off from before `triggerChosen`
+existed answers one addressed message too; nothing is migrated. The Console lists the row Off,
+as it does a gated agent's undecided row.
 An older daemon drops the field and an older relay notices only on a bot with a gated
 member, so either falls back to a silent Off.
 

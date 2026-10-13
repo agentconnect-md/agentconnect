@@ -755,6 +755,11 @@ starts Off for every agent, because "Everyone" means the organization
 [assistant-mode.md](designs/assistant-mode.md) §5.3). Nobody chose that Off, so it is the
 closed door with a sign, not silence, until an editor picks a trigger for the row.
 
+The same holds for any Off nobody chose, for every agent, external or not: a conversation seeded
+Off while its agent was restricted, or while assistant mode gated it, answers an addressed message
+once with the sign. An Off from before the console recorded who chose a trigger reads as nobody's,
+so an operator's Off from that time may answer once too; nothing is migrated.
+
 ## Leaving a conversation and removing its row
 
 Three different things can end a conversation, and the Console must not blur them:
@@ -948,7 +953,8 @@ shared with another organization starts Off, while a Restricted agent stays gate
 "Per-conversation trigger", "Direct messages" and "Group direct messages"). Enabling a conversation
 is not what keeps the agent's other conversations out of it: a read is judged by the person asking
 (see "Reading other conversations") and memory by audience (see "Memory layers"). Turning the mode
-on or off changes no conversation's trigger, so one set Off stays Off. The console's
+on or off changes no conversation's trigger, so one set Off stays Off, and one nobody chose still
+answers an addressed message once with the sign (see "Per-conversation trigger"). The console's
 `assistant-mode` flag decides only whether the mode can be switched on: an agent already in
 assistant mode keeps the switch, so it can be switched off, and keeps its Activity tab,
 Sub-sessions tab and proposals in the console whatever the flag says.
@@ -968,7 +974,8 @@ as it is.
 Each place keeps one long session while the mode is on: every room, and a 1:1 DM
 on a platform whose DMs otherwise open a session per message. A conversation gated By
 decision keeps its own session mode, and a platform whose rooms never append (a Linear
-team) is left as it is. The row shows `Single session` and offers no other choice; the
+team) is left as it is. A new conversation keeps that one session from its first message,
+before the console lists it. The row shows `Single session` and offers no other choice; the
 stored choice returns when the mode is switched off.
 
 A room or group DM is external when the platform says people from outside the organization are
