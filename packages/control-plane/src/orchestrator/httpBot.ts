@@ -63,7 +63,7 @@ import type {
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } from './placement.js'
-import { pendingExternalConversation } from '../domain/conversation-defaults.js'
+import { pendingConversation } from '../domain/conversation-defaults.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
@@ -1518,7 +1518,7 @@ export class HttpBotOrchestrator {
     for (const [channelId, ownerId] of conversationOwner) {
       if (!byAgent.has(ownerId)) muted.add(channelId)
     }
-    // The Off conversations nobody enabled keep the notice: a gated owner's, or an ungated owner's undecided external one (§14.9).
+    // The Off conversations nobody enabled keep the notice: a gated owner's, or an ungated owner's Off nobody chose (§14.9).
     const gatedOff = new Set(
       chans
         .filter((c) => c.trigger === 'off')
@@ -1526,13 +1526,9 @@ export class HttpBotOrchestrator {
           const agent = c.agentId ? agentById.get(c.agentId) : undefined
           if (!agent) return false
           if (isGatedAgent(agent)) return true
-          // Read conversation-wide, as ownership convergence does: any sibling may carry the decision or the detection.
+          // Read conversation-wide, as ownership convergence does: any sibling may carry the decision.
           const rows = chans.filter((row) => row.channelId === c.channelId)
-          return pendingExternalConversation({
-            trigger: c.trigger,
-            triggerChosen: rows.some((row) => row.triggerChosen),
-            externalReason: rows.find((row) => row.externalReason)?.externalReason ?? null
-          })
+          return pendingConversation({ trigger: c.trigger, triggerChosen: rows.some((row) => row.triggerChosen) })
         })
         .map((c) => c.channelId)
     )

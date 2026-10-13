@@ -2822,7 +2822,7 @@ export function agentRoutes(deps: HttpDeps) {
           }
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent)
-          // Assistant mode gates conversations and fixes session modes, both projected into every integration's spec.
+          // Assistant mode fixes session modes, projected into every integration's spec; it gates nothing.
           if (isAssistantModeAgent(existing) !== isAssistantModeAgent(agent)) {
             await convergeIntegrationGating(deps, agent, req.log)
           }

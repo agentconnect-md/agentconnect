@@ -524,7 +524,7 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
     const spec = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [
       channel('C1', 'any'),
       channel('C2', 'mention'),
-      channel('C3', 'off')
+      { ...channel('C3', 'off'), triggerChosen: true }
     ])
     const bindRules = [
       { match: { kind: 'mention' } },
@@ -612,7 +612,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
     const httpBot = bot({ transport: 'http', shareable: true, slackAppId: 'A0TESTAPP' })
     const spec = await httpIntegrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, httpBot, HTTP_SECRET, [
       channel('C1', 'any'),
-      channel('C2', 'off')
+      { ...channel('C2', 'off'), triggerChosen: true }
     ])
     expect(spec).toEqual({
       orgId: INTEGRATION.orgId,

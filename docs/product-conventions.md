@@ -755,6 +755,11 @@ starts Off for every agent, because "Everyone" means the organization
 [assistant-mode.md](designs/assistant-mode.md) §5.3). Nobody chose that Off, so it is the
 closed door with a sign, not silence, until an editor picks a trigger for the row.
 
+The same holds for any Off nobody chose, for every agent, external or not: a conversation seeded
+Off while its agent was restricted, or while assistant mode gated it, answers an addressed message
+once with the sign. An Off from before the console recorded who chose a trigger reads as nobody's,
+so an operator's Off from that time may answer once too; nothing is migrated.
+
 ## Leaving a conversation and removing its row
 
 Three different things can end a conversation, and the Console must not blur them:
@@ -942,15 +947,19 @@ a channel cannot reset a later operator choice.
 
 ## Assistant-mode places
 
-An agent in assistant mode answers only where an editor enabled it, whatever its
-visibility: its conversations are gated exactly like a Restricted agent's. Turning the
-mode on resets no conversation — every conversation already enabled, DMs included, stays enabled
-— and new conversations start Off. Switching it off restores the agent's ordinary
-defaults. The switch, its limits and the agent's responsible user (see "Assistant-mode drafts") are
-in the assistant mode panel on the agent's Configuration tab; the panel names that person and offers
-no choice of them. The console's `assistant-mode` flag decides only whether the mode can be switched
-on: an agent already in assistant mode keeps the switch, so it can be switched off, and keeps its
-Activity tab, Sub-sessions tab and proposals in the console whatever the flag says.
+Assistant mode uses the same conversation defaults as any agent with the same visibility: an
+Everyone agent's new room answers @-mentions, a member's new 1:1 DM starts On and a conversation
+shared with another organization starts Off, while a Restricted agent stays gated (see
+"Per-conversation trigger", "Direct messages" and "Group direct messages"). Enabling a conversation
+is not what keeps the agent's other conversations out of it: a read is judged by the person asking
+(see "Reading other conversations") and memory by audience (see "Memory layers"). Turning the mode
+on or off changes no conversation's trigger, so one set Off stays Off, and one nobody chose still
+answers an addressed message once with the sign (see "Per-conversation trigger"). The switch, its
+limits and the agent's responsible user (see "Assistant-mode drafts") are in the assistant mode
+panel on the agent's Configuration tab; the panel names that person and offers no choice of them.
+The console's `assistant-mode` flag decides only whether the mode can be switched on: an agent
+already in assistant mode keeps the switch, so it can be switched off, and keeps its Activity tab,
+Sub-sessions tab and proposals in the console whatever the flag says.
 
 Turning the mode on also sets the agent's permission mode, so background work nobody is watching
 does not stop to wait for approval: a mode that asks for approval or only reads, or no mode at
@@ -964,19 +973,12 @@ panel warns that background work will often wait for approval; while the switch 
 on, it warns only when the runtime keeps the mode. Turning the mode off leaves the permission mode
 as it is.
 
-Each enabled place keeps one long session while the mode is on: every room, and a 1:1 DM
+Each place keeps one long session while the mode is on: every room, and a 1:1 DM
 on a platform whose DMs otherwise open a session per message. A conversation gated By
 decision keeps its own session mode, and a platform whose rooms never append (a Linear
-team) is left as it is. The row shows `Single session` and offers no other choice; the
+team) is left as it is. A new conversation keeps that one session from its first message,
+before the console lists it. The row shows `Single session` and offers no other choice; the
 stored choice returns when the mode is switched off.
-
-Enabling a room or group DM of such an agent asks first: everyone in it will be able to get
-the content of the agent's other places out of it, so it should be enabled only if everyone
-there is fully trusted. Turning the mode on while rooms or group DMs are already enabled
-names them in the same warning. A 1:1 DM and webchat carry no warning. Rooms are enabled
-one at a time: a decision's Apply to all reaches only the rooms already enabled. The warning
-is the same wherever a room is enabled, including a decision started from the organization's
-Bots list.
 
 A room or group DM is external when the platform says people from outside the organization are
 in it. On Slack that is a Slack Connect conversation, read from the membership listing and from
@@ -990,8 +992,7 @@ whether the conversation is shared now, at most once a minute per conversation. 
 detects outsiders this way, in assistant mode or not, and what it found applies wherever a rule
 names an external conversation. When Slack cannot answer, a post from another conversation waits
 for approval as in an external place. A share is lifted once Slack no longer reports it; a guest or
-an outside member never is. Enabling a 1:1 DM trusts the person in it, so a DM never turns
-external.
+an outside member never is. Slack is never asked about a 1:1 DM, which never turns external.
 
 Every agent, in assistant mode or not, replies in an external conversation as it does anywhere
 else: the reply streams under the working indicator, its other writes there go through, and a
@@ -1140,6 +1141,30 @@ answer: it returns at once, saying whom it asked, and the answer arrives in the 
 A card still waiting when the daemon restarts is rewritten as expired once its integration
 reconnects, and its conversation's agent is told that nothing was read or sent. The `toAgent` channel form asks nothing: where the bot is not in the channel, the
 platform refuses its post.
+
+## Local time
+
+Every agent, in assistant mode or not, reasons about "now", "today" and "this Friday" in the
+people's time zone, never its host's. Every turn it takes is told the current local date, weekday
+and time, to the minute, with the zone's name and offset, in one line given with the turn; the
+conversation's history keeps only what people wrote. The zone is the first of these that is known:
+
+1. **The person who sent the turn's message**, in their own zone: on Slack the zone in their
+   profile, looked up once per person and refreshed every six hours; in the console, their
+   browser's, sent with every message; on Feishu/Lark the zone in their user record, when the
+   platform returns one. Telegram, Discord and Google Chat report none.
+2. **A scheduled run**: the time zone its schedule is set in.
+3. **Any other turn no person sent**, such as a patrol, a task, a sub-session, a report from
+   background work, or another agent's message: the person who started it, as "Reading other
+   conversations" names them, and for a report or another agent's message the person behind the
+   conversation it came from. Their zone comes from the same sources as in step 1: a chat
+   member's profile, a console user's browser as last seen, else the profile of the chat account
+   that console user linked.
+4. **The zone last seen from a person in that conversation.**
+5. **UTC**, and the agent is told the local zone is unknown.
+
+A zone that cannot be read, because a lookup failed or took more than two seconds, is skipped for
+the next one; the turn never fails because of it. There is no setting for it.
 
 ## Assistant-mode drafts
 
@@ -1390,16 +1415,6 @@ still posts and an older one is dropped. One that the platform refuses three tim
 conversation shared with another organization sets and receives reminders like any other (see
 "Assistant-mode places"). Background sessions, patrols and webchat cannot set reminders. A DM that
 read a private conversation for its person can still set them, since they post only in that DM.
-
-## Assistant-mode local time
-
-An agent in assistant mode reasons about "now", "today" and "this Friday" in the people's time
-zone, never its host's. Every turn it takes is told the current local date, weekday and time and
-the zone they are in: the zone of the person whose message started the turn, from their Slack
-profile or, in the console, their browser. A background sub-session, a patrol, a task, a report,
-or a person whose zone is unknown takes the zone last seen from a person in that conversation.
-When none was ever seen, as on platforms that report no zone, the agent is told it is UTC and that
-the local zone is unknown. An agent outside assistant mode is told nothing.
 
 ## Assistant-mode Activity
 

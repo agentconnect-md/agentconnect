@@ -399,7 +399,7 @@ type WebchatRuntimeConfig = {
   fastMode?: boolean
 }
 
-/** The reader's IANA time zone, which an assistant-mode agent reasons in; omitted when the browser names none. */
+/** The reader's IANA time zone, which every agent reasons in; omitted when the browser names none. */
 function browserTimeZone(): { timeZone?: string } {
   try {
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone

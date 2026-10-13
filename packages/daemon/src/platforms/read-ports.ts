@@ -290,7 +290,7 @@ export function tellsWorkspaceMembers(platform: string): boolean {
   return READ_PORTS.get(platform)?.workspaceMembers === true
 }
 
-/** Does `platform`'s channel lookup report a share with another organization? Undeclared ⇒ no, so enabled means trusted there. */
+/** Does `platform`'s channel lookup report a share with another organization? Undeclared ⇒ no, so its places count as internal. */
 export function reportsSharedConversations(platform: string): boolean {
   return READ_PORTS.get(platform)?.sharedConversations === true
 }

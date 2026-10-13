@@ -173,8 +173,8 @@ describe('AssistantModePanel', () => {
     expect(host.textContent).not.toContain('Fallback:')
   })
 
-  // assistant-mode.md §5.1: turning on trusts the rooms and group DMs already enabled, so the switch names them first.
-  it('warns before turning on over enabled rooms and group DMs, and saves only once confirmed', async () => {
+  // #2979 B7: turning on gates nothing, so it saves at once over rooms and group DMs already enabled.
+  it('turns on over enabled rooms and group DMs with no warning', async () => {
     mocks.channels = [
       { channelId: 'C1', name: 'general', trigger: 'mention' },
       { channelId: 'C2', name: 'random', trigger: 'off' },
@@ -185,46 +185,8 @@ describe('AssistantModePanel', () => {
     await clickButton(host, 'Edit')
     await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click())
     await clickButton(host, 'Save assistant mode')
-    expect(mocks.updateAgent).not.toHaveBeenCalled()
-    const dialog = host.querySelector('[role="dialog"]')
-    expect(dialog?.textContent).toContain('Turn on assistant mode?')
-    expect(dialog?.textContent).toContain('Everyone here will be able to get the content of this agent’s other places')
-    expect([...host.querySelectorAll('[data-assistant-place-list] li')].map((li) => li.textContent)).toEqual([
-      'team · #general',
-      'team · ada, bob'
-    ])
-    await clickButton(host, 'Turn on')
-    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT, { assistantMode: { enabled: true } })
     expect(host.querySelector('[role="dialog"]')).toBeNull()
-  })
-
-  it('saves without the warning when already on, and when cancelled saves nothing', async () => {
-    mocks.channels = [{ channelId: 'C1', name: 'general', trigger: 'mention' }]
-    const on = await mount({ assistantMode: { enabled: true } })
-    await clickButton(on, 'Edit')
-    await act(async () => {
-      const input = on.querySelector<HTMLInputElement>('input[data-assistant-mode-limit="dailyPatrolBudget"]')!
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, '10')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await clickButton(on, 'Save assistant mode')
-    expect(on.querySelector('[role="dialog"]')).toBeNull()
-    expect(mocks.updateAgent).toHaveBeenCalledTimes(1)
-
-    await act(async () => root?.unmount())
-    root = undefined
-    mocks.updateAgent.mockClear()
-    const off = await mount()
-    await clickButton(off, 'Edit')
-    await act(async () => off.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click())
-    await clickButton(off, 'Save assistant mode')
-    expect(off.querySelector('[role="dialog"]')).toBeTruthy()
-    const cancel = [...off.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
-      (b) => b.textContent?.trim() === 'Cancel'
-    )
-    await act(async () => cancel?.click())
-    expect(off.querySelector('[role="dialog"]')).toBeNull()
-    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT, { assistantMode: { enabled: true } })
   })
 
   // assistant-mode.md §5.9: patrols run on the agent's own host, so they are marked degraded while the mode is on.

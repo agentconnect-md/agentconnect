@@ -576,14 +576,14 @@ export interface WebChannelListSemantics {
   sessionModes?: readonly ('createNew' | 'append')[]
   /** Session modes a 1:1 DM row offers. Absent ⇒ none: the platform's DMs are one continuous session already. */
   dmSessionModes?: readonly ('createNew' | 'append')[]
-  /** Confirmation before a default seat moves off a gated agent, whose only grant it is (body gets `owner`, `room`, `reason`); absent ⇒ no warning. */
+  /** Confirmation before a default seat moves off a gated agent, whose only grant it is (body gets `owner`, `room`); absent ⇒ no warning. */
   ownerChangeWarning?: {
     title: WebChannelListMessage
     body: WebChannelListMessage
     /** Bare verb — the console's modal convention. */
     confirmLabel: WebChannelListMessage
   }
-  /** The gated-agent banner (gets `reason`), where enabling a row is not the whole gate (Linear, §4.3); absent ⇒ the host's. */
+  /** The gated-agent banner, where enabling a row is not the whole gate (Linear, §4.3); absent ⇒ the host's. */
   gatedNote?: WebChannelListMessage
   /**
    * Splits a stored row label into the name the row leads with and an optional dim tail after

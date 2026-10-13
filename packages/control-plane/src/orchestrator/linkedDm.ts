@@ -102,7 +102,7 @@ export async function linkedMemberIds(
   return new Set(identities.filter((id): id is string => id !== null))
 }
 
-/** {@link linkedMemberIds} over a restricted agent's share set, the seed path; assistant mode alone opens no DM (assistant-mode.md §1.8). */
+/** {@link linkedMemberIds} over a restricted agent's share set, the seed path; an Everyone agent's DM opens by the ordinary default instead. */
 export async function linkedAudienceMemberIds(
   agent: Pick<AgentRecord, 'visibility' | 'sharedWith'>,
   bot: Pick<BotRecord, 'platform' | 'teamId'>,

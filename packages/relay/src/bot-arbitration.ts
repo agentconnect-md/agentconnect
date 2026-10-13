@@ -91,7 +91,7 @@ export interface BotAssignment {
    *  — thread continuity, the unscoped keyword slug, `defaultAgentId` — so Off is a
    *  fence rather than an omission: a muted channel resolves to nothing. */
   mutedChannels?: string[]
-  /** The muted channels nobody enabled (a gated owner's, or an undecided external one, §14.9): fenced like any mute, but they keep the one-time notice. */
+  /** The muted channels nobody enabled (a gated owner's, or any Off nobody chose, §14.9): fenced like any mute, but they keep the one-time notice. */
   gatedOffChannels?: string[]
   /** §14.3: the relayId deterministically responsible for this bot's one-time
    *  CHANNEL gating notices (stamped by the CP from the connected roster). */

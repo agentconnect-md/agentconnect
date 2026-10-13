@@ -23,7 +23,6 @@ export interface OwnerChangeMove {
 interface Pending {
   copy: NonNullable<ReturnType<typeof channelListSemantics>['ownerChangeWarning']>
   owner: string
-  reason: ConversationGate
   room: string
   apply: () => Promise<void>
   done: () => void
@@ -48,9 +47,8 @@ export function useOwnerChangeGuard(): {
   const guard = useCallback((move: OwnerChangeMove, apply: () => Promise<void>): Promise<void> => {
     const copy = channelListSemantics(move.platform).ownerChangeWarning
     const from = move.from
-    if (!copy || !ownerChangeNeedsWarning(move) || !from?.gate) return apply()
-    const reason = from.gate
-    return new Promise<void>((done) => setPending({ copy, owner: from.label, reason, room: move.room, apply, done }))
+    if (!copy || !ownerChangeNeedsWarning(move) || !from) return apply()
+    return new Promise<void>((done) => setPending({ copy, owner: from.label, room: move.room, apply, done }))
   }, [])
 
   // Cancelling resolves the caller's promise without writing — its picker stops spinning
@@ -87,12 +85,7 @@ export function useOwnerChangeGuard(): {
         onConfirm={confirm}
         onClose={close}
       >
-        {t(pending.copy.body.key, {
-          ...pending.copy.body.values,
-          owner: pending.owner,
-          reason: pending.reason,
-          room: pending.room
-        })}
+        {t(pending.copy.body.key, { ...pending.copy.body.values, owner: pending.owner, room: pending.room })}
       </ConfirmationDialog>
     ) : null
   }

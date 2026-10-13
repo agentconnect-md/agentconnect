@@ -76,15 +76,12 @@ export function useChannelGates() {
     botId,
     platform,
     integrationId,
-    row,
-    beforeAdd
+    row
   }: {
     botId: string | undefined
     platform: string | undefined
     integrationId: string | undefined
     row: IntegrationChannelRow
-    /** Runs `open` for a new gate, or holds it behind a confirmation of its own. */
-    beforeAdd?: (open: () => void) => void
   }): ReactNode => {
     if (!decisions) return null
     const plain = plainTrigger(platform)
@@ -96,7 +93,6 @@ export function useChannelGates() {
         canWrite={!!integrationId}
         offer={offers(platform, row)}
         disabled={!integrationId || busy(botId, row)}
-        {...(beforeAdd ? { beforeAdd } : {})}
         onStop={() => (plain ? pickTrigger(botId, integrationId, row, plain) : undefined)}
       />
     )
@@ -123,8 +119,6 @@ export function useChannelGates() {
     siblings?: {
       platform: string | undefined
       rows: { integrationId: string | undefined; row: IntegrationChannelRow }[]
-      /** The owner is in assistant mode, so Apply to all reaches only its rooms already enabled. */
-      assistantMode?: boolean
     }
   }): ReactNode => {
     if (!decisions) return null
@@ -145,13 +139,12 @@ export function useChannelGates() {
             })
           )
         : setChannelDecision(target.integrationId!, target.row.channelId, next)
-    // Every channel (not a DM) the platform offers By decision in and the viewer can write, each once; an assistant-mode agent's Off rooms are enabled one by one, behind their warning, never in bulk.
+    // Every channel (not a DM) the platform offers By decision in and the viewer can write, each once.
     const targets = (siblings?.rows ?? []).filter(
       (target, at, all) =>
         !!target.integrationId &&
         !isDirectConversation(target.row.kind) &&
         offers(siblings!.platform, target.row) &&
-        !(siblings!.assistantMode && rowTrigger(botId, target.row) === 'off') &&
         all.findIndex((other) => other.row.channelId === target.row.channelId) === at
     )
     // A DM's rules stay its own, so the bulk action starts only from a channel.

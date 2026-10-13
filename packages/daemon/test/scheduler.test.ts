@@ -79,6 +79,14 @@ describe('buildSyntheticMessage', () => {
     expect(msg.headless).toBeUndefined()
     expect(msg.syntheticChannel).toBeUndefined()
   })
+
+  it('carries the schedule’s own zone for the run’s local time, and none for one on the host’s clock', () => {
+    const own = buildSyntheticMessage('bot-a', cron('daily', { timezone: 'asia/shanghai' }), 't', FIRED_AT)
+    expect(own.msg.scheduleTimeZone).toBe('Asia/Shanghai')
+    expect(buildSyntheticMessage('bot-a', cron('daily'), 't', FIRED_AT).msg).not.toHaveProperty('scheduleTimeZone')
+    const unknown = cron('daily', { timezone: 'Not/AZone' })
+    expect(buildSyntheticMessage('bot-a', unknown, 't', FIRED_AT).msg).not.toHaveProperty('scheduleTimeZone')
+  })
 })
 
 describe('scheduledRunContext', () => {

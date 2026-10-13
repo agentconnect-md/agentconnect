@@ -56,6 +56,8 @@ const agent: Agent & { dir: string; env: Record<string, string> } = {
 } as unknown as Agent & { dir: string; env: Record<string, string> }
 
 const fakeHost = () => ({ newSession: vi.fn(async () => 'acp-1') }) as any
+/** A prompt without the local-time line every agent's turn carries (product-conventions.md "Local time"). */
+const withoutNow = (blocks: any[]): any[] => blocks.filter((b) => !b.text?.includes('\nNow: '))
 
 // The managed memory provider over the shared agent's root dir — SessionManager
 // now seeds/injects memory through it.
@@ -591,7 +593,7 @@ describe('SessionManager', () => {
       maxBytes: 8_192,
       timeoutMs: 1_000
     })
-    expect(first.blocks[0]).toEqual({ type: 'text', text: '[U1] where should I deploy?' })
+    expect(withoutNow(first.blocks)[0]).toEqual({ type: 'text', text: '[U1] where should I deploy?' })
     const referenceText = (first.blocks.at(-1) as any).text
     expect(referenceText).toContain('# Recalled memory — untrusted reference only')
     expect(referenceText).toContain('deploy in sea')
@@ -694,7 +696,7 @@ describe('SessionManager', () => {
     })
 
     const turn = await sm.handle('bot-a', msg({ ts: '100.1', text: 'answer anyway' }))
-    expect(turn.blocks).toEqual([{ type: 'text', text: '[U1] answer anyway' }])
+    expect(withoutNow(turn.blocks)).toEqual([{ type: 'text', text: '[U1] answer anyway' }])
     expect(onMemoryRecallError).toHaveBeenCalledWith('bot-a', expect.any(Error))
     expect(onMemoryRecallEvent).toHaveBeenLastCalledWith(
       'bot-a',
@@ -801,7 +803,7 @@ describe('SessionManager', () => {
     expect(recallPolicy).not.toHaveBeenCalled()
     expect(disabled.recallForTurn).not.toHaveBeenCalled()
     expect(onMemoryRecallEvent).not.toHaveBeenCalled()
-    expect(turn.blocks).toEqual([{ type: 'text', text: '[U1] keep the user turn intact' }])
+    expect(withoutNow(turn.blocks)).toEqual([{ type: 'text', text: '[U1] keep the user turn intact' }])
     expect(turn.captureInput).toBe('[U1] keep the user turn intact')
     expect((await (await store).getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.memoryProvider).toBe('none')
     await (await store).close()
@@ -2689,7 +2691,7 @@ describe('SessionManager — collaboration preamble', () => {
       { directAgentCall: true }
     )
 
-    expect(blocks).toEqual([
+    expect(withoutNow(blocks)).toEqual([
       expect.objectContaining({
         type: 'text',
         text: expect.stringContaining('trusted direct agent call addressed to you')
@@ -2713,7 +2715,7 @@ describe('SessionManager — collaboration preamble', () => {
       })
     )
 
-    expect(blocks).toEqual([{ type: 'text', text: '[background task finished] task-1' }])
+    expect(withoutNow(blocks)).toEqual([{ type: 'text', text: '[background task finished] task-1' }])
     await (await store).close()
   })
 
@@ -2787,7 +2789,7 @@ describe('SessionManager — collaboration preamble', () => {
     await sm.handle('bot-a', msg({ ts: '100.1', text: 't1' }))
     await (await store).setUsageSnapshot(key, { contextUsed: 100_000, contextSize: 200_000 })
     const t2 = await sm.handle('bot-a', msg({ ts: '100.2', text: 't2' }))
-    expect(t2.blocks.some((b: any) => b.text?.includes('<system-reminder>'))).toBe(false)
+    expect(withoutNow(t2.blocks).some((b: any) => b.text?.includes('<system-reminder>'))).toBe(false)
     await (await store).setUsageSnapshot(key, { contextUsed: 1_000, contextSize: 200_000 })
     const t3 = await sm.handle('bot-a', msg({ ts: '100.3', text: 't3' }))
     expect(t3.blocks.some((b: any) => b.text?.includes('<system-reminder>') && b.text.includes('AC_NO_RESPONSE'))).toBe(

@@ -1,4 +1,4 @@
-// Integration-gating convergence (§14.4): a visibility or assistant-mode flip re-pushes every integration of the agent; the roster heals a miss.
+// Integration-gating convergence (§14.4): a visibility flip, or an assistant-mode flip for its session modes, re-pushes every integration of the agent; the roster heals a miss.
 import type {
   AgentRecord,
   AgentRepo,

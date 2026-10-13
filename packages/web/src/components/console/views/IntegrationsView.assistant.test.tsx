@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The org's Bots list warns before + Decision enables an Off room of an assistant-mode agent, as its agent page does (assistant-mode.md §5.3).
+// The org's Bots list starts + Decision on an assistant-mode agent's Off room with no warning, as for any agent (#2979 B7).
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -74,9 +74,6 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 
 const IntegrationsView = (await import('./IntegrationsView')).default
 
-const WARNING =
-  'Everyone here will be able to get the content of this agent’s other places out of it. Enable only if everyone here is fully trusted.'
-
 const soloBot: BotDto = {
   id: 'solo',
   name: 'support',
@@ -104,20 +101,16 @@ async function expand(): Promise<void> {
   await act(async () => host.querySelector<HTMLElement>('#integration-bot-solo')!.click())
 }
 
-/** Press + Decision on a room: resolves whether its rules opened. */
+/** Press + Decision on a room the way its entry does: resolves whether its rules opened. */
 async function addDecision(channelId: string): Promise<() => boolean> {
   let opened = false
   const entry = mocks.gateEntries.filter((props) => props.row.channelId === channelId).at(-1)!
-  await act(async () => entry.beforeAdd!(() => void (opened = true)))
+  const open = () => void (opened = true)
+  await act(async () => (entry.beforeAdd ? entry.beforeAdd(open) : open()))
   return () => opened
 }
 
-const warning = () =>
-  [...document.body.querySelectorAll('[role="dialog"][aria-modal="true"]')].find((node) =>
-    node.textContent?.includes(WARNING)
-  )
-const button = (label: string) =>
-  [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === label)
+const dialog = () => document.body.querySelector('[role="dialog"][aria-modal="true"]')
 
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -146,33 +139,15 @@ afterEach(async () => {
 })
 
 describe('the Bots list + Decision on an assistant-mode agent’s room', () => {
-  it('warns before enabling an Off room, and opens the rules only once confirmed', async () => {
+  it('opens the rules on an Off room at once, with no warning', async () => {
     await expand()
-    const opened = await addDecision('C1')
-    expect(warning()?.textContent).toContain('Enable #help?')
-    expect(opened()).toBe(false)
-    await act(async () => button('Enable')!.click())
-    expect(opened()).toBe(true)
-    expect(warning()).toBeUndefined()
+    expect((await addDecision('C1'))()).toBe(true)
+    expect(dialog()).toBeNull()
   })
 
-  it('leaves the room Off when the warning is cancelled', async () => {
-    await expand()
-    const opened = await addDecision('C1')
-    await act(async () => button('Cancel')!.click())
-    expect(warning()).toBeUndefined()
-    expect(opened()).toBe(false)
-  })
-
-  it('opens straight away for a room already on, and outside assistant mode', async () => {
+  it('opens them on a room already on too', async () => {
     await expand()
     expect((await addDecision('C2'))()).toBe(true)
-    expect(warning()).toBeUndefined()
-
-    mocks.assistantAgents = new Set()
-    mocks.gateEntries = []
-    await act(async () => root.render(<IntegrationsView />))
-    expect((await addDecision('C1'))()).toBe(true)
-    expect(warning()).toBeUndefined()
+    expect(dialog()).toBeNull()
   })
 })

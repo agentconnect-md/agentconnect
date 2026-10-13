@@ -10,11 +10,7 @@ export function openConversationTrigger(c: {
   return c.kind === 'im' ? 'any' : 'mention'
 }
 
-/** An ungated install's Off that nobody chose on a place still marked external (§14.9): a closed door with a sign, not an operator's silence. */
-export function pendingExternalConversation(c: {
-  trigger: ChannelTrigger
-  triggerChosen: boolean
-  externalReason?: PlaceExternalReason | null
-}): boolean {
-  return c.trigger === 'off' && !c.triggerChosen && !!c.externalReason
+/** An Off nobody chose, for every agent and every place (§14.9): a closed door with a sign, not an operator's silence. */
+export function pendingConversation(c: { trigger: ChannelTrigger; triggerChosen: boolean }): boolean {
+  return c.trigger === 'off' && !c.triggerChosen
 }

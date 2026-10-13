@@ -14,7 +14,7 @@ import {
   rowName,
   rowUrl
 } from './IntegrationChannelList'
-import type { IntegrationChannelRow, IntegrationRow } from '@/lib/data'
+import { conversationGate, type ConversationGate, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
@@ -398,7 +398,7 @@ describe('IntegrationChannelList footer', () => {
 })
 
 describe('IntegrationChannelList gated-agent banner', () => {
-  const banner = (platform?: string, gate: 'private' | 'assistant' | null = 'private') =>
+  const banner = (platform?: string, gate: ConversationGate | null = 'private') =>
     renderToStaticMarkup(
       createElement(IntegrationChannelList, {
         platform,
@@ -420,10 +420,18 @@ describe('IntegrationChannelList gated-agent banner', () => {
     expect(html).not.toContain('enabled below')
   })
 
-  it('names assistant mode when that is the gate, and shows nothing without one', () => {
-    expect(banner('slack', 'assistant')).toContain('Assistant mode — answers only where enabled below.')
-    expect(banner('linear', 'assistant')).toContain('Assistant mode — answers only in teams where it is the default.')
-    expect(banner('slack', null)).not.toContain('role="note"')
+  // #2979 B7: assistant mode gates nothing, so an Everyone agent in it shows no banner.
+  it('shows nothing for an Everyone agent, in assistant mode or not', () => {
+    const everyone = { visibility: 'org' as const }
+    const assistant = { visibility: 'org' as const, assistantMode: { enabled: true } }
+    const privateAssistant = { visibility: 'restricted' as const, assistantMode: { enabled: true } }
+    for (const agent of [everyone, assistant])
+      for (const platform of ['slack', 'linear']) {
+        const html = banner(platform, conversationGate(agent))
+        expect(html, platform).not.toContain('role="note"')
+        expect(html, platform).not.toContain('answers only')
+      }
+    expect(conversationGate(privateAssistant)).toBe('private')
   })
 })
 

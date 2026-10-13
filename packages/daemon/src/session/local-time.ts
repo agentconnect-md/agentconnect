@@ -1,5 +1,10 @@
-// The people's local time on an assistant-mode turn (assistant-mode.md §5.4): their zone, else the place's last seen, else UTC.
+// The people's local time on every agent's turn (product-conventions.md "Local time"), and each person's last known zone.
+import type { ReadAsker } from '../assistant/place-access.js'
+import { askerKey } from '../assistant/place-members.js'
 import { knownTimeZone } from '../messages/time-zone.js'
+
+/** How many people's last known zones are kept; the oldest is forgotten first. */
+const PERSON_ZONE_ENTRIES = 5000
 
 /** The prelude line naming the current local time, e.g. `Now: 2026-10-12 Mon 04:20 (Asia/Shanghai, UTC+08:00).` */
 export function renderLocalNow(now: number, timeZone: string | undefined): string {
@@ -21,4 +26,21 @@ export function renderLocalNow(now: number, timeZone: string | undefined): strin
   const offset = `UTC${part('timeZoneName').replace(/^GMT/, '') || '+00:00'}`
   const where = !zone ? 'UTC, local time zone unknown' : /^[+-]/.test(zone) ? offset : `${zone}, ${offset}`
   return `<system-reminder>\nNow: ${stamp} (${where}).\n</system-reminder>`
+}
+
+/** Each person's last known zone, by who they are to the read rule; in memory, so after a restart a run falls through to its place's. */
+export class PersonTimeZones {
+  private readonly zones = new Map<string, string>()
+
+  note(person: ReadAsker, zone: string): void {
+    const key = askerKey(person)
+    this.zones.delete(key)
+    this.zones.set(key, zone)
+    const oldest = this.zones.size > PERSON_ZONE_ENTRIES ? this.zones.keys().next().value : undefined
+    if (oldest !== undefined) this.zones.delete(oldest)
+  }
+
+  get(person: ReadAsker): string | undefined {
+    return this.zones.get(askerKey(person))
+  }
 }

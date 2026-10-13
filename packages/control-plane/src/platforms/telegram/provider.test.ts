@@ -234,7 +234,7 @@ describe('telegram projection equivalence with the live integrationToSpec path',
     const spec = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, BOT, SECRET, [
       channel('-100', 'any'),
       channel('-200', 'mention'),
-      channel('-300', 'off')
+      { ...channel('-300', 'off'), triggerChosen: true }
     ])
     const bindRules = [
       { match: { kind: 'mention' } },

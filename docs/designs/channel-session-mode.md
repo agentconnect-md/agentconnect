@@ -560,7 +560,12 @@ rooms on every platform but Linear, 1:1 DMs on Slack — except a By decision ro
 keeps its own mode. The stored rows are not rewritten, so switching the mode off restores
 each row's own choice. The console shows those rows as `Single session`, with no other
 choice, while the mode is on. `appendKinds` and the web module's `sessionModes` /
-`dmSessionModes` state one fact; a web test keeps them in agreement.
+`dmSessionModes` state one fact; a web test keeps them in agreement. For such an agent the
+projection lists every known row, `createNew` ones included, and the daemon gives a
+conversation it does not list yet (one whose row has not reached the spec) `append` where the
+platform's `appendKinds` holds the kind of the message: a 1:1 DM, a group DM, else a room. So the
+first message of a new place already keys the one session, and the default never overrides a
+known row such as a By decision room.
 
 **Linear declares `createNew` only.** A Linear row is a team and every issue in it is its own
 thread, so appending would pool a whole team into one session — a meaning this setting has

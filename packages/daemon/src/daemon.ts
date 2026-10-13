@@ -332,12 +332,14 @@ import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { assistantSubsessionToolsFor, type SubsessionStopper } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
 import {
+  askerOf,
   askerOfFollower,
   PlaceMembers,
   readAccessAsker,
   turnAskers,
   type TurnMessage
 } from './assistant/place-members.js'
+import { PersonTimeZones } from './session/local-time.js'
 import {
   NOBODY,
   type ConsoleVerdict,
@@ -394,6 +396,7 @@ import {
   rulesFromAgent,
   resolveCpRule,
   resolveAgentIntegration,
+  conversationKindOf,
   conversationSessionMode,
   integrationRouting,
   conversationAdmitted,
@@ -940,7 +943,8 @@ import type {
   McpAppRpcResult,
   CodeHostProvider,
   McpAppOutcome,
-  RuntimeStrategyEntries
+  RuntimeStrategyEntries,
+  ChannelSessionMode
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { HostPasses } from './daemon/host-passes.js'
@@ -1868,6 +1872,8 @@ export class Daemon {
   })
   /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
   private readonly subsessionOpeners = new Map<string, TurnAskers>()
+  /** Each person's last known zone, for the local time of a run they started (product-conventions.md "Local time"). */
+  private readonly personTimeZones = new PersonTimeZones()
   /** Whom a join result's wake speaks for, by its message id: the person who answered Join (#2979). */
   private readonly joinWakeOpeners = new Map<string, TurnAskers>()
   /** Join confirmations in flight, by session, bot and channel, so parallel calls share one card (#2979). */
@@ -4508,7 +4514,9 @@ export class Daemon {
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
-      senderTimeZoneFor: (msg, integrationId) => this.senderProfileTimeZone(msg, integrationId),
+      senderTimeZoneFor: (msg, integrationId) => this.profileTimeZone(integrationId, msg.sender.id),
+      startedByTimeZone: (agentId, key) => this.startedByTimeZone(agentId, key),
+      notePersonTimeZone: (key, zone) => this.notePersonTimeZone(key, zone),
       now: () => this.clock.now(),
       // Match the spawn defaults so standing context describes the files actually materialized.
       runtimeEnvFor: (agent) => ({
@@ -8784,21 +8792,20 @@ export class Daemon {
   /** Who is asking on a session's live turn: its message's sender and every message folded into it (assistant-mode.md §5.5). */
   private async readAskersFor(ctx: SessionContext): Promise<TurnAskers> {
     const key = this.sessionKeyOf(ctx)
-    return this.askersOfKey(key, ctx.integrationId, await this.openerOf(ctx, key))
+    return this.askersOfKey(key, ctx.integrationId, await this.openerOf(ctx.agentId, ctx.thread, key))
   }
 
   /** Whom a sub-session's messages no person sent speak for: a patrol's or a task's item asker, else whoever opened it. */
-  private async openerOf(ctx: SessionContext, key: string): Promise<TurnAskers | undefined> {
+  private async openerOf(agentId: string, thread: string, key: string): Promise<TurnAskers | undefined> {
     // A join's result continues the request of the person who answered Join, so its turn reads as them.
     const wake = this.joinWakeOpeners.get(this.activeGateEntries.get(key)?.msg.msgId ?? '')
     if (wake) return wake
-    if (isPatrolCoordinate(ctx.thread))
-      return await this.itemAskers(ctx.agentId, await this.patrols.itemFor(ctx.agentId, key))
-    if (isTaskCoordinate(ctx.thread)) {
-      const task = await this.store.assistantDrafts.taskBySubsession(ctx.agentId, key).catch(() => undefined)
-      return await this.itemAskers(ctx.agentId, task?.proposal?.itemId)
+    if (isPatrolCoordinate(thread)) return await this.itemAskers(agentId, await this.patrols.itemFor(agentId, key))
+    if (isTaskCoordinate(thread)) {
+      const task = await this.store.assistantDrafts.taskBySubsession(agentId, key).catch(() => undefined)
+      return await this.itemAskers(agentId, task?.proposal?.itemId)
     }
-    return isSubsessionCoordinate(ctx.thread) ? (this.subsessionOpeners.get(key) ?? NOBODY) : undefined
+    return isSubsessionCoordinate(thread) ? (this.subsessionOpeners.get(key) ?? NOBODY) : undefined
   }
 
   /** The person recorded as having asked for an item: its first follower, on the bot the item came through. */
@@ -8915,10 +8922,63 @@ export class Daemon {
     return { ok: true, actor }
   }
 
-  /** The time zone in a Slack sender's profile, read by the lookup their message already started (assistant-mode.md §5.4). */
-  private async senderProfileTimeZone(msg: NormalizedMessage, integrationId?: string): Promise<string | undefined> {
-    const conn = integrationId ? this.connByIntegration.get(integrationId) : undefined
-    return conn ? await this.nameResolver?.timeZoneOf(conn, msg.sender.id) : undefined
+  /** The zone a person's profile on that bot names, from the name lookups' per-person cache; none where the platform keeps none. */
+  private async profileTimeZone(integrationId: string | undefined, user: string): Promise<string | undefined> {
+    if (!integrationId) return undefined
+    const slack = this.connByIntegration.get(integrationId)
+    if (slack) return await this.nameResolver?.timeZoneOf(slack, user)
+    return this.anyConnForIntegration(integrationId) ? await this.channelNameResolver?.timeZoneOf(user) : undefined
+  }
+
+  /** Keeps the zone a turn's sender reported as that person's last known one. */
+  private notePersonTimeZone(key: string, zone: string): void {
+    const live = this.activeGateEntries.get(key)
+    const person = live ? askerOf(this.turnMessageOf(live), live.integrationId) : null
+    if (person) this.personTimeZones.note(person, zone)
+  }
+
+  /** The zone of whoever the read rule says started a turn no person is behind; a report or another agent's call reads as its origin. */
+  private async startedByTimeZone(agentId: string, key: string): Promise<string | undefined> {
+    const live = this.activeGateEntries.get(key)
+    if (!live) return undefined
+    let { people } = await this.peopleOfSession(agentId, key, sessionThreadOf(live.msg), live.integrationId)
+    const from = live.callMeta
+    if (people.length === 0 && from?.originSessionId) {
+      const origin = await this.store.getSessionByOutwardId(from.originSessionId, from.callFrom).catch(() => undefined)
+      if (origin && origin.key !== key)
+        ({ people } = await this.peopleOfSession(origin.agentId, origin.key, origin.thread, undefined))
+    }
+    for (const person of people) {
+      const zone = await this.personTimeZone(agentId, person)
+      if (zone) return zone
+    }
+    return undefined
+  }
+
+  /** Who a session's turns read as: its live turn's people, else whoever opened it when nothing runs there now. */
+  private async peopleOfSession(
+    agentId: string,
+    key: string,
+    thread: string,
+    integrationId: string | undefined
+  ): Promise<TurnAskers> {
+    const opener = await this.openerOf(agentId, thread, key)
+    return this.activeGateEntries.has(key) ? this.askersOfKey(key, integrationId, opener) : (opener ?? NOBODY)
+  }
+
+  /** A person's zone: a chat member's profile, a console user's browser, else the profile of the chat account they linked. */
+  private async personTimeZone(agentId: string, person: ReadAsker): Promise<string | undefined> {
+    if (person.kind === 'member')
+      return (await this.profileTimeZone(person.integrationId, person.userId)) ?? this.personTimeZones.get(person)
+    const known = this.personTimeZones.get(person)
+    if (known) return known
+    for (const integration of this.agents.get(agentId)?.integrations ?? []) {
+      if (!this.anyConnForIntegration(integration.id)) continue
+      const member = await this.placeMembers.linkedMember(agentId, integration.id, person).catch(() => null)
+      const zone = member ? await this.profileTimeZone(integration.id, member) : undefined
+      if (zone) return zone
+    }
+    return undefined
   }
 
   /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */
@@ -10592,18 +10652,30 @@ export class Daemon {
   private conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean {
     if (integrationId === undefined) return false
     const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    return int !== undefined && conversationSessionMode(int, msg.channel) === 'append'
+    return int !== undefined && this.sessionModeFor(agentId, int, msg) === 'append'
+  }
+
+  /** A target's session mode where a message arrived; an assistant-mode place appends before its row reaches the spec (assistant-mode.md §5.2). */
+  private sessionModeFor(
+    agentId: string,
+    int: Integration,
+    msg: Pick<NormalizedMessage, 'channel'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>
+  ): ChannelSessionMode {
+    // A coordinate with no message behind it (an agent call) has no kind to default by, so only its listed mode counts.
+    if (msg.isDm === undefined && msg.isGroupDm === undefined) return conversationSessionMode(int, msg.channel)
+    const kind = conversationKindOf({ ...msg, platform: int.platform })
+    return conversationSessionMode(int, msg.channel, { assistantMode: assistantModeOn(this.agents.get(agentId)), kind })
   }
 
   private async sessionCoordinateFor(
     agentId: string,
     integrationId: string | undefined,
-    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'>,
+    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>,
     opts: { mint?: boolean } = {}
   ): Promise<string | undefined> {
     if (integrationId === undefined) return undefined
     const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    if (!int || conversationSessionMode(int, msg.channel) !== 'append') return undefined
+    if (!int || this.sessionModeFor(agentId, int, msg) !== 'append') return undefined
     // A delivery mints the coordinate; a reader only asks. Otherwise a `/status` typed into
     // a conversation nobody has spoken in would create the reservation it reports on.
     return opts.mint === false
