@@ -16,6 +16,7 @@ import {
   personMemoryRoot,
   writeChannelMemoryMeta,
   placeLayerMeta,
+  restorePlaceIdentity,
   MEMORY_INDEX,
   type MemoryFile,
   type MemoryFs,
@@ -109,8 +110,15 @@ export class ManagedMemoryProvider implements MemoryProvider {
       this.readRoots(scope),
       scope.agentId,
       writeSource ? { source: writeSource, sourceTurnId: scope.sourceTurnId } : undefined,
-      historyFor
+      historyFor,
+      () => this.landed(scope)
     )
+  }
+
+  // The write boundary every write into a place layer passes, a pinned distillation's included: a layer a clear emptied gets its identity back.
+  private landed(scope: MemoryScope): void {
+    const place = placeLayerMeta(scope)
+    if (place) restorePlaceIdentity(this.portsFor(scope.agentId).live, place)
   }
 
   async ensure(scope: MemoryScope, agentName: string): Promise<void> {
@@ -228,6 +236,7 @@ export class ManagedMemoryProvider implements MemoryProvider {
       history,
       scope.sourceTurnId
     )
+    this.landed(scope)
     return { ok: true, path, size, mtime }
   }
 }

@@ -337,6 +337,18 @@ describe('the layer list', () => {
     expect(channels.length).toBeGreaterThan(0)
     expect(channels.every((c) => c.clearable === false)).toBe(true)
   })
+
+  it('shows a member their layer again once the daemon names it after a clear', async () => {
+    const { inside } = await world()
+    // Rewritten after a clear without its identity, the layer is no one's conversation, so a member cannot see it.
+    const lost = new PlaceDaemon([{ channelKey: PRIVATE.channelKey }])
+    expect(await list(as(inside, lost))).toEqual([])
+    // The daemon restores the identity on that write, and the member sees their conversation's layer again.
+    const restored = new PlaceDaemon([PRIVATE])
+    expect((await list(as(inside, restored))).map((c) => [c.channelKey, c.visible])).toEqual([
+      [PRIVATE.channelKey, true]
+    ])
+  })
 })
 
 describe('clearing a layer', () => {
