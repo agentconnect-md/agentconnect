@@ -206,9 +206,11 @@ RUN mkdir -p /tmp/ac-probe/home /tmp/ac-probe/cwd \
 # Add the independently compiled shim after all application layers.
 FROM runtime-sandbox-full-apps AS runtime-sandbox-full
 COPY --link --from=runtime-helpers --chown=0:0 /out/ /opt/agentconnect/
+COPY --link --chown=0:0 --chmod=0444 docker/runtime-sandbox/agentconnect-path.sh /etc/profile.d/agentconnect-path.sh
 
 FROM runtime-sandbox-apps AS runtime-sandbox
 COPY --link --from=runtime-helpers --chown=0:0 /out/ /opt/agentconnect/
+COPY --link --chown=0:0 --chmod=0444 docker/runtime-sandbox/agentconnect-path.sh /etc/profile.d/agentconnect-path.sh
 
 # ───────────────────────────── shim smoke test ──────────────────────────────
 # The acceptance criterion, run inside the build: the image's own entrypoint started the way the pod starts it, the
