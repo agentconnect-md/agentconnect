@@ -205,25 +205,58 @@ export async function adoptMemoryLayer(fs: MemoryFs, from: string, to: string): 
   )
 }
 
-/** Source identity of a channel memory folder, so the console can render a name
- *  instead of the opaque key. Written when the folder is first created. */
+/** Who a place layer belongs to, so the console names the conversation instead of the opaque key. */
 export interface ChannelMemoryMeta {
   channel: string
   transportScope?: string
+  /** The conversation's platform id. */
+  platform?: string
+  /** The conversation's display name when last seen. */
+  name?: string
 }
 
 const CHANNEL_META_FILENAME = 'channel.json'
+/** A longer display name is cut, so one folder can never swell the console's list. */
+const MAX_CHANNEL_META_NAME = 200
 
-/** Record the source channel identity for a channel memory folder (idempotent
- *  best-effort; a write failure never blocks memory itself). Lives at the channel
- *  root, outside `memory/`, so it never appears as a memory topic. */
+const metaString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length > 0 ? value.slice(0, MAX_CHANNEL_META_NAME) : undefined
+
+/** Record a place layer's identity beside its `memory/`, keeping a known name until a different one is seen; best-effort, never failing memory. */
 export async function writeChannelMemoryMeta(fs: MemoryFs, channelKey: string, meta: ChannelMemoryMeta): Promise<void> {
   assertChannelKey(channelKey)
-  const body = JSON.stringify({
+  const current = await readChannelMemoryMeta(fs, channelKey)
+  const platform = metaString(meta.platform) ?? current?.platform
+  const name = metaString(meta.name) ?? current?.name
+  const next: ChannelMemoryMeta = {
     channel: meta.channel,
-    ...(meta.transportScope ? { transportScope: meta.transportScope } : {})
-  })
-  await fs.writeFile(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}/${CHANNEL_META_FILENAME}`, body).catch(() => {})
+    ...(meta.transportScope ? { transportScope: meta.transportScope } : {}),
+    ...(platform ? { platform } : {}),
+    ...(name ? { name } : {})
+  }
+  if (current && JSON.stringify(current) === JSON.stringify(next)) return
+  const path = `${CHANNEL_MEMORY_DIRNAME}/${channelKey}/${CHANNEL_META_FILENAME}`
+  await fs.writeFile(path, JSON.stringify(next)).catch(() => {})
+}
+
+/** A scope that writes its own place layer, as that layer's identity; undefined for any other scope. */
+export function placeLayerMeta(scope: {
+  channelKey?: string
+  channel?: string
+  transportScope?: string
+  platform?: string
+  channelName?: string
+  sharedPlace?: true
+  root?: unknown
+}): (ChannelMemoryMeta & { channelKey: string }) | undefined {
+  if (!scope.channelKey || !scope.channel || scope.sharedPlace || scope.root) return undefined
+  return {
+    channelKey: scope.channelKey,
+    channel: scope.channel,
+    ...(scope.transportScope ? { transportScope: scope.transportScope } : {}),
+    ...(scope.platform ? { platform: scope.platform } : {}),
+    ...(scope.channelName ? { name: scope.channelName } : {})
+  }
 }
 
 /** Read a channel memory folder's source identity, or null if absent/unreadable. */
@@ -232,12 +265,36 @@ export async function readChannelMemoryMeta(fs: MemoryFs, channelKey: string): P
   try {
     const file = await fs.readFile(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}/${CHANNEL_META_FILENAME}`)
     if (!file) return null
-    const parsed = JSON.parse(file.content) as ChannelMemoryMeta
-    if (parsed && typeof parsed.channel === 'string') return parsed
+    const parsed = JSON.parse(file.content) as Record<string, unknown> | null
+    if (!parsed || typeof parsed.channel !== 'string') return null
+    const transportScope = metaString(parsed.transportScope)
+    const platform = metaString(parsed.platform)
+    const name = metaString(parsed.name)
+    return {
+      channel: parsed.channel,
+      ...(transportScope ? { transportScope } : {}),
+      ...(platform ? { platform } : {}),
+      ...(name ? { name } : {})
+    }
   } catch {
-    /* missing or malformed — treat as unknown */
+    // Missing or malformed: unknown.
+    return null
   }
-  return null
+}
+
+/** Delete one place layer whole, its `memory/`, change log and `channel.json` included; false when nothing was there. */
+export async function clearChannelMemory(fs: MemoryFs, channelKey: string): Promise<boolean> {
+  return await withMemoryDirLock(channelMemoryRoot(fs, channelKey), async () => {
+    const folder = `${CHANNEL_MEMORY_DIRNAME}/${channelKey}`
+    if ((await fs.readdir(folder)).length === 0) return false
+    await fs.rm(folder)
+    return true
+  })
+}
+
+/** Whether a place layer holds a memory file, never counting the internal markers a read leaves beside them. */
+export async function channelMemoryHeld(fs: MemoryFs, channelKey: string): Promise<boolean> {
+  return (await listMemory(channelMemoryRoot(fs, channelKey))).length > 0
 }
 
 /** List the channelKeys that have a memory subtree under an agent root (the folder

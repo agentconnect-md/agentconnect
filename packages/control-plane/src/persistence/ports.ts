@@ -181,6 +181,7 @@ export type AuditKind =
   | 'api_key_revoke'
   | 'mcp_tool_call'
   | 'agent_api_change'
+  | 'memory_change'
 
 // ───────────────────────────────────────────────────────────────────────────
 // DaemonRepo (C4) — fleet registry & fencing root (§3.3)
@@ -1479,6 +1480,13 @@ export interface SessionFacetRecord {
   startedAt: Date
 }
 
+/** One conversation the query admits a session in: its platform (a legacy NULL reads as 'slack') and the newest name a session there carries. */
+export interface SessionConversationRecord {
+  channel: string
+  platform: string
+  channelName: string | null
+}
+
 export interface SessionFacetIndex {
   agents: AgentId[]
   integrations: SessionFacetRecord[]
@@ -1560,6 +1568,8 @@ export interface SessionRepo {
    *  other active facet. The database reduces the full history before returning
    *  this compact index to the HTTP layer. */
   listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex>
+  /** Which of these channels hold a session the query admits, `viewer` included, one row per channel and platform. */
+  conversationsIn(q: SessionFacetQuery, channels: readonly string[]): Promise<SessionConversationRecord[]>
   list(q: SessionQuery): Promise<SessionListRecord[]>
   /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
    *  cross-org id reads as absent, exactly like a missing row. The only session
@@ -7014,6 +7024,8 @@ export interface AgentMemoryHistoryRepo {
   ): Promise<AgentMemoryHistoryPage>
   /** Every record of the agent — the forced return to a daemon home. */
   deleteTree(agentId: AgentId): Promise<void>
+  /** Every record of one store, as when a place layer is cleared. */
+  deleteRoot(agentId: AgentId, root: string): Promise<void>
 }
 
 // ── External-memory plugin control plane (memory-evolution M-5A) ──

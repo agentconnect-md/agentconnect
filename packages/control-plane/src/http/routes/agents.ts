@@ -59,6 +59,8 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   MEMORY_PERSON_LAYER_FEATURE,
+  MEMORY_PLACE_CLEAR_FEATURE,
+  MemoryChannelKey,
   WORKSPACE_SESSION_READ_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   FILE_TRANSFER_FEATURE,
@@ -129,8 +131,17 @@ import { memoryHistoryRoot, toHistoryEvent } from '../../agent-memory/history.js
 import { memoryHomeUnavailable, SANDBOX_UNAVAILABLE_CODE } from '../../agent-memory/unavailable.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
-import { canView, canViewSession, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
+import {
+  AuthorizationAction,
+  can,
+  canView,
+  canViewSession,
+  canEdit,
+  canManageSharing,
+  type ViewCtx
+} from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
+import { makeMemoryPlaceAccess } from '../memory-place-access.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { repositorySelectorRefusal } from '../../agents/repository-selector.js'
@@ -216,8 +227,11 @@ import {
   MemoryFilesDto,
   MemoryFilesQueryDto,
   MemoryChannelsDto,
+  MemoryChannelClearDto,
+  PLACE_LAYER_KEY_DESCRIPTION,
   MemoryFileQueryDto,
   MyMemoryFileQueryDto,
+  DreamFileQueryDto,
   PutMemoryFileQueryDto,
   PutAgentMemoryBody,
   AgentMemoryWriteDto,
@@ -1008,6 +1022,24 @@ export function agentRoutes(deps: HttpDeps) {
       return { ...agent, daemonId }
     }
 
+    // A place layer the caller may not see is absent to them on every route that names one (product-conventions.md "Memory layers").
+    const placeAccess = makeMemoryPlaceAccess(deps)
+    const placeHidden = async (
+      req: FastifyRequest,
+      daemonId: DaemonId,
+      agentId: string,
+      channelKey: string | undefined
+    ): Promise<boolean> => {
+      if (channelKey === undefined) return false
+      if (!MemoryChannelKey.safeParse(channelKey).success) return true
+      const page = await deps.control.memoryChannels(daemonId, { agentId, channelKey })
+      const entry = page.channels.find((candidate) => candidate.channelKey === channelKey)
+      if (!entry) return true
+      const [view] = await placeAccess.judge(req, agentId, [entry], false)
+      return view?.visible !== true
+    }
+    const PLACE_NOT_FOUND = { error: 'Not Found', statusCode: 404, message: 'memory layer not found' } as const
+
     type MemoryEntryOperation = MemoryEntriesReadReq | MemoryEntriesWriteReq extends infer R
       ? R extends MemoryEntriesReadReq | MemoryEntriesWriteReq
         ? Omit<R, 'agentId'>
@@ -1039,6 +1071,8 @@ export function agentRoutes(deps: HttpDeps) {
           code: 'UNAVAILABLE'
         })
       try {
+        if (await placeHidden(req, agent.daemonId, agent.id, operation.channelKey))
+          return reply.code(404).send(PLACE_NOT_FOUND)
         const payload = { ...operation, agentId: agent.id }
         const answer = mutation
           ? await deps.control.memoryEntriesWrite(agent.daemonId, payload as MemoryEntriesWriteReq)
@@ -1106,7 +1140,9 @@ export function agentRoutes(deps: HttpDeps) {
     const entryErrors = Object.fromEntries(
       [400, 403, 404, 409, 410, 413, 501, 503].map((status) => [status, entryError])
     )
-    const entryScopeQuery = z.object({ channelKey: z.string().min(1).max(256).optional() }).strict()
+    const entryScopeQuery = z
+      .object({ channelKey: z.string().min(1).max(256).describe(PLACE_LAYER_KEY_DESCRIPTION).optional() })
+      .strict()
     r.get(
       '/agents/:id/memory/capabilities',
       {
@@ -4376,6 +4412,8 @@ export function agentRoutes(deps: HttpDeps) {
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
+          if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+            return reply.code(404).send(PLACE_NOT_FOUND)
           const rep = await deps.control.memoryRead(agent.daemonId, {
             agentId: agent.id,
             ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
@@ -4427,6 +4465,8 @@ export function agentRoutes(deps: HttpDeps) {
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
+          if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+            return reply.code(404).send(PLACE_NOT_FOUND)
           const rep = await deps.control.memoryList(agent.daemonId, {
             agentId: agent.id,
             ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {})
@@ -4442,6 +4482,9 @@ export function agentRoutes(deps: HttpDeps) {
         }
       }
     )
+
+    const daemonFeature = async (orgId: OrgId, daemonId: DaemonId, feature: string): Promise<boolean> =>
+      (await deps.registry.getAvailable(orgId, daemonId))?.capabilities.features.includes(feature) === true
 
     // The signed-in caller's own memory layer, named by who is asking and never by the request.
     const myMemory = async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
@@ -4560,7 +4603,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List agent channel memory folders',
           description:
-            "List the conversations whose memory has a place layer of its own (a private channel, a group DM, a conversation shared with another organization or one the platform cannot confirm internal), live from the owning daemon. A person's layer is never listed. Empty for an agent whose memory is not managed. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
+            "List the conversations whose memory has a place layer of its own (a private channel, a group DM, a conversation shared with another organization or one the platform cannot confirm internal), live from the owning daemon, each named by its platform and display name. Only the layers whose conversation shows the caller a session in the console are listed; an organization owner also sees the others with `visible: false`, which they may clear but not read. A person's layer is never listed. Empty for an agent whose memory is not managed. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'listAgentMemoryChannels',
           params: IdParam,
           response: { 200: MemoryChannelsDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
@@ -4579,13 +4622,10 @@ export function agentRoutes(deps: HttpDeps) {
         }
         try {
           const rep = await deps.control.memoryChannels(agent.daemonId, { agentId: agent.id })
-          return {
-            channels: rep.channels.map((c) => ({
-              channelKey: c.channelKey,
-              channel: c.channel ?? null,
-              transportScope: c.transportScope ?? null
-            }))
-          }
+          const owner = can(ctxOf(req), { action: AuthorizationAction.OrganizationManage })
+          const clearable = owner && (await daemonFeature(agent.orgId, agent.daemonId, MEMORY_PLACE_CLEAR_FEATURE))
+          const views = await placeAccess.judge(req, agent.id, rep.channels, owner)
+          return { channels: views.map((view) => ({ ...view, clearable })) }
         } catch (err) {
           if (sendMemoryHomeUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
@@ -4594,6 +4634,100 @@ export function agentRoutes(deps: HttpDeps) {
           }
           throw err
         }
+      }
+    )
+
+    // Clear one place layer: an organization owner's way to remove what an agent kept for a conversation they cannot read.
+    r.delete(
+      '/agents/:id/memory/channels/:channelKey',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Clear an agent memory place layer',
+          description:
+            "Delete every file of one conversation's place layer, its change history included, on the owning daemon. Organization owners only; the answer says whether there was a layer and never carries its content. Someone who cannot see a session of the conversation gets 404, as for an absent layer; anyone else who is not an owner gets 403. The change is recorded in the organization's audit log without content. 409 when the agent's daemon is too old to clear a layer; 503 when unplaced, the daemon is offline, or the memory home of the agent is not reachable right now; `code` says why.",
+          operationId: 'clearAgentMemoryChannel',
+          params: IdParam.extend({ channelKey: MemoryChannelKey.describe(PLACE_LAYER_KEY_DESCRIPTION) }),
+          response: {
+            200: MemoryChannelClearDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getServingAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if ((agent.memory?.provider ?? 'managed') !== 'managed') {
+          return reply
+            .code(400)
+            .send({ error: 'Bad Request', statusCode: 400, message: 'only managed memory keeps place layers' })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        const { channelKey } = req.params
+        const failed = (err: unknown) => {
+          const failure = memoryAdminFailure(err)
+          if (!failure) throw err
+          return reply.code(failure.status).send({
+            error: failure.error,
+            statusCode: failure.status,
+            message: failure.message,
+            ...(failure.code ? { code: failure.code } : {})
+          })
+        }
+        try {
+          const owner = can(ctxOf(req), { action: AuthorizationAction.OrganizationManage })
+          const page = await deps.control.memoryChannels(agent.daemonId, { agentId: agent.id, channelKey })
+          const entry = page.channels.find((candidate) => candidate.channelKey === channelKey)
+          if (!entry) return reply.code(404).send(PLACE_NOT_FOUND)
+          if (!owner) {
+            const [view] = await placeAccess.judge(req, agent.id, [entry], false)
+            if (!view?.visible) return reply.code(404).send(PLACE_NOT_FOUND)
+            return reply.code(403).send({
+              error: 'Forbidden',
+              statusCode: 403,
+              message: 'only an organization owner can clear a memory layer'
+            })
+          }
+        } catch (err) {
+          return failed(err)
+        }
+        if (!(await daemonFeature(agent.orgId, agent.daemonId, MEMORY_PLACE_CLEAR_FEATURE))) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: "the agent's daemon cannot clear a memory layer yet; update it"
+          })
+        }
+        let cleared: boolean
+        try {
+          cleared = (await deps.control.memoryChannelClear(agent.daemonId, { agentId: agent.id, channelKey })).cleared
+        } catch (err) {
+          return failed(err)
+        }
+        // A Control-Plane home keeps the layer's change log here, and it holds the content the clear removed.
+        if (memoryHomedInControlPlane(agent.memory))
+          await deps.repos.agentMemoryHistory.deleteRoot(AgentId(agent.id), memoryHistoryRoot(channelKey))
+        // The layer's own change log is gone with it, so the organization's audit log records the clear, without content.
+        await deps.repos.audit
+          .append({
+            kind: 'memory_change',
+            orgId: orgOf(req),
+            agentId: AgentId(agent.id),
+            ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+            frameType: 'memory/channel/clear',
+            message: 'memory place layer cleared',
+            details: { operation: 'clear', layer: 'place', channelKey, cleared }
+          })
+          .catch((err: unknown) => req.log.warn({ err }, 'memory: audit append failed'))
+        return { cleared }
       }
     )
 
@@ -4629,6 +4763,8 @@ export function agentRoutes(deps: HttpDeps) {
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
+          if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+            return reply.code(404).send(PLACE_NOT_FOUND)
           const rep = await deps.control.memoryRead(agent.daemonId, {
             agentId: agent.id,
             ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
@@ -4694,6 +4830,8 @@ export function agentRoutes(deps: HttpDeps) {
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
+          if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+            return reply.code(404).send(PLACE_NOT_FOUND)
           const ok = await deps.control.memoryWrite(agent.daemonId, {
             agentId: agent.id,
             ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
@@ -4752,6 +4890,26 @@ export function agentRoutes(deps: HttpDeps) {
             statusCode: 400,
             message: 'file change history is available only for managed memory'
           })
+        }
+        // Naming a place layer asks the daemon whose conversation it is, even where the change log is kept here.
+        if (req.query.channelKey !== undefined) {
+          if (!agent.daemonId)
+            return reply
+              .code(503)
+              .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+          try {
+            if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+              return reply.code(404).send(PLACE_NOT_FOUND)
+          } catch (err) {
+            const failure = memoryAdminFailure(err)
+            if (!failure) throw err
+            return reply.code(failure.status).send({
+              error: failure.error,
+              statusCode: failure.status,
+              message: failure.message,
+              ...(failure.code ? { code: failure.code } : {})
+            })
+          }
         }
         // A Control-Plane home keeps its change log here, so the read needs no daemon at all (§3.2.1).
         if (memoryHomedInControlPlane(agent.memory)) {
@@ -5605,7 +5763,7 @@ export function agentRoutes(deps: HttpDeps) {
             'Proxy one byte slice of a staged output file (default the MEMORY.md index) live from the owning daemon. `nextOffset` is authoritative — clients must not recompute it.',
           operationId: 'readAgentMemoryDreamFile',
           params: DreamIdParam,
-          querystring: MemoryFileQueryDto,
+          querystring: DreamFileQueryDto,
           response: { 200: DreamFileDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },

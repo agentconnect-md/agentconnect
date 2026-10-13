@@ -13,6 +13,8 @@
  */
 import { randomUUID } from 'node:crypto'
 import type {
+  MemoryChannelClearReq,
+  MemoryChannelClearOk,
   MemoryChannelsReq,
   MemoryChannelsPage,
   MemoryListReq,
@@ -49,9 +51,9 @@ import {
   writeMemoryFile,
   listChannelMemoryKeys,
   readChannelMemoryMeta,
+  channelMemoryHeld,
+  clearChannelMemory,
   memoryPersonKey,
-  CHANNEL_MEMORY_DIRNAME,
-  MEMORY_DIRNAME,
   MemoryPathError,
   MemoryTooLargeError,
   MemoryConflictError,
@@ -83,6 +85,7 @@ export {
 
 export interface MemoryReader {
   channels(req: MemoryChannelsReq): Promise<MemoryChannelsPage>
+  clearChannel(req: MemoryChannelClearReq): Promise<MemoryChannelClearOk>
   list(req: MemoryListReq): Promise<MemoryListPage>
   read(req: MemoryReadReq): Promise<MemoryReadContent>
   write(req: MemoryWriteReq): Promise<MemoryWriteOk>
@@ -192,19 +195,26 @@ export function createMemoryReader(
   return {
     async channels(req) {
       const dir = dirFor(req.agentId)
-      const keys = await listChannelMemoryKeys(dir)
+      const keys = (await listChannelMemoryKeys(dir)).filter((key) => !req.channelKey || key === req.channelKey)
       const channels = []
       for (const channelKey of keys) {
-        // A conversation's place layer is listed once it holds memory, not merely because the conversation met the agent.
-        if ((await dir.readdir(`${CHANNEL_MEMORY_DIRNAME}/${channelKey}/${MEMORY_DIRNAME}`)).length === 0) continue
+        // Listed once it holds memory: a session's read leaves an internal marker in a folder that holds none.
+        if (!(await channelMemoryHeld(dir, channelKey))) continue
         const meta = await readChannelMemoryMeta(dir, channelKey)
         channels.push({
           channelKey,
           ...(meta?.channel ? { channel: meta.channel } : {}),
-          ...(meta?.transportScope ? { transportScope: meta.transportScope } : {})
+          ...(meta?.transportScope ? { transportScope: meta.transportScope } : {}),
+          ...(meta?.platform ? { platform: meta.platform } : {}),
+          ...(meta?.name ? { name: meta.name } : {})
         })
       }
       return { agentId: req.agentId, channels }
+    },
+
+    async clearChannel(req) {
+      const cleared = await clearChannelMemory(dirFor(req.agentId), req.channelKey)
+      return { agentId: req.agentId, channelKey: req.channelKey, cleared }
     },
 
     async list(req) {

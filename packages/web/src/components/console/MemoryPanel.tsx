@@ -17,6 +17,7 @@ import { UnifiedMemoryPanel } from '@/components/console/UnifiedMemoryPanel'
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import {
+  clearAgentMemoryChannel,
   fetchAgentMemoryFull,
   fetchAgentMemoryChannels,
   type ManagedMemoryHome,
@@ -49,6 +50,7 @@ import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { PersonalMemoryPanel } from '@/components/console/PersonalMemoryPanel'
+import { placeLayerLabel } from '@/components/console/memory-place-label'
 
 // The layer picker's value for the signed-in user's own memory; a place layer's key never contains a colon.
 const YOUR_LAYER = ':yours'
@@ -188,6 +190,16 @@ export function MemoryPanel({
   const [channels, setChannels] = useState<MemoryChannelDto[]>([])
   const [layer, setLayer] = useState('')
   const selectedChannel = layer && layer !== YOUR_LAYER ? layer : undefined
+  // An owner's entry for a layer whose conversation shows them no session: named, never read, only cleared.
+  const hiddenLayer = channels.find((entry) => entry.channelKey === selectedChannel && entry.visible === false)
+  const [confirmingClear, setConfirmingClear] = useState(false)
+  const [clearingLayer, setClearingLayer] = useState(false)
+  const [clearError, setClearError] = useState<string | null>(null)
+  // The layers the caller reads come first; an owner's unreadable ones follow.
+  const pickerChannels = [
+    ...channels.filter((entry) => entry.visible !== false),
+    ...channels.filter((entry) => entry.visible === false)
+  ]
 
   // Existing-agent memory settings are one explicit draft. The content below
   // continues to reflect `persistedSettings` until Save succeeds, so selecting a
@@ -390,6 +402,7 @@ export function MemoryPanel({
   // A home change swaps the tree underneath, so nothing cached survives it; the selection resets first, never leaking across agents.
   useEffect(() => {
     setLayer('')
+    setConfirmingClear(false)
     if (persistedProvider !== 'managed') {
       setChannels([])
       return
@@ -406,6 +419,22 @@ export function MemoryPanel({
       live = false
     }
   }, [agentId, persistedProvider, persistedSettings.home, homeMigrationPending])
+
+  const clearHiddenLayer = async () => {
+    if (!hiddenLayer || clearingLayer) return
+    setClearingLayer(true)
+    setClearError(null)
+    try {
+      await clearAgentMemoryChannel(agentId, hiddenLayer.channelKey)
+      setChannels((current) => current.filter((entry) => entry.channelKey !== hiddenLayer.channelKey))
+      setLayer('')
+      setConfirmingClear(false)
+    } catch (e) {
+      setClearError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setClearingLayer(false)
+    }
+  }
 
   return (
     <div className="p-4 desktop:p-0">
@@ -723,9 +752,11 @@ export function MemoryPanel({
             >
               <option value="">{t('sharedLayer')}</option>
               <option value={YOUR_LAYER}>{t('yourMemory')}</option>
-              {channels.map((entry) => (
+              {pickerChannels.map((entry) => (
                 <option key={entry.channelKey} value={entry.channelKey}>
-                  {entry.channel ?? entry.channelKey}
+                  {entry.visible === false
+                    ? t('notVisibleToYou', { name: placeLayerLabel(entry) })
+                    : placeLayerLabel(entry)}
                 </option>
               ))}
             </select>
@@ -735,6 +766,28 @@ export function MemoryPanel({
               key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}`}
               agentId={agentId}
             />
+          ) : hiddenLayer ? (
+            <div
+              data-memory-hidden-layer
+              className="flex flex-col gap-3 rounded-(--radius-lg) border border-(--border-subtle) p-5 desktop:flex-row desktop:items-center desktop:justify-between"
+            >
+              <span className="font-sans text-[13px] font-normal leading-[1.5] text-(--text-secondary)">
+                {t('notVisibleBody')}
+              </span>
+              {hiddenLayer.clearable ? (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  className="self-start desktop:self-auto"
+                  onClick={() => {
+                    setClearError(null)
+                    setConfirmingClear(true)
+                  }}
+                >
+                  {t('clearLayer')}
+                </Button>
+              ) : null}
+            </div>
           ) : (
             <UnifiedMemoryPanel
               key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}:${selectedChannel}`}
@@ -792,6 +845,22 @@ export function MemoryPanel({
           onConfirm={() => void persistMemorySettings()}
         >
           <p className="m-0">{t('moveToControlPlaneBody')}</p>
+        </ConfirmationDialog>
+      ) : null}
+      {confirmingClear && hiddenLayer ? (
+        <ConfirmationDialog
+          title={t('clearLayerTitle')}
+          confirmLabel={t('clearLayer')}
+          busyLabel={t('clearingLayer')}
+          destructive
+          busy={clearingLayer}
+          error={clearError}
+          onClose={() => {
+            if (!clearingLayer) setConfirmingClear(false)
+          }}
+          onConfirm={() => void clearHiddenLayer()}
+        >
+          <p className="m-0">{t('clearLayerBody', { name: placeLayerLabel(hiddenLayer) })}</p>
         </ConfirmationDialog>
       ) : null}
       {confirmingHomeReturn ? (

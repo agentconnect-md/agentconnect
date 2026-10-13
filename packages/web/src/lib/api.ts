@@ -3017,6 +3017,14 @@ export interface MemoryChannelDto {
   channelKey: string
   channel: string | null
   transportScope: string | null
+  /** The conversation's platform id; absent from a Control Plane older than names. */
+  platform?: string | null
+  /** The conversation's display name, when the daemon or one of its sessions has one. */
+  name?: string | null
+  /** False for an organization owner's entry of a layer whose conversation shows them no session. */
+  visible?: boolean
+  /** The caller may clear this layer. */
+  clearable?: boolean
 }
 export interface MemoryChannelsDto {
   channels: MemoryChannelDto[]
@@ -3037,6 +3045,13 @@ export async function fetchAgentAssistantResponsibleUser(agentId: string): Promi
 /** List the conversations whose memory has a place layer of its own. */
 export async function fetchAgentMemoryChannels(agentId: string): Promise<MemoryChannelsDto> {
   return apiGet<MemoryChannelsDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/channels`)
+}
+
+/** Delete one conversation's place layer whole; the answer says only whether there was one. */
+export async function clearAgentMemoryChannel(agentId: string, channelKey: string): Promise<{ cleared: boolean }> {
+  return apiDelete<{ cleared: boolean }>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/channels/${encodeURIComponent(channelKey)}`
+  )
 }
 
 /** List the files of the signed-in user's own memory layer for this agent. */

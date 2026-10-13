@@ -1651,7 +1651,9 @@ Per-turn distillation and an explicit "remember this" write to the session's lay
 card. "Remember this for everyone" writes to the shared layer. A person may read their own
 layer with a memory tool from any conversation, as the one asking; it is injected only in
 their own DM or console conversation. In the console the person sees their own layer under
-Your memory on the agent's Memory page; nobody else sees it, editors included. Dreams consolidate the shared layer only, mining only the conversations that use
+Your memory on the agent's Memory page; nobody else sees it, editors included. A place layer is
+shown only to people the console shows a session of its conversation (see
+[Memory backend selection](#memory-backend-selection)). Dreams consolidate the shared layer only, mining only the conversations that use
 it; person and place layers are not dreamed. External memory is the shared layer alone: it
 captures only from conversations that use the shared layer, has no person layer, and saves
 an explicit write from anywhere else only when the person asks to remember it for everyone.
@@ -1741,10 +1743,21 @@ The agent Memory page offers no scope choice: managed memory is layered by audie
 what the agent learns in public channels is shared across the people it serves, a person's
 DMs stay theirs, and each private conversation keeps its own. A layer picker above the
 memory browser offers the shared layer, **Your memory** (the signed-in user's own person
-layer, read-only), and every conversation whose place layer holds memory. The place layers
-are shown to whoever may see the agent's memory; a person layer is never listed, and the
-route behind Your memory reads only the caller's own layer, so nobody can open another
-person's, editors included.
+layer, read-only), and each conversation whose place layer holds memory and that the person
+may see, named "#name · Platform" after the conversation, or by its channel id when no name
+is known. Reads are judged by who is asking: a person sees, reads and changes a place layer
+only if the console shows them a session of its conversation, by the rule the session list
+applies, linked accounts and session access sync included. Any other place layer is absent
+to them, in the console and through the API alike. The shared layer is shown to whoever may
+see the agent. A person layer is never listed, and the route behind Your memory reads only
+the caller's own layer, so nobody can open another person's, editors included.
+
+An organization owner also sees the place layers they may not read, listed as "#name ·
+Platform — not visible to you", with one action, **Clear this layer**. After a confirmation it
+deletes every file of that layer, its history included, shows none of it, and records the
+clear in the organization's audit log without content. A daemon too old to clear a layer
+offers no such action. Agent editors who are not owners get no action for layers they cannot
+see, since those are not listed for them.
 
 An existing agent's memory settings are edited as one explicit draft. Selecting a
 backend, changing managed distillation, switching an external connection, or editing

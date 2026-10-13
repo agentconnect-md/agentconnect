@@ -8,6 +8,8 @@ import {
   memoryChannelKey,
   memoryPersonKey,
   PERSON_MEMORY_DIRNAME,
+  placeLayerMeta,
+  writeChannelMemoryMeta,
   type MemoryFs
 } from './store.js'
 import type { MemoryScope } from './types.js'
@@ -65,6 +67,8 @@ export interface MemoryLayerDeps {
   linkedConsoleUser(agentId: string, integrationId: string, memberId: string): Promise<string | undefined>
   /** The agent's live memory tree for the one-time folder moves; undefined when it is out of reach. */
   memoryTree(agentId: string): MemoryFs | undefined
+  /** The conversation's display name as this daemon last saw it, recorded with its place layer. */
+  placeName?(place: MemoryPlace): Promise<string | undefined>
   now(): number
   log?(message: string): void
 }
@@ -125,11 +129,24 @@ export class MemoryLayers {
       const chat = place.platform !== 'webchat' && this.deps.chatPlatform(place.platform)
       return { layer, scope: chat ? { ...placeScope, sharedPlace: true } : { agentId: place.agentId } }
     }
-    if (layer === 'place') return { layer, scope: placeScope }
+    if (layer === 'place') return { layer, scope: await this.named(placeScope, place) }
     const person = await this.personOfPlace(place)
-    if (!person) return { layer: 'place', scope: placeScope }
+    if (!person) return { layer: 'place', scope: await this.named(placeScope, place) }
     const personKey = await this.settle(place.agentId, person, own)
     return { layer, scope: { agentId: place.agentId, personKey } }
+  }
+
+  /** Record a place layer's platform and current name again before a write, so a renamed conversation reads right; best-effort. */
+  async notePlace(scope: MemoryScope): Promise<void> {
+    const meta = placeLayerMeta(scope)
+    const tree = meta ? this.deps.memoryTree(scope.agentId) : undefined
+    if (meta && tree) await writeChannelMemoryMeta(tree, meta.channelKey, meta).catch(() => {})
+  }
+
+  /** A place layer's scope with what names it: its platform, and its display name when this daemon knows one. */
+  private async named(scope: MemoryScope, place: MemoryPlace): Promise<MemoryScope> {
+    const name = await this.deps.placeName?.(place).catch(() => undefined)
+    return { ...scope, platform: place.platform, ...(name ? { channelName: name } : {}) }
   }
 
   /** The asker's own person layer, for a tool's `layer: 'person'`; undefined when they cannot be told. */

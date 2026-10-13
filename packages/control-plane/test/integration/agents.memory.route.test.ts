@@ -14,7 +14,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, DEFAULT_DAEMON_CAPABILITIES, seedSessionMeta } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { ProtocolError } from '../../src/domain/errors.js'
@@ -49,7 +49,16 @@ import type {
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { MEMORY_PERSON_LAYER_FEATURE } from '@agentconnect.md/protocol'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
-import { DEFAULT_DAEMON_CAPABILITIES } from '../fixtures/seed.js'
+
+/** A place layer every member sees: the daemon names its conversation and an org-visible session is there. */
+const PLACE_A = { channelKey: 'channel-a', channel: 'C0EXAMPLEA', platform: 'slack' }
+async function seedVisiblePlace(): Promise<void> {
+  await seedSessionMeta(prisma, randomUUID(), AGENT, { channel: PLACE_A.channel })
+}
+const placeChannels = async (_daemon: string, req: { agentId: string }) => ({
+  agentId: req.agentId,
+  channels: [PLACE_A]
+})
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 
@@ -632,7 +641,9 @@ describe('unified memory entry routes', () => {
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     const calls: import('@agentconnect.md/protocol').MemoryEntriesReadReq[] = []
     let error: import('@agentconnect.md/protocol').MemoryEntryErrorCode | undefined
+    await seedVisiblePlace()
     const control = {
+      memoryChannels: placeChannels,
       async memoryEntriesRead(
         _daemon: string,
         req: import('@agentconnect.md/protocol').MemoryEntriesReadReq
@@ -742,7 +753,9 @@ it('proxies canonical admin mutations and preserves conflict/ambiguous/size refu
   await seedAgent(prisma, AGENT, { daemonId: DAEMON })
   const calls: import('@agentconnect.md/protocol').MemoryEntriesWriteReq[] = []
   let error: import('@agentconnect.md/protocol').MemoryEntryErrorCode | undefined
+  await seedVisiblePlace()
   const control = {
+    memoryChannels: placeChannels,
     async memoryEntriesWrite(
       _daemon: string,
       req: import('@agentconnect.md/protocol').MemoryEntriesWriteReq

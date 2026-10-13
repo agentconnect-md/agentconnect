@@ -37,10 +37,13 @@ export interface MemoryScope {
   root?: MemoryFs
   /** A filesystem-safe place-layer folder name (channel + transport scope), set only by the daemon. */
   channelKey?: string
-  /** Raw source identity for the channel folder, recorded once so the console can
-   *  render a name instead of the opaque key. Only meaningful with `channelKey`. */
+  /** The place's channel id, recorded beside a place layer so the console can name it; only with `channelKey`. */
   channel?: string
   transportScope?: string
+  /** The place's platform id, recorded the same way. */
+  platform?: string
+  /** The place's display name when the scope was resolved, recorded the same way. */
+  channelName?: string
   /** A filesystem-safe person-layer folder name, set only by the daemon. */
   personKey?: string
   /** A shared place's own older folder: read beneath the shared store, never written. */

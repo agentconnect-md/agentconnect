@@ -62,9 +62,10 @@ export const MemoryListReq = z.object({
 })
 export type MemoryListReq = z.infer<typeof MemoryListReq>
 
-/** C→D REQ: list the channels that have a memory folder for this agent. */
+/** C→D REQ: list the channels that have a memory folder for this agent; `channelKey` asks for that one alone (an older daemon lists all). */
 export const MemoryChannelsReq = z.object({
-  agentId: z.string().min(1)
+  agentId: z.string().min(1),
+  channelKey: MemoryChannelKey.optional()
 })
 export type MemoryChannelsReq = z.infer<typeof MemoryChannelsReq>
 
@@ -72,9 +73,30 @@ export type MemoryChannelsReq = z.infer<typeof MemoryChannelsReq>
 export const MemoryChannelEntry = z.object({
   channelKey: MemoryChannelKey,
   channel: z.string().optional(), // source channel id (from channel.json), if recorded
-  transportScope: z.string().optional()
+  transportScope: z.string().optional(),
+  platform: z.string().optional(), // the conversation's platform id, if recorded
+  name: z.string().optional() // the conversation's display name when last seen, if recorded
 })
 export type MemoryChannelEntry = z.infer<typeof MemoryChannelEntry>
+
+/** C→D REQ: delete one place layer whole, its change log included, returning no content. */
+export const MemoryChannelClearReq = z
+  .object({
+    agentId: z.string().min(1),
+    channelKey: MemoryChannelKey
+  })
+  .strict()
+export type MemoryChannelClearReq = z.infer<typeof MemoryChannelClearReq>
+
+/** D→C REP: whether there was a layer folder to delete. */
+export const MemoryChannelClearOk = z
+  .object({
+    agentId: z.string(),
+    channelKey: MemoryChannelKey,
+    cleared: z.boolean()
+  })
+  .strict()
+export type MemoryChannelClearOk = z.infer<typeof MemoryChannelClearOk>
 
 /** D→C REP: the agent's channel memory folders (empty when none / not channel-scoped). */
 export const MemoryChannelsPage = z.object({

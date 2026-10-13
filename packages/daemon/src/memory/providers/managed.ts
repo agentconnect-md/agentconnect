@@ -15,6 +15,7 @@ import {
   channelMemoryRoot,
   personMemoryRoot,
   writeChannelMemoryMeta,
+  placeLayerMeta,
   MEMORY_INDEX,
   type MemoryFile,
   type MemoryFs,
@@ -115,13 +116,9 @@ export class ManagedMemoryProvider implements MemoryProvider {
   async ensure(scope: MemoryScope, agentName: string): Promise<void> {
     // Only the shared store is seeded; a layer beside it starts with its first write.
     await ensureMemory(this.layers(scope).base, agentName)
-    // Record the source identity of a place folder once, so the console can name it; best-effort, never blocking.
-    if (scope.channelKey && scope.channel && !scope.sharedPlace && !scope.root) {
-      void writeChannelMemoryMeta(this.portsFor(scope.agentId).live, scope.channelKey, {
-        channel: scope.channel,
-        ...(scope.transportScope ? { transportScope: scope.transportScope } : {})
-      }).catch(() => {})
-    }
+    // Record who a place layer belongs to, so the console can name it; best-effort, never blocking.
+    const place = placeLayerMeta(scope)
+    if (place) void writeChannelMemoryMeta(this.portsFor(scope.agentId).live, place.channelKey, place).catch(() => {})
   }
 
   async standingContextAtSessionStart(scope: MemoryScope): Promise<string> {

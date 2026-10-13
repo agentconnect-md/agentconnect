@@ -4,7 +4,7 @@
  * layer (channel shadows base); writes go only to the channel layer, so channels
  * never cross. DM/webchat are special channels keyed by their conversation.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,6 +15,7 @@ import {
   channelMemoryRoot,
   listChannelMemoryKeys,
   readChannelMemoryMeta,
+  writeChannelMemoryMeta,
   MemoryPathError
 } from '../src/memory/store.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
@@ -154,6 +155,81 @@ describe('channel-scoped memory overlay', () => {
 
     const keys = await listChannelMemoryKeys(local(dir))
     expect(keys).toContain(a.channelKey)
-    expect(await readChannelMemoryMeta(local(dir), a.channelKey)).toEqual({ channel: 'C1', transportScope: 'scope-1' })
+    await vi.waitFor(async () =>
+      expect(await readChannelMemoryMeta(local(dir), a.channelKey)).toEqual({
+        channel: 'C1',
+        transportScope: 'scope-1'
+      })
+    )
+  })
+
+  it('records the platform and display name with a place layer, and keeps the name current', async () => {
+    const { dir, mem } = provider()
+    const a = { ...chan('C0EXAMPLE1'), platform: 'slack', channelName: 'launch-room' }
+    await mem.ensure(a, 'bot')
+    await vi.waitFor(async () =>
+      expect(await readChannelMemoryMeta(local(dir), a.channelKey)).toEqual({
+        channel: 'C0EXAMPLE1',
+        platform: 'slack',
+        name: 'launch-room'
+      })
+    )
+    // A later write that sees the conversation renamed records the new name.
+    await writeChannelMemoryMeta(local(dir), a.channelKey, { channel: 'C0EXAMPLE1', name: 'launch-war-room' })
+    expect(await readChannelMemoryMeta(local(dir), a.channelKey)).toEqual({
+      channel: 'C0EXAMPLE1',
+      platform: 'slack',
+      name: 'launch-war-room'
+    })
+    // One that knows no name keeps the one recorded, and an unchanged identity is not rewritten.
+    const before = await local(dir).readFile(`channels/${a.channelKey}/channel.json`)
+    await writeChannelMemoryMeta(local(dir), a.channelKey, { channel: 'C0EXAMPLE1', platform: 'slack' })
+    expect(await local(dir).readFile(`channels/${a.channelKey}/channel.json`)).toEqual(before)
+  })
+
+  it('lists a place layer only once it holds memory, never for the marker a read leaves behind', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-chan-marker-'))
+    const mem = createManagedMemoryProvider(() => localMemoryHome(local(dir)))
+    const reader = createMemoryReader(() => localMemoryHome(local(dir)), {
+      adminSurfaceForAgent: () => mem.adminSurface()
+    })
+    // A public channel's session reads its own older folder beneath the shared layer; that read marks the folder.
+    const shared = { ...chan('C0EXAMPLE2', 'scope-1'), sharedPlace: true as const }
+    await mem.ensure(shared, 'bot')
+    const view = await mem.entryView?.(shared)
+    await view?.context?.({ maxBytes: 1024 })
+    expect(await local(dir).readdir(`channels/${shared.channelKey}/memory`)).not.toEqual([])
+    expect((await reader.channels({ agentId: 'bot-a' })).channels).toEqual([])
+
+    const place = chan('C0EXAMPLE3')
+    await mem.write(place, 'room.md', '- a place fact', undefined, 'tool')
+    expect((await reader.channels({ agentId: 'bot-a' })).channels.map((c) => c.channelKey)).toEqual([place.channelKey])
+    // Asked for one layer, the reader answers for that one alone.
+    expect((await reader.channels({ agentId: 'bot-a', channelKey: shared.channelKey })).channels).toEqual([])
+  })
+
+  it('clears a place layer whole, its change log and identity included, and returns no content', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-chan-clear-'))
+    const mem = createManagedMemoryProvider(() => localMemoryHome(local(dir)))
+    const reader = createMemoryReader(() => localMemoryHome(local(dir)), {
+      adminSurfaceForAgent: () => mem.adminSurface()
+    })
+    const a = { ...chan('C0EXAMPLE4'), platform: 'slack', channelName: 'private-room' }
+    const b = chan('C0EXAMPLE5')
+    await mem.ensure(a, 'bot')
+    await mem.write(a, 'secret.md', '- something only that room said', undefined, 'tool')
+    await mem.write(b, 'other.md', '- another room', undefined, 'tool')
+    await mem.write({ agentId: 'bot-a' }, 'shared.md', '- everyone', undefined, 'tool')
+
+    const answer = await reader.clearChannel({ agentId: 'bot-a', channelKey: a.channelKey })
+    expect(answer).toEqual({ agentId: 'bot-a', channelKey: a.channelKey, cleared: true })
+    expect(await local(dir).readdir(`channels/${a.channelKey}`)).toEqual([])
+    expect((await reader.channels({ agentId: 'bot-a' })).channels.map((c) => c.channelKey)).toEqual([b.channelKey])
+    // Every other layer is untouched.
+    expect((await mem.read({ agentId: 'bot-a' }, 'shared.md')).content).toBe('- everyone')
+    expect((await mem.read(b, 'other.md')).content).toBe('- another room')
+    // Nothing left to clear is an answer, not an error.
+    expect(await reader.clearChannel({ agentId: 'bot-a', channelKey: a.channelKey })).toMatchObject({ cleared: false })
+    await expect(reader.clearChannel({ agentId: 'bot-a', channelKey: '..' })).rejects.toThrow(MemoryPathError)
   })
 })

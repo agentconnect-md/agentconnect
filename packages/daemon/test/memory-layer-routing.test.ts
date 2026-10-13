@@ -154,6 +154,7 @@ describe('per-turn capture writes to the conversation layer, for every agent', (
         agentId: AGENT,
         channelKey: memoryChannelKey('C1'),
         channel: 'C1',
+        platform: 'slack',
         sessionId: 'outward-1'
       })
     }

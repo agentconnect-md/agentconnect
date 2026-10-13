@@ -109,6 +109,8 @@ import {
   AgentWakeOk,
   TaskList,
   MemoryChannelsReq,
+  MemoryChannelClearReq,
+  MemoryChannelClearOk,
   MemoryChannelsPage,
   MemoryListReq,
   MemoryListPage,
@@ -768,6 +770,12 @@ export class ControlSender {
   async memoryChannels(daemonId: string, req: MemoryChannelsReq): Promise<MemoryChannelsPage> {
     const c = this.must(daemonId)
     return c.conn.request<MemoryChannelsPage>('memory/channels', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Delete one place layer whole on the owning daemon; the reply carries no content. */
+  async memoryChannelClear(daemonId: string, req: MemoryChannelClearReq): Promise<MemoryChannelClearOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<MemoryChannelClearOk>('memory/channel/clear', req, { epoch: c.sessionEpoch })
   }
 
   /**
