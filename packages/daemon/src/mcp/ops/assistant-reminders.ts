@@ -1,4 +1,4 @@
-// The assistant reminder tools (assistant-mode.md §5.9): text the daemon posts into this conversation at a set time, with no model turn.
+// The reminder tools, for every agent (assistant-mode.md §5.9): text the daemon posts into this conversation at a set time, with no model turn.
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { Agent } from '../../agents/agent-schema.js'
@@ -21,8 +21,8 @@ export type AssistantReminderLedgerPort = Pick<AssistantReminderLedger, 'create'
 
 export interface AssistantReminderDeps extends Pick<ShareFileDeps, 'shareTarget'> {
   assistantReminders?: {
-    /** The agent's reminders while its assistant mode is on, else undefined: checked per call. */
-    ledgerFor(agentId: string): AssistantReminderLedgerPort | undefined
+    /** Every agent's reminders, in or out of assistant mode. */
+    ledger: AssistantReminderLedgerPort
     /** The platform user whose message started the live turn; undefined when no person did. */
     requesterFor(ctx: SessionContext): Promise<string | undefined>
     now(): number
@@ -47,14 +47,18 @@ export const CANCEL_REMINDER_ARGS = z.object({
   id: requiredString('id').max(256, 'argument id must be at most 256 characters')
 })
 
-export const ASSISTANT_REMINDER_TOOLS: ToolDescriptor[] = [
-  {
+/** What `remind` tells an agent in assistant mode to take instead for a check at a time. */
+const ITEM_INSTEAD = '; for something to be checked on at a time, take an item with a next check instead'
+
+/** The `remind` descriptor; only an agent in assistant mode, which has items, is pointed at one for a check. */
+function remindTool(items: boolean): ToolDescriptor {
+  return {
     name: 'remind',
     description:
       'Set a reminder in this conversation. At `at` the daemon posts `message` here exactly as written, where your ' +
       'replies here land, with no model turn: you are not woken, the text is not rephrased, and nothing follows it. ' +
       'It posts into this conversation only, never anywhere else. Use it for fixed text at a set time ("remind me at ' +
-      '9 to send the report"); for something to be checked on at a time, take an item with a next check instead. ' +
+      `9 to send the report")${items ? ITEM_INSTEAD : ''}. ` +
       'Say the time and the exact text in your reply. It posts within about a minute of `at`; while the agent is ' +
       'paused nothing is posted, and a reminder more than 24 hours late is dropped.',
     inputSchema: obj(
@@ -74,36 +78,43 @@ export const ASSISTANT_REMINDER_TOOLS: ToolDescriptor[] = [
       },
       ['at', 'message']
     )
-  },
-  {
-    name: 'listReminders',
-    description:
-      'List the reminders set in this conversation that have not been posted yet, soonest first, each with its id, ' +
-      'time and exact text. Reminders set in other conversations are not shown.',
-    inputSchema: obj({})
-  },
-  {
-    name: 'cancelReminder',
-    description:
-      'Cancel a reminder set in this conversation that has not been posted yet, by its id from remind or ' +
-      'listReminders. A reminder set in another conversation cannot be cancelled here.',
-    inputSchema: obj({ id: { type: 'string', minLength: 1, description: 'The reminder id.' } }, ['id'])
   }
-]
+}
 
-/** The reminder tools a session is offered: in assistant mode, in a platform conversation of its own, never a background session. */
+const LIST_REMINDERS_TOOL: ToolDescriptor = {
+  name: 'listReminders',
+  description:
+    'List the reminders set in this conversation that have not been posted yet, soonest first, each with its id, ' +
+    'time and exact text. Reminders set in other conversations are not shown.',
+  inputSchema: obj({})
+}
+
+const CANCEL_REMINDER_TOOL: ToolDescriptor = {
+  name: 'cancelReminder',
+  description:
+    'Cancel a reminder set in this conversation that has not been posted yet, by its id from remind or ' +
+    'listReminders. A reminder set in another conversation cannot be cancelled here.',
+  inputSchema: obj({ id: { type: 'string', minLength: 1, description: 'The reminder id.' } }, ['id'])
+}
+
+/** The reminder tools of an agent in assistant mode. */
+export const ASSISTANT_REMINDER_TOOLS: ToolDescriptor[] = [remindTool(true), LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL]
+
+/** The reminder tools of an agent outside assistant mode, whose `remind` names no item. */
+export const REMINDER_TOOLS: ToolDescriptor[] = [remindTool(false), LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL]
+
+/** The reminder tools a session is offered, for every agent: in a platform conversation of its own, never a background session. */
 export function assistantReminderToolsFor(
   agent: Pick<Agent, 'assistantMode'>,
   session: { thread: string; integrationId?: string | undefined }
 ): ToolDescriptor[] {
-  if (!assistantModeOn(agent) || session.integrationId === undefined || isSubsessionCoordinate(session.thread))
-    return []
-  return ASSISTANT_REMINDER_TOOLS
+  if (session.integrationId === undefined || isSubsessionCoordinate(session.thread)) return []
+  return assistantModeOn(agent) ? ASSISTANT_REMINDER_TOOLS : REMINDER_TOOLS
 }
 
-function ledgerOf(ctx: SessionContext, deps: AssistantReminderDeps): AssistantReminderLedgerPort {
-  const ledger = deps.assistantReminders?.ledgerFor(ctx.agentId)
-  if (!ledger) throw new Error('reminders are available only to an agent in assistant mode')
+function ledgerOf(deps: AssistantReminderDeps): AssistantReminderLedgerPort {
+  const ledger = deps.assistantReminders?.ledger
+  if (!ledger) throw new Error('reminders are not available on this daemon')
   return ledger
 }
 
@@ -144,7 +155,7 @@ function conversationOf(ctx: SessionContext, deps: AssistantReminderDeps) {
 
 export const remind: ToolHandler<AssistantReminderDeps> = async (ctx, args, deps) => {
   const input = parseArgs(REMIND_ARGS, args)
-  const ledger = ledgerOf(ctx, deps)
+  const ledger = ledgerOf(deps)
   const target = conversationOf(ctx, deps)
   const now = deps.assistantReminders!.now()
   if (input.at <= now) throw new Error('remind: argument at must be in the future. Nothing was set.')
@@ -178,14 +189,14 @@ export const remind: ToolHandler<AssistantReminderDeps> = async (ctx, args, deps
 
 export const listReminders: ToolHandler<AssistantReminderDeps> = async (ctx, args, deps) => {
   parseArgs(LIST_REMINDERS_ARGS, args)
-  const ledger = ledgerOf(ctx, deps)
+  const ledger = ledgerOf(deps)
   if (isSubsessionCoordinate(ctx.thread)) throw new Error(`listReminders: ${BACKGROUND}.`)
   return { reminders: (await ledger.listOpen(ctx.agentId, placeOfSession(ctx))).map(view) }
 }
 
 export const cancelReminder: ToolHandler<AssistantReminderDeps> = async (ctx, args, deps) => {
   const { id } = parseArgs(CANCEL_REMINDER_ARGS, args)
-  const ledger = ledgerOf(ctx, deps)
+  const ledger = ledgerOf(deps)
   if (isSubsessionCoordinate(ctx.thread)) throw new Error(`cancelReminder: ${BACKGROUND}. Nothing was cancelled.`)
   const reminder = await ledger.cancel(ctx.agentId, id, placeOfSession(ctx), deps.assistantReminders!.now())
   if (!reminder) throw new Error(`cancelReminder: no reminder ${id} was set in this conversation.`)

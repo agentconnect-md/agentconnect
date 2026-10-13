@@ -410,12 +410,6 @@ describe('recall — refusals the model relays', () => {
     const deps = makeDeps({ gatewayFor: () => undefined, placeSnapshot: () => undefined })
     expect(await executeTool(inDmOfP, 'recall', { place: 'slack:C_DEPLOY' }, deps)).toEqual(opaque('slack:C_DEPLOY'))
   })
-
-  it('is not available to an agent outside assistant mode', async () => {
-    await expect(
-      executeTool(inDmOfP, 'recall', { place: 'slack:C_DEPLOY' }, makeDeps({ assistantModeFor: () => false }))
-    ).rejects.toThrow(/only to an agent in assistant mode/)
-  })
 })
 
 describe('the read rule on the existing cross-place reads', () => {
@@ -466,7 +460,7 @@ describe('the read rule on the existing cross-place reads', () => {
   })
 })
 
-describe('recall is offered only under assistant mode', () => {
+describe('recall is offered to every agent', () => {
   const slack = {
     id: 'int-slack',
     platform: 'slack',
@@ -481,10 +475,14 @@ describe('recall is offered only under assistant mode', () => {
     config: { botToken: 'x', appToken: 'y' }
   } as unknown as Integration
 
-  it('adds the tool for an assistant-mode agent only, and reserves its name', () => {
-    expect(toolsForIntegrations([slack], { assistantMode: true }).some((t) => t.name === 'recall')).toBe(true)
-    expect(toolsForIntegrations([slack]).some((t) => t.name === 'recall')).toBe(false)
-    expect(toolsForIntegrations([], { assistantMode: true }).some((t) => t.name === 'recall')).toBe(true)
+  it('adds the same tool in or out of assistant mode, webchat included, and reserves its name', () => {
+    const recallIn = (integrations: Integration[], options: Parameters<typeof toolsForIntegrations>[1]) =>
+      toolsForIntegrations(integrations, options).find((t) => t.name === 'recall')
+    const offered = recallIn([slack], { assistantMode: true })
+    expect(offered).toBeDefined()
+    expect(recallIn([slack], {})).toBe(offered)
+    expect(recallIn([slack], { assistantMode: false, currentPlatform: 'slack' })).toBe(offered)
+    expect(recallIn([], { currentPlatform: 'webchat', consoleImages: true })).toBe(offered)
     expect(ALL_TOOL_NAMES).toContain('recall')
   })
 })
@@ -855,14 +853,19 @@ describe('reads judged by who is asking', () => {
     expect(outsider.gw.listBookmarks).not.toHaveBeenCalled()
   })
 
-  it('judges an agent outside assistant mode by the same rule', async () => {
+  it('judges an agent outside assistant mode by the same rule, recall included', async () => {
     const { deps } = perAsker()
-    const plain = { ...deps, assistantModeFor: () => false }
-    expect(await executeTool(inOwnDm, 'getChannelHistory', { channel: 'C_PRIV' }, plain)).toMatchObject({
-      privateSource: expect.any(String)
-    })
-    await expect(executeTool(inOwnDm, 'getChannelHistory', { channel: 'D_Q' }, plain)).rejects.toThrow(NOT_SHARED)
-    await expect(executeTool(inOwnDm, 'recall', {}, plain)).rejects.toThrow(/only to an agent in assistant mode/)
+    for (const assistantModeFor of [() => true, () => false]) {
+      const judged = { ...deps, assistantModeFor }
+      expect(await executeTool(inOwnDm, 'getChannelHistory', { channel: 'C_PRIV' }, judged)).toMatchObject({
+        privateSource: expect.any(String)
+      })
+      await expect(executeTool(inOwnDm, 'getChannelHistory', { channel: 'D_Q' }, judged)).rejects.toThrow(NOT_SHARED)
+      // The asker's own private channel is recalled; another person's DM is refused opaquely.
+      expect(await excerptsOf(inOwnDm, 'slack:C_PRIV', judged)).toEqual(['secret merger talk'])
+      expect(await executeTool(inOwnDm, 'recall', { place: 'slack:D_Q' }, judged)).toEqual(opaque('slack:D_Q'))
+      expect(await listedPlaces(inOwnDm, judged)).toEqual(['slack:D_P', 'slack:C_DEPLOY', 'telegram:-1001'])
+    }
   })
 })
 
@@ -873,6 +876,7 @@ describe('turns no person is behind, and sub-sessions', () => {
       { ...fromP, source: 'agent', sender: { id: 'peer', isBot: true }, isDm: false, parentReport: true }
     ],
     ['a scheduled run', { ...fromP, source: 'cron' }],
+    ['a wake from another agent', { ...fromP, source: 'agent', sender: { id: 'peer', isBot: true }, isDm: false }],
     ['a background-task wake', { ...fromP, source: 'agent', sender: { id: 'background-task:1', isBot: true } }],
     ['a headless turn', { ...fromP, headless: true }],
     ['no live turn', undefined],
@@ -887,12 +891,16 @@ describe('turns no person is behind, and sub-sessions', () => {
     ]
   ]
 
-  it.each(noPerson)('reads only public sources on %s', async (_label, msg, ctx = inOwnDm) => {
+  it.each(noPerson)('reads only public sources on %s, in assistant mode or not', async (_label, msg, ctx = inOwnDm) => {
     const { deps, asks, gw } = perAsker()
     asks(msg)
-    expect(await executeTool(ctx, 'recall', { place: 'slack:C_PRIV' }, deps)).toEqual(opaque('slack:C_PRIV'))
-    await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_PRIV' }, deps)).rejects.toThrow(NOT_SHARED)
-    await executeTool(ctx, 'getChannelHistory', { channel: 'C_DEPLOY' }, deps)
+    for (const assistantModeFor of [() => true, () => false]) {
+      const judged = { ...deps, assistantModeFor }
+      expect(await executeTool(ctx, 'recall', { place: 'slack:C_PRIV' }, judged)).toEqual(opaque('slack:C_PRIV'))
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_PRIV' }, judged)).rejects.toThrow(NOT_SHARED)
+      await executeTool(ctx, 'getChannelHistory', { channel: 'C_DEPLOY' }, judged)
+      expect(await excerptsOf(ctx, 'slack:C_DEPLOY', judged)).toContain('Noted: payments deploy Friday')
+    }
     expect(gw.listMemberIds).not.toHaveBeenCalled()
   })
 

@@ -1,4 +1,4 @@
-// Assistant-mode reminders (assistant-mode.md §5.9): text the daemon posts into a conversation at a set time, with no model turn; partitioned by agent.
+// Every agent's reminders (assistant-mode.md §5.9): text the daemon posts into a conversation at a set time, with no model turn; partitioned by agent.
 import { AsyncMutex } from './async-mutex.js'
 import type { AssistantPlace } from './assistant-items.js'
 import type { StoreQueryResult } from './store-database.js'
@@ -134,6 +134,9 @@ function reminderOf(row: Row): AssistantReminder {
   }
 }
 
+/** Agent ids per sweep probe; each is bound twice, which stays under SQLite's oldest 999-parameter limit. */
+const AGENT_IDS_PER_STATEMENT = 400
+
 /** Pending, or claimed and about to post: what still counts toward the cap and what the conversation lists. */
 const OPEN = "('pending', 'delivering')"
 
@@ -232,6 +235,27 @@ export class AssistantReminderLedger {
       )
     ).rows as Row[]
     return rows.map(reminderOf)
+  }
+
+  /** Of `agentIds`, those a sweep has work for: a pending reminder due by `now`, or a claim older than `claimedBefore`. */
+  async agentsWithWork(agentIds: readonly string[], now: number, claimedBefore: number): Promise<Set<string>> {
+    const unique = [...new Set(agentIds)]
+    const found = new Set<string>()
+    for (let start = 0; start < unique.length; start += AGENT_IDS_PER_STATEMENT) {
+      const chunk = unique.slice(start, start + AGENT_IDS_PER_STATEMENT)
+      const marks = chunk.map(() => '?').join(', ')
+      // Each branch seeks the (agentId, status, dueAt) index on its own status, so settled rows are never read.
+      const rows = (
+        await this.db.query(
+          `SELECT agentId FROM assistant_reminder WHERE agentId IN (${marks}) AND status = 'pending' AND dueAt <= ?
+           UNION
+           SELECT agentId FROM assistant_reminder WHERE agentId IN (${marks}) AND status = 'delivering' AND claimedAt < ?`,
+          [...chunk, now, ...chunk, claimedBefore]
+        )
+      ).rows as Row[]
+      for (const row of rows) found.add(String(row.agentId))
+    }
+    return found
   }
 
   /** Expire pending reminders due before `before`; how many expired. */

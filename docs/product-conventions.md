@@ -1400,21 +1400,22 @@ never run again: the conversation is told once that it is not sure this went thr
 check, and the card says the same. Each step (approved, denied, expired, reported back, ended
 without reporting, uncertain) is recorded on the item.
 
-## Assistant-mode reminders
+## Reminders
 
-An agent in assistant mode can be asked to remind a conversation of something at a set time, such
-as "remind me at 9 tomorrow to send the report". At that time it posts the text it agreed on,
-exactly as written, once, in the conversation and thread where it was asked, within about a
-minute. No model turn runs for it: the agent does not look again, rephrase it or follow it up. A
-reminder posts only there, never in another conversation or someone's DM. It can be set up to 366
-days ahead, and an agent holds at most 100 that have not posted yet. The agent lists and cancels
-only the reminders of the conversation it is in.
+Every agent, in assistant mode or not, can be asked to remind a conversation of something at a set
+time, such as "remind me at 9 tomorrow to send the report". At that time it posts the text it
+agreed on, exactly as written, once, in the conversation and thread where it was asked, within
+about a minute. No model turn runs for it: the agent does not look again, rephrase it or follow it
+up. A reminder posts only there, never in another conversation or someone's DM. It can be set up to
+366 days ahead, and an agent holds at most 100 that have not posted yet. The agent lists and
+cancels only the reminders of the conversation it is in. An agent in assistant mode keeps something
+it should check on at a time as an item instead (see "Assistant-mode item ledger").
 
 While the agent is paused nothing posts; after it resumes, a reminder less than 24 hours late
-still posts and an older one is dropped. One that the platform refuses three times is dropped. A
+still posts and an older one is dropped. One that the platform refuses three times is dropped.
+Turning assistant mode on or off changes no reminder: one already set still posts at its time. A
 conversation shared with another organization sets and receives reminders like any other (see
-"Assistant-mode places"). Background sessions, patrols and webchat cannot set reminders. A DM that
-read a private conversation for its person can still set them, since they post only in that DM.
+"Assistant-mode places"). Background sessions, patrols and webchat cannot set reminders.
 
 ## Assistant-mode Activity
 

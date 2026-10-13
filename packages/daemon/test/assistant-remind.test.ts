@@ -1,4 +1,4 @@
-// Assistant-mode reminders (assistant-mode.md §5.9): text posted into the conversation it was set in, at its time, by the daemon, with no model turn.
+// Every agent's reminders (assistant-mode.md §5.9): text posted into the conversation it was set in, at its time, by the daemon, with no model turn.
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -8,17 +8,24 @@ import { AssistantReminders, type AssistantRemindersHost } from '../src/assistan
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
 import { ASSISTANT_ITEM_TOOLS } from '../src/mcp/ops/assistant-items.js'
-import { ASSISTANT_REMINDER_TOOLS, assistantReminderToolsFor } from '../src/mcp/ops/assistant-reminders.js'
+import {
+  ASSISTANT_REMINDER_TOOLS,
+  assistantReminderToolsFor,
+  REMINDER_TOOLS
+} from '../src/mcp/ops/assistant-reminders.js'
 import type { ShareTargetResult } from '../src/mcp/ops/share-file.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
 import type { AssistantPlace } from '../src/store/assistant-items.js'
 import {
   ASSISTANT_REMINDER_CLAIM_STALE_MS,
   ASSISTANT_REMINDER_PENDING_MAX,
+  AssistantReminderLedger,
   type AssistantReminder,
-  type AssistantReminderCreate
+  type AssistantReminderCreate,
+  type AssistantReminderDatabase
 } from '../src/store/assistant-reminders.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../src/store/local-store.js'
+import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { openTestStore } from './store-support.js'
 
@@ -58,7 +65,7 @@ afterEach(async () => {
 })
 
 /** The tool deps over a real ledger: the live turn posts where the session's replies land, unless the test says otherwise. */
-async function tools(options: { enabled?: boolean; deps?: Partial<OpsDeps> } = {}) {
+async function tools(options: { deps?: Partial<OpsDeps> } = {}) {
   store = await openTestStore()
   const s = store
   let now = T0
@@ -71,7 +78,7 @@ async function tools(options: { enabled?: boolean; deps?: Partial<OpsDeps> } = {
   }))
   const deps = {
     assistantReminders: {
-      ledgerFor: () => (options.enabled === false ? undefined : s.assistantReminders),
+      ledger: s.assistantReminders,
       requesterFor: async () => 'U0ALICE',
       now: () => now
     },
@@ -85,36 +92,39 @@ async function tools(options: { enabled?: boolean; deps?: Partial<OpsDeps> } = {
 
 const at = (ms: number): string => new Date(ms).toISOString()
 
-describe('the reminder tools are offered only to assistant-mode agents, in a conversation of the session’s own', () => {
-  it('derives the offered set from the switch and the session, and reserves every name', () => {
+describe('the reminder tools are offered to every agent, in a conversation of the session’s own', () => {
+  it('derives the offered set from the session alone, and reserves every name', () => {
     const own = { thread: 'append:1', integrationId: INT }
-    expect(assistantReminderToolsFor({}, own)).toEqual([])
-    expect(assistantReminderToolsFor({ assistantMode: { enabled: false } }, own)).toEqual([])
-    expect(assistantReminderToolsFor({ assistantMode: { enabled: true } }, own).map((t) => t.name)).toEqual(NAMES)
-    // A background session and a session with no platform conversation are offered none.
-    expect(
-      assistantReminderToolsFor({ assistantMode: { enabled: true } }, { ...own, thread: 'subsession:d-1' })
-    ).toEqual([])
-    expect(assistantReminderToolsFor({ assistantMode: { enabled: true } }, { thread: 'webchat:w-1' })).toEqual([])
+    for (const agent of [{}, { assistantMode: { enabled: false } }, { assistantMode: { enabled: true } }]) {
+      expect(assistantReminderToolsFor(agent, own).map((t) => t.name)).toEqual(NAMES)
+      // A background session and a session with no platform conversation are offered none.
+      expect(assistantReminderToolsFor(agent, { ...own, thread: 'subsession:d-1' })).toEqual([])
+      expect(assistantReminderToolsFor(agent, { thread: 'webchat:w-1' })).toEqual([])
+    }
+    expect(assistantReminderToolsFor({ assistantMode: { enabled: true } }, own)).toBe(ASSISTANT_REMINDER_TOOLS)
+    expect(assistantReminderToolsFor({ assistantMode: { enabled: false } }, own)).toBe(REMINDER_TOOLS)
     expect(ALL_TOOL_NAMES).toEqual(expect.arrayContaining(NAMES))
   })
 
-  it('refuses every reminder tool once the agent is not in assistant mode', async () => {
-    const { call, store: s } = await tools({ enabled: false })
-    for (const [name, args] of [
-      ['remind', { at: at(T0 + HOUR), message: 'x' }],
-      ['listReminders', {}],
-      ['cancelReminder', { id: 'r-1' }]
-    ] as const)
-      await expect(call(ALICE_DM, name, args)).rejects.toThrow('only to an agent in assistant mode')
-    expect(await s.assistantReminders.listOpen(AGENT, placeOf(ALICE_DM))).toEqual([])
+  it('tells the model the text is posted as written, by the daemon, with no turn, here only', () => {
+    for (const set of [ASSISTANT_REMINDER_TOOLS, REMINDER_TOOLS]) {
+      const remind = set.find((t) => t.name === 'remind')!.description
+      expect(remind).toContain('the daemon posts `message` here exactly as written')
+      expect(remind).toContain('with no model turn')
+      expect(remind).toContain('into this conversation only, never anywhere else')
+    }
   })
 
-  it('tells the model the text is posted as written, by the daemon, with no turn, here only', () => {
-    const remind = ASSISTANT_REMINDER_TOOLS.find((t) => t.name === 'remind')!.description
-    expect(remind).toContain('the daemon posts `message` here exactly as written')
-    expect(remind).toContain('with no model turn')
-    expect(remind).toContain('into this conversation only, never anywhere else')
+  it('points only an agent in assistant mode at items, and otherwise offers the same tools', () => {
+    const items = '; for something to be checked on at a time, take an item with a next check instead'
+    const remindIn = (set: ToolDescriptor[]): string => set.find((t) => t.name === 'remind')!.description
+    const [assistant, plain] = [remindIn(ASSISTANT_REMINDER_TOOLS), remindIn(REMINDER_TOOLS)]
+    expect(assistant).toContain(items)
+    expect(plain).not.toContain('item')
+    expect(assistant.replace(items, '')).toBe(plain)
+    const rest = ({ description: _d, ...tool }: ToolDescriptor) => tool
+    expect(REMINDER_TOOLS.map(rest)).toEqual(ASSISTANT_REMINDER_TOOLS.map(rest))
+    expect(REMINDER_TOOLS.slice(1)).toEqual(ASSISTANT_REMINDER_TOOLS.slice(1))
   })
 })
 
@@ -304,21 +314,21 @@ describe('delivery', () => {
     expect((await h.get(r.id)).status).toBe('delivered')
   })
 
-  it('is left to the daemon holding the agent’s duty, and to an agent in assistant mode', async () => {
+  it('is left to the daemon holding the agent’s duty, in assistant mode or not', async () => {
     const h = await delivery()
     const r = await h.set()
     h.at(T0 + HOUR)
     h.host.mayDeliver.mockReturnValue(false)
     await h.reminders.sweep()
     expect(h.host.mayDeliver).toHaveBeenCalledWith(AGENT)
+    expect(h.host.post).not.toHaveBeenCalled()
+    expect((await h.get(r.id)).status).toBe('pending')
+    // Switched out of assistant mode, the agent's reminder still posts.
     h.host.mayDeliver.mockReturnValue(true)
     h.agentsOn.set(AGENT, false)
     await h.reminders.sweep()
-    expect(h.host.post).not.toHaveBeenCalled()
-    expect((await h.get(r.id)).status).toBe('pending')
-    h.agentsOn.set(AGENT, true)
-    await h.reminders.sweep()
     expect(h.host.post).toHaveBeenCalledTimes(1)
+    expect((await h.get(r.id)).status).toBe('delivered')
   })
 
   it('retries a platform error on later sweeps, then fails it after three attempts with a warning', async () => {
@@ -418,11 +428,79 @@ describe('delivery', () => {
   })
 })
 
+/** The delivery service for these agents over a real ledger whose every statement is counted. */
+async function counted(agentIds: string[]) {
+  store = await openTestStore()
+  const db = (store as unknown as { db: AssistantReminderDatabase }).db
+  const statements: string[] = []
+  const ledger = new AssistantReminderLedger({
+    query: (sql, params) => {
+      statements.push(sql)
+      return db.query(sql, params)
+    }
+  })
+  let now = T0
+  const host = {
+    now: () => now,
+    log: { info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+    agents: () => agentIds.map((id) => ({ id })),
+    mayDeliver: vi.fn((_agentId: string) => true),
+    draining: () => false,
+    reminders: ledger,
+    placeEnabled: vi.fn(() => true),
+    post: vi.fn(async (_reminder: AssistantReminder): Promise<string | undefined> => 'ts-posted')
+  } satisfies AssistantRemindersHost
+  return { ledger, statements, host, reminders: new AssistantReminders(host), at: (ms: number) => (now = ms) }
+}
+
+describe('one probe per sweep', () => {
+  it('asks the store once for many agents with nothing due, and nothing per agent', async () => {
+    const ids = Array.from({ length: 50 }, (_, i) => `agent-idle-${i}`)
+    const h = await counted(ids)
+    await h.ledger.create(row({ agentId: ids[0]!, dueAt: T0 + DAY }))
+    h.statements.length = 0
+    h.at(T0 + HOUR)
+    await h.reminders.sweep()
+    expect(h.statements).toHaveLength(1)
+    expect(h.host.post).not.toHaveBeenCalled()
+    // With no agent to deliver for, the sweep asks nothing at all.
+    h.host.mayDeliver.mockReturnValue(false)
+    h.statements.length = 0
+    await h.reminders.sweep()
+    expect(h.statements).toEqual([])
+  })
+
+  it('bounds each probe, so a thousand agents take three statements', async () => {
+    const h = await counted(Array.from({ length: 1000 }, (_, i) => `agent-idle-${i}`))
+    await h.reminders.sweep()
+    expect(h.statements).toHaveLength(3)
+  })
+
+  it('sweeps an agent with a due, a long-overdue or a cut-short reminder, and not one with only future ones', async () => {
+    const [due, overdue, stale, future] = ['agent-due', 'agent-overdue', 'agent-stale', 'agent-future']
+    const h = await counted([due, overdue, stale, future])
+    const at = T0 + 26 * HOUR
+    const posted = (await h.ledger.create(row({ agentId: due, dueAt: at - MINUTE })))!
+    const expired = (await h.ledger.create(row({ agentId: overdue, dueAt: T0 + HOUR })))!
+    const cut = (await h.ledger.create(row({ agentId: stale, dueAt: T0 + HOUR })))!
+    expect(await h.ledger.claim(stale, cut.id, T0 + 2 * HOUR)).toBe(1)
+    await h.ledger.create(row({ agentId: future, dueAt: at + HOUR }))
+    const swept = vi.spyOn(h.ledger, 'expireOverdue')
+    h.at(at)
+    await h.reminders.sweep()
+    expect(swept.mock.calls.map(([agentId]) => agentId).sort()).toEqual([due, overdue, stale].sort())
+    expect(h.host.post).toHaveBeenCalledTimes(1)
+    expect(h.host.post.mock.calls[0]![0]).toMatchObject({ id: posted.id })
+    expect((await h.ledger.get(overdue, expired.id))?.status).toBe('expired')
+    expect((await h.ledger.get(stale, cut.id))?.status).toBe('failed')
+  })
+})
+
 // The daemon's own wiring: the tool through the bridge deps, the sweep, the draft path's post, and the duty gate.
 const BOT = 'bot-a'
 const BOT_INT = 'int-bot-a'
 
-function scaffold(): string {
+function scaffold(assistantMode: boolean): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-remind-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -457,14 +535,14 @@ function scaffold(): string {
         }
       ],
       output: { mode: 'medium' },
-      assistantMode: { enabled: true }
+      assistantMode: { enabled: assistantMode }
     })
   )
   return root
 }
 
-async function bootDaemon() {
-  const root = scaffold()
+async function bootDaemon(options: { assistantMode?: boolean } = {}) {
+  const root = scaffold(options.assistantMode ?? true)
   // Wall time with an offset the test moves forward; timers stay real.
   const clock = {
     offset: 0,
@@ -512,7 +590,8 @@ async function bootDaemon() {
     channel: 'C1',
     thread: coordinate,
     deliveryThread: '1700000000.000100',
-    tools: ASSISTANT_REMINDER_TOOLS
+    // What the daemon offers this agent in its own conversation, in assistant mode or not.
+    tools: assistantReminderToolsFor(d.agents.get(BOT), { thread: coordinate, integrationId: BOT_INT })
   }
   // The live turn's own post target, as the turn engine records it for shareFile.
   d.activeTurnShare.set(sessionKey('slack', 'C1', coordinate, BOT, scope), {
@@ -603,27 +682,84 @@ describe('the daemon delivers reminders', () => {
     }
   })
 
-  // #2979, B4: a conversation shared with another organization takes the agent's posts like any other.
-  it('sets and posts a reminder in a conversation shared with another organization, drafting nothing', async () => {
-    const h = await bootDaemon()
+  it('offers an agent outside assistant mode the tools, and posts its reminder at its time, never while paused', async () => {
+    const h = await bootDaemon({ assistantMode: false })
     try {
-      h.d.agents.get(BOT).integrations[0].core.externalChannels.push('C1')
-      const { id } = await h.remind(Date.now() + MINUTE)
-      expect(await h.pending()).toHaveLength(1)
-      h.later(2 * MINUTE)
+      expect(h.ctx.tools).toBe(REMINDER_TOOLS)
+      expect(
+        assistantReminderToolsFor(h.d.agents.get(BOT), { thread: 'subsession:d-1', integrationId: BOT_INT })
+      ).toEqual([])
+      await expect(
+        executeTool(
+          { ...h.ctx, thread: 'subsession:d-1' },
+          'remind',
+          { at: at(Date.now() + MINUTE), message: 'x' },
+          h.deps
+        )
+      ).rejects.toThrow('background session')
+      const { id } = await h.remind(Date.now() + 2 * MINUTE)
+      expect(await executeTool(h.ctx, 'listReminders', {}, h.deps)).toMatchObject({ reminders: [{ id }] })
       await h.d.reminders.sweep()
+      expect(h.conn.postMessage).not.toHaveBeenCalled()
+      h.later(3 * MINUTE)
+      h.d.agents.get(BOT).pause = true
+      await h.d.reminders.sweep()
+      expect(h.conn.postMessage).not.toHaveBeenCalled()
+      expect((await h.get(id)).status).toBe('pending')
+      h.d.agents.get(BOT).pause = false
+      await h.d.reminders.sweep()
+      expect(h.conn.postMessage).toHaveBeenCalledTimes(1)
       expect(h.conn.postMessage).toHaveBeenCalledWith(
         'C1',
         'Release notes are due.',
         '1700000000.000100',
         expect.objectContaining({ agentAuthorId: BOT })
       )
-      expect(await h.get(id)).toMatchObject({ status: 'delivered', draftId: null })
-      expect(h.conn.postBlocks).not.toHaveBeenCalled()
+      expect(await h.get(id)).toMatchObject({ status: 'delivered' })
     } finally {
       await h.close()
     }
   })
+
+  it('keeps a reminder set in assistant mode, and posts it, after the mode is switched off', async () => {
+    const h = await bootDaemon()
+    try {
+      const { id } = await h.remind(Date.now() + MINUTE)
+      h.d.agents.get(BOT).assistantMode = { enabled: false }
+      expect(await executeTool(h.ctx, 'listReminders', {}, h.deps)).toMatchObject({ reminders: [{ id }] })
+      h.later(2 * MINUTE)
+      await h.d.reminders.sweep()
+      expect(h.conn.postMessage).toHaveBeenCalledTimes(1)
+      expect(await h.get(id)).toMatchObject({ status: 'delivered' })
+    } finally {
+      await h.close()
+    }
+  })
+
+  // #2979, B4: a conversation shared with another organization takes the agent's posts like any other.
+  it.each([true, false])(
+    'sets and posts a reminder in a conversation shared with another organization, drafting nothing (assistant mode: %s)',
+    async (assistantMode) => {
+      const h = await bootDaemon({ assistantMode })
+      try {
+        h.d.agents.get(BOT).integrations[0].core.externalChannels.push('C1')
+        const { id } = await h.remind(Date.now() + MINUTE)
+        expect(await h.pending()).toHaveLength(1)
+        h.later(2 * MINUTE)
+        await h.d.reminders.sweep()
+        expect(h.conn.postMessage).toHaveBeenCalledWith(
+          'C1',
+          'Release notes are due.',
+          '1700000000.000100',
+          expect.objectContaining({ agentAuthorId: BOT })
+        )
+        expect(await h.get(id)).toMatchObject({ status: 'delivered', draftId: null })
+        expect(h.conn.postBlocks).not.toHaveBeenCalled()
+      } finally {
+        await h.close()
+      }
+    }
+  )
 
   it('posts the text where a guest joined after it was set, drafting nothing', async () => {
     const h = await bootDaemon()
