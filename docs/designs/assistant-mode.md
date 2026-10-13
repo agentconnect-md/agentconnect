@@ -849,7 +849,8 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
     restart or handover fails and is never posted again, so delivery is at most once. A platform
     error is retried on later sweeps, three attempts in all, then fails with a warning; a send
     that timed out or came back without a message id may or may not have posted, so it fails at
-    once.
+    once. Each sweep first asks the store once which of its agents have a reminder due or a claim
+    cut short, and works only on those, so an agent with nothing due costs no query of its own.
   - While the agent is paused nothing is delivered; afterwards a reminder less than 24 hours late
     posts late and an older one expires. Switching assistant mode off or on changes nothing: a
     pending reminder stays and posts at its time. An agent holds at most 100 pending reminders, a

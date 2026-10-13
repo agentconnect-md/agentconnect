@@ -167,6 +167,27 @@ describe('the assistant reminder ledger', () => {
     expect((await s.assistantReminders.due(a, 10_000, 10)).map((d) => d.id)).toEqual([recent.id])
   })
 
+  it('finds only the asked agents a sweep has work for: something due, or a claim cut short', async () => {
+    const s = await open()
+    const [due, overdue, stale, fresh, future, settled, unasked] = Array.from({ length: 7 }, agent)
+    await s.assistantReminders.create(reminder(due!, { dueAt: 4_000 }))
+    await s.assistantReminders.create(reminder(overdue!, { dueAt: 1_000 }))
+    const cut = (await s.assistantReminders.create(reminder(stale!, { dueAt: 2_000 })))!
+    expect(await s.assistantReminders.claim(stale!, cut.id, 2_000)).toBe(1)
+    const live = (await s.assistantReminders.create(reminder(fresh!, { dueAt: 2_000 })))!
+    expect(await s.assistantReminders.claim(fresh!, live.id, 4_500)).toBe(1)
+    await s.assistantReminders.create(reminder(future!, { dueAt: 9_000 }))
+    const done = (await s.assistantReminders.create(reminder(settled!, { dueAt: 2_000 })))!
+    await s.assistantReminders.cancel(settled!, done.id, GENERAL, 3_000)
+    await s.assistantReminders.create(reminder(unasked!, { dueAt: 2_000 }))
+    const asked = [due!, overdue!, stale!, fresh!, future!, settled!]
+    expect(await s.assistantReminders.agentsWithWork(asked, 5_000, 4_000)).toEqual(new Set([due, overdue, stale]))
+    expect(await s.assistantReminders.agentsWithWork([], 5_000, 4_000)).toEqual(new Set())
+    // Past one statement's worth of ids, an agent in the last batch is still found.
+    const many = [...Array.from({ length: 900 }, agent), overdue!]
+    expect(await s.assistantReminders.agentsWithWork(many, 5_000, 4_000)).toEqual(new Set([overdue]))
+  })
+
   it('drops only the removed agent’s reminders', async () => {
     const s = await open()
     const [a, b] = [agent(), agent()]

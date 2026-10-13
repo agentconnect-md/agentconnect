@@ -36,12 +36,17 @@ export class AssistantReminders {
     if (this.sweeping || this.host.draining()) return
     this.sweeping = true
     try {
-      for (const agent of this.host.agents()) {
-        if (!this.host.mayDeliver(agent.id)) continue
+      const deliverable = [...this.host.agents()].map((agent) => agent.id).filter((id) => this.host.mayDeliver(id))
+      if (deliverable.length === 0) return
+      const now = this.host.now()
+      // One probe for every agent, so an agent with nothing due costs no query of its own.
+      const busy = await this.host.reminders.agentsWithWork(deliverable, now, now - ASSISTANT_REMINDER_CLAIM_STALE_MS)
+      for (const agentId of deliverable) {
+        if (!busy.has(agentId) || !this.host.mayDeliver(agentId)) continue
         try {
-          await this.deliverFor(agent.id)
+          await this.deliverFor(agentId)
         } catch (err) {
-          this.host.log.warn(`reminders: agent ${agent.id} was not swept: ${(err as Error).message}`)
+          this.host.log.warn(`reminders: agent ${agentId} was not swept: ${(err as Error).message}`)
         }
       }
     } finally {

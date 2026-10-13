@@ -19,8 +19,10 @@ import type { AssistantPlace } from '../src/store/assistant-items.js'
 import {
   ASSISTANT_REMINDER_CLAIM_STALE_MS,
   ASSISTANT_REMINDER_PENDING_MAX,
+  AssistantReminderLedger,
   type AssistantReminder,
-  type AssistantReminderCreate
+  type AssistantReminderCreate,
+  type AssistantReminderDatabase
 } from '../src/store/assistant-reminders.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../src/store/local-store.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
@@ -423,6 +425,74 @@ describe('delivery', () => {
     expect(h.host.post).not.toHaveBeenCalled()
     expect((await h.get(r.id)).status).toBe('failed')
     expect(h.log.warn).toHaveBeenCalledWith(expect.stringContaining(`reminder ${r.id}: a delivery was cut short`))
+  })
+})
+
+/** The delivery service for these agents over a real ledger whose every statement is counted. */
+async function counted(agentIds: string[]) {
+  store = await openTestStore()
+  const db = (store as unknown as { db: AssistantReminderDatabase }).db
+  const statements: string[] = []
+  const ledger = new AssistantReminderLedger({
+    query: (sql, params) => {
+      statements.push(sql)
+      return db.query(sql, params)
+    }
+  })
+  let now = T0
+  const host = {
+    now: () => now,
+    log: { info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+    agents: () => agentIds.map((id) => ({ id })),
+    mayDeliver: vi.fn((_agentId: string) => true),
+    draining: () => false,
+    reminders: ledger,
+    placeEnabled: vi.fn(() => true),
+    post: vi.fn(async (_reminder: AssistantReminder): Promise<string | undefined> => 'ts-posted')
+  } satisfies AssistantRemindersHost
+  return { ledger, statements, host, reminders: new AssistantReminders(host), at: (ms: number) => (now = ms) }
+}
+
+describe('one probe per sweep', () => {
+  it('asks the store once for many agents with nothing due, and nothing per agent', async () => {
+    const ids = Array.from({ length: 50 }, (_, i) => `agent-idle-${i}`)
+    const h = await counted(ids)
+    await h.ledger.create(row({ agentId: ids[0]!, dueAt: T0 + DAY }))
+    h.statements.length = 0
+    h.at(T0 + HOUR)
+    await h.reminders.sweep()
+    expect(h.statements).toHaveLength(1)
+    expect(h.host.post).not.toHaveBeenCalled()
+    // With no agent to deliver for, the sweep asks nothing at all.
+    h.host.mayDeliver.mockReturnValue(false)
+    h.statements.length = 0
+    await h.reminders.sweep()
+    expect(h.statements).toEqual([])
+  })
+
+  it('bounds each probe, so a thousand agents take three statements', async () => {
+    const h = await counted(Array.from({ length: 1000 }, (_, i) => `agent-idle-${i}`))
+    await h.reminders.sweep()
+    expect(h.statements).toHaveLength(3)
+  })
+
+  it('sweeps an agent with a due, a long-overdue or a cut-short reminder, and not one with only future ones', async () => {
+    const [due, overdue, stale, future] = ['agent-due', 'agent-overdue', 'agent-stale', 'agent-future']
+    const h = await counted([due, overdue, stale, future])
+    const at = T0 + 26 * HOUR
+    const posted = (await h.ledger.create(row({ agentId: due, dueAt: at - MINUTE })))!
+    const expired = (await h.ledger.create(row({ agentId: overdue, dueAt: T0 + HOUR })))!
+    const cut = (await h.ledger.create(row({ agentId: stale, dueAt: T0 + HOUR })))!
+    expect(await h.ledger.claim(stale, cut.id, T0 + 2 * HOUR)).toBe(1)
+    await h.ledger.create(row({ agentId: future, dueAt: at + HOUR }))
+    const swept = vi.spyOn(h.ledger, 'expireOverdue')
+    h.at(at)
+    await h.reminders.sweep()
+    expect(swept.mock.calls.map(([agentId]) => agentId).sort()).toEqual([due, overdue, stale].sort())
+    expect(h.host.post).toHaveBeenCalledTimes(1)
+    expect(h.host.post.mock.calls[0]![0]).toMatchObject({ id: posted.id })
+    expect((await h.ledger.get(overdue, expired.id))?.status).toBe('expired')
+    expect((await h.ledger.get(stale, cut.id))?.status).toBe('failed')
   })
 })
 
