@@ -40,8 +40,8 @@ export type DraftCard =
 /** The approval card surface of one integration; only a platform with interactive DM cards offers one. */
 export interface DraftCardPort {
   openDirectMessage(user: string): Promise<string>
-  /** Whether a user is a full member of the installing organization, asked of every asker where offered; fails closed. */
-  isFullMember?(user: string): Promise<boolean>
+  /** Whether a user is a full member of the installing organization, the only way an asker approves; fails closed. */
+  isFullMember(user: string): Promise<boolean>
   /** The workspace a member id lives in, for the decision record. */
   scope?(): string | undefined
   /** Whether a member is a person rather than a bot; fails closed. */
@@ -71,8 +71,6 @@ export interface DraftAsker {
   userId?: string
   /** A console user (webchat), reached through the control plane. */
   consoleUserId?: string
-  /** The asker spoke this turn in a place not known external; it counts only where the card port cannot tell a full member (§5.5). */
-  trusted: boolean
 }
 
 export interface AssistantDraftsHost {
@@ -368,7 +366,7 @@ export class AssistantDrafts {
   ): Promise<{ target: AskerApprover & { consoleUserId?: string }; channel: string } | undefined> {
     const approver = await (
       asker.kind === 'member'
-        ? this.askerRung({ integrationId: asker.integrationId, userId: asker.userId, trusted: false })
+        ? this.askerRung({ integrationId: asker.integrationId, userId: asker.userId })
         : this.routeConsoleUser(agentId, requestId, asker.userId)
     ).catch(() => undefined)
     if (!approver?.userId || !approver.teamId) return undefined
@@ -478,18 +476,16 @@ export class AssistantDrafts {
     return approver ? { approver, rung: 'responsible' } : undefined
   }
 
-  /** The platform asker's own DM when they are internal: a full member where the port can tell, for every agent, else trusted by their place. */
+  /** The platform asker's own DM when their card port says they are a full member, for every agent and in any place; a failed lookup is not one. */
   private async askerRung(asker: DraftAsker | undefined): Promise<AssistantDraftApprover | undefined> {
     if (!asker?.integrationId || !asker.userId) return undefined
     const port = this.host.cardPortFor(asker.integrationId)
     const internal =
       port &&
-      (port.isFullMember
-        ? await port.isFullMember(asker.userId).then(
-            (full) => full === true,
-            () => false
-          )
-        : asker.trusted)
+      (await port.isFullMember(asker.userId).then(
+        (full) => full === true,
+        () => false
+      ))
     const channel = internal ? await port.openDirectMessage(asker.userId).catch(() => undefined) : undefined
     if (!port || !channel) return undefined
     return {

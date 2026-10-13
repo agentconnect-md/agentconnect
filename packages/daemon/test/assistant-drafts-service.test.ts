@@ -57,7 +57,7 @@ const TO_SUPPORT: InterceptedPost = {
   text: 'The release is out.',
   directMessage: false
 }
-const ALICE = { integrationId: INT, userId: 'U0ALICE', trusted: true }
+const ALICE = { integrationId: INT, userId: 'U0ALICE' }
 
 let store: LocalStore | undefined
 afterEach(async () => {
@@ -323,7 +323,7 @@ describe('a post to another place', () => {
 describe('the approver', () => {
   it('is the responsible user the control plane derives when the asker is not an internal member, re-verified on the click', async () => {
     const w = await world()
-    await w.post(TO_SUPPORT, HERE, { integrationId: INT, userId: 'U0GUEST', trusted: false })
+    await w.post(TO_SUPPORT, HERE, { integrationId: INT, userId: 'U0GUEST' })
     expect(w.port.isFullMember).toHaveBeenCalledWith('U0GUEST')
     expect(w.route).toHaveBeenCalledWith({ requestId: expect.any(String), integrationIds: [INT], responsible: true })
     expect(w.port.postCard.mock.calls[0]![0]).toBe('D_U0RESP')
@@ -341,7 +341,7 @@ describe('the approver', () => {
   it('is the asker in an external place when the platform says they are a full member', async () => {
     const w = await world()
     w.port.isFullMember.mockResolvedValue(true)
-    await w.post(TO_SUPPORT, HERE, { integrationId: INT, userId: 'U0ALICE', trusted: false })
+    await w.post(TO_SUPPORT, HERE, { integrationId: INT, userId: 'U0ALICE' })
     expect(w.port.postCard.mock.calls[0]![0]).toBe('D_U0ALICE')
   })
 
@@ -369,7 +369,7 @@ describe('the approver', () => {
         target: { integrationId: INT, teamId: 'T0EXAMPLE', userId: 'U0CREATOR', consoleUserId: 'usr-creator' }
       })
     })
-    expect(await w.post(TO_SUPPORT, HERE, { consoleUserId: 'usr-web', trusted: false })).toMatchObject({
+    expect(await w.post(TO_SUPPORT, HERE, { consoleUserId: 'usr-web' })).toMatchObject({
       result: { approver: "the agent's responsible user, in a direct message" }
     })
     expect(w.route.mock.calls.map(([req]) => req.consoleUserId ?? req.responsible)).toEqual(['usr-web', true])
@@ -425,14 +425,14 @@ describe('the approver', () => {
     const w = await world({ policy: { enabled: false } })
     w.port.isFullMember.mockImplementation(async (user: string) => user === 'U0ALICE')
     const toShared = { ...TO_SUPPORT, channel: 'C0SHARED' }
-    expect(await w.post(toShared, HERE, { integrationId: INT, userId: 'U0ALICE', trusted: false })).toMatchObject({
+    expect(await w.post(toShared, HERE, { integrationId: INT, userId: 'U0ALICE' })).toMatchObject({
       handled: true,
       result: { drafted: true, approver: 'the person who asked, in a direct message' }
     })
     expect(w.port.postCard.mock.calls[0]![0]).toBe('D_U0ALICE')
     expect((await w.only()).approver).toMatchObject({ kind: 'member', userId: 'U0ALICE' })
     // No responsible user stands in: a guest's or a run's post is refused, and no record kept.
-    for (const asker of [{ integrationId: INT, userId: 'U0GUEST', trusted: false }, null]) {
+    for (const asker of [{ integrationId: INT, userId: 'U0GUEST' }, null]) {
       await expect(w.post(toShared, asker ? HERE : PLACELESS, asker)).rejects.toThrow(
         /needs the approval of an internal member/
       )
@@ -446,31 +446,31 @@ describe('the approver', () => {
   // A guest already in a channel when the bot arrived is never detected, so their place is not known external.
   for (const enabled of [true, false]) {
     const mode = enabled ? 'in assistant mode' : 'outside assistant mode'
-    const GUEST = { integrationId: INT, userId: 'U0GUEST', trusted: true }
+    const GUEST = { integrationId: INT, userId: 'U0GUEST' }
     /** What a post comes to when the asker is not taken as internal: the responsible user, or a refusal. */
-    const notTheAsker = async (w: Awaited<ReturnType<typeof world>>, asker: DraftAsker, port = w.port) => {
+    const notTheAsker = async (w: Awaited<ReturnType<typeof world>>, asker: DraftAsker) => {
       if (enabled) {
         expect(await w.post(TO_SUPPORT, HERE, asker)).toMatchObject({
           result: { approver: "the agent's responsible user, in a direct message" }
         })
-        expect(port.postCard.mock.calls.map(([channel]) => channel)).toEqual(['D_U0RESP'])
+        expect(w.port.postCard.mock.calls.map(([channel]) => channel)).toEqual(['D_U0RESP'])
       } else {
         await expect(w.post(TO_SUPPORT, HERE, asker)).rejects.toThrow(/needs the approval of an internal member/)
-        expect(port.postCard).not.toHaveBeenCalled()
+        expect(w.port.postCard).not.toHaveBeenCalled()
       }
-      expect(port.openDirectMessage).not.toHaveBeenCalledWith(asker.userId)
+      expect(w.port.openDirectMessage).not.toHaveBeenCalledWith(asker.userId)
     }
 
-    it(`asks the platform about an asker their place vouches for, so a guest is never the approver (${mode})`, async () => {
+    it(`asks the platform about every asker, so a guest is never the approver (${mode})`, async () => {
       const w = await world({ policy: { enabled } })
       await notTheAsker(w, GUEST)
       expect(w.port.isFullMember.mock.calls).toEqual([['U0GUEST']])
     })
 
-    it(`takes a full member who asked as the approver, vouched for by their place or not, one lookup a draft (${mode})`, async () => {
+    it(`takes a full member who asked as the approver, one lookup a draft (${mode})`, async () => {
       const w = await world({ policy: { enabled } })
-      for (const trusted of [true, false]) {
-        expect(await w.post(TO_SUPPORT, HERE, { ...ALICE, trusted })).toMatchObject({
+      for (let i = 0; i < 2; i++) {
+        expect(await w.post(TO_SUPPORT, HERE, ALICE)).toMatchObject({
           result: { approver: 'the person who asked, in a direct message' }
         })
       }
@@ -484,19 +484,19 @@ describe('the approver', () => {
       await notTheAsker(w, ALICE)
     })
 
-    it(`lets the place vouch for the asker where the card surface cannot tell a full member (${mode})`, async () => {
-      const blind = fakePort()
-      delete (blind as Partial<typeof blind>).isFullMember
-      const w = await world({ policy: { enabled }, cardPort: blind })
-      expect(await w.post(TO_SUPPORT, HERE, GUEST)).toMatchObject({
-        result: { approver: 'the person who asked, in a direct message' }
-      })
-      expect(blind.postCard.mock.calls.map(([channel]) => channel)).toEqual(['D_U0GUEST'])
-      blind.postCard.mockClear()
-      blind.openDirectMessage.mockClear()
-      await notTheAsker(w, { ...GUEST, trusted: false }, blind)
+    it(`never takes an asker whose platform has no card surface to say they are a full member (${mode})`, async () => {
+      const w = await world({ policy: { enabled } })
+      await notTheAsker(w, { integrationId: 'int-without-cards', userId: 'U0ALICE' })
+      expect(w.port.isFullMember).not.toHaveBeenCalled()
     })
   }
+
+  it('requires every card surface to say whether an asker is a full member', () => {
+    const { isFullMember: _isFullMember, ...blind } = fakePort()
+    // @ts-expect-error a card surface without a membership answer is not a card port
+    const port: DraftCardPort = blind
+    expect(port.postCard).toBe(blind.postCard)
+  })
 
   it('is nobody when nothing can be reached: the draft waits, and the model is told nothing was sent', async () => {
     const w = await world({ route: async (req) => ({ requestId: req.requestId }) })
@@ -533,8 +533,8 @@ describe('the membership lookup behind the approver', () => {
     await conn.start()
     try {
       const w = await world({ cardPort: slackDraftCardPort(conn, INT) })
-      for (const trusted of [true, false]) {
-        expect(await w.post(TO_SUPPORT, HERE, { ...ALICE, trusted })).toMatchObject({
+      for (let i = 0; i < 2; i++) {
+        expect(await w.post(TO_SUPPORT, HERE, ALICE)).toMatchObject({
           result: { approver: 'the person who asked, in a direct message' }
         })
       }

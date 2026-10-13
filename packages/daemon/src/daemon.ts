@@ -8643,23 +8643,16 @@ export class Daemon {
       place: (ctx.integrationId !== undefined || ctx.platform === 'webchat') && !isSyntheticA2aChannel(ctx.channel)
     }
     const askers = await this.readAskersFor(ctx).catch(() => NOBODY)
-    return await this.drafts.interceptPost(ctx.agentId, source, post, this.draftAskerOf(ctx, askers, live?.entry.msg))
+    return await this.drafts.interceptPost(ctx.agentId, source, post, this.draftAskerOf(askers))
   }
 
-  /** The person the write rule judged the turn by, as a draft approver candidate; their place vouches for them, in any mode, only where the platform cannot tell a full member (§5.5). */
-  private draftAskerOf(
-    ctx: SessionContext,
-    askers: TurnAskers,
-    msg: NormalizedMessage | undefined
-  ): DraftAsker | undefined {
+  /** The person the write rule judged the turn by, as a draft approver candidate; a member approves only on their platform's word (§5.5). */
+  private draftAskerOf(askers: TurnAskers): DraftAsker | undefined {
     // The turn's own message comes first, so a schedule's, a sub-session's or an item's person stands in where no one typed.
     const asker = askers.people[0]
     if (!asker) return undefined
-    if (asker.kind === 'console') return { consoleUserId: asker.userId, trusted: true }
-    const spokeHere =
-      msg?.source === 'user' && msg.sender.id === asker.userId && asker.integrationId === ctx.integrationId
-    const trusted = spokeHere && !this.placeKnownExternal(ctx.agentId, ctx.integrationId, ctx.channel)
-    return { integrationId: asker.integrationId, userId: asker.userId, trusted }
+    if (asker.kind === 'console') return { consoleUserId: asker.userId }
+    return { integrationId: asker.integrationId, userId: asker.userId }
   }
 
   /** Ask a person behind the live turn before the bot joins a public channel; parallel calls for one channel share one card. */
@@ -13778,11 +13771,7 @@ export class Daemon {
         // Only a person's own platform message names an asker; a webchat turn's sender is a console user.
         if (p.webchat || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id || !p.plan.integrationId)
           return undefined
-        return await this.drafts.askerApprover({
-          integrationId: p.plan.integrationId,
-          userId: msg.sender.id,
-          trusted: false
-        })
+        return await this.drafts.askerApprover({ integrationId: p.plan.integrationId, userId: msg.sender.id })
       }
     }
   }

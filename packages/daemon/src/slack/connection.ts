@@ -15,6 +15,7 @@ import {
   normalizeSlackResponseFinalization,
   slackEnvelopeExternallyShared,
   slackExternalReason,
+  slackFullMember,
   slackMemberExternalReason
 } from '@agentconnect.md/message'
 import type { Agent, Integration } from '../agents/agent-schema.js'
@@ -790,27 +791,6 @@ const SLACK_FILE_ORIGIN = 'https://files.slack.com'
 interface MemberStanding {
   reason: PlaceExternalReason | null
   fullMember: boolean
-}
-
-/** A full member of workspace `teamId`: not a guest, not from another organization, not a bot, not deactivated. */
-function slackFullMember(user: object, teamId: string): boolean {
-  const u = user as {
-    team_id?: string
-    is_restricted?: boolean
-    is_ultra_restricted?: boolean
-    is_stranger?: boolean
-    is_bot?: boolean
-    deleted?: boolean
-  }
-  return (
-    teamId !== '' &&
-    u.team_id === teamId &&
-    !u.is_restricted &&
-    !u.is_ultra_restricted &&
-    !u.is_stranger &&
-    !u.is_bot &&
-    !u.deleted
-  )
 }
 
 /**
@@ -2722,13 +2702,11 @@ export class SlackConnection implements PlatformConnection {
     const standing = this.inStandingLookupSlot(async () => {
       const res = await this.app.client.users.info({ user })
       const member = res.user ?? {}
-      return {
-        reason: slackMemberExternalReason(member, {
-          ...(this.teamId ? { teamId: this.teamId } : {}),
-          ...(this.enterpriseId ? { enterpriseId: this.enterpriseId } : {})
-        }),
-        fullMember: slackFullMember(member, this.teamId)
+      const home = {
+        ...(this.teamId ? { teamId: this.teamId } : {}),
+        ...(this.enterpriseId ? { enterpriseId: this.enterpriseId } : {})
       }
+      return { reason: slackMemberExternalReason(member, home), fullMember: slackFullMember(member, home) }
     })
     this.standings.delete(user)
     this.standings.set(user, { at: now, standing })
