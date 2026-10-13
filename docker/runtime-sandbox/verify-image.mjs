@@ -151,6 +151,13 @@ check('the gh wrapper is present, executable and root-owned', () => {
   return owner
 })
 
+check('login shells resolve gh through the wrapper', () => {
+  assertImmutable('login shell PATH profile', '/etc/profile.d/agentconnect-path.sh')
+  const resolved = execFileSync('bash', ['-lc', 'command -v gh'], { encoding: 'utf8' }).trim()
+  if (resolved !== GH_WRAPPER_PATH) throw new Error(`login shell resolves gh to ${resolved}`)
+  return resolved
+})
+
 // Prepending the wrapper's dir must not shadow the gh it execs; without an identity the agent still gets a plain gh.
 check('the gh wrapper defers to the real gh when no agent identity is present', () => {
   const dir = GH_WRAPPER_PATH.replace(/\/gh$/, '')

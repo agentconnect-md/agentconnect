@@ -177,10 +177,7 @@ test('the repository Dockerfile passes the stage assertions for both variants', 
     const { base, stage, user } = releaseBase(text, variant)
     assert.match(base, /^ghcr\.io\/[^@]+@sha256:[0-9a-f]{64}$/)
     assert.equal(user, '10001:10001')
-    assert.deepEqual(
-      stage.instructions.map((entry) => entry.instruction),
-      ['COPY']
-    )
+    assert.deepEqual([...new Set(stage.instructions.map((entry) => entry.instruction))], ['COPY'])
   }
 })
 
