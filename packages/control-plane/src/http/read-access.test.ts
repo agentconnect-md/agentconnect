@@ -83,6 +83,20 @@ describe('sessionsVisibleTo', () => {
     expect(await visible(viewer('user-tg'), AGENT, dms, true)).toEqual(['ses-tg-dm'])
   })
 
+  it("answers a batched owner-only ask with the viewer's own DMs and webchat conversations alone", async () => {
+    const visible = sessionsVisibleTo(deps(), log)
+    const filler = Array.from({ length: 58 }, (_, i) => `ses-missing-${i}`)
+    const batch = ['ses-dm', 'ses-slack-dm-off', 'ses-tg-dm', 'ses-web-p', 'ses-web-org', 'ses-channel', ...filler]
+    expect(batch).toHaveLength(64)
+    expect(await visible(viewer('user-p'), AGENT, batch, true)).toEqual([
+      'ses-dm',
+      'ses-slack-dm-off',
+      'ses-web-p',
+      'ses-web-org'
+    ])
+    expect(await visible(viewer('user-q'), AGENT, batch, true)).toEqual([])
+  })
+
   it('reads a webchat conversation only for its owner, whether or not the daemon asked for ownership', async () => {
     const visible = sessionsVisibleTo(deps(), log)
     expect(await visible(viewer('user-p'), AGENT, ['ses-web-p', 'ses-web-org'], false)).toEqual([

@@ -58,6 +58,8 @@ export interface ReadLookups {
   fullMember(integrationId: string, userId: string): Promise<boolean>
   /** The console's own session visibility for whoever is behind the asker, `ownerOnly` for a DM or webchat source; rejects when the Control Plane cannot answer. */
   console(asker: ReadAsker, sessionIds: readonly string[], ownerOnly: boolean): Promise<ConsoleVerdict>
+  /** The same `ownerOnly` verdict on up to `READ_ACCESS_BATCH_SESSIONS` sessions in one ask; rejects when the Control Plane cannot answer that many. */
+  consoleOwned?(asker: ReadAsker, sessionIds: readonly string[]): Promise<ConsoleVerdict>
   /** The member id the console user behind the asker linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
   linked(integrationId: string, asker: ReadAsker): Promise<string | null>
 }

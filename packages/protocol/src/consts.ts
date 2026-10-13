@@ -448,6 +448,9 @@ export const READ_ACCESS_V1_FEATURE = 'read-access-v1'
 /** CP answers `agent/read-access` `linkedOn` with the chat identity the asker's console user linked in that bot's workspace; without it the console's own visibility decides, as before. */
 export const READ_ACCESS_LINKED_V1_FEATURE = 'read-access-linked-v1'
 
+/** CP answers `agent/read-access` for up to `READ_ACCESS_BATCH_SESSIONS` sessions at once; an older one rejects a frame naming more than 8, so a daemon sends no more before seeing this. */
+export const READ_ACCESS_BATCH_V1_FEATURE = 'read-access-batch-v1'
+
 /** CP mints the §14.2 broker effect lease — `purpose: 'gitlab_effect'` on a gitcred v2 request,
  *  authorized by the agent's GitLab workspace binding or an enabled gitlab hook and clamped by the
  *  grant's echoed access. A daemon must not name that purpose before seeing this: a new enum value

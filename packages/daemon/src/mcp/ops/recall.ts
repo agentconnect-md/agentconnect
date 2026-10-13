@@ -1,5 +1,6 @@
 // `recall` (assistant-mode.md §5.4 ③): this agent's own transcript from another place, under the read rule of §5.5.
 import { z } from 'zod'
+import { READ_ACCESS_BATCH_SESSIONS } from '@agentconnect.md/protocol'
 import {
   askerMayRead,
   askerUnlinked,
@@ -12,9 +13,13 @@ import {
   sourceClass,
   type PlaceKind,
   type PlaceRef,
+  type ReadAsker,
+  type ReadLookups,
   type SourcePlace,
   type TurnAskers
 } from '../../assistant/place-access.js'
+import { askerKey } from '../../assistant/place-members.js'
+import { platformLabel } from '../../platforms/read-ports.js'
 import { transcriptChannelKey, type SessionRecord, type TranscriptRow } from '../../store/local-store.js'
 import { optionalString, parseArgs } from './args.js'
 import type { SessionContext } from './context.js'
@@ -23,6 +28,8 @@ import { describePlace, judgePlaceRead, kindFromRows, type PlaceAccessDeps, type
 
 export const RECALL_ARGS = z.object({ place: optionalString('place'), query: optionalString('query') })
 
+/** The session ids one ownership ask names, over the asker's candidate DMs and webchat conversations. */
+const OWNED_SESSIONS = READ_ACCESS_BATCH_SESSIONS
 const DESCRIBED_PLACES = 40
 /** The sessions of a place recall reads, newest first: the ones a cross-platform read is checked against. */
 const RECALLED_SESSIONS = 8
@@ -68,11 +75,112 @@ const integrationOf = (ctx: SessionContext, place: Place, deps: PlaceAccessDeps)
 /** The sessions recall reads there; a cross-platform read checks them all, and one without an outward id is never shown. */
 const recalledSessions = (place: Place): SessionRecord[] => place.sessions.slice(0, RECALLED_SESSIONS)
 
+/** The outward ids of the sessions recall reads there, or undefined when one has none. */
+function sessionIdsOf(place: Place): string[] | undefined {
+  const ids = recalledSessions(place).map((s) => s.sessionId)
+  return ids.every((id): id is string => !!id) ? ids : undefined
+}
+
 async function describe(ctx: SessionContext, place: Place, deps: PlaceAccessDeps, name?: string): Promise<SourcePlace> {
   const described = await describePlace(place, rowKindOf(place), integrationOf(ctx, place, deps), deps)
-  const ids = recalledSessions(place).map((s) => s.sessionId)
-  const sessions = ids.every((id): id is string => !!id) ? ids : []
-  return { ...described, ...(name ? { name } : {}), sessions }
+  return { ...described, ...(name ? { name } : {}), sessions: sessionIdsOf(place) ?? [] }
+}
+
+const direct = (kind: PlaceKind | undefined): boolean => kind === 'dm' || kind === 'webchat'
+
+/** The one person a turn speaks for; undefined when nobody, or several people, are behind it. */
+const onlyAsker = (askers: TurnAskers): ReadAsker | undefined =>
+  !askers.nobody && askers.people.length === 1 ? askers.people[0] : undefined
+
+/** Whether a DM is on the bot the asker speaks on, where their only DM is the one they are in. */
+const onAskersBot = (asker: ReadAsker, place: Place, bot: string | undefined): boolean =>
+  asker.kind === 'member' && asker.platform === place.platform && bot !== undefined && asker.integrationId === bot
+
+interface OwnedAnswer {
+  /** The places every recalled session of which the asker owns. */
+  owned: Place[]
+  /** Every place with outward ids fit in the one ask. */
+  complete: boolean
+  /** The lookups with this answer standing in for the console's owner-only verdict on the sessions asked. */
+  judged: ReadLookups
+}
+
+/** One owner-only ask over the places' sessions, `also` first, within `OWNED_SESSIONS`; undefined when it cannot be asked. */
+async function askOwned(
+  asker: ReadAsker,
+  places: readonly Place[],
+  lookups: ReadLookups,
+  also: readonly string[] = []
+): Promise<OwnedAnswer | undefined> {
+  const asked = new Set(also)
+  const fits: Place[] = []
+  let complete = true
+  for (const place of places) {
+    const ids = sessionIdsOf(place)
+    if (!ids) continue
+    if (asked.size + ids.length > OWNED_SESSIONS) {
+      complete = false
+      continue
+    }
+    for (const id of ids) asked.add(id)
+    fits.push(place)
+  }
+  if (fits.length === 0 || !lookups.consoleOwned) return undefined
+  const verdict = await lookups.consoleOwned(asker, [...asked]).catch(() => undefined)
+  if (verdict?.asker !== 'linked') return undefined
+  const { visible } = verdict
+  const judged: ReadLookups = {
+    ...lookups,
+    console: async (who, ids, ownerOnly) =>
+      ownerOnly && askerKey(who) === askerKey(asker) && ids.every((id) => asked.has(id))
+        ? { asker: 'linked', visible: new Set(ids.filter((id) => visible.has(id))) }
+        : await lookups.console(who, ids, ownerOnly)
+  }
+  const owned = fits.filter((place) => sessionIdsOf(place)?.every((id) => visible.has(id)))
+  return { owned, complete, judged }
+}
+
+/** The asker's other DMs and webchat conversations, found only from their own one and each passing the read rule. */
+async function ownDirect(
+  ctx: SessionContext,
+  places: Place[],
+  deps: PlaceAccessDeps,
+  askers: TurnAskers,
+  lookups: ReadLookups
+): Promise<Set<Place>> {
+  const own = new Set<Place>()
+  const asker = onlyAsker(askers)
+  const here = places.find((p) => samePlace({ platform: ctx.platform, channel: ctx.channel }, p))
+  // Anywhere others read the answer, or with nobody or several people asking, the titles stay unlisted (§5.5).
+  if (!asker || !here || !direct(rowKindOf(here))) return own
+  const candidates = places.filter((p) => {
+    const kind = rowKindOf(p)
+    return p !== here && direct(kind) && !(kind === 'dm' && onAskersBot(asker, p, integrationOf(ctx, p, deps)))
+  })
+  // Those the asker opened go first, so a busy agent's other conversations do not crowd theirs out of the one ask.
+  candidates.sort((a, b) => Number(personOf(b) === asker.userId) - Number(personOf(a) === asker.userId))
+  const answer = await askOwned(asker, candidates, lookups, sessionIdsOf(here) ?? [])
+  if (!answer) return own
+  const mayRead = async (place: Place): Promise<boolean> => {
+    const source = await describe(ctx, place, deps)
+    return await askerMayRead(asker, source, integrationOf(ctx, place, deps), answer.judged).catch(() => false)
+  }
+  // The current conversation must be the asker's own by the same rule, so a patrol for someone else lists nothing.
+  if (!(await mayRead(here))) return own
+  for (const place of answer.owned) if (await mayRead(place)) own.add(place)
+  return own
+}
+
+/** The person a DM was opened by: its human participant. */
+const personOf = (place: Place): string | undefined =>
+  place.sessions.find((s) => s.triggeredBy)?.triggeredBy ?? undefined
+
+/** How a person knows their own conversation: a DM by its person and platform, a webchat conversation by its title. */
+function labelOf(place: Place, names: Map<string, string>, people: Map<string, string>): string {
+  if (rowKindOf(place) === 'webchat') return nameOf(place, names) ?? 'Untitled conversation'
+  const person = personOf(place)
+  const who = (person ? people.get(person) : undefined) ?? names.get(place.channel)?.replace(/^@/, '')
+  return who ? `DM with ${who} on ${platformLabel(place.platform)}` : `DM on ${platformLabel(place.platform)}`
 }
 
 /** What every refusal returns, and an unknown place too, so no answer tells a closed place from none. */
@@ -92,30 +200,41 @@ function nameOf(place: Place, names: Map<string, string>): string | undefined {
 
 const iso = (ms: number): string | undefined => (Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : undefined)
 
-async function listing(ctx: SessionContext, places: Place[], deps: PlaceAccessDeps, names: Map<string, string>) {
+async function listing(
+  ctx: SessionContext,
+  places: Place[],
+  deps: PlaceAccessDeps,
+  store: PlaceStore,
+  names: Map<string, string>,
+  askers: TurnAskers,
+  lookups: ReadLookups
+) {
   const current: PlaceRef = { platform: ctx.platform, channel: ctx.channel }
   const listed: Record<string, unknown>[] = []
-  let askers: TurnAskers | undefined
-  const lookups = deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS
+  const own = await ownDirect(ctx, places, deps, askers, lookups)
+  const persons = [...own].flatMap((p) => personOf(p) ?? [])
+  const people = persons.length > 0 ? await store.getDisplayNames(persons) : new Map<string, string>()
   let described = 0
   for (const place of places) {
     if (listed.length >= LISTED_PLACES) break
     const here = samePlace(current, place)
     let kind = rowKindOf(place)
-    if (!here) {
-      // A direct conversation is never listed, so it costs no platform call.
-      if (kind === 'dm' || kind === 'webchat' || described >= DESCRIBED_PLACES) continue
+    let name = nameOf(place, names)
+    if (!here && direct(kind)) {
+      // Another DM or webchat conversation is listed only as the asker's own, in their own one.
+      if (!own.has(place)) continue
+      name = labelOf(place, names, people)
+    } else if (!here) {
+      if (described >= DESCRIBED_PLACES) continue
       described += 1
       const source = await describe(ctx, place, deps)
-      // Only public sources every asker may read are listed: a private one is read by name, never offered (§5.5).
+      // Only public sources every asker may read are listed; a private channel or group DM is read by name (§5.5).
       if (sourceClass(source) !== 'public') continue
-      askers ??= deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
       const bot = integrationOf(ctx, place, deps)
       const ownBot = place.platform === ctx.platform && bot !== undefined && bot === ctx.integrationId
       if (await readRefusal(source, askers, (asker) => askerMayRead(asker, source, bot, lookups), ownBot)) continue
       kind = source.kind
     }
-    const name = nameOf(place, names)
     const lastActive = iso(place.sessions[0]?.updatedAt ?? 0)
     listed.push({
       place: placeId(place),
@@ -131,15 +250,29 @@ async function listing(ctx: SessionContext, places: Place[], deps: PlaceAccessDe
   }
 }
 
-/** Resolve the model's handle: an exact place id, else a unique conversation id, else a unique name. */
-function resolvePlace(handle: string, places: Place[], names: Map<string, string>): Place | undefined {
+/** Resolve the model's handle: an exact place id, else a unique conversation id, else a unique name, else the asker's one webchat conversation by that title. */
+async function resolvePlace(
+  handle: string,
+  places: Place[],
+  names: Map<string, string>,
+  ownAmong: (titled: Place[]) => Promise<Place[]>
+): Promise<Place | undefined> {
   const exact = places.find((p) => placeId(p) === handle)
   if (exact) return exact
   const byChannel = places.filter((p) => p.channel === handle)
   if (byChannel.length === 1) return byChannel[0]
   const wanted = handle.replace(/^#/, '').toLowerCase()
   const byName = places.filter((p) => nameOf(p, names)?.toLowerCase() === wanted)
-  return byName.length === 1 ? byName[0] : undefined
+  if (byName.length <= 1) return byName[0]
+  const own = await ownAmong(byName.filter((p) => rowKindOf(p) === 'webchat'))
+  return own.length === 1 ? own[0] : undefined
+}
+
+/** Of the webchat conversations sharing a title, the one person asking's own, when one ask checked them all. */
+async function ownTitled(titled: Place[], askers: TurnAskers, lookups: ReadLookups): Promise<Place[]> {
+  const asker = onlyAsker(askers)
+  const answer = asker ? await askOwned(asker, titled, lookups) : undefined
+  return answer?.complete ? answer.owned : []
 }
 
 /** This agent's own text rows in a place, newest first, within a scan budget; `complete` when none was left. */
@@ -246,13 +379,16 @@ export async function recall(
   if (!store) throw new Error('recall: not available on this daemon')
   const places = await placesOf(ctx, store)
   const names = await store.getDisplayNames(places.map((p) => p.channel))
-  if (handle === undefined) return await listing(ctx, places, deps, names)
-  const place = resolvePlace(handle, places, names)
+  const lookups = deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS
+  let asking: Promise<TurnAskers> | undefined
+  const askers = (): Promise<TurnAskers> =>
+    (asking ??= deps.readAskers ? deps.readAskers(ctx).catch(() => NOBODY) : Promise.resolve(NOBODY))
+  if (handle === undefined) return await listing(ctx, places, deps, store, names, await askers(), lookups)
+  const place = await resolvePlace(handle, places, names, async (titled) =>
+    titled.length > 0 ? await ownTitled(titled, await askers(), lookups) : []
+  )
   // An unknown place answers as a closed one, link hint included, so the answer never tells them apart.
-  if (!place) {
-    const askers = deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
-    return notSharedHere(handle, await askerUnlinked(askers, deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS))
-  }
+  if (!place) return notSharedHere(handle, await askerUnlinked(await askers(), lookups))
   const name = nameOf(place, names)
   const here = samePlace({ platform: ctx.platform, channel: ctx.channel }, place)
   // The same choke point as the platform reads; the current place only takes on its mark (§5.5).

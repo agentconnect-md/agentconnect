@@ -415,7 +415,9 @@ started.
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
 another place, under §5.5. Every agent has it, in assistant mode or not: the read rule it passes
 is every agent's, so it is offered wherever an assistant-mode agent's sessions offer it, with the
-same parameters and description.
+same parameters and description. Without `place` it lists the conversations the asker may recall
+from here: public ones, and in the asker's own DM or webchat conversation also their other DMs and
+webchat conversations (§5.5 "Reads", the listing).
 
 **④ The people's local time** is no longer assistant mode's own: every agent's turns carry it,
 by the order in [product conventions](../product-conventions.md#local-time). In assistant mode it
@@ -608,6 +610,32 @@ member (below).
   console account is also told how linking opens reads across platforms and bots, on every refusal,
   so the hint never tells a closed place from a missing one. A read of a private source carries a
   `privateSource` note naming it, and the model is asked to mention the source in one short clause.
+- **The listing.** `recall` without `place` lists the current conversation and, newest first and at
+  most 30 entries in all, the public channels every asker may read (at most 40 described). In a
+  person's own DM or webchat conversation it also lists that person's other DMs, on any platform and
+  bot of the agent, and their webchat conversations:
+  - _Only there._ Exactly one person asks, the current conversation is a DM or webchat conversation,
+    and it is theirs by the rule a read of it from elsewhere passes, so a patrol or task run in
+    someone's DM for another person lists none. In a channel or group DM, or on a turn nobody or
+    several people are behind, none is listed, since everyone present would read the titles. Group
+    DMs and private channels are never listed.
+  - _Whose._ The owner rule reads use: a DM is theirs when they are its person or their linked
+    account on that bot is, a webchat conversation when they opened it. Another DM on the bot the
+    asker speaks on is never a candidate, since a person has one DM per bot.
+  - _Cost._ One `agent/read-access` ask, `ownerOnly`, names the candidates' recalled sessions, up to
+    64 (the current conversation's first, then the ones the asker opened, then newest first), under
+    feature `read-access-batch-v1`; the frame's cap was 8, so a CP without the feature is not asked
+    and the listing is as before. Each candidate that ask says the asker owns then passes the read
+    rule with the answer standing in for the console's: a webchat conversation needs nothing more,
+    and a DM on another bot asks for the linked account on that bot (cached a minute per bot, as
+    reads do) and its member listing. No candidate costs a Control Plane call of its own, and none
+    is described through the platform.
+  - _Labels._ Each entry carries its place id and a name the person knows: a DM's is
+    `DM with <their display name> on <platform>`, a webchat conversation's its title.
+- **Titles.** `place` resolves a webchat conversation by its exact title, ignoring case, when no
+  other conversation has it, as before; when several do, it resolves the one that the same batched
+  ask says is the asker's own, if exactly one is. A title that matches nothing, or several of theirs,
+  gets the opaque refusal.
 - **A read restricts nothing afterwards.** The 1:1 write bar B3 kept is removed by B1/B2 (§5.5
   "Writes").
 - **Revocation**: after P leaves a place, excerpts already in a conversation's context stay there;
@@ -1349,3 +1377,15 @@ patrol or webchat. Only an agent in assistant mode is told in `remind`'s descrip
 item instead for something to be checked on at a time, since only it has items. Switching the mode
 off no longer holds back a pending reminder: it posts at its time. Items, patrols, proposals, the
 standing summary, sub-sessions, Activity and the one long session per place stay assistant mode's.
+
+**Thirty-fourth revision (2026-10-13)**: `recall` lists a person's own DMs and webchat conversations
+in their own one (issues #2979, #2810; §5.4 ③, §5.5 "Reads"). A person could already read their own
+conversations across linked surfaces by id, but the listing skipped every DM and webchat
+conversation, a Slack DM has no name, and a webchat title another conversation shared did not
+resolve, so in practice the agent could not find them. In the asker's own DM or webchat
+conversation, with no one else asking, the listing now offers their other DMs on any platform and
+bot and their webchat conversations, judged by the owner rule reads use, through one batched
+owner-only `agent/read-access` ask (feature `read-access-batch-v1`, up to 64 sessions); anywhere else
+it still lists only public conversations. A webchat title also resolves when it is unique among the
+asker's own conversations. A Control Plane without the feature is not asked, and the listing and
+title resolution stay as they were.

@@ -3,6 +3,8 @@ import {
   buildEnvelope,
   CronUpsert,
   decodeEnvelope,
+  READ_ACCESS_BATCH_SESSIONS,
+  READ_ACCESS_BATCH_V1_FEATURE,
   READ_ACCESS_LINKED_V1_FEATURE,
   READ_ACCESS_V1_FEATURE
 } from '../index.js'
@@ -66,14 +68,29 @@ describe('agent/read-access frames', () => {
     expect(READ_ACCESS_LINKED_V1_FEATURE).toBe('read-access-linked-v1')
   })
 
+  it('carries a batched ownership ask and its answer, up to the batch size', () => {
+    const ids = Array.from({ length: READ_ACCESS_BATCH_SESSIONS }, (_, i) => `s${i}`)
+    const req = buildEnvelope(
+      'agent/read-access',
+      { agentId: AGENT_ID, asker: { consoleUserId: 'u' }, sessionIds: ids, ownerOnly: true },
+      { orgId: 'org-a' }
+    )
+    expect(decodeEnvelope(JSON.stringify(req)).ok).toBe(true)
+    const rep = buildEnvelope('agent/read-access/ok', { asker: 'linked', visibleSessionIds: ids }, { orgId: 'org-a' })
+    expect(decodeEnvelope(JSON.stringify(rep)).ok).toBe(true)
+    expect(READ_ACCESS_BATCH_V1_FEATURE).toBe('read-access-batch-v1')
+  })
+
   it('rejects an asker that names neither form, too many sessions and an unknown state', () => {
+    const tooMany = Array.from({ length: READ_ACCESS_BATCH_SESSIONS + 1 }, (_, i) => `s${i}`)
     const bad = [
       buildEnvelope('agent/read-access', { agentId: AGENT_ID, asker: {}, sessionIds: [] } as never, { orgId: 'org-a' }),
       buildEnvelope(
         'agent/read-access',
-        { agentId: AGENT_ID, asker: { consoleUserId: 'u' }, sessionIds: Array.from({ length: 9 }, (_, i) => `s${i}`) },
+        { agentId: AGENT_ID, asker: { consoleUserId: 'u' }, sessionIds: tooMany },
         { orgId: 'org-a' }
       ),
+      buildEnvelope('agent/read-access/ok', { asker: 'linked', visibleSessionIds: tooMany }, { orgId: 'org-a' }),
       buildEnvelope('agent/read-access/ok', { asker: 'maybe', visibleSessionIds: [] } as never, { orgId: 'org-a' })
     ]
     for (const frame of bad) expect(decodeEnvelope(JSON.stringify(frame)).ok).toBe(false)

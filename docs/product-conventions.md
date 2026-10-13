@@ -1062,7 +1062,12 @@ Someone who linked no console account is also told that reading a conversation o
 or bot needs their account linked under Sign-in methods in their console Profile. Content from a
 private channel, a group DM, a DM or a webchat conversation comes with a note naming it, and the
 agent says where it came from in one short clause when it uses it; the note never blocks anything.
-`recall` lists only public conversations the person may read; a private one is read by name.
+`recall` lists the public conversations the person may read. In their own DM or webchat
+conversation, with no one else asking, it also lists their other DMs with the agent, on any platform
+and bot, and their webchat conversations: a DM as `DM with <their name> on <platform>`, a webchat
+conversation by its title. Anywhere else everyone present would see those names, so it lists only
+public ones. A private conversation is still read by name, and a webchat conversation also by its
+title when no other conversation of theirs has it.
 
 Reading a private conversation restricts nothing afterwards: the conversation that read it still
 writes as "Writing to other conversations" allows, changes items and sends to other agents.

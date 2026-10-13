@@ -15,6 +15,7 @@ import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
+  READ_ACCESS_BATCH_V1_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   isFrame
 } from '@agentconnect.md/protocol'
@@ -175,6 +176,8 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
 
     // memory-evolution.md §3.2.1: the whole `memory/store` family is served, so a `control-plane` home may activate.
     expect(snap.serverFeatures).toContain(AGENT_MEMORY_STORE_V1_FEATURE)
+    // assistant-mode.md §5.5: a batched ownership ask, which `recall` lists a person's own conversations by.
+    expect(snap.serverFeatures).toContain(READ_ACCESS_BATCH_V1_FEATURE)
 
     // assignments: exactly the one active row for this daemon, as a RouteAssign.
     expect(snap.assignments).toHaveLength(1)

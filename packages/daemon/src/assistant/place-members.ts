@@ -20,6 +20,8 @@ export interface PlaceMembersHost {
     sessionIds: readonly string[],
     ownerOnly: boolean
   ): Promise<ConsoleVerdict>
+  /** The same `ownerOnly` verdict on many sessions in one ask; rejects when the Control Plane cannot answer that many. */
+  readAccessOwned?(agentId: string, asker: ReadAsker, sessionIds: readonly string[]): Promise<ConsoleVerdict>
   /** The member id the console user behind the asker linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
   linkedMember?(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null>
 }
@@ -69,6 +71,14 @@ export class PlaceMembers {
     return await this.cached(this.verdicts, key, () => ask(agentId, asker, sessionIds, ownerOnly))
   }
 
+  /** Which of many sessions the console user behind the asker owns, in one ask; rejects when it cannot be asked. */
+  async ownedVerdict(agentId: string, asker: ReadAsker, sessionIds: readonly string[]): Promise<ConsoleVerdict> {
+    const ask = this.host.readAccessOwned
+    if (!ask) throw new Error('no batched console verdict on this daemon')
+    const key = ['owned', agentId, askerKey(asker), ...[...sessionIds].sort()].join('\u001f')
+    return await this.cached(this.verdicts, key, () => ask(agentId, asker, sessionIds))
+  }
+
   /** The member id the console user behind the asker linked in that bot's workspace, null for none; rejects when it cannot be asked. */
   async linkedMember(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null> {
     const ask = this.host.linkedMember
@@ -83,6 +93,7 @@ export class PlaceMembers {
       member: (integrationId, channel, userId) => this.isMember(integrationId, channel, userId),
       fullMember: (integrationId, userId) => this.isFullMember(integrationId, userId),
       console: (asker, sessionIds, ownerOnly) => this.consoleVerdict(agentId, asker, sessionIds, ownerOnly),
+      consoleOwned: (asker, sessionIds) => this.ownedVerdict(agentId, asker, sessionIds),
       linked: (integrationId, asker) => this.linkedMember(agentId, integrationId, asker)
     }
   }

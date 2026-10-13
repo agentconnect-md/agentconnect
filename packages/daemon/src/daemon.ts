@@ -60,6 +60,7 @@ import {
   CHAT_ACTOR_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
   READ_ACCESS_LINKED_V1_FEATURE,
+  READ_ACCESS_BATCH_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
@@ -1869,6 +1870,7 @@ export class Daemon {
     now: () => this.clock.now(),
     gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
     readAccess: (agentId, asker, sessionIds, ownerOnly) => this.readAccess(agentId, asker, sessionIds, ownerOnly),
+    readAccessOwned: (agentId, asker, sessionIds) => this.readAccessOwned(agentId, asker, sessionIds),
     linkedMember: (agentId, integrationId, asker) => this.linkedAccount(agentId, integrationId, asker)
   })
   /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
@@ -8863,6 +8865,17 @@ export class Daemon {
       this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
     )
     return res.asker === 'linked' ? { asker: 'linked', visible: new Set(res.visibleSessionIds) } : { asker: res.asker }
+  }
+
+  /** The `ownerOnly` verdict on many sessions in one ask; a Control Plane without `read-access-batch-v1` is not asked. */
+  private async readAccessOwned(
+    agentId: string,
+    asker: ReadAsker,
+    sessionIds: readonly string[]
+  ): Promise<ConsoleVerdict> {
+    if (this.cpClient?.supportsServerFeature?.(READ_ACCESS_BATCH_V1_FEATURE) !== true)
+      throw new Error('batched read access unavailable')
+    return await this.readAccess(agentId, asker, sessionIds, true)
   }
 
   /** The member id the console user behind the asker linked in that bot's workspace, null for none or an older Control Plane; rejects when an answer fails. */
