@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Agent, CronDef } from '../src/agents/agent-schema.js'
 import { Daemon } from '../src/daemon.js'
-import { FeishuConnection } from '../src/feishu/connection.js'
+import { feishuUserProfile } from '../src/feishu/connection.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
@@ -23,23 +23,6 @@ import { sessionKey, transcriptChannelKey, type LocalStore } from '../src/store/
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { openTestStore } from './store-support.js'
 import { WAIT } from './wait-support.js'
-
-/** The Feishu/Lark user records `contact.user.get` answers with, by id. */
-const larkUsers = vi.hoisted(() => new Map<string, Record<string, unknown>>())
-vi.mock('@larksuiteoapi/node-sdk', async (importOriginal) => {
-  const real = await importOriginal<typeof import('@larksuiteoapi/node-sdk')>()
-  class Client {
-    contact = {
-      user: {
-        get: async ({ path }: { path: { user_id: string } }) => ({
-          code: 0,
-          data: { user: larkUsers.get(path.user_id) }
-        })
-      }
-    }
-  }
-  return { ...real, Client }
-})
 
 // A Monday 04:20 in UTC+8 is still Sunday 20:20 in UTC.
 const T = Date.parse('2026-10-11T20:20:00Z')
@@ -435,25 +418,18 @@ describe('a person’s profile zone', () => {
     expect(await conn.getUserProfile('U0BOB')).not.toHaveProperty('timeZone')
   })
 
-  it('reads the zone a Feishu/Lark user record names, and none when it names none or an unknown one', async () => {
-    larkUsers.set('on_alice', { name: 'Alice', time_zone: 'Asia/Shanghai' })
-    larkUsers.set('on_bob', { name: 'Bob' })
-    larkUsers.set('on_carol', { name: 'Carol', time_zone: 'Not/AZone' })
-    const conn = new FeishuConnection({
-      group: {
-        appId: 'cli_example',
-        appSecret: 'secret',
-        mode: 'direct',
-        region: 'feishu',
-        botOpenId: 'ou_bot',
-        integrations: [{ agentId: 'bot-a', integrationId: 'int-fs' }]
-      },
-      onMessage: () => {},
-      newTraceId: () => 't'
+  it('reads the zone a Feishu/Lark user record names, and none when it names none or an unknown one', () => {
+    expect(feishuUserProfile('on_alice', { name: 'Alice', time_zone: 'Asia/Shanghai' })).toEqual({
+      id: 'on_alice',
+      name: 'Alice',
+      timeZone: 'Asia/Shanghai'
     })
-    expect(await conn.getUserProfile('on_alice')).toEqual({ id: 'on_alice', name: 'Alice', timeZone: 'Asia/Shanghai' })
-    expect(await conn.getUserProfile('on_bob')).toEqual({ id: 'on_bob', name: 'Bob' })
-    expect(await conn.getUserProfile('on_carol')).toEqual({ id: 'on_carol', name: 'Carol' })
+    expect(feishuUserProfile('on_bob', { name: 'Bob' })).toEqual({ id: 'on_bob', name: 'Bob' })
+    expect(feishuUserProfile('on_carol', { name: 'Carol', time_zone: 'Not/AZone' })).toEqual({
+      id: 'on_carol',
+      name: 'Carol'
+    })
+    expect(feishuUserProfile('on_dan', undefined)).toEqual({ id: 'on_dan' })
   })
 
   it('waits for the lookup the message started, then answers from the cache', async () => {

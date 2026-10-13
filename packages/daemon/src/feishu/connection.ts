@@ -485,26 +485,8 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
       const res = (await client.contact.user.get({
         path: { user_id: userId },
         params: { user_id_type: userIdType }
-      })) as {
-        data?: {
-          user?: {
-            name?: string
-            en_name?: string
-            avatar?: { avatar_72?: string; avatar_240?: string; avatar_origin?: string }
-            time_zone?: string
-          }
-        }
-      }
-      const u = res?.data?.user ?? {}
-      const avatarUrl = u.avatar?.avatar_72 ?? u.avatar?.avatar_240 ?? u.avatar?.avatar_origin
-      const timeZone = knownTimeZone(u.time_zone)
-      return {
-        id: userId,
-        ...(u.name ? { name: u.name } : {}),
-        ...(u.en_name ? { realName: u.en_name } : {}),
-        ...(avatarUrl ? { avatarUrl } : {}),
-        ...(timeZone ? { timeZone } : {})
-      }
+      })) as { data?: { user?: FeishuUserRecord } }
+      return feishuUserProfile(userId, res?.data?.user)
     },
     async getBotInfo() {
       const res = (await client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })) as {
@@ -552,6 +534,30 @@ const FEISHU_CHANNEL_HISTORY_MAX_LIMIT = 50
 const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
 
 type FeishuPermissionIssue = 'app-permissions' | 'bot-capability' | 'app-availability' | 'chat-access'
+
+/** The fields of a `contact.user.get` user record the profile reads. */
+export interface FeishuUserRecord {
+  name?: string
+  en_name?: string
+  avatar?: { avatar_72?: string; avatar_240?: string; avatar_origin?: string }
+  time_zone?: string
+}
+
+/** A user record as a profile: its names, avatar, and its zone only when the record names one the runtime knows. */
+export function feishuUserProfile(
+  userId: string,
+  u: FeishuUserRecord = {}
+): { id: string; name?: string; realName?: string; avatarUrl?: string; timeZone?: string } {
+  const avatarUrl = u.avatar?.avatar_72 ?? u.avatar?.avatar_240 ?? u.avatar?.avatar_origin
+  const timeZone = knownTimeZone(u.time_zone)
+  return {
+    id: userId,
+    ...(u.name ? { name: u.name } : {}),
+    ...(u.en_name ? { realName: u.en_name } : {}),
+    ...(avatarUrl ? { avatarUrl } : {}),
+    ...(timeZone ? { timeZone } : {})
+  }
+}
 
 type UnknownRecord = Record<string, unknown>
 type FeishuPermissionState = { issue: FeishuPermissionIssue; scopes: string[] }
