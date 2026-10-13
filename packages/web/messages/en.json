@@ -4318,6 +4318,7 @@
       "retry": "Retry",
       "tooltipUsage": "usage",
       "tooltipToppedUp": "topped up",
+      "tooltipTotal": "Total",
       "emptyUsage": "Nothing was deducted in the {period}.",
       "emptyTopups": "No credits were added in the {period}.",
       "footerLine": "{mode} · {period}",
@@ -4342,7 +4343,9 @@
           "label": "90d",
           "period": "90 days"
         }
-      }
+      },
+      "otherModels": "Other",
+      "unknownModel": "Unknown model"
     },
     "membersDontPay": {
       "cardTitle": "Add credits",
@@ -4378,13 +4381,13 @@
         "allBody": "Purchases and usage deductions will appear here once your org is funded."
       },
       "usagePeriod": "Usage — {period}",
-      "usageTag": "usage",
       "agentShare": "{name} — {amount}",
       "withheldShare": "Agents you don’t have access to — {amount}",
       "receipt": "Receipt",
       "loadMore": "Load more",
       "loadingMore": "Loading…",
-      "endOfLedger": "end of ledger"
+      "endOfLedger": "end of ledger",
+      "modelShare": "{name} — {amount}"
     }
   },
   "Settings": {
