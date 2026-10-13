@@ -521,6 +521,8 @@ interface ConsoleWorld {
   owners?: Record<string, string>
   /** Console user → the Slack account they linked in the bot's workspace; absent ⇒ none, so the console decides. */
   accounts?: Record<string, string>
+  /** Another bot → console user → the account they linked in that bot's workspace. */
+  accountsOn?: Record<string, Record<string, string>>
 }
 
 /** The console user behind an asker: every Slack member is linked by default, P as user-p; no other platform's member is. */
@@ -560,6 +562,10 @@ function perAsker(
     failLookups?: boolean
     fullMembers?: string[]
     console?: ConsoleWorld
+    /** The Control Plane answers a batched ownership ask (`read-access-batch-v1`). */
+    batch?: boolean
+    /** The agent's other bots. */
+    gateways?: Record<string, MessageGateway>
   } = {}
 ) {
   const members: Record<string, string[]> = {
@@ -589,19 +595,25 @@ function perAsker(
   const readAccess = vi.fn(async (_agent: string, asker: ReadAsker, sessions: readonly string[], ownerOnly: boolean) =>
     consoleVerdict(opts.console ?? {}, asker, sessions, ownerOnly)
   )
+  const readAccessOwned = vi.fn(async (_agent: string, asker: ReadAsker, sessions: readonly string[]) =>
+    consoleVerdict(opts.console ?? {}, asker, sessions, true)
+  )
+  const linkedMember = vi.fn(async (_agent: string, integrationId: string, asker: ReadAsker) => {
+    const user = personOf(opts.console ?? {}, asker)
+    const accounts = integrationId === 'int-slack' ? opts.console?.accounts : opts.console?.accountsOn?.[integrationId]
+    return (user ? accounts?.[user] : undefined) ?? null
+  })
   const placeMembers = new PlaceMembers({
     now: () => clock.now,
-    gatewayFor: (id) => (id === 'int-slack' ? gw : undefined),
+    gatewayFor: (id) => (id === 'int-slack' ? gw : opts.gateways?.[id]),
     readAccess,
-    linkedMember: async (_agent, integrationId, asker) => {
-      const user = personOf(opts.console ?? {}, asker)
-      return (integrationId === 'int-slack' && user ? opts.console?.accounts?.[user] : undefined) ?? null
-    }
+    ...(opts.batch ? { readAccessOwned } : {}),
+    linkedMember
   })
   const live: Live = { messages: [{ msg: fromP, integrationId: 'int-slack' }] }
   const readLookups = vi.fn((agentId: string) => placeMembers.lookupsFor(agentId))
   const deps = makeDeps({
-    gatewayFor: (id) => (id === 'int-slack' ? gw : id === 'int-tg' ? tg : undefined),
+    gatewayFor: (id) => (id === 'int-slack' ? gw : id === 'int-tg' ? tg : opts.gateways?.[id]),
     readAskers: async (ctx) =>
       live.messages
         ? turnAskers(
@@ -619,7 +631,7 @@ function perAsker(
       ? [{ msg, integrationId: opts2.integrationId ?? 'int-slack', ...(opts2.console ? { console: true } : {}) }]
       : undefined
   }
-  return { deps, gw, clock, members, live, asks, readAccess }
+  return { deps, gw, clock, members, live, asks, readAccess, readAccessOwned, linkedMember }
 }
 
 const listedPlaces = async (ctx: SessionContext, deps: OpsDeps): Promise<string[]> =>
@@ -1083,5 +1095,274 @@ describe('across platforms and bots: as the console would show it to the person'
     const { deps, readAccess } = perAsker({ console: { visible: { 'user-p': ['out-s-tg-closed'] } } })
     readAccess.mockRejectedValue(new Error('offline'))
     expect(await executeTool(inOwnDm, 'recall', { place: 'telegram:-1002' }, deps)).toEqual(opaque('telegram:-1002'))
+  })
+})
+
+// S is P's Slack account on the agent's first bot, U its console user (user-p), and U_P2 the account U linked on the second.
+describe("recall — a person's own DMs and webchat conversations", () => {
+  const OTHER = 'int-slack-2'
+  const twoBots = [...integrations, { id: OTHER, platform: 'slack' }]
+  const OWN_SESSIONS: SessionRecord[] = [
+    ...SESSIONS.map((s) => (s.key === 's-dm-p' ? { ...s, triggeredBy: P } : s)),
+    session({
+      key: 's-dm-p2',
+      platform: 'slack',
+      channel: 'D_P2',
+      conversationKind: 'dm',
+      transportScope: 'scope-other',
+      triggeredBy: 'U_P2',
+      updatedAt: 380
+    }),
+    session({
+      key: 's-dm-x2',
+      platform: 'slack',
+      channel: 'D_X2',
+      conversationKind: 'dm',
+      transportScope: 'scope-other',
+      triggeredBy: 'U_X2',
+      updatedAt: 370
+    }),
+    session({ key: 's-web3', platform: 'webchat', channel: 'chat-3', conversationKind: 'dm', title: 'Planning' }),
+    session({ key: 's-web4', platform: 'webchat', channel: 'chat-4', conversationKind: 'dm', title: 'Budget' }),
+    session({ key: 's-web5', platform: 'webchat', channel: 'chat-5', conversationKind: 'dm', title: 'Budget' })
+  ]
+  const OWN_ROWS = [row('s-web', 'user-p', 'my planning notes', 40), row('s-web3', 'user-q', 'q planning notes', 41)]
+  const PEOPLE: Record<string, string> = { [P]: 'pat', U_P2: 'pat.two' }
+  // U_X2 is an account in the second workspace that no console user linked.
+  const WORLD: ConsoleWorld = {
+    linked: { [P]: 'user-p', U_Q: 'user-q', U_P2: 'user-p' },
+    owners: {
+      'out-s-web': 'user-p',
+      'out-s-web2': 'user-p',
+      'out-s-dm-p2': 'user-p',
+      'out-s-web4': 'user-p',
+      'out-s-web5': 'user-p',
+      'out-s-web3': 'user-q',
+      'out-s-dm-x2': 'user-x2',
+      'out-s-tg-dm': 'user-q'
+    },
+    // The console shows user-p two DMs that are not theirs; only ownership lists one.
+    visible: {
+      'user-p': [
+        'out-s-tg',
+        'out-s-dm-p',
+        'out-s-web',
+        'out-s-web2',
+        'out-s-dm-p2',
+        'out-s-web4',
+        'out-s-web5',
+        'out-s-dm-x2',
+        'out-s-tg-dm'
+      ],
+      'user-q': ['out-s-dm-q', 'out-s-web3', 'out-s-tg-dm']
+    },
+    accounts: { 'user-p': P, 'user-q': 'U_Q' },
+    accountsOn: { [OTHER]: { 'user-p': 'U_P2' } }
+  }
+
+  function ownStore(sessions: SessionRecord[]): PlaceStore {
+    const base = fakeStore(sessions)
+    return {
+      ...base,
+      transcriptPageForAgent: async (scope, beforeSeq, limit) => {
+        const rows = OWN_ROWS.filter((r) => r.sessionKey === scope.sessionKey).map((r) => r.row)
+        if (rows.length === 0) return await base.transcriptPageForAgent(scope, beforeSeq, limit)
+        return { rows: rows.filter((r) => beforeSeq === null || r.seq < beforeSeq).slice(0, limit), hasMore: false }
+      },
+      getDisplayNames: async (ids) =>
+        new Map([...(await base.getDisplayNames(ids)), ...Object.entries(PEOPLE).filter(([id]) => ids.includes(id))])
+    }
+  }
+
+  function own(opts: { batch?: boolean; sessions?: SessionRecord[]; world?: ConsoleWorld } = {}) {
+    const otherBot = fakeGateway({
+      listMemberIds: vi.fn(
+        async (channel: string) =>
+          ({ D_P2: ['U_P2', 'B_BOT2'], D_X2: ['U_X2', 'B_BOT2'] })[channel as 'D_P2' | 'D_X2'] ?? []
+      )
+    })
+    const world = perAsker({ console: opts.world ?? WORLD, batch: opts.batch ?? true, gateways: { [OTHER]: otherBot } })
+    const deps: OpsDeps = {
+      ...world.deps,
+      placeStore: ownStore(opts.sessions ?? OWN_SESSIONS),
+      placeIntegrationFor: (_agent, platform, scope) =>
+        platform === 'slack'
+          ? scope === 'scope-other'
+            ? OTHER
+            : 'int-slack'
+          : platform === 'telegram'
+            ? 'int-tg'
+            : undefined
+    }
+    return { ...world, deps, otherBot }
+  }
+
+  const inDmOfS = { ...inOwnDm, integrations: twoBots }
+  const inWebchatOfU = ctxAt('webchat', 'chat-1', { integrations: twoBots })
+  const room = ctxAt('slack', 'C_DEPLOY', { integrations: twoBots })
+  const fromU = { ...fromP, platform: 'webchat', channel: 'chat-1', sender: { id: 'user-p', isBot: false } }
+  const PRIVATE = ['slack:D_P', 'slack:D_P2', 'webchat:chat-1', 'webchat:chat-2', 'webchat:chat-4', 'webchat:chat-5']
+
+  const listingOf = async (ctx: SessionContext, deps: OpsDeps) =>
+    ((await executeTool(ctx, 'recall', {}, deps)) as { places: Record<string, unknown>[] }).places.map(
+      ({ lastActive: _at, ...entry }) => entry
+    )
+
+  it("lists, in S's own DM, U's webchat conversations and the DM of U's linked account on the other bot", async () => {
+    const { deps, readAccessOwned, readAccess, otherBot } = own()
+    expect(await listingOf(inDmOfS, deps)).toEqual([
+      { place: 'slack:D_P', kind: 'dm', current: true },
+      { place: 'slack:C_DEPLOY', name: 'deploys', kind: 'channel' },
+      { place: 'webchat:chat-1', name: 'Planning', kind: 'webchat' },
+      { place: 'webchat:chat-2', name: 'Untitled conversation', kind: 'webchat' },
+      { place: 'telegram:-1001', kind: 'channel' },
+      { place: 'slack:D_P2', name: 'DM with pat.two on Slack', kind: 'dm' },
+      { place: 'webchat:chat-4', name: 'Budget', kind: 'webchat' },
+      { place: 'webchat:chat-5', name: 'Budget', kind: 'webchat' }
+    ])
+    // One batched ask; another person's DM on S's own bot is never asked about, and no place is asked alone.
+    expect(readAccessOwned).toHaveBeenCalledTimes(1)
+    expect(readAccessOwned.mock.calls[0]![2]).not.toContain('out-s-dm-q')
+    expect(readAccess.mock.calls.filter((call) => call[3])).toEqual([])
+    expect(otherBot.listMemberIds).toHaveBeenCalledWith('D_P2')
+    expect(otherBot.listMemberIds).not.toHaveBeenCalledWith('D_X2')
+  })
+
+  it("lists, in U's webchat, the Slack DM with S beside U's other conversations", async () => {
+    const { deps, asks } = own()
+    asks(fromU, { console: true })
+    expect(await listingOf(inWebchatOfU, deps)).toEqual([
+      { place: 'slack:D_P', name: 'DM with pat on Slack', kind: 'dm' },
+      { place: 'slack:C_DEPLOY', name: 'deploys', kind: 'channel' },
+      { place: 'webchat:chat-1', name: 'Planning', kind: 'webchat', current: true },
+      { place: 'webchat:chat-2', name: 'Untitled conversation', kind: 'webchat' },
+      { place: 'telegram:-1001', kind: 'channel' },
+      { place: 'slack:D_P2', name: 'DM with pat.two on Slack', kind: 'dm' },
+      { place: 'webchat:chat-4', name: 'Budget', kind: 'webchat' },
+      { place: 'webchat:chat-5', name: 'Budget', kind: 'webchat' }
+    ])
+    // Each listed id reads back.
+    expect(await excerptsOf(inWebchatOfU, 'slack:D_P2', deps)).toEqual([])
+  })
+
+  it('lists none of them in a shared channel or a group DM, though the asker owns them', async () => {
+    const { deps, asks, readAccessOwned } = own()
+    for (const ctx of [room, ctxAt('slack', 'G_MPIM', { integrations: twoBots })]) {
+      asks(from(P, ctx.channel))
+      const listed = await listedPlaces(ctx, deps)
+      expect(
+        listed.filter((place) => PRIVATE.includes(place)),
+        ctx.channel
+      ).toEqual([])
+    }
+    expect(readAccessOwned).not.toHaveBeenCalled()
+  })
+
+  it('lists none when nobody, or more than one person, is asking, or a patrol runs for someone else', async () => {
+    const { deps, asks, live, readAccessOwned } = own()
+    asks(undefined)
+    expect(await listedPlaces(inDmOfS, deps)).toEqual(['slack:D_P', 'slack:C_DEPLOY'])
+    live.messages = [
+      { msg: fromP, integrationId: 'int-slack' },
+      { msg: from('U_Q', 'D_P'), integrationId: 'int-slack' }
+    ]
+    expect((await listedPlaces(inDmOfS, deps)).filter((place) => PRIVATE.includes(place))).toEqual(['slack:D_P'])
+    expect(readAccessOwned).not.toHaveBeenCalled()
+    // Q's patrol in S's DM: Q owns a webchat conversation and a DM, but this DM is not Q's.
+    asks({ ...fromP, source: 'agent', sender: { id: AGENT, isBot: true }, headless: true })
+    live.opener = {
+      people: [{ kind: 'member', platform: 'slack', integrationId: 'int-slack', userId: 'U_Q' }],
+      nobody: false
+    }
+    const patrol = {
+      ...inDmOfS,
+      thread: 'subsession:patrol-d-9',
+      tools: [{ name: 'recall' }] as SessionContext['tools']
+    }
+    const listed = await listedPlaces(patrol, deps)
+    expect(listed.filter((place) => /webchat:|telegram:tg-dm|slack:D_/.test(place))).toEqual(['slack:D_P'])
+    // Q was asked about, so it is the check of this DM that keeps Q's conversations out.
+    expect(readAccessOwned).toHaveBeenCalledTimes(1)
+  })
+
+  it('lists nothing private for an account in another workspace that no console user linked', async () => {
+    const { deps, asks } = own()
+    const inDmOfX2 = ctxAt('slack', 'D_X2', {
+      integrationId: OTHER,
+      transportScope: 'scope-other',
+      integrations: twoBots
+    })
+    asks({ ...fromP, channel: 'D_X2', sender: { id: 'U_X2', isBot: false } }, { integrationId: OTHER })
+    expect(await listedPlaces(inDmOfX2, deps)).toEqual(['slack:D_X2'])
+  })
+
+  it("resolves a webchat title unique among the asker's own conversations, and refuses a duplicate or unknown one", async () => {
+    const { deps, asks } = own()
+    asks(from(P))
+    expect(await excerptsOf(room, 'Planning', deps)).toEqual(['my planning notes'])
+    asks(from('U_Q'))
+    expect(await excerptsOf(room, 'planning', deps)).toEqual(['q planning notes'])
+    asks(from(P))
+    for (const handle of ['Budget', 'Nowhere']) {
+      expect(await executeTool(room, 'recall', { place: handle }, deps), handle).toEqual(opaque(handle))
+    }
+    asks(undefined)
+    expect(await executeTool(room, 'recall', { place: 'Planning' }, deps)).toEqual(opaque('Planning'))
+  })
+
+  it('makes the same Control Plane calls for 10 or 100 candidates: one batched ask, and a linked account per bot', async () => {
+    const calls: number[] = []
+    for (const count of [10, 100]) {
+      const many = Array.from({ length: count }, (_, i) =>
+        session({
+          key: `s-many-${i}`,
+          platform: 'webchat',
+          channel: `many-${i}`,
+          conversationKind: 'dm',
+          title: `T${i}`
+        })
+      )
+      // The oldest conversation, which U opened, still makes the one ask.
+      const opened = session({
+        key: 's-opened',
+        platform: 'webchat',
+        channel: 'opened',
+        conversationKind: 'dm',
+        triggeredBy: 'user-p'
+      })
+      const mine = [...many.filter((_, i) => i % 2 === 0), opened].map((s) => `out-${s.key}`)
+      const world: ConsoleWorld = {
+        ...WORLD,
+        owners: { ...WORLD.owners, ...Object.fromEntries(mine.map((id) => [id, 'user-p'])) },
+        visible: { ...WORLD.visible, 'user-p': [...(WORLD.visible?.['user-p'] ?? []), ...mine] }
+      }
+      const { deps, asks, readAccessOwned, readAccess, linkedMember } = own({
+        sessions: [...OWN_SESSIONS, ...many, opened],
+        world
+      })
+      asks(fromU, { console: true })
+      const listed = await listedPlaces(inWebchatOfU, deps)
+      expect(listed).toContain('webchat:many-0')
+      expect(listed).not.toContain('webchat:many-1')
+      expect(readAccessOwned).toHaveBeenCalledTimes(1)
+      expect(readAccessOwned.mock.calls[0]![2].length).toBeLessThanOrEqual(64)
+      expect(readAccessOwned.mock.calls[0]![2]).toContain('out-s-opened')
+      expect(readAccess.mock.calls.filter((call) => call[3])).toEqual([])
+      // One per bot, shared with the reads: the two Slack bots holding a DM of U's, and Telegram's open group.
+      expect(linkedMember.mock.calls.map((call) => call[1]).sort()).toEqual(['int-slack', 'int-slack-2', 'int-tg'])
+      calls.push(readAccessOwned.mock.calls.length + readAccess.mock.calls.length + linkedMember.mock.calls.length)
+    }
+    expect(calls[0]).toBe(calls[1])
+  })
+
+  it('lists and resolves exactly as before on a Control Plane without the batched ask', async () => {
+    const { deps, asks } = own({ batch: false })
+    expect(await listedPlaces(inDmOfS, deps)).toEqual(['slack:D_P', 'slack:C_DEPLOY', 'telegram:-1001'])
+    asks(fromU, { console: true })
+    expect(await listedPlaces(inWebchatOfU, deps)).toEqual(['slack:C_DEPLOY', 'webchat:chat-1', 'telegram:-1001'])
+    asks(from(P))
+    expect(await executeTool(room, 'recall', { place: 'Planning' }, deps)).toEqual(opaque('Planning'))
+    // A private conversation is still read by its id.
+    expect(await excerptsOf(room, 'webchat:chat-1', deps)).toEqual(['my planning notes'])
   })
 })

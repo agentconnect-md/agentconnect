@@ -1,6 +1,7 @@
 // A person's linked chat account is asked of a Control Plane that advertises read-access-linked-v1; an older one leaves the console to decide.
 import { describe, expect, it, vi } from 'vitest'
 import {
+  READ_ACCESS_BATCH_V1_FEATURE,
   READ_ACCESS_LINKED_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
   type AgentReadAccess,
@@ -72,5 +73,20 @@ describe("a person's linked chat account", () => {
       // Even where the console would show the session.
       expect(await judged(cp.lookups)).toBe('private')
     }
+  })
+})
+
+describe('a batched ownership ask', () => {
+  const ids = Array.from({ length: 20 }, (_, i) => `ses-${i}`)
+
+  it('goes, owner-only and in one ask, only to a Control Plane that advertises read-access-batch-v1', async () => {
+    const older = daemonWith(BOTH, {})
+    await expect(older.lookups.consoleOwned!(CONSOLE_P, ids)).rejects.toThrow()
+    expect(older.readAccess).not.toHaveBeenCalled()
+    const newer = daemonWith([...BOTH, READ_ACCESS_BATCH_V1_FEATURE], { visibleSessionIds: ['ses-3'] })
+    expect(await newer.lookups.consoleOwned!(CONSOLE_P, ids)).toEqual({ asker: 'linked', visible: new Set(['ses-3']) })
+    expect(newer.readAccess.mock.calls.map((call) => call[0])).toEqual([
+      { agentId: AGENT, asker: { consoleUserId: 'user-p' }, sessionIds: ids, ownerOnly: true }
+    ])
   })
 })

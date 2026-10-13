@@ -30,6 +30,7 @@ import {
   CHAT_ACTOR_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
   READ_ACCESS_LINKED_V1_FEATURE,
+  READ_ACCESS_BATCH_V1_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   CRON_REPORT_ACK_FEATURE,
@@ -161,6 +162,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       READ_ACCESS_V1_FEATURE,
       // …and the chat identity a console user linked in a bot's workspace, which a read or write through it is judged as.
       READ_ACCESS_LINKED_V1_FEATURE,
+      // …and answers that for up to 64 sessions at once, which `recall` lists a person's own conversations by.
+      READ_ACCESS_BATCH_V1_FEATURE,
       // memory-evolution.md §3.2.1: this CP serves the whole `memory/store` family, the migration completion included.
       AGENT_MEMORY_STORE_V1_FEATURE,
       AGENT_MEMORY_HISTORY_READ_V1_FEATURE,

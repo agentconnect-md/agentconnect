@@ -7,12 +7,15 @@ export const ReadAccessAsker = z.union([
 ])
 export type ReadAccessAsker = z.infer<typeof ReadAccessAsker>
 
+/** Sessions one ask may name of a Control Plane that advertises `read-access-batch-v1`; any other takes at most 8. */
+export const READ_ACCESS_BATCH_SESSIONS = 64
+
 // `agent/read-access` (D→C REQ): which of an agent's sessions the console user behind an asker could see, for the read rule (assistant-mode.md §5.5).
 export const AgentReadAccess = z.object({
   agentId: z.string().uuid(),
   asker: ReadAccessAsker,
   // Outward session ids; empty asks only whether the asker is a linked console user.
-  sessionIds: z.array(z.string().min(1).max(256)).max(8),
+  sessionIds: z.array(z.string().min(1).max(256)).max(READ_ACCESS_BATCH_SESSIONS),
   // A DM or webchat source: only sessions the asker owns count, whoever else the console shows them to.
   ownerOnly: z.boolean().optional(),
   // With `read-access-linked-v1`: also answer which chat identity the asker's console user linked in this bot's workspace.
@@ -27,7 +30,7 @@ export type ReadAccessAskerState = z.infer<typeof ReadAccessAskerState>
 // `agent/read-access/ok` (C→D REP): the session-visibility verdict the console itself would give that user.
 export const AgentReadAccessOk = z.object({
   asker: ReadAccessAskerState,
-  visibleSessionIds: z.array(z.string().min(1).max(256)).max(8),
+  visibleSessionIds: z.array(z.string().min(1).max(256)).max(READ_ACCESS_BATCH_SESSIONS),
   // The console user a `linked` asker resolved to, which keys their memory layer; absent from an older Control Plane.
   consoleUserId: z.string().min(1).max(256).optional(),
   // The member id the asker's console user linked in `linkedOn`'s workspace, null for none; absent from an older Control Plane.
