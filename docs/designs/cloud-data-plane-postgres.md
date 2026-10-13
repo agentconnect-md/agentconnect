@@ -71,7 +71,7 @@ including:
 - transcript rows, recipients, tool bodies, attachments, and mutation cursors;
 - durable inbox, hook-report receipts, activation rendezvous, and loop guards;
 - memory-capture and remote-MCP revocation outboxes;
-- cron watermarks, orchestration rows, dreams, and channel-introduction state;
+- cron watermarks, dreams, and channel-introduction state;
 - routing, runtime-catalog, identity/display, and platform-observation caches.
 
 In-process turn streams, live ACP hosts, timers, sockets, and other generation-local

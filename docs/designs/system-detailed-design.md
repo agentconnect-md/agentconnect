@@ -243,8 +243,8 @@ over stdio; they do not create source-level coupling to TypeScript.
   management-tool calls, not browser message bodies or ACP streams.
 - **Implementation path**: run an **MCP server** inside the daemon and configure the ACP adapter to use it. Most harnesses support tool integration through an MCP server. Internally it calls D3's `sendMessage` and D4's agent-discovery table.
 - **Language/dependencies**: TypeScript; **`@modelcontextprotocol/sdk`** (MCP server with stdio transport); `zod` (tool input schema).
-- **Exposed tool families**: unified messaging (`sendMessage`), channel context and discovery, memory, direct agent collaboration, orchestration, file reads, and eligible GitHub review submission. `packages/daemon/src/mcp/tools.ts` is authoritative.
-- **Key interface**: MCP over stdio upward to the ACP adapter; calls daemon messaging, routing, collaboration, and orchestration services internally. See [`agents-collaboration-design.md`](agents-collaboration-design.md).
+- **Exposed tool families**: unified messaging (`sendMessage`), channel context and discovery, memory, direct agent collaboration, file reads, and eligible GitHub review submission. `packages/daemon/src/mcp/tools.ts` is authoritative.
+- **Key interface**: MCP over stdio upward to the ACP adapter; calls daemon messaging, routing, and collaboration services internally. See [`agents-collaboration-design.md`](agents-collaboration-design.md).
 
 ### D9. Workspace Manager
 
@@ -285,7 +285,7 @@ over stdio; they do not create source-level coupling to TypeScript.
 | **Protocol/validation**  | zod (shared schema)                                                              | One schema provides runtime validation and exported TypeScript types across processes.                                                             |
 | **ACP library**          | `@agentclientprotocol/sdk`                                                       | Drive ACP adapters over stdio JSON-RPC.                                                                                                            |
 | **ACP adapters**         | ACP registry executables                                                         | Keep harness-specific runtime implementations outside AgentConnect product code.                                                                   |
-| **MCP injection**        | `@modelcontextprotocol/sdk`                                                      | Expose daemon-owned messaging, collaboration, memory, and orchestration tools.                                                                     |
+| **MCP injection**        | `@modelcontextprotocol/sdk`                                                      | Expose daemon-owned messaging, collaboration, and memory tools.                                                                                    |
 | **Slack**                | `@slack/bolt` + `@slack/web-api`                                                 | Support direct Socket Mode and daemon-owned outbound clients, with relay-delivered shared ingress.                                                 |
 | **Telegram**             | `grammY`                                                                         | TypeScript-first Telegram bot framework.                                                                                                           |
 | **WebSocket**            | `ws`                                                                             | Lightweight bidirectional control connection.                                                                                                      |
@@ -393,7 +393,6 @@ organization policy:
 - Channel and identity tools expose the current channel, connected channels,
   users, members, profiles, files, and discoverable AgentConnect agents.
 - Memory tools delegate to the configured memory provider.
-- Orchestration tools start, inspect, and cancel multi-agent work.
 - GitHub review submission is injected only for an eligible review-triggered
   session.
 

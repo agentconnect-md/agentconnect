@@ -207,20 +207,7 @@ export interface MessageAgentReq {
    * platform echo as ONE delivery in either arrival order.
    */
   agentCallDeliveryId?: string
-  /**
-   * send-message-routing-rework.md §3.1: this is the POSTLESS `toAgent` form (no
-   * `channel`), so the woken child runs HEADLESS — it emits no platform output of its own.
-   *
-   * Without it, "postless" would only describe the wake and not the delegation: nothing is
-   * posted to announce the call, but the child's own answer would still appear in the
-   * caller's channel, which is exactly the interruption the postless form exists to avoid.
-   * The child keeps everything that makes it followable — origin lineage, hop count,
-   * correlation, `needsReply`, and `viewSessionStatus` — and reports back through the
-   * parent-session reply, whose injected body is likewise never published.
-   *
-   * Set only by `sendMessage`'s agent target. Other internal callers (orchestration, the
-   * intro fan-out) keep their existing visibility, which they express themselves.
-   */
+  /** send-message-routing-rework.md §3.1: the postless `toAgent` form, whose child runs headless; set only by `sendMessage`'s agent target. */
   postless?: boolean
 }
 

@@ -96,14 +96,6 @@ import {
 } from './ops/platform-actions.js'
 import { shareFile, type ShareFileDeps } from './ops/share-file.js'
 import {
-  cancelOrchestration,
-  getOrchestration,
-  ORCHESTRATION_OWNER_ARGS,
-  startOrchestration,
-  START_ORCHESTRATION_ARGS,
-  type OrchestrationDeps
-} from './ops/orchestration.js'
-import {
   replyGithubReviewThreads,
   REPLY_GITHUB_REVIEW_THREADS_ARGS,
   submitCodeReview,
@@ -175,12 +167,6 @@ export type { SubmitCodeReviewReq } from '../codehost/review-adapter.js'
 export type { CodeHostEffectReq } from './ops/code-host.js'
 export { SEND_MESSAGE_BRANCHES } from './ops/messaging.js'
 export type { MessageAgentReq, MessageAgentResult, ReplyToSessionReq, ReplyToSessionResult } from './ops/messaging.js'
-export type {
-  OrchestrationOwnerReq,
-  OrchestrationSubtaskInput,
-  StartOrchestrationReq,
-  StartOrchestrationResult
-} from './ops/orchestration.js'
 export type { SessionStatusReq, SessionStatusResult } from './ops/session.js'
 export { askHost, AskRequired } from './ask.js'
 export type { AskDeps, AskOutcome, AskPort, AskSpec } from './ask.js'
@@ -200,7 +186,6 @@ export interface OpsDeps
     DirectoryDeps,
     KnowledgeDeps,
     DecisionDeps,
-    OrchestrationDeps,
     GithubReviewDeps,
     CodeHostEffectDeps,
     MemoryOpsDeps,
@@ -277,9 +262,6 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['evaluateDecision', evaluateDecision],
   ['listOrgSkills', listOrgSkills],
   ['sendMessage', sendMessage],
-  ['startOrchestration', startOrchestration],
-  ['getOrchestration', getOrchestration],
-  ['cancelOrchestration', cancelOrchestration],
   ['submitCodeReview', submitCodeReview],
   // A working alias so sessions already warm with the pre-promotion tool set keep resolving.
   ['submitGithubReview', submitCodeReview],
@@ -349,9 +331,6 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['listDecisions', LIST_DECISIONS_ARGS],
   ['evaluateDecision', EVALUATE_DECISION_ARGS],
   ['listOrgSkills', LIST_ORG_SKILLS_ARGS],
-  ['startOrchestration', START_ORCHESTRATION_ARGS],
-  ['getOrchestration', ORCHESTRATION_OWNER_ARGS],
-  ['cancelOrchestration', ORCHESTRATION_OWNER_ARGS],
   ['submitCodeReview', SUBMIT_CODE_REVIEW_ARGS],
   ['submitGithubReview', SUBMIT_CODE_REVIEW_ARGS],
   ['replyGithubReviewThreads', REPLY_GITHUB_REVIEW_THREADS_ARGS],

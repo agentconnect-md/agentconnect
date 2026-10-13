@@ -24,7 +24,7 @@
 >
 > This terminology is shared by
 > [agent-collaboration-implementation.md](agent-collaboration-implementation.md),
-> which implements delivery and orchestration,
+> which implements delivery,
 > [loop-breaker-design.md](loop-breaker-design.md), which decides when to stop,
 > and [daemon-detailed-design.md](daemon-detailed-design.md), which implements
 > it in the daemon. User-visible message presentation and delivery conventions
@@ -473,7 +473,7 @@ implements the same-thread form, and unified `sendMessage` reuses it.
    ```ts
    interface CallMeta {
      callFrom: string // Caller agent ID
-     correlationId?: string // N-of-N orchestration correlation
+     correlationId?: string // Opaque reply correlation
      hopCount: number // Agent-call depth for loop limits
      deliveryId: string
      originSessionId: string // Stable caller session address
@@ -502,8 +502,7 @@ implements the same-thread form, and unified `sendMessage` reuses it.
      `inbound.originSessionId` or another visible session.
    - When `sessionId === inbound.originSessionId`, automatically inherit
      `correlationId`, matching the existing reply test at
-     `daemon.ts:3501-3502`. A main-agent orchestration can correlate results
-     without exposing IDs to the agent.
+     `daemon.ts:3501-3502`.
 4. **Preserve boundaries and invariants:**
    - Caller identity comes from daemon session context. `sessionId` is a tool
      input but is authorized, so an agent cannot inject arbitrary sessions.
@@ -736,8 +735,8 @@ This wakes a new session owned by B.
 
 ### 7.3b Case 2c: wake another agent without posting any IM
 
-Set only `toAgent`, with no `channel`. B wakes, but nothing is posted. This is
-appropriate for orchestration where delegation should not interrupt a channel.
+Set only `toAgent`, with no `channel`. B wakes, but nothing is posted. This
+suits delegation that should not interrupt a channel.
 
 Postless behavior applies only when `channel` is absent. If both `toAgent` and
 `channel` are present, the daemon first creates a visible ROOT post — carrying B's

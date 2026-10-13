@@ -69,14 +69,13 @@ export const WINDOWS_EXCLUDED = [
   'test/gitlab-self-managed-git.test.ts',
   // Every case stands up a second daemon on one root, which EADDRINUSEs on Windows: `start()` clears
   // a stale UDS before listening and a named pipe has no equivalent. Restore once that is fixed.
-  // `orchestration.test.ts` is NOT here: only its pool-duty describe opens a root twice.
   'test/schedule-catchup.test.ts',
   'test/daemon-session-metadata-outbox-pool.test.ts',
   'test/daemon-session-sweeps-pool.test.ts',
   'test/daemon-loop-guard-pool.test.ts'
 ]
 
-// Seconds on the Windows runner, the mean of three runs. These 25 files are 78% of the suite's time, which is
+// Seconds on the Windows runner, the mean of three runs. These 24 files are 78% of the suite's time, which is
 // why weighing them alone balances the shards; everything else is the fallback below, and a new file needs an
 // entry only once it grows into this tail. `test/shard-weights.test.ts` fails when an entry stops naming a file.
 export const SHARD_WEIGHTS: Record<string, number> = {
@@ -103,8 +102,7 @@ export const SHARD_WEIGHTS: Record<string, number> = {
   'test/daemon-duty-replacement.test.ts': 18,
   'test/session-manager.test.ts': 17,
   'test/daemon-serial-gate.test.ts': 14,
-  'test/dream-runner.test.ts': 14,
-  'test/orchestration.test.ts': 13
+  'test/dream-runner.test.ts': 14
 }
 
 // The unlisted 326 files measured 0.88 s on average, and rounding that up costs the partition nothing.

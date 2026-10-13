@@ -179,7 +179,7 @@ does not pretend to defend against effects it cannot defend against.
 | Reports                         | `replyToSession`: injected into the parent session, never posted, through the parent's serial gate. Gaps: link state in memory (`childSessionLinks`, cleared at 2000); random delivery id; a full parent queue (10) drops the report; `!stop` deletes the queued messages and their inbox rows; a failing turn rejects everything queued; no report on failure; reports count as agent calls, and the hop cap is today's only loop bound                                                                                                                                     |
 | Stopping                        | `!stop` interrupts the session's current turn, does not cascade, does not mute under `append`; senders are any non-bot member of an enabled place. Agent pause (#288) interrupts every session and **drops queued messages**; nothing is replayed on resume. ACP cancels whole turns only; runtime-started background tasks cannot be stopped                                                                                                                                                                                                                                |
 | Concurrency                     | Sessions sharing a workspace are **not serialized** (`admitActiveDispatch` waits on workspace mutations only); turns from several channels already run in parallel in one directory                                                                                                                                                                                                                                                                                                                                                                                          |
-| Deadline wake                   | The orchestration tool triple is retired from the tool surface; the deadline wake remains, bound to the `orchestration` table, re-armed on startup and duty changes with CAS claim                                                                                                                                                                                                                                                                                                                                                                                           |
+| Deadline wake                   | Removed with the orchestration tools (#2979); an item's `nextCheck` falls due on the patrol's minute sweep                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Read-only modes                 | Matched by **name** (`read-only`, else `plan`). Claude Code has `plan`; **OpenCode's `read-only` is a daemon-authored agent injected only on the credential-less dream host**, a normal host has native `plan` with bash allowed; **Codex's `read-only` profile opens the network when the managed credential channel is enabled**, so a "read-only" session can run write calls through that channel with no permission request — both are credential problems, not filesystem ones. Dreams use a credential-less host; **per-turn distillation uses the agent's own host** |
 | Runtime versions                | Managed Codex follows a floating release channel (`version: ''`); only probed versions are known                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Workspace isolation             | `isolation: session` applies to git mode only; **scratch is always `shared`, on the pool too**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -743,8 +743,8 @@ report the daemon sends ends by telling that session to answer its people in the
 since its framing is English; patrols and tasks are asked to write their report in it, and a
 delegating conversation tells its sub-session which it is. The outbox below is the deferred target.
 
-Implemented as a **persistent per-place outbox** (a table shaped like `orchestration_subtask`:
-agent-owned, CAS-claimed, duty-gated, re-armed on `agentsGained`):
+Implemented as a **persistent per-place outbox** (agent-owned, CAS-claimed, duty-gated, re-armed
+on `agentsGained`):
 
 - **Merged per place**: however many rows are pending for a place, one "report round" carries
   them all (capped; the rest wait for the next round), sidestepping the 10-row session queue.
@@ -871,8 +871,7 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   **unavailable**.
 - **Completion**: each round must update the `observations` of the items it checked; a round
   that updates nothing is recorded as `incomplete` and reported once.
-- **Wake on time**: an item's `nextCheck` uses the deadline wake, generalized out of the
-  `orchestration` record.
+- **Wake on time**: an item's `nextCheck` falls due on the patrol's minute sweep.
 - **Two tiers of self-scheduling**: `remind` (deliver text at a time, no model turn) and
   `patrol`. `remind` ships first, to every agent's sessions that have a platform conversation
   of their own, in assistant mode or not; `patrol` stays assistant mode's:
@@ -999,7 +998,7 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 | Dreams / explicit memory writes     | Dreams mine the shared layer's conversations only; writes go to the conversation's layer                        |
 | `sendMessage` / `needsReply`        | Delegation goes through them; the direct self target is allowed; write targets are limited to the current place |
 | `replyToSession`                    | The reference for the report channel; replaced by the persistent outbox                                         |
-| Orchestration tool triple           | Not restored; the deadline wake is generalized and reused                                                       |
+| Orchestration tool triple           | Removed with its deadline wake; not restored                                                                    |
 | Agent pause (#288)                  | Is "stop everything"; also suspends wakes and the outbox                                                        |
 | Reminder injection (`shouldRemind`) | Carries the standing summary                                                                                    |
 | Dream host                          | The shape of the patrol host                                                                                    |
@@ -1389,3 +1388,6 @@ owner-only `agent/read-access` ask (feature `read-access-batch-v1`, up to 64 ses
 it still lists only public conversations. A webchat title also resolves when it is unique among the
 asker's own conversations. A Control Plane without the feature is not asked, and the listing and
 title resolution stay as they were.
+
+**Thirty-fifth revision (2026-10-13)**: the orchestration tools and their deadline wake are removed
+(issue #2979), so `nextCheck` falls due on the patrol's minute sweep, not a generalized deadline wake.

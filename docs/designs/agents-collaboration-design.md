@@ -1,13 +1,13 @@
 # Agents Collaboration Design
 
-**Status**: Product vision; agent-to-agent delivery and orchestration are
-implemented.
+**Status**: Product vision; agent-to-agent delivery is implemented, and the
+orchestration tools were removed.
 
 > The current technical foundation is the
 > [architecture design](architecture.md).
 > [agent-collaboration-implementation.md](agent-collaboration-implementation.md)
 > defines agent-to-agent delivery, daemon-injected MCP tools such as
-> `messageAgent` and `sendPlatformMessage`, orchestration, and concurrency.
+> `messageAgent` and `sendPlatformMessage`, and concurrency.
 >
 > For the **detailed implementation design** (agent-to-agent @-delivery, main-agent orchestration, and the concurrency model), see [`agent-collaboration-implementation.md`](agent-collaboration-implementation.md). This document explains _what_ and _why_; that document explains _how the code implements it_.
 
@@ -117,8 +117,7 @@ does not need to be a special agent type: define an ordinary agent named
 them. Fan-out and collection are ordinary `sendMessage` calls with
 `toAgent.needsReply` plus `viewSessionStatus`; the first-class
 `startOrchestration` / `getOrchestration` / `cancelOrchestration` tools that once
-provided them are retired from the agent tool surface (their durable machinery is
-retained daemon-side) — see §3 of
+provided them were removed with their daemon machinery — see §3 of
 [`agent-collaboration-implementation.md`](agent-collaboration-implementation.md).
 
 **Unresolved:** we still lack a genuinely complex, highly dynamic real-world case that demonstrates the incremental value of a planner over pure peer-to-peer calls. Most internal cases so far have relatively fixed workflows.
@@ -162,7 +161,6 @@ This boundary is also used by collaboration tools:
   conversation requires the caller's membership, an unrecorded IM conversation is
   refused, and a channel-free one is replaced by a caller-derived pairwise
   coordinate.
-- orchestration tools fan out work and collect correlated results.
 
 Tool registration, identity, and authorization are daemon responsibilities;
 agent prompts and workspace files do not carry bot tokens.

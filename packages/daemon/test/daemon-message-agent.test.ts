@@ -2389,8 +2389,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     expect(msg.sender).toEqual({ id: 'bot-b', isBot: true })
     expect(msg.channel).toBe('C1')
     expect(msg.text).toBe('result: done')
-    // §5.3 step 3: replying into the origin inherits the origin turn's correlationId (so a
-    // main-agent's N-of-N orchestration closes) and bumps the hop count.
+    // §5.3 step 3: replying into the origin inherits the origin turn's correlationId and bumps the hop count.
     expect(callMeta).toMatchObject({ callFrom: 'bot-b', correlationId: 'orch-1', hopCount: 2 })
     // send-message-routing-rework.md §7: the REPORT is what stays invisible — an injected
     // body is never published to a platform — while the resumed parent turn is ORDINARY and

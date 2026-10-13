@@ -32,8 +32,7 @@ export const EvaluationEventTypeSchema = z.enum([
   'permission.cancelled',
   'collaboration.delivery.admitted',
   'collaboration.delivery.rejected',
-  'collaboration.delivery.deduplicated',
-  'orchestration.state'
+  'collaboration.delivery.deduplicated'
 ])
 
 export type EvaluationEventType = z.infer<typeof EvaluationEventTypeSchema>

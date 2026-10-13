@@ -1,7 +1,4 @@
-// Agent-to-agent collaboration — the A2A wake/reply/status path plus §3.4/§6.8 main-agent
-// orchestration, hoisted out of `Daemon` verbatim. Every delivery here is DIRECT (never a
-// visible channel post) and every ordering below — record-first, CAS, admission barrier — is
-// load-bearing against a fast worker replying before its record exists.
+// Agent-to-agent collaboration (A2A wake/reply/status): every delivery is DIRECT, never a visible post, and its CAS and admission orderings are load-bearing.
 import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { deriveTitle } from '../session/derive-title.js'
 import {
@@ -13,7 +10,7 @@ import {
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import type { HostKey } from '../acp/host-key.js'
 import { createHash, randomUUID } from 'node:crypto'
-import type { Clock, TimerHandle } from '@agentconnect.md/connection'
+import type { Clock } from '@agentconnect.md/connection'
 import {
   hasReachedAgentCallHopLimit,
   type ChildSessionStatus,
@@ -29,13 +26,7 @@ import type { CpAgentRegistry } from '../cp/cp-agent-registry.js'
 import type { CpCollabRoutes } from '../cp/cp-collab-routes.js'
 import type { RelayManager } from '../cp/relay-manager.js'
 import { sendAgentMsgUntilReady } from '../cp/agentmsg-retry.js'
-import {
-  sessionKey,
-  type LocalStore,
-  type OrchestrationRow,
-  type SessionRecord,
-  type SubtaskRow
-} from '../store/local-store.js'
+import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { isNoResponseBody } from '../session/no-response.js'
 import { codeHostReplySnapshot, sessionReplyRoute } from '../session/reply-route.js'
@@ -52,13 +43,10 @@ import { pendingTurnKey, sdkLeaseKey, type CallMeta, type Pending, type QueueEnt
 import type {
   MessageAgentReq,
   MessageAgentResult,
-  OrchestrationOwnerReq,
   ReplyToSessionReq,
   ReplyToSessionResult,
   SessionStatusReq,
-  SessionStatusResult,
-  StartOrchestrationReq,
-  StartOrchestrationResult
+  SessionStatusResult
 } from '../mcp/ops.js'
 
 /** assistant-mode.md §5.6: the reason a sub-session's own delegation is refused, and the sentence the agent reads. */
@@ -278,13 +266,6 @@ export class CollabCoordinator {
       remote?: boolean
     }
   >()
-
-  // §3.4/§6.8 orchestration deadline timers, keyed by orchestrationId. Held HERE
-  // (daemon-owned), NOT in the Scheduler's per-agent map — Scheduler.sync is replace-all
-  // and would wipe a per-orchestration one-shot on the next agent reconcile. The durable
-  // SoT is the `orchestration.deadline` epoch; this map is just the live in-process timer,
-  // re-armed from the store on startup. cancelOrchestration clears the timer idempotently.
-  readonly orchestrationDeadlines = new Map<string, TimerHandle>()
 
   // A sub-session's inferred report still in flight when its turn ends, keyed by its session key (assistant-mode.md §5.7).
   private readonly subsessionInferences = new Map<string, Promise<void>>()
@@ -683,14 +664,7 @@ export class CollabCoordinator {
     return { admitted: true }
   }
 
-  /**
-   * Prepare an agent→agent delivery: the caller-framed text the target will see
-   * plus a stable delivery id and thread. The message is delivered DIRECTLY to
-   * the target (which wakes it in its own turn); it is deliberately NOT posted
-   * as a visible channel/thread message and is not recorded in the shared
-   * transcript. Agent-to-agent coordination (messageAgent / startOrchestration)
-   * is no longer surfaced as channel chatter — only the target receives it.
-   */
+  /** An agent→agent delivery's caller-framed text, delivery id and thread: delivered DIRECTLY, never posted or put in the shared transcript. */
   prepareAgentDelivery(req: MessageAgentReq): {
     deliveryId: string
     thread: string
@@ -727,12 +701,7 @@ export class CollabCoordinator {
     return this.host.activeTurnCallMeta().get(key)?.introChannel
   }
 
-  /**
-   * Agent→agent attention routing behind the `messageAgent` MCP tool. The message is
-   * delivered directly to the target and wakes it — there is no visible thread event.
-   * Trusted `CallMeta` is a separate workflow projection for hop limits and
-   * orchestration correlation.
-   */
+  /** Agent→agent routing behind `messageAgent`: a direct wake with no visible thread event; trusted `CallMeta` carries hop limits and reply correlation. */
   /**
    * Side-effect-free authorization for a peer wake on the SAME-DAEMON path — the typed reason
    * {@link messageAgent} would reject it with for a LOCALLY-decidable cause, or, when it is
@@ -1059,18 +1028,7 @@ export class CollabCoordinator {
       return record(remote)
     }
 
-    // Trusted call metadata for the target's turn (§3.3a/§6.6/§6.7): kept daemon-private
-    // (Pending.callMeta), never in the model-visible prompt. DAEMON-MANAGED auto-inheritance
-    // from the CURRENT turn's trusted callMeta (never trusting the agent to hand-copy it):
-    //   • hopCount / originId: ALWAYS inherit (current hopCount + 1) for loop protection,
-    //     regardless of target. A call made from a plain human/platform turn (no active
-    //     callMeta) starts at hopCount 0.
-    //   • correlationId: inherit ONLY on a REPLY — i.e. when the worker is messaging back the
-    //     agent that tasked it (toAgentId === the current turn's inbound callFrom) AND the
-    //     tool caller did not pass one explicitly. An explicit args.correlationId is honored
-    //     as a manual override (advanced use); otherwise the auto-inherit-on-reply is what
-    //     makes N-of-N orchestration close without the agent ever knowing the id. A message
-    //     to a THIRD agent (not the caller) does NOT inherit correlation — it's a fresh call.
+    // Daemon-private CallMeta (§6.7): hop/origin always inherit; correlationId inherits only on a reply to the tasking agent, unless passed.
     const hopCount = inbound ? inbound.hopCount + 1 : 0
     // §5.6: a sub-session always reports back to the conversation that opened it.
     const needsReply = req.needsReply === true || selfDelegation
@@ -1535,9 +1493,7 @@ export class CollabCoordinator {
     if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) {
       return failed('hop_limit')
     }
-    // §5.3 step 3: replying into the origin inherits the origin turn's correlationId when present
-    // (so a main-agent's orchestration closes without the worker knowing the id). Explicit wins;
-    // a human-triggered reply simply has none.
+    // §5.3 step 3: a reply into the origin inherits the origin turn's correlationId; an explicit one wins.
     const correlationId = req.correlationId !== undefined ? req.correlationId : inbound?.correlationId
 
     const deliveryId = randomUUID()
@@ -2296,371 +2252,5 @@ export class CollabCoordinator {
       this.host.log().warn(`messageAgent: cross-daemon route failed for ${req.toAgentId}: ${formatErr(err)}`)
       return { delivered: false, targetSession: ctx.targetSession, reason: 'offline' }
     }
-  }
-
-  // ══════════════════════════ §3.4/§6.8 main-agent orchestration ══════════════════════════
-
-  /**
-   * Start an orchestration (§3.4/§6.8). ATOMIC ordering per §3.4:
-   *   (a) RECORD-FIRST — persist the orchestration header + every subtask (status
-   *       'pending') in one transaction BEFORE any delivery, so a fast worker's reply can
-   *       never arrive before the record exists (§3.3 would otherwise drop it);
-   *   (b) deliver each subtask via the existing `messageAgent` path, CAS-recording
-   *       pending→sending→delivered | pending→sending→(delivered rollback)failed per subtask;
-   *   (c) schedule the one-shot, session-anchored, cancelable cron deadline (if requested)
-   *       — but only when at least one subtask actually delivered (all-failed ⇒ no wait).
-   * The main identity + coords are the TRUSTED SessionContext (never tool input).
-   */
-  async startOrchestration(req: StartOrchestrationReq): Promise<StartOrchestrationResult> {
-    const orchestrationId = randomUUID()
-    const platform = req.platform
-    // The main's session key is the exact coords its tool call ran under, so a deadline
-    // fire and a worker report both key to the SAME session as the caller.
-    const mainSessionKey = sessionKey(platform, req.channel, req.thread, req.mainAgentId, req.transportScope)
-    const now = this.host.clock().now()
-    const deadline =
-      req.deadlineMs !== undefined && req.deadlineMs > 0 ? now + Math.min(req.deadlineMs, 2_147_483_647) : null
-
-    const subtaskRows: SubtaskRow[] = req.subtasks.map((s, idx) => ({
-      orchestrationId,
-      correlationId: `${orchestrationId}.${idx}`,
-      idx,
-      toAgentId: s.toAgentId,
-      text: s.text,
-      status: 'pending',
-      updatedAt: monotonicTs()
-    }))
-
-    const orch: OrchestrationRow = {
-      orchestrationId,
-      mainSessionKey,
-      mainAgentId: req.mainAgentId,
-      platform,
-      channel: req.channel,
-      thread: req.thread,
-      integrationId: req.integrationId ?? null,
-      replyTarget: req.replyTarget ?? null,
-      deadline, // recorded up front (durable SoT); cleared to null if nothing delivers
-      status: 'active',
-      createdAt: now,
-      updatedAt: now
-    }
-
-    // (a) RECORD-FIRST: must fully persist before we deliver anything.
-    await this.host.store().createOrchestration(orch, subtaskRows)
-    this.host.evalHooks().emit({
-      type: 'orchestration.state',
-      agentId: req.mainAgentId,
-      sessionId: (await this.host.store().getSession(mainSessionKey))?.acpSessionId ?? undefined,
-      platform,
-      channel: req.channel,
-      data: {
-        orchestrationId,
-        state: 'created',
-        subtaskCount: subtaskRows.length,
-        deadlineConfigured: deadline !== null
-      }
-    })
-
-    // (b) Deliver each subtask, atomically recording delivered|failed.
-    const delivered: string[] = []
-    const failed: { correlationId: string; reason: string }[] = []
-    for (const s of subtaskRows) {
-      await this.host.store().setSubtaskStatus(orchestrationId, s.correlationId, ['pending'], 'sending', monotonicTs())
-      let result: MessageAgentResult
-      try {
-        result = await this.messageAgent({
-          callerAgentId: req.mainAgentId,
-          platform: req.platform,
-          ...(req.integrationId !== undefined ? { callerIntegrationId: req.integrationId } : {}),
-          ...(req.transportScope !== undefined ? { callerTransportScope: req.transportScope } : {}),
-          callerChannel: req.channel,
-          callerThread: req.thread,
-          toAgentId: s.toAgentId,
-          text: s.text,
-          channel: req.channel,
-          thread: req.thread,
-          correlationId: s.correlationId
-        })
-      } catch (err) {
-        result = { delivered: false, targetSession: '', reason: 'error' }
-        this.host
-          .log()
-          .warn(`orchestration ${orchestrationId}: delivery of ${s.correlationId} threw: ${formatErr(err)}`)
-      }
-      if (result.delivered) {
-        await this.host
-          .store()
-          .setSubtaskStatus(orchestrationId, s.correlationId, ['sending'], 'delivered', monotonicTs())
-        delivered.push(s.correlationId)
-      } else {
-        const reason = result.reason ?? 'undeliverable'
-        // A failed delivery is terminal for this subtask (§3.4): it does NOT occupy a
-        // "waiting" slot. Recorded as worker_error with the delivery reason.
-        await this.host
-          .store()
-          .setSubtaskStatus(orchestrationId, s.correlationId, ['sending'], 'worker_error', monotonicTs(), {
-            deliveryReason: reason
-          })
-        failed.push({ correlationId: s.correlationId, reason })
-      }
-    }
-
-    // (c) Deadline: only arm when something is actually pending a reply. If everything
-    // failed to deliver, there is nothing to wait for — clear the deadline (§3.4).
-    if (deadline !== null && delivered.length > 0) {
-      this.armOrchestrationDeadline(orchestrationId, deadline)
-    } else if (deadline !== null) {
-      await this.host.store().setOrchestrationDeadline(orchestrationId, null, this.host.clock().now())
-    }
-
-    this.host
-      .log()
-      .info(
-        `orchestration ${orchestrationId}: ${delivered.length} delivered, ${failed.length} failed` +
-          (deadline !== null && delivered.length > 0 ? `, deadline in ${deadline - now}ms` : '')
-      )
-    this.host.evalHooks().emit({
-      type: 'orchestration.state',
-      agentId: req.mainAgentId,
-      sessionId: (await this.host.store().getSession(mainSessionKey))?.acpSessionId ?? undefined,
-      platform,
-      channel: req.channel,
-      data: { orchestrationId, state: 'dispatched', delivered: delivered.length, failed: failed.length }
-    })
-    return { orchestrationId, delivered, failed }
-  }
-
-  /** Arm (or re-arm) the one-shot, session-anchored deadline for an orchestration. On fire
-   *  it wakes the main's session DIRECTLY (dispatch to mainSessionKey) — NOT via fireTrigger
-   *  (which would post a channel anchor / open a new thread). Idempotent: replaces any
-   *  existing timer for this id. Clamped to setTimeout's 32-bit ceiling. */
-  private armOrchestrationDeadline(orchestrationId: string, deadlineEpoch: number): void {
-    const existing = this.orchestrationDeadlines.get(orchestrationId)
-    if (existing !== undefined) this.host.clock().clearTimeout(existing)
-    const delay = Math.min(Math.max(0, deadlineEpoch - this.host.clock().now()), 2_147_483_647)
-    const handle = this.host.clock().setTimeout(async () => {
-      this.orchestrationDeadlines.delete(orchestrationId)
-      await this.fireOrchestrationDeadline(orchestrationId)
-    }, delay)
-    this.orchestrationDeadlines.set(orchestrationId, handle)
-  }
-
-  /** Deadline fired (§3.5): mark every still-open subtask timed_out, then WAKE the main's
-   *  session so it re-reads getOrchestration and summarizes the partial result. The wake is
-   *  a direct dispatch to the stored session coords — no platform post, no new thread.
-   *  Every pool member sharing the store may have a timer for this id, so the fire is gated
-   *  twice: the duty check (a dispatch binds the agent's sandbox, so only its holder may wake
-   *  it) and a CAS claim on the stored deadline, which makes a handoff race fire once. */
-  async fireOrchestrationDeadline(orchestrationId: string): Promise<void> {
-    const orch = await this.host.store().getOrchestration(orchestrationId)
-    if (!orch || orch.status !== 'active' || orch.deadline == null) return // cancelled / completed / already fired
-    if (!this.host.servesAgent(orch.mainAgentId)) {
-      this.host
-        .log()
-        .debug(`orchestration ${orchestrationId}: deadline reached but ${orch.mainAgentId} is served elsewhere`)
-      return
-    }
-    if (
-      !(await this.host.store().claimOrchestrationDeadline(orchestrationId, orch.deadline, this.host.clock().now()))
-    ) {
-      this.host.log().debug(`orchestration ${orchestrationId}: deadline already claimed by another member`)
-      return
-    }
-    // Mark unreported (delivered but not yet reported, or still sending/pending) as timed_out.
-    for (const s of await this.host.store().getSubtasks(orchestrationId)) {
-      await this.host
-        .store()
-        .setSubtaskStatus(
-          orchestrationId,
-          s.correlationId,
-          ['pending', 'sending', 'delivered'],
-          'timed_out',
-          monotonicTs()
-        )
-    }
-    this.host.evalHooks().emit({
-      type: 'orchestration.state',
-      agentId: orch.mainAgentId,
-      sessionId: (await this.host.store().getSession(orch.mainSessionKey))?.acpSessionId ?? undefined,
-      platform: orch.platform,
-      channel: orch.channel,
-      data: { orchestrationId, state: 'timed_out' }
-    })
-    this.wakeOrchestrationMain(orch, `orchestration ${orchestrationId} deadline reached — summarize what you have`)
-  }
-
-  /** Wake the orchestration's owning main session with a synthetic agent-source turn keyed
-   *  to the exact stored coords (so it lands in the same session that started it). Headless
-   *  is NOT set — the main needs its reply transport to post the summary. */
-  private wakeOrchestrationMain(orch: OrchestrationRow, text: string): void {
-    const platform = orch.platform
-    const msgId = `orchestration:${orch.orchestrationId}:${monotonicTs()}`
-    const msg: NormalizedMessage = {
-      msgId,
-      traceId: orch.orchestrationId,
-      source: 'agent',
-      platform,
-      channel: orch.channel,
-      thread: orch.thread,
-      sender: { id: `orchestration:${orch.orchestrationId}`, isBot: true },
-      text,
-      mentionedBots: [],
-      isDm: false
-    }
-    void this.host
-      .dispatch(orch.mainAgentId, msg, orch.integrationId ?? undefined)
-      .catch((err) =>
-        this.host.log().error(`orchestration ${orch.orchestrationId}: deadline wake dispatch failed: ${formatErr(err)}`)
-      )
-  }
-
-  /** §3.3 correlation-recording hook, called from dispatchOne when the MAIN receives a
-   *  messageAgent turn carrying a correlationId. Records the worker's result into the
-   *  orchestration ONLY if ALL four safety checks hold; any failure drops the report
-   *  (debug log) and never corrupts completion. Uses ONLY trusted values (callMeta.callFrom,
-   *  the receiving session key) — never a frame/prompt field. */
-  async recordWorkerReport(receivingSessionKey: string, callMeta: CallMeta, reportText: string): Promise<void> {
-    const correlationId = callMeta.correlationId
-    if (correlationId === undefined) return
-    // correlationId = "<orchestrationId>.<idx>" — the orchestrationId is everything before
-    // the final '.' (a UUID contains no '.', and idx is a trailing integer).
-    const dot = correlationId.lastIndexOf('.')
-    if (dot <= 0) return
-    const orchestrationId = correlationId.slice(0, dot)
-    const orch = await this.host.store().getOrchestration(orchestrationId)
-    if (!orch) return // (b) unknown orchestration
-    // (a) owning session: the report must arrive in the SAME session that owns it.
-    if (orch.mainSessionKey !== receivingSessionKey) {
-      this.host.log().debug(`orchestration ${orchestrationId}: report dropped — session mismatch`)
-      return
-    }
-    if (orch.status !== 'active') {
-      this.host.log().debug(`orchestration ${orchestrationId}: report dropped — orchestration ${orch.status}`)
-      return
-    }
-    const sub = await this.host.store().getSubtaskByCorrelation(orchestrationId, correlationId)
-    if (!sub) return // (b) correlationId maps to no subtask
-    // (c) the reporter IS the tasked worker — TRUSTED callFrom, not a frame field.
-    if (callMeta.callFrom !== sub.toAgentId) {
-      this.host
-        .log()
-        .debug(
-          `orchestration ${orchestrationId}: report for ${correlationId} dropped — ` +
-            `reporter "${callMeta.callFrom}" ≠ tasked worker "${sub.toAgentId}"`
-        )
-      return
-    }
-    // (d) idempotent: only an OPEN subtask (sending|delivered|timed_out) is recorded. A
-    // duplicate report (already succeeded/worker_error) is a no-op. A late report AFTER
-    // timeout IS allowed to update the summary (timed_out → succeeded), idempotently.
-    const ok = await this.host
-      .store()
-      .setSubtaskStatus(
-        orchestrationId,
-        correlationId,
-        ['sending', 'delivered', 'timed_out'],
-        'succeeded',
-        monotonicTs(),
-        { result: reportText }
-      )
-    if (ok) {
-      this.host
-        .log()
-        .info(`orchestration ${orchestrationId}: recorded result for ${correlationId} from ${callMeta.callFrom}`)
-      this.host.evalHooks().emit({
-        type: 'orchestration.state',
-        agentId: orch.mainAgentId,
-        sessionId: (await this.host.store().getSession(orch.mainSessionKey))?.acpSessionId ?? undefined,
-        platform: orch.platform,
-        channel: orch.channel,
-        data: { orchestrationId, correlationId, state: 'worker_reported', workerAgentId: callMeta.callFrom }
-      })
-    } else {
-      this.host.log().debug(`orchestration ${orchestrationId}: duplicate/late report for ${correlationId} — no-op`)
-    }
-  }
-
-  async getOrchestrationForOwner(req: OrchestrationOwnerReq): Promise<unknown | null> {
-    const orch = await this.ownedOrchestration(req)
-    if (!orch) return null
-    return {
-      orchestrationId: orch.orchestrationId,
-      status: orch.status,
-      deadline: orch.deadline ?? null,
-      replyTarget: orch.replyTarget ?? null,
-      createdAt: orch.createdAt,
-      subtasks: (await this.host.store().getSubtasks(orch.orchestrationId)).map((s) => ({
-        correlationId: s.correlationId,
-        toAgentId: s.toAgentId,
-        status: s.status,
-        result: s.result ?? null,
-        ...(s.deliveryReason ? { deliveryReason: s.deliveryReason } : {})
-      }))
-    }
-  }
-
-  async cancelOrchestrationForOwner(req: OrchestrationOwnerReq): Promise<boolean> {
-    const orch = await this.ownedOrchestration(req)
-    if (!orch) return false
-    // Idempotent: cancel the deadline timer (if any) + write the cancelled tombstone. The
-    // record is KEPT (not deleted). Already-delivered workers aren't recalled — a late report
-    // after cancellation is ignored (recordWorkerReport drops on status !== 'active').
-    const handle = this.orchestrationDeadlines.get(orch.orchestrationId)
-    if (handle !== undefined) {
-      this.host.clock().clearTimeout(handle)
-      this.orchestrationDeadlines.delete(orch.orchestrationId)
-    }
-    await this.host.store().setOrchestrationDeadline(orch.orchestrationId, null, this.host.clock().now())
-    await this.host.store().setOrchestrationStatus(orch.orchestrationId, 'cancelled', this.host.clock().now())
-    this.host.evalHooks().emit({
-      type: 'orchestration.state',
-      agentId: orch.mainAgentId,
-      sessionId: (await this.host.store().getSession(orch.mainSessionKey))?.acpSessionId ?? undefined,
-      platform: orch.platform,
-      channel: orch.channel,
-      data: { orchestrationId: orch.orchestrationId, state: 'cancelled' }
-    })
-    return true
-  }
-
-  /** Resolve an orchestration IFF the requesting main+session OWNS it (§3.5a owner check).
-   *  Returns undefined on unknown id or any owner mismatch. */
-  private async ownedOrchestration(req: OrchestrationOwnerReq): Promise<OrchestrationRow | undefined> {
-    const orch = await this.host.store().getOrchestration(req.orchestrationId)
-    if (!orch) return undefined
-    const requesterKey = sessionKey(req.platform, req.channel, req.thread, req.mainAgentId, req.transportScope)
-    if (orch.mainSessionKey !== requesterKey || orch.mainAgentId !== req.mainAgentId) return undefined
-    return orch
-  }
-
-  /** Re-derive which deadlines this member arms from the durable `deadline` epochs (§3.5): arm
-   *  the held agents' still-active orchestrations, disarm what moved to another member. Runs at
-   *  startup and after every duty change; idempotent, and a stale timer is harmless because the
-   *  fire re-checks the duty and claims the deadline through the store. A deadline already in
-   *  the past fires ~immediately. */
-  async syncOrchestrationDeadlines(): Promise<void> {
-    let active: OrchestrationRow[]
-    try {
-      active = await this.host.store().listActiveOrchestrations()
-    } catch (err) {
-      this.host.log().warn(`orchestration: deadline re-arm read failed: ${(err as Error).message}`)
-      return
-    }
-    let armed = 0
-    let disarmed = 0
-    for (const orch of active) {
-      const held = this.host.servesAgent(orch.mainAgentId)
-      const handle = this.orchestrationDeadlines.get(orch.orchestrationId)
-      if (held && orch.deadline != null && handle === undefined) {
-        this.armOrchestrationDeadline(orch.orchestrationId, orch.deadline)
-        armed++
-      } else if (!held && handle !== undefined) {
-        this.host.clock().clearTimeout(handle)
-        this.orchestrationDeadlines.delete(orch.orchestrationId)
-        disarmed++
-      }
-    }
-    if (armed || disarmed) this.host.log().info(`orchestration: armed ${armed} and disarmed ${disarmed} deadline(s)`)
   }
 }

@@ -94,7 +94,6 @@ export interface DutyConvergeHost {
   adoptClusterSandbox(agentId: string): void
   reclaimInterruptedWork(agentIds: readonly string[]): Promise<void>
   syncAgentSchedules(agent: LoadedAgent): Promise<void>
-  syncOrchestrationDeadlines(): Promise<void>
   catchUpMissedSchedules(agentIds: string[]): Promise<void>
   drainSessionPurges(): Promise<void>
   drainCronReports(): Promise<void>
@@ -678,7 +677,6 @@ export class DutyCoordinator {
     this.connectionsRequested++
     this.convergeDutyConnections()
     for (const agent of this.host.agents().values()) await this.host.syncAgentSchedules(agent)
-    await this.host.syncOrchestrationDeadlines()
   }
 
   /** Reconcile until the duty-driven convergence has actually run. A pass that throws (a workspace
