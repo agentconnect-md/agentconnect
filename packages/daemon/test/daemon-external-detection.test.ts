@@ -58,7 +58,7 @@ function scaffold(assistant: boolean): string {
         }
       ],
       output: { mode: 'medium' },
-      ...(assistant ? { assistantMode: { enabled: true, responsibleUserId: 'usr-1' } } : {})
+      ...(assistant ? { assistantMode: { enabled: true } } : {})
     })
   )
   return root

@@ -323,7 +323,7 @@ describe.skipIf(usingPostgresStore())('assistant reminders on agent removal', ()
         workspace: { mode: 'from-scratch', path: join(agentDir, 'ws') },
         integrations: [],
         output: { mode: 'medium' },
-        assistantMode: { enabled: true, responsibleUserId: 'user-1' }
+        assistantMode: { enabled: true }
       })
     )
     const idleHost = (a: { id: string }) =>

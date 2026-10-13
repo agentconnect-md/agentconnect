@@ -3027,6 +3027,13 @@ export async function fetchAgentAssistantModeAdmission(agentId: string): Promise
   return apiGet<AssistantModeAdmission>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/assistant-mode/admission`)
 }
 
+/** The member an assistant-mode agent asks when no person is behind the work; null when no member may edit it. */
+export async function fetchAgentAssistantResponsibleUser(agentId: string): Promise<{ userId: string | null }> {
+  return apiGet<{ userId: string | null }>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/assistant-mode/responsible-user`
+  )
+}
+
 /** List the conversations whose memory has a place layer of its own. */
 export async function fetchAgentMemoryChannels(agentId: string): Promise<MemoryChannelsDto> {
   return apiGet<MemoryChannelsDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/channels`)

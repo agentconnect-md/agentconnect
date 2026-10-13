@@ -18,7 +18,7 @@ const AGENT = 'bot-a'
 const INT = 'int-bot-a'
 const DM = 'D0ALICE'
 const OTHER_DM = 'D0BOB'
-const ON = { enabled: true, responsibleUserId: 'user-1' }
+const ON = { enabled: true }
 // Only a sub-session's prompt carries this; the parent's never does.
 const DELEGATED = 'From your own main conversation, as a background sub-session'
 

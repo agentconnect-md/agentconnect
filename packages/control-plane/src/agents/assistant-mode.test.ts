@@ -7,7 +7,7 @@ import {
   assistantModeStoreRefusals
 } from './assistant-mode.js'
 
-const ON = { enabled: true, responsibleUserId: 'usr_1' }
+const ON = { enabled: true }
 const OFF = { enabled: false }
 
 function sets(orgId: string | null, stores: Array<string | null>) {

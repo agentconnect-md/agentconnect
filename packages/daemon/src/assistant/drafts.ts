@@ -169,12 +169,11 @@ export interface DraftDecision {
 /** The console user an editor's decision is recorded under, beside a card's `<workspace>:<member>`. */
 export const consoleDecider = (userId: string): string => `user:${userId}`
 
-type ApproverRung = 'asker' | 'responsible' | 'fallback' | 'place'
+type ApproverRung = 'asker' | 'responsible' | 'place'
 
 const APPROVER_LABEL: Record<ApproverRung, string> = {
   asker: 'the person who asked, in a direct message',
   responsible: "the agent's responsible user, in a direct message",
-  fallback: "the agent's fallback conversation",
   place: 'the people in the conversation the item was taken in'
 }
 
@@ -321,7 +320,7 @@ export class AssistantDrafts {
     }
   }
 
-  /** A patrol's proposal (§5.10): carded in its item's conversation, decided on a webchat conversation's page, else carded like a draft with no asker (the responsible user, then the fallback conversation). */
+  /** A patrol's proposal (§5.10): carded in its item's conversation, decided on a webchat conversation's page, else carded like a draft with no asker (the responsible user, else Activity). */
   async propose(input: ProposalInput): Promise<{ draft: AssistantDraft; approver: string | null }> {
     const id = randomUUID()
     const ledger = this.host.ledger()
@@ -356,24 +355,22 @@ export class AssistantDrafts {
       return { draft: carded.draft, approver: APPROVER_LABEL.place }
     }
     if (place && !carded.rung) {
-      // The place could not take the card, so it goes where a proposal's went before, and only there.
-      const fallback = await this.route(input.agentId, id, undefined)
-      if (await ledger.reroute(id, fallback?.approver ?? null))
-        carded = await this.card((await ledger.get(id)) ?? draft, fallback)
+      // The place could not take the card, so it goes to the responsible user, and only there.
+      const responsible = await this.route(input.agentId, id, undefined)
+      if (await ledger.reroute(id, responsible?.approver ?? null))
+        carded = await this.card((await ledger.get(id)) ?? draft, responsible)
     }
     if (!carded.rung)
       this.host.log.warn(`assistant proposal ${id}: no approver could be reached for agent "${input.agentId}"`)
     return { draft: carded.draft, approver: carded.rung ? APPROVER_LABEL[carded.rung] : null }
   }
 
-  /** Where another card for an external place goes instead (§5.5), routed as a proposal's is: a linked editor's DM, or the fallback conversation. */
+  /** Where another card for an external place goes instead (§5.5), routed as a proposal's is: the responsible user's DM. */
   async cardApprover(agentId: string, requestId: string): Promise<SubsessionApprover | undefined> {
     const approver = (await this.route(agentId, requestId, undefined))?.approver
-    if (approver?.kind === 'conversation')
-      return { kind: 'conversation', integrationId: approver.integrationId, channel: approver.channel }
     if (!approver?.userId || !approver.teamId || !approver.consoleUserId) return undefined
     const { integrationId, teamId, userId, consoleUserId } = approver
-    return { kind: 'member', channel: approver.channel, target: { integrationId, teamId, userId, consoleUserId } }
+    return { channel: approver.channel, target: { integrationId, teamId, userId, consoleUserId } }
   }
 
   /** The asker's own DM when they are an internal member, the first approver a draft tries; undefined otherwise. */
@@ -485,7 +482,7 @@ export class AssistantDrafts {
     }
   }
 
-  /** The asker when an internal member, a console asker, then in assistant mode the responsible user and the fallback conversation. */
+  /** The asker when an internal member, a console asker, then in assistant mode the responsible user the control plane derives; else nobody, and Activity decides it. */
   private async approverFor(
     agentId: string,
     draftId: string,
@@ -498,26 +495,8 @@ export class AssistantDrafts {
       if (approver) return { approver, rung: 'asker' }
     }
     if (!this.assistantOn(agentId)) return undefined
-    const policy = this.host.agent(agentId)?.assistantMode
-    if (policy?.responsibleUserId) {
-      const approver = await this.routeConsoleUser(agentId, draftId, policy.responsibleUserId)
-      if (approver) return { approver, rung: 'responsible' }
-    }
-    const fallback = policy?.fallbackConversation
-    if (fallback && this.host.cardPortFor(fallback.integrationId)) {
-      return {
-        rung: 'fallback',
-        approver: {
-          kind: 'conversation',
-          integrationId: fallback.integrationId,
-          channel: fallback.channelId,
-          userId: null,
-          teamId: null,
-          consoleUserId: null
-        }
-      }
-    }
-    return undefined
+    const approver = await this.routeConsoleUser(agentId, draftId, undefined)
+    return approver ? { approver, rung: 'responsible' } : undefined
   }
 
   /** The platform asker's own DM when they are internal: trusted by their place, or a full member of the installing organization. */
@@ -537,11 +516,11 @@ export class AssistantDrafts {
     }
   }
 
-  /** A console user's linked member on one of the agent's card-capable integrations, chosen by the control plane. */
+  /** A console user's linked member on one of the agent's card-capable integrations, chosen by the control plane; undefined names the agent's responsible user. */
   private async routeConsoleUser(
     agentId: string,
     draftId: string,
-    consoleUserId: string
+    consoleUserId: string | undefined
   ): Promise<AssistantDraftApprover | undefined> {
     const integrationIds = (this.host.agent(agentId)?.integrations ?? [])
       .map((i) => i.id)
@@ -549,11 +528,15 @@ export class AssistantDrafts {
       .slice(0, 8)
     if (integrationIds.length === 0 || !this.host.approvalRoute) return undefined
     const routed = await this.host
-      .approvalRoute(agentId, { requestId: draftId, integrationIds, consoleUserId })
+      .approvalRoute(agentId, {
+        requestId: draftId,
+        integrationIds,
+        ...(consoleUserId ? { consoleUserId } : { responsible: true as const })
+      })
       .catch(() => undefined)
     const target = routed?.target
     // A control plane that predates the named route answers with its own chain; only the named user counts.
-    if (!target || target.consoleUserId !== consoleUserId) return undefined
+    if (!target || (consoleUserId !== undefined && target.consoleUserId !== consoleUserId)) return undefined
     const port = this.host.cardPortFor(target.integrationId)
     const channel = await port?.openDirectMessage(target.userId).catch(() => undefined)
     if (!channel) return undefined
@@ -563,11 +546,11 @@ export class AssistantDrafts {
       channel,
       userId: target.userId,
       teamId: target.teamId,
-      consoleUserId
+      consoleUserId: target.consoleUserId
     }
   }
 
-  /** The addressed member, re-verified with the control plane when it chose them; anyone in a fallback conversation; in a proposal's place, whoever could ask the agent there. */
+  /** The addressed member, re-verified with the control plane when it chose them; in a proposal's place, whoever could ask the agent there. */
   private async authorized(
     draft: AssistantDraft,
     approver: AssistantDraftApprover,
@@ -580,7 +563,6 @@ export class AssistantDrafts {
       const port = this.host.cardPortFor(approver.integrationId)
       return (await port?.isPerson?.(actor.userId).catch(() => false)) === true
     }
-    if (approver.kind === 'conversation') return true
     if (actor.userId !== approver.userId) return false
     if (!approver.consoleUserId) return true
     if (!this.host.approvalRoute || !approver.teamId) return false

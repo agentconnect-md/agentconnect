@@ -77,7 +77,7 @@ describe('a Slack turn, the sub-sessions it opens, patrols, tasks and schedules'
           config: { botToken: 'xoxb-test', appToken: 'xapp-test' }
         }
       ],
-      { assistantMode: { enabled: true, responsibleUserId: 'user-1' } }
+      { assistantMode: { enabled: true } }
     )
     const rt = hangingHost()
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => rt.host as any })

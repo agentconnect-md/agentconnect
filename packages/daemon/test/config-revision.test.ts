@@ -70,7 +70,7 @@ describe('agentSpecDigest', () => {
 
   it('digests a cleared assistant mode as the absent field, and a policy as content', () => {
     expect(agentSpecDigest(spec({ assistantMode: null }))).toBe(agentSpecDigest(spec({})))
-    const enabled = spec({ assistantMode: { enabled: true, responsibleUserId: 'usr_1' } })
+    const enabled = spec({ assistantMode: { enabled: true } })
     expect(agentSpecDigest(enabled)).not.toBe(agentSpecDigest(spec({})))
   })
 

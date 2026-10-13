@@ -74,7 +74,7 @@ function world(place: Place, agent: Agent = {}) {
       },
       { id: 'int-2', platform: 'telegram' }
     ],
-    ...(agent.assistant ? { assistantMode: { enabled: true, responsibleUserId: 'user-1' } } : {})
+    ...(agent.assistant ? { assistantMode: { enabled: true } } : {})
   })
   if (place.snapshot) {
     const integrationId = platform === 'telegram' ? 'int-2' : 'int-1'

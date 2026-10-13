@@ -217,7 +217,7 @@ describe('the daemon downgrade transition', () => {
     daemon.agents.set('bot-a', {
       id: 'bot-a',
       integrations: [integrationOf('int-a', [], 'shared')],
-      assistantMode: { enabled: true, responsibleUserId: 'user-1' }
+      assistantMode: { enabled: true }
     })
     daemon.agents.set('bot-b', { id: 'bot-b', integrations: [integrationOf('int-b', [], 'shared')] })
     const entry = (agentId: string, integrationId: string, channel: string, extra: object = {}) => ({

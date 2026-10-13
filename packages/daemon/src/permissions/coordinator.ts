@@ -1497,14 +1497,13 @@ export class PermissionCoordinator {
       this.sendApprovalDm(requestId, agentId, p, requesterName, route, undefined, beside)
     const place = route.place
     if (place.kind !== 'chat') return await editorDm()
-    let at: { integrationId: string; channel: string; thread?: string } = place
+    const at: { integrationId: string; channel: string; thread?: string } = place
     if (place.external) {
-      // A card is output too, so an external place gets none (§5.5).
+      // A card is output too, so an external place gets none (§5.5): the responsible user's DM, else an editor's.
       const approver = await this.host.assistantApprover?.(agentId, requestId).catch(() => undefined)
-      if (approver?.kind === 'member')
-        return await this.sendApprovalDm(requestId, agentId, p, requesterName, route, approver)
-      if (!approver) return await editorDm()
-      at = { integrationId: approver.integrationId, channel: approver.channel }
+      return approver
+        ? await this.sendApprovalDm(requestId, agentId, p, requesterName, route, approver)
+        : await editorDm()
     }
     const rec = this.pendingApprovals.get(requestId)
     const cards = this.host.chatCardsAt(at.integrationId)

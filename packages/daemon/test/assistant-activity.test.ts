@@ -51,9 +51,9 @@ async function setup() {
   store = await openTestStore()
   const s = store
   const [a, b, off]: [string, string, string] = [randomUUID(), randomUUID(), randomUUID()]
-  const agents = new Map<string, { assistantMode: { enabled: boolean; responsibleUserId?: string } }>([
-    [a, { assistantMode: { enabled: true, responsibleUserId: 'usr-1' } }],
-    [b, { assistantMode: { enabled: true, responsibleUserId: 'usr-1' } }],
+  const agents = new Map<string, { assistantMode: { enabled: boolean } }>([
+    [a, { assistantMode: { enabled: true } }],
+    [b, { assistantMode: { enabled: true } }],
     [off, { assistantMode: { enabled: false } }]
   ])
   const decideDraft = vi.fn(

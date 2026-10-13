@@ -23,7 +23,7 @@ import { openTestStore } from './store-support.js'
 const T = Date.parse('2026-10-11T20:20:00Z')
 const HOUR = 3_600_000
 const SCOPE = 'T0EXAMPLE'
-const ON = { enabled: true, responsibleUserId: 'usr_1' }
+const ON = { enabled: true }
 const line = (text: string): string => `<system-reminder>\nNow: ${text}.\n</system-reminder>`
 const SHANGHAI = line('2026-10-12 Mon 04:20 (Asia/Shanghai, UTC+08:00)')
 const UTC = line('2026-10-11 Sun 20:20 (UTC, local time zone unknown)')

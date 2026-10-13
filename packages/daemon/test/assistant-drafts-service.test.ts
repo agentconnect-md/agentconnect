@@ -98,14 +98,14 @@ async function world(
       (async (req: Omit<AgentApprovalRoute, 'agentId'>) =>
         req.verify
           ? { requestId: req.requestId, allowed: req.verify.userId === 'U0RESP' }
-          : req.consoleUserId === RESPONSIBLE
+          : req.responsible
             ? {
                 requestId: req.requestId,
                 target: { integrationId: INT, teamId: 'T0EXAMPLE', userId: 'U0RESP', consoleUserId: RESPONSIBLE }
               }
             : { requestId: req.requestId })
   )
-  const policy: AssistantModePolicy = { enabled: true, responsibleUserId: RESPONSIBLE, ...over.policy }
+  const policy: AssistantModePolicy = { enabled: true, ...over.policy }
   const describeDestination = vi.fn(async (target: AssistantDraftTarget, opts: { dm: boolean; recipient?: string }) =>
     opts.dm
       ? { userId: opts.recipient ?? null, name: 'Bob Example' }
@@ -312,11 +312,11 @@ describe('a post to another place', () => {
 })
 
 describe('the approver', () => {
-  it('is the responsible user when the asker is not an internal member, re-verified on the click', async () => {
+  it('is the responsible user the control plane derives when the asker is not an internal member, re-verified on the click', async () => {
     const w = await world()
     await w.post(TO_SUPPORT, HERE, { integrationId: INT, userId: 'U0GUEST', trusted: false })
     expect(w.port.isFullMember).toHaveBeenCalledWith('U0GUEST')
-    expect(w.route).toHaveBeenCalledWith(expect.objectContaining({ consoleUserId: RESPONSIBLE, integrationIds: [INT] }))
+    expect(w.route).toHaveBeenCalledWith({ requestId: expect.any(String), integrationIds: [INT], responsible: true })
     expect(w.port.postCard.mock.calls[0]![0]).toBe('D_U0RESP')
     const draft = await w.only()
     expect(draft.approver).toMatchObject({ kind: 'member', userId: 'U0RESP', consoleUserId: RESPONSIBLE })
@@ -353,27 +353,67 @@ describe('the approver', () => {
     expect(w.gateway.postMessage).not.toHaveBeenCalled()
   })
 
-  it('ignores a control plane that answers with someone other than the named user', async () => {
+  it('ignores a control plane that answers a console asker with someone else, and asks for the responsible user', async () => {
     const w = await world({
-      policy: { fallbackConversation: { integrationId: INT, channelId: 'C0APPROVALS' } },
       route: async (req) => ({
         requestId: req.requestId,
         target: { integrationId: INT, teamId: 'T0EXAMPLE', userId: 'U0CREATOR', consoleUserId: 'usr-creator' }
       })
     })
-    await w.post(TO_SUPPORT, PLACELESS, null)
-    expect(w.port.postCard.mock.calls[0]![0]).toBe('C0APPROVALS')
+    expect(await w.post(TO_SUPPORT, HERE, { consoleUserId: 'usr-web', trusted: false })).toMatchObject({
+      result: { approver: "the agent's responsible user, in a direct message" }
+    })
+    expect(w.route.mock.calls.map(([req]) => req.consoleUserId ?? req.responsible)).toEqual(['usr-web', true])
+    expect((await w.only()).approver).toMatchObject({
+      kind: 'member',
+      userId: 'U0CREATOR',
+      consoleUserId: 'usr-creator'
+    })
+  })
+
+  it('never uses a stored fallback conversation: with no one reachable the draft waits for an editor in Activity', async () => {
+    const legacy = { fallbackConversation: { integrationId: INT, channelId: 'C0APPROVALS' } }
+    const w = await world({
+      policy: legacy as Partial<AssistantModePolicy>,
+      route: async (req) => ({ requestId: req.requestId })
+    })
+    expect(await w.post(TO_SUPPORT, PLACELESS, null)).toMatchObject({ result: { drafted: true, approver: null } })
+    expect(w.port.postCard).not.toHaveBeenCalled()
     const draft = await w.only()
-    expect(draft.approver).toMatchObject({ kind: 'conversation', channel: 'C0APPROVALS', userId: null })
-    // Anyone in the fallback conversation may decide.
-    await w.click(draft.id, 'approve', 'U0ANYONE')
-    expect(w.gateway.postMessage).toHaveBeenCalledTimes(1)
+    expect(draft.approver).toBeNull()
+    // No card answers it; an editor decides it from Activity.
+    expect(await w.click(draft.id, 'approve', 'U0ANYONE')).toBe(true)
+    expect(w.gateway.postMessage).not.toHaveBeenCalled()
+    expect(await w.decide(draft.id, 'approve')).toMatchObject({ result: 'decided', status: 'succeeded' })
+    expect(w.gateway.postMessage).toHaveBeenCalledWith(
+      'C0SUPPORT',
+      'The release is out.',
+      undefined,
+      expect.any(Object)
+    )
+  })
+
+  it('cards an external sub-session request to the responsible user too', async () => {
+    const w = await world()
+    const requestId = '55555555-5555-4555-8555-555555555555'
+    expect(await w.drafts.cardApprover(AGENT, requestId)).toEqual({
+      channel: 'D_U0RESP',
+      target: { integrationId: INT, teamId: 'T0EXAMPLE', userId: 'U0RESP', consoleUserId: RESPONSIBLE }
+    })
+    expect(w.route).toHaveBeenCalledWith({ requestId, integrationIds: [INT], responsible: true })
+  })
+
+  it('names no card for an external sub-session request when no one is reachable, never a stored fallback conversation', async () => {
+    const legacy = { fallbackConversation: { integrationId: INT, channelId: 'C0APPROVALS' } }
+    const w = await world({
+      policy: legacy as Partial<AssistantModePolicy>,
+      route: async (req) => ({ requestId: req.requestId })
+    })
+    expect(await w.drafts.cardApprover(AGENT, '66666666-6666-4666-8666-666666666666')).toBeUndefined()
   })
 
   it('outside assistant mode, is the asker only when a full member, and the post is refused otherwise', async () => {
-    const w = await world({
-      policy: { enabled: false, fallbackConversation: { integrationId: INT, channelId: 'C0X' } }
-    })
+    const w = await world({ policy: { enabled: false } })
     w.port.isFullMember.mockImplementation(async (user: string) => user === 'U0ALICE')
     const toShared = { ...TO_SUPPORT, channel: 'C0SHARED' }
     expect(await w.post(toShared, HERE, { integrationId: INT, userId: 'U0ALICE', trusted: false })).toMatchObject({
@@ -382,13 +422,13 @@ describe('the approver', () => {
     })
     expect(w.port.postCard.mock.calls[0]![0]).toBe('D_U0ALICE')
     expect((await w.only()).approver).toMatchObject({ kind: 'member', userId: 'U0ALICE' })
-    // No responsible user or fallback conversation stands in: a guest's or a run's post is refused, and no record kept.
+    // No responsible user stands in: a guest's or a run's post is refused, and no record kept.
     for (const asker of [{ integrationId: INT, userId: 'U0GUEST', trusted: false }, null]) {
       await expect(w.post(toShared, asker ? HERE : PLACELESS, asker)).rejects.toThrow(
         /needs the approval of an internal member/
       )
     }
-    expect(w.route).not.toHaveBeenCalledWith(expect.objectContaining({ consoleUserId: RESPONSIBLE }))
+    expect(w.route).not.toHaveBeenCalledWith(expect.objectContaining({ responsible: true }))
     expect(w.port.postCard).toHaveBeenCalledTimes(1)
     await w.click((await w.only()).id, 'approve')
     expect(w.gateway.postMessage).toHaveBeenCalledWith('C0SHARED', 'The release is out.', undefined, expect.any(Object))

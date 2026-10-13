@@ -10,7 +10,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const mocks = vi.hoisted(() => ({
   flags: new Set<string>(),
   query: '',
-  assistantMode: undefined as { enabled: boolean; responsibleUserId?: string } | undefined,
+  assistantMode: undefined as { enabled: boolean } | undefined,
   canEdit: true
 }))
 
@@ -27,9 +27,7 @@ vi.mock('next/link', () => ({
   )
 }))
 vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: (id: string) => mocks.flags.has(id) }))
-vi.mock('@/components/console/MemoryPanel', () => ({
-  MemoryPanel: ({ besideSettings }: { besideSettings?: ReactNode }) => <div>{besideSettings}</div>
-}))
+vi.mock('@/components/console/MemoryPanel', () => ({ MemoryPanel: () => <div data-memory-panel /> }))
 vi.mock('@/components/console/AssistantModePanel', () => ({
   AssistantModePanel: ({ assistantMode }: { assistantMode?: { enabled: boolean } }) => (
     <div data-assistant-mode-panel={String(assistantMode?.enabled === true)} />
@@ -92,6 +90,18 @@ function agent() {
     workspace: { mode: 'scratch', files: [] },
     integrations: [],
     visibility: 'org',
+    permissionMode: 'default',
+    chatActions: 'approve',
+    callableBy: 'all',
+    allowedCallerAgentIds: [],
+    canCall: 'all',
+    allowedTargetAgentIds: [],
+    env: [],
+    secretKeys: [],
+    organizationVariables: [],
+    organizationSecretKeys: [],
+    hookKinds: [],
+    sharedWith: [],
     canEdit: mocks.canEdit,
     ...(mocks.assistantMode ? { assistantMode: mocks.assistantMode } : {})
   } as unknown as Parameters<typeof Object.freeze>[0]
@@ -137,7 +147,7 @@ afterEach(async () => {
 describe('the agent page’s Activity tab', () => {
   it('appears last for an assistant-mode agent, and opens the panel', async () => {
     mocks.flags = new Set(['assistant-mode'])
-    mocks.assistantMode = { enabled: true, responsibleUserId: 'usr-1' }
+    mocks.assistantMode = { enabled: true }
     mocks.query = 'tab=activity'
     const scope = await render()
     expect(tabs(scope).at(-1)).toEqual(['Activity', '/agents/agent-1?tab=activity'])
@@ -149,7 +159,7 @@ describe('the agent page’s Activity tab', () => {
 
   it('hands a viewer the panel read-only', async () => {
     mocks.flags = new Set(['assistant-mode'])
-    mocks.assistantMode = { enabled: true, responsibleUserId: 'usr-1' }
+    mocks.assistantMode = { enabled: true }
     mocks.query = 'tab=activity'
     mocks.canEdit = false
     const scope = await render()
@@ -157,7 +167,7 @@ describe('the agent page’s Activity tab', () => {
   })
 
   it('stays for an agent already in assistant mode with the flag off', async () => {
-    mocks.assistantMode = { enabled: true, responsibleUserId: 'usr-1' }
+    mocks.assistantMode = { enabled: true }
     mocks.query = 'tab=activity'
     const scope = await render()
     expect(tabs(scope).at(-1)).toEqual(['Activity', '/agents/agent-1?tab=activity'])
@@ -187,13 +197,26 @@ describe('the agent page’s Activity tab', () => {
 
 describe('the assistant mode switch', () => {
   const panel = async () => {
-    mocks.query = 'tab=memory'
+    mocks.query = 'tab=config'
     const scope = await render()
     return scope.querySelector('[data-assistant-mode-panel]')?.getAttribute('data-assistant-mode-panel')
   }
 
+  it('sits on the Configuration tab, not the Memory tab', async () => {
+    mocks.flags = new Set(['assistant-mode'])
+    mocks.assistantMode = { enabled: true }
+    expect(await panel()).toBe('true')
+    await act(async () => root!.unmount())
+    host?.remove()
+    root = undefined
+    mocks.query = 'tab=memory'
+    const memory = await render()
+    expect(memory.querySelector('[data-memory-panel]')).toBeTruthy()
+    expect(memory.querySelector('[data-assistant-mode-panel]')).toBeNull()
+  })
+
   it('stays on an agent already in assistant mode with the flag off, so it can be switched off', async () => {
-    mocks.assistantMode = { enabled: true, responsibleUserId: 'usr-1' }
+    mocks.assistantMode = { enabled: true }
     expect(await panel()).toBe('true')
   })
 

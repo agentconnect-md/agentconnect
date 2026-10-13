@@ -182,7 +182,7 @@ async function seedAssistant(
   })
   await prisma.agent.update({
     where: { id: AGENT },
-    data: { assistantMode: { enabled: opts.enabled ?? true, responsibleUserId: DEFAULT_OWNER_ID } }
+    data: { assistantMode: { enabled: opts.enabled ?? true } }
   })
 }
 
@@ -275,7 +275,7 @@ describe('the assistant Activity routes', () => {
 
     await prisma.agent.update({
       where: { id: AGENT },
-      data: { assistantMode: { enabled: true, responsibleUserId: DEFAULT_OWNER_ID } }
+      data: { assistantMode: { enabled: true } }
     })
     await prisma.daemon.update({
       where: { id: DAEMON },
@@ -585,7 +585,7 @@ describe('one conversation’s sub-sessions', () => {
     control.failure = new NoConnection(DAEMON)
     await prisma.agent.update({
       where: { id: AGENT },
-      data: { assistantMode: { enabled: true, responsibleUserId: DEFAULT_OWNER_ID } }
+      data: { assistantMode: { enabled: true } }
     })
     expect((await stop(app(control, member), teamChild)).json()).toMatchObject({ code: 'DAEMON_OFFLINE' })
   })

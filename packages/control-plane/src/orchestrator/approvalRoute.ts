@@ -15,6 +15,7 @@ import type {
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { AUDIENCE_CONCURRENCY, MAX_AUDIENCE, mapLimited } from './linkedDm.js'
 import { canEdit } from '../authorization/policy.js'
+import { assistantResponsibleUser } from '../agents/assistant-mode.js'
 
 export interface ApprovalRouteDeps {
   agent: Pick<AgentRepo, 'getUnscoped'>
@@ -126,9 +127,11 @@ export async function resolveApprovalRoute(
     }
   }
 
-  // One named console user, never the chain: an editor linked to one of the given tenants, or nobody.
-  if (req.consoleUserId) {
-    const member = editors.find((m) => m.userId === req.consoleUserId)
+  // One named console user or the derived responsible user, never the chain: linked to one of the given tenants, or nobody.
+  if (req.consoleUserId || req.responsible) {
+    const member = req.consoleUserId
+      ? editors.find((m) => m.userId === req.consoleUserId)
+      : assistantResponsibleUser(agent, editors)
     if (!member) return none
     for (const integrationId of req.integrationIds) {
       const tenant = await tenantFor(integrationId)

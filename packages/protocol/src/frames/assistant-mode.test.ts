@@ -7,29 +7,20 @@ import { assistantModePermissionModeOnEnable } from '../assistant-permission-mod
 const INTEGRATION_ID = '22222222-2222-4222-8222-222222222222'
 
 describe('AssistantModePolicy', () => {
-  it('accepts an enabled policy with a responsible user or a fallback conversation', () => {
-    expect(AssistantModePolicy.parse({ enabled: true, responsibleUserId: 'usr_1' })).toEqual({
-      enabled: true,
-      responsibleUserId: 'usr_1'
-    })
-    const fallbackConversation = { integrationId: INTEGRATION_ID, channelId: 'C123' }
-    expect(AssistantModePolicy.parse({ enabled: true, fallbackConversation })).toEqual({
-      enabled: true,
-      fallbackConversation
-    })
-  })
-
-  it('refuses an enabled policy with neither, but keeps a disabled one', () => {
-    expect(AssistantModePolicy.safeParse({ enabled: true }).success).toBe(false)
+  it('needs no routing target: the responsible user is derived and there is no fallback conversation', () => {
+    expect(AssistantModePolicy.parse({ enabled: true })).toEqual({ enabled: true })
     expect(AssistantModePolicy.parse({ enabled: false })).toEqual({ enabled: false })
+    expect(AssistantModePolicy.safeParse({ enabled: true, responsibleUserId: 'usr_1' }).success).toBe(false)
+    expect(
+      AssistantModePolicy.safeParse({
+        enabled: true,
+        fallbackConversation: { integrationId: INTEGRATION_ID, channelId: 'C123' }
+      }).success
+    ).toBe(false)
   })
 
   it('is strict and bounds its limits', () => {
     expect(AssistantModePolicy.safeParse({ enabled: false, extra: 1 }).success).toBe(false)
-    expect(
-      AssistantModePolicy.safeParse({ enabled: false, fallbackConversation: { integrationId: 'nope', channelId: 'C' } })
-        .success
-    ).toBe(false)
     expect(AssistantModePolicy.safeParse({ enabled: false, limits: { permissionWaitHours: 73 } }).success).toBe(false)
     expect(
       AssistantModePolicy.parse({
@@ -53,13 +44,7 @@ describe('AssistantModePolicy', () => {
     const base = { name: 'a' }
     expect(AgentSpec.parse({ ...base, assistantMode: null }).assistantMode).toBeNull()
     expect(AgentSpec.parse(base).assistantMode).toBeUndefined()
-    expect(
-      AgentSpec.parse({ ...base, assistantMode: { enabled: true, responsibleUserId: 'u' } }).assistantMode
-    ).toEqual({
-      enabled: true,
-      responsibleUserId: 'u'
-    })
-    expect(AgentSpec.safeParse({ ...base, assistantMode: { enabled: true } }).success).toBe(false)
+    expect(AgentSpec.parse({ ...base, assistantMode: { enabled: true } }).assistantMode).toEqual({ enabled: true })
   })
 })
 

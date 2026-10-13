@@ -15,7 +15,7 @@ const MEMBER_A = 'd0d0d0d0-dddd-4ddd-8ddd-ddddddddd0b2'
 const MEMBER_B = 'd0d0d0d0-dddd-4ddd-8ddd-ddddddddd0b3'
 const STORE = '5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a01'
 const OTHER_STORE = '5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a02'
-const ON = { enabled: true, responsibleUserId: DEFAULT_OWNER_ID }
+const ON = { enabled: true }
 
 let running: HttpApp | undefined
 
@@ -261,47 +261,33 @@ describe('assistant mode', () => {
     expect(offAndSwitch.json()).toMatchObject({ runtime: 'codex-acp', assistantMode: { enabled: false } })
   })
 
-  it('needs a responsible user or fallback conversation that belongs here', async () => {
+  it('takes no routing target, and names the responsible user it derives', async () => {
+    const creator = await prisma.user.create({ data: { email: `creator-${randomUUID()}@example.test` } })
+    await prisma.membership.create({ data: { orgId: DEFAULT_ORG_ID, userId: creator.id, role: 'collaborator' } })
     const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { runtime: 'claude-acp' })
-    const otherAgent = randomUUID()
-    await seedAgent(prisma, otherAgent, { runtime: 'claude-acp' })
-    const botId = randomUUID()
-    await prisma.bot.create({ data: { id: botId, orgId: DEFAULT_ORG_ID, platform: 'slack', name: `bot-${botId}` } })
-    const own = randomUUID()
-    const foreign = randomUUID()
-    await prisma.integration.createMany({
-      data: [
-        { id: own, orgId: DEFAULT_ORG_ID, agentId, botId, platform: 'slack', name: 'own' },
-        { id: foreign, orgId: DEFAULT_ORG_ID, agentId: otherAgent, botId, platform: 'slack', name: 'foreign' }
-      ]
-    })
+    await seedAgent(prisma, agentId, { runtime: 'claude-acp', createdByUserId: creator.id })
     const { app } = withSpy()
+    const responsible = async () =>
+      (await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/assistant-mode/responsible-user` })).json()
 
-    expect((await patch(app, agentId, { assistantMode: { enabled: true } })).statusCode).toBe(400)
+    const on = await patch(app, agentId, { assistantMode: { enabled: true } })
+    expect(on.statusCode, on.body).toBe(200)
+    expect(on.json()).toMatchObject({ assistantMode: { enabled: true } })
     expect(
-      (await patch(app, agentId, { assistantMode: { enabled: true, responsibleUserId: 'usr_absent' } })).statusCode
+      (await patch(app, agentId, { assistantMode: { enabled: true, responsibleUserId: DEFAULT_OWNER_ID } })).statusCode
     ).toBe(400)
-    const foreignConversation = await patch(app, agentId, {
-      assistantMode: { enabled: true, fallbackConversation: { integrationId: foreign, channelId: 'C1' } }
-    })
-    expect(foreignConversation.statusCode).toBe(400)
-    const ownConversation = await patch(app, agentId, {
-      assistantMode: { enabled: true, fallbackConversation: { integrationId: own, channelId: 'C1' } }
-    })
-    expect(ownConversation.statusCode, ownConversation.body).toBe(200)
+    const fallbackConversation = { integrationId: randomUUID(), channelId: 'C-EXAMPLE' }
+    expect((await patch(app, agentId, { assistantMode: { enabled: true, fallbackConversation } })).statusCode).toBe(400)
 
-    // The saved targets disappear; the console still sends them back when it switches the mode off.
-    await prisma.integration.delete({ where: { id: own } })
-    const offWithStaleTargets = await patch(app, agentId, {
-      assistantMode: {
-        enabled: false,
-        responsibleUserId: 'usr_absent',
-        fallbackConversation: { integrationId: own, channelId: 'C1' }
-      }
+    expect(await responsible()).toEqual({ userId: creator.id })
+    // A creator who may no longer edit hands over to the editor who joined first, here the organization's owner.
+    await prisma.membership.updateMany({
+      where: { orgId: DEFAULT_ORG_ID, userId: creator.id },
+      data: { role: 'viewer' }
     })
-    expect(offWithStaleTargets.statusCode, offWithStaleTargets.body).toBe(200)
-    expect(offWithStaleTargets.json()).toMatchObject({ assistantMode: { enabled: false } })
+    expect(await responsible()).toEqual({ userId: DEFAULT_OWNER_ID })
+    await prisma.membership.deleteMany({ where: { orgId: DEFAULT_ORG_ID, userId: creator.id } })
+    expect(await responsible()).toEqual({ userId: DEFAULT_OWNER_ID })
   })
 
   it('requires every member of a daemon group to share one store', async () => {

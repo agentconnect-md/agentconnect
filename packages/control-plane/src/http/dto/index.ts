@@ -939,6 +939,9 @@ export const AgentListDto = z.array(AgentDto)
 /** Whether the agent may switch assistant mode on as it stands, and every reason it may not. */
 export const AssistantModeAdmissionDto = AssistantModeAdmission
 
+/** The member an assistant-mode agent asks when no person is behind the work; null when no member may edit it. */
+export const AssistantResponsibleUserDto = z.object({ userId: z.string().nullable() })
+
 /** Live, daemon-owned approval queue exposed only to editors of the Agent. */
 /** A request as the console reads it: a join confirmation's askers decide who may answer, and never leave the Control Plane. */
 export const AgentPermissionRequestDto = AgentPermissionRequestRecord.omit({ joinAskers: true })

@@ -26,7 +26,7 @@ import { WAIT } from './wait-support.js'
 import { z } from 'zod'
 
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
-const ON = { enabled: true, responsibleUserId: 'user-1' }
+const ON = { enabled: true }
 const MINUTE = 60_000
 const PATROL_OPENING = '[patrol] A scheduled, read-only check'
 // The patrol writes in its people's language, and the conversation answers in it whatever the report's.

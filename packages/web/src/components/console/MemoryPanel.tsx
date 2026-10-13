@@ -14,7 +14,7 @@ import { UnifiedMemoryPanel } from '@/components/console/UnifiedMemoryPanel'
 // markdown or edited through the same inline file-browser surface as Workspace.
 // The CP enforces edit permission (a 403 surfaces as an error), matching the console.
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import {
   fetchAgentMemoryFull,
@@ -160,8 +160,7 @@ export function MemoryPanel({
   memoryCaptureMode,
   sessionBasePath,
   sandboxed = false,
-  memberSetPlaced = false,
-  besideSettings
+  memberSetPlaced = false
 }: {
   agentId: string
   canEdit: boolean
@@ -182,8 +181,6 @@ export function MemoryPanel({
   sandboxed?: boolean
   /** Placed on a member set (a group or the pool), where the home is fixed to `control-plane` and there is no way back. */
   memberSetPlaced?: boolean
-  /** Agent settings that sit beside the memory backend, such as assistant mode. */
-  besideSettings?: ReactNode
 }) {
   const t = useTranslations('Agents.detail.memory')
   const { updateAgent } = useConsoleData()
@@ -686,8 +683,6 @@ export function MemoryPanel({
           </div>
         ) : null}
       </section>
-
-      {besideSettings}
 
       {backendChanged ? (
         <div
