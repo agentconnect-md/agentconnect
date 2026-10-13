@@ -8851,16 +8851,16 @@ export class Daemon {
     return res.asker === 'linked' ? { asker: 'linked', visible: new Set(res.visibleSessionIds) } : { asker: res.asker }
   }
 
-  /** The member id the console user behind the asker linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
+  /** The member id the console user behind the asker linked in that bot's workspace, null for none or an older Control Plane; rejects when an answer fails. */
   private async linkedAccount(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null> {
     const cp = this.cpClient
-    if (cp?.supportsServerFeature?.(READ_ACCESS_LINKED_V1_FEATURE) !== true)
-      throw new Error('linked identity unavailable')
+    // A Control Plane that cannot name linked accounts leaves the console's own visibility to decide, as before.
+    if (cp?.supportsServerFeature?.(READ_ACCESS_LINKED_V1_FEATURE) !== true) return null
     const res = await cp.readAccess(
       { agentId, asker: readAccessAsker(asker), sessionIds: [], linkedOn: integrationId },
       this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
     )
-    // A reply without the field came from a Control Plane that cannot say, so the read or write is refused.
+    // One that advertises the feature but answers without the field cannot be trusted, so the read or write is refused.
     if (res.linkedMemberId === undefined) throw new Error('linked identity unavailable')
     return res.linkedMemberId
   }

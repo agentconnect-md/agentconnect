@@ -1,4 +1,4 @@
-// A person's linked chat account is asked of the Control Plane only behind read-access-linked-v1, and fails closed without it.
+// A person's linked chat account is asked of a Control Plane that advertises read-access-linked-v1; an older one leaves the console to decide.
 import { describe, expect, it, vi } from 'vitest'
 import {
   READ_ACCESS_LINKED_V1_FEATURE,
@@ -6,7 +6,13 @@ import {
   type AgentReadAccess,
   type AgentReadAccessOk
 } from '@agentconnect.md/protocol'
-import type { ReadAsker, ReadLookups } from '../src/assistant/place-access.js'
+import {
+  askerMayRead,
+  readRefusal,
+  type ReadAsker,
+  type ReadLookups,
+  type SourcePlace
+} from '../src/assistant/place-access.js'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
@@ -15,18 +21,27 @@ const LARK_BOT = '33333333-3333-4333-8333-333333333333'
 const SLACK_BOT = '44444444-4444-4444-8444-444444444444'
 const BOTH = [READ_ACCESS_V1_FEATURE, READ_ACCESS_LINKED_V1_FEATURE]
 const CONSOLE_P: ReadAsker = { kind: 'console', userId: 'user-p' }
+// A Feishu group the console shows user-p the agent's session in.
+const GROUP: SourcePlace = {
+  platform: 'feishu',
+  channel: 'oc_group',
+  kind: 'channel',
+  private: true,
+  sessions: ['ses-1']
+}
 
-function daemonWith(features: string[], reply: Partial<AgentReadAccessOk>) {
+function daemonWith(features: string[], reply: Partial<AgentReadAccessOk>, fails = false) {
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-  const readAccess = vi.fn(async (_payload: AgentReadAccess): Promise<AgentReadAccessOk> => ({
-    asker: 'linked',
-    visibleSessionIds: [],
-    consoleUserId: 'user-p',
-    ...reply
-  }))
+  const readAccess = vi.fn(async (payload: AgentReadAccess): Promise<AgentReadAccessOk> => {
+    if (fails && payload.linkedOn) throw new Error('read access lookup failed')
+    return { asker: 'linked', visibleSessionIds: ['ses-1'], consoleUserId: 'user-p', ...reply }
+  })
   daemon.cpClient = { supportsServerFeature: (feature: string) => features.includes(feature), readAccess }
   return { lookups: daemon.placeMembers.lookupsFor(AGENT) as ReadLookups, readAccess }
 }
+
+const judged = (lookups: ReadLookups, source: SourcePlace = GROUP) =>
+  readRefusal(source, { people: [CONSOLE_P], nobody: false }, (a) => askerMayRead(a, source, LARK_BOT, lookups), false)
 
 describe("a person's linked chat account", () => {
   it('is asked of the Control Plane for that bot, and answers none when they linked nothing there', async () => {
@@ -42,11 +57,20 @@ describe("a person's linked chat account", () => {
     expect(await daemonWith(BOTH, { linkedMemberId: null }).lookups.linked(LARK_BOT, CONSOLE_P)).toBeNull()
   })
 
-  it('fails closed on a Control Plane without the feature, or whose answer lacks the field', async () => {
-    const older = daemonWith([READ_ACCESS_V1_FEATURE], { linkedMemberId: 'on_p' })
-    await expect(older.lookups.linked(LARK_BOT, CONSOLE_P)).rejects.toThrow(/linked identity unavailable/)
-    expect(older.readAccess).not.toHaveBeenCalled()
-    const silent = daemonWith(BOTH, {})
-    await expect(silent.lookups.linked(LARK_BOT, CONSOLE_P)).rejects.toThrow(/linked identity unavailable/)
+  it('leaves the console to decide on a Control Plane without the feature, as before', async () => {
+    const older = daemonWith([READ_ACCESS_V1_FEATURE], {})
+    expect(await older.lookups.linked(LARK_BOT, CONSOLE_P)).toBeNull()
+    // The console shows the session, so the read is allowed; a session it does not show stays closed.
+    expect(await judged(older.lookups)).toBeUndefined()
+    expect(await judged(older.lookups, { ...GROUP, sessions: ['ses-2'] })).toBe('private')
+    expect(older.readAccess.mock.calls.every((call) => call[0].linkedOn === undefined)).toBe(true)
+  })
+
+  it('refuses when a Control Plane that advertises the feature answers without the field, or fails', async () => {
+    for (const cp of [daemonWith(BOTH, {}), daemonWith(BOTH, { linkedMemberId: 'on_p' }, true)]) {
+      await expect(cp.lookups.linked(LARK_BOT, CONSOLE_P)).rejects.toThrow()
+      // Even where the console would show the session.
+      expect(await judged(cp.lookups)).toBe('private')
+    }
   })
 })

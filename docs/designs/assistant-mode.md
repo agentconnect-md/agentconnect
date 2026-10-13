@@ -498,8 +498,9 @@ outsiders (memory layers, below), so opening it everywhere does not reopen what 
   `agent/read-access` with `linkedOn` (feature `read-access-linked-v1`); the CP resolves the asker
   to their console user as below, matches that user's linked identities against the bot's
   `chatMemberTenant` (Slack's workspace, Feishu/Lark's region) and answers the member id or none.
-  The answer is cached for a minute per agent, bot and asker beside the membership lookups; a CP
-  without the feature, or an answer without the field, refuses the read. A webchat source never
+  The answer is cached for a minute per agent, bot and asker beside the membership lookups. A CP
+  without the feature is not asked, so the console's visibility decides as before; one that
+  advertises it but fails, or answers without the field, refuses the read. A webchat source never
   asks, so it stays its owner's.
 - **Otherwise**, for a person with no linked account in that workspace (Telegram, Discord and
   Google Chat accounts cannot be linked), the read is judged by the console's own session-visibility
