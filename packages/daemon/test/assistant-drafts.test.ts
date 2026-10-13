@@ -183,14 +183,21 @@ describe('assistant drafts: the card and its approver', () => {
     const draft = await create(s, { approver: PLACE })
     expect(draft.approver).toEqual(PLACE)
     expect(draft.cardShows).toBeNull()
-    const fallback = { ...PLACE, kind: 'conversation' as const, channel: 'C0FALLBACK' }
-    expect(await s.assistantDrafts.reroute(draft.id, fallback)).toBe(true)
-    expect((await s.assistantDrafts.get(draft.id))?.approver).toEqual(fallback)
+    const responsible = {
+      ...PLACE,
+      kind: 'member' as const,
+      channel: 'D0RESP',
+      userId: 'U0RESP',
+      teamId: 'T0EXAMPLE',
+      consoleUserId: 'usr-responsible'
+    }
+    expect(await s.assistantDrafts.reroute(draft.id, responsible)).toBe(true)
+    expect((await s.assistantDrafts.get(draft.id))?.approver).toEqual(responsible)
     await s.assistantDrafts.setCard(draft.id, '111.222')
     expect(await s.assistantDrafts.reroute(draft.id, PLACE)).toBe(false)
     const decided = await create(s, { approver: PLACE })
     await s.assistantDrafts.deny(decided.id, BY, 2_000)
-    expect(await s.assistantDrafts.reroute(decided.id, fallback)).toBe(false)
+    expect(await s.assistantDrafts.reroute(decided.id, responsible)).toBe(false)
   })
 
   it('lists a decided draft whose card still shows less, until a rewrite is recorded', async () => {

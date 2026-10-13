@@ -706,7 +706,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
       data: {
         visibility,
         sharedWith: visibility === 'restricted' ? [DEFAULT_OWNER_ID] : [],
-        assistantMode: { enabled: true, responsibleUserId: DEFAULT_OWNER_ID }
+        assistantMode: { enabled: true }
       }
     })
     await prisma.bot.update({ where: { id: integration.botId }, data: { teamId: 'T_ACME' } })

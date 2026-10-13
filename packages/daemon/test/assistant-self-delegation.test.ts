@@ -16,13 +16,13 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
-const ON = { enabled: true, responsibleUserId: 'user-1' }
+const ON = { enabled: true }
 
 /** One Slack agent per entry; `C1` appends for every listed agent unless `append` is false. */
 function scaffold(
   agents: {
     id: string
-    assistantMode?: { enabled: boolean; responsibleUserId?: string }
+    assistantMode?: { enabled: boolean }
     append?: boolean
     callPolicy?: 'all' | 'selected'
     outboundPolicy?: 'all' | 'selected'

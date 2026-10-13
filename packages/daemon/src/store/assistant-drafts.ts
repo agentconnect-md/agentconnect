@@ -64,12 +64,12 @@ export interface AssistantDraftSource {
   place: boolean
 }
 
-/** Who approves: a member addressed in their DM, everyone in the agent's fallback conversation, or whoever could ask the agent in the proposal's own place. */
+/** Who approves: a member addressed in their DM, or whoever could ask the agent in the proposal's own place. */
 export interface AssistantDraftApprover {
-  kind: 'member' | 'conversation' | 'place'
+  kind: 'member' | 'place'
   /** The integration the card is posted and clicked through; '' for a webchat place, decided on its page with no card. */
   integrationId: string
-  /** The conversation the card lands in: the member's DM, the fallback conversation, or the proposal's place. */
+  /** The conversation the card lands in: the member's DM, or the proposal's place. */
   channel: string
   userId: string | null
   teamId: string | null
@@ -273,7 +273,7 @@ function draftOf(row: Row): AssistantDraft {
         }
       : null,
     approver:
-      approverKind === 'member' || approverKind === 'conversation' || approverKind === 'place'
+      approverKind === 'member' || approverKind === 'place'
         ? {
             kind: approverKind,
             integrationId: String(row.approverIntegrationId),

@@ -329,6 +329,44 @@ describe('resolveApprovalRoute — one named console user', () => {
   })
 })
 
+// assistant-mode.md §5.1: the creator while they may edit the agent, else the editor who joined first, else nobody.
+describe('resolveApprovalRoute — the derived responsible user', () => {
+  const joined = (day: number) => new Date(Date.UTC(2026, 0, day))
+  const world: World = {
+    members: [
+      { userId: 'u-late', displayName: 'Late', joinedAt: joined(9) },
+      { userId: 'u-creator', displayName: 'Creator', joinedAt: joined(5) },
+      { userId: 'u-early', displayName: 'Early', joinedAt: joined(1) }
+    ],
+    agent: { createdByUserId: 'u-creator' },
+    links: { 'u-late': linked('U0LATE'), 'u-creator': linked('U0CREATOR'), 'u-early': linked('U0EARLY') }
+  }
+  const responsible = async (w: World) =>
+    (await resolveApprovalRoute(routeReq({ responsible: true, requesterId: 'U0LATE' }), deps(w))).target
+
+  it('is the creator while they may edit the agent, never the requester or the chain', async () => {
+    expect(await responsible(world)).toMatchObject({ userId: 'U0CREATOR', consoleUserId: 'u-creator' })
+  })
+
+  it('is the editor who joined first once the creator left or may no longer edit, whatever the list order', async () => {
+    const left = { ...world, members: world.members!.filter((m) => m.userId !== 'u-creator') }
+    expect(await responsible(left)).toMatchObject({ userId: 'U0EARLY', consoleUserId: 'u-early' })
+    const demoted = {
+      ...world,
+      members: world.members!.map((m) => (m.userId === 'u-creator' ? { ...m, role: 'viewer' as const } : m))
+    }
+    expect(await responsible(demoted)).toMatchObject({ consoleUserId: 'u-early' })
+    const notShared = { ...world, agent: { ...world.agent, visibility: 'restricted' as const, sharedWith: ['u-late'] } }
+    expect(await responsible(notShared)).toMatchObject({ consoleUserId: 'u-late' })
+  })
+
+  it('answers nobody when that person is unlinked there, or no member may edit the agent', async () => {
+    expect(await responsible({ ...world, links: { ...world.links, 'u-creator': null } })).toBeUndefined()
+    const viewers = { ...world, members: world.members!.map((m) => ({ ...m, role: 'viewer' as const })) }
+    expect(await responsible(viewers)).toBeUndefined()
+  })
+})
+
 describe('resolveApprovalRoute — verify form', () => {
   const verifyReq = (consoleUserId = 'u-owner', userId = 'U0OWNER', teamId = TEAM_A) =>
     routeReq({ verify: { integrationId: INTEGRATION_A, teamId, userId, consoleUserId } })

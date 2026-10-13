@@ -36,7 +36,7 @@ async function agent(daemonId: string, assistantMode: boolean): Promise<AgentId>
   if (assistantMode) {
     await prisma.agent.update({
       where: { id },
-      data: { assistantMode: { enabled: true, responsibleUserId: 'user-1' } }
+      data: { assistantMode: { enabled: true } }
     })
   }
   return id

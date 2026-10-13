@@ -22,10 +22,11 @@ export interface SubsessionApprovalRoute {
   waitHours: number
 }
 
-/** The approver an external place's card goes to instead, as drafts route theirs (§5.5): a linked editor's DM, or the fallback conversation. */
-export type SubsessionApprover =
-  | { kind: 'member'; target: ApprovalRouteTarget; channel: string }
-  | { kind: 'conversation'; integrationId: string; channel: string }
+/** The approver an external place's card goes to instead, as drafts route theirs (§5.5): the responsible user's DM. */
+export interface SubsessionApprover {
+  target: ApprovalRouteTarget
+  channel: string
+}
 
 // How a self-delegation's message opens (collab/coordinator.ts): no name for the sub-session it opens.
 const DELEGATION_WRAPPER = 'From your own main conversation, as a background sub-session:'

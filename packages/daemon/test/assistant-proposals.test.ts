@@ -323,12 +323,12 @@ const post = (s: LocalStore, agentId: string) =>
     target: PLACE,
     text: 'The release is out.',
     approver: {
-      kind: 'conversation',
+      kind: 'member',
       integrationId: 'int-a',
-      channel: 'C0FALLBACK',
-      userId: null,
-      teamId: null,
-      consoleUserId: null
+      channel: 'D0RESP',
+      userId: 'U0RESP',
+      teamId: 'T0EXAMPLE',
+      consoleUserId: 'usr-responsible'
     },
     now: 1_000
   })
@@ -343,9 +343,9 @@ describe.skipIf(usingPostgresStore())('the v39 → v40 approval record on SQLite
     old
       .prepare(
         `INSERT INTO assistant_draft (id, agentId, action, kind, targetPlatform, targetIntegrationId, targetChannel, text,
-           approverKind, approverIntegrationId, approverChannel, cardTs, status, hash, createdAt, expiresAt)
-         VALUES ('draft-old', 'agent-old', 'post', 'elsewhere', 'slack', 'int-a', 'C0GENERAL', 'Kept.', 'conversation',
-           'int-a', 'C0FALLBACK', '1700.1', 'awaiting_review', 'h', 1000, 2000)`
+           approverKind, approverIntegrationId, approverChannel, approverUserId, cardTs, status, hash, createdAt, expiresAt)
+         VALUES ('draft-old', 'agent-old', 'post', 'elsewhere', 'slack', 'int-a', 'C0GENERAL', 'Kept.', 'member',
+           'int-a', 'D0RESP', 'U0RESP', '1700.1', 'awaiting_review', 'h', 1000, 2000)`
       )
       .run()
     expect(() =>
@@ -367,7 +367,7 @@ describe.skipIf(usingPostgresStore())('the v39 → v40 approval record on SQLite
         kind: 'elsewhere',
         text: 'Kept.',
         cardTs: '1700.1',
-        approver: { kind: 'conversation', channel: 'C0FALLBACK' },
+        approver: { kind: 'member', channel: 'D0RESP', userId: 'U0RESP' },
         proposal: null,
         subsessionKey: null
       })

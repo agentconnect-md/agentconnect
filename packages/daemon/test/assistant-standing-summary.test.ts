@@ -22,7 +22,7 @@ const GENERAL: AssistantPlace = { platform: 'slack', channel: 'C0GENERAL', trans
 const DM: AssistantPlace = { platform: 'slack', channel: 'D0ALICE', transportScope: 'slack:scope-1' }
 const ALICE = 'slack:T0EXAMPLE:U0ALICE'
 const BOB = 'slack:T0EXAMPLE:U0BOB'
-const ON = { enabled: true, responsibleUserId: 'usr_1' }
+const ON = { enabled: true }
 
 const baseAgent = (assistantMode?: typeof ON): Agent & { dir: string; env: Record<string, string> } =>
   ({

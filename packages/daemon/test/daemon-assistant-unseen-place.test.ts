@@ -32,7 +32,7 @@ function scaffold(opts: { assistantMode: boolean; sessionModes?: { channel: stri
       status: 'active',
       runtime: 'claude',
       workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
-      ...(opts.assistantMode ? { assistantMode: { enabled: true, responsibleUserId: 'usr-1' } } : {}),
+      ...(opts.assistantMode ? { assistantMode: { enabled: true } } : {}),
       integrations: [
         {
           id: 'int-bot-a',

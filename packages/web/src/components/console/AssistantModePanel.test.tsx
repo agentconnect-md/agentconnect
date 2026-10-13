@@ -12,6 +12,7 @@ type Row = { channelId: string; name: string; kind?: 'channel' | 'im' | 'mpim'; 
 const mocks = vi.hoisted(() => ({
   updateAgent: vi.fn(),
   admission: { admitted: true, refusals: [] as string[] },
+  responsible: vi.fn(async (): Promise<{ userId: string | null }> => ({ userId: 'usr_1' })),
   channels: [] as Row[]
 }))
 
@@ -50,6 +51,7 @@ vi.mock('@/lib/data-context', () => ({
 
 vi.mock('@/lib/api', () => ({
   fetchAgentAssistantModeAdmission: vi.fn(async () => mocks.admission),
+  fetchAgentAssistantResponsibleUser: mocks.responsible,
   memberDisplayName: (m: { name: string | null }) => m.name ?? 'Member'
 }))
 
@@ -63,6 +65,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 beforeEach(() => {
   mocks.updateAgent.mockReset().mockResolvedValue(undefined)
   mocks.admission = { admitted: true, refusals: [] }
+  mocks.responsible.mockReset().mockResolvedValue({ userId: 'usr_1' })
   mocks.channels = [
     { channelId: 'C1', name: 'general', trigger: 'off' },
     { channelId: 'D1', name: '@ada', kind: 'im', trigger: 'any' }
@@ -103,43 +106,19 @@ const clickButton = async (host: HTMLElement, label: string) => {
   await act(async () => button?.click())
 }
 
-const select = async (element: HTMLSelectElement, value: string) => {
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(element, value)
-    element.dispatchEvent(new Event('change', { bubbles: true }))
-  })
-}
-
 describe('assistant mode draft', () => {
   it('round-trips a policy and keeps the fields the panel does not edit', () => {
-    const persisted = {
-      enabled: true,
-      responsibleUserId: 'usr_1',
-      instructions: 'Keep it short.',
-      limits: { permissionWaitHours: 24 }
-    }
+    const persisted = { enabled: true, instructions: 'Keep it short.', limits: { permissionWaitHours: 24 } }
     const draft = assistantModeDraft(persisted)
     expect(assistantModePolicyForDraft(draft, persisted)).toEqual(persisted)
     expect(
-      assistantModePolicyForDraft(
-        {
-          ...draft,
-          responsibleUserId: '',
-          fallback: `${INTEGRATION}\u0000C1`,
-          limits: { ...draft.limits, permissionWaitHours: '' }
-        },
-        persisted
-      )
-    ).toEqual({
-      enabled: true,
-      instructions: 'Keep it short.',
-      fallbackConversation: { integrationId: INTEGRATION, channelId: 'C1' }
-    })
+      assistantModePolicyForDraft({ ...draft, limits: { ...draft.limits, permissionWaitHours: '' } }, persisted)
+    ).toEqual({ enabled: true, instructions: 'Keep it short.' })
   })
 
-  it('names why a draft cannot be saved', () => {
+  it('needs nothing but the switch to turn on, and names a limit out of range', () => {
     const draft = assistantModeDraft(undefined)
-    expect(assistantModePolicyForDraft({ ...draft, enabled: true }, undefined)).toBe('needsTarget')
+    expect(assistantModePolicyForDraft({ ...draft, enabled: true }, undefined)).toEqual({ enabled: true })
     expect(
       assistantModePolicyForDraft({ ...draft, limits: { ...draft.limits, dailyPatrolBudget: '501' } }, undefined)
     ).toBe('invalidLimit')
@@ -162,19 +141,36 @@ describe('AssistantModePanel', () => {
     expect(toggle?.disabled).toBe(true)
   })
 
-  it('turns on with a responsible user and saves the policy', async () => {
+  it('turns on with the switch alone and saves the policy', async () => {
     const host = await mount()
     await clickButton(host, 'Edit')
     await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click())
-    const save = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (b) => b.textContent?.trim() === 'Save assistant mode'
-    )
-    expect(save?.disabled).toBe(true)
-    await select(host.querySelectorAll<HTMLSelectElement>('select')[0]!, 'usr_1')
     await clickButton(host, 'Save assistant mode')
-    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT, {
-      assistantMode: { enabled: true, responsibleUserId: 'usr_1' }
-    })
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT, { assistantMode: { enabled: true } })
+  })
+
+  // assistant-mode.md §5.1: the responsible user is derived, so it is shown, never chosen.
+  it('shows the derived responsible user read-only, with no responsible-user or fallback select', async () => {
+    const on = await mount({ assistantMode: { enabled: true } })
+    expect(mocks.responsible).toHaveBeenCalledWith(AGENT)
+    expect(on.textContent).toContain('On · Responsible: Ada')
+    await clickButton(on, 'Edit')
+    expect(on.querySelectorAll('select')).toHaveLength(0)
+    expect(on.textContent).not.toContain('Responsible user')
+    expect(on.textContent).not.toContain('Fallback conversation')
+
+    await act(async () => root?.unmount())
+    root = undefined
+    mocks.responsible.mockClear()
+    const off = await mount()
+    expect(mocks.responsible).not.toHaveBeenCalled()
+    expect(off.textContent).not.toContain('Responsible:')
+  })
+
+  it('names nobody when the Control Plane derives no one', async () => {
+    mocks.responsible.mockResolvedValue({ userId: null })
+    const host = await mount({ assistantMode: { enabled: true } })
+    expect(host.textContent).not.toContain('Responsible:')
   })
 
   // #2979 B7: turning on gates nothing, so it saves at once over rooms and group DMs already enabled.
@@ -188,17 +184,14 @@ describe('AssistantModePanel', () => {
     const host = await mount()
     await clickButton(host, 'Edit')
     await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click())
-    await select(host.querySelectorAll<HTMLSelectElement>('select')[0]!, 'usr_1')
     await clickButton(host, 'Save assistant mode')
     expect(host.querySelector('[role="dialog"]')).toBeNull()
-    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT, {
-      assistantMode: { enabled: true, responsibleUserId: 'usr_1' }
-    })
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT, { assistantMode: { enabled: true } })
   })
 
   // assistant-mode.md §5.9: patrols run on the agent's own host, so they are marked degraded while the mode is on.
   it('marks patrols as degraded only while assistant mode is on', async () => {
-    const on = await mount({ assistantMode: { enabled: true, responsibleUserId: 'usr_1' } })
+    const on = await mount({ assistantMode: { enabled: true } })
     const label = on.querySelector('[data-assistant-patrols]')
     expect(label?.getAttribute('data-assistant-patrols')).toBe('degraded')
     expect(label?.textContent).toBe('Patrols degraded')
@@ -211,9 +204,8 @@ describe('AssistantModePanel', () => {
   })
 
   it('warns when the agent asks before every action', async () => {
-    const host = await mount({ askEveryTime: true, assistantMode: { enabled: true, responsibleUserId: 'usr_1' } })
+    const host = await mount({ askEveryTime: true, assistantMode: { enabled: true } })
     expect(host.querySelector('[data-assistant-mode-ask-warning]')?.textContent).toContain('wait for approval')
-    expect(host.textContent).toContain('Responsible: Ada')
   })
 
   // assistant-mode.md §1.8: turning on moves an asking mode to the runtime's auto mode, so only a kept mode warns first.

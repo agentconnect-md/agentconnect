@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { APPROVAL_DM_ROUTE_V1_FEATURE } from '@agentconnect.md/protocol'
+import { APPROVAL_DM_ROUTE_V1_FEATURE, ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type SessionContext } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
@@ -55,7 +55,7 @@ function scaffold(assistant: boolean): string {
         }
       ],
       output: { mode: 'medium' },
-      ...(assistant ? { assistantMode: { enabled: true, responsibleUserId: 'usr-1' } } : {})
+      ...(assistant ? { assistantMode: { enabled: true } } : {})
     })
   )
   return root
@@ -324,6 +324,62 @@ describe('a drafted post outside assistant mode, on a turn no one typed', () => 
       expect((await h.drafts())[0]).toMatchObject({ approver: { kind: 'member', userId: 'U1' } })
     } finally {
       d.activeGateEntries.delete(turn.key)
+      await h.close()
+    }
+  })
+
+  // assistant-mode.md §5.1: the derived responsible user is asked for only where the control plane routes that form.
+  it.each([
+    ['an older control plane', [APPROVAL_DM_ROUTE_V1_FEATURE], null],
+    [
+      'a control plane that derives it',
+      [APPROVAL_DM_ROUTE_V1_FEATURE, ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE],
+      "the agent's responsible user, in a direct message"
+    ]
+  ] as const)("in assistant mode, cards a schedule's unasked post through %s", async (_label, features, approver) => {
+    const h = await boot(true, [])
+    const d = h.daemon as any
+    const approvalRoute = vi.fn(async (req: { requestId: string; responsible?: true }) => ({
+      requestId: req.requestId,
+      ...(req.responsible
+        ? { target: { integrationId: INT, teamId: 'T_FAKE_TEAM', userId: 'U_RESP', consoleUserId: 'user-resp' } }
+        : {})
+    }))
+    const cronId = randomUUID()
+    const turn = liveTurn(d, 'cron-unasked', {
+      source: 'cron',
+      cronRun: { cronId, firedAt: '2026-10-13T09:00:00.000Z' }
+    })
+    try {
+      d.cpCrons.upsert({
+        cronId,
+        agentId: 'bot-a',
+        schedule: '0 9 * * 1-5',
+        timezone: 'UTC',
+        trigger: 'post the update',
+        enabled: true
+      })
+      d.cpClient = {
+        supportsServerFeature: (feature: string) => (features as readonly string[]).includes(feature),
+        approvalRoute,
+        stop: vi.fn(async () => {})
+      }
+      expect(await d.draftPost(turn.ctx, toShared)).toMatchObject({
+        handled: true,
+        result: { drafted: true, approver }
+      })
+      if (approver) {
+        expect(approvalRoute).toHaveBeenCalledWith(expect.objectContaining({ responsible: true }), undefined)
+        expect((h.conn.postBlocks.mock.calls[0] as unknown as [string])[0]).toBe('D_U_RESP')
+        expect((await h.drafts())[0]).toMatchObject({ approver: { kind: 'member', userId: 'U_RESP' } })
+      } else {
+        expect(approvalRoute).not.toHaveBeenCalledWith(expect.objectContaining({ responsible: true }), undefined)
+        expect(h.conn.postBlocks).not.toHaveBeenCalled()
+        expect((await h.drafts())[0]).toMatchObject({ status: 'awaiting_review', approver: null })
+      }
+    } finally {
+      d.activeGateEntries.delete(turn.key)
+      d.cpClient = undefined
       await h.close()
     }
   })

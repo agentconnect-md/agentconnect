@@ -50,7 +50,7 @@ function scaffold(): string {
         }
       ],
       output: { mode: 'low' },
-      assistantMode: { enabled: true, responsibleUserId: 'user-1' }
+      assistantMode: { enabled: true }
     })
   )
   return root

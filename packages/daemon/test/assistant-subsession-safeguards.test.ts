@@ -17,7 +17,7 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
-const ON = { enabled: true, responsibleUserId: 'user-1' }
+const ON = { enabled: true }
 
 /** One Slack agent per entry, each appending in `C1`. */
 function scaffold(agents: { id: string; assistantMode?: Record<string, unknown> }[]): string {

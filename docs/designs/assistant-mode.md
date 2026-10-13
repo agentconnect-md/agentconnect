@@ -14,8 +14,9 @@ and asks before it acts.
 tool set for AI tools. That design gives an agent tools to administer the platform; this one
 describes how an agent behaves.
 
-**Console:** the switch is offered behind the `assistant-mode` flag (`features.assistantMode` in
-the chart, off by default) until it changes behavior. The flag gates only switching the mode on: an
+**Console:** the switch sits in the assistant mode panel on the agent's Configuration tab, offered
+behind the `assistant-mode` flag (`features.assistantMode` in the chart, off by default) until it
+changes behavior. The flag gates only switching the mode on: an
 agent already switched on keeps the switch, Activity, the Sub-sessions tab and proposals.
 
 **Builds on:** [resource-visibility.md](resource-visibility.md) §14 (per-conversation triggers
@@ -62,7 +63,7 @@ does not pretend to defend against effects it cannot defend against.
 - When two people ask for the same thing in different places, it asks "attach this to X's item?"
   when restating, and both receive the report after you confirm.
 - When the asker can no longer be reached (DM closed, left the channel), reports go to the agent's
-  responsible user or fallback conversation.
+  responsible user (§5.1), and otherwise wait in its Activity view.
 
 ### 1.3 Long work: sub-sessions
 
@@ -204,8 +205,8 @@ does not pretend to defend against effects it cannot defend against.
 
 Not admission criteria: platform (all allowed; a place is internal unless detected external, §5.3), channel trigger mode
 (user configuration), workspace mode and isolation (§5.6), sandboxing, permission policy (switching
-on sets a default, §1.8; an asking mode only warns), a linked identity for the responsible user (a
-fallback conversation is required when no DM can be reached).
+on sets a default, §1.8; an asking mode only warns), a linked identity for the responsible user
+(without one, what would be carded to them waits in Activity, §5.1).
 
 ### 4.2 Prerequisites (independent of assistant mode, done first)
 
@@ -233,9 +234,6 @@ A per-agent built-in policy beside `BuiltInMemoryBinding.dreaming`:
 export const AssistantModePolicy = z
   .object({
     enabled: z.boolean(),
-    /** Where undeliverable reports and unclaimed items go; at least one */
-    responsibleUserId: z.string().optional(),
-    fallbackConversation: ConversationRef.optional(),
     /** Patrol cadence; absent ⇒ events and each item's own nextCheck only */
     patrolSchedule: z.string().min(1).max(128).optional(),
     timezone: z.string().min(1).max(64).optional(),
@@ -258,6 +256,25 @@ detects it as external (§5.3). In the same row-locked write, an unset, asking o
 read-only permission mode becomes the runtime's auto mode, else its full-access mode, unless the
 edit sets a mode itself (§1.8); which mode is which comes from a per-runtime map kept beside the
 admission list. Workspace isolation is untouched.
+
+**The responsible user is derived, never stored.** It is the member asked when no person is behind
+a draft, a proposal or a sub-session's permission request (the asker, a schedule's creator or editor,
+an item's asker and a sub-session's opener always come first): the agent's creator while they are a
+member who may edit the agent, otherwise the editor who joined the organization first (membership
+time, then user id), otherwise nobody. The Control Plane derives it when it is asked (the approval
+route's `responsible` form, behind `assistant-responsible-route-v1`, so a daemon on an older Control
+Plane asks nobody), so a creator who leaves or loses edit rights hands over at once, and the
+assistant mode panel names that person read-only. Whatever cannot reach them by a direct message
+waits in the agent's Activity view, where an Agent editor decides it. There is no fallback
+conversation.
+
+The stored keys go in two steps, since a rollout runs both Control Plane versions on one database
+([high-availability.md](high-availability.md)). Now: a row an older Control Plane wrote may keep
+`responsibleUserId` and `fallbackConversation`; this one reads past them, never writes them, serves
+the policy without them, and projects them to daemons unchanged, so a daemon that still requires
+one keeps validating an agent nobody edited. A daemon likewise reads past them in an agent.json an
+older daemon wrote, so that agent still loads after the upgrade. Follow-up: drop the two stored keys
+in the next release, once no Control Plane that reads them is serving.
 
 ### 5.2 Places and long conversations
 
@@ -375,7 +392,7 @@ unlisted place on one session from its first message (§5.2).
 - Concurrency: field-level merge (append observations), CAS only on state transitions.
 - Followers are keyed by platform identity plus place, with no cross-platform merge (P1).
   "Someone left" is handled by **delivery failure**: an undeliverable report goes to the
-  responsible user or fallback conversation.
+  responsible user (§5.1), otherwise it waits in Activity.
 - Duplicates are never merged automatically; the model asks when restating and calls
   `attachFollower` on confirmation. Conflicts between followers are not detected in P0; the model
   says so in the current place and writes it into the summary.
@@ -454,8 +471,8 @@ member (below).
 
 - A post that needs approval goes as a card to an internal member's DM: the asker when the asker
   is an internal member (on Slack, a full member of the installing workspace — not a guest, not
-  from the other organization), otherwise the responsible user or the fallback conversation.
-  **Approve** posts the text unchanged where it was aimed; **discard** drops it.
+  from the other organization), otherwise the responsible user (§5.1); with neither reachable it
+  waits in Activity. **Approve** posts the text unchanged where it was aimed; **discard** drops it.
 - A draft is an approval record (§5.10) whose action is "post this text to this place"; the
   daemon executes it itself, with no sub-session. It expires after 24 hours.
 - Any card that would land in an external place (a runtime permission request, a `propose`) goes
@@ -470,8 +487,7 @@ member (below).
 - Whether a post needs approval follows from where it goes, never from the model's own judgment
   of how sensitive it is — a judgment a message in the conversation could talk it out of.
 - A session no person is behind (a hook, a cron run that records no person) drafts every platform
-  post aimed outside its own conversation, approved by the responsible user or in the fallback
-  conversation.
+  post aimed outside its own conversation, approved by the responsible user or in Activity.
 
 **Writes — judged by who is asking (issue #2979, items B1 and B2):**
 
@@ -502,8 +518,8 @@ member (below).
 - **External targets.** A post into an external place from elsewhere is drafted for every agent:
   the drafts machinery (record, Slack card, expiry sweep, click handling) is not assistant-only, so
   an agent outside assistant mode uses it with one change, routing only to the asker when they are
-  a full member and refusing the post otherwise, since it has no responsible user, fallback
-  conversation or Activity view. In assistant mode a post from elsewhere first asks Slack whether the
+  a full member and refusing the post otherwise, since it has no responsible user or Activity
+  view. In assistant mode a post from elsewhere first asks Slack whether the
   target is shared now (§5.3), as a granted post did; outside it, the integration's recorded
   external conversations decide.
 - **No person behind the turn** writes only to its own conversation, which for an anchored hook or
@@ -630,7 +646,8 @@ below) have shipped, and so has stopping from the main conversation (§5.8).
      root for an `append` conversation, where reports land too. A webchat place has the console:
      the request carries its conversation (`parentSessionId`), whose page lists it among its own.
      An external place's card goes where drafts route theirs: the responsible user's DM (a click is
-     verified like any approval DM), else the fallback conversation. Approval elicitations take the
+     verified like any approval DM), else an editor's DM as for any other request; Activity lists it
+     either way. Approval elicitations take the
      notice and editor path, since a chat card for them needs a live turn's surface.
   3. **Waiting is waiting**: the ACP request stays open and the turn is not cancelled — the card
      and both approval paths are bound to that pending request; cancelling it expires the card,
@@ -849,8 +866,8 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
 
 - The card is posted in the item's place of origin, where the place's own replies land: its root,
   or the thread its long session lives in. An external place's card, or one the place cannot take,
-  goes where a draft with no asker goes instead (§5.5): the responsible user's DM, else the
-  fallback conversation.
+  goes where a draft with no asker goes instead (§5.5): the responsible user's DM, else it waits in
+  Activity.
 - **Drafts are the record's first use** (P0a): action "post" — into an external place from
   another place (§5.5) — executed by the daemon. General
   `propose` actions come with P1.
@@ -885,9 +902,9 @@ places:
    task's prompt shows both versions and says to check the current state first.
 4. **Approvers** are the people who could ask the agent in the item's place, through the draft card
    posted there, plus the agent's editors in the console's Activity view; the first answer from any
-   surface wins. The responsible user's DM or the fallback conversation gets the card only when the
-   place cannot: an external place, a post that definitely failed, a place gated by a decision's
-   verdict, a platform with no card. A timed-out post may still land, so it is never carded twice:
+   surface wins. The responsible user's DM gets the card only when the place cannot (an external
+   place, a post that definitely failed, a place gated by a decision's verdict, a platform with no
+   card), and with them unreachable the proposal waits in Activity. A timed-out post may still land, so it is never carded twice:
    the place keeps it. The card's handle and the status it last showed are on the record, so a reconnect
    rewrites a card a restart left behind. A webchat place has no card: the proposal waits in its
    conversation's pending-requests strip. Whoever may continue that conversation in the console may
@@ -1274,3 +1291,17 @@ bot's default member; the enable warning, the turn-on warning that named enabled
 one-room-at-a-time rule for Apply to all and the console banner are removed. Rows already Off stay
 Off, and an Off nobody chose keeps the one-time notice for every agent. A place's first message
 already keys its one session (§5.2). The permission-mode default (§1.8) is unchanged.
+
+**Thirty-first revision (2026-10-13)**: the responsible user is derived and the fallback
+conversation is removed (issue #2979; §5.1). Both were settings an editor had to fill in before the
+mode could be switched on, for work no person was behind. Since writes and reads are judged by who
+is asking, most work has a person behind it: the asker, a schedule's creator or editor, an item's
+asker, a sub-session's opener, and they still come first. A conversation where anyone may decide
+also conflicts with that rule, since the machine checks who is asking and a fallback conversation
+let whoever was in it decide for someone else. So the responsible user is now the agent's creator
+while they may edit it, otherwise the editor who joined the organization first, derived by the
+Control Plane each time it is asked; what reaches nobody waits in Activity, where an editor decides
+it. Stored values stay in place for one release and are read past, so a Control Plane still serving
+during the rollout never reads a policy it cannot parse; the next release drops them (§5.1). The
+assistant mode panel moves from the Memory tab to the Configuration tab and shows the derived person
+read-only; managed memory stays an admission requirement.

@@ -954,9 +954,11 @@ shared with another organization starts Off, while a Restricted agent stays gate
 is not what keeps the agent's other conversations out of it: a read is judged by the person asking
 (see "Reading other conversations") and memory by audience (see "Memory layers"). Turning the mode
 on or off changes no conversation's trigger, so one set Off stays Off, and one nobody chose still
-answers an addressed message once with the sign (see "Per-conversation trigger"). The console's
-`assistant-mode` flag decides only whether the mode can be switched on: an agent already in
-assistant mode keeps the switch, so it can be switched off, and keeps its Activity tab,
+answers an addressed message once with the sign (see "Per-conversation trigger"). The switch, its
+limits and the agent's responsible user (see "Assistant-mode drafts") are in the assistant mode
+panel on the agent's Configuration tab; the panel names that person and offers no choice of them.
+The console's `assistant-mode` flag decides only whether the mode can be switched on: an agent
+already in assistant mode keeps the switch, so it can be switched off, and keeps its Activity tab,
 Sub-sessions tab and proposals in the console whatever the flag says.
 
 Turning the mode on also sets the agent's permission mode, so background work nobody is watching
@@ -1095,8 +1097,9 @@ The conversation the agent is answering in is always writable.
   person who asked when they are a full member of the organization, and refuses the post otherwise.
 - **A turn no person is behind** (see "Who is asking") writes only to its own conversation, which
   for a hook or a schedule anchored to a conversation is that conversation. An agent in assistant
-  mode drafts a post anywhere else for its responsible user or fallback conversation; every other
-  write, and any write of another agent, is refused. A run that reads as a person writes as them.
+  mode drafts a post anywhere else for its responsible user, or for its Activity view when they
+  cannot be reached; every other write, and any write of another agent, is refused. A run that
+  reads as a person writes as them.
 
 The agent-to-agent forms of `sendMessage` and the parent-session reply are not platform writes; the
 `toAgent` channel form keeps its own reach (on Slack, a public channel, or a private conversation
@@ -1182,15 +1185,18 @@ decided like any other draft.
 
 The draft goes as a card to one internal member's direct message: the person who asked when
 they are an internal member (on Slack, a full member of the installing workspace, not a guest
-and not from the other organization), otherwise the agent's responsible user, otherwise its
-fallback conversation. A session with no conversation of its own (a hook or cron run) goes to
-the responsible user or the fallback conversation. The card leads with one sentence naming the
+and not from the other organization), otherwise the agent's responsible user. A session with no
+conversation of its own (a hook or cron run) goes to the responsible user. Nobody chooses the
+responsible user: it is the agent's creator while they are a member of the organization who may
+edit the agent, otherwise the editor who joined the organization first. When neither the person who
+asked nor the responsible user can be reached in a direct message, no card is sent and the draft
+waits in the agent's Activity view. The card leads with one sentence naming the
 actual destination (the conversation by name, the recipient of a direct message, and the
 platform when it is not the card's own) and saying it will post, identifies the conversation and
 any thread, shows the exact text, and offers Approve and Discard. Only the addressed member's click
-counts, re-verified like an approval DM's when the responsible user was chosen for it; anyone in
-the fallback conversation may decide. An agent editor may also decide it from the agent's
-Activity view (see "Assistant-mode Activity"), including a draft no one could be reached for.
+counts, re-verified like an approval DM's when the responsible user was chosen for it. An agent
+editor may also decide it from the agent's Activity view (see "Assistant-mode Activity"),
+including a draft no one could be reached for.
 
 Approve posts the text unchanged, once, where it was aimed. The approved post is
 recorded and threaded like any message the agent sends, so a reply to it reaches the agent; no
@@ -1202,7 +1208,7 @@ from its target, never from the model's judgment.
 
 Runtime permission requests in an external place get no card or notice in the conversation; who
 is asked instead is in "What people can do in chat". Draft cards are
-delivered on Slack; when no member or conversation can be reached the draft is kept until it
+delivered on Slack; when no member can be reached the draft is kept in Activity until it
 expires, nothing is sent, and for a post it attempted the agent is told so.
 
 ## No-response control marker
@@ -1310,8 +1316,8 @@ waits; its turn is not cancelled. A patrol never asks.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
   marked as from a background sub-session.
 - A conversation shared with another organization gets no card. It goes to the agent's
-  responsible user in a direct message, or to its fallback conversation, as drafts do; where
-  permissions are synced, only an Agent editor answers the card there.
+  responsible user in a direct message, as drafts do, otherwise to an Agent editor in a direct
+  message, as for any other request.
 - Editors can also answer it on the sub-session's own page and in the Activity view.
 
 The first answer from any of these places decides it, and the other cards show that decision. If
@@ -1366,8 +1372,8 @@ own permissions, and its permission requests follow "Assistant-mode sub-session 
 requests". "What people can do in chat" makes no difference to proposals. A conversation shared
 with another organization, one gated By decision, one the card definitely could not be posted in,
 and conversations on other platforms get the card where drafts go instead: the agent's responsible
-user in a direct message, otherwise its fallback conversation. A post that timed out may still land,
-so it is never sent a second time elsewhere. In a webchat conversation, the live Playground
+user in a direct message, otherwise no card, and it waits in Activity. A post that timed out may
+still land, so it is never sent a second time elsewhere. In a webchat conversation, the live Playground
 included, there is no card: the proposal waits among the conversation's pending requests above the
 composer, and is not sent to the responsible user. Whoever may continue that conversation may
 approve or deny it there after a confirmation, and so may the agent's editors, who also find it in

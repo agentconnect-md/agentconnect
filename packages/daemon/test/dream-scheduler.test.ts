@@ -267,7 +267,7 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     }
     inner.agents.set('bot-a', agent)
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
-    inner.agents.set('bot-a', { ...agent, assistantMode: { enabled: true, responsibleUserId: 'user-1' } })
+    inner.agents.set('bot-a', { ...agent, assistantMode: { enabled: true } })
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
     inner.agents.set('bot-a', agent)
     // Right after a restart nothing is known about G1 yet: still skipped, not counted as new activity.

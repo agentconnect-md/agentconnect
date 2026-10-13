@@ -298,7 +298,7 @@ describe('the daemon offers the item tools by the agent’s switch', () => {
     const on = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
     const off = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
     for (const [id, assistantMode] of [
-      [on, { enabled: true, responsibleUserId: 'usr_1' }],
+      [on, { enabled: true }],
       [off, undefined]
     ] as const) {
       const agentDir = join(root, 'agents', id)

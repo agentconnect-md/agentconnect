@@ -102,7 +102,7 @@ vi.mock('@/lib/data-context', () => ({
       {
         ...agent,
         canEdit: wire.canEdit,
-        ...(wire.assistantMode ? { assistantMode: { enabled: true, responsibleUserId: 'usr-1' } } : {})
+        ...(wire.assistantMode ? { assistantMode: { enabled: true } } : {})
       }
     ],
     allSessions: [listRow],

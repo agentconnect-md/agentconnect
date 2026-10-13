@@ -375,11 +375,11 @@ describe('a sub-session’s permission request in the conversation it belongs to
   it.each([true, false])(
     'sends an external place’s card to its approver instead (chat approval %s)',
     async (chatOn) => {
-      // A linked editor: their DM, whichever way chat approval is set, and nothing in the place.
+      // The responsible user: their DM, whichever way chat approval is set, and nothing in the place.
       const member = await world({
         chatOn,
         route: routeTo(slackPlace({ external: true })),
-        approver: { kind: 'member', channel: 'D-approver', target: EDITOR }
+        approver: { channel: 'D-approver', target: EDITOR }
       })
       const decided = member.coordinator.onAcpPermission(OWNER, ACP, params())
       const id = await member.requestId()
@@ -391,21 +391,16 @@ describe('a sub-session’s permission request in the conversation it belongs to
       await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
       await member.store.close()
 
-      // The fallback conversation: its card where chat approval lets anyone answer, else its notice.
-      const room = await world({
-        chatOn,
-        route: routeTo(slackPlace({ external: true })),
-        approver: { kind: 'conversation', integrationId: 'int-2', channel: 'C-fallback' }
-      })
-      void room.coordinator.onAcpPermission(OWNER, ACP, params())
-      await room.requestId()
-      await vi.waitFor(() => expect(room.other.postBlocks).toHaveBeenCalledTimes(1))
-      const [channel, , , thread] = room.other.postBlocks.mock.calls[0] as unknown[]
-      expect([channel, thread]).toEqual(['C-fallback', undefined])
-      expect(blocksOf(room.other).includes('"actions"')).toBe(chatOn)
-      expect(room.place.postBlocks.mock.calls.every((call) => (call as unknown[])[0] !== 'C1')).toBe(true)
-      await room.coordinator.releaseApprovals(OWNER, ACP)
-      await room.store.close()
+      // No responsible user reachable: an editor's DM as for any other request, no conversation card, and Activity lists it.
+      const nobody = await world({ chatOn, route: routeTo(slackPlace({ external: true })) })
+      void nobody.coordinator.onAcpPermission(OWNER, ACP, params())
+      await nobody.requestId()
+      await vi.waitFor(() => expect(nobody.place.postBlocks).toHaveBeenCalledTimes(1))
+      expect((nobody.place.postBlocks.mock.calls[0] as unknown[])[0]).toBe('D-ed')
+      expect(nobody.other.postBlocks).not.toHaveBeenCalled()
+      expect(nobody.coordinator.pendingSubsessionApprovals(AGENT)).toHaveLength(1)
+      await nobody.coordinator.releaseApprovals(OWNER, ACP)
+      await nobody.store.close()
     }
   )
 
@@ -465,32 +460,6 @@ describe('a sub-session’s permission request in the conversation it belongs to
     // The card and the DM both say how it settled.
     expect(rewritesOf(w.place, '200.1')).toHaveLength(1)
     expect(rewritesOf(w.place, '200.2')).toHaveLength(1)
-    await w.store.close()
-  })
-
-  it('takes only an editor’s click on a card in the fallback conversation where only editors may answer', async () => {
-    const w = await world({
-      chatOn: true,
-      editors: ['U-ed2'],
-      route: routeTo(slackPlace({ external: true })),
-      approver: { kind: 'conversation', integrationId: 'int-2', channel: 'C-fallback' }
-    })
-    const decided = vi.fn()
-    void w.coordinator.onAcpPermission(OWNER, ACP, params()).then(decided)
-    const id = await w.requestId()
-    await vi.waitFor(() => expect(w.other.postBlocks).toHaveBeenCalledTimes(1))
-    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U9' } })
-    expect(w.other.postEphemeral).toHaveBeenCalledWith(
-      'C-fallback',
-      'U9',
-      expect.stringContaining('Only an Agent editor'),
-      undefined
-    )
-    expect(decided).not.toHaveBeenCalled()
-    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U-ed2' } })
-    await vi.waitFor(() =>
-      expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
-    )
     await w.store.close()
   })
 
@@ -885,9 +854,7 @@ function scaffold(): string {
         ],
         output: { mode: 'low' },
         chatActions: 'settings',
-        ...(id === 'bot-a'
-          ? { assistantMode: { enabled: true, responsibleUserId: 'user-1', limits: { permissionWaitHours: 1 } } }
-          : {})
+        ...(id === 'bot-a' ? { assistantMode: { enabled: true, limits: { permissionWaitHours: 1 } } } : {})
       })
     )
   }

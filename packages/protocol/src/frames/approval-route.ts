@@ -41,6 +41,8 @@ export const AgentApprovalRoute = z.object({
   integrationIds: z.array(z.string().uuid()).min(1).max(8),
   // Route to exactly this console user (an assistant-mode draft's approver); the reply names them or nobody.
   consoleUserId: z.string().min(1).optional(),
+  // Route to the agent's responsible user, whom the CP derives (assistant-mode.md §5.1); the reply names them or nobody.
+  responsible: z.literal(true).optional(),
   // Decision-time revalidation (§6.3): the clicking actor's pair and the console
   // user the DM addressed. Present ⇒ the reply carries `allowed`, never `target`.
   // Without `consoleUserId` (`chat-actor-v1`) it asks whether the pair is any editor's linked identity,

@@ -3066,7 +3066,6 @@
         "patrolsDegraded": "Patrols degraded",
         "patrolsDegradedHint": "Patrols run read-only on the agent’s own host, with its credentials.",
         "responsibleNamed": "Responsible: {name}",
-        "fallbackNamed": "Fallback: {name}",
         "edit": "Edit",
         "close": "Close",
         "cancel": "Cancel",
@@ -3074,9 +3073,6 @@
         "saving": "Saving…",
         "save": "Save assistant mode",
         "enable": "Turn on assistant mode",
-        "responsibleUser": "Responsible user",
-        "fallbackConversation": "Fallback conversation",
-        "none": "None",
         "limits": "Limits",
         "limit": {
           "maxConcurrentSubsessions": "Concurrent sub-sessions",
@@ -3093,7 +3089,6 @@
           "store-not-shared": "Every daemon in this agent’s group must share one store."
         },
         "blockers": {
-          "needsTarget": "Choose a responsible user or a fallback conversation.",
           "invalidLimit": "Each limit must be a whole number within its range."
         }
       },

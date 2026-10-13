@@ -142,7 +142,7 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
   })
   it('stores assistant mode in agent.json, leaves it on omission, and clears it on null', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-assistant-mode-'))
-    const assistantMode = { enabled: true, responsibleUserId: 'usr_1', limits: { permissionWaitHours: 24 } }
+    const assistantMode = { enabled: true, limits: { permissionWaitHours: 24 } }
     const file = seedAgent(dir, 'bot-a', { id: 'bot-a', name: 'bot-a', runtime: 'claude' })
     writeAgentSpec(dir, 'bot-a', baseSpec({ assistantMode }), deps)
     expect(readJson(file).assistantMode).toEqual(assistantMode)

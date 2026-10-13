@@ -1,12 +1,40 @@
+import { z } from 'zod'
 import {
+  AssistantModePolicy,
   assistantModeDefinitionRefusals,
   assistantModePermissionModeOnEnable,
   type AgentMemoryBinding,
   type AssistantModeAdmission,
-  type AssistantModePolicy,
   type AssistantModeRefusal
 } from '@agentconnect.md/protocol'
-import type { AgentRecord, MemberSetRepo } from '../persistence/ports.js'
+import { canEdit } from '../authorization/policy.js'
+import type { AgentRecord, MemberSetRepo, OrgMemberRecord, StoredAssistantModePolicy } from '../persistence/ports.js'
+
+// Expand step (assistant-mode.md §5.1): a row an older CP wrote keeps its two routing keys, read past and never written.
+export const StoredAssistantModePolicyRow = AssistantModePolicy.extend({
+  responsibleUserId: z.unknown().optional(),
+  fallbackConversation: z.unknown().optional()
+})
+
+/** The stored policy as the API serves it, without the routing keys an older CP wrote. */
+export function servedAssistantMode(policy: StoredAssistantModePolicy): AssistantModePolicy {
+  const { responsibleUserId: _r, fallbackConversation: _f, ...served } = policy
+  return served
+}
+
+/** The agent's responsible user (assistant-mode.md §5.1): its creator while they may edit it, else the editor who joined first. */
+export function assistantResponsibleUser<M extends OrgMemberRecord>(
+  agent: Pick<AgentRecord, 'createdByUserId' | 'visibility' | 'sharedWith'>,
+  members: readonly M[]
+): M | undefined {
+  const editors = members.filter((m) => canEdit(agent, m))
+  const creator = editors.find((m) => m.userId === agent.createdByUserId)
+  if (creator) return creator
+  // Membership order, then user id: the same member every time, whatever order the list arrived in.
+  return [...editors].sort(
+    (a, b) => a.joinedAt.getTime() - b.joinedAt.getTime() || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0)
+  )[0]
+}
 
 /** The 409 `code` of an edit refused by assistant mode admission. */
 export const ASSISTANT_MODE_NOT_ADMITTED = 'ASSISTANT_MODE_NOT_ADMITTED'

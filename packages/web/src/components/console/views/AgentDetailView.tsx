@@ -1287,12 +1287,7 @@ function AgentDetail() {
         })}
       </div>
 
-      {/* Config tab — one grid: mobile stacks Basics → Runtime → Description →
-          Access → Variables → Secrets (flex order). Desktop puts Basics + Runtime
-          in the 340px left column and the rest in the right column (the wrapper is
-          display:contents on mobile so all the cards sit in the same flex column).
-          Workspace is NOT here — it moved into the Workspace tab, next to the
-          files it configures. */}
+      {/* Config tab: mobile stacks the cards in flex order; desktop puts Basics + Runtime left and the rest right. */}
       {tab === 'config' && (
         <div className="flex flex-col gap-4 p-4 desktop:grid desktop:grid-cols-[340px_1fr] desktop:items-start desktop:gap-[18px] desktop:p-0">
           <div className="contents desktop:flex desktop:min-w-0 desktop:flex-col desktop:gap-[18px]">
@@ -1621,10 +1616,7 @@ function AgentDetail() {
           </div>
 
           <div className="contents desktop:flex desktop:min-w-0 desktop:flex-col desktop:gap-[18px]">
-            {/* Description card (design): its own card at the top of the right column,
-                and the ONE group edited on its own (EditDescriptionModal) rather than
-                through the sectioned Edit-agent modal. Mobile order: Basics 1 → Runtime
-                behavior 2 → Description 3 → Access 4 → Variables 5 → Secrets 6. */}
+            {/* Mobile order: Basics, Runtime behavior, Description, Access, Assistant mode, Variables, Secrets. */}
             <div className="card order-3 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
                 <span className="font-sans text-[14px] font-semibold leading-normal">{t('description')}</span>
@@ -1727,12 +1719,32 @@ function AgentDetail() {
               </div>
             </div>
 
-            {/* Variables + Secrets (shared editable cards) — the design keeps these in
-                the right column; each has its own inline add/edit affordances. */}
-            <div className="order-5 min-w-0">
+            {/* The flag offers switching the mode on; an agent already on keeps the panel, so it can be switched off. */}
+            {(featureFlagEnabled('assistant-mode') || da.assistantMode?.enabled) && (
+              <div className="order-5 min-w-0">
+                <AssistantModePanel
+                  agentId={id}
+                  canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
+                  assistantMode={da.assistantMode}
+                  runtime={da.runtime}
+                  memoryProvider={da.memoryProvider}
+                  placement={`${da.placementKind ?? 'daemon'}:${da.setId ?? da.daemon}`}
+                  permissionMode={da.permissionMode}
+                  askEveryTime={
+                    (da.permissionMode ||
+                      capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog
+                        ?.defaultPermissionMode ||
+                      permissionModeDefault(da.runtime)) === 'default'
+                  }
+                />
+              </div>
+            )}
+
+            {/* Variables + Secrets: shared editable cards, each with its own inline add/edit affordances. */}
+            <div className="order-6 min-w-0">
               <AgentEnvCard agent={da} />
             </div>
-            <div className="order-6 min-w-0">
+            <div className="order-7 min-w-0">
               <AgentSecretsCard agent={da} />
             </div>
           </div>
@@ -2878,26 +2890,6 @@ function AgentDetail() {
           sessionBasePath={orgPath('/sessions')}
           sandboxed={isPoolPlacementKind(da.placementKind)}
           memberSetPlaced={isSetPlacementKind(da.placementKind)}
-          besideSettings={
-            // The flag offers switching the mode on; an agent already on keeps the panel, so it can be switched off.
-            (featureFlagEnabled('assistant-mode') || da.assistantMode?.enabled) && (
-              <AssistantModePanel
-                agentId={id}
-                canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
-                assistantMode={da.assistantMode}
-                runtime={da.runtime}
-                memoryProvider={da.memoryProvider}
-                placement={`${da.placementKind ?? 'daemon'}:${da.setId ?? da.daemon}`}
-                permissionMode={da.permissionMode}
-                askEveryTime={
-                  (da.permissionMode ||
-                    capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog
-                      ?.defaultPermissionMode ||
-                    permissionModeDefault(da.runtime)) === 'default'
-                }
-              />
-            )
-          }
         />
       )}
 

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-type Policy = { enabled: boolean; responsibleUserId?: string }
+type Policy = { enabled: boolean }
 
 const mocks = vi.hoisted(() => ({
   query: 'tab=memory',
@@ -32,9 +32,7 @@ vi.mock('next/link', () => ({
   )
 }))
 vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: (id: string) => id === 'assistant-mode' }))
-vi.mock('@/components/console/MemoryPanel', () => ({
-  MemoryPanel: ({ besideSettings }: { besideSettings?: ReactNode }) => <div>{besideSettings}</div>
-}))
+vi.mock('@/components/console/MemoryPanel', () => ({ MemoryPanel: () => <div data-memory-panel /> }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-1' }, myRole: 'owner', orgPath: (path: string) => path })
@@ -73,6 +71,7 @@ vi.mock('@/lib/data-context', () => ({
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchAgentAssistantModeAdmission: vi.fn(async () => ({ admitted: true, refusals: [] })),
+  fetchAgentAssistantResponsibleUser: vi.fn(async () => ({ userId: 'usr-1' })),
   fetchAgentHooks: vi.fn(async () => []),
   fetchAgentRepos: vi.fn(async () => []),
   fetchAgentInstallations: vi.fn(async () => []),
@@ -145,7 +144,7 @@ const permissionRow = (scope: HTMLElement) =>
   [...scope.querySelectorAll('span')].find((s) => s.textContent === 'Permission mode')?.nextElementSibling?.textContent
 
 beforeEach(() => {
-  mocks.query = 'tab=memory'
+  mocks.query = 'tab=config'
   mocks.permissionMode = 'default'
   mocks.assistantMode = undefined
   // The Control Plane's answer to turning the mode on: the asking mode moved to the runtime's auto mode.
@@ -165,33 +164,24 @@ afterEach(async () => {
 describe('turning assistant mode on', () => {
   it('shows the auto mode it moves to, with no warning about the mode it replaces', async () => {
     const scope = await render()
-    await act(async () => button(scope, 'Edit')?.click())
-    await act(async () =>
-      scope.querySelector<HTMLInputElement>('[data-assistant-mode] input[type="checkbox"]')?.click()
-    )
-    await act(async () => {
-      const select = scope.querySelector<HTMLSelectElement>('[data-assistant-mode] select')!
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(select, 'usr-1')
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })
+    const panel = () => scope.querySelector<HTMLElement>('[data-assistant-mode]')!
+    await act(async () => button(panel(), 'Edit')?.click())
+    await act(async () => panel().querySelector<HTMLInputElement>('input[type="checkbox"]')?.click())
     // Saving moves the mode, so the draft does not warn that background work will wait.
     expect(scope.querySelector('[data-assistant-mode-ask-warning]')).toBeNull()
-    await act(async () => button(scope, 'Save assistant mode')?.click())
-    expect(mocks.updateAgent).toHaveBeenCalledWith('agent-1', {
-      assistantMode: { enabled: true, responsibleUserId: 'usr-1' }
-    })
+    await act(async () => button(panel(), 'Save assistant mode')?.click())
+    expect(mocks.updateAgent).toHaveBeenCalledWith('agent-1', { assistantMode: { enabled: true } })
 
     await render()
     expect(scope.querySelector('[data-assistant-mode-ask-warning]')).toBeNull()
-    mocks.query = 'tab=config'
-    expect(permissionRow(await render())).toBe('Auto')
+    expect(permissionRow(scope)).toBe('Auto')
+    expect(panel().textContent).toContain('Responsible: Ada')
   })
 
   it('warns once an editor later picks a mode that asks', async () => {
-    mocks.assistantMode = { enabled: true, responsibleUserId: 'usr-1' }
+    mocks.assistantMode = { enabled: true }
     const scope = await render()
     expect(scope.querySelector('[data-assistant-mode-ask-warning]')?.textContent).toContain('wait for approval')
-    mocks.query = 'tab=config'
-    expect(permissionRow(await render())).toBe('Manual')
+    expect(permissionRow(scope)).toBe('Manual')
   })
 })

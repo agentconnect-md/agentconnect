@@ -45,7 +45,7 @@ function scaffold(): string {
         }
       ],
       output: { mode: 'medium' },
-      assistantMode: { enabled: true, responsibleUserId: 'usr-1' }
+      assistantMode: { enabled: true }
     })
   )
   return root

@@ -30,9 +30,9 @@ const TASK_LANGUAGE =
 const ANSWER_LANGUAGE = 'Speak to the people here in the language they use, even when this report is in another.'
 const SENTENCE = 'I want to rebase PR #12 because it conflicts with main.'
 const TASK = 'Rebase PR #12 onto main and push.'
-const FALLBACK = { enabled: true, fallbackConversation: { integrationId: INT_A, channelId: 'C0FALLBACK' } }
+const ASSISTANT = { enabled: true }
 
-/** Slack agents appending in `C1`: bot-a in assistant mode with a fallback conversation for cards, bot-b outside it. */
+/** Slack agents appending in `C1`: bot-a in assistant mode, with no control plane to name a responsible user, bot-b outside it. */
 function scaffold(over: { limits?: Record<string, unknown>; chat?: boolean; external?: string[] } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-propose-'))
   writeFileSync(
@@ -47,7 +47,7 @@ function scaffold(over: { limits?: Record<string, unknown>; chat?: boolean; exte
     {
       id: 'bot-a',
       integration: INT_A,
-      assistantMode: { ...FALLBACK, ...(over.limits ? { limits: over.limits } : {}) }
+      assistantMode: { ...ASSISTANT, ...(over.limits ? { limits: over.limits } : {}) }
     },
     { id: 'bot-b', integration: INT_B }
   ]
@@ -330,7 +330,7 @@ describe('a patrol proposes', () => {
     expect(results[1]).toContain('this patrol already proposed')
     expect(await h.records()).toHaveLength(1)
 
-    // One card, at the root of the appending conversation, and none in the fallback conversation.
+    // One card, at the root of the appending conversation, and none anywhere else.
     expect(h.cards.post).toHaveBeenCalledTimes(1)
     const [channel, blocks, , thread] = h.cards.post.mock.calls[0]!
     expect(channel).toBe('C1')
@@ -640,21 +640,21 @@ describe('a proposal in the conversation its item belongs to', () => {
     await h.daemon.stop()
   })
 
-  it('falls back to the fallback conversation, and only there, when the conversation cannot take the card', async () => {
+  it('waits in Activity when the conversation cannot take the card and no responsible user can be reached', async () => {
     const h = await boot(scaffold())
     h.cards.post.mockRejectedValueOnce(new Error('not_in_channel'))
     const { record, results } = await proposed(h)
-    expect(h.cards.post.mock.calls.map((c) => c[0])).toEqual(['C1', 'C0FALLBACK'])
-    expect(record).toMatchObject({ approver: { kind: 'conversation', channel: 'C0FALLBACK' }, cardTs: 'card-1' })
-    expect(results[0]).toMatchObject({ approver: "the agent's fallback conversation" })
+    expect(h.cards.post.mock.calls.map((c) => c[0])).toEqual(['C1'])
+    expect(record).toMatchObject({ status: 'awaiting_review', approver: null, cardTs: null })
+    expect(results[0]).toMatchObject({ approver: null })
     await h.daemon.stop()
   })
 
-  it('leaves an external place’s card with the internal approver, as before', async () => {
+  it('cards nothing in an external place when no responsible user can be reached, leaving it to Activity', async () => {
     const h = await boot(scaffold({ external: ['C1'] }))
     const { record } = await proposed(h)
-    expect(h.cards.post.mock.calls.map((c) => c[0])).toEqual(['C0FALLBACK'])
-    expect(record.approver).toMatchObject({ kind: 'conversation', channel: 'C0FALLBACK' })
+    expect(h.cards.post).not.toHaveBeenCalled()
+    expect(record).toMatchObject({ status: 'awaiting_review', approver: null })
     await h.daemon.stop()
   })
 
@@ -800,7 +800,7 @@ describe('a proposal in a webchat conversation', () => {
       cardTs: null
     })
     expect(results[0]).toMatchObject({ approver: 'the people in the conversation the item was taken in' })
-    // Neither the responsible user nor the fallback conversation is carded.
+    // The responsible user is not carded.
     expect(h.cards.post).not.toHaveBeenCalled()
 
     expect(await listIn(h, CONVERSATION)).toEqual([record.id])

@@ -1975,7 +1975,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
   it('tells an assistant-mode agent the local time in the zone the browser reported, else UTC', async () => {
     const { factory, host } = streamingHost([text('ok')])
-    const assistant = { assistantMode: { enabled: true, responsibleUserId: 'usr_ada' } }
+    const assistant = { assistantMode: { enabled: true } }
     const daemon = new Daemon({ root: scaffold(undefined, assistant), hostFactory: factory })
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
