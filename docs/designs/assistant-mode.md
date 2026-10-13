@@ -1415,4 +1415,7 @@ deciding one now admit an agent outside assistant mode when its serving daemon a
 and a Sub-sessions tab on its sessions; items and proposals stay assistant mode's, and an older
 daemon is never asked. The console's new-agent form preselects the runtime's auto mode, else its
 full-access one, through the same helper §1.8 uses, since background work nobody watches stalls on
-approval whatever the mode; an agent created through the API or MCP is unchanged.
+approval whatever the mode; an agent created through the API or MCP is unchanged. The Control Plane
+refuses a visibility change on any agent's own sub-session (§5.6), recognised by its reserved
+coordinate and its parent's agent, no longer only on an assistant-mode agent's; only a daemon that
+opens sub-sessions for every agent can create such a session outside assistant mode.
