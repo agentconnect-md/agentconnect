@@ -994,7 +994,7 @@ export const RcBotAssign = z.object({
   // target at all. Bot-scoped, matching how an HTTP bot's channels converge on one
   // owner, and how the trigger is replicated across its membership rows. Defaults empty.
   mutedChannels: z.array(z.string()).default([]),
-  // The muted channels nobody enabled (a gated owner's, or §14.9's external one at its default): they keep the one-time notice, an operator's Off is silent.
+  // The muted channels nobody enabled (a gated owner's, or any Off nobody chose, §14.9): they keep the one-time notice, an operator's Off is silent.
   gatedOffChannels: z.array(z.string()).default([]),
   // §14.3 one-time gating notice, CHANNEL conversations: the relayId
   // DETERMINISTICALLY responsible for posting it for this bot. A channel mention

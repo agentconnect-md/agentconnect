@@ -285,7 +285,7 @@ describe('discord projection equivalence with the live integrationToSpec path', 
     const spec = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, BOT, SECRET, [
       channel('C1', 'any'),
       channel('C2', 'mention'),
-      channel('C3', 'off')
+      { ...channel('C3', 'off'), triggerChosen: true }
     ])
     const bindRules = [
       { match: { kind: 'mention' } },

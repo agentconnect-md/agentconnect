@@ -2831,7 +2831,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(ingest.postText).toHaveBeenCalledTimes(1)
   })
 
-  // resource-visibility.md §14.9: on a bot with no gated member, the CP's undecided Off (an external place) still speaks once.
+  // resource-visibility.md §14.9: on a bot with no gated member, the CP's undecided Off still speaks once.
   describe('an undecided Off on an ungated bot', () => {
     const ungated = (over: Partial<BotAssignment> = {}): BotAssignment => ({
       ...gatedAssignment(),

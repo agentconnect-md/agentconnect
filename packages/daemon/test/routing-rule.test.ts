@@ -4,6 +4,8 @@ import {
   resolveCpRule,
   resolveAgentIntegration,
   conversationAdmitted,
+  conversationKindOf,
+  conversationSessionMode,
   conversationTrustLevel,
   integrationRouting,
   type CpRule
@@ -460,5 +462,39 @@ describe('conversationTrustLevel', () => {
     expect(conversationTrustLevel(int(['C1']), 'C1')).toBe('external')
     expect(conversationTrustLevel(int(['C1']), 'C2')).toBe('internal')
     expect(conversationTrustLevel(int(), 'C1')).toBe('internal')
+  })
+})
+
+// assistant-mode.md §5.2: an assistant-mode place the control plane has not listed yet appends where its platform appends.
+describe('conversationSessionMode for an unlisted conversation', () => {
+  const int = (platform: string, sessionModes: { channel: string; mode: string }[] = []) =>
+    ({
+      id: 'i-mode',
+      platform,
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], sessionModes }
+    }) as unknown as Integration
+  const on = (kind: 'channel' | 'im' | 'mpim') => ({ assistantMode: true, kind })
+
+  it('appends a room and a Slack DM, but not a group DM or a DM that is one session already', () => {
+    expect(conversationSessionMode(int('slack'), 'C1', on('channel'))).toBe('append')
+    expect(conversationSessionMode(int('slack'), 'D1', on('im'))).toBe('append')
+    expect(conversationSessionMode(int('slack'), 'G1', on('mpim'))).toBe('createNew')
+    expect(conversationSessionMode(int('telegram'), '42', on('im'))).toBe('createNew')
+    expect(conversationSessionMode(int('linear'), 'team', on('channel'))).toBe('createNew')
+  })
+
+  it('keeps a listed mode, and gives nothing outside assistant mode or without a kind', () => {
+    expect(conversationSessionMode(int('slack', [{ channel: 'C1', mode: 'createNew' }]), 'C1', on('channel'))).toBe(
+      'createNew'
+    )
+    expect(conversationSessionMode(int('slack'), 'C1', { assistantMode: false, kind: 'channel' })).toBe('createNew')
+    expect(conversationSessionMode(int('slack'), 'C1')).toBe('createNew')
+  })
+
+  it('reads the kind the way the control plane seeds the row', () => {
+    expect(conversationKindOf({ platform: 'slack', channel: 'D1', isDm: true })).toBe('im')
+    expect(conversationKindOf({ platform: 'slack', channel: 'D1', isDm: false })).toBe('im')
+    expect(conversationKindOf({ platform: 'slack', channel: 'G1', isDm: false, isGroupDm: true })).toBe('mpim')
+    expect(conversationKindOf({ platform: 'slack', channel: 'C1', isDm: false })).toBe('channel')
   })
 })

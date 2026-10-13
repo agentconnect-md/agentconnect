@@ -16,7 +16,14 @@ import {
   type ResolvedRoutedChannel
 } from '../decisions/bundle.js'
 import type { ActivationRule } from '@agentconnect.md/activation-policy'
-import type { ChannelSessionMode, PlaceTrustLevel, RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
+import {
+  manifestFor,
+  type AppendConversationKind,
+  type ChannelSessionMode,
+  type PlaceTrustLevel,
+  type RouteAssign,
+  type RouteUpdate
+} from '@agentconnect.md/protocol'
 
 export type RoutingMatch = BindMatch
 
@@ -68,11 +75,26 @@ export function integrationRouting(int: Integration): {
   }
 }
 
-/** How this integration keys sessions in one conversation (channel-session-mode.md §4).
- *  Absent from the sparse wire list ⇒ `createNew`, which is what every conversation had
- *  before the setting existed and what an older CP's spec still means. */
-export function conversationSessionMode(int: Integration, channel: string): ChannelSessionMode {
-  return integrationCore(int).sessionModes.find((entry) => entry.channel === channel)?.mode ?? 'createNew'
+/** How this integration keys sessions in one conversation (channel-session-mode.md §4): the listed mode, else `createNew`, except an assistant-mode place the CP has not listed yet (`unseen`), which appends where its platform appends that kind (assistant-mode.md §5.2). */
+export function conversationSessionMode(
+  int: Integration,
+  channel: string,
+  unseen?: { assistantMode: boolean; kind: AppendConversationKind }
+): ChannelSessionMode {
+  const listed = integrationCore(int).sessionModes.find((entry) => entry.channel === channel)?.mode
+  if (listed) return listed
+  return unseen?.assistantMode && manifestFor(int.platform).appendKinds.includes(unseen.kind) ? 'append' : 'createNew'
+}
+
+/** A message's conversation kind, as the CP seeds its row: a 1:1 DM (by flag or the platform's DM id syntax), a group DM, else a room. */
+export function conversationKindOf(msg: {
+  platform: string
+  channel: string
+  isDm?: boolean
+  isGroupDm?: boolean
+}): AppendConversationKind {
+  if (msg.isDm || manifestFor(msg.platform).dmChannelPattern?.test(msg.channel) === true) return 'im'
+  return msg.isGroupDm ? 'mpim' : 'channel'
 }
 
 /** A place's trust level (assistant-mode.md §5.3): external when the platform detected it, otherwise internal. */

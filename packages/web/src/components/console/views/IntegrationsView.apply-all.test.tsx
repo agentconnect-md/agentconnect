@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The org's Bots list Apply to all reaches only an assistant-mode agent's rooms already enabled, as its agent page does (assistant-mode.md §5.3).
+// The org's Bots list Apply to all reaches every channel, an Off one included, in assistant mode or not (#2979 B7).
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
@@ -184,21 +184,11 @@ afterEach(async () => {
 })
 
 describe('the Bots list Apply to all', () => {
-  it('skips the Off rooms of an assistant-mode agent', async () => {
-    const confirm = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirm)
-    await expand()
-    await click(addDecisionFor('ops'))
-    await click(applyAll())
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('all 2 channels'))
-    expect(mocks.setChannelDecision.mock.calls.map((call) => call.slice(0, 2))).toEqual([
-      ['i1', 'C2'],
-      ['i1', 'C3']
-    ])
-  })
-
-  it('reaches every channel of an agent outside assistant mode, Off ones included', async () => {
-    mocks.assistantAgents = new Set()
+  it.each([
+    ['in assistant mode', true],
+    ['outside assistant mode', false]
+  ])('reaches every channel of an agent %s, Off ones included', async (_, on) => {
+    mocks.assistantAgents = new Set(on ? ['a1'] : [])
     const confirm = vi.fn(() => true)
     vi.stubGlobal('confirm', confirm)
     await expand()

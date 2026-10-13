@@ -77,7 +77,7 @@ import {
 } from './agentDefinitions.js'
 import { daemonSupportsAgent, encodeAgentSpecForPeer, requiredDaemonFeatures } from '../domain/daemon-features.js'
 import { encodeIntegrationSpecForPeer } from '../domain/decision-trigger-features.js'
-import { pendingExternalConversation } from '../domain/conversation-defaults.js'
+import { pendingConversation } from '../domain/conversation-defaults.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -288,20 +288,20 @@ function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): 
   return channels.filter((c) => c.trigger === 'off').map((c) => c.channelId)
 }
 
-/** The muted conversations of an UNGATED integration that still owe the §14.3 notice (§14.9); a gated one's notice needs no list. */
+/** The Off conversations nobody chose of an UNGATED integration, which still owe the §14.3 notice (§14.9); a gated one's notice needs no list. */
 function pendingChannelIds(channels: IntegrationChannelRecord[], gated: boolean): string[] {
   if (gated) return []
-  return channels.filter(pendingExternalConversation).map((c) => c.channelId)
+  return channels.filter(pendingConversation).map((c) => c.channelId)
 }
 
-/** Sparse per-conversation session modes (channel-session-mode.md §4), sent in both modes; `appendKinds` forces one session per place. */
+/** Per-conversation session modes (channel-session-mode.md §4): sparse, but complete where `appendKinds` forces one session per place, so the daemon's append default for an unseen place never overrides a known row. */
 function sessionModeEntries(
   channels: IntegrationChannelRecord[],
   appendKinds: readonly AppendConversationKind[] = []
 ): IntegrationSessionMode[] {
   return channels
     .map((c) => ({ channel: c.channelId, mode: forcedAppend(c, appendKinds) ? ('append' as const) : c.sessionMode }))
-    .filter((entry) => entry.mode !== 'createNew')
+    .filter((entry) => appendKinds.length > 0 || entry.mode !== 'createNew')
 }
 
 /** An assistant-mode place keys one session (assistant-mode.md §5.2) where its kind appends, unless a Decision gates it. */
