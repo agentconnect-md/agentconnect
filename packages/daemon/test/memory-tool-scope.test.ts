@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
 import { boundWrittenTopics, type MemoryToolCall } from '../src/mcp/ops/memory.js'
 import type { MemoryScope } from '../src/memory/types.js'
+import { MEMORY_LAYER_NOTES } from '../src/memory/entries/tools.js'
 
 const ctx = (): SessionContext => ({
   agentId: 'bot-a',
@@ -115,6 +116,51 @@ describe('record-memory tools under the same seam', () => {
       id: 'r1',
       deleted: true
     })
+  })
+})
+
+describe('a write result names the layer only where memory keeps layers', () => {
+  // A fake memory answering what kind it is the way the daemon's dispatcher does: per agent, never in general.
+  const memoryOf = (shape: 'files' | 'records'): OpsDeps =>
+    deps({
+      memory: {
+        read: vi.fn(async () => ({ content: '' })),
+        write: vi.fn(async () => ({ ok: true })),
+        adminSurface: () => null,
+        adminSurfaceForAgent: () => ({ shape })
+      }
+    } as unknown as Partial<OpsDeps>)
+
+  it("names the layer of an ordinary turn's write, as the agent's own memory answers", async () => {
+    expect(await executeTool(ctx(), 'writeMemory', { content: 'x' }, memoryOf('files'))).toEqual({
+      ok: true,
+      layer: 'shared',
+      note: MEMORY_LAYER_NOTES.shared
+    })
+    const { d } = layered()
+    const person = await executeTool(ctx(), 'writeMemory', { content: 'x' }, { ...d, memory: memoryOf('files').memory })
+    expect(person).toMatchObject({ layer: 'person', note: MEMORY_LAYER_NOTES.person })
+  })
+
+  it('names none for a distillation or a dream, whose pinned store is no layer', async () => {
+    const distill: SessionContext = {
+      ...ctx(),
+      platform: 'distill',
+      memoryBinding: { source: 'distill', scope: { agentId: 'bot-a', personKey: 'person-1' } }
+    }
+    const dream: SessionContext = {
+      ...ctx(),
+      platform: 'dream',
+      memoryBinding: { source: 'dream', scope: { agentId: 'bot-a', root: { key: 'staged' } as never } }
+    }
+    for (const bound of [distill, dream])
+      expect(await executeTool(bound, 'writeMemory', { path: 'prefs.md', content: 'x' }, memoryOf('files'))).toEqual({
+        ok: true
+      })
+  })
+
+  it('names none for a memory without layers', async () => {
+    expect(await executeTool(ctx(), 'writeMemory', { content: 'x' }, memoryOf('records'))).toEqual({ ok: true })
   })
 })
 

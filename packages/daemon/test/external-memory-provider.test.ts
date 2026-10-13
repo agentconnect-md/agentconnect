@@ -374,6 +374,8 @@ describe('ExternalMemoryProvider', () => {
         deps
       )) as MemoryEntryMutationReceipt
       expect(receipt).toMatchObject({ state: 'completed', entry: { label: 'deploy safely', editable: true } })
+      // External memory keeps no layers, so its receipt names none.
+      expect(receipt).not.toHaveProperty('layer')
       expect(h.client.create).toHaveBeenCalledWith(expect.objectContaining({ operationId: receipt.operationId }))
       await expect(
         executeTool(
