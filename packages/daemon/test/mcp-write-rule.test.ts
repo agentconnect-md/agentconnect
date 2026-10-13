@@ -228,7 +228,6 @@ function harness(
     placeIntegrationFor: (_agent, platform) => (platform === 'slack' ? 'int-slack' : 'int-tg'),
     placeSnapshot: (integrationId, channel) => (integrationId === 'int-slack' ? SNAPSHOT[channel] : undefined),
     placeStore,
-    placeExternal: (ctx) => external.has(ctx.channel),
     targetExternal: async (_agent, _integration, channel) => external.has(channel),
     ...(opts.draft === false ? {} : { draftPost }),
     readAskers: async (ctx) => live.askers ?? (live.messages ? turnAskers(live.messages, ctx.integrationId) : NOBODY),
@@ -440,29 +439,24 @@ describe('a conversation shared with another organization', () => {
     })
   }
 
-  it('still refuses every write inside it but the drafted reply, in assistant mode (unchanged)', async () => {
-    const { deps, gw, asks, draftPost } = harness({ assistant: true })
-    asks(said(P, 'C_SHARED'))
-    const here: [string, Record<string, unknown>][] = [
-      ['sendMessage', { channel: 'C_SHARED', message: 'hi' }],
-      ['addReaction', { messageTs: '1.1', emoji: 'eyes' }],
-      ['scheduleMessage', { message: 'later', postAt: later() }],
-      ['shareFile', { path: 'chart.png' }],
-      ['shareFile', { path: 'chart.png', integrationId: 'int-elsewhere' }]
-    ]
-    for (const [tool, args] of here) {
-      await expect(executeTool(inShared, tool, args, deps), tool).rejects.toThrow(/shared with another organization/)
-    }
-    expect(gw.postMessage).not.toHaveBeenCalled()
-    expect(gw.addReaction).not.toHaveBeenCalled()
-    expect(gw.scheduleMessage).not.toHaveBeenCalled()
-    expect(draftPost).not.toHaveBeenCalled()
-    // Outside assistant mode an external conversation's own writes are unchanged.
-    const plain = harness()
-    plain.asks(said(P, 'C_SHARED'))
-    await executeTool(inShared, 'addReaction', { messageTs: '1.1', emoji: 'eyes' }, plain.deps)
-    expect(plain.gw.addReaction).toHaveBeenCalledWith('C_SHARED', '1.1', 'eyes')
-  })
+  for (const assistant of [false, true]) {
+    const mode = assistant ? 'in assistant mode' : 'outside assistant mode'
+
+    it(`takes every write inside it as the current conversation, with nothing drafted (${mode})`, async () => {
+      const { deps, gw, asks, draftPost } = harness({ assistant })
+      asks(said(P, 'C_SHARED'))
+      await executeTool(inShared, 'sendMessage', { channel: 'C_SHARED', message: 'hi' }, deps)
+      await executeTool(inShared, 'addReaction', { messageTs: '1.1', emoji: 'eyes' }, deps)
+      await executeTool(inShared, 'scheduleMessage', { message: 'later', postAt: later() }, deps)
+      expect(gw.postMessage).toHaveBeenCalledWith('C_SHARED', 'hi', undefined, expect.anything())
+      expect(gw.addReaction).toHaveBeenCalledWith('C_SHARED', '1.1', 'eyes')
+      expect(gw.scheduleMessage).toHaveBeenCalledWith('C_SHARED', 'later', expect.any(Number))
+      // A file reaches its own handler, which this harness does not serve; the write rule no longer refuses it.
+      const shared = await executeTool(inShared, 'shareFile', { path: 'chart.png' }, deps).catch((err: Error) => err)
+      expect(String(shared)).not.toMatch(/another organization/)
+      expect(draftPost).not.toHaveBeenCalled()
+    })
+  }
 })
 
 describe('a turn no person is behind', () => {

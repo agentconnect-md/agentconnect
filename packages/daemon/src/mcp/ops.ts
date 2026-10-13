@@ -148,13 +148,7 @@ import {
   type PlatformReadDeps
 } from './ops/platform-reads.js'
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
-import {
-  assertPlaceRead,
-  assertShareHere,
-  isPlatformPost,
-  judgePlaceWrite,
-  type PlaceAccessDeps
-} from './ops/place-gate.js'
+import { assertPlaceRead, isPlatformPost, judgePlaceWrite, type PlaceAccessDeps } from './ops/place-gate.js'
 import { recall, RECALL_ARGS } from './ops/recall.js'
 import { askingToJoin, parkingOnJoin, type JoinAskDeps, type JoinParked } from './ops/join-ask.js'
 import { ASSISTANT_ITEM_ARG_SCHEMAS, ASSISTANT_ITEM_HANDLERS, type AssistantItemDeps } from './ops/assistant-items.js'
@@ -501,7 +495,6 @@ async function executeRegisteredTool(
   deps: OpsDeps
 ): Promise<unknown> {
   // Every agent's reads of another conversation and platform writes are judged by who is asking (§5.5).
-  await assertShareHere(ctx, name, deps)
   const privateSource = await assertPlaceRead(ctx, name, args, deps)
   const handler = HANDLERS.get(name)
   if (handler) {

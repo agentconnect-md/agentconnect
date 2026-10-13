@@ -58,8 +58,6 @@ export interface PlaceAccessDeps extends GatewayDeps {
   /** The integration's snapshot row for a conversation, so privacy needs no platform call when it is known. */
   placeSnapshot?: (integrationId: string, channel: string) => PlaceSnapshotRow | undefined
   placeStore?: PlaceStore
-  /** Whether the session's own conversation is an external place (assistant-mode.md §5.3). */
-  placeExternal?: (ctx: SessionContext) => boolean
   /** Whether a write's target is shared with another organization; in assistant mode the platform is asked first (§5.3). */
   targetExternal?: (agentId: string, integrationId: string, channel: string, dm: boolean) => Promise<boolean>
   /** Drafts a post for an internal member's approval; absent ⇒ a post that needs one is refused. */
@@ -233,9 +231,6 @@ const NEW_OUTSIDE =
 const EXTERNAL_TARGET =
   'that conversation is shared with another organization, so only a post can go there, and only once an internal ' +
   'member approves it. Nothing was changed.'
-const EXTERNAL_HERE =
-  'this conversation is shared with another organization, so your reply here goes to an internal member for ' +
-  'approval and other writes here are refused. Nothing was changed. Put it in your reply instead.'
 const NEW_NOT_MEMBER =
   'something new is made only for full members of this workspace, and not everyone asking could be confirmed as ' +
   'one. Nothing was created or changed.'
@@ -283,12 +278,9 @@ export async function judgePlaceWrite(
   deps: PlaceAccessDeps,
   post = false
 ): Promise<WriteVerdict> {
-  const assistant = deps.assistantModeFor?.(ctx.agentId) === true
-  if (target.kind === 'conversation' && samePlace({ platform: ctx.platform, channel: ctx.channel }, target)) {
-    // An assistant-mode reply in an external place is drafted, and nothing else is written there.
-    if (assistant && deps.placeExternal?.(ctx)) throw refused(tool, EXTERNAL_HERE)
+  // The current conversation takes every write, shared with another organization or not (#2979, B4).
+  if (target.kind === 'conversation' && samePlace({ platform: ctx.platform, channel: ctx.channel }, target))
     return 'post'
-  }
   const lookups = deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS
   const bot = ownBot(ctx, target.platform, target.integrationId)
   if (target.kind === 'document') return await judgeDocument(ctx, tool, target, bot, lookups, deps)
@@ -300,7 +292,7 @@ export async function judgePlaceWrite(
   const askers = deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
   // A run no person started writes only to its own conversation, which is an anchored hook's or schedule's target.
   if (askers.nobody || askers.people.length === 0) {
-    if (post && assistant && deps.draftPost) return 'draft'
+    if (post && deps.assistantModeFor?.(ctx.agentId) === true && deps.draftPost) return 'draft'
     throw refused(tool, NOBODY_WRITES)
   }
   if (target.kind === 'new') {
@@ -353,13 +345,6 @@ async function judgeDocument(
   if (reach.workspace || reach.conversations.length === 0)
     await judgePlaceWrite(ctx, tool, { kind: 'new', platform: target.platform, integrationId: bot, users: [] }, deps)
   return 'post'
-}
-
-/** A file shared into the current conversation passes the write rule too: an assistant-mode agent shares nothing into an external place. */
-export async function assertShareHere(ctx: SessionContext, name: string, deps: PlaceAccessDeps): Promise<void> {
-  if (name !== 'shareFile') return
-  const here: WriteTarget = { kind: 'conversation', platform: ctx.platform, channel: ctx.channel }
-  await judgePlaceWrite(ctx, name, ctx.integrationId ? { ...here, integrationId: ctx.integrationId } : here, deps)
 }
 
 /** Whether `sendMessage` is a platform post: not an agent-to-agent form, and not the parent-session reply. */

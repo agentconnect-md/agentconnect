@@ -1,4 +1,4 @@
-// Every agent detects outsiders in a conversation (assistant-mode.md §5.3); only assistant mode drafts its replies there.
+// Every agent detects outsiders in a conversation (assistant-mode.md §5.3), and every agent replies there directly (#2979, B4).
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -141,6 +141,26 @@ async function boot(assistant: boolean) {
   })
   await d.connections.refreshChannels(conn)
   const report = vi.spyOn(d.placeTrust.deps, 'report')
+  /** The write rule on a write from `from` into a channel, asked by a full member who may post there. */
+  const write = async (tool: string, from: string, channel = 'C_PUB') => {
+    const asker: TurnAskers = {
+      people: [{ kind: 'member', platform: 'slack', integrationId: INT, userId: 'UFULL' }],
+      nobody: false
+    }
+    const deps = {
+      ...d.mcp.deps,
+      readAskers: async () => asker,
+      readLookups: () => ({ ...CLOSED_LOOKUPS, fullMember: async () => true, member: async () => true })
+    }
+    const ctx = { agentId: 'bot-a', platform: 'slack', channel: from, thread: TS, integrationId: INT }
+    return await judgePlaceWrite(
+      ctx as never,
+      tool,
+      { kind: 'conversation', platform: 'slack', integrationId: INT, channel },
+      deps,
+      tool === 'sendMessage'
+    )
+  }
   let n = 0
   return {
     d,
@@ -190,26 +210,9 @@ async function boot(assistant: boolean) {
         transportScope: d.transportScopeForIntegrationIds([INT]),
         kinds: ['channel']
       }),
-    /** The write rule on a post from C_OTHER into a channel, asked by a full member who may post there. */
-    postFromElsewhere: async (channel = 'C_PUB') => {
-      const asker: TurnAskers = {
-        people: [{ kind: 'member', platform: 'slack', integrationId: INT, userId: 'UFULL' }],
-        nobody: false
-      }
-      const deps = {
-        ...d.mcp.deps,
-        readAskers: async () => asker,
-        readLookups: () => ({ ...CLOSED_LOOKUPS, fullMember: async () => true, member: async () => true })
-      }
-      const ctx = { agentId: 'bot-a', platform: 'slack', channel: 'C_OTHER', thread: TS, integrationId: INT }
-      return await judgePlaceWrite(
-        ctx as never,
-        'sendMessage',
-        { kind: 'conversation', platform: 'slack', integrationId: INT, channel },
-        deps,
-        true
-      )
-    },
+    write,
+    /** The write rule on a post from C_OTHER into a channel. */
+    postFromElsewhere: async (channel = 'C_PUB') => await write('sendMessage', 'C_OTHER', channel),
     drafts: async (): Promise<unknown[]> =>
       (await d.store.assistantDrafts.db.query('SELECT id FROM assistant_draft', [])).rows as unknown[],
     async close() {
@@ -236,7 +239,7 @@ describe('an agent outside assistant mode, when a guest joins a public channel',
       expect(await h.memoryLayer()).toBe('place')
       expect(await h.postFromElsewhere()).toBe('draft')
 
-      // Its own reply there is not drafted: drafting replies stays with assistant mode.
+      // Its own reply there is posted directly.
       await h.ask()
       expect(h.conn.postMessage).toHaveBeenCalledWith('C_PUB', REPLY, TS, expect.any(Object))
       expect(await h.drafts()).toEqual([])
@@ -296,16 +299,22 @@ describe('an agent outside assistant mode posting with no event from the place',
   })
 })
 
-describe('an agent in assistant mode, unchanged', () => {
-  it('drafts its reply in a channel a guest joined', async () => {
+describe('an agent in assistant mode, when a guest joins a public channel', () => {
+  it('replies there directly, like any agent, while approvals, memory and posts from elsewhere treat it as external', async () => {
     const h = await boot(true)
     try {
       await h.join('UGUEST')
       expect(h.trust()).toBe('external')
       expect(h.report).toHaveBeenCalledWith(INT, { id: 'C_PUB', externalReason: 'guestMember' })
+      expect(h.approvals()).toBe('external')
+      expect(await h.memoryLayer()).toBe('place')
+      expect(await h.postFromElsewhere()).toBe('draft')
+      // Its own writes there go through as in any conversation it is answering.
+      expect(await h.write('addReaction', 'C_PUB')).toBe('post')
+      expect(await h.write('sendMessage', 'C_PUB')).toBe('post')
       await h.ask()
-      expect(h.conn.postMessage).not.toHaveBeenCalled()
-      expect(await h.drafts()).toHaveLength(1)
+      expect(h.conn.postMessage).toHaveBeenCalledWith('C_PUB', REPLY, TS, expect.any(Object))
+      expect(await h.drafts()).toEqual([])
     } finally {
       await h.close()
     }

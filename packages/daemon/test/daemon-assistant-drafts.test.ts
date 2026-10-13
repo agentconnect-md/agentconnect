@@ -1,4 +1,4 @@
-// An assistant-mode agent's reply in an external place (assistant-mode.md §5.5): drafted to an internal member, never posted unapproved.
+// A reply in a conversation shared with another organization (#2979, B4): posted directly by every agent; a reply drafted before stays approvable.
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -112,12 +112,44 @@ async function boot(assistant: boolean) {
     const rows = (await store.assistantDrafts.db.query('SELECT id FROM assistant_draft', [])).rows as { id: string }[]
     return Promise.all(rows.map(async (row) => (await store.assistantDrafts.get(row.id)) as AssistantDraft))
   }
+  /** A reply drafted for U1 before replies there were posted directly, its card in U1's DM. */
+  const pendingReply = async (): Promise<AssistantDraft> => {
+    const ledger = (daemon as any).store.assistantDrafts
+    const draft = await ledger.create({
+      agentId: 'bot-a',
+      kind: 'reply',
+      target: { platform: 'slack', integrationId: INT, channel: 'C_EXT', thread: TS },
+      targetExternal: true,
+      text: 'Let me check.\n\nThe answer is 42.',
+      source: {
+        platform: 'slack',
+        integrationId: INT,
+        channel: 'C_EXT',
+        thread: TS,
+        transportScope: 'T_FAKE_TEAM',
+        sessionKey: 'k-ext',
+        sessionId: 'outward-ext',
+        place: true
+      },
+      approver: {
+        kind: 'member',
+        integrationId: INT,
+        channel: 'D_U1',
+        userId: 'U1',
+        teamId: 'T_FAKE_TEAM',
+        consoleUserId: null
+      }
+    })
+    await ledger.setCard(draft.id, 'card-1')
+    return draft
+  }
   return {
     daemon,
     root,
     conn,
     ask,
     drafts,
+    pendingReply,
     async close() {
       await daemon.stop()
       rmSync(root, { recursive: true, force: true })
@@ -125,41 +157,54 @@ async function boot(assistant: boolean) {
   }
 }
 
-describe('a reply in an external place', () => {
-  it('is drafted to the asker: the place sees a reaction only, no status, progress or text', async () => {
+describe('a reply in a conversation shared with another organization', () => {
+  it('is streamed directly by an assistant-mode agent, with the working indicator and tool progress, and nothing is drafted', async () => {
     const h = await boot(true)
     try {
       await h.ask()
-      expect(h.conn.postMessage).not.toHaveBeenCalled()
-      expect(h.conn.setStatus).not.toHaveBeenCalled()
-      expect(h.conn.updateMessage).not.toHaveBeenCalled()
-      expect(h.conn.react).toHaveBeenCalledWith('C_EXT', TS, 'seen')
-      const [draft] = await h.drafts()
-      expect(draft).toMatchObject({
-        kind: 'reply',
-        status: 'awaiting_review',
-        target: { platform: 'slack', integrationId: INT, channel: 'C_EXT', thread: TS },
-        targetExternal: true,
-        approver: { kind: 'member', channel: 'D_U1', userId: 'U1' },
-        cardTs: 'card-1'
+      // The working indicator is the acknowledgement, and it follows the tool call.
+      const statuses = h.conn.setStatus.mock.calls.map((call) => (call as unknown[]).slice(0, 3))
+      expect(statuses).toEqual(
+        expect.arrayContaining([
+          ['C_EXT', TS, 'is starting up…'],
+          ['C_EXT', TS, 'Read notes']
+        ])
+      )
+      expect(h.conn.react).not.toHaveBeenCalled()
+      // Each section streams into the thread as it arrives, with the tool's progress between them.
+      const posts = h.conn.postMessage.mock.calls.map((call) => (call as unknown[]).slice(0, 3))
+      expect(posts).toEqual([
+        ['C_EXT', 'Let me check.', TS],
+        ['C_EXT', ':hammer_and_wrench: `Read notes`', TS],
+        ['C_EXT', 'The answer is 42.', TS]
+      ])
+      expect((h.conn.postMessage.mock.calls[0] as unknown[])[3]).toMatchObject({
+        response: { deliveryState: 'streaming' }
       })
-      expect(draft!.text).toBe('Let me check.\n\nThe answer is 42.')
-      // The card is the only message: it lands in the asker's DM, never in the external place.
-      expect(h.conn.isFullMember).toHaveBeenCalledWith('U1')
-      expect(h.conn.postBlocks).toHaveBeenCalledTimes(1)
-      const [cardChannel, blocks] = h.conn.postBlocks.mock.calls[0] as unknown as [string, unknown[]]
-      expect(cardChannel).toBe('D_U1')
-      expect(JSON.stringify(blocks)).toContain('The answer is 42.')
+      expect(await h.drafts()).toEqual([])
+      expect(h.conn.postBlocks).not.toHaveBeenCalled()
     } finally {
       await h.close()
     }
   })
 
+  it('is posted directly, as before, for an agent outside assistant mode', async () => {
+    const h = await boot(false)
+    try {
+      await h.ask()
+      expect(h.conn.postMessage).toHaveBeenCalled()
+      expect(await h.drafts()).toEqual([])
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+describe('a reply drafted there before such replies were posted directly', () => {
   it('posts the drafted text unchanged in the original thread once the asker approves, and only once', async () => {
     const h = await boot(true)
     try {
-      await h.ask()
-      const [draft] = await h.drafts()
+      const draft = await h.pendingReply()
       const click = { requestId: draft!.id, optionId: 'approve', actor: { userId: 'U1' } }
       await (h.daemon as any).routePermissionChoice(click)
       await (h.daemon as any).routePermissionChoice(click)
@@ -179,8 +224,7 @@ describe('a reply in an external place', () => {
   it('is approved from the console through the card’s own path: one post, the card rewritten, a racing click refused', async () => {
     const h = await boot(true)
     try {
-      await h.ask()
-      const [draft] = await h.drafts()
+      const draft = await h.pendingReply()
       const deps = buildCpClientDeps((h.daemon as any).cpClientDepsHost(h.root, 'wss://cp.example.test', () => {}))
       const decide = deps.assistantActivity!.write({
         agentId: 'bot-a',
@@ -215,8 +259,7 @@ describe('a reply in an external place', () => {
   it('is discarded from the console, recorded under the editor, and never posted', async () => {
     const h = await boot(true)
     try {
-      await h.ask()
-      const [draft] = await h.drafts()
+      const draft = await h.pendingReply()
       const deps = buildCpClientDeps((h.daemon as any).cpClientDepsHost(h.root, 'wss://cp.example.test', () => {}))
       expect(
         await deps.assistantActivity!.write({
@@ -232,17 +275,6 @@ describe('a reply in an external place', () => {
       const click = { requestId: draft!.id, optionId: 'approve', actor: { userId: 'U1' } }
       await (h.daemon as any).routePermissionChoice(click)
       expect(h.conn.postMessage).not.toHaveBeenCalled()
-    } finally {
-      await h.close()
-    }
-  })
-
-  it('is posted directly, as before, for an agent outside assistant mode', async () => {
-    const h = await boot(false)
-    try {
-      await h.ask()
-      expect(h.conn.postMessage).toHaveBeenCalled()
-      expect(await h.drafts()).toEqual([])
     } finally {
       await h.close()
     }
