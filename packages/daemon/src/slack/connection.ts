@@ -778,13 +778,40 @@ const MEMBER_ENRICH_CAP = 50
 /** One `conversations.members` page, and how many pages a membership listing follows before it fails closed. */
 const MEMBER_PAGE_SIZE = 1000
 const MEMBER_PAGE_CAP = 20
-/** A joined member's standing is asked once a minute however many channels they join, a few people at a time. */
-const JOIN_LOOKUP_TTL_MS = 60_000
-const JOIN_LOOKUP_ENTRIES = 512
-const JOIN_LOOKUPS_IN_FLIGHT = 4
+/** A person's standing is asked once a minute however many channels they join or drafts they ask for, a few people at a time. */
+const STANDING_LOOKUP_TTL_MS = 60_000
+const STANDING_LOOKUP_ENTRIES = 512
+const STANDING_LOOKUPS_IN_FLIGHT = 4
 const SLACK_CHANNEL_HISTORY_DEFAULT_LIMIT = 100
 const SLACK_CHANNEL_HISTORY_MAX_LIMIT = 200
 const SLACK_FILE_ORIGIN = 'https://files.slack.com'
+
+/** What one `users.info` says of a person: why they would make a place external, and whether they are a full member here. */
+interface MemberStanding {
+  reason: PlaceExternalReason | null
+  fullMember: boolean
+}
+
+/** A full member of workspace `teamId`: not a guest, not from another organization, not a bot, not deactivated. */
+function slackFullMember(user: object, teamId: string): boolean {
+  const u = user as {
+    team_id?: string
+    is_restricted?: boolean
+    is_ultra_restricted?: boolean
+    is_stranger?: boolean
+    is_bot?: boolean
+    deleted?: boolean
+  }
+  return (
+    teamId !== '' &&
+    u.team_id === teamId &&
+    !u.is_restricted &&
+    !u.is_ultra_restricted &&
+    !u.is_stranger &&
+    !u.is_bot &&
+    !u.deleted
+  )
+}
 
 /**
  * Build a chat.postMessage/update payload that renders the body as a Block Kit
@@ -1026,10 +1053,10 @@ export class SlackConnection implements PlatformConnection {
   private teamId = ''
   /** The installing Enterprise Grid organization, which tells its other workspaces apart from outside members. */
   private enterpriseId = ''
-  /** Each joined member's standing, by user, so a burst of joins asks once per person. */
-  private readonly joinedMembers = new Map<string, { at: number; reason: Promise<PlaceExternalReason | null> }>()
-  private joinLookupsRunning = 0
-  private readonly joinLookupWaiters: (() => void)[] = []
+  /** Each person's standing, by user, so a burst of joins and membership checks asks once per person. */
+  private readonly standings = new Map<string, { at: number; standing: Promise<MemberStanding> }>()
+  private standingLookupsRunning = 0
+  private readonly standingLookupWaiters: (() => void)[] = []
   /** A workspace-wide missing scope should create one card, not one per streamed write. */
   private missingScopes = new Set<string>()
   private permissionUpdateAnnounced = false
@@ -2679,7 +2706,7 @@ export class SlackConnection implements PlatformConnection {
   /** Why a member who joined makes the channel external: one `users.info` for a guest or an outside member, else the envelope's share, else null. */
   async joinedMemberReason(user: string, externallyShared = false): Promise<PlaceExternalReason | null> {
     try {
-      const reason = await this.joinedMemberStanding(user)
+      const { reason } = await this.memberStanding(user)
       if (reason) return reason
     } catch (err) {
       this.deps.log?.warn(`slack: looking up a member who joined ${user} failed: ${(err as Error).message}`)
@@ -2687,38 +2714,42 @@ export class SlackConnection implements PlatformConnection {
     return externallyShared ? 'externallyShared' : null
   }
 
-  /** One lookup per person within the TTL, shared by joins in flight; a failed one is dropped so the next join asks again. */
-  private joinedMemberStanding(user: string): Promise<PlaceExternalReason | null> {
+  /** One `users.info` per person within the TTL, shared by joins and membership checks in flight; a failed one is dropped so the next asks again. */
+  private memberStanding(user: string): Promise<MemberStanding> {
     const now = Date.now()
-    const hit = this.joinedMembers.get(user)
-    if (hit && now - hit.at < JOIN_LOOKUP_TTL_MS) return hit.reason
-    const reason = this.inJoinLookupSlot(async () => {
+    const hit = this.standings.get(user)
+    if (hit && now - hit.at < STANDING_LOOKUP_TTL_MS) return hit.standing
+    const standing = this.inStandingLookupSlot(async () => {
       const res = await this.app.client.users.info({ user })
-      return slackMemberExternalReason(res.user ?? {}, {
-        ...(this.teamId ? { teamId: this.teamId } : {}),
-        ...(this.enterpriseId ? { enterpriseId: this.enterpriseId } : {})
-      })
+      const member = res.user ?? {}
+      return {
+        reason: slackMemberExternalReason(member, {
+          ...(this.teamId ? { teamId: this.teamId } : {}),
+          ...(this.enterpriseId ? { enterpriseId: this.enterpriseId } : {})
+        }),
+        fullMember: slackFullMember(member, this.teamId)
+      }
     })
-    this.joinedMembers.delete(user)
-    this.joinedMembers.set(user, { at: now, reason })
-    reason.catch(() => {
-      if (this.joinedMembers.get(user)?.reason === reason) this.joinedMembers.delete(user)
+    this.standings.delete(user)
+    this.standings.set(user, { at: now, standing })
+    standing.catch(() => {
+      if (this.standings.get(user)?.standing === standing) this.standings.delete(user)
     })
-    const oldest = this.joinedMembers.size > JOIN_LOOKUP_ENTRIES ? this.joinedMembers.keys().next().value : undefined
-    if (oldest !== undefined) this.joinedMembers.delete(oldest)
-    return reason
+    const oldest = this.standings.size > STANDING_LOOKUP_ENTRIES ? this.standings.keys().next().value : undefined
+    if (oldest !== undefined) this.standings.delete(oldest)
+    return standing
   }
 
-  /** Runs a join lookup once fewer than JOIN_LOOKUPS_IN_FLIGHT are running, so a burst queues instead of fanning out. */
-  private async inJoinLookupSlot<T>(lookup: () => Promise<T>): Promise<T> {
-    while (this.joinLookupsRunning >= JOIN_LOOKUPS_IN_FLIGHT)
-      await new Promise<void>((resolve) => this.joinLookupWaiters.push(resolve))
-    this.joinLookupsRunning++
+  /** Runs a standing lookup once fewer than STANDING_LOOKUPS_IN_FLIGHT are running, so a burst queues instead of fanning out. */
+  private async inStandingLookupSlot<T>(lookup: () => Promise<T>): Promise<T> {
+    while (this.standingLookupsRunning >= STANDING_LOOKUPS_IN_FLIGHT)
+      await new Promise<void>((resolve) => this.standingLookupWaiters.push(resolve))
+    this.standingLookupsRunning++
     try {
       return await lookup()
     } finally {
-      this.joinLookupsRunning--
-      this.joinLookupWaiters.shift()?.()
+      this.standingLookupsRunning--
+      this.standingLookupWaiters.shift()?.()
     }
   }
 
@@ -2744,27 +2775,11 @@ export class SlackConnection implements PlatformConnection {
     return profile?.realName?.trim() || profile?.name?.trim() || undefined
   }
 
-  /** A full member of this workspace: not a guest, not from another organization (assistant-mode.md §5.5); fails closed. */
+  /** A full member of this workspace: not a guest, not from another organization (assistant-mode.md §5.5); the joins' cached lookup, failing closed. */
   async isFullMember(user: string): Promise<boolean> {
     if (!this.teamId) return false
     try {
-      const res = await this.app.client.users.info({ user })
-      const u = (res.user ?? {}) as {
-        team_id?: string
-        is_restricted?: boolean
-        is_ultra_restricted?: boolean
-        is_stranger?: boolean
-        is_bot?: boolean
-        deleted?: boolean
-      }
-      return (
-        u.team_id === this.teamId &&
-        !u.is_restricted &&
-        !u.is_ultra_restricted &&
-        !u.is_stranger &&
-        !u.is_bot &&
-        !u.deleted
-      )
+      return (await this.memberStanding(user)).fullMember
     } catch (err) {
       this.deps.log?.debug(`slack: users.info failed for a workspace-member check: ${(err as Error).message}`)
       return false

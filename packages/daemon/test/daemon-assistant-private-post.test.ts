@@ -201,6 +201,8 @@ describe('a post from a DM to another conversation, in either mode', () => {
         const [cardChannel, blocks] = h.conn.postBlocks.mock.calls[0] as unknown as [string, unknown[]]
         expect(cardChannel).toBe('D1')
         expect(JSON.stringify(blocks)).not.toContain('Always allow')
+        // Every agent asks the platform whether the asker is a full member, once for the draft.
+        expect(h.conn.isFullMember.mock.calls).toEqual([['U1']])
 
         await (h.daemon as any).routePermissionChoice({
           requestId: draft!.id,
@@ -214,6 +216,28 @@ describe('a post from a DM to another conversation, in either mode', () => {
           expect.objectContaining({ agentAuthorId: 'bot-a' })
         )
         expect((await h.drafts())[0]).toMatchObject({ status: 'succeeded', messageId: 'posted-1' })
+      } finally {
+        await h.close()
+      }
+    })
+
+    it(`never offers a guest who asked from a place not known external as the approver (${mode})`, async () => {
+      const h = await boot(assistant, [{ channel: 'C_SHARED', message: 'The launch moves to Monday.' }])
+      try {
+        // U1 is a guest the platform never reported, so their conversation with the agent is not known external.
+        h.conn.isFullMember.mockResolvedValue(false)
+        await h.ask()
+        if (assistant) {
+          // No responsible user can be routed here, so the draft waits in Activity.
+          expect(h.results[0]).toMatchObject({ drafted: true, approver: null })
+          expect(await h.drafts()).toMatchObject([{ status: 'awaiting_review', approver: null }])
+        } else {
+          expect((h.results[0] as Error).message).toMatch(/needs the approval of an internal member/)
+          expect(await h.drafts()).toEqual([])
+        }
+        expect(h.conn.postBlocks).not.toHaveBeenCalled()
+        expect(h.conn.postMessage).not.toHaveBeenCalledWith('C_SHARED', expect.anything(), undefined, expect.anything())
+        expect(h.conn.isFullMember.mock.calls).toEqual([['U1']])
       } finally {
         await h.close()
       }

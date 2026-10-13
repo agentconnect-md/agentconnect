@@ -8646,7 +8646,7 @@ export class Daemon {
     return await this.drafts.interceptPost(ctx.agentId, source, post, this.draftAskerOf(ctx, askers, live?.entry.msg))
   }
 
-  /** The person the write rule judged the turn by, as a draft approver candidate; only an enabled assistant-mode place trusts its own sender (§5.3). */
+  /** The person the write rule judged the turn by, as a draft approver candidate; their place vouches for them, in any mode, only where the platform cannot tell a full member (§5.5). */
   private draftAskerOf(
     ctx: SessionContext,
     askers: TurnAskers,
@@ -8658,10 +8658,7 @@ export class Daemon {
     if (asker.kind === 'console') return { consoleUserId: asker.userId, trusted: true }
     const spokeHere =
       msg?.source === 'user' && msg.sender.id === asker.userId && asker.integrationId === ctx.integrationId
-    const trusted =
-      spokeHere &&
-      assistantModeOn(this.agents.get(ctx.agentId)) &&
-      !this.placeKnownExternal(ctx.agentId, ctx.integrationId, ctx.channel)
+    const trusted = spokeHere && !this.placeKnownExternal(ctx.agentId, ctx.integrationId, ctx.channel)
     return { integrationId: asker.integrationId, userId: asker.userId, trusted }
   }
 

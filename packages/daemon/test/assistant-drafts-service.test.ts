@@ -13,6 +13,8 @@ import {
 } from '../src/assistant/drafts.js'
 import type { MessageGateway } from '../src/mcp/ops/context.js'
 import { settlePost } from '../src/mcp/ops/messaging.js'
+import { slackDraftCardPort } from '../src/platforms/slack/draft-card.js'
+import { SlackConnection } from '../src/slack/connection.js'
 import { buildAssistantDraftCard, type AssistantDraftCardView } from '../src/slack/render.js'
 import {
   ASSISTANT_DRAFT_TTL_MS,
@@ -22,6 +24,7 @@ import {
 } from '../src/store/assistant-drafts.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'agent-a'
 const INT = '33333333-3333-4333-8333-333333333333'
@@ -66,7 +69,8 @@ function fakePort() {
   let n = 0
   return {
     openDirectMessage: vi.fn(async (user: string) => `D_${user}`),
-    isFullMember: vi.fn(async (_user: string) => false),
+    // Alice is a full member of the workspace; anyone else is a guest or from another organization.
+    isFullMember: vi.fn(async (user: string) => user === 'U0ALICE'),
     scope: () => 'T0EXAMPLE',
     postCard: vi.fn(async (_channel: string, _card: DraftCard, _thread?: string) => `card-${++n}`),
     updateCard: vi.fn(async (_channel: string, _ts: string, _card: DraftCard): Promise<boolean | void> => {}),
@@ -87,6 +91,8 @@ async function world(
     askable?: string[]
     /** The control plane advertises `assistant-responsible-route-v1`; true unless set. */
     routesResponsible?: boolean
+    /** The card surface the drafts reach, in place of the fake port. */
+    cardPort?: DraftCardPort
   } = {}
 ) {
   store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
@@ -132,7 +138,7 @@ async function world(
     agent: () => ({ name: 'Butler', assistantMode: policy, integrations: [{ id: INT }] }),
     gatewayFor: (id) => (id === INT ? (gateway as unknown as MessageGateway) : undefined),
     placeExternal: (_agent, _id, channel) => external.has(channel),
-    cardPortFor: (id) => (id === INT ? port : undefined),
+    cardPortFor: (id) => (id === INT ? (over.cardPort ?? port) : undefined),
     approvalRoute: async (_agent, req) => (await route(req)) as never,
     routesResponsible: () => over.routesResponsible ?? true,
     sessionLink: (id) => `https://console.example.test/sessions/${id}`,
@@ -437,6 +443,61 @@ describe('the approver', () => {
     expect(w.gateway.postMessage).toHaveBeenCalledWith('C0SHARED', 'The release is out.', undefined, expect.any(Object))
   })
 
+  // A guest already in a channel when the bot arrived is never detected, so their place is not known external.
+  for (const enabled of [true, false]) {
+    const mode = enabled ? 'in assistant mode' : 'outside assistant mode'
+    const GUEST = { integrationId: INT, userId: 'U0GUEST', trusted: true }
+    /** What a post comes to when the asker is not taken as internal: the responsible user, or a refusal. */
+    const notTheAsker = async (w: Awaited<ReturnType<typeof world>>, asker: DraftAsker, port = w.port) => {
+      if (enabled) {
+        expect(await w.post(TO_SUPPORT, HERE, asker)).toMatchObject({
+          result: { approver: "the agent's responsible user, in a direct message" }
+        })
+        expect(port.postCard.mock.calls.map(([channel]) => channel)).toEqual(['D_U0RESP'])
+      } else {
+        await expect(w.post(TO_SUPPORT, HERE, asker)).rejects.toThrow(/needs the approval of an internal member/)
+        expect(port.postCard).not.toHaveBeenCalled()
+      }
+      expect(port.openDirectMessage).not.toHaveBeenCalledWith(asker.userId)
+    }
+
+    it(`asks the platform about an asker their place vouches for, so a guest is never the approver (${mode})`, async () => {
+      const w = await world({ policy: { enabled } })
+      await notTheAsker(w, GUEST)
+      expect(w.port.isFullMember.mock.calls).toEqual([['U0GUEST']])
+    })
+
+    it(`takes a full member who asked as the approver, vouched for by their place or not, one lookup a draft (${mode})`, async () => {
+      const w = await world({ policy: { enabled } })
+      for (const trusted of [true, false]) {
+        expect(await w.post(TO_SUPPORT, HERE, { ...ALICE, trusted })).toMatchObject({
+          result: { approver: 'the person who asked, in a direct message' }
+        })
+      }
+      expect(w.port.postCard.mock.calls.map(([channel]) => channel)).toEqual(['D_U0ALICE', 'D_U0ALICE'])
+      expect(w.port.isFullMember.mock.calls).toEqual([['U0ALICE'], ['U0ALICE']])
+    })
+
+    it(`takes no one as internal when the membership lookup fails (${mode})`, async () => {
+      const w = await world({ policy: { enabled } })
+      w.port.isFullMember.mockRejectedValue(new Error('ratelimited'))
+      await notTheAsker(w, ALICE)
+    })
+
+    it(`lets the place vouch for the asker where the card surface cannot tell a full member (${mode})`, async () => {
+      const blind = fakePort()
+      delete (blind as Partial<typeof blind>).isFullMember
+      const w = await world({ policy: { enabled }, cardPort: blind })
+      expect(await w.post(TO_SUPPORT, HERE, GUEST)).toMatchObject({
+        result: { approver: 'the person who asked, in a direct message' }
+      })
+      expect(blind.postCard.mock.calls.map(([channel]) => channel)).toEqual(['D_U0GUEST'])
+      blind.postCard.mockClear()
+      blind.openDirectMessage.mockClear()
+      await notTheAsker(w, { ...GUEST, trusted: false }, blind)
+    })
+  }
+
   it('is nobody when nothing can be reached: the draft waits, and the model is told nothing was sent', async () => {
     const w = await world({ route: async (req) => ({ requestId: req.requestId }) })
     const result = await w.post(TO_SUPPORT, PLACELESS, null)
@@ -456,6 +517,31 @@ describe('the approver', () => {
     const draft = await w.only()
     expect(draft.approver).toBeNull()
     expect(await w.decide(draft.id, 'approve')).toMatchObject({ result: 'decided', status: 'succeeded' })
+  })
+})
+
+describe('the membership lookup behind the approver', () => {
+  it('costs one Slack lookup per person a minute, however many drafts they ask for', async () => {
+    const info = vi.fn(async ({ user }: { user: string }) => ({ user: { id: user, team_id: 'T0EXAMPLE' } }))
+    const conn = new SlackConnection(
+      { group: { appToken: 'xapp-1', botToken: 'xoxb-a', integrations: [] }, onMessage: () => {} } as never,
+      (opts) => {
+        const app = fakeSlackAppFactory({ teamId: 'T0EXAMPLE' })(opts)
+        return { ...app, client: { ...app.client, users: { ...app.client.users, info } } } as never
+      }
+    )
+    await conn.start()
+    try {
+      const w = await world({ cardPort: slackDraftCardPort(conn, INT) })
+      for (const trusted of [true, false]) {
+        expect(await w.post(TO_SUPPORT, HERE, { ...ALICE, trusted })).toMatchObject({
+          result: { approver: 'the person who asked, in a direct message' }
+        })
+      }
+      expect(info.mock.calls).toEqual([[{ user: 'U0ALICE' }]])
+    } finally {
+      await conn.stop()
+    }
   })
 })
 

@@ -825,7 +825,7 @@ describe('SlackConnection membership events', () => {
       }
     })
 
-    it('looks up a burst of different people a few at a time instead of all at once', async () => {
+    it('looks up a burst of different people a few at a time instead of all at once, joins and membership checks alike', async () => {
       const users = Object.fromEntries(
         Array.from({ length: 12 }, (_, i) => [`U${i}`, { id: `U${i}`, team_id: 'T1' }] as const)
       )
@@ -841,17 +841,66 @@ describe('SlackConnection membership events', () => {
         return { user: users[user] }
       })
       await w.conn.start()
-      const joins = Object.keys(users).map((user) => w.join(user))
+      const lookups = Object.keys(users).map((user, i) => (i % 2 ? w.join(user) : w.conn.isFullMember(user)))
       await vi.waitFor(() => expect(waiting).toHaveLength(4))
       expect(w.info).toHaveBeenCalledTimes(4)
       while (waiting.length > 0 || w.info.mock.calls.length < 12) {
         waiting.shift()?.()
         await new Promise((resolve) => setImmediate(resolve))
       }
-      await Promise.all(joins)
+      await Promise.all(lookups)
       expect(w.info).toHaveBeenCalledTimes(12)
       expect(peak).toBe(4)
       expect(w.external).toEqual([])
+    })
+
+    // assistant-mode.md §5.5: a draft's asker is a full member only on the platform's word, from the joins' lookup.
+    describe('and a full-member check', () => {
+      const people = {
+        UFULL: { id: 'UFULL', team_id: 'T1' },
+        UGUEST: { id: 'UGUEST', team_id: 'T1', is_restricted: true },
+        UOUT: { id: 'UOUT', team_id: 'T9' },
+        UOTHERBOT: { id: 'UOTHERBOT', team_id: 'T1', is_bot: true }
+      }
+
+      it('tells a full member from a guest, an outside member or a bot', async () => {
+        const w = joinWorld(people, true)
+        await w.conn.start()
+        expect(await Promise.all(Object.keys(people).map((user) => w.conn.isFullMember(user)))).toEqual([
+          true,
+          false,
+          false,
+          false
+        ])
+      })
+
+      it('shares one lookup per person a minute with the joins', async () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+        try {
+          const w = joinWorld(people, true)
+          await w.conn.start()
+          await w.join('UFULL')
+          expect(await w.conn.isFullMember('UFULL')).toBe(true)
+          expect(await w.conn.isFullMember('UFULL')).toBe(true)
+          expect(w.info).toHaveBeenCalledTimes(1)
+          now.mockReturnValue(1_000_000 + 60_000)
+          expect(await w.conn.isFullMember('UFULL')).toBe(true)
+          expect(w.info).toHaveBeenCalledTimes(2)
+        } finally {
+          now.mockRestore()
+        }
+      })
+
+      it('fails closed when the lookup fails, and asks again next time', async () => {
+        const w = joinWorld(people, true)
+        w.info.mockImplementationOnce(async () => {
+          throw new Error('ratelimited')
+        })
+        await w.conn.start()
+        expect(await w.conn.isFullMember('UFULL')).toBe(false)
+        expect(await w.conn.isFullMember('UFULL')).toBe(true)
+        expect(w.info).toHaveBeenCalledTimes(2)
+      })
     })
   })
 
