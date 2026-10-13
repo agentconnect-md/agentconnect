@@ -28,6 +28,9 @@ export interface SlackHomeOrganization {
 interface SlackMemberFlags {
   is_restricted?: boolean
   is_ultra_restricted?: boolean
+  is_stranger?: boolean
+  is_bot?: boolean
+  deleted?: boolean
   team_id?: string
   enterprise_user?: { enterprise_id?: string }
 }
@@ -40,4 +43,19 @@ export function slackMemberExternalReason(user: object, home: SlackHomeOrganizat
   const enterprise = member.enterprise_user?.enterprise_id
   if (home.enterpriseId && enterprise) return enterprise === home.enterpriseId ? null : 'externalMember'
   return home.teamId && member.team_id && member.team_id !== home.teamId ? 'externalMember' : null
+}
+
+/** A full member of the installing workspace, who may approve a draft (assistant-mode.md §5.5): stricter than the reason above, so another Grid workspace's member is not one. */
+export function slackFullMember(user: object, home: SlackHomeOrganization): boolean {
+  const member = user as SlackMemberFlags
+  return (
+    home.teamId !== undefined &&
+    home.teamId !== '' &&
+    member.team_id === home.teamId &&
+    member.is_restricted !== true &&
+    member.is_ultra_restricted !== true &&
+    member.is_stranger !== true &&
+    member.is_bot !== true &&
+    member.deleted !== true
+  )
 }

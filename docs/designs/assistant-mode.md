@@ -301,7 +301,7 @@ the context with the ledger and summary as a handover note) is an open question 
 ### 5.3 Trust level
 
 The daemon has no presence data and member enumeration is not made a prerequisite. There is no
-per-place trust setting: **a place is internal** (everyone here is an organization member)
+per-place trust setting: **a place is internal** (the organization's own)
 **unless the platform detects it as external**. Enabling a place is not the trust boundary: what
 crosses between places is judged by who is asking (§5.5 "Reads") and memory by its audience
 ([product conventions](../product-conventions.md#memory-layers)), so an assistant-mode agent takes
@@ -309,7 +309,9 @@ the same conversation defaults as any agent of its visibility and is gated only 
 An external place is not walled off: the agent reads there for whoever is asking and **replies
 there directly**, as every agent does (§5.5, "Replies in an external place"). External changes
 who approves, which memory layer the place uses and how a post from elsewhere reaches it; it does
-not change what the agent says in the place itself.
+not change what the agent says in the place itself. Internal describes the place, not each person
+in it: a guest who was in a channel before the bot arrived is never detected, so whether someone
+approves as an internal member is asked of the platform, person by person (§5.5 "Drafts").
 
 **Conversation defaults (issue #2979, item B7).** The mode used to gate the agent like a
 restricted one: its new rooms and DMs started Off, it was never a shared bot's default member, a
@@ -337,7 +339,8 @@ unlisted place on one session from its first message (§5.2).
   detection is never lifted by a later listing. Another workspace of the same Enterprise Grid
   organization is the same organization; a console account plays no part. The connection keeps
   each person's answer for a minute and runs at most four lookups at once, so a burst of joins
-  costs one lookup per person and queues rather than fans out.
+  costs one lookup per person and queues rather than fans out. A draft's membership check (§5.5)
+  reads the same answer.
 - **Output no event triggered asks first.** A place learns of a share from its next event, so
   before a post no event from that place triggered — a scheduled or hook run and its anchor
   message, a report round, a post from another place, a
@@ -475,6 +478,17 @@ member (below).
   is an internal member (on Slack, a full member of the installing workspace — not a guest, not
   from the other organization), otherwise the responsible user (§5.1); with neither reachable it
   waits in Activity. **Approve** posts the text unchanged where it was aimed; **discard** drops it.
+- **Whether the asker is internal is the platform's answer, for every agent.** Every asker is
+  looked up, in any place and in either mode: no place vouches for the people in it, known external
+  or not (§5.3). A card surface must answer the question (`isFullMember` is required of it, and
+  Slack's is the only one today), so on a platform with no card surface an asker never approves,
+  in either mode. The lookup is the member-join one of §5.3, one per person a minute and at most
+  four at once, and a draft makes at most one. A lookup that fails takes the asker as not internal;
+  what follows is unchanged: an assistant-mode agent goes on to the responsible user or Activity,
+  and any other agent refuses the post. A member of another workspace of the same Enterprise Grid
+  organization is the same organization for detection (§5.3) but not a full member of the
+  installing workspace, so they do not approve. A console asker is routed to the member they
+  linked, as before.
 - A draft is an approval record (§5.10) whose action is "post this text to this place"; the
   daemon executes it itself, with no sub-session. It expires after 24 hours.
 - Any card that would land in an external place (a runtime permission request, a `propose`) goes
@@ -1312,7 +1326,19 @@ during the rollout never reads a policy it cannot parse; the next release drops 
 assistant mode panel moves from the Memory tab to the Configuration tab and shows the derived person
 read-only; managed memory stays an admission requirement.
 
-**Thirty-second revision (2026-10-13)**: every agent has `recall` and the reminder tools (issue
+**Thirty-second revision (2026-10-13)**: a draft's asker is internal on the platform's word, for
+every agent (issue #2979; §5.5 "Drafts"). An assistant-mode agent took a person who sent the turn's
+message from a place not known external as an internal member without asking, because enabling a
+place once meant someone had vetted it. Since the thirtieth revision an enabled place is any
+conversation the agent's visibility admits, and a guest already in a channel when the bot arrived
+is never detected, so such a guest could approve a post into a conversation shared with another
+organization. Every agent now asks the platform whether the asker is a full member, reading the
+member-join lookup's per-person answer; a failed lookup takes the asker as not internal. A card
+surface must answer membership, so no place vouches for anyone, and a platform without a card
+surface has no asker approver in either mode. A member of a sibling Enterprise Grid workspace, whom
+the shortcut let approve in assistant mode, is not a full member here and no longer does.
+
+**Thirty-third revision (2026-10-13)**: every agent has `recall` and the reminder tools (issue
 #2979; §5.4 ③, §5.9). Both were gated on assistant mode, but neither needs anything only the mode
 has: `recall` passes the read rule every agent's cross-place reads already pass (B3), and a
 reminder posts into the conversation it was set in, which every agent now does directly, one shared
