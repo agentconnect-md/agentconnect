@@ -91,6 +91,8 @@ export function ModelSelectionField({
   fallback,
   onFallbackChange,
   source,
+  sourceStatus = 'ready',
+  onRetrySource,
   runtimes,
   readsImage,
   requireAvailableModel = false,
@@ -103,6 +105,8 @@ export function ModelSelectionField({
   fallback: DecisionRuntimeTarget
   onFallbackChange(value: DecisionRuntimeTarget): void
   source?: RuntimeModelSource
+  sourceStatus?: 'ready' | 'loading' | 'error'
+  onRetrySource?: () => void
   runtimes: readonly string[]
   /** Whether the agent's strategy starts the image's runtime install, so a profile's image-binary warning applies. */
   readsImage?: boolean
@@ -152,6 +156,7 @@ export function ModelSelectionField({
     .find((profile) => profile.runtime === fallback.runtime)
     ?.models.includes(fallback.model)
   const valid =
+    sourceStatus === 'ready' &&
     (!requireAvailableModel || !!fallbackAvailable) &&
     (!active || (!!configuration && !!fallbackAvailable && !missingModel && issues.length === 0))
   useEffect(() => onValidityChange(valid), [valid, onValidityChange])
@@ -166,6 +171,7 @@ export function ModelSelectionField({
       source={source}
       runtimes={runtimes}
       readsImage={readsImage}
+      readOnly={sourceStatus !== 'ready'}
     />
   )
   const fallbackPanel = (
@@ -248,6 +254,7 @@ export function ModelSelectionField({
               <RuntimeModelSelect
                 dense
                 runSettings
+                readOnly={sourceStatus !== 'ready'}
                 value={{
                   effort: fallback.effort,
                   permissionMode: fallback.permissionMode,
@@ -608,7 +615,7 @@ export function ModelSelectionField({
     t('nextDecision')
 
   return (
-    <div className="flex flex-col gap-[14px]">
+    <div className="flex flex-col gap-[14px]" aria-busy={sourceStatus === 'loading'}>
       <div className="flex items-center justify-between gap-3">
         <h3 className="m-0 text-[15px] font-semibold">{t('title')}</h3>
         {api && (
@@ -638,6 +645,19 @@ export function ModelSelectionField({
           </div>
         )}
       </div>
+      {sourceStatus === 'loading' && (
+        <div role="status" className="text-[12px] text-(--text-tertiary)">
+          {t('savedCredentialsLoading')}
+        </div>
+      )}
+      {sourceStatus === 'error' && (
+        <div role="alert" className="flex items-center gap-2 text-[12px] text-(--status-error)">
+          {t('savedCredentialsLoadError')}
+          <button type="button" className="cursor-pointer text-(--accent) hover:underline" onClick={onRetrySource}>
+            {t('retry')}
+          </button>
+        </div>
+      )}
       {!active ? (
         <div className="grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
           <div className="fld min-w-0">
@@ -645,7 +665,7 @@ export function ModelSelectionField({
               {t('providerModel')}
             </span>
             {fallbackPicker(false)}
-            {requireAvailableModel && !fallbackAvailable && (
+            {sourceStatus === 'ready' && requireAvailableModel && !fallbackAvailable && (
               <div role="alert" className="text-[12px] text-(--status-error)">
                 {t('savedModelUnavailable')}
               </div>
@@ -694,7 +714,7 @@ export function ModelSelectionField({
               {t('invalidRules')}
             </div>
           )}
-          {(missingModel || !fallbackAvailable) && (
+          {sourceStatus === 'ready' && (missingModel || !fallbackAvailable) && (
             <div role="alert" className="text-[12px] text-(--status-error)">
               {t('missingModel')}
             </div>

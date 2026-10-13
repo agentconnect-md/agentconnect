@@ -415,7 +415,11 @@ export default function EditAgentModal({
   const strategySource =
     daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : execution)
   const savedCredentials = daemonId !== POOL_PLACEMENT && modelProvider !== null
-  const modelSource = useSavedModelSource(strategySource, savedCredentials)
+  const {
+    source: modelSource,
+    status: modelSourceStatus,
+    retry: retryModelSource
+  } = useSavedModelSource(strategySource, savedCredentials)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
     // With the flag off the picker offers Cloud only to an agent already ON it — same rule
@@ -503,7 +507,7 @@ export default function EditAgentModal({
   const reportedRuntimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : []
   const runtimeIds = daemon ? reportedRuntimeIds : FALLBACK_RUNTIME_IDS
   const runtimeOptions = savedCredentials
-    ? selectableRuntimeIds(modelSource!, runtime)
+    ? selectableRuntimeIds(modelSource ?? { runtimeModels: [] }, runtime)
     : runtime && !runtimeIds.includes(runtime)
       ? [runtime, ...runtimeIds]
       : runtimeIds
@@ -870,6 +874,8 @@ export default function EditAgentModal({
                 onValidityChange={setModelSelectionValid}
                 fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
                 source={modelSource}
+                sourceStatus={modelSourceStatus}
+                onRetrySource={retryModelSource}
                 runtimes={runtimeOptions}
                 readsImage={readsImage}
                 requireAvailableModel={savedCredentials}
@@ -1019,16 +1025,19 @@ export default function EditAgentModal({
               <Icon name="info" size={14} />
               {t('edit.agentNameImmutable')}
             </div>
-            {err && (
-              <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
-                <Icon name="triangle-alert" size={15} />
-                {err}
-              </div>
-            )}
           </div>
         </div>
       )}
-      <div className="modalfoot">
+      <div className="modalfoot flex-wrap">
+        {err && (
+          <div
+            role="alert"
+            className="flex w-full items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)"
+          >
+            <Icon name="triangle-alert" size={15} className="flex-none" />
+            {err}
+          </div>
+        )}
         <div className="flex-1" />
         <Button variant="ghost" onClick={onClose}>
           {t('cancel')}
