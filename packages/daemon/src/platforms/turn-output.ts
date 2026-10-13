@@ -222,11 +222,6 @@ export class TurnOutputRegistry<TTurn, TAction, TConv, TMessage> {
     return this.surfaces.get(platform) ?? this.coreSurface
   }
 
-  /** The core surface itself, whatever the origin: its actions are the platform-neutral reply sections. */
-  core(): TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
-    return this.coreSurface
-  }
-
   /** The surface REGISTERED for `platform`, with no core fallback. Teardown
    *  hooks route through this: webchat / hook / dream render through the core
    *  surface, but they must not inherit its platform's teardown. */

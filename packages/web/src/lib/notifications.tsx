@@ -6,12 +6,13 @@ import type { SessionAccessNotificationAction } from '@/lib/session-access-notif
 export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error'
 export type NotificationCategory =
   'daemon_lifecycle' | 'session_retention' | 'session_access' | 'approval' | 'integration'
-export type NotificationSourceScope = 'sessions-access' | 'usage-access' | 'approvals' | 'integrations'
+export type NotificationSourceScope = 'sessions-access' | 'usage-access' | 'approvals' | 'integrations' | 'connectors'
 const SOURCE_SCOPES: readonly NotificationSourceScope[] = [
   'sessions-access',
   'usage-access',
   'approvals',
-  'integrations'
+  'integrations',
+  'connectors'
 ]
 
 /** What a snapshot item becomes once its source vanishes; absent ⇒ it keeps its text and read state and only gains `resolvedAt`. */
@@ -85,7 +86,7 @@ function browserStorage(storage?: NotificationStorage): NotificationStorage | un
 export function emptyNotificationState(): NotificationStoreState {
   return {
     notifications: [],
-    activeSources: { 'sessions-access': [], 'usage-access': [], approvals: [], integrations: [] }
+    activeSources: { 'sessions-access': [], 'usage-access': [], approvals: [], integrations: [], connectors: [] }
   }
 }
 

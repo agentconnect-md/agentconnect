@@ -1,4 +1,4 @@
-// A place turning external (assistant-mode.md §5.3): for every agent it reads external at once and reaches the CP; assistant mode also cuts that place's turn.
+// A place turning external (assistant-mode.md §5.3): for every agent it reads external at once and reaches the CP, and no turn is cut.
 import { describe, expect, it, vi } from 'vitest'
 import { mergePlaceExternalReason, type IntegrationChannel, type PlaceExternalReason } from '@agentconnect.md/protocol'
 import { PLACE_SHARE_TTL_MS, PlaceTrust, type PlaceTrustDeps } from '../src/assistant/place-trust.js'
@@ -16,35 +16,27 @@ const integrationOf = (id: string, externalChannels: string[] = [], mode: 'direc
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
-/** A PlaceTrust over fakes: which integrations are an assistant-mode agent's (true) or another agent's (false), what each lists external, and the platform's share lookup. */
+/** A PlaceTrust over fakes: the integrations it knows, what each lists external, and the platform's share lookup. */
 function world(
-  owned: Record<string, boolean>,
+  ids: string[],
   external: Record<string, string[]> = {},
   lookup?: (channel: string) => Promise<PlaceExternalReason | null>
 ) {
-  const integrations = new Map(Object.keys(owned).map((id) => [id, integrationOf(id, external[id])]))
+  const integrations = new Map(ids.map((id) => [id, integrationOf(id, external[id])]))
   const reports: [string, IntegrationChannel][] = []
-  const interrupts: [string, string][] = []
-  const spared: string[][] = []
   const clock = { now: 1_000 }
   const deps: PlaceTrustDeps = {
     integration: (id) => integrations.get(id),
-    assistantOwned: (id) => owned[id] === true,
     report: (id, channel) => void reports.push([id, channel]),
-    interrupt: async (id, channel, spare) => {
-      interrupts.push([id, channel])
-      spared.push([...spare])
-    },
-    warn: () => {},
     now: () => clock.now,
     shareLookup: () => lookup
   }
-  return { trust: new PlaceTrust(deps), integrations, reports, interrupts, spared, clock }
+  return { trust: new PlaceTrust(deps), integrations, reports, clock }
 }
 
 describe('PlaceTrust', () => {
-  it('marks an internal place external for every agent and reports it once, cutting the turn only in assistant mode', async () => {
-    const w = world({ 'int-a': true, 'int-b': false })
+  it('marks an internal place external for every agent and reports it once', async () => {
+    const w = world(['int-a', 'int-b'])
     w.trust.detected(['int-a', 'int-b'], 'C1', 'guestMember')
     w.trust.detected(['int-a', 'int-b'], 'C1', 'externallyShared')
     await settle()
@@ -54,19 +46,17 @@ describe('PlaceTrust', () => {
       ['int-a', { id: 'C1', externalReason: 'guestMember' }],
       ['int-b', { id: 'C1', externalReason: 'guestMember' }]
     ])
-    expect(w.interrupts).toEqual([['int-a', 'C1']])
   })
 
-  it('reports a guest in an already shared place so it turns sticky, with no second transition', async () => {
-    const w = world({ 'int-a': true }, { 'int-a': ['C1'] })
+  it('reports a guest in an already shared place so it turns sticky', async () => {
+    const w = world(['int-a'], { 'int-a': ['C1'] })
     w.trust.detected(['int-a'], 'C1', 'guestMember')
     await settle()
     expect(w.reports).toEqual([['int-a', { id: 'C1', externalReason: 'guestMember' }]])
-    expect(w.interrupts).toEqual([])
   })
 
   it('takes the share flag of a room or group DM message, never of a 1:1 DM', async () => {
-    const w = world({ 'int-a': true })
+    const w = world(['int-a'])
     w.trust.observe({ channel: 'D1', isDm: true, externallyShared: true }, ['int-a'])
     w.trust.observe({ channel: 'C2', isDm: false }, ['int-a'])
     w.trust.observe({ channel: 'G1', isDm: false, isGroupDm: true, externallyShared: true }, ['int-a'])
@@ -76,26 +66,21 @@ describe('PlaceTrust', () => {
       { id: 'G1', externalReason: 'externallyShared' },
       { id: 'C1', externalReason: 'externallyShared' }
     ])
-    expect(w.interrupts).toEqual([
-      ['int-a', 'G1'],
-      ['int-a', 'C1']
-    ])
   })
 
-  it('holds a place the spec newly lists on the live integration until it reconciles, running the transition in assistant mode', async () => {
-    const w = world({ 'int-a': true, 'int-b': false })
+  it('holds a place the spec newly lists on the live integration until it reconciles', async () => {
+    const w = world(['int-a', 'int-b'])
     w.trust.specApplied('int-a', integrationOf('int-a', ['C1']), ['C1'])
     w.trust.specApplied('int-b', integrationOf('int-b', ['C1']), ['C1'])
     await settle()
     expect(conversationTrustLevel(w.integrations.get('int-a')!, 'C1')).toBe('external')
     expect(conversationTrustLevel(w.integrations.get('int-b')!, 'C1')).toBe('external')
-    expect(w.interrupts).toEqual([['int-a', 'C1']])
     expect(w.reports).toEqual([])
   })
 
   // A detection the CP has not confirmed must survive a spec, a listing and a reconnect, or the place reads internal again.
   it('holds a share across specs and replays until a spec lists it, and a guest even after', async () => {
-    const w = world({ 'int-a': true })
+    const w = world(['int-a'])
     w.trust.detected(['int-a'], 'C1', 'externallyShared')
     w.trust.detected(['int-a'], 'C2', 'guestMember')
     const stale = integrationOf('int-a')
@@ -115,7 +100,7 @@ describe('PlaceTrust', () => {
   })
 
   it('drops a held guest only for a channel a complete listing no longer has', () => {
-    const w = world({ 'int-a': true })
+    const w = world(['int-a'])
     w.trust.detected(['int-a'], 'C1', 'guestMember')
     w.trust.detected(['int-a'], 'C9', 'externalMember')
     expect(w.trust.listed('int-a', [{ id: 'C1', externalReason: null }])).toEqual([
@@ -125,7 +110,7 @@ describe('PlaceTrust', () => {
   })
 
   it('lets a listing lift a held share but never a held guest, and carries what it keeps', () => {
-    const w = world({ 'int-a': true })
+    const w = world(['int-a'])
     w.trust.detected(['int-a'], 'C1', 'externallyShared')
     w.trust.detected(['int-a'], 'C2', 'guestMember')
     const listing = [
@@ -144,7 +129,7 @@ describe('PlaceTrust', () => {
   })
 
   it('watches member joins on every agent’s integration, whatever its mode, and on no unknown one', () => {
-    const w = world({ 'int-a': true, 'int-b': false })
+    const w = world(['int-a', 'int-b'])
     expect(w.trust.watches(['int-b'])).toBe(true)
     expect(w.trust.watches(['int-a'])).toBe(true)
     expect(w.trust.watches(['int-gone'])).toBe(false)
@@ -156,7 +141,7 @@ describe('PlaceTrust', () => {
 describe('PlaceTrust.confirm', () => {
   it('answers repeated posts from one lookup per place, and asks again once the answer is a minute old', async () => {
     const lookup = vi.fn(async () => null)
-    const w = world({ 'int-a': true }, {}, lookup)
+    const w = world(['int-a'], {}, lookup)
     expect(await Promise.all([w.trust.confirm('int-a', 'C1'), w.trust.confirm('int-a', 'C1')])).toEqual([
       'internal',
       'internal'
@@ -171,46 +156,43 @@ describe('PlaceTrust.confirm', () => {
     expect(w.reports).toEqual([])
   })
 
-  it('makes a share it finds the same downgrade an event makes, sparing the turns that asked', async () => {
+  it('makes a share it finds the same detection an event makes', async () => {
     let answer!: (reason: PlaceExternalReason | null) => void
     const lookup = vi.fn(() => new Promise<PlaceExternalReason | null>((resolve) => (answer = resolve)))
-    const w = world({ 'int-a': true }, {}, lookup)
-    const asked = [w.trust.confirm('int-a', 'C1', 'k-report'), w.trust.confirm('int-a', 'C1', 'k-cron')]
+    const w = world(['int-a'], {}, lookup)
+    const asked = [w.trust.confirm('int-a', 'C1'), w.trust.confirm('int-a', 'C1')]
     answer('externallyShared')
     expect(await Promise.all(asked)).toEqual(['external', 'external'])
     await settle()
     expect(conversationTrustLevel(w.integrations.get('int-a')!, 'C1')).toBe('external')
     expect(w.reports).toEqual([['int-a', { id: 'C1', externalReason: 'externallyShared' }]])
-    expect(w.interrupts).toEqual([['int-a', 'C1']])
-    expect(w.spared).toEqual([['k-report', 'k-cron']])
-    // Known now: later posts read it from the spec, with no lookup and no second transition.
+    // Known now: later posts read it from the spec, with no lookup and no second report.
     w.clock.now += PLACE_SHARE_TTL_MS
     expect(await w.trust.confirm('int-a', 'C1')).toBe('external')
     expect(lookup).toHaveBeenCalledTimes(1)
-    expect(w.interrupts).toHaveLength(1)
+    expect(w.reports).toHaveLength(1)
   })
 
   it('answers unknown when the lookup fails, marking nothing, and asks again on the next post', async () => {
     const lookup = vi.fn().mockRejectedValueOnce(new Error('ratelimited')).mockResolvedValueOnce(null)
-    const w = world({ 'int-a': true }, {}, lookup)
+    const w = world(['int-a'], {}, lookup)
     expect(await w.trust.confirm('int-a', 'C1')).toBe('unknown')
     await settle()
     expect(conversationTrustLevel(w.integrations.get('int-a')!, 'C1')).toBe('internal')
     expect(w.reports).toEqual([])
-    expect(w.interrupts).toEqual([])
     expect(await w.trust.confirm('int-a', 'C1')).toBe('internal')
     expect(lookup).toHaveBeenCalledTimes(2)
   })
 
   it('asks nothing of a platform that reports no share, nor about a place already known external', async () => {
     const lookup = vi.fn(async () => null)
-    expect(await world({ 'int-a': true }).trust.confirm('int-a', 'C1')).toBe('internal')
-    expect(await world({ 'int-a': true }, { 'int-a': ['C1'] }, lookup).trust.confirm('int-a', 'C1')).toBe('external')
+    expect(await world(['int-a']).trust.confirm('int-a', 'C1')).toBe('internal')
+    expect(await world(['int-a'], { 'int-a': ['C1'] }, lookup).trust.confirm('int-a', 'C1')).toBe('external')
     expect(lookup).not.toHaveBeenCalled()
   })
 })
 
-describe('the daemon downgrade transition', () => {
+describe('a place turning external in the daemon', () => {
   /** An assistant-mode agent and a plain one, with turns in flight across places. */
   function daemonWorld() {
     const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
@@ -242,17 +224,11 @@ describe('the daemon downgrade transition', () => {
     return daemon.cpClient.emitIntegrationChannels.mock.calls.map(([report]: [unknown]) => report)
   }
 
-  it('cuts only the in-flight turn delivering into the place, keeping queued messages for the draft path', async () => {
+  it('records the place for every agent and cuts no turn in it, in assistant mode or not', async () => {
     const daemon = daemonWorld()
     daemon.placeTrust.detected(['int-a', 'int-b'], 'C1', 'guestMember')
     await settle()
-    expect(daemon.interruptTurn).toHaveBeenCalledTimes(1)
-    expect(daemon.interruptTurn).toHaveBeenCalledWith('bot-a', 'a-c1', 'place turned external', undefined, {
-      integrationId: 'int-a',
-      preserveQueued: true,
-      keepAdmission: true
-    })
-    // The agent outside assistant mode records the place too, but keeps its turn.
+    expect(daemon.interruptTurn).not.toHaveBeenCalled()
     expect(daemon.cpClient.emitIntegrationChannels.mock.calls).toEqual([
       [{ integrationId: 'int-a', channels: [{ id: 'C1', externalReason: 'guestMember' }], authoritative: false }],
       [{ integrationId: 'int-b', channels: [{ id: 'C1', externalReason: 'guestMember' }], authoritative: false }]
@@ -338,7 +314,7 @@ describe('the daemon downgrade transition', () => {
     ])
   })
 
-  it('looks up a member the relay forwarded for every agent, cutting a turn only in assistant mode', async () => {
+  it('looks up a member the relay forwarded for every agent, cutting no turn', async () => {
     const daemon = daemonWorld()
     const joinedMemberReason = vi.fn(async () => 'guestMember')
     daemon.connByIntegration.set('int-a', { joinedMemberReason })
@@ -366,13 +342,7 @@ describe('the daemon downgrade transition', () => {
     expect(await join('bot-a', 'int-a')).toEqual({ msgId: 'm-bot-a', accepted: true })
     await settle()
     expect(joinedMemberReason).toHaveBeenCalledTimes(2)
-    expect(daemon.interruptTurn).toHaveBeenCalledTimes(1)
-    expect(daemon.interruptTurn).toHaveBeenCalledWith(
-      'bot-a',
-      'a-c1',
-      'place turned external',
-      undefined,
-      expect.objectContaining({ integrationId: 'int-a' })
-    )
+    expect(conversationTrustLevel(daemon.agents.get('bot-a').integrations[0], 'C1')).toBe('external')
+    expect(daemon.interruptTurn).not.toHaveBeenCalled()
   })
 })

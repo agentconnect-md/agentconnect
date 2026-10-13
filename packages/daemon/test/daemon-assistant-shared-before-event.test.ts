@@ -1,4 +1,4 @@
-// A place learns it became shared from its next event, so a post no event from it triggered asks the platform first (assistant-mode.md §5.3).
+// A place learns it became shared from its next event, so a post no event from it triggered asks the platform first (assistant-mode.md §5.3); its own posts go out directly (#2979, B4).
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -154,6 +154,8 @@ async function boot(assistant = true) {
     /** Whether the write rule holds a post from the asker's DM into a channel for approval as shared. */
     sharedFromElsewhere: async (channel = 'C_ROOM'): Promise<boolean> =>
       await d.mcp.deps.targetExternal('bot-a', INT, channel, false),
+    /** The channel and text of every post made, in order. */
+    posts: () => conn.postMessage.mock.calls.map((call) => (call as unknown[]).slice(0, 2)),
     drafts: async (): Promise<AssistantDraft[]> => {
       const rows = (await d.store.assistantDrafts.db.query('SELECT id FROM assistant_draft ORDER BY createdAt', []))
         .rows as { id: string }[]
@@ -169,36 +171,29 @@ async function boot(assistant = true) {
 }
 
 describe('a channel shared with no event since', () => {
-  it('drafts a scheduled run’s anchor and reply, posts nothing there, and reads external from then on', async () => {
+  it('posts a scheduled run’s anchor and reply directly, drafting nothing, and reads external from then on', async () => {
     const h = await boot()
     try {
       h.slack.shared.add('C_ROOM')
       await h.fire()
-      expect(h.conn.postMessage).not.toHaveBeenCalled()
-      const drafts = await h.drafts()
-      expect(drafts.map((draft) => draft.text).sort()).toEqual(['⏰ post the digest', REPLY].sort())
-      for (const draft of drafts)
-        expect(draft).toMatchObject({
-          kind: 'reply',
-          status: 'awaiting_review',
-          target: { platform: 'slack', integrationId: INT, channel: 'C_ROOM', thread: null },
-          targetExternal: true
-        })
+      expect(h.posts()).toEqual([
+        ['C_ROOM', '⏰ post the digest'],
+        ['C_ROOM', REPLY]
+      ])
+      expect(await h.drafts()).toEqual([])
       expect(h.trust('C_ROOM')).toBe('external')
     } finally {
       await h.close()
     }
   })
 
-  it('drafts a report round instead of posting it', async () => {
+  it('posts a report round directly, drafting nothing', async () => {
     const h = await boot()
     try {
       h.slack.shared.add('C_ROOM')
       await h.report()
-      expect(h.conn.postMessage).not.toHaveBeenCalled()
-      expect(await h.drafts()).toMatchObject([
-        { kind: 'reply', text: REPLY, target: { channel: 'C_ROOM', thread: TS }, targetExternal: true }
-      ])
+      expect(h.conn.postMessage).toHaveBeenCalledWith('C_ROOM', REPLY, TS, expect.any(Object))
+      expect(await h.drafts()).toEqual([])
       expect(h.trust('C_ROOM')).toBe('external')
     } finally {
       await h.close()
@@ -236,14 +231,14 @@ describe('a channel Slack confirms is not shared', () => {
 })
 
 describe('a lookup that fails', () => {
-  it('drafts rather than post as internal, without marking the place external or claiming a share', async () => {
+  it('still holds a post from another conversation, posts the place’s own reply, and marks nothing', async () => {
     const h = await boot()
     try {
       h.slack.failing = true
       await h.report()
       expect(await h.sharedFromElsewhere()).toBe(true)
-      expect(h.conn.postMessage).not.toHaveBeenCalled()
-      expect(await h.drafts()).toMatchObject([{ kind: 'reply', text: REPLY, targetExternal: false }])
+      expect(h.conn.postMessage).toHaveBeenCalledWith('C_ROOM', REPLY, TS, expect.any(Object))
+      expect(await h.drafts()).toEqual([])
       expect(h.trust('C_ROOM')).toBe('internal')
     } finally {
       await h.close()
@@ -268,17 +263,15 @@ describe('an agent outside assistant mode', () => {
 })
 
 describe('a scheduled run in a place already known external', () => {
-  it('drafts its anchor like any other post there', async () => {
+  it('posts its anchor and reply directly, like any other post there', async () => {
     const h = await boot()
     try {
       await h.fire('C_EXT')
-      expect(h.conn.postMessage).not.toHaveBeenCalled()
-      expect((await h.drafts()).map((draft) => [draft.text, draft.target.channel, draft.target.thread])).toEqual(
-        expect.arrayContaining([
-          ['⏰ post the digest', 'C_EXT', null],
-          [REPLY, 'C_EXT', null]
-        ])
-      )
+      expect(h.posts()).toEqual([
+        ['C_EXT', '⏰ post the digest'],
+        ['C_EXT', REPLY]
+      ])
+      expect(await h.drafts()).toEqual([])
     } finally {
       await h.close()
     }

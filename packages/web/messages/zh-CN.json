@@ -3418,6 +3418,14 @@
         "wrongOrganization": "此 MCP 注册表属于另一个组织。",
         "viewerDenied": "你无法在此组织中添加 MCP 服务器。",
         "cannotEditAgent": "你无法更改此服务器所请求 agent 的 MCP 服务器配置。"
+      },
+      "statusUnavailable": "暂时无法获取状态",
+      "connectionNotification": {
+        "title": "连接需要重新授权",
+        "message": "“{name}”的授权已失效。请到工具与技能中重新连接，恢复访问。",
+        "action": "打开工具与技能",
+        "resolvedTitle": "连接提醒已清除",
+        "resolvedMessage": "“{name}”已无需处理。"
       }
     },
     "skills": {
@@ -4305,6 +4313,7 @@
       "retry": "重试",
       "tooltipUsage": "用量",
       "tooltipToppedUp": "已充值",
+      "tooltipTotal": "合计",
       "emptyUsage": "过去{period}内没有扣费记录。",
       "emptyTopups": "过去{period}内没有充值记录。",
       "footerLine": "{mode} · 过去{period}",
@@ -4329,7 +4338,9 @@
           "label": "90 天",
           "period": "90 天"
         }
-      }
+      },
+      "otherModels": "其他",
+      "unknownModel": "未知模型"
     },
     "membersDontPay": {
       "cardTitle": "充值",
@@ -4365,13 +4376,13 @@
         "allBody": "组织完成充值后，购买记录和用量扣费会显示在这里。"
       },
       "usagePeriod": "用量 — {period}",
-      "usageTag": "用量",
       "agentShare": "{name} — {amount}",
       "withheldShare": "你无权访问的 agent — {amount}",
       "receipt": "收据",
       "loadMore": "加载更多",
       "loadingMore": "加载中…",
-      "endOfLedger": "已到达账单末尾"
+      "endOfLedger": "已到达账单末尾",
+      "modelShare": "{name} — {amount}"
     }
   },
   "Settings": {

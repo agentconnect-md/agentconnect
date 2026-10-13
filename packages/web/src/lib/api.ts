@@ -5462,6 +5462,8 @@ export interface McpProviderDto {
   /** Open-connector service slug (e.g. "stripe") for kind='open_connector' — used to
    *  resolve the provider's catalog icon. Absent for custom providers. */
   service?: string
+  /** Credential state reported by the connector, independently of the proxy's header authentication. */
+  connectorStatus?: 'connected' | 'reauth_required' | 'pending' | 'unknown'
   visibility: ResourceVisibility // 'org' = everyone; 'restricted' = sharedWith plus organization owners
   sharedWith: string[] // explicit app_user.id audience when restricted
   createdBy: string | null // immutable creator audit

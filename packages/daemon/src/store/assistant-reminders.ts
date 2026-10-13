@@ -41,7 +41,7 @@ export interface AssistantReminder {
   status: AssistantReminderStatus
   /** Delivery attempts so far; a platform error releases the claim until {@link ASSISTANT_REMINDER_MAX_ATTEMPTS}. */
   attempts: number
-  /** The platform user whose message set it, a draft's approver if the place turned external. */
+  /** The platform user whose message set it. */
   requesterId: string | null
   messageId: string | null
   draftId: string | null

@@ -33,7 +33,9 @@ interface StubCall {
 /** A stub open-connector server: canned catalog, records connection PUT / oauth POST,
  *  and can be told to fail the connection save (to exercise rollback). `onSave` is
  *  awaited before the save responds — a test can park the create flow mid-provision. */
-function stubConnectors(opts: { failSave?: boolean; onSave?: () => Promise<void> } = {}) {
+function stubConnectors(
+  opts: { failSave?: boolean; onSave?: () => Promise<void>; connections?: unknown[]; failList?: boolean } = {}
+) {
   const calls: StubCall[] = []
   const doFetch: FetchLike = async (url, init) => {
     const method = init?.method ?? 'GET'
@@ -70,6 +72,9 @@ function stubConnectors(opts: { failSave?: boolean; onSave?: () => Promise<void>
     if (url.endsWith('/api/oauth/configs')) {
       return json([{ service: 'github', configured: true, clientId: 'gh' }])
     }
+    if (url.endsWith('/api/connections')) {
+      return opts.failList ? json({ message: 'unavailable' }, 503) : json(opts.connections ?? [])
+    }
     if (url.includes('/api/connections/')) {
       if (opts.onSave) await opts.onSave()
       return opts.failSave ? json({ message: 'save failed' }, 500) : json({ ok: true })
@@ -95,6 +100,50 @@ function appWith(connectors?: ConnectorsClient): HttpApp {
 }
 
 describe('connectors routes', () => {
+  it('projects only the bound connection state and observes recovery without exposing upstream records', async () => {
+    const opts = { connections: [] as unknown[], failList: false }
+    const { client } = stubConnectors(opts)
+    const app = appWith(client)
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/connectors/connections`,
+      payload: {
+        service: 'googlecalendar',
+        connectionName: 'calendar',
+        authType: 'oauth2'
+      }
+    })
+    expect(created.statusCode).toBe(201)
+    const { id } = created.json()
+    const connection = {
+      service: 'googlecalendar',
+      connectionName: composeProfileName(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'calendar'),
+      configured: true,
+      authType: 'oauth2',
+      status: 'reauth_required',
+      profile: { accountId: 'upstream-only-account' }
+    }
+    opts.connections = [{ ...connection, connectionName: 'another-profile', status: 'active' }, connection]
+    const list = await app.app.inject({ method: 'GET', url: `${ORG}/mcp-providers` })
+    expect(list.json().find((p: { id: string }) => p.id === id)).toMatchObject({
+      auth: 'headers',
+      connectorStatus: 'reauth_required'
+    })
+    expect(list.body).not.toContain('upstream-only-account')
+    expect(list.body).not.toContain(connection.connectionName)
+
+    connection.status = 'active'
+    const read = () => app.app.inject({ method: 'GET', url: `${ORG}/mcp-providers/${id}` })
+    expect((await read()).json().connectorStatus).toBe('connected')
+    opts.failList = true
+    expect((await read()).json().connectorStatus).toBe('unknown')
+    opts.failList = false
+    opts.connections = [{ ...connection, status: undefined }]
+    expect((await read()).json().connectorStatus).toBe('unknown')
+    opts.connections = [{ ...connection, connectionName: 'another-profile' }]
+    expect((await read()).json().connectorStatus).toBe('pending')
+  })
+
   it('reports disabled + 404s the catalog when OPEN_CONNECTOR_URL is unset', async () => {
     const app = appWith()
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/connectors/config` })).json()).toEqual({

@@ -1121,6 +1121,7 @@ export const McpProviderDto = z.object({
   // Open-connector service slug (e.g. "stripe") for kind='open_connector' — the
   // non-secret binding marker, surfaced so the console can show the provider's icon.
   service: z.string().optional(),
+  connectorStatus: z.enum(['connected', 'reauth_required', 'pending', 'unknown']).optional(),
   visibility: z.string(), // 'org' | 'restricted'
   sharedWith: z.array(z.string()), // explicit app_user.id audience; owners also have access
   // MCP Apps (webchat-mcp-apps.md §4): the owning daemon hosts this provider itself so it can

@@ -34,6 +34,7 @@ import {
   activityRange,
   activityWindowStart,
   bucketActivity,
+  UNATTRIBUTED_MODEL,
   type ActivityMode,
   type ActivityRange
 } from '@/lib/billing-activity'
@@ -58,6 +59,8 @@ const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_24px_190px] gap-2'
 // Named agent chips a usage row shows before the tail becomes a `+N` count. The withheld
 // rollup is never one of them — it is appended after, so it cannot be capped out of view.
 const TX_AGENT_CHIPS = 4
+// Model chips a usage row shows before the tail becomes a `+N` count.
+const TX_MODEL_CHIPS = 3
 
 /** One chip on a usage row. `agent` absent ⇒ the withheld rollup: no id, no count, no name. */
 export interface TxAgentChip {
@@ -479,6 +482,9 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
 // on the wrapper — the trick `SEG_FILL` uses. Usage is the brand hue (money leaving),
 // top-ups green (money arriving), the same pairing as the Cluster page's credits chart.
 const ACTIVITY_FILL = '[&_.bar-usage_path]:fill-(--brand) [&_.bar-topup_path]:fill-(--green-500)'
+// Distinct hues before the model tail folds into "Other" — SEG_FILL's --chart-1..6.
+const ACTIVITY_MODEL_HUES = 6
+const ACTIVITY_OTHER = '\0other'
 
 function ActivityCard({ orgId }: { orgId: string }) {
   const t = useTranslations('Billing.activity')
@@ -491,20 +497,73 @@ function ActivityCard({ orgId }: { orgId: string }) {
   )
   const buckets = bucketActivity(rows.data ?? [], range, mode)
   const total = buckets.reduce((sum, b) => sum + b.amount, 0)
+  const usd = (n: number) => fmtMicroUsd(Math.round(n * 1_000_000))
 
-  const Tip = ({ active, payload }: { active?: boolean; payload?: { payload: (typeof buckets)[number] }[] }) => {
+  // Usage stacks by model: the top six by range spend get --chart-1..6, the tail folds into "Other".
+  const modelTotals = new Map<string, number>()
+  for (const b of buckets)
+    for (const [k, v] of Object.entries(b.byModel)) modelTotals.set(k, (modelTotals.get(k) ?? 0) + v)
+  const ranked = [...modelTotals].sort((a, b) => b[1] - a[1]).map(([k]) => k)
+  // A ledger with no split at all (an older service) keeps the single brand bar.
+  const stacked = mode === 'usage' && ranked.some((k) => k !== UNATTRIBUTED_MODEL)
+  const topKeys = stacked ? ranked.slice(0, ACTIVITY_MODEL_HUES) : []
+  const stackKeys = ranked.length > topKeys.length && stacked ? [...topKeys, ACTIVITY_OTHER] : topKeys
+  const keyName = (k: string) =>
+    k === ACTIVITY_OTHER ? t('otherModels') : k === UNATTRIBUTED_MODEL ? t('unknownModel') : k
+  const keyColor = (k: string) =>
+    k === ACTIVITY_OTHER ? 'var(--chart-other)' : `var(--chart-${topKeys.indexOf(k) + 1})`
+  // Series are `s<i>` so a model name can never collide with `label`/`amount`.
+  const chartData = buckets.map((b) => {
+    const row: Record<string, number | string> = { label: b.label, amount: b.amount }
+    stackKeys.forEach((k, i) => {
+      row[`s${i}`] =
+        k === ACTIVITY_OTHER
+          ? Object.entries(b.byModel).reduce((sum, [m, v]) => (topKeys.includes(m) ? sum : sum + v), 0)
+          : (b.byModel[k] ?? 0)
+    })
+    return row
+  })
+
+  type TipSeg = { dataKey: string; value: number; payload: Record<string, number | string> }
+  const Tip = ({ active, payload }: { active?: boolean; payload?: TipSeg[] }) => {
     const row = active ? payload?.[0]?.payload : undefined
     if (!row) return null
+    const segs = stacked ? [...payload!].reverse().filter((seg) => seg.value > 0) : []
     return (
       <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) px-2.5 py-2 shadow-(--shadow-md)">
-        <div className="mono text-[11px] font-semibold">{row.label}</div>
-        <div className="mt-1 flex items-center gap-1.5 font-sans text-[11px] leading-normal text-(--text-secondary)">
-          <span
-            className={`h-[9px] w-[9px] flex-none rounded-[2px] ${mode === 'usage' ? 'bg-(--brand)' : 'bg-(--green-500)'}`}
-          />
-          {mode === 'usage' ? t('tooltipUsage') : t('tooltipToppedUp')}{' '}
-          <span className="mono text-(--text-primary)">{fmtMicroUsd(Math.round(row.amount * 1_000_000))}</span>
+        {/* Stacked: the bucket total sits beside the date, with the per-model lines below. */}
+        <div className="flex items-baseline justify-between gap-4">
+          <span className="mono text-[11px] font-semibold">{row.label}</span>
+          {stacked && (
+            <span className="font-sans text-[11px] leading-normal text-(--text-secondary)">
+              {t('tooltipTotal')}{' '}
+              <span className="mono font-semibold text-(--text-primary)">{usd(Number(row.amount))}</span>
+            </span>
+          )}
         </div>
+        {!stacked && (
+          <div className="mt-1 flex items-center gap-1.5 font-sans text-[11px] leading-normal text-(--text-secondary)">
+            <span
+              className={`h-[9px] w-[9px] flex-none rounded-[2px] ${mode === 'usage' ? 'bg-(--brand)' : 'bg-(--green-500)'}`}
+            />
+            {mode === 'usage' ? t('tooltipUsage') : t('tooltipToppedUp')}{' '}
+            <span className="mono text-(--text-primary)">{usd(Number(row.amount))}</span>
+          </div>
+        )}
+        {segs.map((seg) => {
+          const key = stackKeys[Number(seg.dataKey.slice(1))]!
+          return (
+            <div
+              key={seg.dataKey}
+              className="mt-1 flex items-center gap-1.5 font-sans text-[11px] leading-normal text-(--text-secondary)"
+            >
+              <span className="h-[8px] w-[8px] flex-none rounded-[2px]" style={{ backgroundColor: keyColor(key) }} />
+              <span className="max-w-[200px] truncate">{keyName(key)}</span>
+              {/* Sub-cent shares keep four significant digits, like the transactions table, instead of reading $0.00. */}
+              <span className="mono text-(--text-primary)">{fmtDecimalUsd(String(seg.value))}</span>
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -576,7 +635,7 @@ function ActivityCard({ orgId }: { orgId: string }) {
           {total > 0 ? (
             <div className={`h-[124px] text-(--text-tertiary) ${SEG_FILL} ${ACTIVITY_FILL}`}>
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={buckets} margin={{ top: 4, right: 4, bottom: 0, left: 4 }} barCategoryGap="12%">
+                <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: 4 }} barCategoryGap="12%">
                   <XAxis
                     dataKey="label"
                     interval={tickInterval(buckets.length)}
@@ -590,13 +649,34 @@ function ActivityCard({ orgId }: { orgId: string }) {
                   {/* A pixel floor under any nonzero bucket, so a cent beside a $50 top-up is
                       still visible — and 0 for a bucket with nothing, so an idle day draws
                       nothing at all. */}
-                  <Bar
-                    dataKey="amount"
-                    name={mode === 'usage' ? t('barNameUsage') : t('barNameTopup')}
-                    className={mode === 'usage' ? 'bar-usage' : 'bar-topup'}
-                    radius={[3, 3, 0, 0]}
-                    minPointSize={(_: number | null | undefined, i: number) => ((buckets[i]?.amount ?? 0) > 0 ? 3 : 0)}
-                  />
+                  {stacked ? (
+                    // stackKeys order is bottom-up, which is also recharts' render order, so `seg-<i>` lines up
+                    // with SEG_FILL (seg-6 is the gray "Other").
+                    stackKeys.map((k, i) => (
+                      <Bar
+                        key={k}
+                        dataKey={`s${i}`}
+                        name={keyName(k)}
+                        stackId="usage"
+                        className={k === ACTIVITY_OTHER ? 'seg-6' : `seg-${i}`}
+                        radius={i === stackKeys.length - 1 ? [3, 3, 0, 0] : undefined}
+                        // Read by index: recharts hands a stacked bar a non-numeric value, which floored zero segments too.
+                        minPointSize={(_: number | null | undefined, idx: number) =>
+                          Number(chartData[idx]?.[`s${i}`] ?? 0) > 0 ? 2 : 0
+                        }
+                      />
+                    ))
+                  ) : (
+                    <Bar
+                      dataKey="amount"
+                      name={mode === 'usage' ? t('barNameUsage') : t('barNameTopup')}
+                      className={mode === 'usage' ? 'bar-usage' : 'bar-topup'}
+                      radius={[3, 3, 0, 0]}
+                      minPointSize={(_: number | null | undefined, i: number) =>
+                        (buckets[i]?.amount ?? 0) > 0 ? 3 : 0
+                      }
+                    />
+                  )}
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -605,6 +685,19 @@ function ActivityCard({ orgId }: { orgId: string }) {
               {mode === 'usage'
                 ? t('emptyUsage', { period: t(`ranges.${cfg.key}.period`) })
                 : t('emptyTopups', { period: t(`ranges.${cfg.key}.period`) })}
+            </div>
+          )}
+          {stacked && total > 0 && (
+            <div className="mt-2 flex flex-wrap justify-center gap-x-3 gap-y-1">
+              {stackKeys.map((k) => (
+                <span
+                  key={k}
+                  className="flex min-w-0 items-center gap-[5px] font-sans text-[11px] leading-normal text-(--text-secondary)"
+                >
+                  <span className="h-[9px] w-[9px] flex-none rounded-[3px]" style={{ backgroundColor: keyColor(k) }} />
+                  <span className="max-w-[180px] truncate">{keyName(k)}</span>
+                </span>
+              ))}
             </div>
           )}
           <div className="mt-2 text-center font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
@@ -1049,92 +1142,159 @@ export default function BillingView() {
                       >
                         <Icon name={credit ? 'arrow-down-left' : 'arrow-up-right'} size={14} strokeWidth={2} />
                       </span>
-                      <span className="flex min-w-0 items-center gap-2">
-                        <span className="truncate font-sans text-[13px] font-medium leading-normal">
-                          {credit
-                            ? (KNOWN_KINDS as readonly string[]).includes(tx.kind)
-                              ? t(`kindLabels.${tx.kind}`)
-                              : tx.kind
-                            : t('transactions.usagePeriod', { period: tx.period })}
-                        </span>
-                        <span
-                          className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
-                          style={
-                            positive
-                              ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
-                              : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
-                          }
-                        >
-                          {credit ? tx.kind : t('transactions.usageTag')}
-                        </span>
-                        {/* Who the charge is attributed to. An agent is named only when it is in
+                      {/* A usage row wraps its label, agent and model chips onto a second line only when they don't fit. */}
+                      <span
+                        className={
+                          credit
+                            ? 'flex min-w-0 items-center gap-2'
+                            : 'flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1'
+                        }
+                      >
+                        <span className="contents">
+                          <span className="truncate font-sans text-[13px] font-medium leading-normal">
+                            {credit
+                              ? (KNOWN_KINDS as readonly string[]).includes(tx.kind)
+                                ? t(`kindLabels.${tx.kind}`)
+                                : tx.kind
+                              : t('transactions.usagePeriod', { period: tx.period })}
+                          </span>
+                          {credit && (
+                            <span
+                              className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
+                              style={
+                                positive
+                                  ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
+                                  : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
+                              }
+                            >
+                              {tx.kind}
+                            </span>
+                          )}
+                          {/* Who the charge is attributed to. An agent is named only when it is in
                             the viewer's roster; everything else is one id-less rollup with a
                             default avatar. See `rowAttribution` and billing-api.ts. */}
-                        {!credit &&
-                          (() => {
-                            // Nothing at all while the roster is in flight: fail closed applies
-                            // to a MISSING answer, not a pending one.
-                            const split = rosterPending ? [] : rowAttribution(tx.agents, agentById)
-                            // The description column shares the row with the amount, so the
-                            // NAMED chips are capped. The rollup is appended after the cap: it
-                            // is the one chip that must never be hidden behind a `+N`.
-                            const named = split.filter((c) => c.agent)
-                            const rollup = split.find((c) => !c.agent)
-                            const shown = named.slice(0, TX_AGENT_CHIPS)
-                            const rest = named.length - shown.length
-                            return (
-                              <>
-                                {/* On desktop the per-agent amount is disclosure, not decoration:
+                          {!credit &&
+                            (() => {
+                              // Nothing at all while the roster is in flight: fail closed applies
+                              // to a MISSING answer, not a pending one.
+                              const split = rosterPending ? [] : rowAttribution(tx.agents, agentById)
+                              // The description column shares the row with the amount, so the
+                              // NAMED chips are capped. The rollup is appended after the cap: it
+                              // is the one chip that must never be hidden behind a `+N`.
+                              const named = split.filter((c) => c.agent)
+                              const rollup = split.find((c) => !c.agent)
+                              const shown = named.slice(0, TX_AGENT_CHIPS)
+                              const rest = named.length - shown.length
+                              return (
+                                <>
+                                  {/* On desktop the per-agent amount is disclosure, not decoration:
                                     eight visible dollar figures per row drowned the row's own
                                     amount, so it lives in `title` — the console TooltipLayer shows
                                     it on hover AND on keyboard focus (the chip is tabbable for
                                     exactly that). Touch has neither, so ≤768px keeps the amount
                                     visible in the chip; that card already scrolls sideways. */}
-                                {[...shown, ...(rollup ? [rollup] : [])].map((chip) => {
-                                  const share = chip.agent
-                                    ? t('transactions.agentShare', {
-                                        name: agentLabel(chip.agent),
-                                        amount: fmtDecimalUsd(chip.amount)
-                                      })
-                                    : t('transactions.withheldShare', { amount: fmtDecimalUsd(chip.amount) })
+                                  {[...shown, ...(rollup ? [rollup] : [])].map((chip) => {
+                                    const share = chip.agent
+                                      ? t('transactions.agentShare', {
+                                          name: agentLabel(chip.agent),
+                                          amount: fmtDecimalUsd(chip.amount)
+                                        })
+                                      : t('transactions.withheldShare', { amount: fmtDecimalUsd(chip.amount) })
+                                    return (
+                                      <span
+                                        key={chip.key}
+                                        data-tx-agent="true"
+                                        tabIndex={0}
+                                        title={share}
+                                        aria-label={share}
+                                        className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
+                                          chip.agent ? '' : 'desktop:pr-[2px]'
+                                        }`}
+                                      >
+                                        <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
+                                          {chip.agent ? (
+                                            <AgentIconView
+                                              icon={chip.agent.icon}
+                                              runtime={chip.agent.runtime}
+                                              size={17}
+                                            />
+                                          ) : (
+                                            // The default avatar. This viewer may not learn which
+                                            // agents these are, how many, or how the amount splits
+                                            // between them — only that the rest of the charge is
+                                            // theirs.
+                                            <span
+                                              data-tx-agent-default="true"
+                                              className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
+                                            >
+                                              <Icon name="bot" size={10} strokeWidth={2} />
+                                            </span>
+                                          )}
+                                        </span>
+                                        {chip.agent && (
+                                          <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
+                                        )}
+                                        {/* Touch's reachable copy of the share; desktop keeps it
+                                          in the tooltip. */}
+                                        <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
+                                          {fmtDecimalUsd(chip.amount)}
+                                        </span>
+                                      </span>
+                                    )
+                                  })}
+                                  {rest > 0 && (
+                                    <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
+                                  )}
+                                </>
+                              )
+                            })()}
+                          {/* Free operator text, rendered as TEXT — truncated, with the whole
+                            note on hover, so a long one cannot push the amount column out. */}
+                          {credit && tx.note && (
+                            <span
+                              className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+                              title={tx.note}
+                            >
+                              {tx.note}
+                            </span>
+                          )}
+                          {credit && tx.receiptUrl && (
+                            <a
+                              className="inline-flex flex-none items-center gap-0.5 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"
+                              href={tx.receiptUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              {t('transactions.receipt')}
+                              <Icon name="arrow-up-right" size={11} />
+                            </a>
+                          )}
+                        </span>
+                        {/* The charge's model split, org-wide; each chip wraps on its own like the agent chips beside it. */}
+                        {!credit &&
+                          (() => {
+                            const models = (tx.models ?? []).filter((m) => Number(m.amount) > 0)
+                            if (!models.length) return null
+                            const shown = models.slice(0, TX_MODEL_CHIPS)
+                            const rest = models.length - shown.length
+                            return (
+                              <span className="contents">
+                                {shown.map((m) => {
+                                  const name = m.model === UNATTRIBUTED_MODEL ? t('activity.unknownModel') : m.model
+                                  const share = t('transactions.modelShare', { name, amount: fmtDecimalUsd(m.amount) })
                                   return (
                                     <span
-                                      key={chip.key}
-                                      data-tx-agent="true"
+                                      key={m.model}
+                                      data-tx-model="true"
                                       tabIndex={0}
                                       title={share}
                                       aria-label={share}
-                                      className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
-                                        chip.agent ? '' : 'desktop:pr-[2px]'
-                                      }`}
+                                      className="inline-flex h-[21px] min-w-0 max-w-full items-center gap-[5px] rounded-[4px] border border-(--border-subtle) px-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
                                     >
-                                      <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
-                                        {chip.agent ? (
-                                          <AgentIconView
-                                            icon={chip.agent.icon}
-                                            runtime={chip.agent.runtime}
-                                            size={17}
-                                          />
-                                        ) : (
-                                          // The default avatar. This viewer may not learn which
-                                          // agents these are, how many, or how the amount splits
-                                          // between them — only that the rest of the charge is
-                                          // theirs.
-                                          <span
-                                            data-tx-agent-default="true"
-                                            className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
-                                          >
-                                            <Icon name="bot" size={10} strokeWidth={2} />
-                                          </span>
-                                        )}
-                                      </span>
-                                      {chip.agent && (
-                                        <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
-                                      )}
-                                      {/* Touch's reachable copy of the share; desktop keeps it
-                                          in the tooltip. */}
+                                      <Icon name="cpu" size={11} strokeWidth={2} color="var(--text-tertiary)" />
+                                      <span className="mono min-w-0 truncate text-[11px]">{name}</span>
                                       <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
-                                        {fmtDecimalUsd(chip.amount)}
+                                        {fmtDecimalUsd(m.amount)}
                                       </span>
                                     </span>
                                   )
@@ -1142,30 +1302,9 @@ export default function BillingView() {
                                 {rest > 0 && (
                                   <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
                                 )}
-                              </>
+                              </span>
                             )
                           })()}
-                        {/* Free operator text, rendered as TEXT — truncated, with the whole
-                            note on hover, so a long one cannot push the amount column out. */}
-                        {credit && tx.note && (
-                          <span
-                            className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
-                            title={tx.note}
-                          >
-                            {tx.note}
-                          </span>
-                        )}
-                        {credit && tx.receiptUrl && (
-                          <a
-                            className="inline-flex flex-none items-center gap-0.5 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"
-                            href={tx.receiptUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            {t('transactions.receipt')}
-                            <Icon name="arrow-up-right" size={11} />
-                          </a>
-                        )}
                       </span>
                       {/* A debit is recorded as a positive amount that was taken away, so the
                           sign belongs here. The rounded figure carries the exact wire string

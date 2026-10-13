@@ -58,11 +58,10 @@ afterEach(async () => {
 })
 
 /** The tool deps over a real ledger: the live turn posts where the session's replies land, unless the test says otherwise. */
-async function tools(options: { enabled?: boolean; external?: string[]; deps?: Partial<OpsDeps> } = {}) {
+async function tools(options: { enabled?: boolean; deps?: Partial<OpsDeps> } = {}) {
   store = await openTestStore()
   const s = store
   let now = T0
-  const external = new Set(options.external ?? [])
   const share = vi.fn((ctx: SessionContext): ShareTargetResult => ({
     ok: true,
     platform: ctx.platform,
@@ -77,7 +76,6 @@ async function tools(options: { enabled?: boolean; external?: string[]; deps?: P
       now: () => now
     },
     shareTarget: share,
-    placeExternal: (ctx: SessionContext) => external.has(ctx.channel),
     ...options.deps
   } as unknown as OpsDeps
   const call = (ctx: SessionContext, name: string, args: Record<string, unknown>) =>
@@ -168,8 +166,8 @@ describe('remind', () => {
     expect(await s.assistantReminders.listOpen(AGENT, placeOf(ALICE_DM))).toEqual([])
   })
 
-  it('is refused in a sub-session, a patrol, an external place, webchat and a turn that posts nothing', async () => {
-    const { call, store: s, share } = await tools({ external: ['C0SHARED'] })
+  it('is refused in a sub-session, a patrol, webchat and a turn that posts nothing', async () => {
+    const { call, store: s, share } = await tools()
     const args = { at: at(T0 + HOUR), message: 'x' }
     await expect(call(session({ thread: 'subsession:d-1' }), 'remind', args)).rejects.toThrow(
       'background session with no conversation of its own'
@@ -177,9 +175,6 @@ describe('remind', () => {
     await expect(
       call(session({ thread: 'subsession:patrol-d-2', tools: ASSISTANT_ITEM_TOOLS }), 'remind', args)
     ).rejects.toThrow('remind is not available in a read-only patrol')
-    await expect(call(session({ channel: 'C0SHARED', isDm: false }), 'remind', args)).rejects.toThrow(
-      'shared with another organization'
-    )
     const { integrationId: _none, ...webchat } = session({ platform: 'webchat', channel: 'w-1', thread: 'webchat:w-1' })
     await expect(call(webchat, 'remind', args)).rejects.toThrow('webchat is not supported yet')
     share.mockReturnValueOnce({ ok: false, reason: 'headless' })
@@ -189,8 +184,7 @@ describe('remind', () => {
     // A turn that would post into another conversation is never taken for this one.
     share.mockReturnValueOnce({ ok: true, platform: 'slack', integrationId: INT, channel: 'C0OTHER' })
     await expect(call(GENERAL, 'remind', args)).rejects.toThrow('this conversation has none')
-    for (const ctx of [ALICE_DM, GENERAL, session({ channel: 'C0SHARED' })])
-      expect(await s.assistantReminders.listOpen(AGENT, placeOf(ctx))).toEqual([])
+    for (const ctx of [ALICE_DM, GENERAL]) expect(await s.assistantReminders.listOpen(AGENT, placeOf(ctx))).toEqual([])
   })
 })
 
@@ -247,11 +241,10 @@ describe('listReminders and cancelReminder stay in their conversation', () => {
 })
 
 /** The delivery service over a real ledger, with the platform and the place faked. */
-async function delivery(options: { external?: string[]; enabled?: boolean } = {}) {
+async function delivery(options: { enabled?: boolean } = {}) {
   store = await openTestStore()
   const s = store
   let now = T0
-  const external = new Set(options.external ?? [])
   const log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() }
   const agentsOn = new Map<string, boolean>([[AGENT, true]])
   const host = {
@@ -262,15 +255,12 @@ async function delivery(options: { external?: string[]; enabled?: boolean } = {}
     draining: () => false,
     reminders: s.assistantReminders,
     placeEnabled: vi.fn(() => options.enabled !== false),
-    placeExternal: async (_agentId: string, _integrationId: string, channel: string) => external.has(channel),
-    post: vi.fn(async (_reminder: AssistantReminder): Promise<string | undefined> => 'ts-posted'),
-    draft: vi.fn(async (_reminder: AssistantReminder) => 'draft-1')
+    post: vi.fn(async (_reminder: AssistantReminder): Promise<string | undefined> => 'ts-posted')
   } satisfies AssistantRemindersHost
   return {
     store: s,
     host,
     log,
-    external,
     agentsOn,
     reminders: new AssistantReminders(host),
     another: () => new AssistantReminders(host),
@@ -400,17 +390,6 @@ describe('delivery', () => {
     expect(await h.get(recent.id)).toMatchObject({ status: 'delivered' })
     expect(h.host.post).toHaveBeenCalledTimes(1)
     expect(h.host.post.mock.calls[0]![0]).toMatchObject({ id: recent.id })
-  })
-
-  it('drafts the text for approval when the conversation turned external after it was set', async () => {
-    const h = await delivery()
-    const r = await h.set()
-    h.external.add(placeOf(ALICE_DM).channel)
-    h.at(T0 + HOUR)
-    await h.reminders.sweep()
-    expect(h.host.post).not.toHaveBeenCalled()
-    expect(h.host.draft).toHaveBeenCalledTimes(1)
-    expect(await h.get(r.id)).toMatchObject({ status: 'drafted', draftId: 'draft-1', messageId: null })
   })
 
   it('fails without posting where the agent is no longer enabled', async () => {
@@ -624,53 +603,38 @@ describe('the daemon delivers reminders', () => {
     }
   })
 
-  it('drafts the text to the person who set it once the conversation turned external, and posts nothing there', async () => {
+  // #2979, B4: a conversation shared with another organization takes the agent's posts like any other.
+  it('sets and posts a reminder in a conversation shared with another organization, drafting nothing', async () => {
     const h = await bootDaemon()
     try {
-      const { id } = await h.remind(Date.now() + MINUTE)
-      // Set by a person in the conversation, which a later share turned external.
-      await h.d.store.assistantReminders['db'].query('UPDATE assistant_reminder SET requesterId = ? WHERE id = ?', [
-        'U1',
-        id
-      ])
       h.d.agents.get(BOT).integrations[0].core.externalChannels.push('C1')
+      const { id } = await h.remind(Date.now() + MINUTE)
+      expect(await h.pending()).toHaveLength(1)
       h.later(2 * MINUTE)
       await h.d.reminders.sweep()
-      expect(h.conn.postMessage).not.toHaveBeenCalled()
-      const reminder = await h.get(id)
-      expect(reminder).toMatchObject({ status: 'drafted', draftId: expect.any(String) })
-      expect(await h.d.store.assistantDrafts.get(reminder.draftId)).toMatchObject({
-        kind: 'reply',
-        status: 'awaiting_review',
-        text: 'Release notes are due.',
-        target: { platform: 'slack', integrationId: BOT_INT, channel: 'C1', thread: '1700000000.000100' },
-        targetExternal: true,
-        approver: { kind: 'member', channel: 'D_U1', userId: 'U1' }
-      })
-      // The card is the only message, in the DM of the person who set it.
-      expect(h.conn.postBlocks).toHaveBeenCalledTimes(1)
-      expect((h.conn.postBlocks.mock.calls[0] as unknown[])[0]).toBe('D_U1')
+      expect(h.conn.postMessage).toHaveBeenCalledWith(
+        'C1',
+        'Release notes are due.',
+        '1700000000.000100',
+        expect.objectContaining({ agentAuthorId: BOT })
+      )
+      expect(await h.get(id)).toMatchObject({ status: 'delivered', draftId: null })
+      expect(h.conn.postBlocks).not.toHaveBeenCalled()
     } finally {
       await h.close()
     }
   })
 
-  // assistant-mode.md §5.3: no event told the place it became shared, so the post asks Slack first.
-  it('drafts the text once Slack says the conversation became shared, though no event from it said so', async () => {
+  it('posts the text where a guest joined after it was set, drafting nothing', async () => {
     const h = await bootDaemon()
     try {
       const { id } = await h.remind(Date.now() + MINUTE)
-      h.conn.getChannelInfo.mockResolvedValue({
-        id: 'C1',
-        name: 'general',
-        isPrivate: false,
-        externalReason: 'externallyShared'
-      } as never)
+      h.d.placeTrust.detected([BOT_INT], 'C1', 'guestMember')
       h.later(2 * MINUTE)
       await h.d.reminders.sweep()
-      expect(h.conn.postMessage).not.toHaveBeenCalled()
-      expect(await h.get(id)).toMatchObject({ status: 'drafted', draftId: expect.any(String) })
-      expect(h.d.agents.get(BOT).integrations[0].core.externalChannels).toEqual(['C1'])
+      expect(h.conn.postMessage).toHaveBeenCalledTimes(1)
+      expect(await h.get(id)).toMatchObject({ status: 'delivered', draftId: null })
+      expect(h.conn.postBlocks).not.toHaveBeenCalled()
     } finally {
       await h.close()
     }
