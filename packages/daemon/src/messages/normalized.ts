@@ -119,8 +119,10 @@ export interface NormalizedMessage extends Omit<
    * webhook delivery's trusted metadata, so the row keeps the binding it already carries.
    */
   adoptedSession?: boolean
-  /** The sender's time zone as their own client reported it (a console browser), read for an assistant-mode turn's local time; never identity. */
+  /** The sender's time zone as their own client reported it (a console browser), read for every agent's local time; never identity. */
   senderTimeZone?: string
+  /** A scheduled run's own configured zone, which its local time reads before any place's (product-conventions.md "Local time"). */
+  scheduleTimeZone?: string
   /** By decision admission context (decisions.md §8.4): daemon-local, persisted with the inbox row, never a trigger. */
   channelIntake?: ChannelIntake
   /** This independent store may lack observations that the relay did not forward. */

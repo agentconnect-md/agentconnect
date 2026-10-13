@@ -1,6 +1,7 @@
 import type { SlackConnection } from './connection.js'
 import type { Logger } from '../log.js'
 import { mentionedUserIds } from './mentions.js'
+import { TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
 
 /**
  * Resolves Slack ids (channel "C…", user "U…/W…") to human display names off the
@@ -19,8 +20,6 @@ import { mentionedUserIds } from './mentions.js'
 const OK_TTL_MS = 6 * 60 * 60 * 1000 // re-check successful lookups (renames) every 6h
 const FAIL_TTL_MS = 10 * 60 * 1000 // retry failed lookups (rate limit / outage) after 10min
 const MAX_TRACKED_IDS = 5000 // attempt-cache cap (oldest-evicted, ~a large workspace's actives)
-/** How long a turn waits for the profile lookup its own message started before reading on without it. */
-export const TIME_ZONE_LOOKUP_WAIT_MS = 2_000
 
 export class SlackNameResolver {
   /** id → epoch ms until which we won't re-attempt a lookup. */
@@ -76,14 +75,14 @@ export class SlackNameResolver {
     return true
   }
 
-  /** The person's profile time zone for an assistant-mode turn, waiting at most `waitMs` for a lookup in flight. */
+  /** The person's profile time zone for any agent's turn, waiting at most `waitMs` for a lookup in flight. */
   async timeZoneOf(
     conn: SlackConnection,
     user: string,
     waitMs = TIME_ZONE_LOOKUP_WAIT_MS
   ): Promise<string | undefined> {
     if (!/^[UW]/.test(user)) return undefined
-    if (!this.zones.has(user)) await settledWithin(this.resolveUser(conn, user), waitMs)
+    if (!this.zones.has(user)) await within(this.resolveUser(conn, user), waitMs)
     return this.zones.get(user) ?? undefined
   }
 
@@ -127,16 +126,4 @@ export class SlackNameResolver {
       this.log?.debug(`slack: name lookup failed for user ${user}: ${(err as Error).message}`)
     }
   }
-}
-
-/** Resolve once `work` settles or `ms` passes, whichever comes first; `work` never rejects here. */
-function settledWithin(work: Promise<void>, ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    timer.unref?.()
-    void work.finally(() => {
-      clearTimeout(timer)
-      resolve()
-    })
-  })
 }

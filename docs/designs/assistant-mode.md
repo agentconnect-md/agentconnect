@@ -395,16 +395,12 @@ started.
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
 another place, under §5.5.
 
-**④ The people's local time**: unlike the summary, this rides every turn of an assistant-mode
-agent — main conversations, sub-sessions, patrols, tasks and report rounds — as one line in the
-turn prelude, current at that turn: `Now: 2026-10-12 Mon 04:20 (Asia/Shanghai, UTC+08:00).` The
-zone is the one the person who started the turn reported: on Slack their profile's (`users.info`
-`tz`, else `tz_offset`), read from the profile lookup their message already starts and cached per
-user; in webchat the browser's, sent with the turn. A turn no person started, or whose person
-reported none, takes the zone last seen from a person in its place, which the daemon store keeps
-per agent and place; with none, the line says UTC and that the local zone is unknown. Other
-platforms report no zone. The runtime host's clock is never presented as the people's time. The
-line is context, not an instruction; no tool's parameters change, and instants the agent writes
+**④ The people's local time** is no longer assistant mode's own: every agent's turns carry it,
+by the order in [product conventions](../product-conventions.md#local-time). In assistant mode it
+still rides every turn — main conversations, sub-sessions, patrols, tasks and report rounds — as
+one line in the turn prelude, current at that turn: `Now: 2026-10-12 Mon 04:20 (Asia/Shanghai,
+UTC+08:00).` The runtime host's clock is never presented as the people's time. The line is
+context, not an instruction; no tool's parameters change, and instants the agent writes
 (`nextCheck`, `remind`) still carry their own offset.
 
 ### 5.5 Permission rules
@@ -1260,7 +1256,17 @@ longer cuts the turn in flight when a place turns external, so the interrupt and
 layer, drafts of posts from elsewhere and the starting Off stay for every agent. The standing
 summary of items is no longer injected there, since the ledger is internal.
 
-**Twenty-ninth revision (2026-10-13)**: assistant mode no longer gates conversations (issue #2979,
+**Twenty-ninth revision (2026-10-13)**: every agent is told the people's local time (issue #2979,
+item B9; [product conventions](../product-conventions.md#local-time)). An agent outside assistant
+mode was told nothing, so it read "today" off the runtime host's clock, which is UTC in a
+container. Now every agent's turns carry the line of §5.4 ④, and its zone is the first one known
+of: the sender's own (a Slack or Feishu/Lark profile, a console browser), a scheduled run's
+configured zone, the zone of the person who started a run no one sent, the zone last seen in the
+place, and UTC. A schedule's own zone now wins over the place's, and a background run reads its
+starter's zone before the place's; with neither known, assistant mode reads as it did. The per-place
+store is the same table under a mode-neutral name in code.
+
+**Thirtieth revision (2026-10-13)**: assistant mode no longer gates conversations (issue #2979,
 item B7; §5.3 "Conversation defaults"). Gating rested on enabling a place being the trust boundary,
 and reads judged by who is asking and memory layered by audience have taken that role. An
 assistant-mode agent now takes the conversation defaults of its visibility and can be a shared

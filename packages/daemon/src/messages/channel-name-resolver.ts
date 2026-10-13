@@ -1,4 +1,5 @@
 import type { Logger } from '../log.js'
+import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from './time-zone.js'
 
 /**
  * The channel/user read helpers both the Discord and Telegram connections expose
@@ -23,7 +24,7 @@ export interface ChannelInfoSource {
   }>
   getUserProfile(
     user: string
-  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }>
+  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string; timeZone?: string }>
 }
 
 /**
@@ -76,6 +77,10 @@ export class ChannelNameResolver {
   private nextAttemptAt = new Map<string, number>()
   /** Inline names use a separate TTL namespace because a channel and user may share an id. */
   private observedNameNextSaveAt = new Map<string, number>()
+  /** User id → the zone their profile names, null when it names none; learned by the lookup a message starts. */
+  private readonly zones = new Map<string, string | null>()
+  /** User lookups in flight, so a turn can wait for the one its message started. */
+  private readonly userLookups = new Map<string, Promise<void>>()
   private saveScope?: (id: string, scope: ResolvedChannelScope) => void | Promise<void>
   private saveAvatar?: (source: ChannelInfoSource, id: string, avatarUrl: string) => void | Promise<void>
   private log?: Logger
@@ -123,6 +128,13 @@ export class ChannelNameResolver {
     for (const id of msg.mentionedUserIds ?? []) void this.resolveUser(src, id)
   }
 
+  /** The zone a person's profile named, waiting at most `waitMs` for the lookup their message started; never starts one. */
+  async timeZoneOf(user: string, waitMs = TIME_ZONE_LOOKUP_WAIT_MS): Promise<string | undefined> {
+    const lookup = this.userLookups.get(user)
+    if (!this.zones.has(user) && lookup) await within(lookup, waitMs)
+    return this.zones.get(user) ?? undefined
+  }
+
   /** A cache sink may write asynchronously; a failed name cache write never fails a lookup. */
   private persist(write: void | Promise<void>): void {
     void Promise.resolve(write).catch((err: unknown) => {
@@ -142,6 +154,7 @@ export class ChannelNameResolver {
     for (const key of attempts.keys()) {
       if (attempts.size <= MAX_TRACKED_IDS) break
       attempts.delete(key)
+      this.zones.delete(key)
     }
     return true
   }
@@ -193,16 +206,21 @@ export class ChannelNameResolver {
     }
   }
 
-  /** Cache one user id's display name (Slack-parity `resolveUser`). Platforms whose bot
-   *  API can't resolve arbitrary users just return a nameless profile — the attempt is
-   *  still cached, so the miss costs one call per TTL. */
-  private async resolveUser(src: ChannelInfoSource, user: string): Promise<void> {
-    if (!this.claim(user)) return
+  /** One profile lookup per user per TTL, shared while in flight; a nameless profile is cached as an attempt too. */
+  private resolveUser(src: ChannelInfoSource, user: string): Promise<void> {
+    if (!this.claim(user)) return this.userLookups.get(user) ?? Promise.resolve()
+    const lookup = this.lookUpUser(src, user).finally(() => this.userLookups.delete(user))
+    this.userLookups.set(user, lookup)
+    return lookup
+  }
+
+  private async lookUpUser(src: ChannelInfoSource, user: string): Promise<void> {
     try {
       const p = await src.getUserProfile(user)
       const name = p.realName || p.name
       if (name) this.persist(this.save(user, name))
       if (p.avatarUrl) this.persist(this.saveAvatar?.(src, user, p.avatarUrl))
+      this.zones.set(user, knownTimeZone(p.timeZone) ?? null)
     } catch (err) {
       this.nextAttemptAt.set(user, this.now() + FAIL_TTL_MS)
       this.log?.debug(`name lookup failed for user ${user}: ${(err as Error).message}`)

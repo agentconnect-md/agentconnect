@@ -9,7 +9,7 @@ import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js
 import { ASSISTANT_PATROL_SCHEMA, AssistantPatrolLedger } from './assistant-patrols.js'
 import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
-import { ASSISTANT_TIME_ZONE_SCHEMA, AssistantPlaceTimeZones } from './assistant-time-zones.js'
+import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
 import {
   APPEND_COORDINATE_PREFIX,
   appendCoordinate,
@@ -2138,8 +2138,8 @@ export class LocalStore {
   readonly assistantPatrols: AssistantPatrolLedger
   /** Reminders the daemon posts at their time with no model turn (assistant-mode.md §5.9). */
   readonly assistantReminders: AssistantReminderLedger
-  /** The time zone last seen from a person in each place, for turns no person started (assistant-mode.md §5.4). */
-  readonly assistantTimeZones: AssistantPlaceTimeZones
+  /** The time zone last seen from a person in each place, for every agent (product-conventions.md "Local time"). */
+  readonly placeTimeZones: PlaceTimeZones
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -2174,7 +2174,7 @@ export class LocalStore {
     })
     this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
-    this.assistantTimeZones = new AssistantPlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
+    this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
   }
 
   /**
@@ -2240,7 +2240,7 @@ export class LocalStore {
       ${ASSISTANT_SUBSESSION_SCHEMA}
       ${ASSISTANT_PATROL_SCHEMA}
       ${ASSISTANT_REMINDER_SCHEMA}
-      ${ASSISTANT_TIME_ZONE_SCHEMA}
+      ${PLACE_TIME_ZONE_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
