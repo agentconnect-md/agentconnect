@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-// The assistant-mode Activity view: what everyone who can view the agent sees, what only its editors see and do.
+// The Activity view: what everyone who can view the agent sees, what only its editors see and do, in assistant mode or not.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { NextIntlClientProvider } from 'next-intl'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
@@ -86,6 +87,7 @@ vi.mock('@/lib/data-context', () => ({
 
 const { ApiError } = await import('@/lib/api')
 const { AssistantActivityPanel } = await import('./AssistantActivityPanel')
+const { default: chinese } = await import('../../../messages/zh-CN.json')
 
 const ITEM: AssistantItemDto = {
   id: 'item-1',
@@ -248,15 +250,17 @@ afterEach(async () => {
   container = undefined
 })
 
-async function mount(canEdit: boolean) {
+async function mount(canEdit: boolean, assistant = true, wrap: (node: ReactNode) => ReactNode = (node) => node) {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
   await act(async () => {
     root?.render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <AssistantActivityPanel agentId={AGENT} canEdit={canEdit} />
-      </SWRConfig>
+      wrap(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <AssistantActivityPanel agentId={AGENT} canEdit={canEdit} assistant={assistant} />
+        </SWRConfig>
+      )
     )
   })
   await act(async () => {})
@@ -634,6 +638,71 @@ describe('the Activity view for an editor', () => {
     await click(button(row, 'Keep'))
     expect(row.querySelector('[role="group"]')).toBeNull()
     expect(api.deleteAssistantItem).not.toHaveBeenCalled()
+  })
+})
+
+describe('the Activity view of an agent outside assistant mode', () => {
+  const sections = (host: HTMLElement) =>
+    [...host.querySelectorAll('[data-activity-section]')].map((s) => s.getAttribute('data-activity-section'))
+
+  it('shows an editor its sub-sessions, permission requests and drafts, and reads no items', async () => {
+    mocks.permissions = [PERMISSION]
+    const host = await mount(true, false)
+    expect(sections(host)).toEqual(['subsessions', 'drafts'])
+    expect(api.fetchAssistantItems).not.toHaveBeenCalled()
+    expect(host.querySelector('[data-assistant-item]')).toBeNull()
+    expect(button(host, 'Done and dropped')).toBeUndefined()
+
+    const subsessions = section(host, 'subsessions')!
+    expect(subsessions.querySelector('[data-assistant-subsession="sid-child"]')?.textContent).toContain('Running')
+    const drafts = section(host, 'drafts')!
+    expect(drafts.firstElementChild?.textContent).toContain('Waiting for approval')
+    expect(drafts.querySelector('[data-assistant-permission="request-1"]')?.textContent).toContain('Write src/app.ts')
+    expect(drafts.querySelector('[data-assistant-draft="draft-1"]')?.textContent).toContain('The release is out.')
+
+    // Both are decided as an assistant-mode agent’s are.
+    await click(button(drafts.querySelector('[data-assistant-permission="request-1"]')!, 'Allow'))
+    expect(api.decideAgentPermissionRequest).toHaveBeenCalledWith(AGENT, 'request-1', 'allow', 'o-allow')
+    const draft = drafts.querySelector('[data-assistant-draft="draft-1"]')!
+    await click(button(draft, 'Approve'))
+    await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
+    expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'draft-1', 'approve')
+  })
+
+  it('shows anyone else its sub-sessions alone', async () => {
+    const host = await mount(false, false)
+    expect(sections(host)).toEqual(['subsessions'])
+    expect(api.fetchAssistantItems).not.toHaveBeenCalled()
+    expect(api.fetchAssistantDrafts).not.toHaveBeenCalled()
+    expect(api.fetchAssistantSubsessions).toHaveBeenCalledWith(AGENT)
+  })
+
+  it('keeps one responsive tree on a phone, its colors from the theme’s tokens', async () => {
+    mocks.permissions = [PERMISSION]
+    const host = await mount(true, false)
+    const panel = host.querySelector('[data-assistant-activity]')!
+    expect(panel.className).toContain('p-4')
+    expect(panel.className).toContain('desktop:p-0')
+    const subsession = host.querySelector('[data-assistant-subsession="sid-child"]')!
+    expect(subsession.className).toContain('flex-col')
+    expect(subsession.className).toContain('desktop:flex-row')
+    expect(host.querySelector('[data-assistant-draft-actions]')?.className).toContain('flex-wrap')
+    // Every color is a token, so the dark theme's remap applies; no literal would survive it.
+    for (const badge of host.querySelectorAll('.badge')) expect(badge.className).toMatch(/(bg|text)-\(--/)
+    expect(panel.outerHTML).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i)
+  })
+
+  it('reads in Chinese with the zh-CN messages', async () => {
+    mocks.permissions = [PERMISSION]
+    const host = await mount(true, false, (node) => (
+      <NextIntlClientProvider locale="zh-CN" messages={chinese} timeZone="UTC">
+        {node}
+      </NextIntlClientProvider>
+    ))
+    expect(section(host, 'subsessions')?.firstElementChild?.textContent).toContain('子会话')
+    expect(section(host, 'subsessions')?.textContent).toContain('运行中')
+    expect(section(host, 'drafts')?.firstElementChild?.textContent).toContain('等待批准')
+    expect(host.querySelector('[data-assistant-permission="request-1"] .badge')?.textContent).toBe('权限')
   })
 })
 

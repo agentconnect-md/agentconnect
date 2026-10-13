@@ -444,6 +444,9 @@ export const CHAT_ACTOR_V1_FEATURE = 'chat-actor-v1'
 /** CP answers the `responsible` form of `agent/approval-route` with the agent's derived responsible user; without it an older CP strips the form and answers its own chain, so a daemon asks nobody. */
 export const ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE = 'assistant-responsible-route-v1'
 
+/** Daemon serves the Activity read for an agent outside assistant mode: its pending permission requests, sub-sessions and drafts, with items empty; an older daemon refuses it. */
+export const ACTIVITY_EVERY_AGENT_V1_FEATURE = 'activity-every-agent-v1'
+
 /** CP answers `agent/read-access`: which sessions the console user behind an asker could see. A daemon must not send it
  *  before seeing this, since a new request type is frame-fatal to an older CP; until then every cross-platform read is refused. */
 export const READ_ACCESS_V1_FEATURE = 'read-access-v1'
