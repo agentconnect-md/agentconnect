@@ -272,8 +272,9 @@ The stored keys go in two steps, since a rollout runs both Control Plane version
 ([high-availability.md](high-availability.md)). Now: a row an older Control Plane wrote may keep
 `responsibleUserId` and `fallbackConversation`; this one reads past them, never writes them, serves
 the policy without them, and projects them to daemons unchanged, so a daemon that still requires
-one keeps validating an agent nobody edited. Follow-up: drop the two stored keys in the next
-release, once no Control Plane that reads them is serving.
+one keeps validating an agent nobody edited. A daemon likewise reads past them in an agent.json an
+older daemon wrote, so that agent still loads after the upgrade. Follow-up: drop the two stored keys
+in the next release, once no Control Plane that reads them is serving.
 
 ### 5.2 Places and long conversations
 

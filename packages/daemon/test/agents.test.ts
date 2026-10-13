@@ -102,6 +102,25 @@ describe('loadAgents', () => {
     expect(result.failures[0]?.error.message).toMatch(/invalid agent\.json.*bad[/\\]agent\.json/)
   })
 
+  // Expand step (assistant-mode.md §5.1): an agent.json an older daemon wrote keeps the policy's two routing keys.
+  it('loads an assistant-mode agent whose stored policy keeps the two routing keys, without them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-agents-'))
+    const fallbackConversation = { integrationId: '33333333-3333-4333-8333-333333333333', channelId: 'C1' }
+    writeAgent(dir, 'bot-a', {
+      ...slackAgent('bot-a'),
+      assistantMode: { enabled: true, responsibleUserId: 'usr-1', fallbackConversation, instructions: 'Be brief.' }
+    })
+    writeAgent(dir, 'bot-b', { ...slackAgent('bot-b'), assistantMode: { enabled: true, extra: 1 } })
+
+    const result = discoverAgentsTolerant(dir)
+
+    expect(result.agents.map(({ agent }) => [agent.id, agent.assistantMode])).toEqual([
+      ['bot-a', { enabled: true, instructions: 'Be brief.' }]
+    ])
+    // Only those two keys are read past: any other unknown key still refuses the file.
+    expect(result.failures.map((f) => f.file)).toEqual([join(dir, 'bot-b', 'agent.json')])
+  })
+
   it.skipIf(process.platform === 'win32')('repairs a legacy detached agent.json without discovering it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-agents-'))
     writeAgent(dir, 'bot-a', slackAgent('bot-a'))
