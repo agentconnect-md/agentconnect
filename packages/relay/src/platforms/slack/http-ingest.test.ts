@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createHmac } from 'node:crypto'
+import { once } from 'node:events'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { WebClient } from '@slack/web-api'
 import {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
@@ -514,6 +518,42 @@ describe('SlackHttpIngest events', () => {
     webClientFactory: () => web as never,
     log: silentLog,
     ...over
+  })
+
+  it('probes credentials without relying on native fetch', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, user_id: 'UBOT' }))
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const nativeFetch = vi.fn().mockRejectedValue(new Error('native fetch unavailable'))
+    vi.stubGlobal('fetch', nativeFetch)
+    vi.stubEnv('HTTPS_PROXY', undefined)
+    vi.stubEnv('HTTP_PROXY', undefined)
+    try {
+      const d = deps(
+        {},
+        {
+          webClientFactory: (token, options) =>
+            new WebClient(token, {
+              ...options,
+              slackApiUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/`,
+              retryConfig: { retries: 0 }
+            })
+        }
+      )
+      const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+
+      await ingest.start()
+
+      expect(d.onBotUserId).toHaveBeenCalledWith('UBOT')
+      expect(nativeFetch).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+    }
   })
 
   it('publishes Home for each visitor without an agent route or a chat message', async () => {

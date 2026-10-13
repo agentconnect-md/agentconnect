@@ -1,6 +1,6 @@
 // Per-HTTP-bot Slack handler held by the relay (shared-bot-relay.md §12): the route hands it verified events and interactions, and `botToken`/`signingSecret` are never logged.
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
-import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
+import { Agent, fetch as undiciFetch, FormData as UndiciFormData, ProxyAgent, type Dispatcher } from 'undici'
 import {
   isSlackSystemMessage,
   normalizeSlackMessage,
@@ -320,8 +320,20 @@ function proxyDispatcher(): ProxyAgent | undefined {
   return url ? new ProxyAgent(url) : undefined
 }
 
-function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
-  return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
+// Keep Slack independent of the Undici version that claims the process-wide dispatcher.
+const directSlackDispatcher = new Agent()
+
+function fetchWithDispatcher(dispatcher: Dispatcher = directSlackDispatcher): FetchFunction {
+  return (url, init) => {
+    const options = { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher }
+    // The SDK builds native FormData, which bundled Undici does not recognize as multipart.
+    if (init?.body instanceof FormData) {
+      const form = new UndiciFormData()
+      for (const [name, value] of init.body) form.append(name, value)
+      options.body = form
+    }
+    return undiciFetch(url, options)
+  }
 }
 
 /** `auth.test` codes proving the token is dead (`account_inactive` is what an uninstall leaves); a false positive revokes a live bot, so keep it narrow. */
@@ -490,7 +502,7 @@ export class SlackHttpIngest {
   /** Build the Web API client and run the first credential probe; inbound arrives on the pool-wide HTTP routes, so no socket opens. */
   async start(): Promise<void> {
     const dispatcher = proxyDispatcher()
-    const options: WebClientOptions = dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}
+    const options: WebClientOptions = { fetch: fetchWithDispatcher(dispatcher) }
     this.web = this.deps.webClientFactory
       ? this.deps.webClientFactory(this.secrets.botToken, options)
       : new WebClient(this.secrets.botToken, options)
