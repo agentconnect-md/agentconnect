@@ -129,18 +129,10 @@ export interface SettledSdkTask extends LiveSdkTask {
   summary?: string
 }
 
-/**
- * DAEMON-PRIVATE trusted metadata for an agent-originated delivery. Authoritative
- * (never derived from model output or platform text): the caller identity the target can
- * trust, the correlationId to bounce back, and the hop/origin chain for loop protection.
- * Most deliveries run a turn whose nested `messageAgent` reads this to auto-increment
- * hopCount (§2.4); a self-authored channel root instead carries `initializeOnly`.
- */
+/** Daemon-private trusted metadata for an agent-originated delivery: caller identity and the hop/origin chain, never model-derived. */
 export interface CallMeta {
   /** Trusted caller agentId (the agent that invoked `messageAgent`). */
   callFrom: string
-  /** Opaque correlation id the caller supplied or a reply inherited, if any. */
-  correlationId?: string
   /** Depth of this agent-call chain; inbound platform/user turns are 0. */
   hopCount: number
   /** Stable id of the delivery that started this turn (== the msgId's ts segment). */
@@ -675,15 +667,7 @@ export interface Pending {
   /** Linked footer prepared before the runtime starts streaming. Every reply section is
    *  initially posted with these trailing blocks so Slack can suppress unfurls. */
   attribution?: { blocks: unknown[]; key: string }
-  /**
-   * DAEMON-PRIVATE trusted call metadata for an agent→agent turn (design §3.3a/§6.6/§6.7).
-   * Present iff this turn was started by `messageAgent`. Holds the AUTHORITATIVE caller
-   * identity, correlationId, hop/origin, and stable deliveryId — kept OUT of the
-   * model-visible prompt (that only ever sees `msg.text`); it is the trust basis for a
-   * future auto-hop/auto-correlation of a nested `messageAgent` (§2.4). Keyed here by the
-   * turn's Pending so a tool call within this turn can read it.
-   * TODO(P4): move into the unified sessionKey QueueEntry/DispatchContext (§6.9 #367).
-   */
+  /** Trusted call metadata of a `messageAgent`-started turn, kept out of the prompt. TODO(P4): move into QueueEntry (§6.9 #367). */
   callMeta?: CallMeta
   /** Webchat streams ACP updates live and commits each completed reply segment at turn end. */
   webchat?: WebchatTurnContext & {

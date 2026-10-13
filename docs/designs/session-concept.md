@@ -473,7 +473,6 @@ implements the same-thread form, and unified `sendMessage` reuses it.
    ```ts
    interface CallMeta {
      callFrom: string // Caller agent ID
-     correlationId?: string // Opaque reply correlation
      hopCount: number // Agent-call depth for loop limits
      deliveryId: string
      originSessionId: string // Stable caller session address
@@ -500,9 +499,8 @@ implements the same-thread form, and unified `sendMessage` reuses it.
      `daemon.ts:3491`.
    - Verifies that the target is writable by B, such as
      `inbound.originSessionId` or another visible session.
-   - When `sessionId === inbound.originSessionId`, automatically inherit
-     `correlationId`, matching the existing reply test at
-     `daemon.ts:3501-3502`.
+   - Carries no reply correlation: the origin lineage alone routes the reply
+     (`correlationId` was removed with orchestration, #2979).
 4. **Preserve boundaries and invariants:**
    - Caller identity comes from daemon session context. `sessionId` is a tool
      input but is authorized, so an agent cannot inject arbitrary sessions.
@@ -725,13 +723,13 @@ This wakes a new session owned by B.
 - The visible `@agentB` platform event and A's internal wake are **two observations of
   one delivery**, not two deliveries: they meet at a durable activation rendezvous keyed
   by the visible post, so B is admitted exactly once whichever arrives first. The
-  internal wake is the authority — it alone carries lineage, correlation, `needsReply`,
+  internal wake is the authority — it alone carries lineage, `needsReply`,
   hop depth, and the privacy gate — so a platform observation whose wake never arrives is
   recorded as a delivery failure rather than becoming a lineage-less B session. See
   [send-message-routing-rework.md](send-message-routing-rework.md) §3.2 / §8.6.
 - B's SessionTarget reply inserts into the existing origin without creating a
   session, and the resumed origin turn is **session-only**: it produces no automatic IM
-  output (§7 of the routing rework). The daemon inherits `correlationId`.
+  output (§7 of the routing rework).
 
 ### 7.3b Case 2c: wake another agent without posting any IM
 

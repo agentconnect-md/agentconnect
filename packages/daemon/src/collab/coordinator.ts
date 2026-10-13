@@ -701,7 +701,7 @@ export class CollabCoordinator {
     return this.host.activeTurnCallMeta().get(key)?.introChannel
   }
 
-  /** Agent→agent routing behind `messageAgent`: a direct wake with no visible thread event; trusted `CallMeta` carries hop limits and reply correlation. */
+  /** Agent→agent routing behind `messageAgent`: a direct wake with no visible thread event; trusted `CallMeta` carries hop limits. */
   /**
    * Side-effect-free authorization for a peer wake on the SAME-DAEMON path — the typed reason
    * {@link messageAgent} would reject it with for a LOCALLY-decidable cause, or, when it is
@@ -877,8 +877,7 @@ export class CollabCoordinator {
       })
     }
 
-    // Trusted source-turn metadata is independent from the delivered message. Both
-    // local and relay paths inherit reply correlation identically.
+    // Trusted source-turn metadata, independent of the delivered message; local and relay paths inherit it identically.
     const inbound = this.host.activeTurnCallMeta().get(callerKey)
     const sourceHopCount = inbound?.hopCount ?? 0
     // session-concept §5.3: capture the CALLER's own session as the woken child's origin, so
@@ -918,10 +917,6 @@ export class CollabCoordinator {
         reason: 'no_parent_session'
       })
     }
-    // A delegation is never a reply, though a parent woken by its sub-session's report has itself as `callFrom`.
-    const isReply = !selfDelegation && inbound !== undefined && req.toAgentId === inbound.callFrom
-    const correlationId =
-      req.correlationId !== undefined ? req.correlationId : isReply ? inbound.correlationId : undefined
 
     const target = this.host.agents().get(req.toAgentId)
     const resolved = target ? this.host.resolveCpAgent(req.toAgentId, platform) : null
@@ -1001,7 +996,6 @@ export class CollabCoordinator {
           deliveryId,
           targetSession,
           sourceHopCount,
-          correlationId,
           ...(originSessionId !== undefined ? { originSessionId } : {}),
           originSessionKey: callerKey,
           originCodeHostReplyTarget,
@@ -1028,13 +1022,12 @@ export class CollabCoordinator {
       return record(remote)
     }
 
-    // Daemon-private CallMeta (§6.7): hop/origin always inherit; correlationId inherits only on a reply to the tasking agent, unless passed.
+    // Daemon-private CallMeta (§6.7): hop/origin always inherit.
     const hopCount = inbound ? inbound.hopCount + 1 : 0
     // §5.6: a sub-session always reports back to the conversation that opened it.
     const needsReply = req.needsReply === true || selfDelegation
     const callMeta: CallMeta = {
       callFrom: req.callerAgentId,
-      ...(correlationId !== undefined ? { correlationId } : {}),
       hopCount,
       deliveryId,
       // §5.3: hand the child its origin so it can reply back with `sendMessage({sessionId})`.
@@ -1074,13 +1067,7 @@ export class CollabCoordinator {
       // (no duplicate hand-off) and the session cursor stays canonical (mirrors the
       // spawnChannelRootSession seed). Absent ⇒ transcriptCoords derives ts from the msgId.
       ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
-      // Self-introduce-on-join (#536): a fan-out from an intro turn wakes each peer
-      // HEADLESS so it records the newcomer silently, never posting to the channel.
-      // send-message-routing-rework.md §3.1 adds the second case: the POSTLESS `toAgent`
-      // form. Nothing is posted to announce the call, so letting the child's own answer
-      // surface in the caller's channel would reintroduce exactly the interruption that
-      // form exists to avoid. The child stays fully followable (lineage, correlation,
-      // `needsReply`, `viewSessionStatus`) and reports back through the session reply.
+      // Headless for an intro fan-out (#536) and the postless `toAgent` form (send-message-routing-rework.md §3.1); the child still reports back.
       ...(inbound?.deliverHeadless || req.postless ? { headless: true } : {})
     }
 
@@ -1129,12 +1116,7 @@ export class CollabCoordinator {
         deliveryId
       })
     }
-    // send-message-routing-rework.md §3.2/§8.6 — the "internal wake first" arrival order
-    // of a PAIRED `toAgent + channel` call. The wake is the SEMANTIC AUTHORITY (it alone
-    // carries lineage, correlation, needsReply, external origin, and the privacy gate),
-    // so it attaches the envelope and admits. The platform echo of the same post then
-    // reconciles onto this record instead of opening a second child — whenever it
-    // arrives, including after a restart, which is why the record is durable.
+    // send-message-routing-rework.md §3.2/§8.6: the wake of a paired call is the authority; the platform echo reconciles onto this durable record.
     let pairingKey: string | undefined
     if (req.transcriptTs !== undefined) {
       const key = activationKey(platform, targetTransportScope, req.transcriptTs, req.toAgentId)
@@ -1292,8 +1274,7 @@ export class CollabCoordinator {
         {
           callFrom: link.agentId,
           deliveryId,
-          hopCount: callMeta.hopCount + 1,
-          ...(callMeta.correlationId !== undefined ? { correlationId: callMeta.correlationId } : {})
+          hopCount: callMeta.hopCount + 1
         },
         {
           requireDurable: true,
@@ -1493,9 +1474,6 @@ export class CollabCoordinator {
     if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) {
       return failed('hop_limit')
     }
-    // §5.3 step 3: a reply into the origin inherits the origin turn's correlationId; an explicit one wins.
-    const correlationId = req.correlationId !== undefined ? req.correlationId : inbound?.correlationId
-
     const deliveryId = randomUUID()
     // Hand the origin owner a turn whose origin points back at the REPLIER's session, so the
     // origin could reply again (symmetric lineage). callFrom = the replier.
@@ -1511,7 +1489,6 @@ export class CollabCoordinator {
     }
     const callMeta: CallMeta = {
       callFrom: req.callerAgentId,
-      ...(correlationId !== undefined ? { correlationId } : {}),
       hopCount: sourceHopCount + 1,
       deliveryId,
       ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
@@ -1635,8 +1612,7 @@ export class CollabCoordinator {
         toAgentId: inbound.callFrom,
         text: req.text,
         channel: coords.channel,
-        ...(coords.thread !== undefined ? { thread: coords.thread } : {}),
-        ...(correlationId !== undefined ? { correlationId } : {})
+        ...(coords.thread !== undefined ? { thread: coords.thread } : {})
       },
       {
         platform: coords.platform,
@@ -1645,7 +1621,6 @@ export class CollabCoordinator {
         deliveryId,
         targetSession,
         sourceHopCount: inbound.hopCount,
-        ...(correlationId !== undefined ? { correlationId } : {}),
         ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
         originSessionKey: callerKey,
         originCodeHostReplyTarget,
@@ -2164,7 +2139,6 @@ export class CollabCoordinator {
       deliveryId: string
       targetSession: string
       sourceHopCount: number
-      correlationId?: string
       /** §5.3: the caller's origin session, forwarded so the remote child can reply back — its
        *  OUTWARD id (§1.1), since it travels to another daemon. */
       originSessionId?: string
@@ -2210,7 +2184,6 @@ export class CollabCoordinator {
             channel: ctx.channel,
             ...(ctx.thread !== undefined ? { thread: ctx.thread } : {})
           },
-          ...(ctx.correlationId !== undefined ? { correlationId: ctx.correlationId } : {}),
           hopCount: ctx.sourceHopCount,
           deliveryId: ctx.deliveryId,
           // Visible-post ts (if this wake was a `toAgent`+`channel` send) so the remote target
