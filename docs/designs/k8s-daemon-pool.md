@@ -1400,7 +1400,7 @@ it converged on is four rules, and they are the shape any new table has to take.
   (`runtime_catalog_meta` / `runtime_model_catalog`, #1058).
 - **Background work is duty-gated.** `servesAgent(agentId)` — the predicate that
   already scoped `transportAgents()` — now also gates the sandbox idle sweep
-  (#1045), orchestration deadlines (#1042), the session TTL and retention sweeps
+  (#1045), orchestration deadlines (#1042, since removed), the session TTL and retention sweeps
   (#1065), the loop-guard trip's inbox purge (#1069) and cron/dream arming. A
   sweep on a non-holder is not merely wasted work: it suspends a pod, closes a
   session or deletes a queued row another member is serving.

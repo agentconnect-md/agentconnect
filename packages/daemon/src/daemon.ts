@@ -1641,7 +1641,7 @@ export class Daemon {
   // ACP permission + elicitation policy and its pending human-approval state (permissions/coordinator.ts).
   private readonly permissions = new PermissionCoordinator(this.permissionHost())
 
-  // Agent→agent collaboration: A2A wake/reply/status plus §3.4/§6.8 orchestration (src/collab/).
+  // Agent→agent collaboration: A2A wake/reply/status (src/collab/).
   private readonly collab = new CollabCoordinator(this.collabHost())
   // Latched for the WHOLE drain handoff, including the window after `draining`
   // reopens and before the leases are surrendered — a claim landing there would
@@ -4178,9 +4178,6 @@ export class Daemon {
       viewSessionStatus: (req) => Promise.resolve(this.collab.viewSessionStatus(req)),
       rootPostRelation: (req) => this.collab.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req),
-      startOrchestration: (req) => this.collab.startOrchestration(req),
-      getOrchestration: (req) => Promise.resolve(this.collab.getOrchestrationForOwner(req)),
-      cancelOrchestration: (req) => Promise.resolve(this.collab.cancelOrchestrationForOwner(req)),
       submitCodeReview: (req) => this.codeReviews.submit(req),
       replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
       codeHostEffect: (req) => this.runCodeHostEffect(req),
@@ -5145,13 +5142,12 @@ export class Daemon {
     this.log.info(`watching ${this.agentsDir} for agent changes`)
   }
 
-  /** Phase 30 — durable inbox replay, orchestration deadlines, the startup retention pass and dream crash recovery. */
+  /** Phase 30 — durable inbox replay, the startup retention pass and dream crash recovery. */
   private async replayDurableWork(): Promise<void> {
     await this.replayInbox()
     // After the inbox replay, whose receipts tell recovery which verdicts were already admitted.
     await this.decisionGate.recover()
     await this.decisionRouter.recover()
-    await this.collab.syncOrchestrationDeadlines()
     // A draft post a crash cut short is `outcome_unknown`, never retried (assistant-mode.md §5.10).
     await this.drafts
       .recover([...this.agents.keys()])
@@ -13957,7 +13953,6 @@ export class Daemon {
       adoptClusterSandbox: (agentId) => this.adoptClusterSandbox(agentId),
       reclaimInterruptedWork: (agentIds) => this.reclaimInterruptedWork(agentIds),
       syncAgentSchedules: (agent) => this.syncAgentSchedules(agent),
-      syncOrchestrationDeadlines: () => this.collab.syncOrchestrationDeadlines(),
       catchUpMissedSchedules: (agentIds) => this.catchUpMissedSchedules(agentIds),
       drainSessionPurges: () => this.drainSessionPurges(),
       drainCronReports: () => this.cronReportOutbox.drainReports(),
@@ -16001,8 +15996,7 @@ export class Daemon {
     }
   }
 
-  /** §3.3 source gate: bind this session to the inbound envelope's external audience, then — only
-   *  once the gate passed — record a correlated worker report into orchestration state. */
+  /** §3.3 source gate: bind this session to the inbound envelope's external audience. */
   private async bindTurnSource(
     entry: QueueEntry,
     key: string,
@@ -16036,14 +16030,6 @@ export class Daemon {
         )
       }
       return 'rejected'
-    }
-    // §3.3 correlation-recording hook: if this turn is an agent→agent delivery carrying a
-    // correlationId, it MAY be a worker reporting back to a main that owns an orchestration.
-    // Run only after the source gate: a rejected cross-audience envelope must not
-    // copy its body into orchestration state even though no ACP prompt will run.
-    // The result is owner-checked, trusted-callFrom, and idempotent.
-    if (callMeta?.correlationId !== undefined) {
-      await this.collab.recordWorkerReport(key, callMeta, msg.text)
     }
     return 'ok'
   }
@@ -16163,11 +16149,7 @@ export class Daemon {
           initializeOnly: plan.initializeOnly,
           retryAdmittedTurn: entry.fromInboxReplay,
           runtimeTarget: this.sessionRuntimes.get(key),
-          // CallMeta is the trusted distinction between a real A2A delivery and
-          // synthetic `source: agent` wakes (background task/orchestration). A webchat
-          // roster continuation carries CallMeta for its hop/rendezvous chain but is a
-          // conversation post, not an address — it must not defeat the response-choice
-          // rule (webchat-multi-agents.md §5.2a).
+          // CallMeta marks a real A2A delivery, not a synthetic `source: agent` wake; a webchat roster continuation carries it but is no address (webchat-multi-agents.md §5.2a).
           directAgentCall: plan.directAgentCall,
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
           ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
@@ -26226,10 +26208,6 @@ export class Daemon {
     }
     this.sessionMetadataOutbox.dispose()
     this.cronReportOutbox.dispose()
-    // Clear any live orchestration deadline timers so they don't hold the process open
-    // (the durable `orchestration.deadline` epoch re-arms them on the next startup).
-    for (const t of this.collab.orchestrationDeadlines.values()) this.clock.clearTimeout(t)
-    this.collab.orchestrationDeadlines.clear()
     this.metrics?.stop()
     await this.watcher?.close()
     // §2.5: gate new turns and let in-flight ones finish (deadline-bounded) BEFORE

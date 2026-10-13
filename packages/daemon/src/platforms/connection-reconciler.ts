@@ -1260,14 +1260,7 @@ export class ConnectionReconciler {
       this.log.info(`intro: agent "${agent.id}" self-introducing in channel ${ch}`)
       const traceId = randomUUID()
       const msg = buildIntroMessage(agent.id, platform, ch, traceId)
-      // `deliverHeadless` marks THIS turn's fan-out: peers woken via messageAgent run
-      // headless and record the newcomer silently. No correlationId ⇒ no orchestration /
-      // worker-report side effect (recordWorkerReport only fires on a correlationId).
-      // No origin fields (§5.3): a self-introduce is root-like — the woken peer has no parent
-      // session to reply into, so it gets no `Parent session` line and no SessionTarget.
-      // `introChannel` is the CODE-level bound on the fan-out: discovery in this turn is
-      // pinned to the joined channel whatever the model passes to `listAgents` (the prompt
-      // asks for the same filter, but a prompt is not a bound — see CallMeta.introChannel).
+      // This turn wakes its peers headless with no origin (§5.3); `introChannel` pins its `listAgents` to the joined channel in code.
       const callMeta: CallMeta = {
         callFrom: agent.id,
         hopCount: 0,

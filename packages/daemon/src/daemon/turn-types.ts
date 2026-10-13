@@ -139,7 +139,7 @@ export interface SettledSdkTask extends LiveSdkTask {
 export interface CallMeta {
   /** Trusted caller agentId (the agent that invoked `messageAgent`). */
   callFrom: string
-  /** Opaque correlation id supplied by the caller (orchestration), if any. */
+  /** Opaque correlation id the caller supplied or a reply inherited, if any. */
   correlationId?: string
   /** Depth of this agent-call chain; inbound platform/user turns are 0. */
   hopCount: number

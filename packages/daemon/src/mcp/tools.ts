@@ -1021,16 +1021,7 @@ export const KNOWLEDGE_TOOLS: ToolDescriptor[] = [
   }
 ]
 
-/**
- * Agent-collaboration tools — available to EVERY agent regardless of platform
- * (discovery is org-level, not platform- or channel-gated). `listAgents` asks the CP
- * which peers this agent may reach in its organization so it can find someone to work
- * with; channel membership is only an optional filter on that answer. Waking a peer is
- * no longer a separate tool: it is `sendMessage` with `toAgent` (session-concept §4).
- * The requesting agent's identity is injected by the daemon from the session context —
- * it is NOT a tool input. Fan-out is likewise not a separate tool: the orchestration
- * triple is retired, see {@link RETIRED_ORCHESTRATION_TOOLS}.
- */
+// Collaboration tools for every agent: `listAgents` finds org peers; waking one, or fanning out to N, is `sendMessage` with `toAgent`.
 const LIST_AGENTS_INPUT_SCHEMA = () =>
   obj({
     channel: {
@@ -1090,89 +1081,6 @@ const collaborationTools = (selfDelegation: boolean): ToolDescriptor[] => [
 
 export const COLLABORATION_TOOLS: ToolDescriptor[] = collaborationTools(false)
 const ASSISTANT_COLLABORATION_TOOLS: ToolDescriptor[] = collaborationTools(true)
-
-/**
- * RETIRED from the advertised tool surface — kept here, and still dispatchable by
- * `executeTool`, but injected into NO agent's tool set.
- *
- * Why: the send half duplicated `sendMessage`. A fan-out to N workers is N
- * `sendMessage({ toAgent: { agentId, needsReply: true } })` calls, and status lookup is
- * `viewSessionStatus`. Offering both made "give work to another agent" ambiguous, so the
- * orchestration triple is no longer offered.
- *
- * What is NOT retired: the daemon-side machinery behind these names — the durable
- * orchestration/subtask records, correlation recording on worker reports, and the one-shot
- * session-anchored DEADLINE WAKE (re-armed from the store on daemon startup). That deadline
- * is the one capability `sendMessage(needsReply)` cannot express today (it has no timeout),
- * and it is kept intact so `needsReply` can gain an optional deadline on top of it.
- *
- * These descriptors stay dispatchable and stay in {@link ALL_TOOL_NAMES} on purpose: an ACP
- * session that went warm with the old descriptors, and any orchestration record that is
- * still in flight, must keep resolving. Re-enabling is a one-line move back into
- * {@link COLLABORATION_TOOLS}.
- */
-export const RETIRED_ORCHESTRATION_TOOLS: ToolDescriptor[] = [
-  {
-    name: 'startOrchestration',
-    description:
-      'Fan out a batch of subtasks to worker agents in one atomic step, then wait asynchronously. ' +
-      'The daemon persists an orchestration record (all subtasks pending) BEFORE delivering, delivers each ' +
-      'subtask to its worker (attaching a correlationId so their replies map back), and schedules a one-shot ' +
-      'deadline that wakes THIS session when it fires. Returns { orchestrationId, delivered:[correlationId…], ' +
-      'failed:[{correlationId, reason}…] }. This does NOT return the workers’ results — you are woken (by a ' +
-      'worker reply or the deadline) and then call getOrchestration to read statuses/results and summarize. ' +
-      'Tell each worker in its `text` to report back to you when done (their reply auto-carries the correlationId).',
-    inputSchema: obj(
-      {
-        subtasks: {
-          type: 'array',
-          description: 'The subtasks to fan out, one per worker delivery.',
-          items: obj(
-            {
-              toAgentId: { type: 'string', description: 'The worker agent id to deliver this subtask to.' },
-              text: { type: 'string', description: 'The instruction delivered into the worker’s session.' }
-            },
-            ['toAgentId', 'text']
-          )
-        },
-        deadlineMs: {
-          type: 'number',
-          description:
-            'Optional deadline in milliseconds from now. When it elapses, your session is woken so you can ' +
-            'summarize partial results; unreported subtasks are marked timed_out. Omit for no deadline.'
-        },
-        replyTarget: {
-          type: 'string',
-          description: 'Optional opaque marker for where you should post the final human-facing summary.'
-        }
-      },
-      ['subtasks']
-    )
-  },
-  {
-    name: 'getOrchestration',
-    description:
-      'Read one of YOUR orchestrations — its subtasks with per-subtask status (pending/sending/delivered/' +
-      'succeeded/worker_error/timed_out) and any collected results. Call this each time you are woken (by a ' +
-      'worker report or the deadline) to judge whether all subtasks are in (N-of-N) or the deadline passed, ' +
-      'then summarize. Only the orchestration’s owning main agent+session may read it.',
-    inputSchema: obj(
-      { orchestrationId: { type: 'string', description: 'The orchestrationId returned by startOrchestration.' } },
-      ['orchestrationId']
-    )
-  },
-  {
-    name: 'cancelOrchestration',
-    description:
-      'Cancel one of YOUR orchestrations: cancels its pending deadline and writes a cancelled tombstone (the ' +
-      'record is kept, not deleted). Already-delivered workers are not recalled — a late report from them after ' +
-      'cancellation is ignored. Only the owning main agent+session may cancel.',
-    inputSchema: obj(
-      { orchestrationId: { type: 'string', description: 'The orchestrationId returned by startOrchestration.' } },
-      ['orchestrationId']
-    )
-  }
-]
 
 /**
  * Formal code-host review effect (gitlab-com-integration.md §15). The descriptor
@@ -1434,10 +1342,6 @@ export const ALL_TOOL_NAMES = [
       ...KNOWLEDGE_TOOLS,
       ...DECISION_TOOLS,
       ...COLLABORATION_TOOLS,
-      // Retired from injection but still dispatched by `executeTool`, so the name stays
-      // reserved (no evaluation tool may shadow it) and auto-allowed (a session warm with
-      // the old descriptor, or an in-flight orchestration, must not start hitting approval).
-      ...RETIRED_ORCHESTRATION_TOOLS,
       ...GITHUB_REVIEW_TOOLS,
       ...CODE_HOST_EFFECT_TOOLS,
       RECALL_TOOL,

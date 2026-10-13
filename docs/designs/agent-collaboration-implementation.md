@@ -13,27 +13,23 @@
 > second, equally hop-bounded path. Read that document for the verification, hop
 > transition, and activation rendezvous rules.
 
-> **Current behavior:** the `sendMessage` peer-agent target and
-> `startOrchestration` use the daemon's internal `messageAgent` delivery
-> primitive. A peer wake is postless unless `sendMessage` explicitly includes a
-> channel. Runtime code and protocol schemas are authoritative for exact
-> payload shapes.
+> **Current behavior:** the `sendMessage` peer-agent target uses the daemon's
+> internal `messageAgent` delivery primitive. A peer wake is postless unless
+> `sendMessage` explicitly includes a channel. Runtime code and protocol schemas
+> are authoritative for exact payload shapes.
 
-> **Orchestration tool surface retired.** `startOrchestration`,
-> `getOrchestration`, and `cancelOrchestration` are no longer injected into any
-> agent's tool set: the send half duplicated `sendMessage` (a fan-out to N workers
-> is N `sendMessage({ toAgent: { agentId, needsReply: true } })` calls) and the
-> status half duplicated `viewSessionStatus`. Section 3 below still describes the
-> daemon machinery accurately — durable records, correlation checks, idempotent
-> report recording, and the one-shot deadline wake are all unchanged and still
-> re-armed from the store on startup — but an agent can no longer start or query an
-> orchestration. The descriptors remain in `RETIRED_ORCHESTRATION_TOOLS`
-> (`packages/daemon/src/mcp/tools.ts`) and `executeTool` still dispatches them, so
-> a session warm with the old descriptors and any still-open record keep resolving.
-> The **deadline wake** is the one capability with no `sendMessage` equivalent
-> today (`needsReply` has no timeout); it is retained precisely so `needsReply` can
-> gain an optional deadline on top of it, and until then no agent-reachable tool
-> offers a timeout-based wake.
+> **Orchestration removed (#2979).** The `startOrchestration`,
+> `getOrchestration`, and `cancelOrchestration` tools are gone, and so is the
+> daemon machinery behind them: the orchestration and subtask records, the
+> recording of correlated worker reports, and the one-shot deadline wake with its
+> startup and duty-change re-arm. A fan-out to N workers is N
+> `sendMessage({ toAgent: { agentId, needsReply: true } })` calls, and status is
+> `viewSessionStatus`; a session that still calls a removed name gets the ordinary
+> unknown-tool error. Sections 3 and 6.8 remain as the record of the removed
+> design. `correlationId` still rides trusted call metadata and the parent-session
+> reply, but nothing in the daemon reads it any more. The daemon store keeps its
+> unused `orchestration` and `orchestration_subtask` tables until a schema step
+> drops them.
 
 > This document is the concrete implementation design for
 > [`agents-collaboration-design.md`](agents-collaboration-design.md). That
@@ -43,7 +39,7 @@
 > Three major areas:
 >
 > - **Section 2: Agent-mention delivery data plane** - agent-to-agent delivery that uses an @mention in a channel/thread to wake another agent
-> - **Section 3: Main-agent orchestration** - direct-message workers + wait/collect + summarize, including correlation, completion detection, and result collection
+> - **Section 3: Main-agent orchestration (removed)** - direct-message workers + wait/collect + summarize, including correlation, completion detection, and result collection
 > - **Section 4: Concurrency model** - natural concurrency across threads/sources, serialization within one conversation line, and backpressure/limits
 >
 > The canonical safety rules for feedback loops are in [`loop-breaker-design.md`](loop-breaker-design.md). This document defines delivery and orchestration; that document defines when a platform conversation, agent-call chain, or future interaction graph must stop and how it recovers.
@@ -67,7 +63,7 @@ daemon remains on the message hot path and CP remains off it.
 | **Peer discovery**          | `listAgents` (alias `listChannelAgents`) uses the `channel/agents` control request. Scope is the requester's **organization**, filtered by the directional call policy; `channel` is an optional narrowing filter. |
 | **Agent-to-agent delivery** | The `sendMessage` peer target invokes the internal `messageAgent` primitive locally or uses `rd/agentmsg` → `rd/agentmsg/fwd` → `rd/agentmsg/ack` across daemons. Message bodies never traverse CP.                |
 | **Call authorization**      | The caller's outbound policy and target's inbound policy must both allow the edge; directory, source daemon, relay, and target daemon verify independently.                                                        |
-| **Orchestration**           | Durable daemon-local state, trusted correlation metadata, and deadline wakes are live, but the `startOrchestration` / `getOrchestration` / `cancelOrchestration` tools are retired from the agent tool surface.    |
+| **Orchestration**           | Removed with its tools, records, report recording, and deadline wake; a fan-out is N `sendMessage` peer wakes with `needsReply`.                                                                                   |
 | **Concurrency**             | Different sessions run concurrently; a per-`sessionKey` admission gate serializes one conversation and enforces queue/capacity limits.                                                                             |
 
 ### 1.3 Implemented Surface
@@ -79,9 +75,8 @@ daemon remains on the message hot path and CP remains off it.
   `messageAgent` delivery primitive.
 - `viewSessionStatus` for checking a child session the caller started.
 - A durable inbox and per-session admission gate.
-- Fan-out orchestration with correlated worker replies, deadlines, and
-  cancellation — **daemon-side only**; the three orchestration tools are no
-  longer part of the agent-facing surface.
+- Fan-out as N `sendMessage` peer wakes with `needsReply`; the orchestration
+  tools and their daemon machinery were removed.
 
 ### 1.4 Boundaries / Non-Goals
 
@@ -193,8 +188,8 @@ The target receives caller-attributed text in its own agent session:
   `delivered:false, reason:'not_allowed'`.
 - Trusted daemon/relay code derives `fromAgentId`; an agent cannot attest its
   own identity.
-- `correlationId`, `subtaskId`, hop count, and orchestration status are trusted
-  call metadata, not caller-authored message fields.
+- `correlationId` and hop count are trusted call metadata, not caller-authored
+  message fields.
 
 ### 2.3 Delivery Paths (Two Target Locations)
 
@@ -213,8 +208,7 @@ messageAgent(toAgentId, text, coords)
 
 - **Deduplication / ordering (see section 6.3):** **Generating a unique msgId and reusing existing deduplication is insufficient.** The `(sessionKey,msgId)` cache wraps only `rd/msg`; same-daemon `dispatch` and `rd/agentmsg` bypass it. `transcriptCoords()` also derives ts from the final msgId segment, while `transcriptSince` sorts by ts, so a random UUID can reorder or omit replay. Use a **stable `deliveryId` + monotonic `ts`** and one admission idempotency layer shared by local and relay paths.
 - **Return path:** A worker's reverse `messageAgent` call wakes the main agent
-  and supplies the result. Trusted correlation metadata updates orchestration
-  completion; no platform echo is used as a trigger.
+  and supplies the result; no platform echo is used as a trigger.
 
 **Cross daemon, where the target agent runs elsewhere:** use the **daemon -> relay -> daemon data plane**; the message body **does not pass through CP**. Reuse the physical shared-bot links—daemons connected to relays and relays holding connections by daemonId—described in [`shared-bot-relay.md`](shared-bot-relay.md), but **do not address through existing `members`**:
 
@@ -530,7 +524,10 @@ remaining work and are deliberately out of that change's scope:
 
 ---
 
-## 3. Main-Agent Orchestration (Fan-Out + Wait/Collect + Summarize)
+## 3. Main-Agent Orchestration (Fan-Out + Wait/Collect + Summarize) — Removed
+
+> **Removed (#2979).** None of this section is implemented any more; it is kept as
+> the record of the design. See the banner at the top of this document.
 
 > Goal: a **main agent** divides work into subtasks, directly messages multiple
 > worker agents, waits for their return, and summarizes one result.
@@ -651,11 +648,6 @@ Human in thread T: @main please upgrade these three RPC nodes.
 
 ### 3.5a Orchestration API That the Main Agent Can Actually Call
 
-> **Retired surface.** The three tools below are no longer injected into any
-> agent's tool set (see the banner at the top of this document). The daemon-side
-> contract they describe — atomic record-first start, owner-scoped read, and
-> deadline-clearing cancel — is unchanged and still reachable internally.
-
 The daemon owns orchestration storage and exposes tools rather than asking a
 skill or prompt to mutate local state:
 
@@ -670,18 +662,17 @@ skill or prompt to mutate local state:
   ```
 - **Read/control tools:** `getOrchestration(orchestrationId)` lets main inspect all subtask/result state after wake. `cancelOrchestration(orchestrationId)` removes the deadline and writes the durable cancelled state. Section 3.3a `call_metadata` automatically preserves correlation in a worker response; main does not manually supply it.
 - **Completion trigger:** On every worker report or durable deadline wake, main calls `getOrchestration` and determines complete/timeout. Daemon applies the four section 3.3 correlation checks and idempotency when storing report results.
-- `startOrchestration`, `getOrchestration`, and `cancelOrchestration` are
-  declared in the daemon's MCP tool module but detached from every injected tool
-  set; durable state lives in `local-store.ts`.
+- `startOrchestration`, `getOrchestration`, and `cancelOrchestration` were
+  removed with their handlers and durable state.
 
-### 3.6 Implemented Surface
+### 3.6 Removed Surface
 
-| Layer    | Behavior                                                                                                                                                                                                          |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Daemon   | Carries `correlationId` and trusted caller metadata through the turn, persists a daemon-local orchestration record before delivery, and applies idempotent state transitions and correlation checks.              |
-| Deadline | Stores a cancellable one-shot deadline in the orchestration record and wakes `mainSessionKey` directly.                                                                                                           |
-| Tools    | `startOrchestration`, `getOrchestration`, and `cancelOrchestration` are retired from injection (still dispatchable for warm sessions and in-flight records); worker replies inherit trusted correlation metadata. |
-| Tests    | Cover record-before-send, replay, partial delivery failure, forged or duplicate reports, serialized main wakes, N-of-N completion, deadline partial summaries, and worker errors.                                 |
+| Layer    | Behavior                                                                                                       |
+| -------- | -------------------------------------------------------------------------------------------------------------- |
+| Daemon   | Records and report recording removed; `correlationId` still rides trusted call metadata, but nothing reads it. |
+| Deadline | Removed, with its startup and duty-change re-arm. The unused tables stay in the store schema.                  |
+| Tools    | Removed; a session that still calls one gets the unknown-tool error.                                           |
+| Tests    | Removed with the code.                                                                                         |
 
 ---
 
@@ -699,7 +690,7 @@ skill or prompt to mutate local state:
 - **Current capacity enforcement is local to a conversation:** same-session
   work queues to a hard-coded depth of 10 and returns `queue_full` beyond it.
   The daemon does not yet enforce a collaboration-specific per-agent
-  concurrent-turn limit or orchestration fan-out width.
+  concurrent-turn limit.
 
 ### 4.2 Rules
 
@@ -708,7 +699,6 @@ skill or prompt to mutate local state:
 | **Across sessions**                 | **Concurrent**, unchanged. Different `sessionKey` values run fully in parallel.                             |
 | **Within one session/conversation** | **Serialized / in order.** Handle inbound events for one `sessionKey` by arrival order, one turn at a time. |
 | **Total for one agent**             | No collaboration-specific admission limit is currently enforced across sessions.                            |
-| **One orchestration fan-out**       | `startOrchestration` accepts the supplied subtask array; no schema-level width limit is currently enforced. |
 
 ### 4.3 Per-Session Serialization Gate
 
@@ -767,20 +757,15 @@ per-session queue:
    daemon rejects the new inbound event with `queue_full`.
 2. **Per-agent concurrent-turn limit:** not implemented as a collaboration
    admission gate.
-3. **Orchestration fan-out width:** not enforced by the current
-   `startOrchestration` schema.
 
-For orchestration:
-
-- If a worker is busy, `messageAgent` returns `delivered:false, reason:'busy'`. Main uses a **cron deadline job** from section 3.5 to retry later rather than blocking.
-- If a target agent is **offline or not placed**, fail fast similarly; main retries or marks the subtask `unavailable`.
+For a fan-out, a busy, offline, or unplaced target fails fast with a typed
+`delivered:false` reason, and the caller retries or reports it.
 
 ### 4.5 Loop / Explosion Protection
 
 This section lists collaboration-side mechanisms only. See [`loop-breaker-design.md`](loop-breaker-design.md) for unified platform feedback loops, durable latches, restart/replay, and recovery permissions.
 
 - **hopCount:** Increment every agent-to-agent delivery and reject at or above the shared `MAX_AGENT_CALL_HOPS` threshold, preventing an A <-> B wake loop.
-- **Orchestration depth limit:** Bound nested orchestration when a worker acts as a main agent, preventing exponential fan-out.
 - **Self-delivery protection:** Reject `messageAgent(toAgentId == self)` to avoid self-wake loops.
 
 ### 4.6 Current Surface and Remaining Limits
@@ -789,7 +774,7 @@ This section lists collaboration-side mechanisms only. See [`loop-breaker-design
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Daemon | Atomic `sessionKey` admission serializes a conversation, caps its queue at 10, releases or fail-stops queued work on failure/cancel, enforces the shared `MAX_AGENT_CALL_HOPS` exclusive boundary (20), and rejects self-delivery. |
 | Tool   | Peer delivery reports typed outcomes including offline, queue-full, policy denial, and hop-limit failures.                                                                                                                         |
-| Config | `maxAgents` bounds placed agent capacity and `maxConcurrentSessions` is part of daemon config; neither supplies the missing collaboration-specific per-agent turn limit or orchestration fan-out width described above.            |
+| Config | `maxAgents` bounds placed agent capacity and `maxConcurrentSessions` is part of daemon config; neither supplies the missing collaboration-specific per-agent turn limit described above.                                           |
 | Tests  | Cover concurrent cold-session admission, queue ordering and failure, queue-full reporting, hop-limit rejection, and self-delivery rejection.                                                                                       |
 
 ---
@@ -821,12 +806,11 @@ section is part of the contract, not an optional optimization.
   channel, thread, DM state, and the agent's integration snapshot at
   `session/new`. The daemon derives these fields from the real trigger; tools
   never trust caller-supplied identity or platform claims.
-- Caller identity, `mainSessionKey`, origin, and reply target for
-  `listAgents`, the `sendMessage` peer branch, and orchestration tools
-  come entirely from trusted `SessionContext`. `listAgents` takes only an
-  optional `channel` **filter** from tool input; the trusted current channel is
-  carried separately, and is used solely to build a compatible request for a CP
-  that lacks `agent-directory-org-scope-v1`.
+- Caller identity, origin, and reply target for `listAgents` and the
+  `sendMessage` peer branch come entirely from trusted `SessionContext`.
+  `listAgents` takes only an optional `channel` **filter** from tool input; the
+  trusted current channel is carried separately, and is used solely to build a
+  compatible request for a CP that lacks `agent-directory-org-scope-v1`.
 
 ### 6.2 Target Addressing: Deterministic `(platform, channel, toAgentId) -> {daemonId, integrationId}`
 
@@ -876,9 +860,11 @@ Timeout, retransmission, and deduplication at each hop use the stable
 
 - An MCP token is **statically session-scoped**, and queued turns in the session share it. Bind metadata to one `QueueEntry` by `deliveryId` / msgId. Install its active context **before prompt begins**, clear it in `finally`, and reject tool calls with **no active turn**. Durable replay of the same delivery restores its own correlation/hop, but nothing survives after turn finally to contaminate the next delivery.
 - **Split semantics:** `messageAgent` must not automatically inherit correlation for every call, or a worker delegating to a third agent would incorrectly reuse the parent task correlation. Add `replyToAgentCall` or a mode: **only a reply inherits correlation**, while **every child call must inherit hop/origin**.
-- **Do not conflate security IDs:** `correlationId` is only for subtask/reply association, never a loop root. A future `originId` must be minted by the daemon and durably persisted end to end; see sections 7.3 and 8.1 of [`loop-breaker-design.md`](loop-breaker-design.md).
+- **Do not conflate security IDs:** `correlationId` is only for reply association, never a loop root. A future `originId` must be minted by the daemon and durably persisted end to end; see sections 7.3 and 8.1 of [`loop-breaker-design.md`](loop-breaker-design.md).
 
-### 6.8 Orchestration: Durable Owner / Outbox / State Machine / Owner Authorization
+### 6.8 Orchestration: Durable Owner / Outbox / State Machine / Owner Authorization — Removed
+
+> **Removed (#2979)** with section 3; kept as the record of the design.
 
 - **Durable owner:** Orchestration state is daemon-local. A placement move cannot
   silently abandon an active orchestration; the move must either rehydrate it

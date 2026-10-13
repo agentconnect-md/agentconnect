@@ -108,7 +108,7 @@ the picture it draws.
 ### Agents and collaboration
 
 - [agents-collaboration-design.md](designs/agents-collaboration-design.md) — The product vision for agent-to-agent collaboration.
-- [agent-collaboration-implementation.md](designs/agent-collaboration-implementation.md) — The collaboration mechanics: agent-to-agent delivery and orchestration.
+- [agent-collaboration-implementation.md](designs/agent-collaboration-implementation.md) — The collaboration mechanics: agent-to-agent delivery and concurrency.
 - [loop-breaker-design.md](designs/loop-breaker-design.md) — Feedback-loop protection for platform messages and collaboration.
 - [collaboration-arena.md](designs/collaboration-arena.md) — The collaboration arena.
 - [collaboration-arena-baseline.md](designs/collaboration-arena-baseline.md) — The arena's measured baseline.

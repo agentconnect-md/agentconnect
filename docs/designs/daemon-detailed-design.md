@@ -1382,15 +1382,12 @@ control plane no longer reads `Bot.platformConfig.joinPublicChannels` or sends t
 daemon's `IntegrationSlackConfig` no longer has it (an older daemon reads its absence as on).
 
 The orchestration triple `startOrchestration` / `getOrchestration` /
-`cancelOrchestration` is **retired from the injected tool surface**: its send half
-duplicated `sendMessage` (fan-out to N workers is N `sendMessage` calls with
-`toAgent.needsReply`) and its status half duplicated `viewSessionStatus`. The descriptors
-live on in `RETIRED_ORCHESTRATION_TOOLS` and `executeTool` still dispatches them, so
-sessions already warm with the old descriptors and still-open orchestration records keep
-resolving — but no agent is offered them. The daemon-side machinery below (durable
-records, correlation recording, the re-armed deadline wake) is unchanged; the deadline is
-the one capability `sendMessage(needsReply)` cannot yet express and is kept so
-`needsReply` can gain an optional deadline on top of it.
+`cancelOrchestration` is **removed** (#2979), with its daemon machinery: the durable
+records, correlation recording on worker reports, and the re-armed deadline wake. Its send
+half duplicated `sendMessage` (fan-out to N workers is N `sendMessage` calls with
+`toAgent.needsReply`) and its status half duplicated `viewSessionStatus`. A session that
+still calls one of the names gets the ordinary unknown-tool error. The store keeps the
+unused `orchestration` and `orchestration_subtask` tables until a schema step drops them.
 
 `listAgents` is **org**-scoped, not channel-scoped: it issues `channel/agents` with
 no channel and gets back every peer in the organization that the directional call

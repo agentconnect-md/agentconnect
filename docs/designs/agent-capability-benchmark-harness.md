@@ -11,7 +11,7 @@
 AgentConnect is a **harness-neutral capability layer**. Claude Code, Codex, Gemini, and other ACP runtimes supply the underlying agent loop, reasoning, and most general task competence. AgentConnect adds product behavior around that loop:
 
 - durable managed, native, or external memory;
-- multi-agent discovery, direct delivery, orchestration, correlation, and policy;
+- multi-agent discovery, direct delivery, correlation, and policy;
 - channel/session routing, prompt context, permission policy, and untrusted-event wrapping;
 - daemon-local durability, isolation, and lifecycle behavior.
 
@@ -195,7 +195,7 @@ Events are versioned discriminated records with shared trial/turn/session/agent/
 - ACP session update and normalized tool call/result;
 - memory recall requested/completed/failed and capture requested/completed/failed;
 - permission requested, auto-allowed, prompted, denied, resolved, or cancelled;
-- agent delivery admitted/rejected/deduplicated and orchestration state transitions;
+- agent delivery admitted/rejected/deduplicated;
 - output terminal status and usage/cost updates.
 
 Emit at the semantic decision point. For example, an `AcpHost.onPermission` callback is only a request; it does not say whether the daemon auto-allowed a system tool or rendered an interactive prompt. The observer records the actual decision.
@@ -249,7 +249,6 @@ These remain normal tests and gate relevant pull requests:
 - direct delivery preserves trusted caller, delivery, correlation, origin, and hop metadata;
 - context isolation gives a callee only the handed content and trusted collaboration context;
 - call policy, membership, idempotency, queue limits, timeout/cancel, and failure feedback hold;
-- orchestration is record-first and reaches the correct terminal state;
 - duplicate delivery and cascades/loops are contained.
 
 **Policy and ingress**
@@ -269,7 +268,6 @@ Keep v1 small and outcome-focused:
 - `memory-isolation`: memory on; verify a fact from another agent/principal is neither injected nor disclosed.
 - `collab-delivery-reply`: production-surface functional check; a task requiring a specialist peer succeeds only through admitted delivery/reply correlation (no off cell — the product ships no collaboration-off composition).
 - `collab-context-isolation`: reproduce the greeting/cascade failure; treatment must complete without peer rebroadcast or thread-context bleed.
-- `collab-orchestration-partial-failure`: verify collected successes, timed-out worker state, and final main-agent recovery.
 - `prompt-quiet-mechanics`: prompt-variant comparison on the production surface; the treatment uses the tool without narrating internal delivery mechanics.
 - `memory-collab-handoff`: a peer uses relevant managed memory during a delegated task without leaking unrelated memory.
 

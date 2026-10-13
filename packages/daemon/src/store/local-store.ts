@@ -1083,40 +1083,6 @@ function noteProjectionParams(row: NoteProjectionRow, now: number, ownerId: stri
   }
 }
 
-/** §3.4/§6.8 main-agent orchestration record (daemon-local). `status` is the
- *  orchestration-level lifecycle; per-subtask status lives on {@link SubtaskRow}. */
-export interface OrchestrationRow {
-  orchestrationId: string
-  mainSessionKey: string
-  mainAgentId: string
-  platform: string
-  channel: string
-  thread: string
-  integrationId?: string | null
-  /** Where the main should post its human-facing summary (opaque to the daemon). */
-  replyTarget?: string | null
-  /** Deadline epoch (ms) — the durable SoT for the one-shot cron. NULL ⇒ no deadline. */
-  deadline?: number | null
-  status: 'active' | 'done' | 'cancelled'
-  createdAt: number
-  updatedAt: number
-}
-
-/** One subtask of an orchestration. `correlationId` = `<orchestrationId>.<idx>` is the
- *  stable delivery/report correlation key (§3.3). */
-export interface SubtaskRow {
-  orchestrationId: string
-  correlationId: string
-  idx: number
-  toAgentId: string
-  text: string
-  status: 'pending' | 'sending' | 'delivered' | 'succeeded' | 'worker_error' | 'timed_out'
-  result?: string | null
-  /** Typed reason on a failed delivery (`self` for postless/unpaired self-wakes, or not_allowed/not_local/no_agent/offline). */
-  deliveryReason?: string | null
-  updatedAt: string
-}
-
 /** Runtime-level model-catalog metadata (runtime-model-catalog.md §4). `fingerprint`
  *  is the discovery generation (runtime id + probed version + launch definition);
  *  `complete` flips true only after one FULL successful discovery, so the §3.3
@@ -2603,18 +2569,11 @@ export class LocalStore {
         trippedAt INTEGER,
         reason TEXT
       );
-      -- §3.4/§6.8 main-agent orchestration: a main agent fans out N subtasks to
-      -- worker agents, then waits asynchronously and summarizes. The record is
-      -- persisted BEFORE any delivery (record-first — a fast worker's reply must
-      -- never arrive before the record exists, else §3.3 correlation drops it).
-      -- daemon-local (never on the CP hot path); the deadline epoch is the durable
-      -- SoT for the one-shot cron re-armed on startup. status: active|done|cancelled.
+      -- Unused since the orchestration tools were removed; kept until a schema step drops them.
       CREATE TABLE IF NOT EXISTS orchestration (
         orchestrationId TEXT PRIMARY KEY,
         mainSessionKey TEXT NOT NULL,
         mainAgentId TEXT NOT NULL,
-        -- The main's session coords, stored explicitly (not parsed from mainSessionKey,
-        -- whose channel/thread may contain ':') so the deadline fire wakes the exact session.
         platform TEXT NOT NULL,
         channel TEXT NOT NULL,
         thread TEXT NOT NULL,
@@ -2626,11 +2585,6 @@ export class LocalStore {
         updatedAt INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS orchestration_active ON orchestration (status);
-      -- One row per subtask. Stable correlationId = "<orchestrationId>.<idx>" is the
-      -- delivery/report correlation key (§3.3). State machine (§6.8):
-      --   pending → sending → delivered → succeeded | worker_error | timed_out
-      -- busy/offline are RETRYABLE attempt states folded back to a delivery failure.
-      -- Transitions are CAS + idempotent on (orchestrationId, correlationId).
       CREATE TABLE IF NOT EXISTS orchestration_subtask (
         orchestrationId TEXT NOT NULL,
         correlationId TEXT NOT NULL,
@@ -9230,148 +9184,6 @@ export class LocalStore {
       ).changes
       return { transcriptOnly, released: Number(released) }
     })
-  }
-
-  // ── §3.4/§6.8 main-agent orchestration ──
-
-  /**
-   * RECORD-FIRST (§3.4): persist the orchestration header + all subtask rows (status
-   * 'pending') in ONE transaction, BEFORE any delivery. A fast worker's reply that
-   * arrives before this returns has nothing to correlate against and is dropped — so
-   * this MUST complete before startOrchestration delivers anything. Idempotent via
-   * INSERT OR IGNORE on the stable ids (replay-safe).
-   */
-  async createOrchestration(orch: OrchestrationRow, subtasks: SubtaskRow[]): Promise<void> {
-    await this.transaction(async (raw) => {
-      const tx = accessOf(raw)
-      const insertOrch = tx.prepare(
-        `INSERT OR IGNORE INTO orchestration
-         (orchestrationId, mainSessionKey, mainAgentId, platform, channel, thread,
-          integrationId, replyTarget, deadline, status, createdAt, updatedAt)
-       VALUES (@orchestrationId, @mainSessionKey, @mainAgentId, @platform, @channel, @thread,
-          @integrationId, @replyTarget, @deadline, @status, @createdAt, @updatedAt)`
-      )
-      const insertSub = tx.prepare(
-        `INSERT OR IGNORE INTO orchestration_subtask
-         (orchestrationId, correlationId, idx, toAgentId, text, status, result, deliveryReason, updatedAt)
-       VALUES (@orchestrationId, @correlationId, @idx, @toAgentId, @text, @status, @result, @deliveryReason, @updatedAt)`
-      )
-      await insertOrch.run({
-        orchestrationId: orch.orchestrationId,
-        mainSessionKey: orch.mainSessionKey,
-        mainAgentId: orch.mainAgentId,
-        platform: orch.platform,
-        channel: orch.channel,
-        thread: orch.thread,
-        integrationId: orch.integrationId ?? null,
-        replyTarget: orch.replyTarget ?? null,
-        deadline: orch.deadline ?? null,
-        status: orch.status,
-        createdAt: orch.createdAt,
-        updatedAt: orch.updatedAt
-      })
-      for (const s of subtasks) {
-        await insertSub.run({
-          orchestrationId: s.orchestrationId,
-          correlationId: s.correlationId,
-          idx: s.idx,
-          toAgentId: s.toAgentId,
-          text: s.text,
-          status: s.status,
-          result: s.result ?? null,
-          deliveryReason: s.deliveryReason ?? null,
-          updatedAt: s.updatedAt
-        })
-      }
-    })
-  }
-
-  async getOrchestration(orchestrationId: string): Promise<OrchestrationRow | undefined> {
-    return (await this.db
-      .prepare('SELECT * FROM orchestration WHERE orchestrationId = ?')
-      .get(orchestrationId)) as unknown as OrchestrationRow | undefined
-  }
-
-  async getSubtasks(orchestrationId: string): Promise<SubtaskRow[]> {
-    return (await this.db
-      .prepare('SELECT * FROM orchestration_subtask WHERE orchestrationId = ? ORDER BY idx ASC')
-      .all(orchestrationId)) as unknown as SubtaskRow[]
-  }
-
-  async getSubtaskByCorrelation(orchestrationId: string, correlationId: string): Promise<SubtaskRow | undefined> {
-    return (await this.db
-      .prepare('SELECT * FROM orchestration_subtask WHERE orchestrationId = ? AND correlationId = ?')
-      .get(orchestrationId, correlationId)) as unknown as SubtaskRow | undefined
-  }
-
-  /** All still-`active` orchestrations — for startup re-arm of deadlines + re-drive
-   *  of non-terminal subtasks (§6.8). */
-  async listActiveOrchestrations(): Promise<OrchestrationRow[]> {
-    return (await this.db
-      .prepare("SELECT * FROM orchestration WHERE status = 'active' ORDER BY createdAt ASC")
-      .all()) as unknown as OrchestrationRow[]
-  }
-
-  /** CAS subtask status — only advances when the current status is one of `from`.
-   *  Idempotent + monotonic: a stale/duplicate transition (current status not in
-   *  `from`) is a no-op and returns false. */
-  async setSubtaskStatus(
-    orchestrationId: string,
-    correlationId: string,
-    from: SubtaskRow['status'][],
-    to: SubtaskRow['status'],
-    updatedAt: string,
-    extra?: { result?: string | null; deliveryReason?: string | null }
-  ): Promise<boolean> {
-    const placeholders = from.map((_, i) => `@from${i}`).join(', ')
-    const params: SqlParams = { orchestrationId, correlationId, to, updatedAt }
-    from.forEach((f, i) => (params[`from${i}`] = f))
-    let setResult = ''
-    if (extra && 'result' in extra) {
-      setResult += ', result=@result'
-      params.result = extra.result ?? null
-    }
-    if (extra && 'deliveryReason' in extra) {
-      setResult += ', deliveryReason=@deliveryReason'
-      params.deliveryReason = extra.deliveryReason ?? null
-    }
-    const info = await this.db
-      .prepare(
-        `UPDATE orchestration_subtask SET status=@to, updatedAt=@updatedAt${setResult}
-         WHERE orchestrationId=@orchestrationId AND correlationId=@correlationId AND status IN (${placeholders})`
-      )
-      .run(params)
-    return info.changes > 0
-  }
-
-  async setOrchestrationStatus(
-    orchestrationId: string,
-    status: OrchestrationRow['status'],
-    updatedAt: number
-  ): Promise<void> {
-    await this.db
-      .prepare('UPDATE orchestration SET status=?, updatedAt=? WHERE orchestrationId=?')
-      .run(status, updatedAt, orchestrationId)
-  }
-
-  async setOrchestrationDeadline(orchestrationId: string, deadline: number | null, updatedAt: number): Promise<void> {
-    await this.db
-      .prepare('UPDATE orchestration SET deadline=?, updatedAt=? WHERE orchestrationId=?')
-      .run(deadline, updatedAt, orchestrationId)
-  }
-
-  /** CAS fire claim: clear the deadline iff it is still the armed one — every member sharing the
-   *  store may hold a timer for it, and exactly one of them gets `true`. */
-  async claimOrchestrationDeadline(orchestrationId: string, deadline: number, updatedAt: number): Promise<boolean> {
-    return (
-      (
-        await this.db
-          .prepare(
-            "UPDATE orchestration SET deadline=NULL, updatedAt=? WHERE orchestrationId=? AND status='active' AND deadline=?"
-          )
-          .run(updatedAt, orchestrationId, deadline)
-      ).changes === 1
-    )
   }
 
   // ── runtime model-catalog cache (runtime-model-catalog.md §4) ──

@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  toolsForIntegrations,
-  ALL_TOOL_NAMES,
-  COLLABORATION_TOOLS,
-  GITHUB_REVIEW_TOOLS,
-  RETIRED_ORCHESTRATION_TOOLS
-} from '../src/mcp/tools.js'
+import { toolsForIntegrations, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
 import type { Integration } from '../src/agents/agent-schema.js'
 
@@ -476,22 +470,6 @@ describe('toolsForIntegrations', () => {
     ])
   })
 
-  it('never advertises the retired orchestration tools to any agent', () => {
-    const retired = ['startOrchestration', 'getOrchestration', 'cancelOrchestration']
-    const surfaces = [
-      toolsForIntegrations([]),
-      toolsForIntegrations([slackInt, telegramInt, discordInt], { organizationKnowledge: true }),
-      toolsForIntegrations([slackInt])
-    ]
-    for (const tools of surfaces) {
-      for (const name of retired) expect(tools.map((t) => t.name)).not.toContain(name)
-    }
-    // The descriptors themselves are deliberately KEPT (the deadline machinery behind them
-    // is still live and re-armable), just detached from every injected surface.
-    expect(RETIRED_ORCHESTRATION_TOOLS.map((t) => t.name)).toEqual(retired)
-    expect(COLLABORATION_TOOLS.map((t) => t.name)).not.toEqual(expect.arrayContaining(retired))
-  })
-
   it('offers one surface only: every composition carries the full production target union', () => {
     // The user-facing invariant behind removing the evaluation "collaboration off"
     // toggle: there is exactly ONE tool surface, and it is the production one.
@@ -574,12 +552,15 @@ describe('toolsForIntegrations', () => {
         'submitGithubReview'
       ])
     )
-    // The merged-away tool names are gone.
-    expect(ALL_TOOL_NAMES).not.toContain('sendPlatformMessage')
-    expect(ALL_TOOL_NAMES).not.toContain('messageAgent')
-    // The orchestration triple is retired from INJECTION but `executeTool` still dispatches
-    // it for warm sessions / in-flight records, so the names stay reserved + auto-allowed.
-    for (const retired of RETIRED_ORCHESTRATION_TOOLS) expect(ALL_TOOL_NAMES).toContain(retired.name)
+    // The merged-away and removed tool names are gone.
+    for (const name of [
+      'sendPlatformMessage',
+      'messageAgent',
+      'startOrchestration',
+      'getOrchestration',
+      'cancelOrchestration'
+    ])
+      expect(ALL_TOOL_NAMES).not.toContain(name)
   })
 
   it('projects only reviewed external-memory capabilities onto stable core tool names', () => {

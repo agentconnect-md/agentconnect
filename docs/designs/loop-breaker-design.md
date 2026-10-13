@@ -6,8 +6,7 @@
 > protection for platform-message feedback loops, durable-replay amplification,
 > recursive agent-to-agent calls, and the future orchestration causal graph.
 >
-> Agent delivery, authorization, correlation, and the orchestration state machine
-> remain governed by
+> Agent delivery, authorization, and correlation remain governed by
 > [`agent-collaboration-implementation.md`](agent-collaboration-implementation.md).
 > This document defines only when an interaction chain must stop, how it remains
 > stopped, and who may resume it.
@@ -533,13 +532,12 @@ mixed-version migration.
 
 ### 7.3 IDs Must Keep Distinct Responsibilities
 
-| ID                              | Current meaning                                                                | Can it be a loop trust root?                                              |
-| ------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| `deliveryId`                    | Stable idempotency key for one delivery                                        | No; each hop/delivery may differ                                          |
-| `correlationId`                 | Which subtask a worker reply belongs to; only replies inherit it automatically | No; it is an association key, and tools currently allow explicit override |
-| `orchestrationId`               | Owner/state of one controlled fanout job                                       | Not alone; nested calls may cross orchestration boundaries                |
-| `hopCount`                      | Current trusted agent-call depth                                               | Yes; the current L2 safety counter                                        |
-| Future `interactionId/originId` | Daemon-minted root for the whole causal graph                                  | Yes; L3 budget key; **not currently implemented**                         |
+| ID                              | Current meaning                                                      | Can it be a loop trust root?                                              |
+| ------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `deliveryId`                    | Stable idempotency key for one delivery                              | No; each hop/delivery may differ                                          |
+| `correlationId`                 | Which call a reply belongs to; only replies inherit it automatically | No; it is an association key, and tools currently allow explicit override |
+| `hopCount`                      | Current trusted agent-call depth                                     | Yes; the current L2 safety counter                                        |
+| Future `interactionId/originId` | Daemon-minted root for the whole causal graph                        | Yes; L3 budget key; **not currently implemented**                         |
 
 Correlation should be inherited only when replying to the original caller. A
 worker forwarding work to a third agent creates a new subtask edge and must not

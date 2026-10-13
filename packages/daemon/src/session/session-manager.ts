@@ -370,9 +370,7 @@ export class SessionManager {
       initializeOnly?: boolean
       /** Durable replay owns this turn even if its trigger is behind the read cursor. */
       retryAdmittedTurn?: boolean
-      /** True only when the daemon attached trusted CallMeta for this turn.
-       * `source: agent` alone is insufficient: background-task and orchestration
-       * wakes deliberately use that source without being direct agent calls. */
+      /** True only for trusted CallMeta: background-task wakes use `source: agent` without being direct agent calls. */
       directAgentCall?: boolean
       /** Trusted daemon-owned host override for a conversation-isolated webchat
        * cell. Never derived from model/session input. */

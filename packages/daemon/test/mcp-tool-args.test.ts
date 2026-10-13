@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { SEND_MESSAGE_BRANCHES, TOOL_ARG_SCHEMAS } from '../src/mcp/ops.js'
-import {
-  CODE_HOST_EFFECT_TOOLS,
-  GITHUB_REVIEW_TOOLS,
-  RETIRED_ORCHESTRATION_TOOLS,
-  toolsForIntegrations
-} from '../src/mcp/tools.js'
+import { CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
@@ -78,7 +73,6 @@ const advertised: ToolDescriptor[] = [
     currentPlatform: 'telegram'
   }),
   ...externalMemoryTools(ALL_CAPABILITIES),
-  ...RETIRED_ORCHESTRATION_TOOLS,
   ...GITHUB_REVIEW_TOOLS,
   ...CODE_HOST_EFFECT_TOOLS,
   ...ASSISTANT_ITEM_TOOLS,
@@ -107,7 +101,7 @@ describe('advertised tool schemas agree with their zod validators', () => {
 
   it('advertises every dispatchable tool that takes arguments', () => {
     const missing = [...TOOL_ARG_SCHEMAS.keys()].filter(
-      // `listChannelAgents` and `submitGithubReview` are dispatch-only aliases, and the orchestration triple is retired.
+      // `listChannelAgents` and `submitGithubReview` are dispatch-only aliases.
       (name) => !byName.has(name) && name !== 'listChannelAgents' && name !== 'submitGithubReview'
     )
     expect(missing).toEqual([])

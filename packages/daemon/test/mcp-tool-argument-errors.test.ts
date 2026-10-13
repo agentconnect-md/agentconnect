@@ -24,9 +24,6 @@ function deps(over: Partial<OpsDeps> = {}): OpsDeps {
     channelAgents: async () => ({ platform: 'slack', agents: [] }),
     messageAgent: async () => ({ delivered: true, targetSession: 'stub' }),
     replyToSession: async () => ({ delivered: true, targetSession: 'stub' }),
-    startOrchestration: async () => ({ orchestrationId: 'o', delivered: [], failed: [] }),
-    getOrchestration: async () => null,
-    cancelOrchestration: async () => false,
     memory: {
       read: vi.fn(async (_scope: unknown, path: string) => ({ path, content: '# index\n' })),
       write: vi.fn(async () => ({ ok: true }))

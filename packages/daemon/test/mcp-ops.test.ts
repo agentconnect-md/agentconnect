@@ -152,9 +152,6 @@ function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
     },
     messageAgent: async (req) => ({ delivered: true, targetSession: `stub:${req.toAgentId}` }),
     replyToSession: async () => ({ delivered: true, targetSession: 'stub' }),
-    startOrchestration: async () => ({ orchestrationId: 'o', delivered: [], failed: [] }),
-    getOrchestration: async () => null,
-    cancelOrchestration: async () => false,
     memory: noMemory,
     recordOutbound: async () => {},
     now: () => 1000,
@@ -1411,6 +1408,14 @@ describe('executeTool: read tools', () => {
     const { deps: d } = deps(fakeGateway())
     await expect(executeTool(ctx, 'nope', {}, d)).rejects.toThrow(/unknown tool/)
   })
+
+  it.each(['startOrchestration', 'getOrchestration', 'cancelOrchestration'])(
+    'answers a warm session calling the removed %s as an unknown tool',
+    async (name) => {
+      const { deps: d } = deps(fakeGateway())
+      await expect(executeTool(ctx, name, { orchestrationId: 'o' }, d)).rejects.toThrow(`unknown tool: ${name}`)
+    }
+  )
 })
 
 describe('executeTool: getThreadHistory', () => {
@@ -2694,8 +2699,7 @@ describe('executeTool: submitCodeReview', () => {
       tool: 'replyGithubReviewThreads',
       args: { replies: [{ threadRootCommentId: '1', body: 'ok' }, 7] },
       expected: 'replies[1] must be an object'
-    },
-    { tool: 'startOrchestration', args: { subtasks: ['nope'] }, expected: 'subtasks[0] must be an object' }
+    }
   ])('$tool names the offending entry by index', async ({ tool, args, expected }) => {
     const { deps: d } = deps(fakeGateway())
     d.submitCodeReview = vi.fn()

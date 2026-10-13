@@ -540,8 +540,8 @@ The parent session is therefore resumed as an ORDINARY turn:
 - the turn keeps its ordinary reply sink and delivery chrome, so an answer the
   parent writes lands in the parent's own conversation — where the humans who
   delegated the work are waiting;
-- correlation, hop count, orchestration report recording, memory behavior, and
-  the per-session serial gate remain unchanged.
+- correlation, hop count, memory behavior, and the per-session serial gate
+  remain unchanged.
 
 For code-host sessions, a repository scope (`github:<id>`, `gitlab:<id>`, or
 `gitea:<id>`) identifies the conversation; it is not a chat integration ID.
