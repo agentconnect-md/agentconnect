@@ -14,6 +14,7 @@ import type { MemoryProvider, MemoryScope } from '../../memory/provider.js'
 import { MEMORY_LAYER_CHOICES, type MemoryLayerChoice } from '../../memory/types.js'
 import type { MemoryWriteSource } from '../../memory/store.js'
 import { MemoryPathError, MemoryTooLargeError } from '../../memory/store.js'
+import { MEMORY_LAYER_NOTES } from '../../memory/entries/tools.js'
 
 /** The memory-tool deps. */
 export interface MemoryOpsDeps {
@@ -109,6 +110,30 @@ export async function memoryScopeFor(
   if (ctx.memoryBinding && call.layer !== undefined)
     throw new Error('argument layer is not available in this memory session')
   return { ...(ctx.memoryBinding?.scope ?? (await deps.memoryScope?.(ctx, call)) ?? { agentId: ctx.agentId }) }
+}
+
+/** The layer a successful write landed in and what it means to a person; a pinned binding or a memory without layers names none. */
+export function writtenLayer(
+  ctx: SessionContext,
+  deps: MemoryOpsDeps,
+  scope: MemoryScope
+): { layer: MemoryLayerChoice; note: string } | undefined {
+  if (ctx.memoryBinding || scope.root || !keepsLayers(ctx, deps)) return undefined
+  const layer: MemoryLayerChoice = scope.personKey
+    ? 'person'
+    : scope.channelKey && !scope.sharedPlace
+      ? 'here'
+      : 'shared'
+  return { layer, note: MEMORY_LAYER_NOTES[layer] }
+}
+
+/** Only the file memory keeps layers; an external memory's records, or an answer it cannot get, name none. */
+function keepsLayers(ctx: SessionContext, deps: MemoryOpsDeps): boolean {
+  try {
+    return (deps.memory.adminSurfaceForAgent?.(ctx.agentId) ?? deps.memory.adminSurface())?.shape === 'files'
+  } catch {
+    return false
+  }
 }
 
 /** A raw `layer` argument, checked; the dispatch boundary validated it already, so this only narrows the type. */
@@ -225,12 +250,12 @@ export async function writeMemory(
       const updated = current.replace(oldString, newString)
       const edited = await deps.memory.write(scope, path, updated, undefined, writeSource(ctx))
       recordBoundTopic(ctx, path)
-      return edited
+      return { ...edited, ...writtenLayer(ctx, deps, scope) }
     }
     const full = parseArgs(requiredStringAllowEmpty('content'), content)
     const written = await deps.memory.write(scope, path, full, undefined, writeSource(ctx))
     recordBoundTopic(ctx, path)
-    return written
+    return { ...written, ...writtenLayer(ctx, deps, scope) }
   } catch (err) {
     toToolError(err)
   }

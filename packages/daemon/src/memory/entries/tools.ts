@@ -8,7 +8,7 @@ import {
   MemoryEntryDeleteRequest
 } from '@agentconnect.md/protocol'
 import { unionOf, type ObjectToolSchema, type ToolDescriptor } from '../../tool-schema/descriptor.js'
-import { MEMORY_LAYER_CHOICES } from '../types.js'
+import { MEMORY_LAYER_CHOICES, type MemoryLayerChoice } from '../types.js'
 
 const LAYER_DESCRIPTION =
   'Optional. One memory layer: "shared", "person" (the person asking) or "here" (this conversation\'s). Omit for the default.'
@@ -22,6 +22,13 @@ export const MEMORY_READ_LAYER_SENTENCE =
   'Pass `layer` to read one memory layer alone: "shared" (everyone this agent serves), "person" (the person asking, from anywhere) or "here" (this conversation\'s own).'
 export const MEMORY_WRITE_LAYER_SENTENCE =
   'Writes go to this conversation\'s own layer; pass `layer: "shared"` only when the person asks to remember it for everyone, or "person" to keep it with the person asking.'
+
+/** What each layer means to a person, named in a write's result so the agent can tell them where it went. */
+export const MEMORY_LAYER_NOTES: Readonly<Record<MemoryLayerChoice, string>> = {
+  shared: 'Shared with everyone this agent serves.',
+  person: 'Your own memory, kept for you across your conversations with this agent.',
+  here: 'Kept for this conversation only.'
+}
 
 const withLayer = <T extends z.ZodObject>(schema: T) => schema.extend({ layer: MEMORY_LAYER_ARG })
 

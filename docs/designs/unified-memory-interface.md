@@ -217,6 +217,8 @@ Overlay rules: the written layer shadows the other per topic; each layer keeps i
 
 The memory read and write tools take one optional `layer` argument that names a single layer instead of the view: `shared`, `here` (the layer this conversation writes, alone), or `person` (the asker's own, honoured only when the whole turn is that one person, the way their reads are judged; it is never injected outside their own DM or console conversation). A distillation or dream binding pins its store and refuses `layer`. Writes need no approval card: the layer already keeps them to the audience that said them.
 
+A successful write, edit or delete through these tools names the layer it landed in, as `layer` (`shared`, `person` or `here`) with a one-sentence `note` a person would understand, so the agent can tell them where it went; a distillation or dream binding and external memory keep no layers and name none.
+
 Choosing external capture continues to require its existing egress opt-in. Unifying operation names does not consent to exporting conversations.
 
 External v1 remains the shared layer alone: it captures only from conversations that use the shared layer, refuses a default write from any other conversation (an explicit `layer: "shared"` is the person's call), and has no person or place layer. Do not encode channel or person ids into its agent key and claim that layered memory is supported: this bypasses the reviewed scope contract and makes existing data routing ambiguous. Later support requires an explicit profile/binding revision (a `user` scope maps naturally onto a backend's user id), trusted partition-key derivation, backend conformance, overlay semantics, and a migration plan.

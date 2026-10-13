@@ -1,10 +1,20 @@
 // Every agent's capture, memory tools and dreams follow the conversation's layer (unified-memory-interface.md §6).
-import { describe, expect, it, vi } from 'vitest'
-import type { IntegrationChannel } from '@agentconnect.md/protocol'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { existsSync } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { IntegrationChannel, MemoryEntryMutationReceipt } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import type { SessionContext } from '../src/mcp/ops.js'
+import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
+import type { MemoryToolCall } from '../src/mcp/ops/memory.js'
+import { MEMORY_LAYER_NOTES } from '../src/memory/entries/tools.js'
+import { LocalMemoryFs } from '../src/memory/fs.js'
+import { localMemoryHome } from '../src/memory/home.js'
+import { ManagedMemoryProvider } from '../src/memory/providers/managed.js'
 import { memoryChannelKey, memoryPersonKey } from '../src/memory/store.js'
 import { MEMORY_PERSON_LAYER_REFUSED, MEMORY_SHARED_LAYER_ONLY } from '../src/memory/tools.js'
+import { openTestStore } from './store-support.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { appendCoordinate } from '../src/session/append-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -364,5 +374,91 @@ describe('a channel shares only where the platform confirms it is not shared', (
       expect(scope).toMatchObject({ channelKey: memoryChannelKey('C1') })
       expect(scope).not.toHaveProperty('sharedPlace')
     }
+  })
+})
+
+describe('a memory write names the layer it landed in', () => {
+  const cleanup: (() => Promise<unknown>)[] = []
+  afterEach(async () => {
+    for (const close of cleanup.splice(0).reverse()) await close()
+  })
+
+  // The daemon's own scope rule over a real managed tree, so the layer a result names is where the file is.
+  async function writer(place: Place) {
+    const w = world(place)
+    const dir = await mkdtemp(join(tmpdir(), 'memory-written-layer-'))
+    cleanup.push(() => rm(dir, { recursive: true, force: true }))
+    const db = await openTestStore(join(dir, 'state.sqlite'))
+    cleanup.push(() => db.close())
+    const deps = {
+      memory: new ManagedMemoryProvider(() => localMemoryHome(new LocalMemoryFs(join(dir, 'agent')))),
+      memoryEntryStore: db,
+      memoryScope: (ctx: SessionContext, call: MemoryToolCall) => w.daemon.memoryToolScope(ctx, call)
+    } as unknown as OpsDeps
+    const write = async (name: string, args: Record<string, unknown>) =>
+      (await executeTool(w.ctx, name, args, deps)) as Record<string, unknown>
+    return { write, landed: (path: string) => existsSync(join(dir, 'agent', path)) }
+  }
+  const DM: Place = { channel: 'D1', conversationKind: 'dm', triggeredBy: 'U1' }
+  const PERSON_DIR = `people/${memoryPersonKey(`slack:${TENANT}:U1`)}/memory`
+
+  it("names the person's own layer for a 1:1 DM write with no layer", async () => {
+    const { write, landed } = await writer(DM)
+    expect(await write('writeMemory', { path: 'prefs.md', content: '- tabs' })).toMatchObject({
+      ok: true,
+      path: 'prefs.md',
+      layer: 'person',
+      note: MEMORY_LAYER_NOTES.person
+    })
+    expect(landed(`${PERSON_DIR}/prefs.md`)).toBe(true)
+  })
+
+  it("names this conversation's own layer in a channel with several people", async () => {
+    const { write, landed } = await writer({ snapshot: { isPrivate: true } })
+    expect(await write('writeMemory', { path: 'prefs.md', content: '- tabs' })).toMatchObject({
+      layer: 'here',
+      note: MEMORY_LAYER_NOTES.here
+    })
+    expect(landed(`channels/${memoryChannelKey('C1')}/memory/prefs.md`)).toBe(true)
+  })
+
+  it('names the shared layer when asked for everyone, and where the conversation itself shares', async () => {
+    const dm = await writer(DM)
+    expect(await dm.write('writeMemory', { path: 'prefs.md', content: '- tabs', layer: 'shared' })).toMatchObject({
+      layer: 'shared',
+      note: MEMORY_LAYER_NOTES.shared
+    })
+    expect(dm.landed('memory/prefs.md')).toBe(true)
+    // A public internal channel writes the shared layer even when asked for `here`, and says so.
+    const open = await writer({ snapshot: PUBLIC })
+    expect(await open.write('writeMemory', { path: 'a.md', content: 'x' })).toMatchObject({ layer: 'shared' })
+    expect(await open.write('writeMemory', { path: 'b.md', content: 'x', layer: 'here' })).toMatchObject({
+      layer: 'shared'
+    })
+    expect(open.landed('memory/b.md')).toBe(true)
+  })
+
+  it('names the layer of an edit and of a deletion, for files and entries alike', async () => {
+    const { write, landed } = await writer(DM)
+    await write('writeMemory', { path: 'prefs.md', content: 'keep\nDROP\n' })
+    expect(await write('writeMemory', { path: 'prefs.md', oldString: 'keep', newString: 'kept' })).toMatchObject({
+      layer: 'person'
+    })
+    expect(await write('writeMemory', { path: 'prefs.md', oldString: 'DROP\n', newString: '' })).toMatchObject({
+      layer: 'person'
+    })
+    const created = await write('createMemoryEntry', { label: 'tz', text: 'UTC+8' })
+    expect(created).toMatchObject({ state: 'completed', layer: 'person', note: MEMORY_LAYER_NOTES.person })
+    expect(landed(`${PERSON_DIR}/tz.md`)).toBe(true)
+    const { entry } = created as MemoryEntryMutationReceipt
+    const updated = await write('updateMemoryEntry', { ref: entry!.ref, revision: entry!.revision, text: 'UTC+9' })
+    expect(updated).toMatchObject({ state: 'completed', layer: 'person' })
+    const { entry: next } = updated as MemoryEntryMutationReceipt
+    expect(await write('deleteMemoryEntry', { ref: next!.ref, revision: next!.revision })).toMatchObject({
+      state: 'completed',
+      layer: 'person',
+      note: MEMORY_LAYER_NOTES.person
+    })
+    expect(landed(`${PERSON_DIR}/tz.md`)).toBe(false)
   })
 })
