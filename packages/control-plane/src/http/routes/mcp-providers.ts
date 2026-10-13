@@ -32,7 +32,8 @@ import { serializeByProvider, serializeByProviderNames } from '../provider-chain
 // Re-exported at the shape callers already import (routes/agents.ts, tests) after the chain
 // moved to `provider-chain.ts` so the refresher could join it without importing a route.
 export { serializeByProvider, serializeByProviderNames }
-import { CONNECTOR_SERVICE_HEADER } from '../../connectors/index.js'
+import { CONNECTOR_ALIAS_HEADER, CONNECTOR_SERVICE_HEADER } from '../../connectors/index.js'
+import { connectorConnectionStatus, type ConnectorConnectionStatus } from '../../connectors/client.js'
 import {
   CreateMcpProviderBody,
   UpdateMcpProviderBody,
@@ -99,7 +100,8 @@ function toDto(
   p: McpProviderRecord,
   ctx: ViewCtx,
   headers: McpHeader[],
-  oauth?: McpProviderOauthRecord | null
+  oauth?: McpProviderOauthRecord | null,
+  connectorStatus?: ConnectorConnectionStatus
 ): McpProviderDtoT {
   // For open_connector providers the service slug rides as a non-secret binding
   // header — surface it so the console can render the provider's icon.
@@ -112,6 +114,7 @@ function toDto(
     transport: p.transport,
     url: p.url,
     ...(service ? { service } : {}),
+    ...(connectorStatus ? { connectorStatus } : {}),
     visibility: p.visibility,
     sharedWith: p.sharedWith,
     ui: p.ui,
@@ -168,15 +171,26 @@ export function mcpProviderRoutes(deps: HttpDeps) {
       async (req) => {
         const ctx = ctxOf(req)
         const rows = await deps.repos.mcpProvider.listForOrg(orgOf(req), ctx)
+        const connections = rows.some((p) => p.kind === 'open_connector')
+          ? await deps.connectors?.connections().catch(() => null)
+          : null
         return Promise.all(
-          rows.map(async (p) =>
-            toDto(
+          rows.map(async (p) => {
+            const headers = (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? []
+            return toDto(
               p,
               ctx,
-              (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? [],
-              p.auth === 'oauth2' ? await deps.repos.mcpProviderOauth.get(p.orgId, p.id) : null
+              headers,
+              p.auth === 'oauth2' ? await deps.repos.mcpProviderOauth.get(p.orgId, p.id) : null,
+              p.kind === 'open_connector'
+                ? connectorConnectionStatus(
+                    connections ?? null,
+                    headers.find((h) => h.name === CONNECTOR_SERVICE_HEADER)?.value,
+                    headers.find((h) => h.name === CONNECTOR_ALIAS_HEADER)?.value
+                  )
+                : undefined
             )
-          )
+          })
         )
       }
     )
@@ -201,11 +215,20 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         if (!p || !canView(p, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
+        const headers = (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? []
+        const connections = p.kind === 'open_connector' ? await deps.connectors?.connections().catch(() => null) : null
         return toDto(
           p,
           ctxOf(req),
-          (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? [],
-          p.auth === 'oauth2' ? await deps.repos.mcpProviderOauth.get(p.orgId, p.id) : null
+          headers,
+          p.auth === 'oauth2' ? await deps.repos.mcpProviderOauth.get(p.orgId, p.id) : null,
+          p.kind === 'open_connector'
+            ? connectorConnectionStatus(
+                connections ?? null,
+                headers.find((h) => h.name === CONNECTOR_SERVICE_HEADER)?.value,
+                headers.find((h) => h.name === CONNECTOR_ALIAS_HEADER)?.value
+              )
+            : undefined
         )
       }
     )

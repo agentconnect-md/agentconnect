@@ -217,6 +217,12 @@ function ProviderTile({
       action={
         canWrite ? (
           <>
+            {p.kind === 'open_connector' &&
+              (p.connectorStatus === 'reauth_required' || p.connectorStatus === 'pending') && (
+                <button className="iconbtn h-6 w-6" title={t('mcp.reconnect')} onClick={onEdit}>
+                  <Icon name="plug" size={12} />
+                </button>
+              )}
             {p.auth === 'oauth2' && p.oauth?.status !== 'connected' && (
               <button
                 className="iconbtn h-6 w-6"
@@ -317,14 +323,20 @@ function OauthConnectionField({ provider }: { provider: McpProviderDto }) {
   )
 }
 
-/** The one thing a viewer must be able to see at a glance: whether this provider can
- *  currently reach its upstream at all. `reauth_required` means the grant is dead and only
- *  a fresh authorization repairs it — a refresh will not. */
+// Credential custody supplies the state; access-token expiry alone does not mean authorization failed.
 function OauthStatusBadge({ provider }: { provider: McpProviderDto }) {
   const t = useTranslations('Tools')
-  if (provider.auth !== 'oauth2') return null
-  const status = provider.oauth?.status ?? 'pending'
+  if (provider.auth !== 'oauth2' && provider.kind !== 'open_connector') return null
+  const status =
+    provider.kind === 'open_connector' ? (provider.connectorStatus ?? 'unknown') : (provider.oauth?.status ?? 'pending')
   if (status === 'connected') return null
+  if (status === 'unknown') {
+    return (
+      <span className="font-sans text-[10.5px] font-medium leading-normal text-(--text-tertiary)">
+        {t('mcp.statusUnavailable')}
+      </span>
+    )
+  }
   return (
     <span
       className="flex-none font-sans text-[10.5px] font-medium leading-normal text-(--status-error)"
