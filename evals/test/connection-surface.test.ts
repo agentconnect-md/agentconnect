@@ -57,6 +57,8 @@ const EXEMPT: Record<string, string> = {
   rememberSearchToken: 'private ingress-side credential parking, behind rememberInboundSearchToken',
   searchTokenFor: 'private credential lookup behind searchPublicMessages',
   changeSetting: 'private status-action refusal delivery behind the Bolt select handlers',
+  joinedMemberStanding: 'private per-person users.info cache behind joinedMemberReason',
+  inJoinLookupSlot: 'private in-flight cap on member-join lookups, behind joinedMemberReason',
   // The Arena's transport receives no provider events, so nothing ever parks a credential
   // for it — and `searchPublicMessages` (which the virtual DOES implement) refuses regardless.
   rememberInboundSearchToken: 'HTTP-arm credential handoff; the Arena has no relay ingress',

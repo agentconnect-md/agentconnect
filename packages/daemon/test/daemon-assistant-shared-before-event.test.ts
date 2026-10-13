@@ -252,13 +252,14 @@ describe('a lookup that fails', () => {
 })
 
 describe('an agent outside assistant mode', () => {
-  it('asks Slack nothing and posts as before', async () => {
+  it('asks Slack too and marks the place external, but posts its reply as before', async () => {
     const h = await boot(false)
     try {
       h.slack.shared.add('C_ROOM')
       await h.report()
       expect(h.conn.postMessage).toHaveBeenCalledWith('C_ROOM', REPLY, TS, expect.any(Object))
-      expect(h.lookups('C_ROOM')).toBe(0)
+      expect(h.lookups('C_ROOM')).toBe(1)
+      expect(h.trust('C_ROOM')).toBe('external')
       expect(await h.drafts()).toEqual([])
     } finally {
       await h.close()

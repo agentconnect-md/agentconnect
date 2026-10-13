@@ -276,6 +276,34 @@ describe('a conversation shared with another organization', () => {
     await w.store.close()
   })
 
+  it('sends the approval to the asker’s DM once a guest who joined is detected, for an agent outside assistant mode', async () => {
+    const w = await world({ level: 'approve', core: { mode: 'shared' } })
+    w.daemon.cpClient.emitIntegrationChannels = vi.fn()
+    w.conn.joinedMemberReason = vi.fn(async () => 'guestMember')
+    const joined = await w.daemon.handleRelaySlackAction({
+      agentId: AGENT,
+      integrationId: INT,
+      sessionKey: 'slack:C1',
+      msgId: 'm-join',
+      botId: 'bot-1',
+      userId: 'U-GUEST',
+      payload: { kind: 'member-joined', channelId: 'C1', userId: 'U-GUEST' }
+    })
+    expect(joined).toEqual({ msgId: 'm-join', accepted: true })
+    expect(w.daemon.cpClient.emitIntegrationChannels).toHaveBeenCalledWith({
+      integrationId: INT,
+      channels: [{ id: 'C1', externalReason: 'guestMember' }],
+      authoritative: false
+    })
+    void w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual(['D-U-ASKER']))
+    // The guest cannot answer it: only the asker decides.
+    const id = w.onlyRequest()
+    await w.permissions.handlePermissionChoice({ requestId: id, optionId: 'allow', actor: { userId: 'U-GUEST' } })
+    expect(w.permissions.pendingApprovals.has(id)).toBe(true)
+    await w.store.close()
+  })
+
   it('sends an MCP approval to the asker’s DM the same way', async () => {
     const w = await world({ level: 'settings', core: { externalChannels: ['C1'] } })
     const decided = w.permissions.onAcpElicit(AGENT, 's1', mcpApproval)

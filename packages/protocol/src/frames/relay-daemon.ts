@@ -560,7 +560,7 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('app-home-opened'), channelId: z.string().min(1) }),
   // Slack's Assistant "new chat" in a DM: the daemon starts a fresh session where that DM appends.
   z.object({ kind: z.literal('assistant-thread-started'), channelId: z.string().min(1), threadTs: z.string().min(1) }),
-  // Someone other than the bot joined a channel; an assistant-mode owner checks whether it turned external (assistant-mode.md §5.3).
+  // Someone other than the bot joined a channel; the owning daemon checks whether it turned external (assistant-mode.md §5.3).
   z.object({
     kind: z.literal('member-joined'),
     channelId: z.string().min(1),

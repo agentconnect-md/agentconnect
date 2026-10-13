@@ -296,7 +296,7 @@ export function forwardAssistantThreadStarted(
     )
 }
 
-// Another member's join goes to the channel's owning daemon, which looks them up only for an assistant-mode agent (assistant-mode.md §5.3).
+// Another member's join goes to the channel's owning daemon, which looks them up for every agent (assistant-mode.md §5.3).
 export function forwardMemberJoined(host: RelayIngressHost, botId: string, joined: HttpSlackMemberJoined): void {
   const route = host.directory.resolveTarget(botId, { channelId: joined.channelId })
   if (!route) return

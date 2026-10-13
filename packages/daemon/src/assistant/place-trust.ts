@@ -1,4 +1,4 @@
-// A place turning external (assistant-mode.md §5.3): detections, their report to the CP, and the downgrade transition.
+// A place turning external (assistant-mode.md §5.3): every agent's detections and their report to the CP; assistant mode's downgrade transition.
 import {
   mergePlaceExternalReason,
   placeExternalReasonSticky,
@@ -17,7 +17,7 @@ const MAX_SHARE_ENTRIES = 512
 export interface PlaceTrustDeps {
   /** The live integration, as turns read it. */
   integration: (integrationId: string) => Integration | undefined
-  /** Whether an agent in assistant mode owns the integration; nothing happens for any other agent. */
+  /** Whether an agent in assistant mode owns the integration; only its turn is cut when a place turns external. */
   assistantOwned: (integrationId: string) => boolean
   /** Hand a detection to the CP, which stores it and re-pushes the spec. */
   report: (integrationId: string, channel: IntegrationChannel) => void
@@ -43,9 +43,9 @@ export class PlaceTrust {
 
   constructor(private readonly deps: PlaceTrustDeps) {}
 
-  /** Whether any of the integrations is owned by an agent in assistant mode, so a member join is worth a lookup. */
+  /** Whether any of the integrations is an agent's, in any mode, so a member join is worth a lookup. */
   watches(integrationIds: readonly string[]): boolean {
-    return integrationIds.some((id) => this.deps.assistantOwned(id))
+    return integrationIds.some((id) => this.deps.integration(id) !== undefined)
   }
 
   /** A message the platform delivered from a conversation shared with another organization; a 1:1 DM is trusting that person. */
@@ -91,7 +91,7 @@ export class PlaceTrust {
     }
   }
 
-  /** A platform found the place external: it reads external at once, the CP records it, and an internal place is downgraded. */
+  /** A platform found the place external, for every agent: it reads external at once, the CP records it, and an assistant-mode place is downgraded. */
   detected(
     integrationIds: readonly string[],
     channel: string,
@@ -99,7 +99,6 @@ export class PlaceTrust {
     spare: ReadonlySet<string> = new Set()
   ): void {
     for (const id of integrationIds) {
-      if (!this.deps.assistantOwned(id)) continue
       const int = this.deps.integration(id)
       if (!int) continue
       const wasExternal = noteExternalChannel(int, channel)
@@ -109,11 +108,11 @@ export class PlaceTrust {
       held.set(channel, mergePlaceExternalReason(held.get(channel) ?? null, reason) ?? reason)
       this.pending.set(id, held)
       this.deps.report(id, { id: channel, externalReason: reason })
-      if (!wasExternal) void this.downgrade(id, channel, spare)
+      if (!wasExternal && this.deps.assistantOwned(id)) void this.downgrade(id, channel, spare)
     }
   }
 
-  /** A CP spec was applied: a held place it misses stays external, a held share it lists is the CP's now, and a newly listed place is downgraded. */
+  /** A CP spec was applied: a held place it misses stays external, a held share it lists is the CP's now, and a newly listed place reads external, downgraded in assistant mode. */
   specApplied(integrationId: string, next: Integration, added: readonly string[]): void {
     const held = this.pending.get(integrationId)
     if (held) {
@@ -125,12 +124,13 @@ export class PlaceTrust {
       }
       if (held.size === 0) this.pending.delete(integrationId)
     }
-    if (added.length === 0 || !this.deps.assistantOwned(integrationId)) return
+    if (added.length === 0) return
     const live = this.deps.integration(integrationId)
+    const downgrades = this.deps.assistantOwned(integrationId)
     for (const channel of added) {
       // The live integration is replaced only once the push reconciles; until then it must read external too.
       if (live) noteExternalChannel(live, channel)
-      void this.downgrade(integrationId, channel, new Set())
+      if (downgrades) void this.downgrade(integrationId, channel, new Set())
     }
   }
 
