@@ -1,8 +1,10 @@
 // The daemon's join confirmation (#2979): one card in the live turn's conversation, and a parked call's outcome back in its session.
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
+import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'
+import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { JoinDelivery, JoinRequest } from '../src/mcp/ops/join-ask.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
 import { judgePlaceWrite } from '../src/mcp/ops/place-gate.js'
@@ -110,9 +112,10 @@ describe('the daemon’s join confirmation', () => {
     const first = w.daemon.confirmJoin(w.ctx, w.ask, offeredFirst)
     const second = w.daemon.confirmJoin(w.ctx, w.ask, offeredSecond)
     await vi.waitFor(() => expect(w.conn.postCard).toHaveBeenCalledTimes(1), WAIT)
-    // Both parked calls hear the one offer, so both can return before the answer.
+    // Both parked calls hear the one offer, and the turn's thread, so both can return before the answer.
     await vi.waitFor(() => expect(offeredSecond).toHaveBeenCalledTimes(1), WAIT)
     expect(offeredFirst).toHaveBeenCalledTimes(1)
+    expect([offeredFirst.mock.calls[0]![1], offeredSecond.mock.calls[0]![1]]).toEqual([THREAD, THREAD])
     const [channel, text, buttons, anchor] = w.conn.postCard.mock.calls[0] as [string, string, unknown[][], object]
     expect(channel).toBe(CHAT)
     expect(anchor).toMatchObject({ replyTo: 50 })
@@ -154,7 +157,7 @@ describe('the daemon’s join confirmation', () => {
     await w.store.close()
   })
 
-  it('hands a parked call’s late outcome to its session as a new message', async () => {
+  it('hands a parked call’s late outcome to its session as a new message, in the thread that is the session', async () => {
     const w = await world()
     const key = sessionKey('telegram', CHAT, THREAD, AGENT)
     await w.store.upsertSession({
@@ -170,16 +173,21 @@ describe('the daemon’s join confirmation', () => {
     })
     const dispatch = vi.fn(async () => {})
     w.daemon.dispatch = dispatch
-    const call = { tool: 'getChannelHistory', name: 'general', purpose: 'read' as const, to: 'Ada Example' }
+    const call = {
+      tool: 'getChannelHistory',
+      name: 'general',
+      purpose: 'read' as const,
+      to: 'Ada Example',
+      thread: THREAD
+    }
     await w.daemon.deliverJoinOutcome(w.ctx, { ...call, result: { messages: [{ text: 'hello' }] } })
     await w.daemon.deliverJoinOutcome(w.ctx, { ...call, error: 'getChannelHistory: the bot did not join #general.' })
     expect(dispatch).toHaveBeenCalledTimes(2)
-    const [agentId, joined] = dispatch.mock.calls[0] as unknown as [
-      string,
-      { channel: string; text: string; source: string }
-    ]
+    const [agentId, joined] = dispatch.mock.calls[0] as unknown as [string, NormalizedMessage]
     expect(agentId).toBe(AGENT)
-    expect(joined).toMatchObject({ channel: CHAT, source: 'agent' })
+    // A per-thread session's thread is where the asking turn replied, as before.
+    expect(joined).toMatchObject({ channel: CHAT, thread: THREAD, source: 'agent' })
+    expect(joined.sessionThread).toBeUndefined()
     expect(joined.text).toContain('ran once the bot joined')
     expect(joined.text).toContain('"text": "hello"')
     const [, refused] = dispatch.mock.calls[1] as unknown as [string, { text: string }]
@@ -308,6 +316,214 @@ describe('the turn a join’s result starts', () => {
   })
 })
 
+const DM = 'D-ADA'
+/** The person's message the asking turn replied under. */
+const ASKED_UNDER = '1700.0001'
+/** The DM's one long session. */
+const APPEND = 'append:1000'
+const ADA_SLACK = { kind: 'member' as const, platform: 'slack', integrationId: 'int-s', userId: 'U-ada' }
+
+/** A daemon holding one live turn in a person's Slack DM with the bot: one long session, each turn replying under its message. */
+async function slackDm(over: { database?: DatabaseSync; thread?: string | null } = {}) {
+  const database = over.database ?? new DatabaseSync(':memory:')
+  const daemon: any = new Daemon({
+    slackAppFactory: fakeSlackAppFactory(),
+    sandboxMechanism: null,
+    clock: new FakeClock(1_000_000)
+  })
+  daemon.cfg = { ...(daemon.cfg ?? {}), webAppUrl: 'https://console.example.test' }
+  const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(database) })
+  daemon.store = store
+  const int = {
+    id: 'int-s',
+    platform: 'slack',
+    core: {
+      mode: 'direct',
+      bindRules: [],
+      mutedChannels: [],
+      gated: false,
+      sessionModes: [],
+      externalChannels: [],
+      decisions: { bindings: [], definitions: [] }
+    }
+  }
+  daemon.agents.set(AGENT, { id: AGENT, name: 'Butler', chatActions: 'talk', integrations: [int] })
+  let n = 0
+  const conn = {
+    postBlocks: vi.fn(async (..._args: unknown[]) => `300.${++n}`),
+    updateBlocks: vi.fn(async (..._args: unknown[]) => undefined),
+    postEphemeral: vi.fn(async (..._args: unknown[]) => true),
+    memberName: vi.fn(async () => 'Ada Example'),
+    workspaceId: () => 'T1'
+  }
+  daemon.connByIntegration.set('int-s', conn)
+  const key = sessionKey('slack', DM, APPEND, AGENT)
+  await store.upsertSession({
+    key,
+    agentId: AGENT,
+    platform: 'slack',
+    channel: DM,
+    thread: APPEND,
+    acpSessionId: 's1',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: Date.now()
+  })
+  await store.setSessionClassification(key, { conversationKind: 'dm' })
+  const thread = over.thread === null ? undefined : (over.thread ?? ASKED_UNDER)
+  daemon.pending.set(JSON.stringify([AGENT, 's1']), {
+    plan: {
+      platform: 'slack',
+      agentId: AGENT,
+      agentName: 'Butler',
+      integrationId: 'int-s',
+      sessionKey: key,
+      requesterId: 'U-ada',
+      channel: DM,
+      ...(thread !== undefined ? { thread } : {}),
+      transcriptChannel: DM,
+      statusThread: thread ?? 'm-1',
+      sessionThread: APPEND,
+      isDm: true,
+      approvalSurfaceSuppressed: false
+    },
+    entry: { msg: { source: 'user', text: 'post the notes in #general', sender: { id: 'U-ada', isBot: false } } },
+    conn,
+    hostKey: AGENT,
+    acpSessionId: 's1',
+    outwardSessionId: 'sid-1',
+    chrome: {},
+    reply: { text: '', attemptText: '', attemptAnswerUpdates: [] },
+    signals: { applyChain: Promise.resolve() },
+    approval: { waitMs: 0, depth: 0 },
+    builtinSystemToolCallIds: new Set<string>(),
+    conv: { onUpdate: () => [], hasBuffered: () => false },
+    rec: { onUpdate: () => [] },
+    termOut: new TerminalOutputFolder(),
+    workBoundary: new WorkBoundary()
+  })
+  const ctx = {
+    agentId: AGENT,
+    platform: 'slack',
+    integrationId: 'int-s',
+    isDm: true,
+    channel: DM,
+    thread: APPEND,
+    deliveryThread: thread ?? APPEND,
+    tools: [],
+    integrations: [{ id: 'int-s', platform: 'slack' }]
+  } as SessionContext
+  const dispatch = vi.fn(async () => {})
+  daemon.dispatch = dispatch
+  const joined = new Set<string>()
+  const gw = {
+    getChannelInfo: vi.fn(async (id: string) => ({ id, name: 'general', isPrivate: false })),
+    getChannelHistory: vi.fn(async (channel: string) => {
+      if (!joined.has(channel)) throw markNotJoined(new Error('An API error occurred: not_in_channel'), channel)
+      return { messages: [{ sender: 'U1', ts: '1.0', text: 'hello', isBot: false }], hasMore: false }
+    }),
+    joinChannel: vi.fn(async (channel: string) => void joined.add(channel)),
+    postMessage: vi.fn(async () => 'ts-1'),
+    listMembers: vi.fn(async () => []),
+    listChannels: vi.fn(async () => []),
+    getUserProfile: vi.fn(async (u: string) => ({ id: u })),
+    downloadFile: vi.fn(async () => null)
+  }
+  // The two join ports as the daemon's tool host wires them.
+  const deps = {
+    gatewayFor: () => gw,
+    readAskers: async () => ({ people: [ADA_SLACK], nobody: false }),
+    readLookups: () => ({
+      member: async () => true,
+      fullMember: async () => true,
+      console: async (_asker: unknown, sessionIds: readonly string[]) => ({
+        asker: 'linked',
+        visible: new Set(sessionIds)
+      }),
+      linked: async () => null
+    }),
+    placeStore: {
+      listSessions: async () => [],
+      latestSession: async () => undefined,
+      transcriptPageForAgent: async () => ({ rows: [], hasMore: false }),
+      getDisplayNames: async () => new Map()
+    },
+    confirmJoin: (c: SessionContext, a: JoinRequest, o: (to: string | null) => void) => daemon.confirmJoin(c, a, o),
+    deliverJoinOutcome: (c: SessionContext, o: JoinDelivery) => void daemon.deliverJoinOutcome(c, o)
+  } as unknown as OpsDeps
+  const requestId = async (): Promise<string> => {
+    await vi.waitFor(async () => expect(await store.listPermissionRequests(AGENT)).toHaveLength(1), WAIT)
+    return (await store.listPermissionRequests(AGENT))[0]!.id
+  }
+  /** The one message a join notice dispatched. */
+  const notice = async (): Promise<NormalizedMessage> => {
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1), WAIT)
+    return (dispatch.mock.calls[0] as unknown as [string, NormalizedMessage])[1]
+  }
+  return { daemon, store, database, conn, ctx, deps, requestId, notice }
+}
+
+describe('the turn a join’s answer starts in a single-session DM', () => {
+  it.each([
+    ['Join', 'join', 'ran once the bot joined'],
+    ['Don’t join', 'dont-join', 'did nothing']
+  ])('replies under the message that asked, after %s', async (_label, optionId, said) => {
+    const w = await slackDm()
+    await expect(executeTool(w.ctx, 'getChannelHistory', { channel: 'C-GEN' }, w.deps)).resolves.toMatchObject({
+      joinRequested: true
+    })
+    const id = await w.requestId()
+    // The card is in the asking turn's thread, where its reply went.
+    await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
+    const [channel, , , thread] = w.conn.postBlocks.mock.calls[0]!
+    expect([channel, thread]).toEqual([DM, ASKED_UNDER])
+
+    await w.daemon.permissions.handlePermissionChoice({ requestId: id, optionId, actor: { userId: 'U-ada' } })
+    const msg = await w.notice()
+    expect(msg.text).toContain(said)
+    // It replies in that thread, and its turn is still the DM's one session.
+    expect(msg).toMatchObject({ channel: DM, thread: ASKED_UNDER, sessionThread: APPEND, isDm: true })
+    await w.store.close()
+  })
+
+  it('stays at the top level when the asking turn had no thread', async () => {
+    const w = await slackDm({ thread: null })
+    await executeTool(w.ctx, 'getChannelHistory', { channel: 'C-GEN' }, w.deps)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
+    await w.daemon.permissions.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
+    const msg = await w.notice()
+    expect(msg.thread).toBeUndefined()
+    expect(msg.sessionThread).toBe(APPEND)
+    await w.store.close()
+  })
+
+  it('tells the thread that asked when a restart expired its card, read back from the store', async () => {
+    const first = await slackDm()
+    const ask: JoinRequest = {
+      integrationId: 'int-s',
+      channel: 'C-GEN',
+      name: 'general',
+      purpose: 'post',
+      tool: 'sendMessage',
+      askers: [ADA_SLACK]
+    }
+    void first.daemon.confirmJoin(first.ctx, ask, vi.fn())
+    const id = await first.requestId()
+    const handle = () =>
+      first.database.prepare('SELECT notifyChannel, notifyTs FROM permission_requests WHERE id = ?').get(id)
+    await vi.waitFor(() => expect(handle()).toEqual({ notifyChannel: DM, notifyTs: '300.1' }), WAIT)
+
+    // The process dies; the next one opens the store, and its integration's reconnect sweeps the card.
+    const restarted = await slackDm({ database: first.database })
+    await restarted.daemon.permissions.retireOrphanedCards('int-s')
+    const msg = await restarted.notice()
+    expect(msg.text).toContain('sendMessage: the bot did not join #general: nobody answered')
+    expect(msg).toMatchObject({ channel: DM, thread: ASKED_UNDER, sessionThread: APPEND })
+    await restarted.store.close()
+  })
+})
+
 describe('a join card a restart left pending', () => {
   it('tells its session nothing was read, in the timeout’s words, and skips a session that is gone', async () => {
     const w = await world()
@@ -329,8 +545,9 @@ describe('a join card a restart left pending', () => {
     expect(dispatch).not.toHaveBeenCalled()
     await w.daemon.joinCardExpired(AGENT, 's1', stored)
     expect(dispatch).toHaveBeenCalledTimes(1)
-    const [, msg] = dispatch.mock.calls[0] as unknown as [string, { channel: string; text: string; msgId: string }]
-    expect(msg.channel).toBe(CHAT)
+    const [, msg] = dispatch.mock.calls[0] as unknown as [string, NormalizedMessage]
+    // A row that recorded no thread, as an older daemon wrote it, replies where the session is.
+    expect(msg).toMatchObject({ channel: CHAT, thread: THREAD })
     expect(msg.text).toContain(
       'getChannelHistory: the bot did not join #general: nobody answered whether it may within 10 minutes. Nothing was read'
     )

@@ -30,6 +30,9 @@ export interface JoinAsk {
 /** How the ask ended: join, a person declined, nobody answered in time, or no card could reach anyone behind the turn. */
 export type JoinOutcome = 'join' | 'declined' | 'expired' | 'unavailable'
 
+/** A card is up: whom it asked, and the thread the asking turn replied in, absent at a conversation's top level. */
+export type JoinOffered = (to: string | null, thread?: string) => void
+
 /** The ask's end, with the person behind the turn who answered it. */
 export interface JoinAnswer {
   outcome: JoinOutcome
@@ -41,6 +44,8 @@ export interface StoredJoinAsk {
   tool?: string
   name: string
   purpose: JoinAsk['purpose']
+  /** The thread the asking turn replied in, where the session is told. */
+  thread?: string
 }
 
 /** A stored join ask, or undefined for any other row or an unreadable one. */
@@ -49,7 +54,12 @@ export function parseStoredJoinAsk(raw: string | null | undefined): StoredJoinAs
   try {
     const value = JSON.parse(raw) as Partial<StoredJoinAsk>
     if (typeof value.name !== 'string' || (value.purpose !== 'read' && value.purpose !== 'post')) return undefined
-    return { name: value.name, purpose: value.purpose, ...(typeof value.tool === 'string' ? { tool: value.tool } : {}) }
+    return {
+      name: value.name,
+      purpose: value.purpose,
+      ...(typeof value.tool === 'string' ? { tool: value.tool } : {}),
+      ...(typeof value.thread === 'string' ? { thread: value.thread } : {})
+    }
   } catch {
     return undefined
   }
