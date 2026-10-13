@@ -56,6 +56,7 @@ import { useDaemonNotifier } from '@/lib/daemon-notifications'
 import { useSessionAccessNotifier } from '@/lib/session-access-notifier'
 import { useApprovalNotifier } from '@/lib/approval-notifier'
 import { useIntegrationNotifier } from '@/lib/integration-notifier'
+import { useConnectorNotifier } from '@/lib/connector-notifier'
 import { EscapeLayer } from './Scrim'
 import { localeList } from '@/i18n/config'
 import { NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, navVisible } from './nav'
@@ -366,6 +367,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     integrations,
     integrationsLoaded,
     botsLoaded,
+    mcpProviders,
+    mcpProvidersLoaded,
     sessionAccessSnapshot,
     usageAccessSnapshot,
     pendingApprovalSessions
@@ -374,6 +377,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   useSessionAccessNotifier({ sessionAccessSnapshot, usageAccessSnapshot, orgPath })
   useApprovalNotifier({ pendingApprovalSessions, agents, agentsLoaded, orgPath })
   useIntegrationNotifier({ integrations, integrationsLoaded, botsLoaded, agents, agentsLoaded, orgPath })
+  useConnectorNotifier(mcpProviders, mcpProvidersLoaded, orgPath)
   // Mobile-only chrome state: the drawer (alone, or with one of its sheets over it), and the full-screen search.
   const [mobileSheet, setMobileSheet] = useState<'menu' | 'account' | 'help' | null>(null)
   const [mobileSearch, setMobileSearch] = useState(false)

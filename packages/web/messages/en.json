@@ -3415,6 +3415,14 @@
         "wrongOrganization": "This MCP registry belongs to another organization.",
         "viewerDenied": "You cannot add MCP servers in this organization.",
         "cannotEditAgent": "You cannot change the MCP servers of the agent this server was requested for."
+      },
+      "statusUnavailable": "Status unavailable",
+      "connectionNotification": {
+        "title": "Connection needs reconnection",
+        "message": "“{name}” is no longer authorized. Reconnect it in Tools & Skills to restore access.",
+        "action": "Open Tools & Skills",
+        "resolvedTitle": "Connection warning cleared",
+        "resolvedMessage": "“{name}” no longer needs your attention."
       }
     },
     "skills": {
