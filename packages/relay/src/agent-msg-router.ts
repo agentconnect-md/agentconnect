@@ -203,7 +203,6 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         ...(integrationId !== undefined ? { integrationId } : {}),
         text: msg.text,
         coords: msg.coords,
-        ...(msg.correlationId !== undefined ? { correlationId: msg.correlationId } : {}),
         hopCount,
         deliveryId: msg.deliveryId,
         // Visible-post ts (if any), forwarded opaquely so the target can dedup the wake against

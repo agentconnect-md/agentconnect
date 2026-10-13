@@ -92,6 +92,7 @@ import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { AssistantModePanel } from '@/components/console/AssistantModePanel'
 import { AssistantActivityPanel } from '@/components/console/AssistantActivityPanel'
+import { activityScope } from '@/lib/agent-activity'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
@@ -941,8 +942,9 @@ function AgentDetail() {
       </div>
     )
   }
-  // Activity exists only for an assistant-mode agent, whatever the flag (which gates only switching it on); a link to it otherwise lands on Integrations.
-  const activityShown = da.assistantMode?.enabled === true
+  // Activity is whole for an assistant-mode agent whatever the flag, partial for another whose daemon serves it, else absent and a link to it lands on Integrations.
+  const activity = activityScope(da.assistantMode?.enabled === true, capabilitySource?.caps.features)
+  const activityShown = activity !== null
   const tab: DetailTab = requestedTab === 'activity' && !activityShown ? 'integrations' : requestedTab
   // The owning daemon (if placed in the live fleet). Gates the agent's "online" —
   // an agent can't be online when its daemon is offline — and names the daemon.
@@ -2950,9 +2952,13 @@ function AgentDetail() {
         </div>
       )}
 
-      {/* Activity tab — what an assistant-mode agent follows, runs and waits on, read from its daemon. */}
+      {/* Activity tab — what the agent follows, runs and waits on, read from its daemon. */}
       {tab === 'activity' && (
-        <AssistantActivityPanel agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
+        <AssistantActivityPanel
+          agentId={da.id}
+          canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
+          assistant={activity === 'assistant'}
+        />
       )}
 
       {/* One review/check settings surface, rendered as a bottom sheet on mobile

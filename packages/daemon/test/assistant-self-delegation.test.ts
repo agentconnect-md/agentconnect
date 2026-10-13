@@ -268,15 +268,14 @@ describe('self-delegation: every agent opens a sub-session', () => {
     await daemon.stop()
   })
 
-  it('is never a reply: a parent woken by its own report delegates without inheriting correlation', async () => {
+  it('a parent woken by its own report delegates one hop deeper', async () => {
     const { daemon, d, calls, call } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(d)
-    d.activeTurnCallMeta.set(caller.key, { callFrom: 'bot-a', correlationId: 'corr-1', hopCount: 3, deliveryId: 'd0' })
+    d.activeTurnCallMeta.set(caller.key, { callFrom: 'bot-a', hopCount: 3, deliveryId: 'd0' })
 
     await call(delegation(caller))
 
     expect(calls[0]!.callMeta.hopCount).toBe(4)
-    expect(calls[0]!.callMeta).not.toHaveProperty('correlationId')
     // The hop cap still bounds the chain.
     d.activeTurnCallMeta.set(caller.key, { callFrom: 'bot-a', hopCount: MAX_AGENT_CALL_HOPS - 1, deliveryId: 'd1' })
     expect(d.collab.wakeRejectionReason(delegation(caller))).toBe('hop_limit')

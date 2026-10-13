@@ -1029,74 +1029,55 @@ describe('messageAgent: what a woken child inherits on this daemon', () => {
   })
 })
 
-describe('messageAgent: §6.7 daemon-managed auto-inheritance (hop/origin + reply correlation)', () => {
-  // Seed the CURRENT in-flight turn's trusted callMeta for a caller's logical sessionKey,
-  // simulating a worker whose turn was started by messageAgent (callFrom=main, correlationId=x).
+describe('messageAgent: §6.7 daemon-managed auto-inheritance (hop/origin)', () => {
+  // Seed the in-flight turn's trusted callMeta, as for a worker whose turn `main` started.
   const seedActiveTurn = (
     daemon: any,
     caller: { platform: string; channel: string; thread: string; agentId: string },
-    callMeta: { callFrom: string; correlationId?: string; hopCount: number; deliveryId: string }
+    callMeta: { callFrom: string; hopCount: number; deliveryId: string }
   ) => {
     const key = `${caller.platform}:${caller.channel}:${caller.thread}:${caller.agentId}`
     ;(daemon as any).activeTurnCallMeta.set(key, callMeta)
   }
 
-  it('REPLY: worker messaging back its caller auto-inherits the inbound correlationId (no arg passed)', async () => {
+  it('REPLY: a worker messaging back its caller reaches it one hop deeper, with no correlation', async () => {
     const root = scaffold([{ id: 'main' }, { id: 'worker' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
-    // worker's active turn was started by main, carrying correlationId o1.0.
     seedActiveTurn(
       daemon,
       { platform: 'slack', channel: 'C1', thread: '100.1', agentId: 'worker' },
-      { callFrom: 'main', correlationId: 'o1.0', hopCount: 0, deliveryId: 'd0' }
+      { callFrom: 'main', hopCount: 0, deliveryId: 'd0' }
     )
-    // worker replies to main WITHOUT passing correlationId.
-    const res = await call(baseReq({ callerAgentId: 'worker', toAgentId: 'main', text: 'done' /* no correlationId */ }))
+    const res = await call(baseReq({ callerAgentId: 'worker', toAgentId: 'main', text: 'done' }))
     expect(res.delivered).toBe(true)
     expect(calls).toHaveLength(1)
-    // Auto-inherited: correlation bounced back to main, hop incremented.
-    expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'worker', correlationId: 'o1.0', hopCount: 1 })
+    expect(calls[0]!.agentId).toBe('main')
+    expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'worker', hopCount: 1 })
+    expect(calls[0]!.callMeta).not.toHaveProperty('correlationId')
     await daemon.stop()
   })
 
-  it('THIRD agent: messaging a non-caller does NOT inherit correlation, but DOES inherit hop+1', async () => {
+  it('THIRD agent: messaging a non-caller inherits hop+1', async () => {
     const root = scaffold([{ id: 'main' }, { id: 'worker' }, { id: 'third' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     seedActiveTurn(
       daemon,
       { platform: 'slack', channel: 'C1', thread: '100.1', agentId: 'worker' },
-      { callFrom: 'main', correlationId: 'o1.0', hopCount: 2, deliveryId: 'd0' }
+      { callFrom: 'main', hopCount: 2, deliveryId: 'd0' }
     )
-    // worker forwards work to a THIRD agent (not its caller) → fresh correlation, hop inherited.
     const res = await call(baseReq({ callerAgentId: 'worker', toAgentId: 'third', text: 'sub-help' }))
     expect(res.delivered).toBe(true)
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.callMeta.correlationId).toBeUndefined()
     expect(calls[0]!.callMeta.hopCount).toBe(3)
     await daemon.stop()
   })
 
-  it('explicit arg correlationId overrides the auto-inherited reply correlation', async () => {
-    const root = scaffold([{ id: 'main' }, { id: 'worker' }])
-    const { daemon, calls, call } = await bootWithDispatchSpy(root)
-    seedActiveTurn(
-      daemon,
-      { platform: 'slack', channel: 'C1', thread: '100.1', agentId: 'worker' },
-      { callFrom: 'main', correlationId: 'o1.0', hopCount: 0, deliveryId: 'd0' }
-    )
-    const res = await call(baseReq({ callerAgentId: 'worker', toAgentId: 'main', correlationId: 'manual-99' }))
-    expect(res.delivered).toBe(true)
-    expect(calls[0]!.callMeta.correlationId).toBe('manual-99')
-    await daemon.stop()
-  })
-
-  it('no active turn (human-initiated call) → fresh call: hop 0, no inherited correlation', async () => {
+  it('no active turn (human-initiated call) → fresh call: hop 0', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     const res = await call(baseReq()) // nothing seeded
     expect(res.delivered).toBe(true)
     expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 0 })
-    expect(calls[0]!.callMeta.correlationId).toBeUndefined()
     await daemon.stop()
   })
 
@@ -1165,23 +1146,6 @@ describe('messageAgent: §6.7 daemon-managed auto-inheritance (hop/origin + repl
     expect(d.collab.wakeRejectionReason(req)).toBe('hop_limit')
     expect(await call(req)).toEqual({ delivered: false, targetSession: 'slack:C1:100.1:third', reason: 'hop_limit' })
     expect(calls).toHaveLength(1)
-    await daemon.stop()
-  })
-
-  it('inherits no correlation on a reply whose inbound turn had none, and honors an explicit one on a human turn', async () => {
-    const root = scaffold([{ id: 'main' }, { id: 'worker' }, { id: 'bot-a' }, { id: 'bot-b' }])
-    const { daemon, calls, call } = await bootWithDispatchSpy(root)
-    seedActiveTurn(
-      daemon,
-      { platform: 'slack', channel: 'C1', thread: '100.1', agentId: 'worker' },
-      { callFrom: 'main', hopCount: 0, deliveryId: 'd0' }
-    )
-    expect((await call(baseReq({ callerAgentId: 'worker', toAgentId: 'main' }))).delivered).toBe(true)
-    expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'worker', hopCount: 1 })
-    expect(calls[0]!.callMeta).not.toHaveProperty('correlationId')
-
-    expect((await call(baseReq({ correlationId: 'manual-1' }))).delivered).toBe(true)
-    expect(calls[1]!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 0, correlationId: 'manual-1' })
     await daemon.stop()
   })
 })
@@ -1341,12 +1305,11 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
     await daemon.stop()
   })
 
-  it('forwards the trusted source depth and auto-inherited reply correlation to the relay', async () => {
+  it('forwards the trusted source depth to the relay, with no correlation', async () => {
     const root = scaffold([{ id: 'worker' }]) // main is on another daemon
     const { daemon, call } = await bootWithDispatchSpy(root)
     ;(daemon as any).activeTurnCallMeta.set('slack:C1:100.1:worker', {
       callFrom: 'main',
-      correlationId: 'o1.0',
       hopCount: 2,
       deliveryId: 'd0'
     })
@@ -1361,9 +1324,9 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
     expect(sendAgentMsg.mock.calls[0]![0]).toMatchObject({
       claimedFromAgentId: 'worker',
       toAgentId: 'main',
-      hopCount: 2,
-      correlationId: 'o1.0'
+      hopCount: 2
     })
+    expect(sendAgentMsg.mock.calls[0]![0]).not.toHaveProperty('correlationId')
     await daemon.stop()
   })
 
@@ -1558,6 +1521,16 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1, deliveryId: 'd-1' })
     // No visible post preceded this wake → no transcriptTs, ts derives from the delivery id.
     expect(calls[0]!.msg.transcriptTs).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('accepts a forward from an older relay that still carries correlationId, and drops it', async () => {
+    const { daemon, calls } = await bootWithDispatchSpy(scaffold([{ id: 'bot-b' }]))
+    withSnapshot(daemon)
+    const ack = await (daemon as any).handleRelayAgentMsg(fwd({ correlationId: 'o1.0' }))
+    expect(ack).toMatchObject({ deliveryId: 'd-1', delivered: true })
+    expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1, deliveryId: 'd-1' })
+    expect(calls[0]!.callMeta).not.toHaveProperty('correlationId')
     await daemon.stop()
   })
 
@@ -2363,7 +2336,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     await daemon.stop()
   })
 
-  it('delivers into the local origin session and inherits the origin turn’s correlationId', async () => {
+  it('delivers into the local origin session one hop deeper, with no correlation', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
     // The origin session (owner bot-a) the replier bot-b was woken from.
@@ -2398,7 +2371,6 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       callFrom: 'bot-a',
       hopCount: 1,
       deliveryId: 'd1',
-      correlationId: 'orch-1',
       originSessionId: 'sid-parent-1',
       originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
     })
@@ -2414,8 +2386,9 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     expect(msg.sender).toEqual({ id: 'bot-b', isBot: true })
     expect(msg.channel).toBe('C1')
     expect(msg.text).toBe('result: done')
-    // §5.3 step 3: replying into the origin inherits the origin turn's correlationId and bumps the hop count.
-    expect(callMeta).toMatchObject({ callFrom: 'bot-b', correlationId: 'orch-1', hopCount: 2 })
+    // §5.3 step 3: replying into the origin bumps the hop count.
+    expect(callMeta).toMatchObject({ callFrom: 'bot-b', hopCount: 2 })
+    expect(callMeta).not.toHaveProperty('correlationId')
     // send-message-routing-rework.md §7: the REPORT is what stays invisible — an injected
     // body is never published to a platform — while the resumed parent turn is ORDINARY and
     // keeps its reply connection, so a delegated result can reach the humans waiting in the

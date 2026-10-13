@@ -30,7 +30,7 @@ export interface SessionViewable {
   /** The session's thread coordinate; null when it has none. Omitted means unread, which
    *  `session.visibility.change` treats as an `append` coordinate (fail closed). */
   thread?: string | null
-  /** What recognises an assistant-mode agent's own sub-session; unread on a sub-session coordinate counts as one. */
+  /** What recognises an agent's own sub-session; unread on a sub-session coordinate counts as one. */
   subsession?: SubsessionFacts
 }
 
@@ -40,8 +40,6 @@ export interface SubsessionFacts {
   /** The parent session's agent; null when there is no parent row. */
   parentAgentId: string | null
   agentId: string
-  /** The agent's assistant mode is on. */
-  assistantMode: boolean
 }
 
 export type AuthorizationRequest =
@@ -80,14 +78,11 @@ function resourceIsEditable(resource: Shareable, principal: ViewCtx): boolean {
   return principal.role !== 'viewer' && resourceIsVisible(resource, principal)
 }
 
-/** An assistant-mode agent's own sub-session takes its parent's audience, so none of its viewers may change it. */
-function isAssistantSubsession(resource: SessionViewable): boolean {
+/** An agent's own sub-session, in assistant mode or not, takes its parent's audience, so none of its viewers may change it. */
+function isOwnSubsession(resource: SessionViewable): boolean {
   if (!isSubsessionCoordinate(resource.thread)) return false
   const facts = resource.subsession
-  return (
-    facts === undefined ||
-    (facts.parentSessionId !== null && facts.parentAgentId === facts.agentId && facts.assistantMode)
-  )
+  return facts === undefined || (facts.parentSessionId !== null && facts.parentAgentId === facts.agentId)
 }
 
 function identityOwnsSession(resource: SessionViewable, identitySet: ReadonlySet<string>): boolean {
@@ -149,13 +144,13 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // An `append` session is the whole conversation's long-lived session: its
     // recorded owner is only the first poster, so its audience is no one's to
     // change (channel-session-mode.md §9). An unread coordinate counts as one.
-    // The same holds for an assistant-mode agent's own sub-session (assistant-mode.md §5.6).
+    // The same holds for an agent's own sub-session (assistant-mode.md §5.6).
     case AuthorizationAction.SessionChangeVisibility:
       return (
         !request.resource.externalProvider &&
         request.resource.thread !== undefined &&
         !isAppendCoordinate(request.resource.thread) &&
-        !isAssistantSubsession(request.resource) &&
+        !isOwnSubsession(request.resource) &&
         identityOwnsSession(request.resource, request.identitySet)
       )
     // Continuation is an organization WRITE riding on view (webchat-cross-

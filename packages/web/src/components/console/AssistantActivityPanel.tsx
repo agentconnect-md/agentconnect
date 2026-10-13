@@ -1,6 +1,6 @@
 'use client'
 
-// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): its items, sub-sessions and what waits for approval.
+// An agent's Activity view (assistant-mode.md §1.7, §5.11): its sub-sessions and what waits for approval, and in assistant mode its items.
 import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -120,19 +120,28 @@ function Quiet({ children }: { children: ReactNode }) {
   )
 }
 
-export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
+export function AssistantActivityPanel({
+  agentId,
+  canEdit,
+  assistant
+}: {
+  agentId: string
+  canEdit: boolean
+  /** In assistant mode, with its items; any other agent has only sub-sessions and what waits for approval. */
+  assistant: boolean
+}) {
   const t = useTranslations('Agents.detail.activity')
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id
   const [closedOpen, setClosedOpen] = useState(false)
 
   const open = useSWR(
-    consoleKeys.assistantItems(orgId, agentId, 'open'),
+    assistant ? consoleKeys.assistantItems(orgId, agentId, 'open') : null,
     ([, , , id]) => fetchAssistantItems(id as string, 'open'),
     { refreshInterval: REFRESH_MS, shouldRetryOnError: false }
   )
   const closed = useSWR(
-    closedOpen ? consoleKeys.assistantItems(orgId, agentId, 'closed') : null,
+    assistant && closedOpen ? consoleKeys.assistantItems(orgId, agentId, 'closed') : null,
     ([, , , id]) => fetchAssistantItems(id as string, 'closed'),
     { shouldRetryOnError: false }
   )
@@ -227,36 +236,15 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
 
   return (
     <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0" data-assistant-activity>
-      <Section title={t('items.title')} count={open.data?.items.length} kind="items">
-        <Listing state={open} count={open.data?.items.length} truncated={open.data?.truncated} empty={t('items.empty')}>
-          {open.data?.items.map((item, i) => (
-            <ItemRow
-              key={item.id}
-              agentId={agentId}
-              item={item}
-              first={i === 0}
-              canEdit={canEdit}
-              onDelete={removeItem}
-            />
-          ))}
-        </Listing>
-        <button
-          type="button"
-          aria-expanded={closedOpen}
-          onClick={() => setClosedOpen((v) => !v)}
-          className="flex w-full cursor-pointer items-center gap-2 border-t border-(--border-subtle) bg-transparent px-4 py-[10px] text-left font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
-        >
-          <Icon name={closedOpen ? 'chevron-down' : 'chevron-right'} size={14} />
-          {t('items.closed')}
-        </button>
-        {closedOpen ? (
+      {assistant ? (
+        <Section title={t('items.title')} count={open.data?.items.length} kind="items">
           <Listing
-            state={closed}
-            count={closed.data?.items.length}
-            truncated={closed.data?.truncated}
-            empty={t('items.closedEmpty')}
+            state={open}
+            count={open.data?.items.length}
+            truncated={open.data?.truncated}
+            empty={t('items.empty')}
           >
-            {closed.data?.items.map((item, i) => (
+            {open.data?.items.map((item, i) => (
               <ItemRow
                 key={item.id}
                 agentId={agentId}
@@ -267,8 +255,36 @@ export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; 
               />
             ))}
           </Listing>
-        ) : null}
-      </Section>
+          <button
+            type="button"
+            aria-expanded={closedOpen}
+            onClick={() => setClosedOpen((v) => !v)}
+            className="flex w-full cursor-pointer items-center gap-2 border-t border-(--border-subtle) bg-transparent px-4 py-[10px] text-left font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+          >
+            <Icon name={closedOpen ? 'chevron-down' : 'chevron-right'} size={14} />
+            {t('items.closed')}
+          </button>
+          {closedOpen ? (
+            <Listing
+              state={closed}
+              count={closed.data?.items.length}
+              truncated={closed.data?.truncated}
+              empty={t('items.closedEmpty')}
+            >
+              {closed.data?.items.map((item, i) => (
+                <ItemRow
+                  key={item.id}
+                  agentId={agentId}
+                  item={item}
+                  first={i === 0}
+                  canEdit={canEdit}
+                  onDelete={removeItem}
+                />
+              ))}
+            </Listing>
+          ) : null}
+        </Section>
+      ) : null}
 
       <Section title={t('subsessions.title')} count={subsessions.data?.subsessions.length} kind="subsessions">
         <Listing

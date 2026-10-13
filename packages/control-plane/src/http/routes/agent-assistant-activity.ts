@@ -1,7 +1,8 @@
-// The Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11) and a webchat conversation's proposals (§5.10): bounded reads and edits proxied to the owning daemon, nothing kept here.
+// An agent's Activity view (assistant-mode.md §1.7, §5.11), whose items and proposals are assistant mode's, and a webchat conversation's proposals (§5.10): bounded reads and edits proxied to the owning daemon, nothing kept here.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
+  ACTIVITY_EVERY_AGENT_V1_FEATURE,
   ASSISTANT_ACTIVITY_DRAFTS_MAX,
   ASSISTANT_ACTIVITY_FEATURE,
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
@@ -112,6 +113,10 @@ const SubsessionStopDto = z.object({
   /** `stopped` interrupted its current turn; `not_running` found none to interrupt. */
   result: z.enum(['stopped', 'not_running'])
 })
+const ACTIVITY = {
+  feature: ASSISTANT_ACTIVITY_FEATURE,
+  refusal: 'this agent version cannot show its activity; upgrade its daemon'
+}
 const SUBSESSION_PANEL = {
   feature: ASSISTANT_SUBSESSION_PANEL_FEATURE,
   refusal: 'this agent version cannot list or stop a conversation’s sub-sessions; upgrade its daemon'
@@ -285,16 +290,14 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       return row
     }
 
-    // Visible agent → editor (when asked) → assistant mode → serving daemon with the feature; the reply is sent on refusal.
+    // Visible agent → editor (when asked) → assistant mode, or a section every agent has on a daemon serving it → serving daemon with the feature; the reply is sent on refusal.
     const admit = async (
       req: FastifyRequest,
       reply: FastifyReply,
       editorOnly: boolean,
-      need: { feature: string; refusal: string } = {
-        feature: ASSISTANT_ACTIVITY_FEATURE,
-        refusal: 'this agent version cannot show its activity; upgrade its daemon'
-      }
-    ): Promise<{ agent: AgentRecord; daemonId: DaemonId } | null> => {
+      need: { feature: string; refusal: string } = ACTIVITY,
+      everyAgent = false
+    ): Promise<{ agent: AgentRecord; daemonId: DaemonId; assistant: boolean } | null> => {
       const agent = await deps.repos.agent.get(orgOf(req), AgentId((req.params as { id: string }).id))
       if (!agent || !canView(agent, ctxOf(req))) {
         await send(reply, notFound('agent not found'))
@@ -307,7 +310,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           return null
         }
       }
-      if (agent.assistantMode?.enabled !== true) {
+      const assistant = agent.assistantMode?.enabled === true
+      if (!assistant && !everyAgent) {
         await send(reply, MODE_OFF)
         return null
       }
@@ -322,6 +326,11 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         return null
       }
       const daemon = await deps.registry.getAvailable(orgOf(req), daemonId)
+      // An older daemon serves Activity to assistant mode alone, so it is never asked for any other agent.
+      if (!assistant && !daemon?.capabilities.features.includes(ACTIVITY_EVERY_AGENT_V1_FEATURE)) {
+        await send(reply, MODE_OFF)
+        return null
+      }
       if (!daemon?.capabilities.features.includes(need.feature)) {
         await reply.code(409).send({
           error: 'Conflict',
@@ -331,7 +340,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         })
         return null
       }
-      return { agent, daemonId }
+      return { agent, daemonId, assistant }
     }
 
     const readSection = async <O extends AssistantActivityReadReq['operation']>(
@@ -462,8 +471,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Agents],
-          summary: 'List an assistant-mode agent’s sub-sessions',
-          description: `Lists the background sub-sessions the agent opened, running ones first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only those that conversation opened, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that opened it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. Nothing is stored by this call.`,
+          summary: 'List an agent’s sub-sessions',
+          description: `Lists the background sub-sessions the agent opened, running ones first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only those that conversation opened, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that opened it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s sub-sessions, and 409 \`ASSISTANT_MODE_OFF\` otherwise. Nothing is stored by this call.`,
           operationId: 'listAssistantSubsessions',
           params: IdParam,
           querystring: SubsessionsQuery,
@@ -477,7 +486,13 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
             .code(400)
             .send({ error: 'Bad Request', statusCode: 400, message: 'cursor pages a parentSessionId listing only' })
         }
-        const admitted = await admit(req, reply, false, parentSessionId === undefined ? undefined : SUBSESSION_PANEL)
+        const admitted = await admit(
+          req,
+          reply,
+          false,
+          parentSessionId === undefined ? ACTIVITY : SUBSESSION_PANEL,
+          true
+        )
         if (!admitted) return reply
         let parentRow: SessionMetaRecord | null = null
         if (parentSessionId !== undefined) {
@@ -540,16 +555,16 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Agents],
-          summary: 'Stop an assistant-mode agent’s sub-session',
+          summary: 'Stop an agent’s sub-session',
           description:
-            'Interrupts the current turn of one background sub-session the agent opened, exactly as a stop from the conversation composer would: nothing is muted, the sub-session reports back that it ended, and nothing it already did is undone; a process its runtime started in the background may keep running. The answer is `stopped`, or `not_running` when it had no turn to interrupt. Only callers who may continue that sub-session’s session may stop it, and they are named in its transcript. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot stop a sub-session.',
+            'Interrupts the current turn of one background sub-session the agent opened, exactly as a stop from the conversation composer would: nothing is muted, the sub-session reports back that it ended, and nothing it already did is undone; a process its runtime started in the background may keep running. The answer is `stopped`, or `not_running` when it had no turn to interrupt. Only callers who may continue that sub-session’s session may stop it, and they are named in its transcript. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot stop a sub-session, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s.',
           operationId: 'stopAssistantSubsession',
           params: SubsessionParam,
           response: { 200: SubsessionStopDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const admitted = await admit(req, reply, false, SUBSESSION_PANEL)
+        const admitted = await admit(req, reply, false, SUBSESSION_PANEL, true)
         if (!admitted) return reply
         const row = await deps.repos.session.get(orgOf(req), SessionId(req.params.sessionId))
         // A sub-session of this agent only: its coordinate is the one the daemon mints for a delegation.
@@ -583,21 +598,22 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Agents],
-          summary: 'List an assistant-mode agent’s pending drafts',
-          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a scheduled check asks to do: its sentence, its reason and its item, with the task as its text; it runs in the conversation its item was taken in once approved. \`permissionRequests\` lists the runtime permission requests background sub-sessions are waiting on, oldest first: what each asks to run, when it is denied and its sub-session stops unless someone answers, and its options; the sub-session and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. This read changes nothing. Only callers who can edit the agent may read it.`,
+          summary: 'List an agent’s pending drafts',
+          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a scheduled check of an assistant-mode agent asks to do: its sentence, its reason and its item, with the task as its text; it runs in the conversation its item was taken in once approved. \`permissionRequests\` lists the runtime permission requests background sub-sessions are waiting on, oldest first: what each asks to run, when it is denied and its sub-session stops unless someone answers, and its options; the sub-session and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. An agent outside assistant mode is answered, without proposals, only when its daemon serves every agent’s Activity, and 409 \`ASSISTANT_MODE_OFF\` otherwise. This read changes nothing. Only callers who can edit the agent may read it.`,
           operationId: 'listAssistantDrafts',
           params: IdParam,
           response: { 200: DraftsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const admitted = await admit(req, reply, true)
+        const admitted = await admit(req, reply, true, ACTIVITY, true)
         if (!admitted) return reply
         const page = await readSection(reply, admitted.daemonId, {
           agentId: admitted.agent.id,
           operation: 'drafts',
           limit: ASSISTANT_ACTIVITY_DRAFTS_MAX,
-          proposals: true,
+          // Proposals are assistant mode's: one left from before it was switched off is not offered.
+          proposals: admitted.assistant,
           permissions: true
         })
         if (!page) return reply
@@ -632,9 +648,9 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Agents],
-          summary: 'Decide an assistant-mode agent’s pending draft',
+          summary: 'Decide an agent’s pending draft',
           description:
-            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). A proposal is approved or denied the same way: approval starts its task in a background session and answers `executing`, and while the agent already runs as many sub-sessions as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. Only callers who can edit the agent may decide, and they are recorded as the decider.',
+            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). A proposal is approved or denied the same way: approval starts its task in a background session and answers `executing`, and while the agent already runs as many sub-sessions as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. An agent outside assistant mode is answered only when its daemon serves every agent’s Activity, and 409 `ASSISTANT_MODE_OFF` otherwise. Only callers who can edit the agent may decide, and they are recorded as the decider.',
           operationId: 'decideAssistantDraft',
           params: DraftParam,
           body: DraftDecisionBody,
@@ -642,10 +658,16 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const admitted = await admit(req, reply, true, {
-          feature: ASSISTANT_DRAFT_DECISION_FEATURE,
-          refusal: 'this agent version cannot decide drafts from the console; upgrade its daemon'
-        })
+        const admitted = await admit(
+          req,
+          reply,
+          true,
+          {
+            feature: ASSISTANT_DRAFT_DECISION_FEATURE,
+            refusal: 'this agent version cannot decide drafts from the console; upgrade its daemon'
+          },
+          true
+        )
         if (!admitted) return reply
         const answer = await writeEdit(
           reply,

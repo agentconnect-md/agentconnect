@@ -614,22 +614,18 @@ export function sessionRoutes(deps: HttpDeps) {
       return { session, access }
     }
 
-    // assistant-mode.md §5.6: the lineage that recognises an assistant-mode agent's own sub-session, read only on its coordinate.
+    // assistant-mode.md §5.6: the lineage that recognises an agent's own sub-session, read only on its coordinate.
     const subsessionFacts = async (
       req: FastifyRequest,
       session: SessionMetaRecord
     ): Promise<{ subsession?: SubsessionFacts }> => {
       if (!isSubsessionCoordinate(session.thread)) return {}
-      const [parent, agent] = await Promise.all([
-        session.parentSessionId ? deps.repos.session.get(orgOf(req), session.parentSessionId) : Promise.resolve(null),
-        deps.repos.agent.get(orgOf(req), session.agentId)
-      ])
+      const parent = session.parentSessionId ? await deps.repos.session.get(orgOf(req), session.parentSessionId) : null
       return {
         subsession: {
           parentSessionId: session.parentSessionId,
           parentAgentId: parent?.agentId ?? null,
-          agentId: session.agentId,
-          assistantMode: agent?.assistantMode?.enabled === true
+          agentId: session.agentId
         }
       }
     }

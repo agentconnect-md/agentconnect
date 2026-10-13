@@ -902,7 +902,7 @@ export const RdAgentMsg = z.object({
     channel: z.string().min(1),
     thread: z.string().optional()
   }),
-  correlationId: z.string().optional(),
+  correlationId: z.string().optional(), // Expand step: no longer sent or read, tolerated from older peers; drop in a later release.
   hopCount: z.number().int().nonnegative(),
   deliveryId: z.string().min(1),
   // When this cross-daemon wake was preceded by a VISIBLE channel post (a `toAgent`+`channel`
@@ -1014,7 +1014,7 @@ export const RdAgentMsgFwd = z.object({
     channel: z.string().min(1),
     thread: z.string().optional()
   }),
-  correlationId: z.string().optional(),
+  correlationId: z.string().optional(), // Expand step: no longer sent or read, tolerated from older peers; drop in a later release.
   hopCount: z.number().int().nonnegative(), // already incremented by the relay
   deliveryId: z.string().min(1),
   // Forwarded verbatim from RdAgentMsg: the visible post's real platform `ts` (if any), so the

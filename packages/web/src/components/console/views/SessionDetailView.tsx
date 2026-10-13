@@ -151,6 +151,7 @@ import {
   type PlanEntry
 } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
+import { activityScope } from '@/lib/agent-activity'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
@@ -3198,9 +3199,15 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
-  // The conversation whose sub-sessions the dock lists: the focused participant's session, while that agent is in assistant mode.
+  // The conversation whose sub-sessions the dock lists: the focused participant's session, while that agent is in assistant mode or its daemon lists every agent's.
   const subsessionsAgent = filesAgentId ? agentById.get(filesAgentId) : undefined
-  const subsessionsSessionId = !MOCK_MODE && subsessionsAgent?.assistantMode?.enabled === true ? tasksSessionId : null
+  const subsessionsListed =
+    !!subsessionsAgent &&
+    activityScope(
+      subsessionsAgent.assistantMode?.enabled === true,
+      agentCapabilitySource(subsessionsAgent, daemons, memberSets)?.caps.features
+    ) !== null
+  const subsessionsSessionId = !MOCK_MODE && subsessionsListed ? tasksSessionId : null
   // An isolated session's own wake, with its own agent; the panel presses it only when the read says this session's arm places the watcher.
   const prSessionIsolation =
     currentSessionDetail && currentSessionDetail.id === prSessionId

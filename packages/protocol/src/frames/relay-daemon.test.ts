@@ -703,6 +703,32 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     ).toBe(true)
   })
 
+  it('rd/agentmsg + rd/agentmsg/fwd still accept the correlationId an older peer sends', () => {
+    const msg = {
+      claimedFromAgentId: AGENT_ID,
+      toAgentId: '44444444-4444-4444-8444-444444444444',
+      text: 'delegate this',
+      coords: { platform: 'slack' as const, channel: 'C123' },
+      correlationId: 'o1.0',
+      hopCount: 0,
+      deliveryId: 'delivery-1'
+    }
+    expect(RdAgentMsg.safeParse(msg).success).toBe(true)
+    expect(decodeRelayDaemonFrame(envelope('rd/agentmsg', msg)).ok).toBe(true)
+    const fwd = {
+      trustedFromAgentId: AGENT_ID,
+      orgId: ORG_ID,
+      toAgentId: '44444444-4444-4444-8444-444444444444',
+      text: 'delegate this',
+      coords: { platform: 'slack' as const, channel: 'C123' },
+      correlationId: 'o1.0',
+      hopCount: 1,
+      deliveryId: 'delivery-1'
+    }
+    expect(RdAgentMsgFwd.safeParse(fwd).success).toBe(true)
+    expect(decodeRelayDaemonFrame(envelope('rd/agentmsg/fwd', fwd)).ok).toBe(true)
+  })
+
   it('rd/agentmsg + rd/agentmsg/fwd carry the tighten-only parentPrivate hint (session-visibility.md §5.1)', () => {
     const msg = {
       claimedFromAgentId: AGENT_ID,

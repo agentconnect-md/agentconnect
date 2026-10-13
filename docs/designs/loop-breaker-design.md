@@ -6,7 +6,7 @@
 > protection for platform-message feedback loops, durable-replay amplification,
 > recursive agent-to-agent calls, and the future orchestration causal graph.
 >
-> Agent delivery, authorization, and correlation remain governed by
+> Agent delivery and authorization remain governed by
 > [`agent-collaboration-implementation.md`](agent-collaboration-implementation.md).
 > This document defines only when an interaction chain must stop, how it remains
 > stopped, and who may resume it.
@@ -73,8 +73,8 @@ to the agent-call guard in this document and to the future interaction budget.
   the breaker themselves.
 - The current version does not guarantee atomic conversation counters shared
   across every daemon.
-- The system does not infer agent identity, correlation, hop count, or graph
-  edges from natural-language message bodies.
+- The system does not infer agent identity, hop count, or graph edges from
+  natural-language message bodies.
 
 ---
 
@@ -510,7 +510,6 @@ authoritative.
 ```ts
 {
   callFrom: string
-  correlationId?: string
   hopCount: number
   deliveryId: string
 }
@@ -534,17 +533,15 @@ mixed-version migration.
 
 ### 7.3 IDs Must Keep Distinct Responsibilities
 
-| ID                              | Current meaning                                                      | Can it be a loop trust root?                                              |
-| ------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `deliveryId`                    | Stable idempotency key for one delivery                              | No; each hop/delivery may differ                                          |
-| `correlationId`                 | Which call a reply belongs to; only replies inherit it automatically | No; it is an association key, and tools currently allow explicit override |
-| `hopCount`                      | Current trusted agent-call depth                                     | Yes; the current L2 safety counter                                        |
-| Future `interactionId/originId` | Daemon-minted root for the whole causal graph                        | Yes; L3 budget key; **not currently implemented**                         |
+| ID                              | Current meaning                               | Can it be a loop trust root?                      |
+| ------------------------------- | --------------------------------------------- | ------------------------------------------------- |
+| `deliveryId`                    | Stable idempotency key for one delivery       | No; each hop/delivery may differ                  |
+| `hopCount`                      | Current trusted agent-call depth              | Yes; the current L2 safety counter                |
+| Future `interactionId/originId` | Daemon-minted root for the whole causal graph | Yes; L3 budget key; **not currently implemented** |
 
-Correlation should be inherited only when replying to the original caller. A
-worker forwarding work to a third agent creates a new subtask edge and must not
-incorrectly carry the parent's correlation. Hop count, however, must be inherited
-by every nested call.
+Hop count must be inherited by every nested call. The reply `correlationId` was
+removed with orchestration (#2979); the agent-message frames only tolerate it
+from older peers.
 
 ---
 
@@ -631,14 +628,14 @@ The daemon needs a trusted, minted edge kind:
 
 - `delegate`: derive new work; constrained by the active delegation path,
   repeated edges, and fanout.
-- `reply/report`: return to the original caller/correlation owner; idempotent,
+- `reply/report`: return to the original caller; idempotent,
   charged against the total budget, but retains a small return-path allowance.
 - `retry`: controlled retry of the same delivery/subtask; must not mint a new
   origin to bypass the budget.
 
 The model cannot directly supply a trusted edge kind. It can be derived from
-`target == inbound.callFrom`, valid correlation, and orchestration state, and
-must ultimately be validated by the daemon.
+the delivery kind (parent-session reply or wake) and `target == inbound.callFrom`,
+and must ultimately be validated by the daemon.
 
 ### 8.3 Breaker and Orchestration State Machine
 
@@ -744,8 +741,7 @@ L3 should add at least:
 7. A mixed platform event → `messageAgent` → platform reply chain retains one
    interaction.
 8. Origin, budget, and OPEN state do not reset after restart/replay/move.
-9. Forged `correlationId`, body-supplied `hopCount`, or `originId` cannot change
-   safety decisions.
+9. Body-supplied `hopCount` or `originId` cannot change safety decisions.
 10. Mixed-version daemon/relay hop and origin migration fails closed.
 
 ---
@@ -759,11 +755,10 @@ L3 should add at least:
 4. **Resume requires a trusted human command authorized for a concrete
    integration.**
 5. **`messageAgent` uses trusted hops, not a platform-rate heuristic.**
-6. **Correlation is a business association, not a security root.**
-7. **There is currently no `originId`; graph/fanout budget is an explicit next
+6. **There is currently no `originId`; graph/fanout budget is an explicit next
    phase.**
-8. **Valid reply/report and delegation edges must remain distinct, or graph-cycle
+7. **Valid reply/report and delegation edges must remain distinct, or graph-cycle
    detection will harm legitimate orchestration.**
-9. **A cross-daemon global budget belongs in the data plane or a durable owner;
+8. **A cross-daemon global budget belongs in the data plane or a durable owner;
    the CP must remain outside the message-body hot path.**
-10. **`!resume` admits only future interactions and never revives purged work.**
+9. **`!resume` admits only future interactions and never revives purged work.**

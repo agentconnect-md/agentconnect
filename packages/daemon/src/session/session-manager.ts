@@ -817,15 +817,7 @@ export class SessionManager {
         : {})
     })
 
-    // §8.5 first-class thread catch-up: human and agent-authored messages share one
-    // conversation log. `messageAgent` determines who wakes NOW, not who may see the row;
-    // every participant catches up all thread events through its own stable cutoff when it
-    // next wakes. Workflow correlation remains out-of-band in trusted CallMeta.
-    //
-    // EXCEPT on a synthetic pairwise `a2a:<caller>` thread (#967): every postless child
-    // of one caller shares that physical thread while each row is a private pairwise
-    // delivery, so the catch-up there reads only rows THIS agent sent or received —
-    // a sibling must never see another child's role/task delivery or report.
+    // §8.5: every participant catches up the whole thread, except on a pairwise `a2a:<caller>` thread (#967), where it reads only its own rows.
     const blocks: ContentBlock[] = []
     let contextEvents: { ts: string; text?: string }[] = []
     // By decision background and evidence (decisions.md §8.4), rebuilt byte-identically from the persisted intake.

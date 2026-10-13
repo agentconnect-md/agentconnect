@@ -1184,9 +1184,10 @@ refused. The agent-to-agent forms and the parent-session reply are unchanged.
 
 An agent outside assistant mode drafts only a post from elsewhere into an external place, and only
 to the person who asked when they are a full member of the organization (see "Writing to other
-conversations"); it has no Activity view, so the card is where its draft is decided. A reply that
-was drafted in an external place before such replies were posted directly stays waiting and is
-decided like any other draft.
+conversations"). Its card is where its draft is decided, and an editor may also decide it from the
+agent's Activity view once the agent's daemon serves one outside assistant mode (see
+"Assistant-mode Activity"). A reply that was drafted in an external place before such replies were
+posted directly stays waiting and is decided like any other draft.
 
 The draft goes as a card to one internal member's direct message: the person who asked when
 they are an internal member (on Slack, a full member of the installing workspace, not a guest
@@ -1275,7 +1276,8 @@ their messages, goes by its item's title and summary. The conversation then answ
 language whatever language a report arrived in. Fixed text on cards is not translated.
 
 The session page of a conversation that opened sub-sessions has a Sub-sessions tab in its side
-panel; no other conversation shows it.
+panel, for an agent in assistant mode or any agent whose daemon serves Activity outside it; no
+other conversation shows it.
 It lists the sub-sessions that conversation opened, newest first and a page at a time, each
 with its state and start. A title and a link to its own session appear only to someone who may
 view that session, as in the Activity view. A delegated sub-session is titled by its task, as its
@@ -1424,9 +1426,12 @@ conversation shared with another organization sets and receives reminders like a
 
 ## Assistant-mode Activity
 
-The page of an agent in assistant mode has an Activity tab. No other agent shows it, and a link to
-it opens Integrations instead. It is read from the agent's daemon when it is shown and kept nowhere
-else; each list shows the most recent entries, up to a limit, and says when more exist.
+The page of an agent in assistant mode has an Activity tab. Every other agent's page has one too
+once its daemon serves it, with only what such an agent has: its sub-sessions and what waits for
+approval, that is its drafts and its sub-sessions' permission requests. Items and proposals stay
+assistant mode's. An agent whose daemon predates this shows no tab outside assistant mode, and a
+link to it opens Integrations instead. It is read from the agent's daemon when it is shown and kept
+nowhere else; each list shows the most recent entries, up to a limit, and says when more exist.
 
 - **Items** are visible to everyone who can view the agent: the active and waiting ones, most
   recently updated first, each with what counts as done, its next check (when a patrol looks at it
@@ -2078,6 +2083,18 @@ Trigger is required. The agent inspects current review and CI state and keeps
 fixes on the existing branch. This association never guesses a session from a
 shared checkout, a fork, or an additional workspace root. Provider event support
 and delivery rules are documented in [Pull-request feedback continuation](designs/codehost-pr-feedback.md).
+
+## A new agent's permission mode
+
+The console's form for a new agent preselects the runtime's auto mode (Claude Code's Auto, Codex's
+Auto review), or its full-access mode where the runtime offers no auto mode, so work nobody is
+watching does not stop to wait for approval. It is the same pick turning assistant mode on makes
+(see "Assistant-mode places"), taken from the modes the runtime reports when it reports them. A
+runtime with neither keeps the mode the form always preselected. Choosing another runtime
+preselects that runtime's mode again. The person creating the agent may still pick any other mode,
+one that asks included, and with Manual the assistant mode panel warns as it always has. Only the
+console form does this: an agent created through the API or the AgentConnect MCP tools without a
+permission mode keeps the runtime's own default, as before.
 
 ## Agent model credentials
 

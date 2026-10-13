@@ -119,7 +119,6 @@ export const SEND_MESSAGE_BRANCHES = {
   }),
   sessionId: targetBranch('session target', {
     sessionId: requiredString('sessionId'),
-    correlationId: optionalString('correlationId'),
     message: messageField
   })
 }
@@ -176,11 +175,7 @@ export interface MessageAgentReq {
   callerIntegrationId?: string
   /** Trusted physical-bot scope of the caller session. */
   callerTransportScope?: string
-  /** Trusted caller session coords (== the caller's {@link SessionContext} channel/thread).
-   *  Never a tool input. The daemon uses these + `callerAgentId` to recompute the caller's
-   *  logical sessionKey and resolve the CURRENT turn's trusted call metadata (§6.7), so a
-   *  nested `messageAgent` can auto-inherit hop/origin (all calls) and correlationId (replies
-   *  only) without the agent hand-copying anything. */
+  /** Trusted caller coords; with `callerAgentId` they resolve the current turn's call metadata (§6.7) for hop/origin. */
   callerChannel: string
   callerThread: string
   toAgentId: string
@@ -195,7 +190,6 @@ export interface MessageAgentReq {
    *  and so the new session's read cursor stays a canonical platform ts (mirrors
    *  `spawnChannelRootSession`). Absent for a postless wake. */
   transcriptTs?: string
-  correlationId?: string
   /** session-concept §5.3: the caller asked the woken session to report back when it is done or
    *  has failed (`toAgent.needsReply`). The daemon turns this into a standing directive on the
    *  child's session — it is NOT part of the delivered message text. */
@@ -225,15 +219,7 @@ export interface MessageAgentResult {
   subsession?: true
 }
 
-/**
- * A trusted request to reply into an existing session addressed by its stable id
- * (session-concept §5.2 — `sendMessage`'s SessionTarget). Every field except `sessionId`,
- * `text`, and the optional `correlationId` override is filled by the daemon from the trusted
- * {@link SessionContext}; the caller coords let the daemon recompute the caller's logical
- * sessionKey and read the CURRENT turn's trusted call metadata, which is the ONLY basis for
- * authorizing `sessionId` (it must equal the turn's `originSessionId`) — an agent can only
- * reply into its own origin, never inject into an arbitrary session.
- */
+/** A trusted SessionTarget reply (session-concept §5.2): only `sessionId` and `text` come from the model, and `sessionId` must be the caller's origin. */
 export interface ReplyToSessionReq {
   /** Trusted caller identity (== `ctx.agentId`). Never a tool input. */
   callerAgentId: string
@@ -246,8 +232,6 @@ export interface ReplyToSessionReq {
    *  The daemon authorizes it against the caller's active-turn origin. */
   sessionId: string
   text: string
-  /** Optional correlationId override (advanced). Normally inherited from the origin turn. */
-  correlationId?: string
 }
 
 /** The result of a SessionTarget reply. `delivered:false` carries a typed reason
@@ -307,11 +291,7 @@ export interface MessagingDeps extends GatewayDeps {
   messageAgent: (req: MessageAgentReq) => Promise<MessageAgentResult>
   /** Side-effect-free: the reason {@link MessagingDeps.messageAgent} would refuse this wake locally, else null, so no post precedes it; absent ⇒ not gated. */
   preflightWake?: (req: MessageAgentReq) => string | null
-  /** Reply into an existing session addressed by its stable id (session-concept §5.2). The
-   *  daemon fills the trusted caller identity from the session context, authorizes `sessionId`
-   *  against the caller's active-turn origin (origin-only, fail-closed), auto-inherits the
-   *  origin turn's correlationId, and inserts a {type:system, from:<caller>} message —
-   *  routing local or cross-daemon. Backs `sendMessage`'s SessionTarget. */
+  /** Backs `sendMessage`'s SessionTarget (session-concept §5.2): origin-only, fail-closed reply into the caller's origin session. */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
   /** How a channel-ROOT post this session just made relates to the conversations the session is
    *  ALREADY part of: `parent` = the origin session waiting on an answer (named, so the caller can
@@ -518,7 +498,8 @@ export async function sendMessage(
   // Discriminant (§3.3): a `sessionId` ⇒ SessionTarget — reply into that existing session.
   const sessionId = parseArgs(optionalString('sessionId'), args.sessionId)
   if (sessionId !== undefined) {
-    const { correlationId } = parseArgs(SEND_MESSAGE_BRANCHES.sessionId, args)
+    // Validation only: the strict branch rejects any key this form does not accept.
+    parseArgs(SEND_MESSAGE_BRANCHES.sessionId, args)
     return await deps.replyToSession({
       callerAgentId: ctx.agentId,
       platform: ctx.platform,
@@ -526,8 +507,7 @@ export async function sendMessage(
       callerChannel: ctx.channel,
       callerThread: ctx.thread,
       sessionId,
-      text: message,
-      ...(correlationId !== undefined ? { correlationId } : {})
+      text: message
     })
   }
 

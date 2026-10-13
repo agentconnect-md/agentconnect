@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { AgentModelProvider, ChatActions } from '@agentconnect.md/protocol'
+import { autoOrFullAccessPermissionMode } from '@agentconnect.md/protocol/assistant-permission-modes'
 import { ModelProviderField } from '@/components/console/ModelProviderField'
 import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
@@ -181,9 +182,8 @@ export default function AddAgentModal({
   const [showStatusBar, setShowStatusBar] = useState(false)
   const [memoryProvider, setMemoryProvider] = useState<MemoryProviderChoice>('managed')
   const [externalMemory, setExternalMemory] = useState<ExternalMemoryBindingDraft>(DEFAULT_EXTERNAL_MEMORY_BINDING)
-  const [permissionMode, setPermissionMode] = useState(
-    seed.permissionMode ?? permissionModeDefault(FALLBACK_RUNTIME_IDS[0]!)
-  )
+  // null until the user picks one, so the runtime's own preselection below applies.
+  const [permissionMode, setPermissionMode] = useState<string | null>(seed.permissionMode)
   const [chatActions, setChatActions] = useState<ChatActions>('approve')
   const [description, setDescription] = useState(seed.description)
   const [daemonId, setDaemonId] = useState(seed.daemonValue)
@@ -444,11 +444,18 @@ export default function AddAgentModal({
   const selectedEffort = showEffort ? displayedEffort(effort, effortChoices, capability?.defaultEffort) : ''
   const fastModeAvailable = fastModeAvailableFor(effectiveRuntime, capability)
   const permissionChoices = permissionModeChoicesFor(effectiveRuntime, modelCatalog)
-  // A statically-guessed initial mode the dynamic vocabulary doesn't offer is a
-  // phantom, not user data — resolve it to the runtime's own default (probe
-  // currentValue), else the first offered mode. No "(unavailable)" here: unlike
-  // Edit, nothing in this modal is stored yet.
-  const selectedPermissionMode = resolvedPermissionMode(permissionMode, permissionChoices, modelCatalog)
+  // A new agent starts in the runtime's auto mode, else its full-access one, so work nobody watches does not wait; else its own default.
+  const permissionPreselected =
+    autoOrFullAccessPermissionMode(
+      effectiveRuntime,
+      permissionChoices.map((choice) => choice.v)
+    ) ?? permissionModeDefault(effectiveRuntime)
+  // A guessed mode the reported vocabulary lacks resolves to the runtime's own default, else its first mode; nothing here is stored yet.
+  const selectedPermissionMode = resolvedPermissionMode(
+    permissionMode ?? permissionPreselected,
+    permissionChoices,
+    modelCatalog
+  )
 
   // Probe on open: App enabled on this deployment? Any installations? Refetch on
   // window focus too — "Install GitHub app" finishes in another tab, and coming
@@ -1071,7 +1078,7 @@ export default function AddAgentModal({
               requireAvailableModel={savedCredentials}
               aside={<ChatActionsField value={chatActions} onChange={setChatActions} />}
               onFallbackChange={(target) => {
-                if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
+                const switched = target.runtime !== effectiveRuntime
                 setRuntime(target.runtime)
                 setModel(target.model)
                 setEffort(
@@ -1083,7 +1090,9 @@ export default function AddAgentModal({
                       current
                     )
                 )
-                if (target.permissionMode !== undefined) setPermissionMode(target.permissionMode)
+                // Another runtime takes its own preselection; the same one keeps the mode picked.
+                if (switched) setPermissionMode(null)
+                else if (target.permissionMode !== undefined) setPermissionMode(target.permissionMode)
                 if (target.fastMode !== undefined) setFastMode(target.fastMode)
               }}
             />

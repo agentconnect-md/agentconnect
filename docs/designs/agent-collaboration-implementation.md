@@ -26,10 +26,11 @@
 > `sendMessage({ toAgent: { agentId, needsReply: true } })` calls, and status is
 > `viewSessionStatus`; a session that still calls a removed name gets the ordinary
 > unknown-tool error. Sections 3 and 6.8 remain as the record of the removed
-> design. `correlationId` still rides trusted call metadata and the parent-session
-> reply, but nothing in the daemon reads it any more. The daemon store keeps its
-> unused `orchestration` and `orchestration_subtask` tables until a schema step
-> drops them.
+> design. `correlationId` is gone as well: `sendMessage` no longer accepts it, the
+> daemon no longer carries it in trusted call metadata or the parent-session
+> reply, and the `rd/agentmsg` frames only tolerate it from older peers. The
+> daemon store keeps its unused `orchestration` and `orchestration_subtask` tables
+> until a schema step drops them.
 
 > This document is the concrete implementation design for
 > [`agents-collaboration-design.md`](agents-collaboration-design.md). That
@@ -188,8 +189,7 @@ The target receives caller-attributed text in its own agent session:
   `delivered:false, reason:'not_allowed'`.
 - Trusted daemon/relay code derives `fromAgentId`; an agent cannot attest its
   own identity.
-- `correlationId` and hop count are trusted call metadata, not caller-authored
-  message fields.
+- Hop count is trusted call metadata, not a caller-authored message field.
 
 ### 2.3 Delivery Paths (Two Target Locations)
 
@@ -254,7 +254,7 @@ allowedCallerAgentIds, outboundPolicy, allowedTargetAgentIds, name?, displayName
 agentA@daemon-1
   messageAgent(toAgentId=B)
   -> daemon-1 cannot find B locally -> send relay op
-     rd/agentmsg { claimedFromAgentId, toAgentId, text, coords, correlationId, hopCount }
+     rd/agentmsg { claimedFromAgentId, toAgentId, text, coords, hopCount }
        over the direct rd/* data plane, not CP  // claimedFromAgentId is untrusted; see section 2.5.
   -> relay resolves B to owning daemonId through the collaboration-routing snapshot
      -> get(daemonId) obtains the connection
@@ -267,15 +267,14 @@ agentA@daemon-1
      -> constructs NormalizedMessage -> dispatch(B, msg)
 ```
 
-- Relay op `rd/agentmsg` in `relay-daemon.ts` carries `{ claimedFromAgentId, toAgentId, text, coords, correlationId, hopCount }`. Because one authenticated daemon can host several agents, the socket's daemonId cannot identify which agent initiated a call. The frame therefore carries a **claimed, untrusted `fromAgentId`**. Relay verifies it against socket daemonId + the flat org directory (the claimed id must exist and its placement must be owned by the authenticated sending daemon — that daemon-ownership check, not channel membership, is what makes the claim unforgeable), then and only then creates a trusted caller claim for forwarding. `msg.coords` rides along as the **delivery coordinate** for the woken session, never as an authorization input; the target's reply `integrationId` prefers its placement in the coords channel and falls back to its directory entry when it has no row there (an integration-less peer legitimately has none).
+- Relay op `rd/agentmsg` in `relay-daemon.ts` carries `{ claimedFromAgentId, toAgentId, text, coords, hopCount }`. Because one authenticated daemon can host several agents, the socket's daemonId cannot identify which agent initiated a call. The frame therefore carries a **claimed, untrusted `fromAgentId`**. Relay verifies it against socket daemonId + the flat org directory (the claimed id must exist and its placement must be owned by the authenticated sending daemon — that daemon-ownership check, not channel membership, is what makes the claim unforgeable), then and only then creates a trusted caller claim for forwarding. `msg.coords` rides along as the **delivery coordinate** for the woken session, never as an authorization input; the target's reply `integrationId` prefers its placement in the coords channel and falls back to its directory entry when it has no row there (an integration-less peer legitimately has none).
 - See section 2.5 for authorization, including target call policy and creation of trusted caller identity.
 
 ### 2.4 Target-Agent Experience
 
 Target agent B receives an ordinary inbound message whose `from` identifies `@agentA`. It handles it in **its own turn** and can:
 
-- Reply to its parent session with `sendMessage` and the parent `sessionId`,
-  preserving trusted correlation.
+- Reply to its parent session with `sendMessage` and the parent `sessionId`.
 - Use the `sendMessage` peer target to wake a third agent for chained
   collaboration.
 
@@ -479,7 +478,7 @@ paths enforce call policy from the sources above:
 | Daemon        | Injects `listAgents` (alias `listChannelAgents`) and unified `sendMessage`, performs local delivery and org-scoped target-side verification, maintains trusted call metadata, and receives the versioned collaboration snapshot    |
 | Relay         | Routes `rd/agentmsg` using the bot-independent snapshot, binds the authenticated daemon, verifies claimed caller ownership, creates the trusted caller claim, and enforces policy                                                  |
 | Control plane | Distributes versioned membership, placement, route, and policy snapshots (channel-keyed `channels[]` **plus** the flat org `agents[]`) to relays and daemons without message bodies, and advertises `agent-directory-org-scope-v1` |
-| Tests         | Cover tool validation, local and relay delivery, directional-policy rejection, forged caller claims, missing/stale snapshots, cross-organization rejection, trusted correlation, and hop-depth enforcement                         |
+| Tests         | Cover tool validation, local and relay delivery, directional-policy rejection, forged caller claims, missing/stale snapshots, cross-organization rejection, and hop-depth enforcement                                              |
 
 ### 2.7 Follow-Ups (Explicitly Not Done Here)
 
@@ -667,12 +666,12 @@ skill or prompt to mutate local state:
 
 ### 3.6 Removed Surface
 
-| Layer    | Behavior                                                                                                       |
-| -------- | -------------------------------------------------------------------------------------------------------------- |
-| Daemon   | Records and report recording removed; `correlationId` still rides trusted call metadata, but nothing reads it. |
-| Deadline | Removed, with its startup and duty-change re-arm. The unused tables stay in the store schema.                  |
-| Tools    | Removed; a session that still calls one gets the unknown-tool error.                                           |
-| Tests    | Removed with the code.                                                                                         |
+| Layer    | Behavior                                                                                                           |
+| -------- | ------------------------------------------------------------------------------------------------------------------ |
+| Daemon   | Records, report recording and `correlationId` removed; the agent-message frames only tolerate it from older peers. |
+| Deadline | Removed, with its startup and duty-change re-arm. The unused tables stay in the store schema.                      |
+| Tools    | Removed; a session that still calls one gets the unknown-tool error.                                               |
+| Tests    | Removed with the code.                                                                                             |
 
 ---
 
@@ -852,15 +851,15 @@ Timeout, retransmission, and deduplication at each hop use the stable
 ### 6.6 Trusted-Metadata Storage Layer: ACP Has No Per-Turn System Channel
 
 - ACP has **no per-turn system/context layer outside user prompt**. Only `session/new|load` accepts `_meta.systemPrompt`; `session/prompt` accepts only `ContentBlock[]`. Section 3.3a cannot both show `call_metadata` to the model and claim it does not enter the prompt. Split it:
-  - Keep **authoritative metadata only in daemon-private turn context**. Authorization, correlation, hop, and automatic tool propagation read only this context.
+  - Keep **authoritative metadata only in daemon-private turn context**. Authorization, hop, and automatic tool propagation read only this context.
   - If the model needs the caller identity, daemon generates an ordinary/embedded display context that is **never a security input**.
 - If a trusted per-turn system channel is truly required, make an **ACP/runtime extension an explicit prerequisite**.
 
 ### 6.7 Turn-Context Lifecycle / Key + Reply vs New Call
 
-- An MCP token is **statically session-scoped**, and queued turns in the session share it. Bind metadata to one `QueueEntry` by `deliveryId` / msgId. Install its active context **before prompt begins**, clear it in `finally`, and reject tool calls with **no active turn**. Durable replay of the same delivery restores its own correlation/hop, but nothing survives after turn finally to contaminate the next delivery.
-- **Split semantics:** `messageAgent` must not automatically inherit correlation for every call, or a worker delegating to a third agent would incorrectly reuse the parent task correlation. Add `replyToAgentCall` or a mode: **only a reply inherits correlation**, while **every child call must inherit hop/origin**.
-- **Do not conflate security IDs:** `correlationId` is only for reply association, never a loop root. A future `originId` must be minted by the daemon and durably persisted end to end; see sections 7.3 and 8.1 of [`loop-breaker-design.md`](loop-breaker-design.md).
+- An MCP token is **statically session-scoped**, and queued turns in the session share it. Bind metadata to one `QueueEntry` by `deliveryId` / msgId. Install its active context **before prompt begins**, clear it in `finally`, and reject tool calls with **no active turn**. Durable replay of the same delivery restores its own hop/origin, but nothing survives after turn finally to contaminate the next delivery.
+- **Every child call inherits hop/origin.** A reply reaches its parent through the origin lineage (`sendMessage` with the parent `sessionId`); the reply `correlationId` was removed with orchestration (#2979).
+- **Origin is a security ID:** a future `originId` must be minted by the daemon and durably persisted end to end; see sections 7.3 and 8.1 of [`loop-breaker-design.md`](loop-breaker-design.md).
 
 ### 6.8 Orchestration: Durable Owner / Outbox / State Machine / Owner Authorization — Removed
 

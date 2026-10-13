@@ -839,23 +839,7 @@ export interface InboxRow {
  *  `childSessionId` instead of opening a second session, short enough that a busy
  *  channel's table stays bounded. */
 
-/**
- * One activation rendezvous record (send-message-routing-rework.md §8.6).
- *
- * A paired `toAgent + channel` send produces TWO observations of ONE logical delivery:
- * an internal wake carrying the complete trusted call envelope, and the visible platform
- * post the peer's daemon also receives. They can arrive in either order and, cross-daemon,
- * over different transports. This record is what makes them one admission instead of two
- * — or, worse, an admission built from whichever arrived first.
- *
- * The asymmetry between the two halves is deliberate. The internal wake is the semantic
- * AUTHORITY: only it carries lineage, correlation, `needsReply`, hop depth, external
- * origin, and privacy gates. The platform event contributes provider-authenticated
- * coordinates and the transcript observation — correlation, never authority. Hence a
- * platform-first record can be claimed `pending` but can NEVER reach `admitted` without
- * `callEnvelope`: dispatching an envelope-less child would silently invent a lineage-less
- * session in place of the call the caller actually made.
- */
+/** One activation rendezvous record (send-message-routing-rework.md §8.6): only the wake's `callEnvelope` admits, so a platform-first record stays `pending`. */
 export interface ActivationRecord {
   /** `platform + transportScope + platformMessageId + targetAgentId` — one logical
    *  delivery to one target. Including the target is what lets a single visible post

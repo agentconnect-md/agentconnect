@@ -246,7 +246,7 @@ These remain normal tests and gate relevant pull requests:
 
 **Collaboration**
 
-- direct delivery preserves trusted caller, delivery, correlation, origin, and hop metadata;
+- direct delivery preserves trusted caller, delivery, origin, and hop metadata;
 - context isolation gives a callee only the handed content and trusted collaboration context;
 - call policy, membership, idempotency, queue limits, timeout/cancel, and failure feedback hold;
 - duplicate delivery and cascades/loops are contained.

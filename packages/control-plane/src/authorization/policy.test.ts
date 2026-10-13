@@ -432,14 +432,13 @@ describe('visibilityWhere', () => {
   })
 })
 
-// assistant-mode.md §5.6: an assistant-mode agent's own sub-session takes its parent's audience.
-describe('canChangeSessionVisibility on assistant-mode sub-sessions', () => {
+// assistant-mode.md §5.6: an agent's own sub-session takes its parent's audience, in assistant mode or not.
+describe('canChangeSessionVisibility on an agent’s own sub-sessions', () => {
   const AGENT = 'agent-a'
   const facts = (over: Partial<NonNullable<SessionViewable['subsession']>> = {}) => ({
     parentSessionId: 'sid-parent-1',
     parentAgentId: AGENT,
     agentId: AGENT,
-    assistantMode: true,
     ...over
   })
   const session = (thread: string | null, subsession?: SessionViewable['subsession']): SessionViewable => ({
@@ -451,7 +450,7 @@ describe('canChangeSessionVisibility on assistant-mode sub-sessions', () => {
   const allowed = (resource: SessionViewable, role: OrgMemberRole = 'collaborator') =>
     canChangeSessionVisibility(resource, ctx(CREATOR, role), identitySetOf(ctx(CREATOR, role)))
 
-  it('refuses an assistant-mode agent’s own sub-session even to its inherited owner, whatever the role', () => {
+  it('refuses an agent’s own sub-session even to its inherited owner, whatever the role', () => {
     for (const role of ['owner', 'collaborator', 'viewer'] as const) {
       expect(allowed(session('subsession:1700000000000', facts()), role)).toBe(false)
     }
@@ -463,8 +462,7 @@ describe('canChangeSessionVisibility on assistant-mode sub-sessions', () => {
 
   it.each([
     ['another agent’s parent', facts({ parentAgentId: 'agent-b' })],
-    ['no parent', facts({ parentSessionId: null, parentAgentId: null })],
-    ['assistant mode off', facts({ assistantMode: false })]
+    ['no parent', facts({ parentSessionId: null, parentAgentId: null })]
   ])('leaves the owner’s choice in place with %s', (_label, lineage) => {
     expect(allowed(session('subsession:1700000000000', lineage))).toBe(true)
   })
@@ -472,6 +470,6 @@ describe('canChangeSessionVisibility on assistant-mode sub-sessions', () => {
   it('changes nothing for a session on any other coordinate, whatever its lineage', () => {
     expect(allowed(session('1700000000.000100', facts()))).toBe(true)
     expect(allowed(session(null, facts()))).toBe(true)
-    expect(allowed(session('append:1700000000000', facts({ assistantMode: false })))).toBe(false)
+    expect(allowed(session('append:1700000000000', facts()))).toBe(false)
   })
 })

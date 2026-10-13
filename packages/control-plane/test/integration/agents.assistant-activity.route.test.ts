@@ -1,7 +1,8 @@
-// The assistant-mode Activity view over the REST surface (assistant-mode.md §1.7, §5.11): who may read and edit what, proxied to the daemon and kept nowhere.
+// The Activity view over the REST surface (assistant-mode.md §1.7, §5.11): who may read and edit what, in assistant mode or not, proxied to the daemon and kept nowhere.
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
+  ACTIVITY_EVERY_AGENT_V1_FEATURE,
   ASSISTANT_ACTIVITY_FEATURE,
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
@@ -912,6 +913,130 @@ describe('a webchat conversation’s proposals', () => {
       await decideIn(app(control, owner), mine, 'approve')
     ])
       expect(res.json()).toMatchObject({ statusCode: 409, code: 'DAEMON_FEATURE_MISSING' })
+    expect(control.reads).toEqual([])
+    expect(control.writes).toEqual([])
+  })
+})
+
+describe('the Activity of an agent outside assistant mode', () => {
+  const EVERY_AGENT = [...CAPABILITIES.features, ACTIVITY_EVERY_AGENT_V1_FEATURE]
+
+  it('serves its sub-sessions, drafts and permission requests on a daemon that serves every agent’s', async () => {
+    await seedAssistant({ enabled: false, features: EVERY_AGENT })
+    const { team, teamChild } = await seedConversations()
+    const editor = await makeUser(`every-agent-editor-${randomUUID()}`, 'collaborator')
+    await new PgUserRepo(prisma).updateProfile(editor, { displayName: 'Grace' })
+    const control = new ActivitySpy()
+    control.subsessions = [
+      { sessionId: teamChild, parentSessionId: team, state: 'open', createdAt: '2026-10-09T09:00:00.000Z' }
+    ]
+    control.permissions = [
+      {
+        requestId: randomUUID(),
+        sessionId: teamChild,
+        parentSessionId: team,
+        tool: 'Write src/app.ts',
+        createdAt: '2026-10-09T09:00:00.000Z',
+        expiresAt: '2026-10-09T21:00:00.000Z'
+      }
+    ]
+    const running = app(control, editor)
+
+    const all = await get(running, '/subsessions')
+    expect(all.statusCode, all.body).toBe(200)
+    expect(all.json().subsessions).toEqual([expect.objectContaining({ sessionId: teamChild, canStop: true })])
+    const narrowed = await get(running, `/subsessions?parentSessionId=${team}`)
+    expect(narrowed.json().subsessions).toEqual([expect.objectContaining({ sessionId: teamChild, canStop: true })])
+    const drafts = await get(running, '/drafts')
+    expect(drafts.statusCode, drafts.body).toBe(200)
+    expect(drafts.json()).toMatchObject({
+      drafts: [{ id: 'draft-1' }],
+      permissionRequests: [{ tool: 'Write src/app.ts', subsession: { sessionId: teamChild } }]
+    })
+    expect((await stop(running, teamChild)).json()).toEqual({ result: 'stopped' })
+    expect((await decide(running, 'approve')).json()).toEqual({ status: 'succeeded', failure: null })
+
+    // Proposals are assistant mode's, so its daemon is not asked for them.
+    expect(control.reads).toEqual([
+      { agentId: AGENT, operation: 'subsessions', limit: 50 },
+      { agentId: AGENT, operation: 'subsessions', limit: 50, parent: { sessionId: team } },
+      { agentId: AGENT, operation: 'drafts', limit: 50, proposals: false, permissions: true }
+    ])
+    const actor = { userId: editor, name: 'Grace' }
+    expect(control.writes).toEqual([
+      { agentId: AGENT, operation: 'stop-subsession', sessionId: teamChild, actor },
+      { agentId: AGENT, operation: 'decide-draft', draftId: 'draft-1', choice: 'approve', decider: actor }
+    ])
+  })
+
+  it('keeps items and a conversation’s proposals assistant mode’s, before any daemon I/O', async () => {
+    await seedAssistant({ enabled: false, features: EVERY_AGENT })
+    const owner = await makeUser(`every-agent-owner-${randomUUID()}`, 'collaborator')
+    const { mine } = await seedWebchat(owner)
+    const control = new ActivitySpy()
+    for (const res of [
+      await get(app(control), '/items'),
+      await get(app(control), '/items/item-1'),
+      await del(app(control), '/items/item-1'),
+      await proposals(app(control, owner), mine),
+      await decideIn(app(control, owner), mine, 'approve')
+    ])
+      expect(res.json()).toMatchObject({ statusCode: 409, code: 'ASSISTANT_MODE_OFF' })
+    expect(control.reads).toEqual([])
+    expect(control.writes).toEqual([])
+  })
+
+  it('refuses every section as before on a daemon that serves only assistant mode’s, before any daemon I/O', async () => {
+    await seedAssistant({ enabled: false })
+    const { team, teamChild } = await seedConversations()
+    const control = new ActivitySpy()
+    for (const res of [
+      await get(app(control), '/subsessions'),
+      await get(app(control), `/subsessions?parentSessionId=${team}`),
+      await get(app(control), '/drafts'),
+      await stop(app(control), teamChild),
+      await decide(app(control), 'approve')
+    ])
+      expect(res.json()).toMatchObject({ statusCode: 409, code: 'ASSISTANT_MODE_OFF' })
+    expect(control.reads).toEqual([])
+    expect(control.writes).toEqual([])
+  })
+
+  it('checks who may read, stop and decide exactly as in assistant mode', async () => {
+    await seedAssistant({ enabled: false, features: EVERY_AGENT })
+    const { team, teamChild, dmChild } = await seedConversations()
+    const control = new ActivitySpy()
+    control.subsessions = [
+      { sessionId: teamChild, parentSessionId: team, state: 'open', createdAt: '2026-10-09T09:00:00.000Z' }
+    ]
+    const viewer = await makeUser(`every-agent-viewer-${randomUUID()}`, 'viewer')
+    const asViewer = app(control, viewer)
+    expect((await get(asViewer, '/subsessions')).json().subsessions).toEqual([
+      expect.objectContaining({ sessionId: teamChild, canStop: false })
+    ])
+    for (const res of [
+      await get(asViewer, '/drafts'),
+      await decide(asViewer, 'approve'),
+      await stop(asViewer, teamChild)
+    ])
+      expect(res.statusCode).toBe(403)
+    // The owner's DM sub-session is not a member's to see.
+    const member = await makeUser(`every-agent-member-${randomUUID()}`, 'collaborator')
+    expect((await stop(app(control, member), dmChild)).statusCode).toBe(404)
+    expect(control.writes).toEqual([])
+
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
+    control.reads = []
+    for (const res of [
+      await get(app(control, member), '/subsessions'),
+      await get(app(control, member), '/drafts'),
+      await stop(app(control, member), teamChild),
+      await decide(app(control, member), 'approve')
+    ])
+      expect(res.statusCode).toBe(404)
     expect(control.reads).toEqual([])
     expect(control.writes).toEqual([])
   })
