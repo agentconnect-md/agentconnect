@@ -949,8 +949,18 @@ function proxyDispatcher(): ProxyAgent | undefined {
   return url ? new ProxyAgent(url) : undefined
 }
 
-function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
-  return (url, init) => undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
+function slackFetch(dispatcher?: Dispatcher): FetchFunction {
+  return (url, init) => {
+    // Node 26.0 can hang on the first Slack request when it carries an explicit zero-length body.
+    if (init?.body === '') {
+      init = { ...init }
+      delete init.body
+    }
+    if (dispatcher) {
+      return undiciFetch(url, { ...(init as Parameters<typeof undiciFetch>[1]), dispatcher })
+    }
+    return globalThis.fetch(url, init as RequestInit)
+  }
 }
 
 /** Build the send-only {@link AppLike}: a real Slack `WebClient` (xoxb) for the send
@@ -959,7 +969,7 @@ function fetchWithDispatcher(dispatcher: Dispatcher): FetchFunction {
 function sendOnlyApp(botToken: string): AppLike {
   const dispatcher = proxyDispatcher()
   const client = new WebClient(botToken, {
-    ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
+    fetch: slackFetch(dispatcher),
     timeout: SLACK_API_TIMEOUT_MS,
     retryConfig: { retries: 2 }
   })
@@ -984,7 +994,7 @@ function realSocketModeApp(o: { token: string; appToken: string }, boltDebug?: b
   // WebSocket connections through that proxy.
   const dispatcher = proxyDispatcher()
   const clientOptions: WebClientOptions = {
-    ...(dispatcher ? { fetch: fetchWithDispatcher(dispatcher) } : {}),
+    fetch: slackFetch(dispatcher),
     // Bound the Web API per-request time + retries. The @slack/web-api default
     // "10 retries over ~30 minutes" would, combined with our serial send-queue,
     // let one transient failure block all delivery for a whole turn. 30s is a

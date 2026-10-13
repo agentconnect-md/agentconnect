@@ -64,6 +64,8 @@ const deps = () => ({
 })
 
 describe('SlackConnection initialization', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
   it('constructs the Bolt v5 Socket Mode receiver', () => {
     expect(() => new SlackConnection(deps() as any)).not.toThrow()
   })
@@ -96,6 +98,25 @@ describe('SlackConnection initialization', () => {
     await app.authorize({ isEnterpriseInstall: false })
     await app.authorize({ isEnterpriseInstall: false })
     expect(authTest).toHaveBeenCalledTimes(2)
+  })
+
+  it('omits empty Slack API bodies without changing populated requests', async () => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ ok: true, user_id: 'UBOT', team_id: 'T123' }), {
+          headers: { 'content-type': 'application/json' }
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const conn = new SlackConnection({ ...deps(), sendOnly: true } as any)
+
+    await conn.start()
+    await (conn as any).app.client.chat.postMessage({ channel: 'C1', text: 'hello' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0]![1]).not.toHaveProperty('body')
+    expect(fetchMock.mock.calls[1]![1]?.body).toContain('channel=C1')
+    expect(fetchMock.mock.calls[1]![1]?.body).toContain('text=hello')
   })
 })
 
