@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
+import type { CollabHost } from '../src/collab/coordinator.js'
 import { AGENTMSG_NOT_READY_RETRY } from '../src/cp/agentmsg-retry.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
@@ -3363,6 +3364,152 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
       nextAction: 'finish-turn-and-wait',
       message:
         'Message delivered; the agent is still working. End this turn and wait for its reply; do not retry or poll tightly.'
+    })
+    await daemon.stop()
+  })
+
+  it.each([false, true])(
+    'reports dispatch failure with an existing child row=%s and wakes the parent',
+    async (existingRow) => {
+      const { daemon, call } = await bootWithDispatchSpy(scaffold([{ id: 'bot-a' }, { id: 'bot-b' }]))
+      await seedSession(daemon, PARENT_KEY, { sessionId: 'sid-parent-1', state: 'prompting' })
+      if (existingRow) await seedSession(daemon, CHILD_KEY, { lastTurnOutcome: 'done' })
+      let reject!: (err: Error) => void
+      const dispatch = vi.spyOn(daemon as any, 'dispatch')
+      dispatch.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, fail) => {
+            reject = fail
+          })
+      )
+      const result = await call(baseReq({ needsReply: true, postless: true }))
+      expect((await ask(daemon, result.targetSession))?.status).toBe('in-progress')
+      reject(new Error('Model opus[1m] not offered'))
+      await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2))
+      const failure = await ask(daemon, result.targetSession)
+      expect(failure).toMatchObject({
+        status: 'failed',
+        reply: { requested: true, state: 'failed' },
+        nextAction: 'report-failure'
+      })
+      expect(failure.message).toContain('Model opus[1m] not offered')
+      // A CP-forwarded probe sees the same failure, including before a runtime row exists.
+      expect(
+        await (daemon as any).collab.childSessionStatusProbe({
+          childSessionId: result.targetSession,
+          parentSessionId: 'sid-parent-1'
+        })
+      ).toMatchObject({ found: true, status: 'failed', nextAction: 'report-failure' })
+      const [agent, msg, , , meta, opts] = dispatch.mock.calls[1]! as Parameters<CollabHost['dispatch']>
+      expect(agent).toBe('bot-a')
+      expect(msg).toMatchObject({
+        platform: 'slack',
+        channel: 'C1',
+        thread: '100.1',
+        parentReport: true,
+        sender: { id: 'bot-b', isBot: true }
+      })
+      expect(msg.text).toContain('Model opus[1m] not offered')
+      expect(msg.headless).toBeUndefined()
+      expect(meta).toMatchObject({ callFrom: 'bot-b', hopCount: 1 })
+      expect(meta?.needsReply).toBeUndefined()
+      expect(opts?.requireDurable).toBe(true)
+      if (existingRow) {
+        expect((await (daemon as any).store.getSession(CHILD_KEY)).lastTurnOutcome).toBe('failed')
+        // Runtime failure is still visible if volatile reply tracking is lost on restart.
+        await (daemon as any).store.upsertSession({
+          ...(await (daemon as any).store.getSession(CHILD_KEY)),
+          originSessionId: 'sid-parent-1'
+        })
+        ;(daemon as any).collab.childSessionLinks.clear()
+        expect((await ask(daemon, CHILD_KEY))?.status).toBe('failed')
+      }
+      await daemon.stop()
+    }
+  )
+
+  it('exposes a failed no-reply wake without waking the parent', async () => {
+    const { daemon, call } = await bootWithDispatchSpy(scaffold([{ id: 'bot-a' }, { id: 'bot-b' }]))
+    await seedSession(daemon, PARENT_KEY, { sessionId: 'sid-parent-1' })
+    const dispatch = vi.spyOn(daemon as any, 'dispatch').mockRejectedValueOnce(new Error('runtime launch failed'))
+    const result = await call(baseReq())
+    await vi.waitFor(async () =>
+      expect(await ask(daemon, result.targetSession)).toMatchObject({
+        status: 'failed',
+        reply: { requested: false, state: 'failed' },
+        nextAction: 'report-failure'
+      })
+    )
+    expect(dispatch).toHaveBeenCalledTimes(1)
+    // An explicit new delivery re-arms the obligation and clears the old dispatch error.
+    await call(baseReq({ needsReply: true }))
+    expect(await ask(daemon, result.targetSession)).toMatchObject({
+      status: 'in-progress',
+      reply: { requested: true, state: 'awaiting' }
+    })
+    await daemon.stop()
+  })
+
+  it('preserves an admitted parent reply when the child dispatch rejects later', async () => {
+    const { daemon, call } = await bootWithDispatchSpy(scaffold([{ id: 'bot-a' }, { id: 'bot-b' }]))
+    await seedSession(daemon, PARENT_KEY, { sessionId: 'sid-parent-1' })
+    await seedSession(daemon, CHILD_KEY, { originSessionId: 'sid-parent-1' })
+    let reject!: (err: Error) => void
+    const dispatch = vi.spyOn(daemon as any, 'dispatch')
+    dispatch.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail
+        })
+    )
+    const result = await call(baseReq({ needsReply: true }))
+    // Exercise the real reply admission path, rather than editing the tracked reply state.
+    expect(
+      await (daemon as any).collab.replyToSession({
+        callerAgentId: 'bot-b',
+        platform: 'slack',
+        callerChannel: 'C1',
+        callerThread: '100.1',
+        sessionId: 'sid-parent-1',
+        text: 'The completed answer.'
+      })
+    ).toMatchObject({ delivered: true })
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    // The turn engine still records the failed turn; it must not retract the queued reply.
+    await (daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'failed', 2_000)
+    reject(new Error('post-reply work failed'))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(await ask(daemon, result.targetSession)).toMatchObject({
+      status: 'failed',
+      reply: { requested: true, state: 'queued-for-parent' },
+      nextAction: 'finish-turn-and-wait'
+    })
+    expect((await ask(daemon, result.targetSession)).message).toContain('The agent replied.')
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    expect((daemon as any).collab.childSessionLinks.get(CHILD_KEY).dispatchError).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('does not let an older dispatch failure poison a newer wake of the same session', async () => {
+    const { daemon, call } = await bootWithDispatchSpy(scaffold([{ id: 'bot-a' }, { id: 'bot-b' }]))
+    await seedSession(daemon, PARENT_KEY, { sessionId: 'sid-parent-1' })
+    let reject!: (err: Error) => void
+    const dispatch = vi.spyOn(daemon as any, 'dispatch')
+    dispatch.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail
+        })
+    )
+    const old = await call(baseReq({ needsReply: true }))
+    await call(baseReq({ needsReply: true }))
+    reject(new Error('old failure'))
+    // Drain the rejection handler (including its final cleanup) before asserting no report.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    expect(await ask(daemon, old.targetSession)).toMatchObject({
+      status: 'in-progress',
+      reply: { state: 'awaiting' }
     })
     await daemon.stop()
   })

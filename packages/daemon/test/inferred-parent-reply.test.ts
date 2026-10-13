@@ -38,7 +38,10 @@ function callReq(over: Partial<MessageAgentReq> = {}): MessageAgentReq {
 
 /** Boot a daemon whose CHILD host behaves per `childReply`, with the CALLER's
  *  session row seeded (acpSessionId minted) so needsReply has an origin. */
-async function boot(childReply: (text: string, chunk: (t: string) => void) => Promise<string> | string) {
+async function boot(
+  childReply: (text: string, chunk: (t: string) => void) => Promise<string> | string,
+  startError?: Error
+) {
   const prompts = new Map<string, string[]>([
     [CALLER, []],
     [CHILD, []]
@@ -48,6 +51,7 @@ async function boot(childReply: (text: string, chunk: (t: string) => void) => Pr
   const factory = (agent: { id: string }, onUpdate: (sid: string, u: unknown) => void) => ({
     start: vi.fn(async () => {}),
     newSession: vi.fn(async (_cwd: string, mcpServers?: unknown) => {
+      if (agent.id === CHILD && startError) throw startError
       const sid = `acp-${agent.id}-${++sessions}`
       const binding = daemonMcpBinding(mcpServers)
       if (binding) bindings.set(sid, binding)
@@ -86,7 +90,8 @@ async function boot(childReply: (text: string, chunk: (t: string) => void) => Pr
     lastDeliveredTs: null,
     updatedAt: Date.now()
   })
-  const call = (req: MessageAgentReq) => (daemon as any).collab.messageAgent(req) as Promise<{ delivered: boolean }>
+  const call = (req: MessageAgentReq) =>
+    (daemon as any).collab.messageAgent(req) as Promise<{ delivered: boolean; targetSession: string }>
   const parentPrompts = () => prompts.get(CALLER)!
   return { daemon, prompts, bindings, call, parentPrompts }
 }
@@ -96,6 +101,29 @@ async function boot(childReply: (text: string, chunk: (t: string) => void) => Pr
 // through the ordinary resume path, so the parent still receives the turn.
 
 describe('inferred parent reply (#800 mechanism fix)', () => {
+  it('a failed runtime start wakes the parent with the error instead of leaving it awaiting (#2995)', async () => {
+    const run = await boot(() => 'unreachable', new Error('Could not select model opus[1m]: not offered'))
+    try {
+      const result = await run.call(callReq())
+      expect(result.delivered).toBe(true)
+      await vi.waitFor(() => expect(run.parentPrompts().join('\n')).toContain('Could not select model opus[1m]'), WAIT)
+      await settle()
+      expect(run.parentPrompts()).toHaveLength(1)
+      expect(run.prompts.get(CHILD)).toHaveLength(0)
+      expect(
+        await (run.daemon as any).collab.viewSessionStatus({
+          callerAgentId: CALLER,
+          platform: 'webchat',
+          callerChannel: 'wc-parent-1',
+          callerThread: '100.1',
+          sessionId: result.targetSession
+        })
+      ).toMatchObject({ status: 'failed', reply: { requested: true, state: 'failed' }, nextAction: 'report-failure' })
+    } finally {
+      await run.daemon.stop()
+    }
+  })
+
   it('a prose answer from a needsReply child is delivered to the parent, marked inferred', async () => {
     const run = await boot(() => 'The answer is 42.')
     try {
