@@ -119,7 +119,6 @@ type ChannelTarget = {
 
 type SessionTarget = {
   sessionId: string
-  correlationId?: string
   message: string
 }
 ```
@@ -271,8 +270,8 @@ without any platform integration.
 
 Its child session is headless. The daemon derives its delivery coordinates from
 the trusted caller session instead of treating a platform channel supplied by the
-model as authorization. The child retains origin lineage, hop count, optional
-correlation, `needsReply`, and `viewSessionStatus` support.
+model as authorization. The child retains origin lineage, hop count,
+`needsReply`, and `viewSessionStatus` support.
 
 ### 3.2 Channel-root form
 
@@ -300,7 +299,7 @@ activationKey = platform + transportScope + platformMessageId + targetAgentId
 The target daemon keeps a durable rendezvous record for the activation key. The
 internal wake is the semantic authority for a paired `toAgent + channel` call
 because it carries the complete trusted call envelope: delivery ID, caller and
-parent lineage, origin coordinates, correlation, `needsReply`, hop count,
+parent lineage, origin coordinates, `needsReply`, hop count,
 external-origin metadata, and privacy gates. The platform event contributes the
 provider-authenticated visible coordinates and transcript observation; its
 delivery ID is correlation, not authority.
@@ -540,8 +539,8 @@ The parent session is therefore resumed as an ORDINARY turn:
 - the turn keeps its ordinary reply sink and delivery chrome, so an answer the
   parent writes lands in the parent's own conversation — where the humans who
   delegated the work are waiting;
-- correlation, hop count, memory behavior, and the per-session serial gate
-  remain unchanged.
+- hop count, memory behavior, and the per-session serial gate remain
+  unchanged.
 
 For code-host sessions, a repository scope (`github:<id>`, `gitlab:<id>`, or
 `gitea:<id>`) identifies the conversation; it is not a chat integration ID.

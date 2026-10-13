@@ -2408,16 +2408,13 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     })
   })
 
-  it('passes an explicit correlationId override through on a SessionTarget reply', async () => {
-    const replyCalls: ReplyToSessionReq[] = []
-    const d = makeDeps({
-      replyToSession: async (req) => {
-        replyCalls.push(req)
-        return { delivered: true, targetSession: 'origin-key' }
-      }
-    })
-    await executeTool(ctx, 'sendMessage', { sessionId: 'sess-1', correlationId: 'o1.0', message: 'done' }, d)
-    expect(replyCalls[0]!.correlationId).toBe('o1.0')
+  it('rejects a correlationId on a SessionTarget reply as an unknown argument', async () => {
+    const replyToSession = vi.fn()
+    const d = makeDeps({ replyToSession })
+    await expect(
+      executeTool(ctx, 'sendMessage', { sessionId: 'sess-1', correlationId: 'o1.0', message: 'done' }, d)
+    ).rejects.toThrow(/session target allows only `sessionId`, `message`; unexpected `correlationId`/)
+    expect(replyToSession).not.toHaveBeenCalled()
   })
 
   // The woken peer runs in its own session; the caller needs its id to follow the work it just

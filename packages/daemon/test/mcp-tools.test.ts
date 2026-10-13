@@ -360,7 +360,7 @@ describe('toolsForIntegrations', () => {
     const session = sendTargetBranch([slackInt], 'sessionId')
     expect(session.required).toEqual(['sessionId', 'message'])
     expect(session.additionalProperties).toBe(false)
-    expect(Object.keys(session.properties)).toEqual(['sessionId', 'correlationId', 'message'])
+    expect(Object.keys(session.properties)).toEqual(['sessionId', 'message'])
 
     expect(tool.description).toMatch(/^Send one message using exactly one target mode:/)
     expect(tool.description).toContain('{"toAgent":"<agent id>","message":"..."}')

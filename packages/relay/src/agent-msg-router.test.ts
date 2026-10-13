@@ -260,6 +260,22 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards[0]!.transcriptTs).toBe('1784297789.871789')
   })
 
+  it('accepts an older daemon’s correlationId and does not forward it', async () => {
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const ack = await route(D1, baseMsg({ correlationId: 'o1.0' }))
+    expect(ack.delivered).toBe(true)
+    expect(forwards).toHaveLength(1)
+    expect(forwards[0]).not.toHaveProperty('correlationId')
+  })
+
   it('forwards needsReply opaquely (it is the caller’s instruction about its own lineage)', async () => {
     const router = new CollaborationRouter()
     router.replace(snap())

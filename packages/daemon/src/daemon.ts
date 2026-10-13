@@ -10488,23 +10488,7 @@ export class Daemon {
     return conversationAdmitsAgent(this.mergedRules(), agentId, msg.channel)
   }
 
-  /**
-   * Admit ONE target of a verified agent-authored message, through the durable
-   * activation rendezvous (§3.2/§8.6). Returns undefined when this target produced no
-   * dispatch, so the caller can try the next recipient.
-   *
-   * Two shapes converge here:
-   *  - An ORDINARY `@mention` reply. It carries no `agent_call_delivery_id`, so the
-   *    platform event is itself the authority: its envelope is recorded and dispatched
-   *    immediately. The rendezvous still runs, because exactly-once must survive a
-   *    redelivered event, a second bot connection seeing the same channel, and restart.
-   *  - The VISIBLE half of a paired `toAgent + channel` send. It only ever CLAIMS the
-   *    key: the trusted envelope (lineage, correlation, needsReply, external origin,
-   *    privacy) travels on the internal wake, and building a child from platform
-   *    metadata would fabricate exactly what the pairing exists to preserve. If the wake
-   *    never arrives the record expires transcript-only and is reported as a delivery
-   *    failure — never downgraded into an envelope-less child.
-   */
+  /** Admit one verified agent-authored target via the activation rendezvous (§3.2/§8.6); a paired call's visible half only claims, its wake carries the envelope. */
   private async activateVerifiedAgentTarget(
     shared: NormalizedMessage,
     verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>,
@@ -12252,7 +12236,6 @@ export class Daemon {
     // The relay-minted caller and its origin snapshot become the durable turn context.
     const callMeta: CallMeta = {
       callFrom: msg.trustedFromAgentId,
-      ...(msg.correlationId !== undefined ? { correlationId: msg.correlationId } : {}),
       hopCount: msg.hopCount,
       deliveryId: msg.deliveryId,
       // §5.3: preserve the remote caller's origin lineage so a child woken here can reply
@@ -16898,8 +16881,7 @@ export class Daemon {
     // Replay only after Pending owns the live sink so persisted and streamed state
     // converge in the same turn instead of requiring a browser refresh.
     await this.finishSessionInitialization(agentId, { owner: this.sessionOwnerKey(agentId, key), sessionId })
-    // §6.7 active-turn context: expose THIS turn's trusted callMeta by logical sessionKey so
-    // a nested messageAgent made during the turn can auto-inherit hop/origin + reply-correlation.
+    // §6.7: expose this turn's trusted callMeta so a nested messageAgent inherits hop/origin.
     if (callMeta) this.activeTurnCallMeta.set(key, callMeta)
     // shareFile's trusted post target (§3.1): the turn plan's coordinates plus the reply
     // anchor Telegram places by. Installed per turn because headless-ness and the reply
@@ -19900,16 +19882,7 @@ export class Daemon {
   /** In-flight rendering state keyed by (agentId, ACP sessionId). */
   private pending = new Map<string, Pending>()
 
-  /**
-   * DAEMON-PRIVATE trusted call metadata of the CURRENTLY in-flight turn, keyed by the
-   * turn's LOGICAL sessionKey (§6.7). Installed at the start of a `dispatchOne` turn that
-   * carries `callMeta` and cleared in its `finally`; the tool is keyed by the static
-   * session-level MCP token, so a nested `messageAgent` resolves the caller's sessionKey
-   * (from its trusted SessionContext coords + agentId) and reads THIS map to auto-inherit
-   * hop/origin (all child calls) and correlationId (replies only) — never trusting the
-   * agent to pass them. A plain human/platform turn has no entry, so a `messageAgent` it
-   * makes is a fresh call (hopCount 0, no inherited correlation).
-   */
+  /** Trusted call metadata of each in-flight turn by logical sessionKey (§6.7); a nested `messageAgent` inherits hop/origin from it. */
   private activeTurnCallMeta = new Map<string, CallMeta>()
 
   /** The active turn's trusted `shareFile` post target, by logical sessionKey — the

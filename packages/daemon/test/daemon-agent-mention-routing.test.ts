@@ -779,10 +779,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
   })
 
   it('holds the visible half of a paired agent call for its internal wake', async () => {
-    // §3.2: a post carrying an `agent_call_delivery_id` is one half of a paired delivery.
-    // Its trusted envelope — lineage, correlation, needsReply, privacy — travels on the
-    // internal wake, so dispatching from the platform observation alone would fabricate a
-    // lineage-less child. It waits instead.
+    // §3.2: the visible half of a paired delivery waits for the internal wake, which carries the trusted envelope.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
     expect((await route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' }))).kind).toBe('rejected')
     expect(calls).toHaveLength(0)

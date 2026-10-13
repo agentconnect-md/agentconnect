@@ -250,12 +250,6 @@ function buildSendMessageTool(platforms: string[], options: { assistantMode?: bo
           minLength: 1,
           description: 'The `Parent session` id from your `# Agent` block.'
         },
-        correlationId: {
-          type: 'string',
-          minLength: 1,
-          description:
-            'Optional advanced override. Normally omit it so the daemon inherits reply correlation automatically.'
-        },
         message
       },
       ['sessionId', 'message']
