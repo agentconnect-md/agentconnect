@@ -92,6 +92,8 @@ export interface AssistantDraftsHost {
   cardPortFor(integrationId: string): DraftCardPort | undefined
   /** The control plane's approval route; undefined without one. */
   approvalRoute?(agentId: string, req: Omit<AgentApprovalRoute, 'agentId'>): Promise<AgentApprovalRouted>
+  /** Whether the control plane answers the route's `responsible` form (`assistant-responsible-route-v1`); without it nobody is asked. */
+  routesResponsible?(): boolean
   sessionLink?(sessionId: string): string
   platformName(platform: string): string
   /** Who or what a target is: the conversation's name, the DM recipient, a thread link. Best effort. */
@@ -504,6 +506,7 @@ export class AssistantDrafts {
       .filter((id) => this.host.cardPortFor(id) !== undefined)
       .slice(0, 8)
     if (integrationIds.length === 0 || !this.host.approvalRoute) return undefined
+    if (consoleUserId === undefined && this.host.routesResponsible?.() !== true) return undefined
     const routed = await this.host
       .approvalRoute(agentId, {
         requestId: draftId,

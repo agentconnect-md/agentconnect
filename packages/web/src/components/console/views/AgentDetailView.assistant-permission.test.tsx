@@ -175,7 +175,7 @@ describe('turning assistant mode on', () => {
     await render()
     expect(scope.querySelector('[data-assistant-mode-ask-warning]')).toBeNull()
     expect(permissionRow(scope)).toBe('Auto')
-    expect(panel().textContent).toContain('Fallback: Ada')
+    expect(panel().textContent).toContain('Responsible: Ada')
   })
 
   it('warns once an editor later picks a mode that asks', async () => {

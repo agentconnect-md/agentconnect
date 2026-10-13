@@ -164,7 +164,7 @@ export function AssistantModePanel({
   }
 
   const summary = enabled
-    ? [t('on'), ...(responsibleName ? [t('fallbackNamed', { name: responsibleName })] : [])].join(' · ')
+    ? [t('on'), ...(responsibleName ? [t('responsibleNamed', { name: responsibleName })] : [])].join(' · ')
     : t('off')
 
   return (

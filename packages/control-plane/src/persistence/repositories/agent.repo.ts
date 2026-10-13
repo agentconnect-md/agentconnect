@@ -5,7 +5,6 @@ import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
 import {
   AgentMemoryBinding,
-  AssistantModePolicy,
   apiGateDecisionIds,
   modelSelectionDecisionIds,
   type AgentApiGates,
@@ -31,6 +30,7 @@ import type {
   CreateAgentInput,
   HookRecord,
   OrgAgentRecord,
+  StoredAssistantModePolicy,
   UpdateAgentInput,
   ViewCtx
 } from '../ports.js'
@@ -64,7 +64,8 @@ import { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './agent-memory.
 import {
   assertAssistantModeDefinition,
   assistantModeEditNeedsAdmission,
-  assistantModePermissionModeForEdit
+  assistantModePermissionModeForEdit,
+  StoredAssistantModePolicyRow
 } from '../../agents/assistant-mode.js'
 import { PgHookRepo } from './hook.repo.js'
 import { joinGiteaBindingFence } from './gitea-binding-fence.js'
@@ -230,9 +231,9 @@ function storedMemoryBinding(memory: AgentMemoryBinding | undefined): AgentMemor
 }
 
 // A stored policy that no longer parses reads as never configured, so a read never fails on it.
-function assistantModeOf(value: unknown): AssistantModePolicy | undefined {
+function assistantModeOf(value: unknown): StoredAssistantModePolicy | undefined {
   if (value === null || value === undefined) return undefined
-  const parsed = AssistantModePolicy.safeParse(value)
+  const parsed = StoredAssistantModePolicyRow.safeParse(value)
   return parsed.success ? parsed.data : undefined
 }
 

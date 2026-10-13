@@ -85,6 +85,8 @@ async function world(
     route?: (req: Omit<AgentApprovalRoute, 'agentId'>) => Promise<unknown>
     /** Conversations where a person's own message would start a turn of the agent. */
     askable?: string[]
+    /** The control plane advertises `assistant-responsible-route-v1`; true unless set. */
+    routesResponsible?: boolean
   } = {}
 ) {
   store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
@@ -132,6 +134,7 @@ async function world(
     placeExternal: (_agent, _id, channel) => external.has(channel),
     cardPortFor: (id) => (id === INT ? port : undefined),
     approvalRoute: async (_agent, req) => (await route(req)) as never,
+    routesResponsible: () => over.routesResponsible ?? true,
     sessionLink: (id) => `https://console.example.test/sessions/${id}`,
     platformName: () => 'Slack',
     describeDestination,
@@ -440,6 +443,19 @@ describe('the approver', () => {
     expect(result).toMatchObject({ handled: true, result: { drafted: true, approver: null } })
     expect(w.port.postCard).not.toHaveBeenCalled()
     expect((await w.only()).approver).toBeNull()
+  })
+
+  // An older control plane strips the `responsible` form and answers its own chain, so it is never asked.
+  it('asks no one for the responsible user when the control plane does not route it, and the draft waits in Activity', async () => {
+    const w = await world({ routesResponsible: false })
+    expect(await w.post(TO_SUPPORT, PLACELESS, null)).toMatchObject({ result: { drafted: true, approver: null } })
+    expect(w.route).not.toHaveBeenCalled()
+    expect(w.port.postCard).not.toHaveBeenCalled()
+    expect(await w.drafts.cardApprover(AGENT, '77777777-7777-4777-8777-777777777777')).toBeUndefined()
+    expect(w.route).not.toHaveBeenCalled()
+    const draft = await w.only()
+    expect(draft.approver).toBeNull()
+    expect(await w.decide(draft.id, 'approve')).toMatchObject({ result: 'decided', status: 'succeeded' })
   })
 })
 

@@ -1,13 +1,26 @@
+import { z } from 'zod'
 import {
+  AssistantModePolicy,
   assistantModeDefinitionRefusals,
   assistantModePermissionModeOnEnable,
   type AgentMemoryBinding,
   type AssistantModeAdmission,
-  type AssistantModePolicy,
   type AssistantModeRefusal
 } from '@agentconnect.md/protocol'
 import { canEdit } from '../authorization/policy.js'
-import type { AgentRecord, MemberSetRepo, OrgMemberRecord } from '../persistence/ports.js'
+import type { AgentRecord, MemberSetRepo, OrgMemberRecord, StoredAssistantModePolicy } from '../persistence/ports.js'
+
+// Expand step (assistant-mode.md §5.1): a row an older CP wrote keeps its two routing keys, read past and never written.
+export const StoredAssistantModePolicyRow = AssistantModePolicy.extend({
+  responsibleUserId: z.unknown().optional(),
+  fallbackConversation: z.unknown().optional()
+})
+
+/** The stored policy as the API serves it, without the routing keys an older CP wrote. */
+export function servedAssistantMode(policy: StoredAssistantModePolicy): AssistantModePolicy {
+  const { responsibleUserId: _r, fallbackConversation: _f, ...served } = policy
+  return served
+}
 
 /** The agent's responsible user (assistant-mode.md §5.1): its creator while they may edit it, else the editor who joined first. */
 export function assistantResponsibleUser<M extends OrgMemberRecord>(

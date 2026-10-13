@@ -290,6 +290,36 @@ describe('assistant mode', () => {
     expect(await responsible()).toEqual({ userId: DEFAULT_OWNER_ID })
   })
 
+  // Expand step (assistant-mode.md §5.1): an older Control Plane's stored keys are read past, served without, and projected unchanged.
+  it('reads a policy that still carries the stored routing keys, without serving or rewriting them', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, runtime: 'claude-acp' })
+    const fallbackConversation = { integrationId: randomUUID(), channelId: 'C-EXAMPLE' }
+    const stored = {
+      enabled: true,
+      responsibleUserId: DEFAULT_OWNER_ID,
+      fallbackConversation,
+      instructions: 'Be brief.'
+    }
+    await prisma.agent.update({ where: { id: agentId }, data: { assistantMode: stored, configRevision: 3n } })
+    const { app, spy } = withSpy()
+
+    const read = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })
+    expect(read.statusCode, read.body).toBe(200)
+    expect(read.json().assistantMode).toEqual({ enabled: true, instructions: 'Be brief.' })
+
+    // An unrelated edit leaves the row as it was and projects it unchanged, so a daemon that still requires a key validates it.
+    const edited = await patch(app, agentId, { description: 'Helps the team.' })
+    expect(edited.json().assistantMode).toEqual({ enabled: true, instructions: 'Be brief.' })
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).assistantMode).toEqual(stored)
+    expect(spy.upserts.at(-1)?.spec.assistantMode).toEqual(stored)
+
+    // A new write never carries them.
+    await patch(app, agentId, { assistantMode: { enabled: true } })
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).assistantMode).toEqual({ enabled: true })
+  })
+
   it('requires every member of a daemon group to share one store', async () => {
     const split = await seedGroup([STORE, OTHER_STORE])
     const agentId = randomUUID()

@@ -3065,7 +3065,7 @@
         "locked": "Unavailable",
         "patrolsDegraded": "Patrols degraded",
         "patrolsDegradedHint": "Patrols run read-only on the agent’s own host, with its credentials.",
-        "fallbackNamed": "Fallback: {name}",
+        "responsibleNamed": "Responsible: {name}",
         "edit": "Edit",
         "close": "Close",
         "cancel": "Cancel",

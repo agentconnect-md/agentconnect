@@ -153,7 +153,7 @@ describe('AssistantModePanel', () => {
   it('shows the derived responsible user read-only, with no responsible-user or fallback select', async () => {
     const on = await mount({ assistantMode: { enabled: true } })
     expect(mocks.responsible).toHaveBeenCalledWith(AGENT)
-    expect(on.textContent).toContain('On · Fallback: Ada')
+    expect(on.textContent).toContain('On · Responsible: Ada')
     await clickButton(on, 'Edit')
     expect(on.querySelectorAll('select')).toHaveLength(0)
     expect(on.textContent).not.toContain('Responsible user')
@@ -164,13 +164,13 @@ describe('AssistantModePanel', () => {
     mocks.responsible.mockClear()
     const off = await mount()
     expect(mocks.responsible).not.toHaveBeenCalled()
-    expect(off.textContent).not.toContain('Fallback:')
+    expect(off.textContent).not.toContain('Responsible:')
   })
 
   it('names nobody when the Control Plane derives no one', async () => {
     mocks.responsible.mockResolvedValue({ userId: null })
     const host = await mount({ assistantMode: { enabled: true } })
-    expect(host.textContent).not.toContain('Fallback:')
+    expect(host.textContent).not.toContain('Responsible:')
   })
 
   // #2979 B7: turning on gates nothing, so it saves at once over rooms and group DMs already enabled.

@@ -262,10 +262,18 @@ a draft, a proposal or a sub-session's permission request (the asker, a schedule
 an item's asker and a sub-session's opener always come first): the agent's creator while they are a
 member who may edit the agent, otherwise the editor who joined the organization first (membership
 time, then user id), otherwise nobody. The Control Plane derives it when it is asked (the approval
-route's `responsible` form), so a creator who leaves or loses edit rights hands over at once, and
-the assistant mode panel names that person read-only. Whatever cannot reach them by a direct message
+route's `responsible` form, behind `assistant-responsible-route-v1`, so a daemon on an older Control
+Plane asks nobody), so a creator who leaves or loses edit rights hands over at once, and the
+assistant mode panel names that person read-only. Whatever cannot reach them by a direct message
 waits in the agent's Activity view, where an Agent editor decides it. There is no fallback
 conversation.
+
+The stored keys go in two steps, since a rollout runs both Control Plane versions on one database
+([high-availability.md](high-availability.md)). Now: a row an older Control Plane wrote may keep
+`responsibleUserId` and `fallbackConversation`; this one reads past them, never writes them, serves
+the policy without them, and projects them to daemons unchanged, so a daemon that still requires
+one keeps validating an agent nobody edited. Follow-up: drop the two stored keys in the next
+release, once no Control Plane that reads them is serving.
 
 ### 5.2 Places and long conversations
 
@@ -1292,6 +1300,7 @@ also conflicts with that rule, since the machine checks who is asking and a fall
 let whoever was in it decide for someone else. So the responsible user is now the agent's creator
 while they may edit it, otherwise the editor who joined the organization first, derived by the
 Control Plane each time it is asked; what reaches nobody waits in Activity, where an editor decides
-it. Stored values are dropped by a migration, so no agent reads as never configured under the strict
-policy schema. The assistant mode panel moves from the Memory tab to the Configuration tab and shows
-the derived person read-only; managed memory stays an admission requirement.
+it. Stored values stay in place for one release and are read past, so a Control Plane still serving
+during the rollout never reads a policy it cannot parse; the next release drops them (§5.1). The
+assistant mode panel moves from the Memory tab to the Configuration tab and shows the derived person
+read-only; managed memory stays an admission requirement.

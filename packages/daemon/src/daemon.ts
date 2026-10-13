@@ -56,6 +56,7 @@ import {
   K8S_SUPERVISOR,
   AGENT_CONFIG_REVISION_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
+  ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
   READ_ACCESS_LINKED_V1_FEATURE,
@@ -8149,6 +8150,7 @@ export class Daemon {
           this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
         )
       },
+      routesResponsible: () => this.cpClient?.supportsServerFeature?.(ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE) === true,
       sessionLink: (sessionId) => this.sessionLink(sessionId),
       platformName: (platform) => platformLabel(platform),
       describeDestination: (target, opts) => this.describeDraftDestination(target, opts),
