@@ -8774,14 +8774,28 @@ export class Daemon {
     const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
     if (!live) return 'unavailable'
     const flight: JoinFlight = { waiters: [offered], answer: Promise.resolve<JoinOutcome>('unavailable') }
-    flight.answer = this.permissions
-      .askToJoin(live, ask, JOIN_ASK_TIMEOUT_MS, (to) => {
+    this.joinAsks.set(flightKey, flight)
+    flight.answer = (async () => {
+      const askers = [...ask.askers, ...(await this.linkedCardAskers(ctx.agentId, live, ask.askers))]
+      return await this.permissions.askToJoin(live, { ...ask, askers }, JOIN_ASK_TIMEOUT_MS, (to) => {
         flight.offered = { to }
         for (const waiter of flight.waiters.splice(0)) waiter(to)
       })
-      .finally(() => this.joinAsks.delete(flightKey))
-    this.joinAsks.set(flightKey, flight)
+    })().finally(() => this.joinAsks.delete(flightKey))
     return await flight.answer
+  }
+
+  /** The chat accounts the console people behind a turn linked on the bot its card goes through, so they answer it there. */
+  private async linkedCardAskers(agentId: string, p: Pending, askers: readonly ReadAsker[]): Promise<ReadAsker[]> {
+    const bot = p.plan.integrationId
+    if (!bot) return []
+    const lookups = this.placeMembers.lookupsFor(agentId)
+    const linked = await Promise.all(
+      askers.flatMap((asker) => (asker.kind === 'console' ? [lookups.linked(bot, asker).catch(() => null)] : []))
+    )
+    return linked.flatMap((userId) =>
+      userId ? [{ kind: 'member' as const, platform: p.plan.platform, integrationId: bot, userId }] : []
+    )
   }
 
   /** A call that waited on a join confirmation finished after it returned: its session hears how, as a message. */

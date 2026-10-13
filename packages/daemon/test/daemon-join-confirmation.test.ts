@@ -131,6 +131,19 @@ describe('the daemon’s join confirmation', () => {
     await w.store.close()
   })
 
+  it('takes a console asker’s answer from the chat account they linked on the card’s bot', async () => {
+    const w = await world()
+    w.daemon.placeMembers.linkedMember = async (_agentId: string, integrationId: string) =>
+      integrationId === INT ? '42' : null
+    const asked = w.daemon.confirmJoin(w.ctx, { ...w.ask, askers: [{ kind: 'console', userId: 'cu-ada' }] }, vi.fn())
+    await vi.waitFor(() => expect(w.conn.postCard).toHaveBeenCalledTimes(1), WAIT)
+    const requestId = (await w.store.listPermissionRequests(AGENT))[0]!.id
+    expect(await w.tap(requestId, '7')).toBe(JOIN_ANSWER_REFUSED)
+    expect(await w.tap(requestId, '42')).toBeUndefined()
+    await expect(asked).resolves.toBe('join')
+    await w.store.close()
+  })
+
   it('asks nothing without a live turn', async () => {
     const w = await world()
     w.daemon.pending.clear()

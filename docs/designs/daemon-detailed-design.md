@@ -1360,7 +1360,8 @@ conversation of the turn, else delivered to a person's DM through `AssistantDraf
 listed as a webchat conversation's pending request (`kind: 'join'` with its console askers, which the
 Control Plane uses to let the conversation's owner list and answer their own join confirmations at
 any chat level, and never sends to the console). A click is taken only from a person behind the
-turn (a member asker on that integration, a console asker verified through `agent/approval-route`
+turn (a member asker on that integration, a console asker by the chat account they linked on that
+bot, as the read rule's `linked` lookup answers it, or else verified through `agent/approval-route`
 `verify`), anyone else is refused through the facet's `tellPrivately`, and a console decision only
 from a console asker (`decidedBy`); the chat level of "What people can do in chat" does not apply.
 The card's handle is on its `permission_requests` row, so the reconnect sweep
