@@ -425,7 +425,7 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
     const spec = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [
       channel('oc_1', 'any'),
       channel('oc_2', 'mention'),
-      channel('oc_3', 'off')
+      { ...channel('oc_3', 'off'), triggerChosen: true }
     ])
     const bindRules = [
       { match: { kind: 'mention' } },
@@ -519,7 +519,7 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
     const httpBot = bot({ transport: 'http', botUserId: 'ou_bot' })
     const spec = await httpIntegrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, httpBot, HTTP_SECRET, [
       channel('oc_1', 'any'),
-      channel('oc_2', 'off')
+      { ...channel('oc_2', 'off'), triggerChosen: true }
     ])
     expect(spec).toEqual({
       orgId: INTEGRATION.orgId,

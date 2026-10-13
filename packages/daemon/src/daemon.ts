@@ -396,6 +396,7 @@ import {
   rulesFromAgent,
   resolveCpRule,
   resolveAgentIntegration,
+  conversationKindOf,
   conversationSessionMode,
   integrationRouting,
   conversationAdmitted,
@@ -942,7 +943,8 @@ import type {
   McpAppRpcResult,
   CodeHostProvider,
   McpAppOutcome,
-  RuntimeStrategyEntries
+  RuntimeStrategyEntries,
+  ChannelSessionMode
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { HostPasses } from './daemon/host-passes.js'
@@ -10650,18 +10652,30 @@ export class Daemon {
   private conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean {
     if (integrationId === undefined) return false
     const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    return int !== undefined && conversationSessionMode(int, msg.channel) === 'append'
+    return int !== undefined && this.sessionModeFor(agentId, int, msg) === 'append'
+  }
+
+  /** A target's session mode where a message arrived; an assistant-mode place appends before its row reaches the spec (assistant-mode.md §5.2). */
+  private sessionModeFor(
+    agentId: string,
+    int: Integration,
+    msg: Pick<NormalizedMessage, 'channel'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>
+  ): ChannelSessionMode {
+    // A coordinate with no message behind it (an agent call) has no kind to default by, so only its listed mode counts.
+    if (msg.isDm === undefined && msg.isGroupDm === undefined) return conversationSessionMode(int, msg.channel)
+    const kind = conversationKindOf({ ...msg, platform: int.platform })
+    return conversationSessionMode(int, msg.channel, { assistantMode: assistantModeOn(this.agents.get(agentId)), kind })
   }
 
   private async sessionCoordinateFor(
     agentId: string,
     integrationId: string | undefined,
-    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'>,
+    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>,
     opts: { mint?: boolean } = {}
   ): Promise<string | undefined> {
     if (integrationId === undefined) return undefined
     const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    if (!int || conversationSessionMode(int, msg.channel) !== 'append') return undefined
+    if (!int || this.sessionModeFor(agentId, int, msg) !== 'append') return undefined
     // A delivery mints the coordinate; a reader only asks. Otherwise a `/status` typed into
     // a conversation nobody has spoken in would create the reservation it reports on.
     return opts.mint === false

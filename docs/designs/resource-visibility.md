@@ -730,9 +730,9 @@ So authorization must live in AgentConnect's own routing layer.
 | **Mention**      | Activates on explicit @-mention (today's default).       |
 | **All messages** | Activates on any message (today's `any`).                |
 
-**Gating applies only to restricted agents** — and to an agent in assistant mode
-([assistant-mode.md](assistant-mode.md) §5.1), which is gated the same way whatever its
-visibility.
+**Gating applies only to restricted agents**, whatever their mode: an agent in assistant mode
+takes the same defaults as any agent of its visibility ([assistant-mode.md](assistant-mode.md)
+§5.3).
 
 - **Org-visible agents keep the same routing defaults.** Unscoped mention
   default everywhere, DMs open to the whole workspace, per-channel "All
@@ -900,9 +900,8 @@ remains forbidden for gated agents.
   owner. Mutations are serialized per bot/channel and fenced to the owner that
   passed authorization, so a concurrent in-Slack owner move makes the Console
   request retry instead of applying its trigger to the new owner.
-- `gated` is **derived** from `agent.visibility === 'restricted'` or an enabled
-  assistant mode at spec assembly (`isGatedAgent`); there is no separate stored
-  toggle (see §14.7).
+- `gated` is **derived** from `agent.visibility === 'restricted'` at spec assembly
+  (`isGatedAgent`); there is no separate stored toggle (see §14.7).
 - Web `IntegrationChannelList`: tri-state segmented control per conversation row
   (Off / Mention / All messages) — offered for every agent, not only a gated
   one — a Direct-messages section with binary rows, pending badges, and a
@@ -930,8 +929,8 @@ remains forbidden for gated agents.
     than Off and must not receive the gated-owner notice.
 - Because the relay fence covers both, it also has to say which Off conversations
   still deserve the §14.3 notice. `gatedOffChannels` carries that subset — the
-  muted conversations whose owner is gated, i.e. Off because nobody has enabled them
-  rather than because an operator silenced them. The relay posts the notice only
+  muted conversations whose owner is gated, or whose Off nobody chose (§14.9), i.e. Off
+  because nobody has enabled them rather than because an operator silenced them. The relay posts the notice only
   for those; an operator's Off is silent (see "Per-conversation trigger" in
   product-conventions.md). The two states share a trigger value and the relay
   cannot infer conversation ownership from a table that holds no route for them, so
@@ -949,10 +948,8 @@ remains forbidden for gated agents.
   their trigger values persist so flipping back restores the previous
   decisions — the same preservation principle as Decision 4. Direct and channel
   rows remain visible and effective, including Off.
-- **assistant mode on / off:** gating follows the switch, and every integration of
-  the agent is re-projected. Unlike org → restricted, no row is reset: every
-  enabled row, DMs included, keeps its trigger. §14.8 still reads only a restricted
-  agent's share set, so assistant mode alone opens no DM.
+- **assistant mode on / off:** gating does not change; every integration of the
+  agent is re-projected for its session modes only, and no row is reset.
 
 ### 14.5 Rollout / migration
 
@@ -1133,8 +1130,8 @@ and wins.
 
 **Pending, not chosen.** Off already fences every path, because it is `mutedChannels` on
 both arbiters (thread affinity, explicit targets and agent-authored recipients included),
-so the change adds no fence. What it adds is which Off still answers. An external Off that
-nobody chose behaves like the gate: an addressed message (an @-mention or a DM) gets the
+so the change adds no fence. What it adds is which Off still answers. An Off that nobody
+chose behaves like the gate, for every agent and every place: an addressed message (an @-mention or a DM) gets the
 §14.3 one-time notice through the existing notice paths. An Off an editor chose stays
 silent. The edge learns the difference from a subset of the muted set:
 
@@ -1142,12 +1139,16 @@ silent. The edge learns the difference from a subset of the muted set:
   ungated integration's direct and send-only specs. `maybeGatedNotice` speaks for a
   listed conversation as it does for a gated integration.
 - **Relay:** the existing `gatedOffChannels` set also carries these conversations, read
-  conversation-wide (any row's choice, any row's detection), and the relay posts the notice
+  conversation-wide (any row's choice), and the relay posts the notice
   for a listed conversation even on a bot with no gated member.
 
-Pending also requires the place to still be marked external: an Off from before
-`triggerChosen` existed reads as unchosen and may well be an operator's, so an internal one
-stays silent. The Console lists the row Off, as it does a gated agent's undecided row.
+Pending first also required the place to still be marked external, because an Off from
+before `triggerChosen` existed reads as unchosen and may well be an operator's. Issue #2979
+(item B7) dropped that condition: rows seeded Off while assistant mode gated an Everyone agent
+are Offs nobody chose, and without the notice a person mentioning the agent there got no answer
+and no hint. The accepted cost is that an operator's internal Off from before `triggerChosen`
+existed answers one addressed message too; nothing is migrated. The Console lists the row Off,
+as it does a gated agent's undecided row.
 An older daemon drops the field and an older relay notices only on a bot with a gated
 member, so either falls back to a silent Off.
 

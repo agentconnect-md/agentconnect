@@ -79,6 +79,7 @@ const bot = (over: Partial<BotRecord> = {}): BotRecord =>
 /** The owning agents the projection reads: restricted, and Everyone in assistant mode. */
 const RESTRICTED: SpecOwner = { visibility: 'restricted' }
 const ASSISTANT: SpecOwner = { visibility: 'org', assistantMode: { enabled: true } }
+const RESTRICTED_ASSISTANT: SpecOwner = { visibility: 'restricted', assistantMode: { enabled: true } }
 
 /** `integrationToSpec` with the registry + the matching bot row pre-bound, so the
  *  cases below keep reading as the trigger→bindRules fold they are testing. */
@@ -173,7 +174,7 @@ describe('integrationToSpec sessionModes', () => {
   })
 })
 
-// assistant-mode.md §5.1, §5.2: assistant mode gates the agent and gives each place one session, at projection only.
+// assistant-mode.md §5.1, §5.2: assistant mode gives each place one session, at projection only, and gates nothing.
 describe('assistant-mode places', () => {
   const decided = (channelId: string, sessionMode: 'createNew' | 'append' = 'createNew'): IntegrationChannelRecord => ({
     ...channel(channelId, 'mention', 'channel', sessionMode),
@@ -195,24 +196,41 @@ describe('assistant-mode places', () => {
   ]
   const OFF: SpecOwner = { visibility: 'org', assistantMode: { enabled: false } }
 
-  it('gates an Everyone agent in assistant mode exactly like a restricted one', async () => {
+  // #2979 B7: an Everyone agent in assistant mode takes the open defaults; an Off row it already has stays Off.
+  it('leaves an Everyone agent in assistant mode ungated, like any Everyone agent', async () => {
     expect(isGatedAgent({ visibility: 'org' })).toBe(false)
     expect(isGatedAgent(OFF)).toBe(false)
-    expect(isGatedAgent(ASSISTANT)).toBe(true)
-    expect(isGatedAgent(RESTRICTED)).toBe(true)
+    expect(isGatedAgent(ASSISTANT)).toBe(false)
     const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention'), channel('C2', 'off')], ASSISTANT)
+    expect(spec.core.gated).toBe(false)
+    expect(spec.core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(spec.core.mutedChannels).toEqual(['C2'])
+  })
+
+  it('keeps a restricted agent gated whatever its mode', async () => {
+    expect(isGatedAgent(RESTRICTED)).toBe(true)
+    expect(isGatedAgent(RESTRICTED_ASSISTANT)).toBe(true)
+    const spec = await specOf(
+      INTEGRATION,
+      SECRET,
+      [channel('C1', 'mention'), channel('C2', 'off')],
+      RESTRICTED_ASSISTANT
+    )
     expect(spec.core.gated).toBe(true)
     expect(spec.core.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
     expect(spec.core.mutedChannels).toEqual([])
   })
 
-  it('keys rooms and Slack DMs on one session, leaving group DMs and Decision rows on their own mode', async () => {
+  // The list is complete in assistant mode, so the daemon's append default for an unseen place never overrides a known row.
+  it('keys rooms and Slack DMs on one session, listing group DMs and Decision rows on their own mode', async () => {
     const spec = await specOf(INTEGRATION, SECRET, rows(), ASSISTANT)
     expect(spec.core.sessionModes).toEqual([
       { channel: 'C1', mode: 'append' },
       { channel: 'C2', mode: 'append' },
       { channel: 'C3', mode: 'append' },
       { channel: 'D1', mode: 'append' },
+      { channel: 'G1', mode: 'createNew' },
+      { channel: 'C4', mode: 'createNew' },
       { channel: 'C5', mode: 'append' }
     ])
   })
@@ -237,8 +255,14 @@ describe('assistant-mode places', () => {
       rows(),
       ASSISTANT
     )
-    expect(spec?.core.gated).toBe(true)
-    expect(spec?.core.sessionModes.map((m) => m.channel)).toEqual(['C1', 'C2', 'C3', 'D1', 'C5'])
+    expect(spec?.core.gated).toBe(false)
+    expect(spec?.core.sessionModes.filter((m) => m.mode === 'append').map((m) => m.channel)).toEqual([
+      'C1',
+      'C2',
+      'C3',
+      'D1',
+      'C5'
+    ])
   })
 
   it('leaves a DM that is one continuous session already on its platform keying', async () => {
@@ -248,7 +272,10 @@ describe('assistant-mode places', () => {
       [channel('-100', 'mention'), channel('42', 'any', 'im')],
       ASSISTANT
     )
-    expect(spec.core.sessionModes).toEqual([{ channel: '-100', mode: 'append' }])
+    expect(spec.core.sessionModes).toEqual([
+      { channel: '-100', mode: 'append' },
+      { channel: '42', mode: 'createNew' }
+    ])
   })
 
   it('skips a platform whose rows never append', async () => {
@@ -272,7 +299,6 @@ describe('assistant-mode places', () => {
       [channel('team_eng', 'mention')],
       ASSISTANT
     )
-    expect(spec?.core.gated).toBe(true)
     expect(spec?.core.sessionModes).toEqual([])
   })
 })
@@ -302,7 +328,7 @@ describe('integrationToSpec externalChannels', () => {
   })
 })
 
-// resource-visibility.md §14.9: an ungated integration's undecided Off on an external place still owes the §14.3 notice.
+// resource-visibility.md §14.9: an ungated integration's Off nobody chose still owes the §14.3 notice, internal or external.
 describe('integrationToSpec pendingChannels', () => {
   const external = (
     channelId: string,
@@ -314,19 +340,34 @@ describe('integrationToSpec pendingChannels', () => {
     externalReason: 'externallyShared'
   })
 
-  it('lists the undecided external Off conversations, each also muted', async () => {
+  const chosen = (channelId: string): IntegrationChannelRecord => ({
+    ...channel(channelId, 'off'),
+    triggerChosen: true
+  })
+
+  it('lists the Off conversations nobody chose, each also muted', async () => {
     const spec = await specOf(INTEGRATION, SECRET, [
       external('C1', 'off'),
       external('C2', 'off', true),
       external('C3', 'mention'),
-      channel('C4', 'off')
+      channel('C4', 'off'),
+      chosen('C5')
     ])
-    expect(spec.core.mutedChannels).toEqual(['C1', 'C2', 'C4'])
-    expect(spec.core.pendingChannels).toEqual(['C1'])
+    expect(spec.core.mutedChannels).toEqual(['C1', 'C2', 'C4', 'C5'])
+    expect(spec.core.pendingChannels).toEqual(['C1', 'C4'])
+  })
+
+  // #2979 B7: a room seeded Off under the old assistant-mode gating keeps the notice, in assistant mode or not.
+  it('lists an Everyone agent’s undecided internal Off room, in assistant mode or not, but not a chosen one', async () => {
+    for (const owner of [{ visibility: 'org' } as SpecOwner, ASSISTANT]) {
+      const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), chosen('C2')], owner)
+      expect(spec.core.mutedChannels).toEqual(['C1', 'C2'])
+      expect(spec.core.pendingChannels).toEqual(['C1'])
+    }
   })
 
   it('is absent when nothing is pending, so an older daemon reads the spec exactly as before', async () => {
-    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), external('C2', 'mention')])
+    const spec = await specOf(INTEGRATION, SECRET, [chosen('C1'), external('C2', 'mention')])
     expect(spec.core).not.toHaveProperty('pendingChannels')
   })
 

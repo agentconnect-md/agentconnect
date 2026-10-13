@@ -21,11 +21,6 @@ import {
   type ChannelSettingsOption
 } from '@/components/console/ChannelSettingsPopover'
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
-import {
-  placeEnableNeedsWarning,
-  placeName,
-  useAssistantPlaceWarning
-} from '@/components/console/AssistantPlaceWarning'
 import { useChannelGates } from '@/components/console/decisions/channel-gates'
 import { managedByRouting } from '@/lib/decisions/binding'
 import {
@@ -795,7 +790,7 @@ export function IntegrationChannelList({
   shareable?: boolean
   /** Why the agent's conversations are gated (resource-visibility.md §14): new ones start Off and the banner names it. */
   gate?: ConversationGate | null
-  /** The agent is in assistant mode: places hold one session, and enabling a room warns first (assistant-mode.md §5.2, §5.3). */
+  /** The agent is in assistant mode: places hold one session (assistant-mode.md §5.2). */
   assistantMode?: boolean
   /** Horizontal row padding, to line up with the host card (18 list / 14 detail). */
   padX?: number
@@ -813,7 +808,6 @@ export function IntegrationChannelList({
     integrations
   } = useConsoleData()
   const ownerGuard = useOwnerChangeGuard()
-  const placeWarning = useAssistantPlaceWarning()
   // The shared-bot row whose By decision rules modal is open.
   const [routingRow, setRoutingRow] = useState<{
     botId: string
@@ -839,11 +833,7 @@ export function IntegrationChannelList({
   const dispatchable = memberIds.length > 1
   // Why a gated agent's rows start off. A platform whose gate is more than the row's own says so itself.
   const gatedMessage = channelListSemantics(platform).gatedNote
-  const gatedNote = gate
-    ? gatedMessage
-      ? resolveMessage(translate, gatedMessage, { reason: gate })
-      : translate('gatedNote', { reason: gate })
-    : null
+  const gatedNote = gate ? (gatedMessage ? resolveMessage(translate, gatedMessage) : translate('gatedNote')) : null
   // A platform refusal is the useful half of a failed Leave — a missing scope or a
   // last-member channel tells the operator what to do — so it is shown verbatim
   // rather than collapsed into "something went wrong".
@@ -890,17 +880,6 @@ export function IntegrationChannelList({
   const rowTrigger = (c: IntegrationChannelRow): RowTrigger => gates.rowTrigger(botId, c)
   const pickTrigger = (c: IntegrationChannelRow, trigger: RowTrigger) =>
     gates.pickTrigger(botId, integrationId, c, trigger)
-  // Enabling a room or group DM of an assistant-mode agent is trusting everyone in it, so it asks first.
-  const enablePlace = (c: IntegrationChannelRow, trigger: RowTrigger, apply: () => void | Promise<void>) =>
-    placeEnableNeedsWarning(c, rowTrigger(c), trigger, assistantMode)
-      ? placeWarning.confirmBefore(
-          {
-            title: translate('assistantPlace.title', { name: placeName(c, roomGlyph(c.kind, platform)) }),
-            confirmLabel: translate('assistantPlace.confirm')
-          },
-          apply
-        )
-      : apply()
   /**
    * Leaving, for a platform that has no per-conversation membership to leave. A
    * Discord bot is in a SERVER, so the action belongs to the band that names one —
@@ -954,7 +933,7 @@ export function IntegrationChannelList({
           // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
           agentName: (defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? '',
           padX,
-          siblings: { platform, rows: channelRows.map((row) => ({ integrationId, row })), assistantMode }
+          siblings: { platform, rows: channelRows.map((row) => ({ integrationId, row })) }
         })
   const row = (c: IntegrationChannelRow) => {
     // One member is no choice, so the row drops the picker unless the bot's routing owns the row.
@@ -980,8 +959,7 @@ export function IntegrationChannelList({
                 botId,
                 platform,
                 integrationId,
-                row: c,
-                beforeAdd: (open) => void enablePlace(c, 'decision', open)
+                row: c
               })}
             {def && (
               // The PATCH goes through THIS agent's integration: shared ownership is bot-scoped and fenced server-side.
@@ -1027,7 +1005,7 @@ export function IntegrationChannelList({
                 trigger === 'decision' && ((!!decisions && ownGate) || (shareable && managedByRouting(c)))
               }
               assistantMode={assistantMode}
-              onTrigger={(next) => enablePlace(c, next, () => pickTrigger(c, next))}
+              onTrigger={(next) => pickTrigger(c, next)}
               onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
             />
             {/* Demo rows carry no button rather than an inert one, and a derived roster none at all — the
@@ -1079,7 +1057,6 @@ export function IntegrationChannelList({
       {dmRows.length > 0 && groupHeader(translate('directMessages'), padX)}
       {dmRows.map(row)}
       {ownerGuard.dialog}
-      {placeWarning.dialog}
       {routingRow && decisions && (
         <DecisionRoutingModal
           botId={routingRow.botId}

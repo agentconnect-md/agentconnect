@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { openConversationTrigger, pendingExternalConversation } from './conversation-defaults.js'
+import { openConversationTrigger, pendingConversation } from './conversation-defaults.js'
 
 describe('openConversationTrigger', () => {
   it('opens a room on Mention and a 1:1 DM On', () => {
@@ -14,20 +14,15 @@ describe('openConversationTrigger', () => {
   })
 })
 
-describe('pendingExternalConversation', () => {
-  it('is an Off nobody chose on a place still marked external', () => {
-    expect(pendingExternalConversation({ trigger: 'off', triggerChosen: false, externalReason: 'guestMember' })).toBe(
-      true
-    )
+// #2979 B7: an Off nobody chose keeps the notice wherever it is, not only on a place marked external.
+describe('pendingConversation', () => {
+  it('is an Off nobody chose, internal or external', () => {
+    expect(pendingConversation({ trigger: 'off', triggerChosen: false })).toBe(true)
   })
 
-  it('is not an operator Off, an enabled place, or an internal one', () => {
-    expect(pendingExternalConversation({ trigger: 'off', triggerChosen: true, externalReason: 'guestMember' })).toBe(
-      false
-    )
-    expect(
-      pendingExternalConversation({ trigger: 'mention', triggerChosen: false, externalReason: 'externallyShared' })
-    ).toBe(false)
-    expect(pendingExternalConversation({ trigger: 'off', triggerChosen: false, externalReason: null })).toBe(false)
+  it('is not an Off an editor chose, or an enabled conversation', () => {
+    expect(pendingConversation({ trigger: 'off', triggerChosen: true })).toBe(false)
+    expect(pendingConversation({ trigger: 'mention', triggerChosen: false })).toBe(false)
+    expect(pendingConversation({ trigger: 'any', triggerChosen: true })).toBe(false)
   })
 })

@@ -2831,7 +2831,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(ingest.postText).toHaveBeenCalledTimes(1)
   })
 
-  // resource-visibility.md §14.9: on a bot with no gated member, the CP's undecided Off (an external place) still speaks once.
+  // resource-visibility.md §14.9: on a bot with no gated member, the CP's undecided Off still speaks once.
   describe('an undecided Off on an ungated bot', () => {
     const ungated = (over: Partial<BotAssignment> = {}): BotAssignment => ({
       ...gatedAssignment(),
@@ -2866,6 +2866,18 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
       expect(sendMsg).not.toHaveBeenCalled()
       expect(ingest.postText).toHaveBeenCalledTimes(1)
       expect(ingest.postText.mock.calls[0]![0]).toBe('C9')
+    })
+
+    // #2979 B7: the assignment the CP now ships for an Everyone agent in assistant mode; the relay posts no notice for it.
+    it('dispatches a DM and a mention in a new channel to its ungated default agent, with no notice', async () => {
+      const { internals, ingest, sendMsg } = setUp(ungated())
+      await internals.forward(BOT_ID, dm())
+      await internals.forward(BOT_ID, mention(M1, '1.1'))
+      expect(sendMsg.mock.calls.map(([msg]) => [msg.agentId, msg.payload.channel])).toEqual([
+        [AGENT_ID, 'D42'],
+        [AGENT_ID, 'C9']
+      ])
+      expect(ingest.postText).not.toHaveBeenCalled()
     })
 
     it('stays silent on an Off an editor chose, and on an older CP that marks nothing', async () => {
