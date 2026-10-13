@@ -9,6 +9,8 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
+import { ManagedMemoryProvider } from '../src/memory/providers/managed.js'
+import type { MemoryScope } from '../src/memory/types.js'
 import { createMemoryReader } from '../src/cp/memory-reader.js'
 import {
   memoryChannelKey,
@@ -231,5 +233,50 @@ describe('channel-scoped memory overlay', () => {
     // Nothing left to clear is an answer, not an error.
     expect(await reader.clearChannel({ agentId: 'bot-a', channelKey: a.channelKey })).toMatchObject({ cleared: false })
     await expect(reader.clearChannel({ agentId: 'bot-a', channelKey: '..' })).rejects.toThrow(MemoryPathError)
+  })
+
+  it('names a cleared layer again when a background distillation writes into it before any session starts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-chan-restore-'))
+    // The extraction session writes through the scope it is pinned to, as `ctx.memoryBinding.scope`, never through a tool scope.
+    const extract = vi.fn(async (_agent: string, _prompt: string, pinned?: MemoryScope) => {
+      const view = await mem.entryView(pinned!, 'distill')
+      await view.create({ label: 'distilled', text: '- learned in the room' } as never)
+      return ''
+    })
+    const mem: ManagedMemoryProvider = new ManagedMemoryProvider(
+      () => localMemoryHome(local(dir)),
+      () => true,
+      extract
+    )
+    const reader = createMemoryReader(() => localMemoryHome(local(dir)), {
+      adminSurfaceForAgent: () => mem.adminSurface()
+    })
+    const place = { ...chan('C0EXAMPLE7', 'scope-1'), platform: 'slack', channelName: 'launch-room' }
+    const named = { channel: 'C0EXAMPLE7', transportScope: 'scope-1', platform: 'slack', name: 'launch-room' }
+    await mem.ensure(place, 'bot')
+    await mem.write(place, 'room.md', '- a place fact', undefined, 'tool')
+    const restored = async () => {
+      await vi.waitFor(async () => expect(await readChannelMemoryMeta(local(dir), place.channelKey)).toEqual(named))
+      expect((await reader.channels({ agentId: 'bot-a' })).channels).toEqual([
+        { channelKey: place.channelKey, ...named }
+      ])
+    }
+
+    // A pinned distillation-style write, the way the extraction session's tools reach the provider.
+    await reader.clearChannel({ agentId: 'bot-a', channelKey: place.channelKey })
+    await mem.write(
+      { ...place, sourceTurnId: 'turn-1' },
+      'pinned.md',
+      '- written by a pinned binding',
+      undefined,
+      'distill'
+    )
+    await restored()
+
+    // A captured turn, which distills through the extractor.
+    await reader.clearChannel({ agentId: 'bot-a', channelKey: place.channelKey })
+    await mem.recordTurn(place, { input: 'what did we decide?', output: 'ship on Friday', turnId: 'turn-2' })
+    expect(extract).toHaveBeenCalledTimes(1)
+    await restored()
   })
 })
