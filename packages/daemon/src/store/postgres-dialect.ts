@@ -157,6 +157,7 @@ export const canonicalColumns = [
   'quoteJson',
   'reasonCode',
   'replyTarget',
+  'replyThread',
   'reportClaimedAt',
   'reportOwnerId',
   'requesterId',

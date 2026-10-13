@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { SessionPullRequestFeedback } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey, type SessionRecord } from '../src/store/local-store.js'
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111'
@@ -93,4 +94,68 @@ describe('pull request feedback continuation', () => {
       }
     }
   )
+})
+
+describe('pull request feedback in a direct message that is one long session', () => {
+  /** The message the feedback dispatches into a Slack DM session at `thread` that recorded `replyThread`. */
+  async function feedbackInto(thread: string, replyThread: string | null) {
+    const daemon = new Daemon({ sandboxMechanism: null } as never)
+    const session = {
+      key: sessionKey('slack', 'D-ADA', thread, AGENT_ID),
+      agentId: AGENT_ID,
+      acpSessionId: 'acp-session-850',
+      sessionId: SESSION_ID,
+      platform: 'slack',
+      channel: 'D-ADA',
+      thread,
+      transportScope: null,
+      conversationKind: 'dm',
+      replyThread
+    } as unknown as SessionRecord
+    const inner = daemon as never as {
+      agents: Map<string, unknown>
+      connByIntegration: Map<string, unknown>
+      store: { getSessionByOutwardId: (sessionId: string, agentId: string) => Promise<SessionRecord | undefined> }
+      dispatch: ReturnType<typeof vi.fn>
+      dispatchPullRequestFeedback: (req: SessionPullRequestFeedback) => Promise<unknown>
+    }
+    inner.agents.set(AGENT_ID, { id: AGENT_ID, integrations: [{ id: 'int-s', platform: 'slack' }] })
+    inner.connByIntegration.set('int-s', { postMessage: vi.fn() })
+    inner.store = { getSessionByOutwardId: vi.fn(async () => session) }
+    inner.dispatch = vi.fn(async (...args: unknown[]) => {
+      ;(args[5] as { onAdmission: (result: { accepted: boolean }) => void }).onAdmission({ accepted: true })
+      return SESSION_ID
+    })
+    await expect(
+      inner.dispatchPullRequestFeedback({
+        agentId: AGENT_ID,
+        sessionId: SESSION_ID,
+        deliveryKey: 'delivery-review-2',
+        repoId: '456',
+        repoFullName: 'example-org/example-repo',
+        pullNumber: 1466
+      })
+    ).resolves.toEqual({ deliveryKey: 'delivery-review-2', accepted: true })
+    const [, message, integrationId] = inner.dispatch.mock.calls[0]! as [string, NormalizedMessage, string]
+    expect(integrationId).toBe('int-s')
+    expect(message).toMatchObject({ source: 'system', platform: 'slack', channel: 'D-ADA', isDm: true })
+    return message
+  }
+
+  it('replies under the message the session last replied under', async () => {
+    const message = await feedbackInto('append:1000', '1700.0001')
+    expect(message).toMatchObject({ thread: '1700.0001', sessionThread: 'append:1000' })
+  })
+
+  it('stays at the top level when the session last replied there', async () => {
+    const message = await feedbackInto('append:1000', null)
+    expect(message.thread).toBeUndefined()
+    expect(message.sessionThread).toBe('append:1000')
+  })
+
+  it('replies in a per-thread session’s own thread, as before', async () => {
+    const message = await feedbackInto('1700.0001', null)
+    expect(message.thread).toBe('1700.0001')
+    expect(message.sessionThread).toBeUndefined()
+  })
 })

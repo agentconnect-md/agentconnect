@@ -113,6 +113,8 @@ export interface LiveSdkTask {
   description?: string
   isSubagent: boolean
   startedAt: number
+  /** The thread the turn that started it replied in; absent at a conversation's top level or with no turn live. */
+  thread?: string
 }
 
 /** One SETTLED background task, retained for the console's `task/list` read. Display history and

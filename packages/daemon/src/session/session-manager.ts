@@ -1044,6 +1044,12 @@ export class SessionManager {
     // that already has it passes 1 straight back through.
     if (needsReplyToParent) rec.needsParentReply = 1
     await this.deps.store.upsertSession(rec)
+    // Where an appending session's turn replies, for a later wake keyed by the session alone (a pull request's feedback).
+    const replyThread = isAppendCoordinate(thread) ? (msg.thread ?? null) : null
+    if ((rec.replyThread ?? null) !== replyThread) {
+      await this.deps.store.setSessionReplyThread(key, replyThread)
+      rec.replyThread = replyThread
+    }
 
     return {
       sessionId: rec.acpSessionId!,
