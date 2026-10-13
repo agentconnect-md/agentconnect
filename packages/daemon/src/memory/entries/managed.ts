@@ -96,7 +96,7 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
     bindingGeneration: string,
     private readonly writeContext?: { source: MemoryWriteSource; sourceTurnId?: string },
     private readonly historyFor?: (root: MemoryFs) => MemoryHistorySink,
-    private readonly landed?: () => void
+    private readonly landed?: () => Promise<void>
   ) {
     if (roots.length < 1 || roots.length > 2) throw new Error('managed memory requires one root or an overlay')
     this.identity = memoryDigest(['managed', bindingGeneration, roots.map((root) => root.key)])
@@ -363,7 +363,7 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
             this.writeContext,
             this.historyFor?.(root) ?? sidecarMemoryHistory(root)
           )
-    this.landed?.()
+    await this.landed?.()
     const file = result.receipt.files.find((entry) => entry.path === topic)!
     const header = result.content === null ? undefined : parseMemoryFrontmatter(result.content).header
     return {
@@ -411,7 +411,7 @@ export async function managedMemoryEntries(
   writeContext?: { source: MemoryWriteSource; sourceTurnId?: string },
   historyFor?: (root: MemoryFs) => MemoryHistorySink,
   // Called once a mutation has landed in the written root.
-  landed?: () => void
+  landed?: () => Promise<void>
 ): Promise<ManagedMemoryEntries> {
   const lineages: string[] = []
   for (const root of roots) {

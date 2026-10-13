@@ -116,9 +116,9 @@ export class ManagedMemoryProvider implements MemoryProvider {
   }
 
   // The write boundary every write into a place layer passes, a pinned distillation's included: a layer a clear emptied gets its identity back.
-  private landed(scope: MemoryScope): void {
+  private async landed(scope: MemoryScope): Promise<void> {
     const place = placeLayerMeta(scope)
-    if (place) restorePlaceIdentity(this.portsFor(scope.agentId).live, place)
+    if (place) await restorePlaceIdentity(this.portsFor(scope.agentId).live, place)
   }
 
   async ensure(scope: MemoryScope, agentName: string): Promise<void> {
@@ -236,7 +236,7 @@ export class ManagedMemoryProvider implements MemoryProvider {
       history,
       scope.sourceTurnId
     )
-    this.landed(scope)
+    await this.landed(scope)
     return { ok: true, path, size, mtime }
   }
 }

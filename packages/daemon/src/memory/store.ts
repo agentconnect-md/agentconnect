@@ -249,17 +249,22 @@ export async function writeChannelMemoryMeta(
 /** Place folders this process has seen holding their `channel.json`, so a write checks once per folder; a clear forgets its own. */
 const namedPlaceFolders = new Set<string>()
 
-/** After a write lands in a place layer, give the folder back its `channel.json` if a clear removed it; best-effort, never delaying the write. */
-export function restorePlaceIdentity(fs: MemoryFs, place: ChannelMemoryMeta & { channelKey: string }): void {
+/** After a write lands in a place layer, give the folder back its `channel.json` if a clear removed it; awaited so nothing writes after the caller is done, and never throwing. */
+export async function restorePlaceIdentity(
+  fs: MemoryFs,
+  place: ChannelMemoryMeta & { channelKey: string }
+): Promise<void> {
   const folder = channelMemoryRoot(fs, place.channelKey).key
   if (namedPlaceFolders.has(folder)) return
   namedPlaceFolders.add(folder)
-  void (async () => {
+  try {
     const named =
       (await readChannelMemoryMeta(fs, place.channelKey)) !== null ||
       (await writeChannelMemoryMeta(fs, place.channelKey, place))
     if (!named) namedPlaceFolders.delete(folder)
-  })().catch(() => namedPlaceFolders.delete(folder))
+  } catch {
+    namedPlaceFolders.delete(folder)
+  }
 }
 
 /** A scope that writes its own place layer, as that layer's identity; undefined for any other scope. */
