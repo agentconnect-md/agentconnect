@@ -310,9 +310,17 @@ describe('a main conversation’s running sub-sessions in the standing summary',
     expect(runningOf((await sm.handle('bot-a', dm('200.6'), undefined, INT)).blocks)).toBeUndefined()
   })
 
-  it('is absent outside assistant mode, in a sub-session, and in a session with no conversation of its own', async () => {
+  it('lists them for an agent outside assistant mode too, since any agent opens them', async () => {
+    const { manager, delegate } = await harness()
+    await manager().handle('bot-a', dm('200.1'), undefined, INT)
+    const child = await delegate(DM_KEY, 'd-1', 1_000, 'write the release notes')
+    expect(runningOf((await manager().handle('bot-a', dm('200.2'), undefined, INT)).blocks)).toBe(
+      `<system-reminder>\n${HEAD}\n- ${child} — write the release notes\n</system-reminder>`
+    )
+  })
+
+  it('is absent in a sub-session and in a session with no conversation of its own', async () => {
     const cases: [typeof ON | undefined, NormalizedMessage, string | undefined][] = [
-      [undefined, dm('200.2'), INT],
       [ON, dm('200.2', { sessionThread: 'subsession:d-1' }), INT],
       [ON, dm('200.2', { channel: 'cron:c-1', sessionThread: 'cron:c-1:t-1', source: 'cron' }), undefined]
     ]
