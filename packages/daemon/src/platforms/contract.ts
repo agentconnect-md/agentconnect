@@ -120,6 +120,8 @@ export interface PlatformUserProfile {
   realName?: string
   isBot?: boolean
   avatarUrl?: string
+  /** The zone the person's profile names, where the platform keeps one; read for every agent's local time. */
+  timeZone?: string
 }
 
 /** One historical message from a provider thread read (`getThreadReplies`).

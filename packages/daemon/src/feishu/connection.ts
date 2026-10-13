@@ -15,6 +15,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
+import { knownTimeZone } from '../messages/time-zone.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
@@ -232,11 +233,11 @@ export interface FeishuApi {
   listChatMemberUnionIds?(chatId: string, pageToken?: string): Promise<{ ids: string[]; nextPageToken?: string }>
   /** im.chat.list (capped). */
   listChats(cap: number): Promise<{ id: string; name?: string }[]>
-  /** contact.user.get. */
+  /** contact.user.get; `timeZone` only when the user record names one. */
   getUser(
     userId: string,
     userIdType: 'open_id' | 'union_id'
-  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }>
+  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string; timeZone?: string }>
   /** GET /open-apis/bot/v3/info — the bot's own open_id + display name. */
   getBotInfo(): Promise<{ openId?: string; name?: string }>
 }
@@ -490,16 +491,19 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
             name?: string
             en_name?: string
             avatar?: { avatar_72?: string; avatar_240?: string; avatar_origin?: string }
+            time_zone?: string
           }
         }
       }
       const u = res?.data?.user ?? {}
       const avatarUrl = u.avatar?.avatar_72 ?? u.avatar?.avatar_240 ?? u.avatar?.avatar_origin
+      const timeZone = knownTimeZone(u.time_zone)
       return {
         id: userId,
         ...(u.name ? { name: u.name } : {}),
         ...(u.en_name ? { realName: u.en_name } : {}),
-        ...(avatarUrl ? { avatarUrl } : {})
+        ...(avatarUrl ? { avatarUrl } : {}),
+        ...(timeZone ? { timeZone } : {})
       }
     },
     async getBotInfo() {
@@ -1469,7 +1473,7 @@ export class FeishuConnection implements PlatformConnection {
 
   async getUserProfile(
     user: string
-  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }> {
+  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string; timeZone?: string }> {
     try {
       // Message senders use union_id (`on_…`); callback actors and mentions may
       // still be provider-native open_id values (`ou_…`).

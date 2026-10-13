@@ -27,3 +27,19 @@ export function offsetTimeZone(seconds: unknown): string | undefined {
 export function profileTimeZone(name: unknown, offsetSeconds: unknown): string | undefined {
   return knownTimeZone(name) ?? offsetTimeZone(offsetSeconds)
 }
+
+/** How long a turn waits for a person's zone before reading on without it. */
+export const TIME_ZONE_LOOKUP_WAIT_MS = 2_000
+
+/** What `work` resolves to if it settles within `ms`, else undefined; a rejection reads as undefined too. */
+export function within<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms)
+    timer.unref?.()
+    const settle = (value: T | undefined): void => {
+      clearTimeout(timer)
+      resolve(value)
+    }
+    work.then(settle, () => settle(undefined))
+  })
+}
