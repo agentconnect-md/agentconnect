@@ -58,13 +58,16 @@ export interface ReadLookups {
   fullMember(integrationId: string, userId: string): Promise<boolean>
   /** The console's own session visibility for whoever is behind the asker, `ownerOnly` for a DM or webchat source; rejects when the Control Plane cannot answer. */
   console(asker: ReadAsker, sessionIds: readonly string[], ownerOnly: boolean): Promise<ConsoleVerdict>
+  /** The member id the console user behind the asker linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
+  linked(integrationId: string, asker: ReadAsker): Promise<string | null>
 }
 
 /** Lookups that confirm nothing, for a host that wires none. */
 export const CLOSED_LOOKUPS: ReadLookups = {
   member: async () => false,
   fullMember: async () => false,
-  console: async () => ({ asker: 'unidentifiable' })
+  console: async () => ({ asker: 'unidentifiable' }),
+  linked: async () => null
 }
 
 export function samePlace(a: PlaceRef, b: PlaceRef): boolean {
@@ -112,7 +115,7 @@ async function sameBotMayRead(
   return membersAuthoritative(source.platform) && (await lookups.member(bot, source.channel, userId))
 }
 
-/** May this person read the source on bot `bot`? Elsewhere than their own platform and bot, only as the console would show it to them. */
+/** May this person read the source on bot `bot`? On their own bot, or as the chat account they linked in its workspace, as the platform says; else only as the console would show it. */
 export async function askerMayRead(
   asker: ReadAsker,
   source: SourcePlace,
@@ -121,6 +124,11 @@ export async function askerMayRead(
 ): Promise<boolean> {
   if (asker.kind === 'member' && bot !== undefined && asker.platform === source.platform && asker.integrationId === bot)
     return await sameBotMayRead(asker.userId, source, bot, lookups)
+  // A webchat source stays its owner's, so only a platform conversation asks for the person's linked account.
+  if (bot !== undefined && source.kind !== 'webchat') {
+    const linked = await lookups.linked(bot, asker)
+    if (linked !== null) return await sameBotMayRead(linked, source, bot, lookups)
+  }
   const sessions = source.sessions ?? []
   if (sessions.length === 0) return false
   // Stricter than the console: anything but a shared conversation (a DM, webchat, an undescribed place) is its owner's alone.

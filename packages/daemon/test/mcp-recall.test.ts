@@ -521,24 +521,27 @@ interface ConsoleWorld {
   visible?: Record<string, string[]>
   /** Session → the console user recorded as owning it, beside each Slack DM's own person. */
   owners?: Record<string, string>
+  /** Console user → the Slack account they linked in the bot's workspace; absent ⇒ none, so the console decides. */
+  accounts?: Record<string, string>
 }
 
-/** Every Slack member is linked by default, P as user-p, who sees the Telegram group the console shows as org-visible. */
+/** The console user behind an asker: every Slack member is linked by default, P as user-p; no other platform's member is. */
+function personOf(world: ConsoleWorld, asker: ReadAsker): string | null | undefined {
+  if (asker.kind === 'console') return asker.userId
+  if (asker.platform !== 'slack') return null
+  if (world.linked) return world.linked[asker.userId]
+  return asker.userId === P ? 'user-p' : `user-${asker.userId}`
+}
+
+/** user-p sees the Telegram group the console shows as org-visible. */
 function consoleVerdict(
   world: ConsoleWorld,
   asker: ReadAsker,
   sessions: readonly string[],
   ownerOnly: boolean
 ): ConsoleVerdict {
-  if (asker.kind === 'member' && asker.platform !== 'slack') return { asker: 'unidentifiable' }
-  const user =
-    asker.kind === 'console'
-      ? asker.userId
-      : world.linked
-        ? world.linked[asker.userId]
-        : asker.userId === P
-          ? 'user-p'
-          : `user-${asker.userId}`
+  const user = personOf(world, asker)
+  if (user === null) return { asker: 'unidentifiable' }
   if (!user) return { asker: 'unlinked' }
   const visible = (world.visible ?? { 'user-p': ['out-s-tg'] })[user] ?? []
   const owners: Record<string, string> = { 'out-s-dm-p': 'user-p', 'out-s-dm-q': 'user-q', ...world.owners }
@@ -591,7 +594,11 @@ function perAsker(
   const placeMembers = new PlaceMembers({
     now: () => clock.now,
     gatewayFor: (id) => (id === 'int-slack' ? gw : undefined),
-    readAccess
+    readAccess,
+    linkedMember: async (_agent, integrationId, asker) => {
+      const user = personOf(opts.console ?? {}, asker)
+      return (integrationId === 'int-slack' && user ? opts.console?.accounts?.[user] : undefined) ?? null
+    }
   })
   const live: Live = { messages: [{ msg: fromP, integrationId: 'int-slack' }] }
   const readLookups = vi.fn((agentId: string) => placeMembers.lookupsFor(agentId))
@@ -898,6 +905,21 @@ describe('turns no person is behind, and sub-sessions', () => {
     expect(await excerptsOf(sub, 'slack:C_PRIV', deps)).toEqual(['secret merger talk'])
     live.opener = NOBODY
     expect(await executeTool(sub, 'recall', { place: 'slack:C_PRIV' }, deps)).toEqual(opaque('slack:C_PRIV'))
+  })
+
+  it('reads for a webchat asker as the Slack account they linked in the bot workspace', async () => {
+    const web = ctxAt('webchat', 'chat-1')
+    // The console shows user-p none of these sessions; the account they linked decides.
+    const { deps, asks, readAccess } = perAsker({ console: { visible: {}, accounts: { 'user-p': P } } })
+    asks({ ...fromP, platform: 'webchat', sender: { id: 'user-p', isBot: false } }, { console: true })
+    expect(await excerptsOf(web, 'slack:C_PRIV', deps)).toEqual(['secret merger talk'])
+    expect(await excerptsOf(web, 'slack:C_DEPLOY', deps)).toContain('Noted: payments deploy Friday')
+    expect(await sourceOf(web, 'slack:D_P', deps)).toContain('the direct message')
+    expect(await executeTool(web, 'recall', { place: 'slack:D_Q' }, deps)).toEqual(opaque('slack:D_Q'))
+    expect(readAccess).not.toHaveBeenCalled()
+    // A console user who linked nothing in that workspace reads only what the console shows them.
+    asks({ ...fromP, platform: 'webchat', sender: { id: 'user-q', isBot: false } }, { console: true })
+    expect(await executeTool(web, 'recall', { place: 'slack:C_DEPLOY' }, deps)).toEqual(opaque('slack:C_DEPLOY'))
   })
 
   it('reads for whoever sent the message, not for the DM it arrived in', async () => {

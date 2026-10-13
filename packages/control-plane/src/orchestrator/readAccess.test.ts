@@ -10,6 +10,7 @@ import { resolveReadAccess, type ReadAccessDeps } from './readAccess.js'
 const AGENT_ID = '11111111-1111-4111-8111-111111111111'
 const SLACK = '33333333-3333-4333-8333-333333333333'
 const TELEGRAM = '44444444-4444-4444-8444-444444444444'
+const LARK = '55555555-5555-4555-8555-555555555555'
 const ORG = 'org-1'
 
 const PLATFORMS = buildCpPlatformRegistry([createSlackCpProvider({}), createFeishuCpProvider({})])
@@ -19,7 +20,8 @@ function deps(
 ) {
   const integrations = [
     { id: SLACK, botId: 'bot-slack', platform: 'slack' },
-    { id: TELEGRAM, botId: 'bot-tg', platform: 'telegram' }
+    { id: TELEGRAM, botId: 'bot-tg', platform: 'telegram' },
+    { id: LARK, botId: 'bot-lark', platform: 'feishu' }
   ].map((i) => ({ orgId: ORG, agentId: AGENT_ID, ...i }) as unknown as IntegrationRecord)
   const links = over.links ?? {
     'user-p': [{ platform: 'slack', tenant: 'T0AAA', memberId: 'U_P' }],
@@ -39,7 +41,8 @@ function deps(
         (
           ({
             'bot-slack': { platform: 'slack', teamId: 'T0AAA', revokedAt: null },
-            'bot-tg': { platform: 'telegram' }
+            'bot-tg': { platform: 'telegram' },
+            'bot-lark': { platform: 'feishu', feishuRegion: 'lark', revokedAt: null }
           }) as Record<string, Partial<BotRecord>>
         )[String(botId)] as BotRecord
     },
@@ -143,6 +146,88 @@ describe('resolveReadAccess', () => {
         )
       ).asker
     ).toBe('unidentifiable')
+  })
+
+  it("answers the chat identity a console user linked in the bot's workspace, and none in any other", async () => {
+    const { deps: d } = deps({
+      links: {
+        'user-p': [
+          { platform: 'slack', tenant: 'T0AAA', memberId: 'U_P' },
+          { platform: 'feishu', tenant: 'lark', memberId: 'on_p' }
+        ],
+        'user-q': [{ platform: 'slack', tenant: 'T0OTHER', memberId: 'U_Q' }]
+      }
+    })
+    const on = (userId: string, linkedOn = SLACK): AgentReadAccess => ({
+      ...ask({ consoleUserId: userId }, []),
+      linkedOn
+    })
+    expect(await resolveReadAccess(on('user-p'), d, ORG)).toEqual({
+      asker: 'linked',
+      visibleSessionIds: [],
+      consoleUserId: 'user-p',
+      linkedMemberId: 'U_P'
+    })
+    // Feishu/Lark matches its union_id under the bot's region.
+    expect((await resolveReadAccess(on('user-p', LARK), d, ORG)).linkedMemberId).toBe('on_p')
+    // Linked only in another Slack workspace, or not at all.
+    expect((await resolveReadAccess(on('user-q'), d, ORG)).linkedMemberId).toBeNull()
+    expect((await resolveReadAccess(on('user-r'), d, ORG)).linkedMemberId).toBeNull()
+    // A platform that cannot match members, a bot that is not the agent's, and a deployment without sign-in.
+    expect((await resolveReadAccess(on('user-p', TELEGRAM), d, ORG)).linkedMemberId).toBeNull()
+    expect((await resolveReadAccess(on('user-p', AGENT_ID), d, ORG)).linkedMemberId).toBeNull()
+    expect((await resolveReadAccess(on('user-p'), deps({ identityAbsent: true }).deps, ORG)).linkedMemberId).toBeNull()
+    // Someone outside the organization is linked to nothing; a request without `linkedOn` gets no such field.
+    expect(await resolveReadAccess(on('user-x'), d, ORG)).toEqual({
+      asker: 'unidentifiable',
+      visibleSessionIds: [],
+      linkedMemberId: null
+    })
+    expect(await resolveReadAccess(ask({ consoleUserId: 'user-p' }, []), d, ORG)).not.toHaveProperty('linkedMemberId')
+  })
+
+  it("answers for a chat member the identity their console user linked in another bot's workspace", async () => {
+    const { deps: d } = deps({
+      links: {
+        'user-p': [
+          { platform: 'slack', tenant: 'T0AAA', memberId: 'U_P' },
+          { platform: 'feishu', tenant: 'lark', memberId: 'on_p' }
+        ]
+      }
+    })
+    const on = (asker: AgentReadAccess['asker']): AgentReadAccess => ({ ...ask(asker, []), linkedOn: LARK })
+    // A Slack member linked to user-p is judged on the Feishu/Lark bot as the union_id user-p linked there.
+    expect(await resolveReadAccess(on({ integrationId: SLACK, memberId: 'U_P' }), d, ORG)).toEqual({
+      asker: 'linked',
+      visibleSessionIds: [],
+      consoleUserId: 'user-p',
+      linkedMemberId: 'on_p'
+    })
+    // An unlinked chat member, and one on a platform that cannot be matched, have none.
+    expect(await resolveReadAccess(on({ integrationId: SLACK, memberId: 'U_NOBODY' }), d, ORG)).toEqual({
+      asker: 'unlinked',
+      visibleSessionIds: [],
+      linkedMemberId: null
+    })
+    expect(await resolveReadAccess(on({ integrationId: TELEGRAM, memberId: '42' }), d, ORG)).toEqual({
+      asker: 'unidentifiable',
+      visibleSessionIds: [],
+      linkedMemberId: null
+    })
+  })
+
+  it('refuses to answer when a console user linked two identities in one workspace', async () => {
+    const twice = deps({
+      links: {
+        'user-p': [
+          { platform: 'slack', tenant: 'T0AAA', memberId: 'U_P' },
+          { platform: 'slack', tenant: 'T0AAA', memberId: 'U_P2' }
+        ]
+      }
+    })
+    await expect(
+      resolveReadAccess({ ...ask({ consoleUserId: 'user-p' }, []), linkedOn: SLACK }, twice.deps, ORG)
+    ).rejects.toThrow(/several linked chat identities/)
   })
 
   it('refuses to answer rather than call someone unlinked when the organization is too large to scan', async () => {

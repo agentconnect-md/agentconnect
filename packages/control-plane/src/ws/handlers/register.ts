@@ -28,6 +28,7 @@ import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
+  READ_ACCESS_LINKED_V1_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   CRON_REPORT_ACK_FEATURE,
@@ -155,6 +156,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       CHAT_ACTOR_V1_FEATURE,
       // …and gives the console's session visibility for whoever asks a cross-platform read.
       READ_ACCESS_V1_FEATURE,
+      // …and the chat identity a console user linked in a bot's workspace, which a read or write through it is judged as.
+      READ_ACCESS_LINKED_V1_FEATURE,
       // memory-evolution.md §3.2.1: this CP serves the whole `memory/store` family, the migration completion included.
       AGENT_MEMORY_STORE_V1_FEATURE,
       AGENT_MEMORY_HISTORY_READ_V1_FEATURE,

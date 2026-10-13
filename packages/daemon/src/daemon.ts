@@ -58,6 +58,7 @@ import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
+  READ_ACCESS_LINKED_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
@@ -329,7 +330,13 @@ import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { assistantSubsessionToolsFor, type SubsessionStopper } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
-import { askerOfFollower, PlaceMembers, turnAskers, type TurnMessage } from './assistant/place-members.js'
+import {
+  askerOfFollower,
+  PlaceMembers,
+  readAccessAsker,
+  turnAskers,
+  type TurnMessage
+} from './assistant/place-members.js'
 import {
   NOBODY,
   type ConsoleVerdict,
@@ -1842,7 +1849,8 @@ export class Daemon {
   private readonly placeMembers = new PlaceMembers({
     now: () => this.clock.now(),
     gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
-    readAccess: (agentId, asker, sessionIds, ownerOnly) => this.readAccess(agentId, asker, sessionIds, ownerOnly)
+    readAccess: (agentId, asker, sessionIds, ownerOnly) => this.readAccess(agentId, asker, sessionIds, ownerOnly),
+    linkedMember: (agentId, integrationId, asker) => this.linkedAccount(agentId, integrationId, asker)
   })
   /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
   private readonly subsessionOpeners = new Map<string, TurnAskers>()
@@ -8834,16 +8842,27 @@ export class Daemon {
     const res = await cp.readAccess(
       {
         agentId,
-        asker:
-          asker.kind === 'console'
-            ? { consoleUserId: asker.userId }
-            : { integrationId: asker.integrationId, memberId: asker.userId },
+        asker: readAccessAsker(asker),
         sessionIds: [...sessionIds],
         ...(ownerOnly ? { ownerOnly: true } : {})
       },
       this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
     )
     return res.asker === 'linked' ? { asker: 'linked', visible: new Set(res.visibleSessionIds) } : { asker: res.asker }
+  }
+
+  /** The member id the console user behind the asker linked in that bot's workspace, null for none or an older Control Plane; rejects when an answer fails. */
+  private async linkedAccount(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null> {
+    const cp = this.cpClient
+    // A Control Plane that cannot name linked accounts leaves the console's own visibility to decide, as before.
+    if (cp?.supportsServerFeature?.(READ_ACCESS_LINKED_V1_FEATURE) !== true) return null
+    const res = await cp.readAccess(
+      { agentId, asker: readAccessAsker(asker), sessionIds: [], linkedOn: integrationId },
+      this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+    )
+    // One that advertises the feature but answers without the field cannot be trusted, so the read or write is refused.
+    if (res.linkedMemberId === undefined) throw new Error('linked identity unavailable')
+    return res.linkedMemberId
   }
 
   /** A snapshot row for the read rule: its privacy only from a complete listing, or when it says private. */

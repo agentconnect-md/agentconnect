@@ -1009,15 +1009,21 @@ readable.
   up when the read happens and trusted for at most a minute;
 - the asker's own 1:1 DM with the agent. Another person's DM never.
 
-**Anywhere else** (another platform, another of the agent's bots, or any read for a console user),
-only what the console itself would show that person: they must be known as a console user, through
-the chat account they linked under Sign-in methods in their console Profile (a webchat or console
-user already is), and the console must show them the agent's sessions in that conversation. A Slack
-member linked to an organization member therefore reads a Telegram or Discord group, whose sessions
-every member sees while that platform's session access sync is off. Someone on a platform the
-console cannot match reads nothing beyond their own platform and bot. A webchat conversation and a
-DM on any platform stay readable only by their owner, even where the console shows them to every
-member.
+**On another platform or another of the agent's bots**, and for a webchat or console user, a person
+the product can identify is judged on the target platform by the chat account they linked there,
+and otherwise by what the console shows them. The linked account must be in the target bot's
+workspace (Slack) or region (Feishu/Lark), and is judged by the rules above as if it had asked on
+that bot. The product identifies a person as a console user: a webchat or console user already is
+one, and a chat member is one once they linked their account under Sign-in methods in their console
+Profile. A Slack member who also linked Feishu therefore posts into a Feishu group they are in, even
+one the agent has never been in.
+
+**What the console shows** them is the agent's sessions in that conversation. A Slack member linked
+to an organization member therefore reads a Telegram or Discord group, which no one can link,
+whose sessions every member sees while that platform's session access sync is off. Someone on a
+platform the console cannot match reads nothing beyond their own platform and bot. A webchat
+conversation and a DM on any platform stay readable only by their owner, even where the console
+shows them to every member.
 
 **Who is asking:**
 
@@ -1058,10 +1064,11 @@ The conversation the agent is answering in is always writable.
 
 - **Another conversation** is writable when every person asking may read it, as "Reading other
   conversations" decides: a private channel or group DM needs them as members, a public channel a
-  full member of that workspace (not a guest or someone from another organization), and another
-  platform or another of the agent's bots what the console shows them. A refusal answers "I can't
-  post there from here." and never says whether the conversation exists. Where the platform can tell
-  nothing about a conversation (Google Chat), only what the console shows the person is writable.
+  full member of that workspace (not a guest or someone from another organization), and on another
+  platform or another of the agent's bots the same for the chat account they linked there, else
+  what the console shows them. A refusal answers "I can't post there from here." and never says
+  whether the conversation exists. Where the platform can tell nothing about a conversation (Google
+  Chat), only what the console shows the person is writable.
 - **A direct message** (`toUser`) goes only to a member of the organization: on Slack, a full member
   of the bot's workspace, so a guest or someone from another organization is refused with that
   reason. Elsewhere the platform's own limits on whom a bot may message apply, as before.

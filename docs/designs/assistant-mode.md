@@ -446,7 +446,8 @@ outsiders (memory layers, below), so opening it everywhere does not reopen what 
 - **Direct messages** go only to a member of the organization: where the platform declares
   `workspaceMembers` (Slack), a full member of the target bot's workspace; elsewhere the platform's
   own limits stand. A new conversation is opened only with such members, and made only for a full
-  member. A canvas or a list is judged by the conversations it is shared in, from a new read port
+  member, which a person off their own bot is as the account they linked there (see "Reads"). A
+  canvas or a list is judged by the conversations it is shared in, from a new read port
   `documentReach` (Slack's `files.info`); one the platform cannot fully list is not changed.
 - **External targets.** A post into an external place from elsewhere is drafted for every agent:
   the drafts machinery (record, Slack card, expiry sweep, click handling) is not assistant-only, so
@@ -491,11 +492,23 @@ outsiders (memory layers, below), so opening it everywhere does not reopen what 
   union_id) and `workspaceMembers` (Slack's `isFullMember`, which tells a guest or an outsider from
   a full member). A 1:1 DM's only member besides the bot is its person, so membership decides a DM
   too. Lookups are cached for a minute (`assistant/place-members.ts`) and fail closed.
-- **Anywhere else**, and for every console user, the read is judged by the console's own
-  session-visibility predicate ([session-visibility.md](session-visibility.md)), asked of the
-  Control Plane through `agent/read-access` (feature `read-access-v1`): the CP resolves a chat member
-  to the one organization member who linked that identity, or takes a console user directly, and
-  answers which of the agent's sessions there that user could see. Every session the read would
+- **On another platform or bot, and for every console user**, a person the product can identify (a
+  console user, or a chat member who linked a console account) who linked a chat account in the
+  target bot's workspace is judged as that account on that bot, by the rule above. The daemon asks
+  `agent/read-access` with `linkedOn` (feature `read-access-linked-v1`); the CP resolves the asker
+  to their console user as below, matches that user's linked identities against the bot's
+  `chatMemberTenant` (Slack's workspace, Feishu/Lark's region) and answers the member id or none.
+  The answer is cached for a minute per agent, bot and asker beside the membership lookups. A CP
+  without the feature is not asked, so the console's visibility decides as before; one that
+  advertises it but fails, or answers without the field, refuses the read. A webchat source never
+  asks, so it stays its owner's.
+- **Otherwise**, for a person with no linked account in that workspace (Telegram, Discord and
+  Google Chat accounts cannot be linked), the read is judged by the console's own session-visibility
+  predicate
+  ([session-visibility.md](session-visibility.md)), asked of the Control Plane through
+  `agent/read-access` (feature `read-access-v1`): the CP resolves a chat member to the one
+  organization member who linked that identity, or takes a console user directly, and answers which
+  of the agent's sessions there that user could see. Every session the read would
   show must be visible; `recall` reads at most the place's eight newest sessions, the ones it checks.
   For a DM, a webchat conversation or an undescribed place the rule is stricter than the console:
   the daemon asks `ownerOnly`, and the CP counts only sessions whose recorded owner is that user
@@ -1170,3 +1183,11 @@ platform confirms internal uses the shared layer; a person's DM and console conv
 person's layer, keyed by their linked console account; every other conversation keeps a place layer
 of its own. The P0 memory bypass and the per-person memory space planned for P1 are both this rule,
 now applied to agents outside assistant mode too, and the Agent/Channel memory scope is retired.
+
+**Twenty-seventh revision (2026-10-13)**: off their own bot, a person the product can identify is
+judged by the chat account they linked in the target bot's workspace (issue #2979, items B1 to B3;
+§5.5 "Reads"). Judged only by console session visibility, a person in the Playground, or a Slack
+member asking about Feishu, could neither read nor post in a conversation the agent had never been
+in, even as a full member of that workspace or a member of that private group. Someone with a
+linked account there is now judged as that account; without one, by the console as before. An
+asker on their own bot, and one the product cannot identify, are unchanged.

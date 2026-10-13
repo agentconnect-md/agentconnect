@@ -101,7 +101,8 @@ const ASKER_WHO_MAY_WRITE: Pick<OpsDeps, 'readAskers' | 'readLookups' | 'placeSn
   readLookups: () => ({
     member: async () => true,
     fullMember: async () => true,
-    console: async (_asker, sessionIds) => ({ asker: 'linked', visible: new Set(sessionIds) })
+    console: async (_asker, sessionIds) => ({ asker: 'linked', visible: new Set(sessionIds) }),
+    linked: async () => null
   }),
   placeSnapshot: () => ({ isPrivate: false }),
   placeStore: sessionsOn()
