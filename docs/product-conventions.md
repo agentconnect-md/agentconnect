@@ -1113,15 +1113,18 @@ answer: it returns at once, saying whom it asked, and the answer arrives in the 
   The first valid answer decides, and the card is rewritten to "✅ Joined #channel — Name" or "Not
   joined — Name", its buttons gone. There is no "always join".
 - **What happens.** Join: the bot joins, the read or post runs as the agent asked for it, and its
-  result reaches the agent as a message in that conversation, starting a turn there. Don't join, or
+  result reaches the agent as a message in that conversation, starting a turn there. That turn reads
+  and writes as the person who answered Join, so a request that goes on ("read #a and post a summary
+  to #b") is judged for them, and a second channel the bot is not in asks them again. Don't join, or
   no answer within 10 minutes, the window an API caller has to answer the agent's question: the bot
-  does not join, nothing is read or sent, and the agent is told so the same way.
+  does not join, nothing is read or sent, and the agent is told so the same way, in a turn no person
+  is behind.
 - **No one to ask.** A turn no person is behind never joins, and neither does a run whose person no
   card can reach: the call fails with "the bot is not in #channel; invite it, or ask from a
   conversation".
 
 A card still waiting when the daemon restarts is rewritten as expired once its integration
-reconnects. The `toAgent` channel form asks nothing: where the bot is not in the channel, the
+reconnects, and its conversation's agent is told that nothing was read or sent. The `toAgent` channel form asks nothing: where the bot is not in the channel, the
 platform refuses its post.
 
 ## Assistant-mode drafts

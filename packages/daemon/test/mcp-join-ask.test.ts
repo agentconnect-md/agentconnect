@@ -4,7 +4,7 @@ import { executeTool, type MessageGateway, type OpsDeps, type SessionContext } f
 import type { JoinDelivery, JoinRequest } from '../src/mcp/ops/join-ask.js'
 import type { MemoryProvider } from '../src/memory/provider.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
-import type { JoinOutcome } from '../src/permissions/join-confirmation.js'
+import type { JoinAnswer, JoinOutcome } from '../src/permissions/join-confirmation.js'
 import { markNotJoined } from '../src/platforms/not-joined.js'
 
 const ctx: SessionContext = {
@@ -69,10 +69,11 @@ function makeDeps(gw: MessageGateway, over: { nobody?: boolean; unreachable?: bo
   let answer!: (outcome: JoinOutcome) => void
   const answered = new Promise<JoinOutcome>((resolve) => (answer = resolve))
   const confirmJoin = vi.fn(
-    async (_ctx: SessionContext, _ask: JoinRequest, offered: (to: string | null) => void): Promise<JoinOutcome> => {
-      if (over.unreachable) return 'unavailable'
+    async (_ctx: SessionContext, _ask: JoinRequest, offered: (to: string | null) => void): Promise<JoinAnswer> => {
+      if (over.unreachable) return { outcome: 'unavailable' }
       offered('Ada Example')
-      return await answered
+      const outcome = await answered
+      return outcome === 'join' ? { outcome, by: ADA } : { outcome }
     }
   )
   const deliver = vi.fn((_ctx: SessionContext, _outcome: JoinDelivery) => {})
@@ -125,7 +126,14 @@ describe('reading a public channel the bot has not joined', () => {
     await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C-GEN' }, w.deps)).resolves.toEqual(PARKED)
     expect(w.confirmJoin).toHaveBeenCalledWith(
       ctx,
-      { integrationId: 'int-1', channel: 'C-GEN', name: 'general', purpose: 'read', askers: [ADA] },
+      {
+        integrationId: 'int-1',
+        channel: 'C-GEN',
+        name: 'general',
+        purpose: 'read',
+        tool: 'getChannelHistory',
+        askers: [ADA]
+      },
       expect.any(Function)
     )
     expect(gw.joinChannel).not.toHaveBeenCalled()
@@ -139,6 +147,8 @@ describe('reading a public channel the bot has not joined', () => {
       name: 'general',
       purpose: 'read',
       to: 'Ada Example',
+      // The result speaks for the person who answered Join.
+      by: ADA,
       result: { channel: 'C-GEN', messages: [{ text: 'hello' }] }
     })
   })

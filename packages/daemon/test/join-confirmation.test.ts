@@ -57,6 +57,7 @@ async function world(
     surface?: ChatSurface
     database?: DatabaseSync
     personDm?: PermissionHost['personDm']
+    joinCardExpired?: PermissionHost['joinCardExpired']
   } = {}
 ) {
   const store = await LocalStore.open({
@@ -126,7 +127,8 @@ async function world(
     chatSurface: () => over.surface ?? 'open',
     chatEditorsOnly: () => false,
     chatActor: async () => 'not-editor',
-    ...(over.personDm ? { personDm: over.personDm } : {})
+    ...(over.personDm ? { personDm: over.personDm } : {}),
+    ...(over.joinCardExpired ? { joinCardExpired: over.joinCardExpired } : {})
   }
   const coordinator = new PermissionCoordinator(host)
   const offered = vi.fn((_to: string | null) => {})
@@ -184,7 +186,7 @@ describe('the card in the conversation the request came from', () => {
     await vi.waitFor(() => expect(w.offered).toHaveBeenCalledTimes(1), WAIT)
 
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
-    await expect(asked).resolves.toBe('join')
+    await expect(asked).resolves.toEqual({ outcome: 'join', by: ADA })
     expect(w.rewrites()).toEqual([expect.stringContaining(':white_check_mark: Joined #general — Ada Example')])
     expect(w.rewrites()[0]).not.toContain('"type":"button"')
     expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'allowed' })
@@ -199,7 +201,7 @@ describe('the card in the conversation the request came from', () => {
     await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     expect(JSON.stringify(w.posted()[1])).toContain('Let Butler join #general to post there?')
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'dont-join', actor: { userId: 'U-ada' } })
-    await expect(asked).resolves.toBe('declined')
+    await expect(asked).resolves.toMatchObject({ outcome: 'declined' })
     expect(w.rewrites()).toEqual([expect.stringContaining('Not joined — Ada Example')])
     await w.store.close()
   })
@@ -215,7 +217,7 @@ describe('the card in the conversation the request came from', () => {
     await w.coordinator.releaseApprovals(OWNER, ACP)
     expect(w.rewrites()).toEqual([])
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
-    await expect(asked).resolves.toBe('join')
+    await expect(asked).resolves.toMatchObject({ outcome: 'join' })
     await w.store.close()
   })
 
@@ -227,7 +229,7 @@ describe('the card in the conversation the request came from', () => {
     w.clock.advance(JOIN_ASK_TIMEOUT_MS - 1)
     expect(w.rewrites()).toEqual([])
     w.clock.advance(1)
-    await expect(asked).resolves.toBe('expired')
+    await expect(asked).resolves.toMatchObject({ outcome: 'expired' })
     expect(w.rewrites()).toEqual([expect.stringContaining(JOIN_EXPIRED_TEXT)])
     expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'expired' })
     await w.store.close()
@@ -254,7 +256,7 @@ describe('the card in the conversation the request came from', () => {
 
     // The first valid answer decides.
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
-    await expect(asked).resolves.toBe('join')
+    await expect(asked).resolves.toMatchObject({ outcome: 'join' })
     await w.store.close()
   })
 
@@ -264,7 +266,7 @@ describe('the card in the conversation the request came from', () => {
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
-    await expect(asked).resolves.toBe('join')
+    await expect(asked).resolves.toEqual({ outcome: 'join', by: ADA_CONSOLE })
     expect(w.cp).toHaveBeenCalledWith(
       expect.objectContaining({
         verify: { integrationId: 'int-1', teamId: 'T1', userId: 'U-ada', consoleUserId: 'cu-ada' }
@@ -290,7 +292,7 @@ describe('where else the card goes', () => {
     expect(w.posted()[0]).toBe('D-U-ada')
     expect(JSON.stringify(w.posted()[1])).toContain('Let Butler join #general to read it?')
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
-    await expect(asked).resolves.toBe('join')
+    await expect(asked).resolves.toEqual({ outcome: 'join', by: ADA_CONSOLE })
     expect(w.rewrites()).toEqual([expect.stringContaining('Joined #general — Ada Example')])
     await w.store.close()
   })
@@ -307,14 +309,16 @@ describe('where else the card goes', () => {
     expect(w.posted()[0]).toBe('D-U-ada')
     // A member's own DM needs no console recheck: they are the person behind the turn.
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
-    await expect(asked).resolves.toBe('join')
+    await expect(asked).resolves.toEqual({ outcome: 'join', by: ADA })
     expect(w.cp).not.toHaveBeenCalled()
     await w.store.close()
   })
 
   it('asks nobody when no card can reach a person behind the turn', async () => {
     const w = await world({ conversation: false, personDm: async () => undefined })
-    await expect(w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS, w.offered)).resolves.toBe('unavailable')
+    await expect(w.coordinator.askToJoin(w.p, ask(), JOIN_ASK_TIMEOUT_MS, w.offered)).resolves.toMatchObject({
+      outcome: 'unavailable'
+    })
     expect(w.slack.postBlocks).not.toHaveBeenCalled()
     expect(await w.store.listPermissionRequests(AGENT)).toEqual([])
     await w.store.close()
@@ -376,7 +380,7 @@ describe('where else the card goes', () => {
         decidedByName: 'Ada Example'
       })
     ).resolves.toEqual({ ok: true })
-    await expect(asked).resolves.toBe('join')
+    await expect(asked).resolves.toEqual({ outcome: 'join', by: ADA_CONSOLE })
     await w.store.close()
   })
 })
@@ -393,8 +397,11 @@ describe('a restart', () => {
     await vi.waitFor(() => expect(handle()).toEqual({ notifyChannel: 'C1', notifyTs: '300.1' }), WAIT)
 
     // The process dies; the next one opens the store, which expires every request no resolver holds.
-    const restarted = await world({ database })
+    const joinCardExpired = vi.fn()
+    const restarted = await world({ database, joinCardExpired })
     await restarted.coordinator.retireOrphanedCards('int-1')
+    // Its session is told the call did nothing, in the words a timeout uses.
+    expect(joinCardExpired).toHaveBeenCalledWith(AGENT, ACP, { name: 'general', purpose: 'read' })
     const swept = restarted.slack.updateBlocks.mock.calls
     expect(swept).toHaveLength(1)
     expect(swept[0]![0]).toBe('C1')

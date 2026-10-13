@@ -8,6 +8,13 @@ export const JOIN_ASK_TIMEOUT_MS = 10 * 60_000
 /** The wait as a card and a tool result say it. */
 export const JOIN_ASK_WAIT_TEXT = `${JOIN_ASK_TIMEOUT_MS / 60_000} minutes`
 
+/** A console asker's chat account on the bot a card goes through, so they answer it there as themselves. */
+export interface JoinLinkedAsker {
+  readonly integrationId: string
+  readonly userId: string
+  readonly consoleUserId: string
+}
+
 /** What the bot would join, what for, and who may answer: the people behind the turn. */
 export interface JoinAsk {
   readonly channel: string
@@ -15,10 +22,38 @@ export interface JoinAsk {
   readonly name: string
   readonly purpose: 'read' | 'post'
   readonly askers: readonly ReadAsker[]
+  /** The tool call that asked, which a restart's notice names. */
+  readonly tool?: string
+  readonly linked?: readonly JoinLinkedAsker[]
 }
 
 /** How the ask ended: join, a person declined, nobody answered in time, or no card could reach anyone behind the turn. */
 export type JoinOutcome = 'join' | 'declined' | 'expired' | 'unavailable'
+
+/** The ask's end, with the person behind the turn who answered it. */
+export interface JoinAnswer {
+  outcome: JoinOutcome
+  by?: ReadAsker
+}
+
+/** What a join card's row keeps, so a restart's sweep can tell the session the call did nothing. */
+export interface StoredJoinAsk {
+  tool?: string
+  name: string
+  purpose: JoinAsk['purpose']
+}
+
+/** A stored join ask, or undefined for any other row or an unreadable one. */
+export function parseStoredJoinAsk(raw: string | null | undefined): StoredJoinAsk | undefined {
+  if (!raw) return undefined
+  try {
+    const value = JSON.parse(raw) as Partial<StoredJoinAsk>
+    if (typeof value.name !== 'string' || (value.purpose !== 'read' && value.purpose !== 'post')) return undefined
+    return { name: value.name, purpose: value.purpose, ...(typeof value.tool === 'string' ? { tool: value.tool } : {}) }
+  } catch {
+    return undefined
+  }
+}
 
 export const JOIN_OPTION = 'join'
 export const DONT_JOIN_OPTION = 'dont-join'

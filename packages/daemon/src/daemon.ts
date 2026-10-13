@@ -785,8 +785,19 @@ import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
 import { PermissionCoordinator, type PermissionHost } from './permissions/coordinator.js'
-import { JOIN_ASK_TIMEOUT_MS, type JoinOutcome } from './permissions/join-confirmation.js'
-import { joinOutcomeText, type JoinDelivery, type JoinFlight, type JoinRequest } from './mcp/ops/join-ask.js'
+import {
+  JOIN_ASK_TIMEOUT_MS,
+  type JoinAnswer,
+  type JoinLinkedAsker,
+  type StoredJoinAsk
+} from './permissions/join-confirmation.js'
+import {
+  joinExpiredText,
+  joinOutcomeText,
+  type JoinDelivery,
+  type JoinFlight,
+  type JoinRequest
+} from './mcp/ops/join-ask.js'
 import {
   DEFAULT_PERMISSION_WAIT_HOURS,
   platformThread,
@@ -1856,6 +1867,8 @@ export class Daemon {
   })
   /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
   private readonly subsessionOpeners = new Map<string, TurnAskers>()
+  /** Whom a join result's wake speaks for, by its message id: the person who answered Join (#2979). */
+  private readonly joinWakeOpeners = new Map<string, TurnAskers>()
   /** Join confirmations in flight, by session, bot and channel, so parallel calls share one card (#2979). */
   private readonly joinAsks = new Map<string, JoinFlight>()
   /** Places of assistant-mode agents turning external, and the transition that follows (assistant-mode.md §5.3). */
@@ -8762,7 +8775,7 @@ export class Daemon {
     ctx: SessionContext,
     ask: JoinRequest,
     offered: (to: string | null) => void
-  ): Promise<JoinOutcome> {
+  ): Promise<JoinAnswer> {
     const key = this.sessionKeyOf(ctx)
     const flightKey = [key, ask.integrationId, ask.channel].join('\u001f')
     const flying = this.joinAsks.get(flightKey)
@@ -8772,12 +8785,12 @@ export class Daemon {
       return await flying.answer
     }
     const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
-    if (!live) return 'unavailable'
-    const flight: JoinFlight = { waiters: [offered], answer: Promise.resolve<JoinOutcome>('unavailable') }
+    if (!live) return { outcome: 'unavailable' }
+    const flight: JoinFlight = { waiters: [offered], answer: Promise.resolve<JoinAnswer>({ outcome: 'unavailable' }) }
     this.joinAsks.set(flightKey, flight)
     flight.answer = (async () => {
-      const askers = [...ask.askers, ...(await this.linkedCardAskers(ctx.agentId, live, ask.askers))]
-      return await this.permissions.askToJoin(live, { ...ask, askers }, JOIN_ASK_TIMEOUT_MS, (to) => {
+      const linked = await this.linkedCardAskers(ctx.agentId, live, ask.askers)
+      return await this.permissions.askToJoin(live, { ...ask, linked }, JOIN_ASK_TIMEOUT_MS, (to) => {
         flight.offered = { to }
         for (const waiter of flight.waiters.splice(0)) waiter(to)
       })
@@ -8786,23 +8799,53 @@ export class Daemon {
   }
 
   /** The chat accounts the console people behind a turn linked on the bot its card goes through, so they answer it there. */
-  private async linkedCardAskers(agentId: string, p: Pending, askers: readonly ReadAsker[]): Promise<ReadAsker[]> {
+  private async linkedCardAskers(
+    agentId: string,
+    p: Pending,
+    askers: readonly ReadAsker[]
+  ): Promise<JoinLinkedAsker[]> {
     const bot = p.plan.integrationId
     if (!bot) return []
     const lookups = this.placeMembers.lookupsFor(agentId)
     const linked = await Promise.all(
-      askers.flatMap((asker) => (asker.kind === 'console' ? [lookups.linked(bot, asker).catch(() => null)] : []))
+      askers.flatMap((asker) =>
+        asker.kind === 'console'
+          ? [
+              lookups.linked(bot, asker).then(
+                (userId) => (userId ? { integrationId: bot, userId, consoleUserId: asker.userId } : null),
+                () => null
+              )
+            ]
+          : []
+      )
     )
-    return linked.flatMap((userId) =>
-      userId ? [{ kind: 'member' as const, platform: p.plan.platform, integrationId: bot, userId }] : []
-    )
+    return linked.filter((entry): entry is JoinLinkedAsker => entry !== null)
   }
 
-  /** A call that waited on a join confirmation finished after it returned: its session hears how, as a message. */
+  /** A call that waited on a join confirmation finished after it returned: its session hears how, for the person who answered Join. */
   private async deliverJoinOutcome(ctx: SessionContext, outcome: JoinDelivery): Promise<void> {
     const rec = await this.store.getSession(this.sessionKeyOf(ctx))
     if (!rec) return void this.log.debug(`join outcome for ${outcome.tool} dropped: no session row`)
-    const integrationId = this.integrationIdForSessionTransport(ctx.agentId, rec.platform, rec.transportScope)
+    // The result continues that person's request, so the turn it starts reads and writes as them; a refusal speaks for no one.
+    this.dispatchJoinNotice(ctx.agentId, rec, joinOutcomeText(outcome), 'result' in outcome ? outcome.by : undefined)
+  }
+
+  /** A join card a restart left pending did nothing: its session is told so in the timeout's words, or skipped when it is gone. */
+  private async joinCardExpired(agentId: string, acpSessionId: string, ask: StoredJoinAsk): Promise<void> {
+    const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId).catch(() => undefined)
+    if (!rec) return
+    const tool = ask.tool ?? 'the call'
+    const call = { tool, name: ask.name, purpose: ask.purpose, to: null }
+    this.dispatchJoinNotice(
+      agentId,
+      rec,
+      joinOutcomeText({ ...call, error: joinExpiredText(tool, ask.name, ask.purpose) })
+    )
+  }
+
+  /** A join notice as a new message in its session; `onBehalfOf` is the person the turn it starts speaks for, as a sub-session's opener is. */
+  private dispatchJoinNotice(agentId: string, rec: SessionRecord, text: string, onBehalfOf?: ReadAsker): void {
+    const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
     const traceId = randomUUID()
     const msg: NormalizedMessage = {
       msgId: `join:${rec.channel}:${traceId}`,
@@ -8814,17 +8857,24 @@ export class Daemon {
       ...(isAppendCoordinate(rec.thread) ? { sessionThread: rec.thread } : rec.thread ? { thread: rec.thread } : {}),
       ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
       sender: { id: 'join-confirmation', isBot: true },
-      text: joinOutcomeText(outcome),
+      text,
       mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
       isDm: rec.conversationKind === 'dm',
       ...(rec.conversationKind === 'group_dm' ? { isGroupDm: true } : {})
     }
+    if (onBehalfOf) {
+      this.joinWakeOpeners.set(msg.msgId, { people: [onBehalfOf], nobody: false })
+      if (this.joinWakeOpeners.size > 512) {
+        const oldest = this.joinWakeOpeners.keys().next().value
+        if (oldest !== undefined) this.joinWakeOpeners.delete(oldest)
+      }
+    }
     void this.dispatch(
-      ctx.agentId,
+      agentId,
       msg,
       integrationId,
       this.webchatTransport.webchatWakeContext(rec.platform, rec.channel)
-    ).catch((err) => this.log.error(`join outcome dispatch failed for "${ctx.agentId}": ${formatErr(err)}`))
+    ).catch((err) => this.log.error(`join notice dispatch failed for "${agentId}": ${formatErr(err)}`))
   }
 
   /** A card button: a draft's when its id names one, else a permission request's. */
@@ -8854,6 +8904,9 @@ export class Daemon {
 
   /** Whom a sub-session's messages no person sent speak for: a patrol's or a task's item asker, else whoever opened it. */
   private async openerOf(ctx: SessionContext, key: string): Promise<TurnAskers | undefined> {
+    // A join's result continues the request of the person who answered Join, so its turn reads as them.
+    const wake = this.joinWakeOpeners.get(this.activeGateEntries.get(key)?.msg.msgId ?? '')
+    if (wake) return wake
     if (isPatrolCoordinate(ctx.thread))
       return await this.itemAskers(ctx.agentId, await this.patrols.itemFor(ctx.agentId, key))
     if (isTaskCoordinate(ctx.thread)) {
@@ -13760,6 +13813,10 @@ export class Daemon {
       chatEditorsOnly: (agentId, integrationId) => this.chatEditorsOnly(agentId, integrationId),
       chatActor: async (agentId, integrationId, actor) => await this.chatActor(agentId, integrationId, actor),
       personDm: (agentId, requestId, asker) => this.drafts.personApprover(agentId, requestId, asker),
+      joinCardExpired: (agentId, acpSessionId, ask) =>
+        void this.joinCardExpired(agentId, acpSessionId, ask).catch((err) =>
+          this.log.warn(`expired join notice for "${agentId}" failed: ${formatErr(err)}`)
+        ),
       externalAskerDm: async (p) => {
         const msg = p.entry.msg
         // Only a person's own platform message names an asker; a webchat turn's sender is a console user.

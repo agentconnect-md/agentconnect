@@ -1346,7 +1346,10 @@ answer fails the call with a `JoinRefused` that says the bot did not join. A tur
 behind is never asked. The call does not block on the answer: once the card is up (`offered`),
 `parkingOnJoin` returns the tool call at once with whom it asked, and the handler finishes in the
 background; `deliverJoinOutcome` hands its result, or why it did nothing, to the session as a new
-message (`joinOutcomeText`). Blocking was not an option because runtimes bound an MCP tool call on
+message (`joinOutcomeText`). A result's wake carries the person who answered Join (`JoinAnswer.by`)
+as its turn's asker, the way a sub-session's opener does (`joinWakeOpeners`, read by `openerOf`), so
+the turn that continues the request reads and writes as them; a refusal's wake speaks for no one.
+Blocking was not an option because runtimes bound an MCP tool call on
 their own: Codex gives each MCP server 60 seconds by default, and codex-acp builds the server it is
 handed from ACP's `McpServerStdio` alone, which carries no timeout, so the daemon cannot raise it;
 Claude Code's stdio limit is 30 minutes of silence, and other runtimes differ again. The card's
@@ -1365,7 +1368,9 @@ bot, as the read rule's `linked` lookup answers it, or else verified through `ag
 `verify`), anyone else is refused through the facet's `tellPrivately`, and a console decision only
 from a console asker (`decidedBy`); the chat level of "What people can do in chat" does not apply.
 The card's handle is on its `permission_requests` row, so the reconnect sweep
-(`retireOrphanedCards`) rewrites a card a restart left pending as expired. Parallel calls for one
+(`retireOrphanedCards`) rewrites a card a restart left pending as expired and, from the row's
+`joinAsk` (local store v48), tells its session in the timeout's words that the call did nothing; a
+session that is gone is skipped. Parallel calls for one
 channel in one turn share one card. The bot's former `joinPublicChannels` setting is retired: the
 control plane no longer reads `Bot.platformConfig.joinPublicChannels` or sends the field, and the
 daemon's `IntegrationSlackConfig` no longer has it (an older daemon reads its absence as on).

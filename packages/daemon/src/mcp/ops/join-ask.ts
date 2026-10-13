@@ -1,6 +1,12 @@
 // Asking before the bot joins a channel (#2979): a call refused because the bot is not in a public channel waits for a person behind the turn, after the tool call returned.
 import { askerMayRead, CLOSED_LOOKUPS, NOBODY, sourceClass } from '../../assistant/place-access.js'
-import { JOIN_ASK_WAIT_TEXT, type JoinAsk, type JoinOutcome } from '../../permissions/join-confirmation.js'
+import type { ReadAsker } from '../../assistant/place-access.js'
+import {
+  JOIN_ASK_WAIT_TEXT,
+  type JoinAnswer,
+  type JoinAsk,
+  type JoinOutcome
+} from '../../permissions/join-confirmation.js'
 import { notJoinedChannel } from '../../platforms/not-joined.js'
 import type { MessageGateway, SessionContext, UploadOutcome } from './context.js'
 import { knownIntegrations } from './gateway.js'
@@ -14,6 +20,8 @@ export interface JoinRequest extends JoinAsk {
 /** A call waiting on a join confirmation, as its tool result names it. */
 export interface JoinParked {
   tool: string
+  /** The person behind the turn who answered Join, whom the call's result then speaks for. */
+  by?: ReadAsker
   name: string
   purpose: JoinRequest['purpose']
   /** Who was asked, when known. */
@@ -25,7 +33,7 @@ export type JoinDelivery = JoinParked & ({ result: unknown } | { error: string }
 
 export interface JoinAskDeps {
   /** Ask a person behind the turn whether the bot may join, calling `offered` once a card is up; absent ⇒ the bot never joins. */
-  confirmJoin?: (ctx: SessionContext, ask: JoinRequest, offered: (to: string | null) => void) => Promise<JoinOutcome>
+  confirmJoin?: (ctx: SessionContext, ask: JoinRequest, offered: (to: string | null) => void) => Promise<JoinAnswer>
   /** Hand a parked call's outcome to its session as a message; absent ⇒ the call waits for the answer instead. */
   deliverJoinOutcome?: (ctx: SessionContext, outcome: JoinDelivery) => void
 }
@@ -48,6 +56,11 @@ const ANSWERED: Record<Exclude<JoinOutcome, 'join'>, (name: string, purpose: Joi
   expired: (name, purpose) =>
     `the bot did not join #${name}: nobody answered whether it may within ${JOIN_ASK_WAIT_TEXT}. ${nothing(purpose)}; say so.`,
   unavailable: notInChannelText
+}
+
+/** What the session of a call whose card a restart expired is told: the timeout's own words. */
+export function joinExpiredText(tool: string, name: string, purpose: JoinRequest['purpose']): string {
+  return `${tool}: ${ANSWERED.expired(name, purpose)}`
 }
 
 /** A tool call that did not join a channel, as the call fails with it; a caller that tolerates other read failures rethrows it. */
@@ -78,12 +91,14 @@ async function joinAfterAsking(
   for (const asker of askers.people)
     if (!(await askerMayRead(asker, place, integrationId, lookups).catch(() => false)))
       throw refused(tool, notInChannelText(name, purpose))
+  const call: JoinParked = { tool, name, purpose, to: null }
   const answer = await deps
-    .confirmJoin(ctx, { integrationId, channel, name, purpose, askers: askers.people }, (to) =>
-      parked?.({ tool, name, purpose, to })
+    .confirmJoin(ctx, { integrationId, channel, name, purpose, tool, askers: askers.people }, (to) =>
+      parked?.(Object.assign(call, { to }))
     )
-    .catch((): JoinOutcome => 'unavailable')
-  if (answer !== 'join') throw refused(tool, ANSWERED[answer](name, purpose))
+    .catch((): JoinAnswer => ({ outcome: 'unavailable' }))
+  if (answer.outcome !== 'join') throw refused(tool, ANSWERED[answer.outcome](name, purpose))
+  if (answer.by) call.by = answer.by
   await join(channel).catch(() => {
     throw refused(tool, `the bot could not join #${name}. ${nothing(purpose)}.`)
   })
@@ -141,7 +156,7 @@ export function askingToJoin(
 
 /** One join confirmation in flight for a session's channel: its later answer, whom it was offered to, and calls waiting to hear that. */
 export interface JoinFlight {
-  answer: Promise<JoinOutcome>
+  answer: Promise<JoinAnswer>
   offered?: { to: string | null }
   waiters: ((to: string | null) => void)[]
 }
