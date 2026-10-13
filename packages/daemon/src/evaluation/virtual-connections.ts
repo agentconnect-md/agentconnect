@@ -486,6 +486,13 @@ export class VirtualSlackConnection implements PlatformConnection {
     return this.listChannels()
   }
 
+  /** A channel named by its name, against the same rooms `listChannels` returns; a name two rooms share resolves to none. */
+  async resolveChannelName(channel: string): Promise<string | undefined> {
+    const name = channel.replace(/^#/, '').toLowerCase()
+    const ids = (await this.listChannels()).filter((c) => c.name?.toLowerCase() === name).map((c) => c.id)
+    return name && ids.length === 1 ? ids[0] : undefined
+  }
+
   async leaveChannel(_channel: string): Promise<void> {}
 
   /** The Arena's rooms are the world's, with no membership to enter, so a confirmed join changes nothing. */
