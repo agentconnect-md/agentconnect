@@ -149,6 +149,7 @@ import {
 } from './ops/platform-reads.js'
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
 import { assertPlaceRead, isPlatformPost, judgePlaceWrite, type PlaceAccessDeps } from './ops/place-gate.js'
+import { resolveChannelArg } from './ops/channel-names.js'
 import { recall, RECALL_ARGS } from './ops/recall.js'
 import { askingToJoin, parkingOnJoin, type JoinAskDeps, type JoinParked } from './ops/join-ask.js'
 import { ASSISTANT_ITEM_ARG_SCHEMAS, ASSISTANT_ITEM_HANDLERS, type AssistantItemDeps } from './ops/assistant-items.js'
@@ -491,9 +492,11 @@ function withPrivateSource(result: unknown, note: string): unknown {
 async function executeRegisteredTool(
   ctx: SessionContext,
   name: string,
-  args: Record<string, unknown>,
+  given: Record<string, unknown>,
   deps: OpsDeps
 ): Promise<unknown> {
+  // A channel named by its name is judged and acted on by the one id it resolves to.
+  const args = await resolveChannelArg(ctx, name, given, deps)
   // Every agent's reads of another conversation and platform writes are judged by who is asking (§5.5).
   const privateSource = await assertPlaceRead(ctx, name, args, deps)
   const handler = HANDLERS.get(name)

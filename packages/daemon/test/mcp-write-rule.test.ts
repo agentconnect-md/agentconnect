@@ -6,10 +6,13 @@ import { executeTool, type MessageGateway, type OpsDeps, type SessionContext } f
 import type { PlaceSnapshotRow, PlaceStore } from '../src/mcp/ops/place-gate.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { PlatformDocumentReach } from '../src/platforms/contract.js'
+import { SlackConnection } from '../src/slack/connection.js'
 import type { LocalStore, SessionRecord } from '../src/store/local-store.js'
 import { openTestStore } from './store-support.js'
 
 const AGENT = 'agent-a'
+/** A private channel the bot was invited to, where the agent has no session yet. */
+const ROOM = 'C0EXAMPLE1'
 const P = 'U_P'
 const GUEST = 'U_GUEST'
 const NOT_POSTED = "I can't post there from here."
@@ -78,7 +81,7 @@ function slackGateway(members: Record<string, string[]>, fullMembers: string[], 
       ...(id.startsWith('D') ? { isIm: true } : {}),
       ...(id.startsWith('G') ? { isMpim: true } : {}),
       // Every Feishu group here is private.
-      isPrivate: id === 'C_PRIV' || id.startsWith('oc_') || id.startsWith('D') || id.startsWith('G')
+      isPrivate: id === 'C_PRIV' || id === ROOM || id.startsWith('oc_') || id.startsWith('D') || id.startsWith('G')
     })),
     listMembers: vi.fn(async () => []),
     listMemberIds: vi.fn(async (channel: string) => members[channel] ?? []),
@@ -105,7 +108,7 @@ function slackGateway(members: Record<string, string[]>, fullMembers: string[], 
       return reach as PlatformDocumentReach
     })
   } satisfies MessageGateway
-  return gw as typeof gw & Pick<MessageGateway, 'uploadFile'>
+  return gw as typeof gw & Pick<MessageGateway, 'uploadFile' | 'resolveChannelName'>
 }
 
 function ctxAt(platform: string, channel: string, over: Partial<SessionContext> = {}): SessionContext {
@@ -639,5 +642,93 @@ describe('a person the product can identify is judged as the chat account they l
       await expect(executeTool(inTelegram, 'sendMessage', post(channel), deps), channel).rejects.toThrow(NOT_POSTED)
     }
     expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('a channel named by its name resolves among the channels the bot lists, then the same rules decide', () => {
+  const NOT_SHARED = "I can't share that here."
+
+  /** The harness with the Slack bot's own name lookup over its public channel and the private ROOM it was invited to. */
+  function byName(opts: Parameters<typeof harness>[0] = {}) {
+    const h = harness(opts)
+    const list = vi.fn(async () => ({ channels: [{ id: 'C_DEPLOY', name: 'deploys' }] }))
+    const conn = new SlackConnection(
+      { group: { appToken: 'xapp-1', botToken: 'xoxb-a', integrations: [] }, onMessage: () => {} } as never,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          shortcut() {},
+          view() {},
+          client: {
+            conversations: { list },
+            users: { conversations: async () => ({ channels: [{ id: ROOM, name: 'project-room', is_private: true }] }) }
+          },
+          start: async () => {},
+          stop: async () => {}
+        }) as never
+    )
+    h.gw.resolveChannelName = (channel) => conn.resolveChannelName(channel)
+    // Slack knows a conversation by its id alone; a name it is handed is `channel_not_found`.
+    const info = h.gw.getChannelInfo.getMockImplementation()!
+    h.gw.getChannelInfo.mockImplementation(async (id: string) => {
+      if (!/^[A-Z]/.test(id))
+        throw Object.assign(new Error('channel_not_found'), { data: { error: 'channel_not_found' } })
+      return await info(id)
+    })
+    return { ...h, list }
+  }
+
+  const refusal = (call: Promise<unknown>) =>
+    call.then(
+      () => 'allowed',
+      (err: Error) => err.message
+    )
+
+  it('reads and posts in a private channel the bot is in, with no session there, for a member', async () => {
+    for (const channel of ['project-room', '#project-room']) {
+      const { deps, gw } = byName({ members: { [ROOM]: [P, 'U_ALICE'] } })
+      const read = (await executeTool(inDmOfP, 'getChannelHistory', { channel }, deps)) as Record<string, unknown>
+      expect(gw.getChannelHistory).toHaveBeenCalledWith(ROOM, {})
+      expect(read).toMatchObject({ channel: ROOM, privateSource: expect.stringContaining('private channel') })
+      await executeTool(inDmOfP, 'getThreadHistory', { channel, thread: '7.7' }, deps)
+      expect(gw.getThreadReplies).toHaveBeenCalledWith(ROOM, '7.7', expect.any(Number), expect.anything())
+      await executeTool(inDmOfP, 'sendMessage', { channel, message: 'for the team' }, deps)
+      expect(gw.postMessage).toHaveBeenCalledWith(ROOM, 'for the team', undefined, expect.anything())
+      await executeTool(inDmOfP, 'scheduleMessage', { channel, message: 'later', postAt: later() }, deps)
+      expect(gw.scheduleMessage).toHaveBeenCalledWith(ROOM, 'later', expect.any(Number))
+    }
+  })
+
+  it('refuses a non-member by name exactly as by id', async () => {
+    const { deps, gw } = byName({ members: { [ROOM]: ['U_ALICE'] } })
+    const read = (channel: string) => refusal(executeTool(inDmOfP, 'getChannelHistory', { channel }, deps))
+    const post = (channel: string) => refusal(executeTool(inDmOfP, 'sendMessage', { channel, message: 'hi' }, deps))
+    expect(await read('project-room')).toBe(await read(ROOM))
+    expect(await read('project-room')).toContain(NOT_SHARED)
+    expect(await post('#project-room')).toBe(await post(ROOM))
+    expect(await post('#project-room')).toContain(NOT_POSTED)
+    expect(gw.getChannelHistory).not.toHaveBeenCalled()
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('refuses a name the bot cannot see with the same opaque answer', async () => {
+    const { deps, gw } = byName()
+    await expect(executeTool(inDmOfP, 'getChannelHistory', { channel: 'secret-room' }, deps)).rejects.toThrow(
+      NOT_SHARED
+    )
+    await expect(executeTool(inDmOfP, 'sendMessage', { channel: '#secret-room', message: 'hi' }, deps)).rejects.toThrow(
+      NOT_POSTED
+    )
+    expect(gw.getChannelHistory).not.toHaveBeenCalled()
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('never looks a channel id up by name', async () => {
+    const { deps, list } = byName()
+    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'shipped' }, deps)
+    await executeTool(inDmOfP, 'getChannelHistory', { channel: 'C_PRIV' }, deps)
+    expect(list).not.toHaveBeenCalled()
   })
 })

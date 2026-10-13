@@ -350,6 +350,8 @@ export interface PlatformConnection {
   /** AUTHORITATIVE bot membership, when the platform can enumerate it
    *  (`membershipEnumeration: 'authoritative'`). `null` ⇒ not answerable now. */
   listBotChannels?(): Promise<PlatformChannelRef[] | null>
+  /** The id of the one channel `listChannels` names `channel`; undefined for an id or a name it cannot pin to one channel. */
+  resolveChannelName?(channel: string): Promise<string | undefined>
   /** Leave one conversation (`leaveGranularity: 'conversation'`). */
   leaveChannel?(channel: string): Promise<void>
   /** Leave the enclosing space/guild (`leaveGranularity: 'space'` — Discord). */

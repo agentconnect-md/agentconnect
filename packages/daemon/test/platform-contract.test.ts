@@ -77,6 +77,11 @@ describe('Layer-1 platform contract (§7.1)', () => {
     expect(has(DiscordConnection, 'getChannelHistory')).toBe(true)
     expect(has(FeishuConnection, 'getChannelHistory')).toBe(true)
     expect(has(TelegramConnection, 'getChannelHistory')).toBe(false)
+    // Only Slack names a channel uniquely among what it lists, so only Slack resolves a name to its id.
+    expect(has(SlackConnection, 'resolveChannelName')).toBe(true)
+    for (const ctor of [TelegramConnection, DiscordConnection, FeishuConnection]) {
+      expect(has(ctor, 'resolveChannelName')).toBe(false)
+    }
 
     // leaveGranularity: Slack/Telegram leave a CONVERSATION, Discord leaves the
     // enclosing SPACE (a bot joins servers, not channels), Feishu leaves neither.

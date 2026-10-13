@@ -783,6 +783,9 @@ const MEMBER_PAGE_CAP = 20
 const STANDING_LOOKUP_TTL_MS = 60_000
 const STANDING_LOOKUP_ENTRIES = 512
 const STANDING_LOOKUPS_IN_FLIGHT = 4
+/** The channel-name index lives five minutes, and a name it lacks lists anew at most every thirty seconds. */
+const CHANNEL_NAMES_TTL_MS = 5 * 60_000
+const CHANNEL_NAMES_RELIST_MS = 30_000
 const SLACK_CHANNEL_HISTORY_DEFAULT_LIMIT = 100
 const SLACK_CHANNEL_HISTORY_MAX_LIMIT = 200
 const SLACK_FILE_ORIGIN = 'https://files.slack.com'
@@ -1037,6 +1040,10 @@ export class SlackConnection implements PlatformConnection {
   private readonly standings = new Map<string, { at: number; standing: Promise<MemberStanding> }>()
   private standingLookupsRunning = 0
   private readonly standingLookupWaiters: (() => void)[] = []
+  /** Channel ids by name over the last `listChannels`, when that listing was started, and the one in flight. */
+  private channelNames?: { at: number; ids: Map<string, string | null> }
+  private channelNamesListedAt = Number.NEGATIVE_INFINITY
+  private channelNamesListing?: Promise<void>
   /** A workspace-wide missing scope should create one card, not one per streamed write. */
   private missingScopes = new Set<string>()
   private permissionUpdateAnnounced = false
@@ -1208,6 +1215,8 @@ export class SlackConnection implements PlatformConnection {
         return
       }
       log?.debug(`slack: bot joined channel ${ev.channel ?? '?'}`)
+      // A channel the bot just joined resolves by name on the next miss.
+      this.channelNamesListedAt = Number.NEGATIVE_INFINITY
       this.deps.onChannelsChanged?.()
     })
     for (const type of ['channel_left', 'group_left']) {
@@ -2665,6 +2674,46 @@ export class SlackConnection implements PlatformConnection {
       cursor = res.response_metadata?.next_cursor || undefined
     } while (cursor)
     return [...out, ...members.filter((c) => c.isPrivate).map(({ id, name, isPrivate }) => ({ id, name, isPrivate }))]
+  }
+
+  /** The id of a channel `listChannels` names, `#` optional; undefined for an id, or a name it lists for none or for several. */
+  async resolveChannelName(channel: string): Promise<string | undefined> {
+    const name = channel.replace(/^#/, '')
+    // Slack ids are upper case and channel names never are, so an id is never looked up as a name.
+    if (!name || (/[A-Z]/.test(name) && !/[a-z]/.test(name))) return undefined
+    const wanted = name.toLowerCase()
+    const known = this.channelNameIds()?.get(wanted)
+    if (known !== undefined) return known ?? undefined
+    await this.listChannelNames()
+    return this.channelNameIds()?.get(wanted) ?? undefined
+  }
+
+  /** The name index while it is fresh; a name listed for two channels maps to null. */
+  private channelNameIds(): Map<string, string | null> | undefined {
+    const index = this.channelNames
+    return index && Date.now() - index.at < CHANNEL_NAMES_TTL_MS ? index.ids : undefined
+  }
+
+  /** One listing shared by every lookup that misses while it runs, and none sooner than CHANNEL_NAMES_RELIST_MS after the last. */
+  private async listChannelNames(): Promise<void> {
+    if (!this.channelNamesListing && Date.now() - this.channelNamesListedAt >= CHANNEL_NAMES_RELIST_MS) {
+      const at = Date.now()
+      this.channelNamesListedAt = at
+      this.channelNamesListing = this.listChannels()
+        .then((channels) => {
+          const ids = new Map<string, string | null>()
+          for (const { id, name } of channels) {
+            const key = name?.toLowerCase()
+            if (key) ids.set(key, ids.has(key) && ids.get(key) !== id ? null : id)
+          }
+          this.channelNames = { at, ids }
+        })
+        .catch((err: unknown) => this.deps.log?.debug(`slack: listing channel names failed: ${(err as Error).message}`))
+        .finally(() => {
+          this.channelNamesListing = undefined
+        })
+    }
+    await this.channelNamesListing
   }
 
   /**
