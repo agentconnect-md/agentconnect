@@ -2125,3 +2125,86 @@ describe('SlackConnection credential lifecycle', () => {
     expect(revoked).toEqual([])
   })
 })
+
+describe('SlackConnection channel names', () => {
+  afterEach(() => vi.useRealTimers())
+
+  // A workspace with one public channel and the private channels the bot was invited to.
+  const named = () => {
+    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+    const invited = [{ id: 'C0EXAMPLE1', name: 'project-room', is_private: true }]
+    const list = vi.fn(async () => ({ channels: [{ id: 'C0EXAMPLE2', name: 'general' }] }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event(type: string, h: (a: { event: unknown }) => unknown) {
+            handlers.set(type, h)
+          },
+          action() {},
+          shortcut() {},
+          view() {},
+          client: {
+            auth: { test: async () => ({ user_id: 'UBOT' }) },
+            conversations: { list },
+            users: { conversations: async () => ({ channels: [...invited] }) }
+          },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+    const invite = (id: string, name: string) => void invited.push({ id, name, is_private: true })
+    return { conn, list, handlers, invite }
+  }
+
+  it('resolves a public channel and a private one the bot is in, with or without #, and leaves an id alone', async () => {
+    const { conn, list } = named()
+    await expect(conn.resolveChannelName('general')).resolves.toBe('C0EXAMPLE2')
+    await expect(conn.resolveChannelName('#project-room')).resolves.toBe('C0EXAMPLE1')
+    // Slack keeps every channel name lowercase, so a name's case cannot pick another channel.
+    await expect(conn.resolveChannelName('Project-Room')).resolves.toBe('C0EXAMPLE1')
+    await expect(conn.resolveChannelName('C0EXAMPLE1')).resolves.toBeUndefined()
+    expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves no name it lists for two channels', async () => {
+    const { conn, invite } = named()
+    invite('C0EXAMPLE4', 'general')
+    await expect(conn.resolveChannelName('general')).resolves.toBeUndefined()
+  })
+
+  it('lists once for lookups that arrive together', async () => {
+    const { conn, list } = named()
+    const ids = await Promise.all(['general', 'project-room', 'unknown-room'].map((n) => conn.resolveChannelName(n)))
+    expect(ids).toEqual(['C0EXAMPLE2', 'C0EXAMPLE1', undefined])
+    expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes once on a miss, so a just-joined channel resolves, and not once per call for a name it cannot see', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(0)
+    const { conn, list, invite } = named()
+    await expect(conn.resolveChannelName('project-room')).resolves.toBe('C0EXAMPLE1')
+    invite('C0EXAMPLE3', 'new-room')
+    vi.setSystemTime(60_000)
+    await expect(conn.resolveChannelName('new-room')).resolves.toBe('C0EXAMPLE3')
+    expect(list).toHaveBeenCalledTimes(2)
+    for (let i = 0; i < 3; i += 1) await expect(conn.resolveChannelName('secret-room')).resolves.toBeUndefined()
+    expect(list).toHaveBeenCalledTimes(2)
+    // An index past its lifetime is listed anew even for a name it holds.
+    vi.setSystemTime(60_000 + 10 * 60_000)
+    await expect(conn.resolveChannelName('general')).resolves.toBe('C0EXAMPLE2')
+    expect(list).toHaveBeenCalledTimes(3)
+  })
+
+  it('lists anew on the first miss after the bot joins a channel', async () => {
+    const { conn, list, handlers, invite } = named()
+    await conn.start()
+    await expect(conn.resolveChannelName('secret-room')).resolves.toBeUndefined()
+    invite('C0EXAMPLE3', 'new-room')
+    await handlers.get('member_joined_channel')!({ event: { user: 'UBOT', channel: 'C0EXAMPLE3' } })
+    await expect(conn.resolveChannelName('new-room')).resolves.toBe('C0EXAMPLE3')
+    expect(list).toHaveBeenCalledTimes(2)
+  })
+})

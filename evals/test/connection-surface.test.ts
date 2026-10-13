@@ -59,6 +59,8 @@ const EXEMPT: Record<string, string> = {
   changeSetting: 'private status-action refusal delivery behind the Bolt select handlers',
   memberStanding: 'private per-person users.info cache behind joinedMemberReason and isFullMember',
   inStandingLookupSlot: 'private in-flight cap on member lookups, behind joinedMemberReason and isFullMember',
+  channelNameIds: 'private fresh-name index behind resolveChannelName',
+  listChannelNames: 'private shared, rate-bounded listing behind resolveChannelName',
   // The Arena's transport receives no provider events, so nothing ever parks a credential
   // for it — and `searchPublicMessages` (which the virtual DOES implement) refuses regardless.
   rememberInboundSearchToken: 'HTTP-arm credential handoff; the Arena has no relay ingress',
