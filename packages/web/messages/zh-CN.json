@@ -3423,6 +3423,14 @@
         "wrongOrganization": "此 MCP 注册表属于另一个组织。",
         "viewerDenied": "你无法在此组织中添加 MCP 服务器。",
         "cannotEditAgent": "你无法更改此服务器所请求 agent 的 MCP 服务器配置。"
+      },
+      "statusUnavailable": "暂时无法获取状态",
+      "connectionNotification": {
+        "title": "连接需要重新授权",
+        "message": "“{name}”的授权已失效。请到工具与技能中重新连接，恢复访问。",
+        "action": "打开工具与技能",
+        "resolvedTitle": "连接提醒已清除",
+        "resolvedMessage": "“{name}”已无需处理。"
       }
     },
     "skills": {

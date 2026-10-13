@@ -165,6 +165,7 @@ interface ConsoleData {
    *  and the per-agent enable-list candidate set both read this. */
   mcpProviders: McpProviderDto[]
   mcpProvidersLoading: boolean
+  mcpProvidersLoaded: boolean
   /** Register an upstream MCP server, then re-pull; resolves with the created row
    *  INCLUDING the one-time grant key (the caller reveals it exactly once). */
   createMcpProvider: (input: CreateMcpProviderInput) => Promise<McpProviderCreatedDto>
@@ -206,8 +207,7 @@ interface ConsoleData {
    *  provider), then re-pull the providers list. Resolves with the created row
    *  (grant key once) + an OAuth popup URL when authType is oauth2. */
   createConnectorConnection: (input: CreateConnectorConnectionInput) => Promise<ConnectorConnectionCreatedDto>
-  /** Reconnect an existing open_connector connection (re-run OAuth / re-save credentials).
-   *  The provider row is unchanged, so no re-pull; resolves with an OAuth popup URL for oauth2. */
+  /** Reconnect a connection; OAuth status changes only after the returned popup completes authorization. */
   reconnectConnectorConnection: (
     id: string,
     input: ReconnectConnectorConnectionInput
@@ -326,6 +326,7 @@ const DAEMON_CAPABILITY_REFRESH_MS = 300_000
 const RESOURCE_REFRESH_MS = 30_000
 // A stable empty bot list while the first pull is outstanding, so memos keyed on it do not recompute every render.
 const NO_BOTS: BotDto[] = []
+const NO_MCP_PROVIDERS: McpProviderDto[] = []
 
 const EMPTY_SESSION_FACETS: SessionFacets = {
   agentIds: [],
@@ -899,10 +900,14 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const realBots = botsData ?? NO_BOTS
   const botsLoaded = botsData !== undefined
   const {
-    data: realMcpProviders = [],
+    data: mcpProvidersData,
     isLoading: mcpProvidersIsLoading,
     mutate: mutateMcpProviders
-  } = useSWR<McpProviderDto[]>(consoleKeys.mcpProviders(orgKey), ([, orgId]) => fetchMcpProviders(orgId as string))
+  } = useSWR<McpProviderDto[]>(consoleKeys.mcpProviders(orgKey), ([, orgId]) => fetchMcpProviders(orgId as string), {
+    refreshInterval: RESOURCE_REFRESH_MS
+  })
+  const realMcpProviders = mcpProvidersData ?? NO_MCP_PROVIDERS
+  const mcpProvidersLoaded = MOCK_MODE || mcpProvidersData !== undefined
   const {
     data: realSkillSources = [],
     isLoading: skillSourcesIsLoading,
@@ -1358,8 +1363,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateMcpProviders]
   )
 
-  // Reconnect only refreshes the upstream credential/authorization; the open_connector
-  // provider row is unchanged, so there's nothing to re-pull.
+  // Opening the authorization popup is not proof of success; polling observes the completed consent.
   const reconnectConnectorConnection = useCallback(
     (id: string, input: ReconnectConnectorConnectionInput): Promise<ReconnectConnectorConnectionResult> =>
       apiReconnectConnectorConnection(id, input),
@@ -1759,6 +1763,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       botsLoaded,
       mcpProviders,
       mcpProvidersLoading,
+      mcpProvidersLoaded,
       createMcpProvider,
       updateMcpProvider,
       deleteMcpProvider,
@@ -1848,6 +1853,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       botsLoaded,
       mcpProviders,
       mcpProvidersLoading,
+      mcpProvidersLoaded,
       createMcpProvider,
       updateMcpProvider,
       deleteMcpProvider,

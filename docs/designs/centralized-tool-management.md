@@ -43,6 +43,17 @@ Current implementation details:
   proxies; `open_connector` providers are served by the relay's MCP adapter
   over the configured OpenConnector runtime API.
 
+OpenConnector owns its connections' credential status. The provider list and detail
+read its local connection summaries and expose only the status of each visible provider's
+stored service/profile binding. An expired access token that can be refreshed is not a
+reason to reconnect. A definitive authorization refusal displays **Reconnect needed**
+on the Tools & Skills tile, with an action opening the existing reconnect dialog and a
+notification for viewers who can edit that connection. The console polls every 30 seconds;
+completed authorization clears the warning without replacing the provider or its grants.
+An unavailable status source displays **Status unavailable** and preserves outstanding
+notifications. This requires OpenConnector to report credential status in `/api/connections`;
+a summary without OAuth status is unknown, never assumed healthy.
+
 Provider flow:
 
 1. The user defines a custom MCP provider: `server url` + `headers` (API key). → §4 registry

@@ -8,6 +8,28 @@
 import type { FetchLike } from '../github/api.js'
 import { filterCatalog, type OcOAuthConfig, type OcProvider } from './filter.js'
 
+export type ConnectorConnectionStatus = 'connected' | 'reauth_required' | 'pending' | 'unknown'
+
+interface OcConnection {
+  service: string
+  connectionName: string
+  authType: string
+  configured: boolean
+  status?: 'active' | 'reauth_required'
+}
+
+export function connectorConnectionStatus(
+  connections: readonly OcConnection[] | null,
+  service: string | undefined,
+  profile: string | undefined
+): ConnectorConnectionStatus {
+  if (!connections || !service || !profile) return 'unknown'
+  const connection = connections.find((c) => c.service === service && c.connectionName === profile)
+  if (!connection?.configured) return 'pending'
+  if (connection.status === 'reauth_required') return 'reauth_required'
+  return connection.status === 'active' || connection.authType !== 'oauth2' ? 'connected' : 'unknown'
+}
+
 export interface ConnectorsClientOptions {
   baseUrl: string
   fetch: FetchLike
@@ -73,6 +95,13 @@ export class ConnectorsClient {
       this.json<OcOAuthConfig[]>('/api/oauth/configs')
     ])
     return { providers: filterCatalog(providers, oauthConfigs, this.whitelist, this.blocklist) }
+  }
+
+  // Read credential metadata only; listing never refreshes tokens or calls a provider API.
+  async connections(): Promise<OcConnection[]> {
+    const rows = await this.json<OcConnection[]>('/api/connections', { signal: AbortSignal.timeout(5_000) })
+    if (!Array.isArray(rows)) throw new ConnectorsError('invalid connections response', 502)
+    return rows
   }
 
   /** Save an api-key / custom / no-auth connection under a profile name. */
