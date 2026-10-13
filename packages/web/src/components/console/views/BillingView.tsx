@@ -531,16 +531,25 @@ function ActivityCard({ orgId }: { orgId: string }) {
     const segs = stacked ? [...payload!].reverse().filter((seg) => seg.value > 0) : []
     return (
       <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) px-2.5 py-2 shadow-(--shadow-md)">
-        <div className="mono text-[11px] font-semibold">{row.label}</div>
-        <div className="mt-1 flex items-center gap-1.5 font-sans text-[11px] leading-normal text-(--text-secondary)">
-          {!stacked && (
+        {/* Stacked: the bucket total sits beside the date, with the per-model lines below. */}
+        <div className="flex items-baseline justify-between gap-4">
+          <span className="mono text-[11px] font-semibold">{row.label}</span>
+          {stacked && (
+            <span className="font-sans text-[11px] leading-normal text-(--text-secondary)">
+              {t('tooltipTotal')}{' '}
+              <span className="mono font-semibold text-(--text-primary)">{usd(Number(row.amount))}</span>
+            </span>
+          )}
+        </div>
+        {!stacked && (
+          <div className="mt-1 flex items-center gap-1.5 font-sans text-[11px] leading-normal text-(--text-secondary)">
             <span
               className={`h-[9px] w-[9px] flex-none rounded-[2px] ${mode === 'usage' ? 'bg-(--brand)' : 'bg-(--green-500)'}`}
             />
-          )}
-          {mode === 'usage' ? t('tooltipUsage') : t('tooltipToppedUp')}{' '}
-          <span className="mono text-(--text-primary)">{usd(Number(row.amount))}</span>
-        </div>
+            {mode === 'usage' ? t('tooltipUsage') : t('tooltipToppedUp')}{' '}
+            <span className="mono text-(--text-primary)">{usd(Number(row.amount))}</span>
+          </div>
+        )}
         {segs.map((seg) => {
           const key = stackKeys[Number(seg.dataKey.slice(1))]!
           return (
@@ -550,7 +559,8 @@ function ActivityCard({ orgId }: { orgId: string }) {
             >
               <span className="h-[8px] w-[8px] flex-none rounded-[2px]" style={{ backgroundColor: keyColor(key) }} />
               <span className="max-w-[200px] truncate">{keyName(key)}</span>
-              <span className="mono text-(--text-primary)">{usd(seg.value)}</span>
+              {/* Sub-cent shares keep four significant digits, like the transactions table, instead of reading $0.00. */}
+              <span className="mono text-(--text-primary)">{fmtDecimalUsd(String(seg.value))}</span>
             </div>
           )
         })}
@@ -650,7 +660,10 @@ function ActivityCard({ orgId }: { orgId: string }) {
                         stackId="usage"
                         className={k === ACTIVITY_OTHER ? 'seg-6' : `seg-${i}`}
                         radius={i === stackKeys.length - 1 ? [3, 3, 0, 0] : undefined}
-                        minPointSize={(v: number | null | undefined) => ((v ?? 0) > 0 ? 2 : 0)}
+                        // Read by index: recharts hands a stacked bar a non-numeric value, which floored zero segments too.
+                        minPointSize={(_: number | null | undefined, idx: number) =>
+                          Number(chartData[idx]?.[`s${i}`] ?? 0) > 0 ? 2 : 0
+                        }
                       />
                     ))
                   ) : (
@@ -1129,8 +1142,15 @@ export default function BillingView() {
                       >
                         <Icon name={credit ? 'arrow-down-left' : 'arrow-up-right'} size={14} strokeWidth={2} />
                       </span>
-                      <span className="flex min-w-0 flex-col gap-1">
-                        <span className="flex min-w-0 items-center gap-2">
+                      {/* A usage row wraps its label, agent and model chips onto a second line only when they don't fit. */}
+                      <span
+                        className={
+                          credit
+                            ? 'flex min-w-0 items-center gap-2'
+                            : 'flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1'
+                        }
+                      >
+                        <span className="contents">
                           <span className="truncate font-sans text-[13px] font-medium leading-normal">
                             {credit
                               ? (KNOWN_KINDS as readonly string[]).includes(tx.kind)
@@ -1138,16 +1158,18 @@ export default function BillingView() {
                                 : tx.kind
                               : t('transactions.usagePeriod', { period: tx.period })}
                           </span>
-                          <span
-                            className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
-                            style={
-                              positive
-                                ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
-                                : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
-                            }
-                          >
-                            {credit ? tx.kind : t('transactions.usageTag')}
-                          </span>
+                          {credit && (
+                            <span
+                              className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
+                              style={
+                                positive
+                                  ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
+                                  : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
+                              }
+                            >
+                              {tx.kind}
+                            </span>
+                          )}
                           {/* Who the charge is attributed to. An agent is named only when it is in
                             the viewer's roster; everything else is one id-less rollup with a
                             default avatar. See `rowAttribution` and billing-api.ts. */}
@@ -1248,7 +1270,7 @@ export default function BillingView() {
                             </a>
                           )}
                         </span>
-                        {/* The charge's model split, org-wide, on its own wrapping line so it never squeezes the label or the amount. */}
+                        {/* The charge's model split, org-wide; each chip wraps on its own like the agent chips beside it. */}
                         {!credit &&
                           (() => {
                             const models = (tx.models ?? []).filter((m) => Number(m.amount) > 0)
@@ -1256,7 +1278,7 @@ export default function BillingView() {
                             const shown = models.slice(0, TX_MODEL_CHIPS)
                             const rest = models.length - shown.length
                             return (
-                              <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                              <span className="contents">
                                 {shown.map((m) => {
                                   const name = m.model === UNATTRIBUTED_MODEL ? t('activity.unknownModel') : m.model
                                   const share = t('transactions.modelShare', { name, amount: fmtDecimalUsd(m.amount) })
