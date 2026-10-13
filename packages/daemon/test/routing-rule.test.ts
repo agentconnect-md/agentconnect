@@ -47,7 +47,7 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
         config: { botToken: 'x', appToken: 'y', botUserId: 'U-SLACK' }
       } as unknown as Integration,
       selfId: 'U-SLACK',
-      parsedConfig: { botToken: 'x', appToken: 'y', botUserId: 'U-SLACK', shareable: false, joinPublicChannels: true }
+      parsedConfig: { botToken: 'x', appToken: 'y', botUserId: 'U-SLACK', shareable: false }
     },
     {
       int: {

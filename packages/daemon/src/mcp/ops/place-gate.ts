@@ -128,7 +128,7 @@ export async function describePlace(
 }
 
 /** Another conversation as the rules judge it: described, with the agent's newest session there, which a read off the asker's own bot is judged by. */
-async function describeConversation(
+export async function describeConversation(
   ctx: SessionContext,
   place: PlaceRef,
   bot: string | undefined,

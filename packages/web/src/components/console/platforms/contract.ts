@@ -473,12 +473,7 @@ export interface WebBotSettingsFragments {
      *  (:1312-1324), Discord's ready-made invite (:1325-1337), the Feishu /
      *  Lark console per region (:71-74, :1338-1345). */
     RowLinks?: ComponentType<{ bot: BotDto }>
-    /**
-     * Bot-level settings the module owns, rendered at the top of the EXPANDED row
-     * (above the channel roster) — Slack's "join public channels on demand" switch.
-     * The host renders none for a platform that declares none, which is how the
-     * control stays off every row where the server would refuse it.
-     */
+    /** Bot-level settings the module owns, at the top of the expanded row; a platform that declares none renders none. */
     RowSettings?: ComponentType<{ bot: BotDto; canWrite: boolean }>
     /**
      * The delete dialog's "what AgentConnect cannot delete for you" block —

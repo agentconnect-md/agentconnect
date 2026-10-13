@@ -38,7 +38,7 @@ export const SLACK_BOT_SCOPES = [
   'bookmarks:write',
   'lists:read',
   'lists:write',
-  // Join public channels on first read or post; private channels still require an invitation.
+  // Join a public channel once a person behind the turn confirms it; private channels still require an invitation.
   'channels:join',
   // The search tool requests public-channel messages and returns message results only.
   'search:read.public'

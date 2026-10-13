@@ -778,6 +778,8 @@ import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
 import { PermissionCoordinator, type PermissionHost } from './permissions/coordinator.js'
+import { JOIN_ASK_TIMEOUT_MS, type JoinOutcome } from './permissions/join-confirmation.js'
+import type { JoinRequest } from './mcp/ops/join-ask.js'
 import {
   DEFAULT_PERMISSION_WAIT_HOURS,
   platformThread,
@@ -1846,6 +1848,8 @@ export class Daemon {
   })
   /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
   private readonly subsessionOpeners = new Map<string, TurnAskers>()
+  /** Join confirmations in flight, by session, bot and channel, so parallel calls share one card (#2979). */
+  private readonly joinAsks = new Map<string, Promise<JoinOutcome>>()
   /** Places of assistant-mode agents turning external, and the transition that follows (assistant-mode.md §5.3). */
   private readonly placeTrust = new PlaceTrust({
     integration: (integrationId) => this.integrationConfigById(integrationId),
@@ -3965,6 +3969,8 @@ export class Daemon {
         this.assistantPlaceExternal(agentId, integrationId, channel) ||
         !(await this.assistantPlaceConfirmed(agentId, integrationId, channel, { dm })),
       draftPost: (ctx, post) => this.draftPost(ctx, post),
+      // A call refused because the bot is not in a public channel asks a person behind the turn first (#2979).
+      confirmJoin: (ctx, ask) => this.confirmJoin(ctx, ask),
       // The read and write rules (assistant-mode.md §5.5): who is asking on the live turn, and the lookups that judge them.
       readAskers: async (ctx) => this.readAskersFor(ctx),
       readLookups: (agentId) => this.placeMembers.lookupsFor(agentId),
@@ -8740,6 +8746,19 @@ export class Daemon {
     } catch (err) {
       this.log.warn(`assistant draft for ${plan.sessionKey} failed: ${formatErr(err)}`)
     }
+  }
+
+  /** Ask a person behind the live turn before the bot joins a public channel; parallel calls for one channel share one card. */
+  private async confirmJoin(ctx: SessionContext, ask: JoinRequest): Promise<JoinOutcome> {
+    const key = this.sessionKeyOf(ctx)
+    const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
+    if (!live) return 'unavailable'
+    const flight = [key, ask.integrationId, ask.channel].join('\u001f')
+    const asked =
+      this.joinAsks.get(flight) ??
+      this.permissions.askToJoin(live, ask, JOIN_ASK_TIMEOUT_MS).finally(() => this.joinAsks.delete(flight))
+    this.joinAsks.set(flight, asked)
+    return await asked
   }
 
   /** A card button: a draft's when its id names one, else a permission request's. */
@@ -13663,6 +13682,7 @@ export class Daemon {
         this.chatSurface(agentId, integrationId, channel, externallyShared),
       chatEditorsOnly: (agentId, integrationId) => this.chatEditorsOnly(agentId, integrationId),
       chatActor: async (agentId, integrationId, actor) => await this.chatActor(agentId, integrationId, actor),
+      personDm: (agentId, requestId, asker) => this.drafts.personApprover(agentId, requestId, asker),
       externalAskerDm: async (p) => {
         const msg = p.entry.msg
         // Only a person's own platform message names an asker; a webchat turn's sender is a console user.

@@ -19,7 +19,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   refreshSlackBot: mocks.refreshSlackBot
 }))
 vi.mock('@/lib/data-context', () => ({
-  useConsoleData: () => ({ refresh: mocks.refresh, setBotJoinPublicChannels: vi.fn() })
+  useConsoleData: () => ({ refresh: mocks.refresh })
 }))
 
 import { SlackReplaceTokenModal } from './replace-token'

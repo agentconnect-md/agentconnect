@@ -159,7 +159,7 @@ describe('SlackConnection.uploadFile', () => {
     const conn = connWith({ completeUploadExternal })
     await expect(
       conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
-    ).resolves.toMatchObject({ ok: false, detail: 'not_in_channel' })
+    ).resolves.toMatchObject({ ok: false, detail: 'not_in_channel', notJoined: true })
     expect(completeUploadExternal).toHaveBeenCalledOnce()
   })
 

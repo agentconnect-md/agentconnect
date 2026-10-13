@@ -5803,10 +5803,7 @@
         "openOn": "在 Slack 中打开",
         "manifestMissing": "Manifest 缺少：{scopes}",
         "missing": "缺少：{scopes}",
-        "builtinRejected": "Slack 拒绝了这个工作区的授权。请重新安装该应用以恢复连接。",
-        "joinPublicChannels": "自动加入公共频道",
-        "joinPublicChannelsEnabled": "当 Agent 在此机器人尚未加入的公共频道中读取或发布消息时，机器人会自动加入并保持成员身份。Slack 会宣布此次加入，且成员身份适用于使用此机器人的所有 Agent。私人频道仍需要邀请。",
-        "joinPublicChannelsDisabled": "Agent 只能在此机器人已加入的频道中读取和发布消息。"
+        "builtinRejected": "Slack 拒绝了这个工作区的授权。请重新安装该应用以恢复连接。"
       },
       "replaceToken": {
         "title": "替换 Bot token",

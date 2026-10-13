@@ -278,8 +278,6 @@ interface ConsoleData {
   ) => Promise<void>
   /** Flip a bot's shared-bot opt-in (PATCH /bots/:id), then re-pull. */
   setBotShareable: (botId: string, shareable: boolean) => Promise<void>
-  /** Flip a Slack bot's "join public channels on demand" switch (`PATCH /bots/:id`). */
-  setBotJoinPublicChannels: (botId: string, enabled: boolean) => Promise<void>
   /** Create-or-update a cron (PUT upsert; null id ⇒ mint a fresh UUID), then re-pull. */
   saveCron: (id: string | null, body: UpsertCronInput) => Promise<void>
   /** Delete a cron, then re-pull. */
@@ -1639,15 +1637,6 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateBots, mutateIntegrations]
   )
 
-  // A bot-level switch the daemon reads; only the bot row shows it, so only bots re-pull.
-  const setBotJoinPublicChannels = useCallback(
-    async (botId: string, enabled: boolean) => {
-      await apiUpdateBot(botId, { joinPublicChannels: enabled })
-      settleInBackground(mutateBots())
-    },
-    [mutateBots]
-  )
-
   // Create-or-update a cron. PUT /crons/:id is an idempotent upsert, so a create
   // just mints a fresh client-side UUID (the CP keys the row on it).
   const saveCron = useCallback(
@@ -1820,7 +1809,6 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       leaveConversation,
       setChannelAgent,
       setBotShareable,
-      setBotJoinPublicChannels,
       saveCron,
       deleteCron,
       provisionDaemon,
@@ -1907,7 +1895,6 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       setChannelDecision,
       setChannelAgent,
       setBotShareable,
-      setBotJoinPublicChannels,
       saveCron,
       deleteCron,
       provisionDaemon,

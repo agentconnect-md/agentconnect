@@ -550,7 +550,6 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
       // and the ingress mode ride the core envelope, never the config payload.
       config: {
         shareable: false, // a socket bot is single-agent by construction
-        joinPublicChannels: true, // absent from the bag ⇒ the daemon's default
         botToken: 'xoxb-test-token',
         appToken: 'xapp-1-A0TESTAPP-123-abc' // Socket Mode carries the app-level token
       }
@@ -633,7 +632,6 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       },
       config: {
         shareable: true,
-        joinPublicChannels: true,
         botToken: 'xoxb-test-token',
         appId: 'A0TESTAPP'
       }
@@ -664,23 +662,20 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
     })
   }
 
-  it('carries the operator’s join-public-channels switch from the bot row on both arms', async () => {
-    // Absent from the bag ⇒ true (the behaviour bots predating the switch keep).
-    const socketOn = await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, bot(), SOCKET_SECRET, [])
-    expect(socketOn?.config).toMatchObject({ joinPublicChannels: true })
-    const off = { platformConfig: { joinPublicChannels: false } }
-    const socketOff = await integrationToSpec(
+  it('never sends the retired join switch, whatever an old bot row still stores (#2979)', async () => {
+    const stale = { platformConfig: { joinPublicChannels: false } }
+    const socket = await integrationToSpec(
       PLATFORMS,
       NO_SESSION_SYNC,
       INTEGRATION,
-      { ...bot(), ...off },
+      { ...bot(), ...stale },
       SOCKET_SECRET,
       []
     )
-    expect(socketOff?.config).toMatchObject({ joinPublicChannels: false })
-    const httpBotOff = { ...bot({ transport: 'http', shareable: true, slackAppId: 'A0TESTAPP' }), ...off }
-    const httpOff = await httpIntegrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, httpBotOff, HTTP_SECRET, [])
-    expect(httpOff?.config).toMatchObject({ joinPublicChannels: false })
+    expect(socket?.config).not.toHaveProperty('joinPublicChannels')
+    const httpBot = { ...bot({ transport: 'http', shareable: true, slackAppId: 'A0TESTAPP' }), ...stale }
+    const http = await httpIntegrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, httpBot, HTTP_SECRET, [])
+    expect(http?.config).not.toHaveProperty('joinPublicChannels')
   })
 })
 

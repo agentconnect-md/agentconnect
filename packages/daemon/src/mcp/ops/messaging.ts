@@ -5,6 +5,7 @@ import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
 import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
 import { optionalString, parseArgs, requiredString } from './args.js'
 import { assertChannelReachable } from './channel-reach.js'
+import { JoinRefused } from './join-ask.js'
 import {
   offersThreadUpdates,
   rootPostNeedsThreadMaterialization,
@@ -687,10 +688,13 @@ export async function sendMessage(
             'turn already reaches it — no sendMessage needed.'
         )
       }
-      // A thread ROOT is what both halves need: the anchor Slack posts against and the segment
-      // an inbound reply canonicalizes to. A reply's own id would post into the right thread but
-      // key a session no reply can reach, so it is refused rather than silently corrected.
-      const head = await gw.getThreadReplies?.(requestedChannel, updateThread, 1).catch(() => undefined)
+      // A thread root is what both halves need; a reply's own id would key a session no reply reaches, so it is refused.
+      const head = await gw
+        .getThreadReplies?.(requestedChannel, updateThread, 1, { throwOnError: true })
+        .catch((err) => {
+          if (err instanceof JoinRefused) throw err
+          return undefined
+        })
       if (head === undefined) {
         throw new Error(
           `sendMessage: could not read thread "${updateThread}" in that channel — check the id (and that this bot ` +

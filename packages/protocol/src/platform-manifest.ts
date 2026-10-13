@@ -88,13 +88,6 @@ export interface PlatformManifest {
    *  Fail-closed: an unknown platform serves one agent per bot, so a flag no
    *  install path honors can never be set. */
   readonly multiAgentShareable: boolean
-  /** Whether a bot here can ENTER a public conversation by itself (Slack's
-   *  `conversations.join`) — what makes "join public channels on demand" an operator
-   *  choice worth offering (`Bot.platformConfig.joinPublicChannels`). A PRE-DISPATCH
-   *  read: `PATCH /bots/:id` refuses the flag on any other platform and the console
-   *  renders no switch there. Fail-closed: an unknown platform has no self-join, so
-   *  the flag can never be set for it. */
-  readonly publicChannelJoin: boolean
   /** Whether a conversation row's OWNER here is a per-conversation DEFAULT rather than an
    *  ownership claim — a connected Linear workspace, where every event already addresses the
    *  app (linear-integration.md §4.3, §6.2). ONE PRE-DISPATCH read, in the HTTP-bot compile:
@@ -129,8 +122,6 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   leaveGranularity: 'conversation',
   // The arm the retired Slack-only predicate took for every other id: one agent per bot.
   multiAgentShareable: false,
-  // No platform but Slack lets a bot enter a conversation on its own.
-  publicChannelJoin: false,
   // The arm every shipped platform takes: an owner is an ownership route, not a default.
   ownerAsDefault: false,
   // A mention is an explicit address, judged even inside a thread the agent is in.
@@ -160,7 +151,6 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: true,
       leaveGranularity: 'conversation',
       multiAgentShareable: true,
-      publicChannelJoin: true,
       ownerAsDefault: false,
       addressedByConstruction: false,
       // A Slack DM opens a session per top-level message unless it appends (channel-session-mode.md §8).
@@ -175,7 +165,6 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: false,
-      publicChannelJoin: false,
       ownerAsDefault: false,
       addressedByConstruction: false,
       // A DM here is one continuous session already (thread-keys.ts), so only rooms take `append`.
@@ -192,7 +181,6 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: false,
       leaveGranularity: 'space',
       multiAgentShareable: false,
-      publicChannelJoin: false,
       ownerAsDefault: false,
       addressedByConstruction: false,
       // A DM here is one continuous session already (thread-keys.ts), so only rooms take `append`.
@@ -207,7 +195,6 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: false,
-      publicChannelJoin: false,
       ownerAsDefault: false,
       addressedByConstruction: false,
       // A DM here is one continuous session already (thread-keys.ts), so only rooms take `append`.
@@ -224,7 +211,6 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: true,
-      publicChannelJoin: false,
       // Every Linear event addresses the app, so a team row's owner is its dispatch default (§6.2).
       ownerAsDefault: true,
       // A follow-up prompt in a session the agent already holds continues it rather than addressing anew.
@@ -242,7 +228,6 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: false,
-      publicChannelJoin: false,
       ownerAsDefault: false,
       // Google delivers only mentions and adds in a Space, so a mention in a thread the agent holds continues it (google-chat-integration.md §4).
       addressedByConstruction: true,
