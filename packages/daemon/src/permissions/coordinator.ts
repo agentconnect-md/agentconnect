@@ -1736,10 +1736,13 @@ export class PermissionCoordinator {
     picked: PickedChoice<R>,
     by: Decider | undefined,
     surface: 'console' | 'chat' | 'dm',
-    actor?: InteractionActor
+    actor?: InteractionActor,
+    answeredBy?: ReadAsker
   ): Promise<boolean> {
     if (!(await this.resolveStoredPermissionRequest(rec.agentId, id, picked.allow ? 'allowed' : 'denied', by)))
       return false
+    // Only the answer that won the row speaks for the join's continuation; one that lost touches nothing.
+    if (rec.kind === 'permission' && rec.join && answeredBy) rec.join.answeredBy = answeredBy
     // Only now is this answer the decision: the surface admitted it, the choice was real, and the row resolved.
     if (actor) this.host.logSessionAction(`permission:${picked.allow ? 'allowed' : 'denied'}`, rec.sessionId, actor)
     this.pendingApprovals.delete(id)
@@ -1984,9 +1987,11 @@ export class PermissionCoordinator {
         const choices = permissionChoices(rec.params)
         const picked = pickChoice(choices, req, permissionFallback(choices))
         if (!picked.ok) return picked
-        if (rec.join && req.decidedBy)
-          rec.join.answeredBy = { kind: 'console', userId: req.decidedBy.slice('user:'.length) }
-        return (await this.settle(req.requestId, rec, picked, decidedBy, 'console')) ? { ok: true } : gone
+        const answeredBy: ReadAsker | undefined =
+          rec.join && req.decidedBy ? { kind: 'console', userId: req.decidedBy.slice('user:'.length) } : undefined
+        return (await this.settle(req.requestId, rec, picked, decidedBy, 'console', undefined, answeredBy))
+          ? { ok: true }
+          : gone
       }
       const picked = pickChoice(rec.choices, req, elicitationFallback)
       if (!picked.ok) return picked
@@ -2054,8 +2059,8 @@ export class PermissionCoordinator {
       if (!by) return
       const picked = choiceById(permissionChoices(rec.params), optionId)
       if (!picked) return
-      if (rec.join) rec.join.answeredBy = joinDmAsker(rec.join, rec.notify.target)
-      await this.settle(input.requestId, rec, picked, by, 'dm', input.actor)
+      const answeredBy = rec.join ? joinDmAsker(rec.join, rec.notify.target) : undefined
+      await this.settle(input.requestId, rec, picked, by, 'dm', input.actor, answeredBy)
       return
     }
     // A request no card was posted for is the console's alone.
@@ -2081,8 +2086,7 @@ export class PermissionCoordinator {
       }
       const picked = choiceById(permissionChoices(rec.params), optionId)
       if (!picked) return
-      rec.join.answeredBy = answered.asker
-      await this.settle(input.requestId, rec, picked, answered.by, 'chat', input.actor)
+      await this.settle(input.requestId, rec, picked, answered.by, 'chat', input.actor, answered.asker)
       return
     }
     // The level was lowered, the conversation closed, or only editors may answer here and this person is not one.

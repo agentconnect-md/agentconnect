@@ -235,6 +235,31 @@ describe('the card in the conversation the request came from', () => {
     await w.store.close()
   })
 
+  it('gives the continuation to the answer that won, never to one that lost the race', async () => {
+    const w = await world()
+    const bob: ReadAsker = { kind: 'member', platform: 'slack', integrationId: 'int-1', userId: 'U-bob' }
+    const asked = w.coordinator.askToJoin(w.p, ask({ askers: [ADA, bob] }), JOIN_ASK_TIMEOUT_MS, w.offered)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.slack.postBlocks).toHaveBeenCalledTimes(1), WAIT)
+    // Two people behind the turn answer at once: Ada's Join reaches the row first, Bob's Don't join loses.
+    await Promise.all([
+      w.coordinator.handlePermissionChoice({
+        requestId: id,
+        optionId: 'join',
+        actor: { userId: 'U-ada', name: 'Ada' }
+      }),
+      w.coordinator.handlePermissionChoice({
+        requestId: id,
+        optionId: 'dont-join',
+        actor: { userId: 'U-bob', name: 'Bob' }
+      })
+    ])
+    await expect(asked).resolves.toEqual({ outcome: 'join', by: ADA })
+    expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'allowed', resolvedByName: 'Ada' })
+    expect(w.rewrites()).toEqual([expect.stringContaining('Joined #general — Ada')])
+    await w.store.close()
+  })
+
   it('refuses anyone else privately and leaves the card live; a bot decides nothing', async () => {
     const w = await world()
     const decided = vi.fn()
@@ -321,6 +346,22 @@ describe('where else the card goes', () => {
     })
     expect(w.slack.postBlocks).not.toHaveBeenCalled()
     expect(await w.store.listPermissionRequests(AGENT)).toEqual([])
+    await w.store.close()
+  })
+
+  it('keeps the console answer that won, not one that lost the race', async () => {
+    const w = await world({ webchat: true })
+    const bob: ReadAsker = { kind: 'console', userId: 'cu-bob' }
+    const asked = w.coordinator.askToJoin(w.p, ask({ askers: [ADA_CONSOLE, bob] }), JOIN_ASK_TIMEOUT_MS, w.offered)
+    const id = await w.requestId()
+    const decide = (decidedBy: string, decision: 'allow' | 'deny', optionId: string) =>
+      w.coordinator.decideEditorPermission({ agentId: AGENT, requestId: id, decision, optionId, decidedBy })
+    const [ada, bobs] = await Promise.all([
+      decide('user:cu-ada', 'allow', 'join'),
+      decide('user:cu-bob', 'deny', 'dont-join')
+    ])
+    expect([ada, bobs]).toEqual([{ ok: true }, { ok: false, reason: 'permission request is no longer pending' }])
+    await expect(asked).resolves.toEqual({ outcome: 'join', by: ADA_CONSOLE })
     await w.store.close()
   })
 
