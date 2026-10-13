@@ -205,12 +205,16 @@ describe('a webchat conversation’s approval requests', () => {
   it('keeps them the editors’ alone at talk, and lets an editor answer at any level', async () => {
     const w = await world('talk')
     const control = new QueueSpy()
-    for (const res of [await list(app(control, w.owner), w.mine), await decide(app(control, w.owner), w.mine)]) {
-      expect(res.statusCode).toBe(403)
-      expect(res.json().message).toMatch(/Agent editor/)
-    }
-    expect(control.lists).toEqual([])
+    control.requests = [record(w.mine, { id: REQUEST })]
+    // The owner sees none of the agent's tool-call approvals at talk, and answering one is refused.
+    const listed = await list(app(control, w.owner), w.mine)
+    expect(listed.statusCode, listed.body).toBe(200)
+    expect(listed.json()).toEqual({ requests: [] })
+    const refused = await decide(app(control, w.owner), w.mine)
+    expect(refused.statusCode).toBe(403)
+    expect(refused.json().message).toMatch(/Agent editor/)
     expect(control.decisions).toEqual([])
+    control.requests = []
 
     // The editor reads the conversation open to the organization and decides under their own name.
     expect((await list(app(control, w.editor), w.team)).statusCode).toBe(200)
@@ -225,6 +229,57 @@ describe('a webchat conversation’s approval requests', () => {
         conversation: { sessionId: w.team }
       }
     ])
+  })
+
+  it('lets its owner list and answer their own join confirmations at talk, and nobody else’s', async () => {
+    const w = await world('talk')
+    const control = new QueueSpy()
+    const join = (askers: string[], id = REQUEST) =>
+      record(w.mine, {
+        id,
+        command: 'Let Butler join #general to post there?',
+        kind: 'join',
+        joinAskers: askers,
+        options: [
+          { optionId: 'join', name: 'Join', kind: 'allow_once' },
+          { optionId: 'dont-join', name: 'Don’t join', kind: 'reject_once' }
+        ]
+      })
+    const theirs = join([w.editor], randomUUID())
+    const approval = record(w.mine)
+    control.requests = [join([w.owner]), theirs, approval]
+    const running = app(control, w.owner)
+
+    // Only the join confirmation that asks them, without its askers.
+    const listed = await list(running, w.mine)
+    expect(listed.statusCode, listed.body).toBe(200)
+    const { joinAskers: _askers, ...shown } = join([w.owner])
+    expect(listed.json()).toEqual({ requests: [shown] })
+    const decided = await decide(running, w.mine, { decision: 'allow', optionId: 'join' })
+    expect(decided.statusCode, decided.body).toBe(200)
+    expect(control.decisions).toEqual([
+      {
+        agentId: AGENT,
+        requestId: REQUEST,
+        decision: 'allow',
+        optionId: 'join',
+        decidedBy: `user:${w.owner}`,
+        decidedByName: 'Olive',
+        conversation: { sessionId: w.mine }
+      }
+    ])
+
+    // An ordinary approval and someone else's join confirmation stay out of their reach.
+    control.decisions = []
+    for (const id of [approval.id, theirs.id]) {
+      const res = await running.app.inject({
+        method: 'POST',
+        url: `${ORG}/sessions/${w.mine}/permission-requests/${id}/decision`,
+        payload: { decision: 'allow' }
+      })
+      expect(res.statusCode).toBe(403)
+    }
+    expect(control.decisions).toEqual([])
   })
 
   it('refuses anyone else who may view it, and a session that is not one of the agent’s webchat conversations', async () => {

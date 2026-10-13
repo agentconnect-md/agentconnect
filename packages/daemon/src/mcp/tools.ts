@@ -302,8 +302,9 @@ function buildSendMessageTool(platforms: string[], options: { assistantMode?: bo
       'that thread hears it. Never use it for the thread you are in now — that is your ordinary reply.\n' +
       'A post reaches only where the people asking you could post themselves: a conversation they are in, a public ' +
       'channel of their own workspace, or a direct message to a member of their organization; anything else is ' +
-      'refused. On Slack the bot joins a public channel on first use, unless an operator switched that off for this ' +
-      'bot. A post into a conversation shared with another organization comes back as a draft waiting for an ' +
+      'refused. On Slack, before the bot joins a public channel it is not in, the person asking is asked to ' +
+      'confirm; if they decline or do not answer, nothing is sent. A post into a conversation shared with another ' +
+      'organization comes back as a draft waiting for an ' +
       'internal member’s approval: say so, and do not send it again.\n' +
       '- attachment (with `toUser` or `channel`) — forward an image this conversation received: ' +
       '`{"channel":"<channel id>","attachment":"<file name>","message":"..."}`. The name is the one in the ' +
@@ -435,8 +436,8 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
             description:
               'Read one bounded page of messages from a channel on this platform: the channel bound to this ' +
               'conversation by default, or the one `channel` names. Another conversation is readable only when ' +
-              'the person asking may see it: a public channel (the bot joins it on first use, unless an operator ' +
-              'switched that off for this bot), a private channel or group DM they are in, or their own direct ' +
+              'the person asking may see it: a public channel (if the bot is not in it, the person asking is asked ' +
+              'first whether it may join), a private channel or group DM they are in, or their own direct ' +
               'message with you; through another of your bots, as the chat account they linked for that ' +
               "bot's workspace, else only what the console shows that person. A run no " +
               'person started reads only public channels. Anything else is refused ' +
@@ -544,8 +545,8 @@ function buildThreadHistoryTool(offered: boolean, integrationId: SchemaProp): To
         'Read one thread in full — its root message and every reply. Use it to catch up on a discussion you are not ' +
         'part of: `getChannelHistory` reports each message’s `threadTs` and `replyCount`, and this opens one of ' +
         'them. `thread` is the root message’s id (Slack thread_ts). A thread in another conversation is readable ' +
-        'under the same rule as `getChannelHistory`: only when the person asking may see that conversation (the ' +
-        'bot joins a public channel on first use, unless an operator switched that off for this bot), with ' +
+        'under the same rule as `getChannelHistory`: only when the person asking may see that conversation (if the ' +
+        'bot is not in a public channel, the person asking is asked first whether it may join), with ' +
         '`privateSource` on a result from a private one. Results are ' +
         'oldest-first; `truncated` is true when the thread is longer than `limit`. Your own status chrome is ' +
         'filtered out.',
@@ -782,8 +783,8 @@ function buildSearchTool(enabled: boolean): ToolDescriptor[] {
         'The name is the first limit: private channels and DMs are never searched, INCLUDING the conversation you ' +
         'are in right now, so this cannot look through the discussion you are having. Two more follow from it. ' +
         'Hits may sit in channels you were never added to — they are public, so `getThreadHistory` opens them for ' +
-        'whoever may see that channel (the bot joins the channel on first use, unless an operator switched that ' +
-        'off; then answer from the hit’s own text and permalink). And the ' +
+        'whoever may see that channel (if the bot is not in it, the person asking is asked first whether it may join; ' +
+        'if they decline, answer from the hit’s own text and permalink). And the ' +
         'search is authorized by the message that started this turn, so a scheduled run, a turn another agent ' +
         'woke, or a channel message that did not address you cannot search, and will say so. Page with `cursor`. ' +
         'Slack does not permit these results to be stored or copied, so AgentConnect keeps none of them in ' +

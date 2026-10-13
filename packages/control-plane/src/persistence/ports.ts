@@ -3443,9 +3443,6 @@ export interface BotIdentityChange {
 export interface BotUpdate {
   /** Shared-bot (multi-agent) opt-in; `false` is recounted under the row lock. */
   shareable?: boolean
-  /** May the bot enter a PUBLIC channel on first use (Slack `conversations.join`)? Kept in
-   *  the `platformConfig` bag (merged under the same lock), absent ⇒ true. */
-  joinPublicChannels?: boolean
 }
 
 export interface BotRepo {

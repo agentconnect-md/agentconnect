@@ -4000,7 +4000,7 @@ describe.skipIf(pg)('decision table migrations', () => {
   }
 
   it('creates the decision tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(47)
+    expect(SCHEMA_VERSION).toBe(48)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual([
@@ -4419,6 +4419,48 @@ describe.skipIf(usingPostgresStore())('the v46 → v47 beside handle on SQLite',
     const db = new DatabaseSync(path)
     expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
     db.close()
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v47 → v48 join ask on SQLite', () => {
+  it('adds the column to a v47 store, and a swept join card names its channel and call', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-join-v47-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE permission_requests DROP COLUMN joinAsk')
+    old.exec('PRAGMA user_version = 47')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    await upgraded.createPermissionRequest({
+      id: 'request-1',
+      agentId: 'bot-a',
+      sessionId: 'acp-1',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: 'Butler',
+      command: 'Let Butler join #general to read it?',
+      status: 'pending',
+      resolvedAt: null,
+      joinAsk: JSON.stringify({ tool: 'getChannelHistory', name: 'general', purpose: 'read' })
+    })
+    expect(await upgraded.setPermissionRequestNotify('bot-a', 'request-1', 'int-1', 'C1', '1.200')).toBe(true)
+    await upgraded.close()
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+
+    // Reopening expires it, and the sweep hands back what its session is told.
+    const restarted = await LocalStore.open(path)
+    expect(await restarted.takeOrphanedPermissionNotices('int-1')).toMatchObject([
+      {
+        id: 'request-1',
+        sessionId: 'acp-1',
+        status: 'expired',
+        joinAsk: JSON.stringify({ tool: 'getChannelHistory', name: 'general', purpose: 'read' })
+      }
+    ])
+    await restarted.close()
   })
 })
 

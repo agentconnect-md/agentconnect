@@ -184,7 +184,7 @@ does not pretend to defend against effects it cannot defend against.
 | Workspace isolation             | `isolation: session` applies to git mode only; **scratch is always `shared`, on the pool too**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | In-chat approval                | The in-conversation card checks who clicks only where permissions are synced (an editor's linked account, slack-approval-dm.md §6.5), hence behind `chatActions` at `approve` or above; otherwise the editor path. The card **exists on Slack, Telegram, Discord, Feishu/Lark and Google Chat** and the editor DM **on Slack only**, and both bind to a pending ACP request                                                                                                                                                                                                  |
 | Context size                    | The daemon has `contextUsed` (usage snapshots) and infers compaction from it; the reminder path `shouldRemind` already handles first turn, restart and compaction                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Slack auto-join                 | `joiningOnRefusal` joins public channels on demand; the join fires `member_joined_channel` and re-reports from the authoritative snapshot                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Slack joins                     | A join waits for a person behind the turn (`askToJoin`, #2979); the join fires `member_joined_channel` and re-reports from the authoritative snapshot                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Pending cards                   | `OrganizationSuggestion`'s card component is reusable; its review route is owner-only and is not                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Self-hosted groups              | Without a shared store, records stay on the member that wrote them                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
@@ -323,8 +323,8 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
   it, under the new trust, so its reply is a draft. The long session and its sub-sessions keep
   their context: what they know was never the risk, what they post is. An upgrade (external →
   internal) needs no transition; drafts already pending stay approvable.
-- Joining a public Slack channel on demand (`joiningOnRefusal`) does not create a place: an off
-  row is not a place, and no filtering of self-initiated joins is attempted.
+- A confirmed join of a public Slack channel ("Joining a public channel" in product-conventions.md)
+  does not create a place: an off row is not a place, and no filtering of such joins is attempted.
 
 ### 5.4 The shared mind
 
@@ -467,9 +467,10 @@ outsiders (memory layers, below), so opening it everywhere does not reopen what 
   `!new`: posts follow the rule above, the item ledger keeps recording only who asked for what, and
   an agent-to-agent child session keeps the DM's visibility. The mark's table is no longer created
   or read.
-- **Unchanged**: replies inside an external place (B4), joining a public Slack channel (the bot's
-  `joinPublicChannels` setting), memory, and the agent-to-agent forms of `sendMessage`, whose
-  channel form keeps the Slack reach rule.
+- **Unchanged**: replies inside an external place (B4), memory, and the agent-to-agent forms of
+  `sendMessage`, whose channel form keeps the Slack reach rule. Joining a public Slack channel later
+  became a person's confirmation instead of the bot's `joinPublicChannels` setting (#2979, "Joining
+  a public channel" in product-conventions.md).
 
 **Reads — judged by who is asking (issue #2979, item B3):**
 

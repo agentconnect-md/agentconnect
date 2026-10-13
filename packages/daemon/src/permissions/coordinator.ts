@@ -130,6 +130,19 @@ import {
   type ChatSurface
 } from '../agents/chat-actions.js'
 import type { AskerApprover } from '../assistant/drafts.js'
+import type { ReadAsker } from '../assistant/place-access.js'
+import {
+  JOIN_ANSWER_REFUSED,
+  JOIN_EXPIRED_TEXT,
+  JOIN_OPTION,
+  joinDecidedByAsker,
+  joinDecidedText,
+  joinRequestParams,
+  parseStoredJoinAsk,
+  type JoinAnswer,
+  type JoinAsk,
+  type StoredJoinAsk
+} from './join-confirmation.js'
 
 /** The union of a turn's explicit human-approval waits, measured here and nowhere else.
  *  Regeneration budgets subtract it while retaining runtime/tool work time; `depth` counts
@@ -392,6 +405,14 @@ export interface PermissionSurfaceHost {
   assistantApprover?(agentId: string, requestId: string): Promise<SubsessionApprover | undefined>
   /** The person whose message started the turn, in their own DM, when they are an internal member (§5.5). */
   externalAskerDm?(p: Pending): Promise<AskerApprover | undefined>
+  /** A join card a restart left pending was rewritten as expired: its session hears that the call did nothing. */
+  joinCardExpired?(agentId: string, acpSessionId: string, ask: StoredJoinAsk): void
+  /** One person behind a turn in their own direct message, routed as drafts route an approver; undefined when no card reaches them. */
+  personDm?(
+    agentId: string,
+    requestId: string,
+    asker: ReadAsker
+  ): Promise<{ target: DmTarget; channel: string } | undefined>
 }
 
 /** Everything the permission coordinator touches on the `Daemon`. */
@@ -404,7 +425,7 @@ interface ChatPlace {
 }
 
 /** A DM card's addressee: an editor the control plane chose carries their console user, the asker of an external place does not. */
-type DmTarget = Omit<ApprovalRouteTarget, 'consoleUserId'> & { consoleUserId?: string }
+export type DmTarget = Omit<ApprovalRouteTarget, 'consoleUserId'> & { consoleUserId?: string }
 
 /** A live DM approval card (§5): its target, connection and handle; `propName`/`valueKind` mirror an elicitation's one field. */
 interface DmNotice {
@@ -488,6 +509,16 @@ interface PermissionApproval extends ApprovalEntry<RequestPermissionRequest, Req
   /** Original ACP object used by the host's final policy observer. */
   evaluationParams: RequestPermissionRequest
   chat?: ChatPermissionCard
+  /** Set on the daemon's own confirmation before the bot joins a channel: only the people behind the turn answer it. */
+  join?: JoinWait
+}
+
+/** A join confirmation while it waits: its deadline, and how it ended when no one decided it. */
+interface JoinWait extends JoinAsk {
+  timer?: TimerHandle
+  ended?: 'expired'
+  /** The person behind the turn whose answer decided it. */
+  answeredBy?: ReadAsker
 }
 
 interface ElicitationApproval extends ApprovalEntry<CreateElicitationRequest, CreateElicitationResponse> {
@@ -497,6 +528,17 @@ interface ElicitationApproval extends ApprovalEntry<CreateElicitationRequest, Cr
 }
 
 type PendingApproval = PermissionApproval | ElicitationApproval
+
+/** Whether an approval holds its turn: a join confirmation outlives it, answered after the call returned. */
+const holdsTurn = (e: PendingApproval): boolean => !(e.kind === 'permission' && e.join)
+
+/** The person behind the turn a join DM was addressed to: its console user, else the chat member it went to. */
+function joinDmAsker(join: JoinWait, target: DmTarget): ReadAsker | undefined {
+  if (target.consoleUserId) return { kind: 'console', userId: target.consoleUserId }
+  return join.askers.find(
+    (asker) => asker.kind === 'member' && asker.integrationId === target.integrationId && asker.userId === target.userId
+  )
+}
 
 /** What a webchat conversation is told while its owner may answer the request on its page. */
 const WEBCHAT_OWNER_APPROVAL_NOTICE =
@@ -566,7 +608,8 @@ export class PermissionCoordinator {
 
   /** Any answerable request for the session across both pending maps (approval elicitations only). */
   private hasPendingApproval(owner: HostKey, sessionId: string): boolean {
-    for (const e of this.pendingApprovals.values()) if (e.owner === owner && e.sessionId === sessionId) return true
+    for (const e of this.pendingApprovals.values())
+      if (holdsTurn(e) && e.owner === owner && e.sessionId === sessionId) return true
     for (const e of this.pendingElicits.values())
       if (e.approval && e.owner === owner && e.sessionId === sessionId) return true
     return false
@@ -628,7 +671,8 @@ export class PermissionCoordinator {
     request: ApprovalRequestParts,
     p: Pending,
     notifyChat = true,
-    requester?: { id: null; name: string }
+    requester?: { id: null; name: string },
+    joinAsk?: StoredJoinAsk
   ): Promise<{ requesterName: string | null }> {
     const command = approvalRequestSummary(request)
     const store = this.host.store()
@@ -648,7 +692,8 @@ export class PermissionCoordinator {
       requesterName,
       command,
       status: 'pending',
-      resolvedAt: null
+      resolvedAt: null,
+      ...(joinAsk ? { joinAsk: JSON.stringify(joinAsk) } : {})
     })
 
     if (!notifyChat) return { requesterName }
@@ -717,7 +762,7 @@ export class PermissionCoordinator {
   awaitingHuman(owner: HostKey, sessionId: string): boolean {
     const mine = (pending: { owner: HostKey; sessionId: string }): boolean =>
       pending.owner === owner && pending.sessionId === sessionId
-    for (const pending of this.pendingApprovals.values()) if (mine(pending)) return true
+    for (const pending of this.pendingApprovals.values()) if (holdsTurn(pending) && mine(pending)) return true
     for (const pending of this.pendingElicits.values()) if (mine(pending)) return true
     for (const pending of this.pendingCallerApprovals.values()) if (mine(pending)) return true
     return false
@@ -726,7 +771,7 @@ export class PermissionCoordinator {
   /** When the session's oldest unanswered request or question was asked, or undefined when none waits. */
   oldestHumanWaitAskedAt(owner: HostKey, sessionId: string): number | undefined {
     let oldest: number | undefined
-    for (const pending of [...this.pendingApprovals.values(), ...this.pendingElicits.values()]) {
+    for (const pending of [...[...this.pendingApprovals.values()].filter(holdsTurn), ...this.pendingElicits.values()]) {
       if (pending.owner !== owner || pending.sessionId !== sessionId) continue
       if (oldest === undefined || pending.askedAt < oldest) oldest = pending.askedAt
     }
@@ -1003,6 +1048,240 @@ export class PermissionCoordinator {
         this.host.log().warn(`approval DM beside the card for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
       })
     return await this.trackHumanApprovalWait(p, result)
+  }
+
+  /** Ask a person behind the turn before the bot joins a public channel (#2979); `offered` names whom once a card is up, and the answer may come after the turn ended. */
+  async askToJoin(p: Pending, ask: JoinAsk, waitMs: number, offered: (to: string | null) => void): Promise<JoinAnswer> {
+    const { hostKey: owner, acpSessionId: sessionId } = p
+    const agentId = hostKeyAgentId(owner)
+    // A patrol never asks (assistant-mode.md §5.9).
+    if (!this.turnStillLive(owner, sessionId, p) || isPatrolCoordinate(p.plan.sessionThread))
+      return { outcome: 'unavailable' }
+    const requestId = randomUUID()
+    const webchat = p.webchat !== undefined && !p.webchat.continuation
+    const facet = webchat ? undefined : this.joinCardFacet(agentId, p)
+    const dm = webchat || facet ? undefined : await this.joinDm(agentId, requestId, ask.askers)
+    if ((!webchat && !facet && !dm) || !this.turnStillLive(owner, sessionId, p)) return { outcome: 'unavailable' }
+    const params = joinRequestParams(sessionId, p.plan.agentName, ask)
+    let resolveResult!: (res: RequestPermissionResponse) => void
+    const result = new Promise<RequestPermissionResponse>((resolve) => (resolveResult = resolve))
+    const join: JoinWait = { ...ask }
+    const entry: PermissionApproval = {
+      kind: 'permission',
+      owner,
+      agentId,
+      sessionId,
+      askedAt: this.host.clock().now(),
+      params,
+      evaluationParams: params,
+      join,
+      resolve: resolveResult
+    }
+    this.pendingApprovals.set(requestId, entry)
+    const stored: StoredJoinAsk = { name: ask.name, purpose: ask.purpose, ...(ask.tool ? { tool: ask.tool } : {}) }
+    const recorded = this.noteEditorPermissionRequest(
+      requestId,
+      agentId,
+      sessionId,
+      permissionRequestParts(params),
+      p,
+      false,
+      undefined,
+      stored
+    )
+    this.recordedWrites.set(requestId, recorded)
+    let requesterName: string | null
+    try {
+      requesterName = (await recorded).requesterName
+    } catch (err) {
+      this.pendingApprovals.delete(requestId)
+      throw err
+    } finally {
+      this.recordedWrites.delete(requestId)
+    }
+    if (this.pendingApprovals.get(requestId) === entry) {
+      join.timer = this.host.clock().setTimeout(() => {
+        void this.expireJoinAsk(requestId, entry).catch((err) =>
+          this.host.log().warn(`join confirmation for "${p.plan.sessionKey}" did not settle: ${formatErr(err)}`)
+        )
+      }, waitMs)
+      const posted = webchat
+        ? this.noticeWebchatJoin(p, params)
+        : facet
+          ? await this.postJoinCard(requestId, entry, p, facet)
+          : dm !== undefined &&
+            (await this.sendApprovalDm(requestId, agentId, p, requesterName, undefined, dm).then(
+              () => entry.notify !== undefined || this.pendingApprovals.get(requestId) !== entry,
+              (err: unknown) => {
+                this.host.log().warn(`join confirmation DM for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+                return false
+              }
+            ))
+      if (!posted) await this.abandonJoinAsk(requestId, entry)
+      else offered(dm?.target.displayName ?? requesterName)
+    }
+    const res = await result
+    const by = join.answeredBy ? { by: join.answeredBy } : {}
+    if (res.outcome.outcome === 'selected')
+      return { outcome: res.outcome.optionId === JOIN_OPTION ? 'join' : 'declined', ...by }
+    return { outcome: join.ended ?? 'unavailable' }
+  }
+
+  /** The turn's own card surface for a join confirmation: an open conversation it can post in, never a sub-session's. */
+  private joinCardFacet(agentId: string, p: Pending): ApprovalCardFacet | undefined {
+    if (isSubsessionCoordinate(p.plan.sessionThread) || p.plan.approvalSurfaceSuppressed || !chatOut(p))
+      return undefined
+    const facet = this.host.approvalCardFacet(p.plan.platform)
+    if (!facet) return undefined
+    // An external place gets no card naming another channel: it goes to the person's DM instead.
+    const surface = this.host.chatSurface(
+      agentId,
+      p.plan.integrationId,
+      p.plan.channel,
+      p.entry.msg.externallyShared === true
+    )
+    return surface === 'open' ? facet : undefined
+  }
+
+  /** The first person behind the turn a DM card reaches. */
+  private async joinDm(
+    agentId: string,
+    requestId: string,
+    askers: readonly ReadAsker[]
+  ): Promise<{ target: DmTarget; channel: string } | undefined> {
+    for (const asker of askers) {
+      const dm = await this.host.personDm?.(agentId, requestId, asker).catch(() => undefined)
+      if (dm) return dm
+    }
+    return undefined
+  }
+
+  /** Post the join card in the turn's own conversation, its handle kept on the row so a restart's sweep retires it. */
+  private async postJoinCard(
+    requestId: string,
+    rec: PermissionApproval,
+    p: Pending,
+    facet: ApprovalCardFacet
+  ): Promise<boolean> {
+    const thread = p.plan.thread ? { thread: p.plan.thread } : {}
+    const chat: ChatPermissionCard = {
+      facet,
+      conn: chatOut(p),
+      channel: facet.cardChannel?.({ channel: p.plan.channel, ...thread }) ?? p.plan.channel,
+      ...thread,
+      place: { integrationId: p.plan.integrationId, channel: p.plan.channel }
+    }
+    rec.chat = chat
+    const via = p.plan.integrationId ? { via: { agentId: rec.agentId, integrationId: p.plan.integrationId } } : {}
+    const draft = facet.build(
+      { requestId, params: rec.params, sessionTarget: this.host.httpSlackSessionTarget(p), ...via },
+      chat.conn
+    )
+    const ts = draft ? await facet.send(this.elicitCardHost, p, draft).catch(() => undefined) : undefined
+    if (!ts) return this.pendingApprovals.get(requestId) !== rec
+    chat.ts = ts
+    if (this.pendingApprovals.get(requestId) !== rec) {
+      if (chat.settledFirst) facet.rewrite(chat, chat.settledFirst)
+      return true
+    }
+    const integrationId = p.plan.integrationId
+    const stored =
+      integrationId !== undefined &&
+      (await this.host
+        .store()
+        .setPermissionRequestNotify(rec.agentId, requestId, integrationId, chat.channel, ts)
+        .catch(() => false))
+    if (stored && this.pendingApprovals.get(requestId) === rec) chat.stored = { agentId: rec.agentId, requestId }
+    else if (stored)
+      void this.host
+        .store()
+        .clearPermissionRequestNotify(rec.agentId, requestId)
+        .catch(() => {})
+    return true
+  }
+
+  /** A webchat conversation's people answer among its pending requests; its stream says where. */
+  private noticeWebchatJoin(p: Pending, params: RequestPermissionRequest): boolean {
+    const wc = p.webchat
+    if (!wc) return false
+    try {
+      wc.sink.output({
+        conversationId: wc.conversationId,
+        turnId: wc.turnId,
+        index: wc.index++,
+        event: {
+          kind: 'message',
+          text: `🔒 ${permToolLabel(params)} Answer it among this conversation’s pending requests.`
+        }
+      })
+    } catch (err) {
+      this.host.log().warn(`join confirmation notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
+    }
+    return true
+  }
+
+  /** Nobody answered in time: the card says so and the call goes on without joining. */
+  private async expireJoinAsk(id: string, rec: PermissionApproval): Promise<void> {
+    if (this.pendingApprovals.get(id) !== rec || !rec.join) return
+    if (!(await this.resolveStoredPermissionRequest(rec.agentId, id, 'expired'))) return
+    if (this.pendingApprovals.get(id) !== rec) return
+    this.pendingApprovals.delete(id)
+    rec.join.ended = 'expired'
+    this.retireApprovalCards(id, rec, JOIN_EXPIRED_TEXT, undefined, { kind: 'cancelled' })
+    rec.resolve({ outcome: { outcome: 'cancelled' } })
+  }
+
+  /** No card reached anyone: the request ends unanswered and leaves nothing to sweep. */
+  private async abandonJoinAsk(id: string, rec: PermissionApproval): Promise<void> {
+    if (this.pendingApprovals.get(id) !== rec) return
+    this.pendingApprovals.delete(id)
+    this.clearJoinWait(rec)
+    await this.resolveStoredPermissionRequest(rec.agentId, id, 'expired')
+    rec.resolve({ outcome: { outcome: 'cancelled' } })
+  }
+
+  private clearJoinWait(rec: PendingApproval): void {
+    if (rec.kind === 'permission' && rec.join?.timer) this.host.clock().clearTimeout(rec.join.timer)
+  }
+
+  /** Who answered a join card, and as which person behind the turn: a chat member there, or a console user by the account they linked; undefined for anyone else. */
+  private async joinCardAnswerer(
+    requestId: string,
+    rec: PermissionApproval & { join: JoinWait },
+    chat: ChatPermissionCard,
+    actor: InteractionActor
+  ): Promise<{ by: Decider; asker: ReadAsker } | undefined> {
+    const integrationId = chat.place.integrationId
+    const named = async () => actor.name ?? (await this.cardMemberName(chat, actor.userId)) ?? null
+    const decider = async (name?: string | null): Promise<Decider> => ({
+      resolvedBy: cardAnswererId(chat, actor.userId),
+      resolvedByName: name ?? (await named())
+    })
+    const member = rec.join.askers.find(
+      (asker) => asker.kind === 'member' && asker.integrationId === integrationId && asker.userId === actor.userId
+    )
+    if (member) return { by: await decider(), asker: member }
+    const linked = rec.join.linked?.find((l) => l.integrationId === integrationId && l.userId === actor.userId)
+    if (linked) return { by: await decider(), asker: { kind: 'console', userId: linked.consoleUserId } }
+    const cp = this.host.cpApprovalRoute()
+    const teamId = chat.facet.answerScope?.(chat)
+    if (!cp || !teamId || !integrationId) return undefined
+    for (const asker of rec.join.askers) {
+      if (asker.kind !== 'console') continue
+      const verified = await cp
+        .approvalRoute(
+          {
+            agentId: rec.agentId,
+            requestId,
+            integrationIds: [integrationId],
+            verify: { integrationId, teamId, userId: actor.userId, consoleUserId: asker.userId }
+          },
+          this.host.orgForAgent(rec.agentId)
+        )
+        .catch(() => undefined)
+      if (verified?.allowed === true) return { by: await decider(verified.displayName), asker }
+    }
+    return undefined
   }
 
   /** Where only editors may answer a card, an editor is also told in a DM unless the person who asked is one; the first answer decides. */
@@ -1338,6 +1617,9 @@ export class PermissionCoordinator {
     for (const row of await this.host.store().takeOrphanedPermissionNotices(integrationId)) {
       const handle = { conn: cards.conn, channel: row.notifyChannel, ts: row.notifyTs }
       cards.facet.rewrite(handle, cards.facet.orphaned(row))
+      // A join card the restart left pending did nothing: its session is told so, as after a timeout.
+      const join = row.status === 'expired' ? parseStoredJoinAsk(row.joinAsk) : undefined
+      if (join) this.host.joinCardExpired?.(row.agentId, row.sessionId, join)
     }
   }
 
@@ -1408,6 +1690,10 @@ export class PermissionCoordinator {
     actor: InteractionActor | undefined
   ): Promise<{ ok: true; name: string | null } | { ok: false; authoritative: boolean }> {
     if (!actor || actor.isBot || actor.userId !== notify.target.userId) return { ok: false, authoritative: false }
+    // A join confirmation's DM went to a person behind the turn; one routed by their chat account needs no console recheck.
+    const asked = this.pendingApprovals.get(requestId)
+    if (asked?.kind === 'permission' && asked.join && !notify.target.consoleUserId)
+      return { ok: true, name: actor.name ?? null }
     if (notify.asker) {
       const verdict = await this.chatAnswerVerdict(agentId, notify.asker, actor, true)
       if (verdict === 'allowed') return { ok: true, name: actor.name ?? null }
@@ -1450,22 +1736,27 @@ export class PermissionCoordinator {
     picked: PickedChoice<R>,
     by: Decider | undefined,
     surface: 'console' | 'chat' | 'dm',
-    actor?: InteractionActor
+    actor?: InteractionActor,
+    answeredBy?: ReadAsker
   ): Promise<boolean> {
     if (!(await this.resolveStoredPermissionRequest(rec.agentId, id, picked.allow ? 'allowed' : 'denied', by)))
       return false
+    // Only the answer that won the row speaks for the join's continuation; one that lost touches nothing.
+    if (rec.kind === 'permission' && rec.join && answeredBy) rec.join.answeredBy = answeredBy
     // Only now is this answer the decision: the surface admitted it, the choice was real, and the row resolved.
     if (actor) this.host.logSessionAction(`permission:${picked.allow ? 'allowed' : 'denied'}`, rec.sessionId, actor)
     this.pendingApprovals.delete(id)
     this.clearSubsessionWait(rec)
-    this.syncApprovalActivity(rec.owner, rec.sessionId, { id, allowed: picked.allow })
+    this.clearJoinWait(rec)
+    if (holdsTurn(rec)) this.syncApprovalActivity(rec.owner, rec.sessionId, { id, allowed: picked.allow })
     if (rec.kind === 'permission') {
       this.permissionEvaluationDetails.set(rec.evaluationParams, {
         reason: surface === 'chat' ? 'chat_user' : 'agent_editor'
       })
     }
     const name = by?.resolvedByName ?? (surface === 'console' ? 'an Agent editor' : null)
-    this.retireApprovalCards(id, rec, name ? `${picked.label} — ${name}` : picked.label, picked.allow, {
+    const label = rec.kind === 'permission' && rec.join ? joinDecidedText(rec.join, picked.allow) : picked.label
+    this.retireApprovalCards(id, rec, name ? `${label} — ${name}` : label, picked.allow, {
       kind: picked.allow ? 'allowed' : 'denied',
       by: name
     })
@@ -1665,6 +1956,13 @@ export class PermissionCoordinator {
       })
   }
 
+  /** A pending join confirmation's console askers, the only console users it takes an answer from; undefined for any other request. */
+  pendingJoinAskers(agentId: string, requestId: string): string[] | undefined {
+    const rec = this.pendingApprovals.get(requestId)
+    if (rec?.agentId !== agentId || rec.kind !== 'permission' || !rec.join) return undefined
+    return rec.join.askers.flatMap((asker) => (asker.kind === 'console' ? [asker.userId] : []))
+  }
+
   /** The options a live approval offers the console; undefined once it is settled or when it offers no choices (#1969). */
   pendingPermissionOptions(agentId: string, requestId: string): AgentPermissionOption[] | undefined {
     const rec = this.pendingApprovals.get(requestId)
@@ -1684,10 +1982,16 @@ export class PermissionCoordinator {
     const rec = this.pendingApprovals.get(req.requestId)
     if (rec?.agentId === req.agentId) {
       if (rec.kind === 'permission') {
+        // Only a person behind the turn decides whether the bot joins a channel, an Agent editor included.
+        if (rec.join && !joinDecidedByAsker(rec.join, req.decidedBy)) return { ok: false, reason: JOIN_ANSWER_REFUSED }
         const choices = permissionChoices(rec.params)
         const picked = pickChoice(choices, req, permissionFallback(choices))
         if (!picked.ok) return picked
-        return (await this.settle(req.requestId, rec, picked, decidedBy, 'console')) ? { ok: true } : gone
+        const answeredBy: ReadAsker | undefined =
+          rec.join && req.decidedBy ? { kind: 'console', userId: req.decidedBy.slice('user:'.length) } : undefined
+        return (await this.settle(req.requestId, rec, picked, decidedBy, 'console', undefined, answeredBy))
+          ? { ok: true }
+          : gone
       }
       const picked = pickChoice(rec.choices, req, elicitationFallback)
       if (!picked.ok) return picked
@@ -1754,7 +2058,9 @@ export class PermissionCoordinator {
       const by = await this.authorizeDm(input.requestId, { ...rec, notify: rec.notify }, input.actor, optionId)
       if (!by) return
       const picked = choiceById(permissionChoices(rec.params), optionId)
-      if (picked) await this.settle(input.requestId, rec, picked, by, 'dm', input.actor)
+      if (!picked) return
+      const answeredBy = rec.join ? joinDmAsker(rec.join, rec.notify.target) : undefined
+      await this.settle(input.requestId, rec, picked, by, 'dm', input.actor, answeredBy)
       return
     }
     // A request no card was posted for is the console's alone.
@@ -1764,6 +2070,23 @@ export class PermissionCoordinator {
     // A bot never answers, and its click leaves the card for the people there.
     if (input.actor?.isBot) {
       this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, input.actor)
+      return
+    }
+    // A join confirmation is answered only by a person behind the turn, whatever the agent lets people do in chat.
+    if (rec.join) {
+      const answered = input.actor
+        ? await this.joinCardAnswerer(input.requestId, { ...rec, join: rec.join }, chat, input.actor)
+        : undefined
+      if (!answered) {
+        this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, input.actor)
+        if (!input.actor) return
+        if (!chat.facet.tellPrivately) return JOIN_ANSWER_REFUSED
+        chat.facet.tellPrivately(chat, input.actor.userId, JOIN_ANSWER_REFUSED)
+        return
+      }
+      const picked = choiceById(permissionChoices(rec.params), optionId)
+      if (!picked) return
+      await this.settle(input.requestId, rec, picked, answered.by, 'chat', input.actor, answered.asker)
       return
     }
     // The level was lowered, the conversation closed, or only editors may answer here and this person is not one.
@@ -1818,7 +2141,8 @@ export class PermissionCoordinator {
   /** Retire in-chat Allow/Deny controls once the agent no longer lets people approve in chat; the requests stay pending for editors. */
   disableChatPermissionSurfaces(agentId: string): void {
     for (const pending of this.pendingApprovals.values()) {
-      if (pending.agentId !== agentId) continue
+      // A join confirmation is not a tool-call approval, so the level does not reach it.
+      if (pending.agentId !== agentId || (pending.kind === 'permission' && pending.join)) continue
       // The asker's own card for an external place was a chat-side answer too.
       const dm = pending.notify?.asker ? pending.notify : undefined
       if (dm) {
@@ -1844,7 +2168,8 @@ export class PermissionCoordinator {
     for (const caller of this.pendingCallerApprovals.values())
       if (caller.owner === owner && caller.sessionId === sessionId) caller.cancel()
     for (const [id, pending] of this.pendingApprovals) {
-      if (pending.owner !== owner || pending.sessionId !== sessionId) continue
+      // A join confirmation outlives the turn that asked: its own wait ends it.
+      if (pending.owner !== owner || pending.sessionId !== sessionId || !holdsTurn(pending)) continue
       this.pendingApprovals.delete(id)
       this.clearSubsessionWait(pending)
       this.syncApprovalActivity(owner, sessionId, { id })

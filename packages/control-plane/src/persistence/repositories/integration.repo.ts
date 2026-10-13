@@ -327,37 +327,20 @@ export class PgBotRepo implements BotRepo {
   }
 
   async update(orgId: OrgId, id: BotId, patch: BotUpdate): Promise<void> {
-    // Serialized on the bot row: membership admission (addBotMembership) takes
-    // the same lock, so a disable can never commit alongside a concurrent
-    // second-agent admission — whichever wins, the loser observes the winner's
-    // committed state. The capacity recount lives HERE (not only in the route's
-    // optimistic pre-check) because only under the lock is it authoritative.
+    // Serialized on the bot row with membership admission, so the capacity recount here is authoritative.
     await withAmbientTx(this.db, async (tx) => {
-      // The org fence rides the row-lock read and refuses BEFORE the recount:
-      // reaching the recount with a foreign id would answer `BotStillShared`
-      // (a 409 carrying the foreign bot's occupancy) instead of the missing-row
-      // 404 the tenancy fence owes (org-scoped-data-layer.md §3).
+      // The org fence rides the row-lock read, so a foreign id is missing (404), never `BotStillShared`.
       const locked = await tx.$queryRaw<
-        { id: string; platformConfig: unknown }[]
-      >`SELECT id, "platformConfig" FROM bot WHERE id = ${id} AND "orgId" = ${orgId} FOR UPDATE`
+        { id: string }[]
+      >`SELECT id FROM bot WHERE id = ${id} AND "orgId" = ${orgId} FOR UPDATE`
       if (locked.length === 0) throw new BotMissing(id)
       if (patch.shareable === false) {
         const active = await tx.integration.count({ where: { botId: id, status: 'active' } })
         if (active > 1) throw new BotStillShared(active)
       }
-      // The flag lives in the generic bag, so it is merged over the LOCKED row's copy: a
-      // blind write would drop the platform's own identity metadata stored beside it.
-      const bag = (locked[0]!.platformConfig as Record<string, unknown> | null) ?? {}
-      const platformConfig =
-        patch.joinPublicChannels !== undefined
-          ? ({ ...bag, joinPublicChannels: patch.joinPublicChannels } as Prisma.InputJsonObject)
-          : undefined
       await tx.bot.update({
         where: { id, orgId },
-        data: {
-          ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}),
-          ...(platformConfig !== undefined ? { platformConfig } : {})
-        }
+        data: patch.shareable !== undefined ? { shareable: patch.shareable } : {}
       })
     })
   }

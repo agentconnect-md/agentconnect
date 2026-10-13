@@ -360,17 +360,22 @@ export interface PermissionRequestRecord {
   // Who decided (slack-approval-dm.md §6.1): `user:<id>` / `slack:<teamId>:<userId>`.
   resolvedBy?: string | null
   resolvedByName?: string | null
+  /** A join confirmation's channel and call, as JSON (#2979); null for any other request. */
+  joinAsk?: string | null
 }
 
 /** A pending approval's posted DM card — the §5.4 handle an orphan rewrite needs. */
 export interface PermissionNoticeRow {
   id: string
   agentId: string
+  /** The runtime session it was asked in. */
+  sessionId: string
   status: PermissionRequestStatus
   command: string
   resolvedByName: string | null
   notifyChannel: string
   notifyTs: string
+  joinAsk: string | null
 }
 
 /** A settled sub-session request whose notice in its conversation was never rewritten (assistant-mode.md §5.6). */
@@ -1349,7 +1354,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 47
+export const SCHEMA_VERSION = 48
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1927,6 +1932,17 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     )
     for (const column of added)
       if (!columns.includes(column)) await db.exec(`ALTER TABLE permission_requests ADD COLUMN ${column} TEXT`)
+  },
+  // v48 keeps a join confirmation's channel and call, so a restart's sweep tells its session nothing was done (#2979).
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE permission_requests ADD COLUMN IF NOT EXISTS joinAsk TEXT')
+      return
+    }
+    const columns = ((await db.query('PRAGMA table_info(permission_requests)', [])).rows as { name: string }[]).map(
+      (c) => c.name
+    )
+    if (!columns.includes('joinAsk')) await db.exec('ALTER TABLE permission_requests ADD COLUMN joinAsk TEXT')
   }
 ]
 
@@ -2387,7 +2403,8 @@ export class LocalStore {
         noticeTs TEXT,
         besideIntegrationId TEXT,
         besideChannel TEXT,
-        besideTs TEXT
+        besideTs TEXT,
+        joinAsk TEXT
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
@@ -2944,11 +2961,12 @@ export class LocalStore {
     await this.db
       .prepare(
         `INSERT INTO permission_requests
-           (id, agentId, sessionId, createdAt, requesterId, requesterName, command, status, resolvedAt, ownerId)
+           (id, agentId, sessionId, createdAt, requesterId, requesterName, command, status, resolvedAt, ownerId, joinAsk)
          VALUES
-           (@id, @agentId, @sessionId, @createdAt, @requesterId, @requesterName, @command, @status, @resolvedAt, @ownerId)`
+           (@id, @agentId, @sessionId, @createdAt, @requesterId, @requesterName, @command, @status, @resolvedAt, @ownerId,
+            @joinAsk)`
       )
-      .run({ ...row, ownerId: this.ownerId ?? null } as unknown as SqlParams)
+      .run({ ...row, joinAsk: row.joinAsk ?? null, ownerId: this.ownerId ?? null } as unknown as SqlParams)
     await this.prunePermissionRequestHistory(record.agentId)
   }
 
@@ -3066,7 +3084,8 @@ export class LocalStore {
     const take = async (handle: 'notify' | 'beside'): Promise<PermissionNoticeRow[]> => {
       const rows = (await this.db
         .prepare(
-          `SELECT id, agentId, status, command, resolvedByName, ${handle}Channel AS notifyChannel, ${handle}Ts AS notifyTs
+          `SELECT id, agentId, sessionId, status, command, resolvedByName, ${handle}Channel AS notifyChannel,
+             ${handle}Ts AS notifyTs, joinAsk
            FROM permission_requests
            WHERE ${handle}IntegrationId = ? AND ${handle}Ts IS NOT NULL AND status != 'pending'
            ORDER BY resolvedAt DESC LIMIT ?`

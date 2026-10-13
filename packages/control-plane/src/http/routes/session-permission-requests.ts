@@ -1,4 +1,4 @@
-// A webchat conversation's own approval requests (product-conventions.md, What people can do in chat): its owner answers them where the agent lets people in chat approve, its editors always; proxied to the owning daemon, nothing kept here.
+// A webchat conversation's own approval requests (product-conventions.md, What people can do in chat): its owner answers them where the agent lets people in chat approve, its editors always, and its owner their own join confirmations at any level; proxied to the owning daemon, nothing kept here.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
@@ -14,7 +14,12 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import type { AgentRecord, SessionMetaRecord } from '../../persistence/ports.js'
 import { ConnectionClosed } from '../../ws/registry.js'
 import type { HttpDeps } from '../deps.js'
-import { AgentPermissionDecisionBody, AgentPermissionRequestPageDto, ErrorDto } from '../dto/index.js'
+import {
+  AgentPermissionDecisionBody,
+  AgentPermissionRequestPageDto,
+  ErrorDto,
+  toPermissionRequestDto
+} from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { ctxOf, orgOf } from '../rbac.js'
@@ -52,11 +57,11 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const access = makeSessionAccessResolver(deps)
 
-    // A webchat conversation the caller may view, whose requests its agent's editors answer, and its owner where people in chat may approve; the reply is sent on refusal.
+    // A webchat conversation the caller may view: every request for its agent's editors and, where people in chat may approve, its owner; its owner's own join confirmations at any level.
     const admit = async (
       req: FastifyRequest,
       reply: FastifyReply
-    ): Promise<{ row: SessionMetaRecord; agent: AgentRecord; daemonId: DaemonId } | null> => {
+    ): Promise<{ row: SessionMetaRecord; agent: AgentRecord; daemonId: DaemonId; joinsOnly: boolean } | null> => {
       const row = await deps.repos.session.get(orgOf(req), SessionId((req.params as { sessionId: string }).sessionId))
       // A sub-session's page is read-only: its requests are answered in the conversation it belongs to.
       if (!row || row.platform !== 'webchat' || isSubsessionCoordinate(row.thread)) {
@@ -72,7 +77,8 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
       }
       // An owner who is not an editor is a viewer: webchat lets anyone who can see the agent talk to it.
       const owner = ownsSession(row, audience.identitySet)
-      if (!canEdit(agent, ctx) && !(owner && chatApprovalsAllowed(agent))) {
+      const everything = canEdit(agent, ctx) || (owner && chatApprovalsAllowed(agent))
+      if (!everything && !owner) {
         await send(reply, {
           status: 403,
           error: 'Forbidden',
@@ -97,7 +103,26 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
         })
         return null
       }
-      return { row, agent, daemonId }
+      return { row, agent, daemonId, joinsOnly: !everything }
+    }
+
+    // The conversation's requests from its daemon; a caller admitted for join confirmations sees only those that ask them.
+    const listed = async (
+      admitted: { row: SessionMetaRecord; agent: AgentRecord; daemonId: DaemonId; joinsOnly: boolean },
+      userId: string
+    ) => {
+      const sessionId = String(admitted.row.id)
+      const page = await deps.control.agentPermissionRequests(admitted.daemonId, {
+        agentId: admitted.agent.id,
+        limit: 100,
+        conversation: { sessionId }
+      })
+      // A daemon answers for the conversation asked about only; anything else is dropped rather than shown.
+      return page.requests.filter(
+        (r) =>
+          (r.sessionId === sessionId || r.parentSessionId === sessionId) &&
+          (!admitted.joinsOnly || (r.kind === 'join' && r.joinAskers?.includes(userId) === true))
+      )
     }
 
     r.get(
@@ -107,7 +132,7 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'List a webchat conversation’s approval requests',
           description:
-            'Proxies the owning daemon’s bounded, secret-masked approval requests of one webchat conversation and of its background sub-sessions, pending ones first. Callers who can edit the agent may read them, and so may the conversation’s owner while the agent lets people in chat approve tool calls (`chatActions` `approve` or `settings`); the conversation must be one the caller may view. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot narrow its requests to one conversation. Nothing is stored by this call.',
+            'Proxies the owning daemon’s bounded, secret-masked approval requests of one webchat conversation and of its background sub-sessions, pending ones first. Callers who can edit the agent may read them, and so may the conversation’s owner while the agent lets people in chat approve tool calls (`chatActions` `approve` or `settings`); at any level the owner reads the join confirmations (`kind: join`) that ask them. The conversation must be one the caller may view. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot narrow its requests to one conversation. Nothing is stored by this call.',
           operationId: 'listSessionPermissionRequests',
           params: ConversationParam,
           response: { 200: AgentPermissionRequestPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -116,17 +141,8 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const admitted = await admit(req, reply)
         if (!admitted) return reply
-        const sessionId = String(admitted.row.id)
         try {
-          const page = await deps.control.agentPermissionRequests(admitted.daemonId, {
-            agentId: admitted.agent.id,
-            limit: 100,
-            conversation: { sessionId }
-          })
-          // A daemon answers for the conversation asked about only; anything else is dropped rather than shown.
-          return {
-            requests: page.requests.filter((r) => r.sessionId === sessionId || r.parentSessionId === sessionId)
-          }
+          return { requests: (await listed(admitted, ctxOf(req).userId)).map(toPermissionRequestDto) }
         } catch (err) {
           const failure = daemonFailure(err)
           if (!failure) throw err
@@ -142,7 +158,7 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Decide a webchat conversation’s approval request',
           description:
-            'Allows or denies one pending runtime request of a webchat conversation or of one of its background sub-sessions, optionally by one of the options it offers, exactly as an Agent editor’s decision would. Callers who can edit the agent may decide, and so may the conversation’s owner while the agent lets people in chat approve tool calls (`chatActions` `approve` or `settings`); the decider is recorded. Whichever surface answers first decides it: one no longer pending answers 409, and a request of another conversation answers 404. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot bind a decision to one conversation.',
+            'Allows or denies one pending runtime request of a webchat conversation or of one of its background sub-sessions, optionally by one of the options it offers, exactly as an Agent editor’s decision would. Callers who can edit the agent may decide, and so may the conversation’s owner while the agent lets people in chat approve tool calls (`chatActions` `approve` or `settings`); at any level the owner answers a join confirmation (`kind: join`) that asks them. The decider is recorded. Whichever surface answers first decides it: one no longer pending answers 409, and a request of another conversation answers 404. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot bind a decision to one conversation.',
           operationId: 'decideSessionPermissionRequest',
           params: DecisionParam,
           body: AgentPermissionDecisionBody,
@@ -161,6 +177,14 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
         try {
           // Stamped server-side (slack-approval-dm.md §6.2), never client-supplied.
           const me = ctxOf(req)
+          // Admitted for join confirmations only: the request must be one that asks them, or it is not theirs to answer.
+          if (admitted.joinsOnly && !(await listed(admitted, me.userId)).some((r) => r.id === req.params.requestId)) {
+            return send(reply, {
+              status: 403,
+              error: 'Forbidden',
+              message: 'only an Agent editor can answer this agent’s requests'
+            })
+          }
           const profile = await deps.repos.user.getProfile(me.userId).catch(() => null)
           const decidedByName = profile?.displayName ?? profile?.email ?? undefined
           const ack = await deps.control.agentPermissionDecision(admitted.daemonId, {

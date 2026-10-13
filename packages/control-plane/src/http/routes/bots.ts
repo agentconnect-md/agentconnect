@@ -20,9 +20,7 @@ import { orgOf, denyViewerWrite } from '../rbac.js'
 import { BotDto, BotListDto, UpdateBotBody, ErrorDto, IdParam, type BotDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import { multiAgentUnsupportedMessage } from '../../platforms/sharing.js'
-import { botJoinsPublicChannels } from '../../platforms/slack/provider.js'
 import { deleteBotIdentity } from '../uninstall.js'
-import { pushBotConfig } from '../bot-config-push.js'
 import type { CpPlatformRegistry } from '../../platforms/provider.js'
 
 export function toBotDto(b: BotRecord, platforms: Pick<CpPlatformRegistry, 'get'>): BotDtoT {
@@ -39,7 +37,6 @@ export function toBotDto(b: BotRecord, platforms: Pick<CpPlatformRegistry, 'get'
     // non-human creator ⇒ null (the console shows the prebuilt/"—" fallback).
     createdBy: b.createdBy && !isSyntheticEmail(b.createdBy.email) ? b.createdBy.userId : null,
     shareable: b.shareable,
-    joinPublicChannels: botJoinsPublicChannels(b),
     transport: b.transport,
     inUseByAgentId: b.inUseByAgentId,
     agentIds: b.agentIds,
@@ -149,11 +146,7 @@ export function botRoutes(deps: HttpDeps) {
       }
     )
 
-    // Flip the HTTP bot's multi-agent capacity (`Bot.shareable`,
-    // shared-bot-relay.md §4.1). Transport is immutable: relay ingress remains in
-    // place either way. Enabling needs BOTH a platform whose manifest declares
-    // `multiAgentShareable` (the same precondition the shareable install checks)
-    // and the http transport; disabling is refused while >1 agent uses the bot.
+    // Flip an HTTP bot's multi-agent capacity (shared-bot-relay.md §4.1): enabling needs a `multiAgentShareable` platform and the http transport.
     r.patch(
       '/bots/:id',
       {
@@ -161,7 +154,7 @@ export function botRoutes(deps: HttpDeps) {
           tags: [Tag.Bots],
           summary: 'Update a bot',
           description:
-            'Allow or disallow this HTTP bot from serving multiple agents (allowing requires a platform that supports multi-agent bots; relay ingress is unchanged either way), and/or let the bot join public channels on demand where the platform supports it.',
+            'Allow or disallow this HTTP bot from serving multiple agents (allowing requires a platform that supports multi-agent bots; relay ingress is unchanged either way).',
           operationId: 'updateBot',
           params: IdParam,
           body: UpdateBotBody,
@@ -174,39 +167,8 @@ export function botRoutes(deps: HttpDeps) {
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        // The join switch is a plain per-bot setting: no membership to recount, so no
-        // mutation lease. Gated on the manifest FIRST, like `shareable` below — a flag no
-        // daemon reads must not sit on the row as a promise.
-        if (req.body.joinPublicChannels !== undefined) {
-          if (!manifestFor(bot.platform).publicChannelJoin) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: `${bot.platform} bots cannot join channels by themselves`
-            })
-          }
-          if (req.body.joinPublicChannels !== botJoinsPublicChannels(bot)) {
-            await deps.repos.bot.update(bot.orgId, bot.id, { joinPublicChannels: req.body.joinPublicChannels })
-            bot = (await deps.repos.bot.get(bot.orgId, bot.id)) ?? bot
-            await pushBotConfig(deps, app.log, bot)
-          }
-          if (req.body.shareable === undefined) return toBotDto(bot, deps.platforms)
-        }
-        if (req.body.shareable === undefined || req.body.shareable === bot.shareable)
-          return toBotDto(bot, deps.platforms) // no-op
-        // Multi-agent bots are a per-PLATFORM capability, and this route used to
-        // check only the transport — so any HTTP-transport bot on a platform the
-        // install path refuses (`validateShareableInstall`) could be flipped
-        // shareable here, leaving the flag on the row as a promise nothing
-        // honors. Only the ENABLE direction is refused: an already-flipped row
-        // from before this guard must stay repairable from the console.
-        //
-        // Checked before the mutation lease, unlike `shareable`/`agentIds`
-        // below: `platform` is immutable, so a locked re-read could not tell us
-        // anything the snapshot does not. 409 rather than the create route's
-        // 400 for the same rule — there the platform is the CLIENT's assertion
-        // in the request body, here it is the stored row's, exactly like the
-        // transport refusal this sits beside.
+        if (req.body.shareable === bot.shareable) return toBotDto(bot, deps.platforms) // no-op
+        // Only enabling is refused on a platform without multi-agent bots, so a row flipped before this guard stays repairable.
         if (req.body.shareable && !manifestFor(bot.platform).multiAgentShareable) {
           return reply
             .code(409)

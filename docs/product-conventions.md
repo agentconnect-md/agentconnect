@@ -123,11 +123,13 @@ Every level keeps these rules:
 - The setting does not change the agent's permission policy. Which tool calls need approval is
   set in the console, and an agent that allows every tool call never asks.
 
-Two things are outside this setting:
+Three things are outside this setting:
 
 - An assistant-mode patrol's proposal. Approving it is the same as asking the agent there, so
   whoever could ask there may approve it ("Assistant-mode proposals").
 - Stopping a turn or a sub-session, which follows the `!stop` sender rule.
+- Letting the bot join a public channel, which only a person behind the turn answers ("Joining a
+  public channel").
 
 Existing agents start where a new one does. An agent that had "Allow runtime changes in chat"
 switched off, or never set, moves to the second level, and one that had it switched on moves to
@@ -1089,8 +1091,44 @@ The conversation the agent is answering in is always writable.
 
 The agent-to-agent forms of `sendMessage` and the parent-session reply are not platform writes; the
 `toAgent` channel form keeps its own reach (on Slack, a public channel, or a private conversation
-only where the agent was invoked). Whether the bot joins a public Slack channel it is not in still
-follows the bot's "Automatically join public channels" setting.
+only where the agent was invoked).
+
+## Joining a public channel
+
+A bot joins a channel only when a person says so. When a read or a write the rules above allow needs
+the bot in a public channel it has not joined, the agent asks first. Only a platform whose bot can
+enter a public channel by itself asks this; today that is Slack. The tool call does not wait for the
+answer: it returns at once, saying whom it asked, and the answer arrives in the conversation later.
+
+- **Where it asks.** A card in the conversation the request came from, in the turn's thread, reads
+  "Let <agent> join #channel to read it?" (or "to post there?") with **Join** and **Don't join**. A
+  run that reads as a person (a schedule's, an item's, a sub-session's) asks in its own conversation
+  or, when it has none, in that person's direct message, routed as a draft's approver is. A
+  conversation shared with another organization gets no card naming the channel; the person's direct
+  message does. A webchat conversation lists it among its pending requests, where its owner answers
+  it at every level of "What people can do in chat", "Talk to the agent" included; the owner still
+  sees no tool-call approval at that level.
+- **Who answers.** Only a person behind the turn, whatever "What people can do in chat" allows.
+  Anyone else who clicks is refused privately and the card stays as it is, and a bot never answers.
+  The first valid answer decides, and the card is rewritten to "✅ Joined #channel — Name" or "Not
+  joined — Name", its buttons gone. There is no "always join".
+- **What happens.** Join: the bot joins, the read or post runs as the agent asked for it, and its
+  result reaches the agent as a message in that conversation, starting a turn there. That turn reads
+  and writes as the person who answered Join, so a request that goes on ("read #a and post a summary
+  to #b") is judged for them, and a second channel the bot is not in asks them again. Don't join, or
+  no answer within 10 minutes, the window an API caller has to answer the agent's question: the bot
+  does not join, nothing is read or sent, and the agent is told so the same way, in a turn no person
+  is behind.
+- **No one to ask.** A turn no person is behind never joins, and neither does a run whose person no
+  card can reach: the call fails with "the bot is not in #channel; invite it, or ask from a
+  conversation".
+- **A configured target.** A target an editor configured for a schedule or a hook counts as
+  consent: when the run posts into it and it is a public channel the bot is not in, the bot joins it
+  without asking. Only that target; any other conversation the run reaches follows the rules above.
+
+A card still waiting when the daemon restarts is rewritten as expired once its integration
+reconnects, and its conversation's agent is told that nothing was read or sent. The `toAgent` channel form asks nothing: where the bot is not in the channel, the
+platform refuses its post.
 
 ## Assistant-mode drafts
 

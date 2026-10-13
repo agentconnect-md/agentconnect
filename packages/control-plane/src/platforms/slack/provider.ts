@@ -134,55 +134,25 @@ export const SlackCpEnvSchema = {
   SLACK_PLATFORM_SIGNING_SECRET: z.string().optional()
 } satisfies ZodRawShape
 
-/**
- * The operator's "join public channels on demand" switch for one bot (`PATCH /bots/:id`),
- * read from the generic `platformConfig` bag where the update wrote it. Absent ⇒ true: a bot
- * that predates the switch keeps joining, which is the behaviour the daemon shipped with.
- */
-export function botJoinsPublicChannels(bot: Pick<BotRecord, 'platformConfig'>): boolean {
-  return bot.platformConfig?.joinPublicChannels !== false
-}
-
-/**
- * The §6.4 opaque `IntegrationSpec.config` payload for a DIRECT (socket) Slack
- * integration — the body of `integrationToSpec`'s slack arm
- * (`orchestrator/placement.ts`), extracted so the live placement path and the
- * provider's projector share ONE implementation. This daemon owns the Socket
- * Mode connection, so the app-level token rides along; a socket bot is
- * single-agent, so it is never shareable. Platform-private material ONLY: the
- * routing knobs (and the ingress mode) ride the core ENVELOPE, never this
- * payload (§6.4 final shape). Token-bearing — NEVER log the result.
- */
+/** The §6.4 config payload of a direct (socket) Slack integration, with its app-level token; token-bearing, never log it. */
 export function slackIntegrationConfig(
-  secret: Pick<BotSecretMaterial, 'botToken' | 'appToken'>,
-  joinPublicChannels = true
+  secret: Pick<BotSecretMaterial, 'botToken' | 'appToken'>
 ): IntegrationSlackConfig {
   return {
     shareable: false,
-    joinPublicChannels,
     botToken: secret.botToken,
     appToken: secret.appToken ?? ''
   }
 }
 
-/**
- * The §6.4 payload for a SHARED (http/relay) Slack integration — the slack arm
- * of `httpIntegrationToSpec` (`orchestrator/placement.ts`), extracted for the
- * same one-implementation reason. Send-only: xoxb but NO appToken (credential
- * domaining — the daemon must not be able to subscribe the event stream).
- * `shareable` gates the daemon's in-thread "Switch agent" control;
- * `providerAppId` is the bot row's public Slack app id (the permission-update
- * deep link). Token-bearing — NEVER log.
- */
+/** The §6.4 config payload of a shared (http) Slack integration: send-only, so no app token; token-bearing, never log it. */
 export function slackSharedIntegrationConfig(
   secret: Pick<BotSecretMaterial, 'botToken'>,
   shareable: boolean,
-  providerAppId?: string,
-  joinPublicChannels = true
+  providerAppId?: string
 ): IntegrationSlackConfig {
   return {
     shareable,
-    joinPublicChannels,
     botToken: secret.botToken,
     ...(providerAppId ? { appId: providerAppId } : {})
   }
@@ -596,8 +566,8 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
     // maintains no additional secret store to load from. Token-bearing — NEVER log.
     async projectIntegrationConfig(integration, bot, _core, secrets) {
       return bot.transport === 'http'
-        ? slackSharedIntegrationConfig(secrets, bot.shareable, bot.slackAppId ?? undefined, botJoinsPublicChannels(bot))
-        : slackIntegrationConfig(secrets, botJoinsPublicChannels(bot))
+        ? slackSharedIntegrationConfig(secrets, bot.shareable, bot.slackAppId ?? undefined)
+        : slackIntegrationConfig(secrets)
     },
 
     // §6.7 projection: same body as the live `buildAssign` slack fork (both

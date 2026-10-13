@@ -51,7 +51,7 @@ const EXEMPT: Record<string, string> = {
   completeShare: 'private one-shot completion boundary, behind completeUpload',
   shareMessageTs: 'private share-ts read behind uploadFile',
   toolFailure: 'private Slack-error sanitizer behind the agent-callable actions',
-  joiningOnRefusal: 'private not_in_channel join-and-retry boundary behind history/replies/post/upload',
+  markingNotJoined: 'private not_in_channel tagging boundary behind history/replies/post',
   canvasLink: 'private files.info read behind createCanvas',
   canvasSections: 'private canvases.sections.lookup behind readCanvas',
   rememberSearchToken: 'private ingress-side credential parking, behind rememberInboundSearchToken',

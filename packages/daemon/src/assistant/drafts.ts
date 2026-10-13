@@ -8,6 +8,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { MessageGateway, SendIdentity } from '../mcp/ops/context.js'
 import type { SubsessionApprover } from '../permissions/subsession-approval.js'
+import type { ReadAsker } from './place-access.js'
 import { isSendQueueTimeout } from '../platforms/send-queue.js'
 import type { AssistantDraftCardView, AssistantDraftChoice } from '../slack/render.js'
 import {
@@ -381,6 +382,22 @@ export class AssistantDrafts {
     if (!approver?.userId || !approver.teamId) return undefined
     const { integrationId, teamId, userId, channel } = approver
     return { integrationId, teamId, userId, channel }
+  }
+
+  /** A person behind a turn in their own DM, routed as a draft's approver: a member's own DM, else a console user's linked one. */
+  async personApprover(
+    agentId: string,
+    requestId: string,
+    asker: ReadAsker
+  ): Promise<{ target: AskerApprover & { consoleUserId?: string }; channel: string } | undefined> {
+    const approver = await (
+      asker.kind === 'member'
+        ? this.askerRung({ integrationId: asker.integrationId, userId: asker.userId, trusted: false })
+        : this.routeConsoleUser(agentId, requestId, asker.userId)
+    ).catch(() => undefined)
+    if (!approver?.userId || !approver.teamId) return undefined
+    const { integrationId, teamId, userId, channel, consoleUserId } = approver
+    return { target: { integrationId, teamId, userId, channel, ...(consoleUserId ? { consoleUserId } : {}) }, channel }
   }
 
   /** A task's sub-session ended or was cut: the card shows the outcome and the item records it. */

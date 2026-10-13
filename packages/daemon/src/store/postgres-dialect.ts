@@ -92,6 +92,7 @@ export const canonicalColumns = [
   'introducedAt',
   'isIm',
   'isQueueCmd',
+  'joinAsk',
   'lastDeliveredTs',
   'lastRunAt',
   'lastTurnOutcome',

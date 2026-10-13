@@ -1,4 +1,4 @@
-// Re-deliver every active integration of one bot after a bot-level change the daemon reads (a setting or a new credential).
+// Re-deliver every active integration of one bot after a bot-level change the daemon reads (a new credential).
 import type { HttpDeps } from './deps.js'
 import type { BotRecord } from '../persistence/ports.js'
 import { integrationToSpec } from '../orchestrator/placement.js'

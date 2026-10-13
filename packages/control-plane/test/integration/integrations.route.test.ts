@@ -1691,36 +1691,34 @@ describe('bot sharing capability (PATCH /bots/:id)', () => {
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).shareable).toBe(false)
   })
 
-  it('flips the join-public-channels switch on a Slack bot and refuses it elsewhere', async () => {
+  it('no longer reads or changes the retired join switch (#2979)', async () => {
     const { app } = withSpy()
     const slack = await seedBot({ platform: 'slack', transport: 'socket' })
-    const feishu = await seedBot({ platform: 'feishu', transport: 'http' })
+    await prisma.bot.update({ where: { id: slack }, data: { platformConfig: { joinPublicChannels: false } } })
 
-    // Absent from the row ⇒ on: the daemon's default, reported as such.
-    const before = await app.app.inject({ method: 'GET', url: `${ORG}/bots` })
-    expect((before.json() as { id: string; joinPublicChannels: boolean }[]).find((b) => b.id === slack)).toMatchObject({
-      joinPublicChannels: true
-    })
+    // The bot list no longer reports it, and the bag's boolean never leaks into `platformConfig`.
+    const listed = await app.app.inject({ method: 'GET', url: `${ORG}/bots` })
+    const row = (listed.json() as Record<string, unknown>[]).find((b) => b.id === slack)
+    expect(row).not.toHaveProperty('joinPublicChannels')
+    expect(row?.platformConfig).toBeNull()
 
-    const off = await app.app.inject({
+    // Alone it is not an update at all; beside `shareable` it is dropped, and the stored value is never touched.
+    const alone = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/bots/${slack}`,
-      payload: { joinPublicChannels: false }
+      payload: { joinPublicChannels: true }
     })
-    expect(off.statusCode).toBe(200)
-    expect(off.json()).toMatchObject({ joinPublicChannels: false, shareable: false })
-    // Stored in the generic bag, so no migration — and merged, not replaced.
+    expect(alone.statusCode).toBe(400)
+    const beside = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${slack}`,
+      payload: { shareable: false, joinPublicChannels: true }
+    })
+    expect(beside.statusCode).toBe(200)
+    expect(beside.json()).not.toHaveProperty('joinPublicChannels')
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: slack } })).platformConfig).toEqual({
       joinPublicChannels: false
     })
-
-    const refused = await app.app.inject({
-      method: 'PATCH',
-      url: `${ORG}/bots/${feishu}`,
-      payload: { joinPublicChannels: false }
-    })
-    expect(refused.statusCode).toBe(409)
-    expect((refused.json() as { message: string }).message).toBe('feishu bots cannot join channels by themselves')
 
     const empty = await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${slack}`, payload: {} })
     expect(empty.statusCode).toBe(400)

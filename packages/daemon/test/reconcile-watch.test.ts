@@ -363,7 +363,6 @@ describe('Daemon.reconcileSlackConnections', () => {
     const shared = {
       botToken: 'xoxb-shared',
       botUserId: 'U_SHARED',
-      setJoinPublicChannels: vi.fn(),
       stop: vi.fn().mockResolvedValue(undefined)
     }
     ;(daemon as any).connections.slackSharedPool.add(shared)
@@ -480,7 +479,6 @@ describe('Daemon.reconcileSlackConnections', () => {
     const conn = (botToken: string, appToken?: string) => ({
       botToken,
       appToken,
-      setJoinPublicChannels: vi.fn(),
       stop: vi.fn().mockResolvedValue(undefined)
     })
     const sharedLive = conn('xoxb-live', '')

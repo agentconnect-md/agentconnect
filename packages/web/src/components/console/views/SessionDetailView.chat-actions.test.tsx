@@ -12,7 +12,7 @@ import type { AgentPermissionRequestDto, SessionDetailDto } from '@/lib/api'
 const wire = vi.hoisted(() => ({
   detail: null as unknown,
   chatActions: 'approve' as 'talk' | 'approve' | 'settings',
-  requests: [] as unknown[],
+  requests: [] as AgentPermissionRequestDto[],
   conversationReads: [] as string[],
   agentReads: [] as string[],
   decisions: [] as unknown[][]
@@ -291,13 +291,31 @@ describe('a webchat conversation’s pending requests', () => {
     expect(wire.decisions).toEqual([['session-1', 'request-1', 'allow', undefined]])
   })
 
-  it('shows them nothing at talk, and nothing to anyone else who views the conversation', async () => {
+  it('shows them at talk only the join confirmations that ask them, and nothing to anyone else who views it', async () => {
+    // At talk the Control Plane lists the owner only the join confirmations that ask them.
     wire.chatActions = 'talk'
+    wire.requests = [
+      {
+        ...request,
+        id: 'join-1',
+        command: 'Let Ops bot join #general to post there?',
+        kind: 'join',
+        options: [
+          { optionId: 'join', name: 'Join', kind: 'allow_once' },
+          { optionId: 'dont-join', name: 'Don’t join', kind: 'reject_once' }
+        ]
+      }
+    ]
     await render()
-    expect(container?.textContent).not.toContain('Pending requests')
+    expect(container?.textContent).toContain('Pending requests')
+    expect(container?.textContent).toContain('Join a channel')
+    expect(container?.textContent).toContain('Let Ops bot join #general to post there?')
+    await act(async () => button('Join')?.click())
+    expect(wire.decisions).toEqual([['session-1', 'join-1', 'allow', 'join']])
 
     act(() => root?.unmount())
     root = createRoot(container!)
+    wire.conversationReads = []
     wire.chatActions = 'settings'
     wire.detail = detail(false)
     await render()

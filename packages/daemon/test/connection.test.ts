@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import { encodeSlackStatusOverflowValue, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
 import { consolidate, SlackConnection } from '../src/slack/connection.js'
+import { notJoinedChannel } from '../src/platforms/not-joined.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
 const mk = (id: string, appToken: string, botToken: string): Agent =>
@@ -352,11 +353,8 @@ describe('SlackConnection.listBotChannels', () => {
   })
 })
 
-// `joiningOnRefusal`: Slack requires membership even in a public channel, so the first read or
-// post into one the bot was never added to is refused with `not_in_channel`; the connection joins
-// (`conversations.join`, `channels:join`) and repeats the call exactly once. A private channel
-// cannot be joined, and then the original refusal is what surfaces.
-describe('SlackConnection joins a public channel on demand', () => {
+// Slack requires membership even in a public channel; the connection never joins on its own (#2979): it tags the refusal so core can ask a person first.
+describe('SlackConnection never joins a public channel on its own', () => {
   const notInChannel = () =>
     Object.assign(new Error('An API error occurred: not_in_channel'), { data: { error: 'not_in_channel' } })
   const appWith = (client: Record<string, unknown>) =>
@@ -371,92 +369,44 @@ describe('SlackConnection joins a public channel on demand', () => {
       stop: async () => {}
     }) as any
 
-  it('joins and re-reads channel history after not_in_channel', async () => {
-    const history = vi
-      .fn()
-      .mockRejectedValueOnce(notInChannel())
-      .mockResolvedValueOnce({ messages: [{ ts: '100.5', user: 'U1', text: 'hello' }] })
-    const join = vi.fn(async () => ({ ok: true }))
-    const conn = new SlackConnection(deps() as any, () => appWith({ conversations: { history, join } }))
-
-    await expect(conn.getChannelHistory('C1')).resolves.toMatchObject({
-      messages: [{ sender: 'U1', ts: '100.5', text: 'hello', isBot: false }]
-    })
-    expect(join).toHaveBeenCalledWith({ channel: 'C1' })
-    expect(history).toHaveBeenCalledTimes(2)
-  })
-
-  it('surfaces the original refusal when the channel cannot be joined (private)', async () => {
+  it('tags a channel-history refusal with the channel and joins nothing', async () => {
     const history = vi.fn(async () => {
       throw notInChannel()
     })
-    const join = vi.fn(async () => {
-      throw Object.assign(new Error('method_not_supported_for_channel_type'), {
-        data: { error: 'method_not_supported_for_channel_type' }
-      })
-    })
+    const join = vi.fn(async () => ({ ok: true }))
     const conn = new SlackConnection(deps() as any, () => appWith({ conversations: { history, join } }))
 
-    await expect(conn.getChannelHistory('G1')).rejects.toThrow('Slack channel history failed: not_in_channel')
-    expect(join).toHaveBeenCalledWith({ channel: 'G1' })
+    const err = await conn.getChannelHistory('C1').catch((e: unknown) => e)
+    expect((err as Error).message).toBe('Slack channel history failed: not_in_channel')
+    expect(notJoinedChannel(err)).toBe('C1')
+    expect(join).not.toHaveBeenCalled()
     expect(history).toHaveBeenCalledTimes(1)
   })
 
-  it('retries exactly once: a refusal that survives the join is real', async () => {
-    const history = vi.fn(async () => {
-      throw notInChannel()
-    })
-    const join = vi.fn(async () => ({ ok: true }))
-    const conn = new SlackConnection(deps() as any, () => appWith({ conversations: { history, join } }))
-
-    await expect(conn.getChannelHistory('C1')).rejects.toThrow('not_in_channel')
-    expect(join).toHaveBeenCalledTimes(1)
-    expect(history).toHaveBeenCalledTimes(2)
-  })
-
-  it('does not join while the bot’s switch is off, and picks up a live flip', async () => {
-    const history = vi.fn(async (): Promise<{ messages: unknown[] }> => {
-      throw notInChannel()
-    })
-    const join = vi.fn(async () => ({ ok: true }))
-    const conn = new SlackConnection(
-      {
-        ...deps(),
-        group: { appToken: 'xapp-1', botToken: 'xoxb-a', integrations: [], joinPublicChannels: false }
-      } as any,
-      () => appWith({ conversations: { history, join } })
-    )
-
-    // Off: the refusal surfaces as it always did, and nothing is joined.
-    await expect(conn.getChannelHistory('C1')).rejects.toThrow('not_in_channel')
-    expect(join).not.toHaveBeenCalled()
-
-    // The reconciler flips the LIVE connection when the operator turns it on.
-    conn.setJoinPublicChannels(true)
-    history.mockReset()
-    history.mockRejectedValueOnce(notInChannel()).mockResolvedValueOnce({ messages: [] })
-    await expect(conn.getChannelHistory('C1')).resolves.toMatchObject({ messages: [] })
-    expect(join).toHaveBeenCalledWith({ channel: 'C1' })
-  })
-
-  it('joins before re-posting a message and a thread read', async () => {
-    const postMessage = vi.fn().mockRejectedValueOnce(notInChannel()).mockResolvedValueOnce({ ts: '100.2' })
+  it('tags a refused post and thread read, and leaves another refusal untagged', async () => {
+    const postMessage = vi.fn().mockRejectedValueOnce(notInChannel())
     const replies = vi
       .fn()
       .mockRejectedValueOnce(notInChannel())
-      .mockResolvedValueOnce({ messages: [{ ts: '100.1', user: 'U1', text: 'root' }] })
+      .mockRejectedValueOnce(Object.assign(new Error('channel_not_found'), { data: { error: 'channel_not_found' } }))
     const join = vi.fn(async () => ({ ok: true }))
     const conn = new SlackConnection({ ...deps(), sendIntervalMs: 0 } as any, () =>
       appWith({ chat: { postMessage }, conversations: { replies, join } })
     )
 
-    await expect(conn.postMessage('C1', 'body')).resolves.toBe('100.2')
-    expect(postMessage).toHaveBeenCalledTimes(2)
-    await expect(conn.getThreadReplies('C1', '100.1', 200, { throwOnError: true })).resolves.toEqual([
-      expect.objectContaining({ ts: '100.1', text: 'root' })
-    ])
-    expect(replies).toHaveBeenCalledTimes(2)
-    expect(join).toHaveBeenCalledTimes(2)
+    expect(notJoinedChannel(await conn.postMessage('C1', 'body').catch((e: unknown) => e))).toBe('C1')
+    const read = await conn.getThreadReplies('C2', '100.1', 200, { throwOnError: true }).catch((e: unknown) => e)
+    expect(notJoinedChannel(read)).toBe('C2')
+    const gone = await conn.getThreadReplies('C3', '100.1', 200, { throwOnError: true }).catch((e: unknown) => e)
+    expect(notJoinedChannel(gone)).toBeUndefined()
+    expect(join).not.toHaveBeenCalled()
+  })
+
+  it('joins only when asked to, through conversations.join', async () => {
+    const join = vi.fn(async () => ({ ok: true }))
+    const conn = new SlackConnection(deps() as any, () => appWith({ conversations: { join } }))
+
+    await conn.joinChannel('C1')
     expect(join).toHaveBeenCalledWith({ channel: 'C1' })
   })
 })

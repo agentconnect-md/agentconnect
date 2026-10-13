@@ -337,7 +337,7 @@ exact shape follows the documentation (§7).
 ### 6.2 Manifest and the reinstall cost
 
 Adding a required scope makes existing installations incomplete until they are reauthorized,
-so scopes must arrive with implemented callers. `channels:join` backs the on-demand join in
+so scopes must arrive with implemented callers. `channels:join` backs the confirmed join in
 daemon-detailed-design.md §9.4 "Channel reach"; the unused `team:read` and `users:read.email`
 grants are no longer requested. If `code.channels:manage` is granted through the parent
 `assistant:write` as the developer post suggests, existing installs need nothing. If it is

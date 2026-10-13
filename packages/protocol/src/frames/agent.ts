@@ -699,7 +699,11 @@ export const AgentPermissionRequestRecord = z.object({
   // The live request's own options; absent once it is settled, for an elicitation, or from an older daemon.
   options: z.array(AgentPermissionOption).max(AGENT_PERMISSION_MAX_OPTIONS).optional(),
   // A background sub-session's request (assistant-mode.md §5.6): the conversation it belongs to, by outward id; absent from an older daemon.
-  parentSessionId: z.string().min(1).optional()
+  parentSessionId: z.string().min(1).optional(),
+  // A pending confirmation before the bot joins a channel (#2979), whatever the agent's chat level; absent for any other request.
+  kind: z.enum(['join']).optional(),
+  // The console users behind that confirmation's turn, the only ones it takes an answer from in the console.
+  joinAskers: z.array(z.string().min(1)).max(64).optional()
 })
 export type AgentPermissionRequestRecord = z.infer<typeof AgentPermissionRequestRecord>
 

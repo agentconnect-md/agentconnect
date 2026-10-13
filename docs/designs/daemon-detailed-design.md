@@ -1281,10 +1281,11 @@ directory feature must add its scope alongside its implementation.
 `chat.postMessage` even in a public channel, and a bot is a member only of the channels a human
 added it to — so for a long time `getChannelHistory` read the session's own channel only and
 `getThreadHistory` / `sendMessage` failed with `not_in_channel` anywhere else. Two pieces change
-that, and their split is the point. The **connection** joins a PUBLIC channel on demand
-(`joiningOnRefusal` in `slack/connection.ts`: a call refused with `not_in_channel` is retried
-exactly once after `conversations.join`, `channels:join`; the join cannot enter a private channel,
-DM or group DM, so there the original refusal surfaces). The **ops layer** decides where a write
+that, and their split is the point. The **connection** never joins on its own: a call refused
+with `not_in_channel` is tagged with its channel (`markNotJoined`, `platforms/not-joined.ts`; an
+upload reports `notJoined`), and `joinChannel` (`conversations.join`, `channels:join`) is the
+capability a platform whose bot can enter a public channel declares. The **ops layer** asks before
+it joins (below) and decides where a write
 may go: platform posts and every other platform write pass the write rule below, and only the
 agent-to-agent channel form of `sendMessage` keeps the reach gate (`mcp/ops/channel-reach.ts`), on
 a platform that declares `publicChannelReach` in `read-ports.ts`: a public channel is open, while a
@@ -1335,17 +1336,46 @@ draft (`AssistantDrafts.interceptPost`, for every agent; outside assistant mode 
 is a full member may approve, else the post is refused) and refuses any other write. An opaque
 refusal reads "I can't post there from here.", with the read rule's sign-in hint.
 
-The join is an **operator switch**, per bot: `Bot.platformConfig.joinPublicChannels` (the
-generic bag, so no migration), flipped by `PATCH /bots/:id` and rendered by the Slack module's
-`RowSettings` fragment in the console's expanded bot row. The control plane refuses the flag
-on any platform whose §5 manifest does not declare `publicChannelJoin` (Slack alone does), and
-re-projects the bot's integration specs on a flip — `syncBot` for an HTTP bot, an
-`integration/upsert` per socket integration — so the flag rides `IntegrationSlackConfig`
-(default true for an older control plane) into the daemon's consolidated group. The reconciler
-keys a Slack connection by its tokens, so it applies a flipped flag to the LIVE connection
-rather than opening another. Off, `joiningOnRefusal` rethrows the platform's own
-`not_in_channel` and the bot reaches only what it was invited to; the reach gate above is
-unchanged, and workspace search (`searchPublicMessages`) never depended on membership.
+**Joining asks a person** (#2979, "Joining a public channel" in
+[product-conventions.md](../product-conventions.md)). The dispatcher hands every handler but the
+agent-to-agent forms of `sendMessage` gateways wrapped by `askingToJoin` (`mcp/ops/join-ask.ts`):
+a tagged refusal on a public channel (`describeConversation`, `sourceClass` public) of a gateway
+that offers `joinChannel` re-checks that every person behind the turn may read it (`askerMayRead`),
+then calls `confirmJoin`; on `join` it joins and runs the one refused call once more, and any other
+answer fails the call with a `JoinRefused` that says the bot did not join. A turn no person is
+behind is never asked. The call does not block on the answer: once the card is up (`offered`),
+`parkingOnJoin` returns the tool call at once with whom it asked, and the handler finishes in the
+background; `deliverJoinOutcome` hands its result, or why it did nothing, to the session as a new
+message (`joinOutcomeText`). A result's wake carries the person who answered Join (`JoinAnswer.by`)
+as its turn's asker, the way a sub-session's opener does (`joinWakeOpeners`, read by `openerOf`), so
+the turn that continues the request reads and writes as them; a refusal's wake speaks for no one.
+Blocking was not an option because runtimes bound an MCP tool call on
+their own: Codex gives each MCP server 60 seconds by default, and codex-acp builds the server it is
+handed from ACP's `McpServerStdio` alone, which carries no timeout, so the daemon cannot raise it;
+Claude Code's stdio limit is 30 minutes of silence, and other runtimes differ again. The card's
+request outlives the turn that asked (`releaseApprovals` skips it) and never counts as the turn
+waiting for a person. The daemon's `confirmJoin` finds the live turn and calls
+`PermissionCoordinator.askToJoin` (`permissions/join-confirmation.ts` holds its request, labels and
+the 10-minute `JOIN_ASK_TIMEOUT_MS`, the API caller's answer window): a permission request whose
+`join` marks it as the daemon's own, rendered by the turn surface's approval-card facet in an open
+conversation of the turn, else delivered to a person's DM through `AssistantDrafts.personApprover`
+(a member's own DM, a console user's linked one through the named `agent/approval-route`), or
+listed as a webchat conversation's pending request (`kind: 'join'` with its console askers, which the
+Control Plane uses to let the conversation's owner list and answer their own join confirmations at
+any chat level, and never sends to the console). A click is taken only from a person behind the
+turn (a member asker on that integration, a console asker by the chat account they linked on that
+bot, as the read rule's `linked` lookup answers it, or else verified through `agent/approval-route`
+`verify`), anyone else is refused through the facet's `tellPrivately`, and a console decision only
+from a console asker (`decidedBy`); the chat level of "What people can do in chat" does not apply.
+The card's handle is on its `permission_requests` row, so the reconnect sweep
+(`retireOrphanedCards`) rewrites a card a restart left pending as expired and, from the row's
+`joinAsk` (local store v48), tells its session in the timeout's words that the call did nothing; a
+session that is gone is skipped. A schedule's or hook's own anchor post into its configured target
+joins without asking (`postIntoConfiguredTarget` in `anchorTrigger`): a target an editor configured
+counts as consent, and the run's output then lands in a channel the bot is in. Parallel calls for one
+channel in one turn share one card. The bot's former `joinPublicChannels` setting is retired: the
+control plane no longer reads `Bot.platformConfig.joinPublicChannels` or sends the field, and the
+daemon's `IntegrationSlackConfig` no longer has it (an older daemon reads its absence as on).
 
 The orchestration triple `startOrchestration` / `getOrchestration` /
 `cancelOrchestration` is **retired from the injected tool surface**: its send half

@@ -68,10 +68,8 @@ export type UploadFailReason =
 
 export type UploadOutcome =
   | { ok: true; messageId?: string; warning?: string }
-  /** `detail` is the PROVIDER's own error code, carried because a category alone is not
-   *  diagnosable: `platform_error` is the catch-all every unclassified refusal lands in, and
-   *  a report that omits what the platform actually said cannot be acted on. */
-  | { ok: false; reason: UploadFailReason; detail?: string }
+  /** `detail` is the provider's own error code; `notJoined` marks a refusal because the bot is not in that conversation. */
+  | { ok: false; reason: UploadFailReason; detail?: string; notJoined?: true }
 
 // A turn-bound image sender; its destination and reply anchor are captured by the platform.
 export type ImageUploader = (
@@ -95,6 +93,8 @@ export interface MessageGateway {
   createThread?(channel: string, messageId: string, name: string): Promise<string | undefined>
   /** The provider thread a just-posted root message landed in, where it is not the message id itself (Google Chat). */
   threadOfPost?(postId: string): string | undefined
+  /** Enter a public conversation the bot is not in; offered only where a bot can join one by itself (Slack). */
+  joinChannel?(channel: string): Promise<void>
   /** `user` is the counterpart of a 1:1 direct conversation, where the platform names one. */
   getChannelInfo(channel: string): Promise<{
     id: string

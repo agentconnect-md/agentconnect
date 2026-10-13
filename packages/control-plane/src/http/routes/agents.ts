@@ -168,6 +168,7 @@ import {
   SetAgentCallPolicyBody,
   AgentDto,
   AgentPermissionRequestPageDto,
+  toPermissionRequestDto,
   AgentSkillSourceListDto,
   AgentPermissionDecisionBody,
   AgentCreatedDto,
@@ -2465,7 +2466,7 @@ export function agentRoutes(deps: HttpDeps) {
             agentId: agent.id,
             limit: 100
           })
-          return { requests: page.requests }
+          return { requests: page.requests.map(toPermissionRequestDto) }
         } catch (err) {
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {

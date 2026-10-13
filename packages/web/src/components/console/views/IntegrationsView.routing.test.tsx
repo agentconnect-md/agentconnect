@@ -35,7 +35,6 @@ vi.mock('@/lib/data-context', () => ({
     refresh: mocks.refresh,
     deleteIntegration: vi.fn(),
     setBotShareable: vi.fn(),
-    setBotJoinPublicChannels: vi.fn(),
     setChannelAgent: vi.fn()
   })
 }))
