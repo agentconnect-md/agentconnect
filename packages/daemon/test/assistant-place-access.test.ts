@@ -29,7 +29,7 @@ const P: ReadAsker = { kind: 'member', platform: 'slack', integrationId: BOT, us
 const GUEST: ReadAsker = { kind: 'member', platform: 'slack', integrationId: BOT, userId: 'U_GUEST' }
 const people = (...p: ReadAsker[]): TurnAskers => ({ people: p, nobody: false })
 
-/** A Slack workspace where P and Q are full members and the guest is in C_GUESTS alone; the console knows U_P as user-p. */
+/** A Slack workspace where P and Q are full members and the guest is in C_GUESTS alone; the console knows U_P as user-p, who linked it in this bot's workspace. */
 function lookups(over: Partial<ReadLookups> = {}): ReadLookups {
   const members: Record<string, string[]> = {
     C_PRIV: ['U_P'],
@@ -60,6 +60,7 @@ function lookups(over: Partial<ReadLookups> = {}): ReadLookups {
         return { asker: 'linked', visible: new Set(sessions.filter(sees)) }
       }
     ),
+    linked: vi.fn(async (bot: string, user: string) => (bot === BOT && user === 'user-p' ? 'U_P' : null)),
     ...over
   }
 }
@@ -203,15 +204,67 @@ describe('across platforms and bots: as the console would show it to the person'
     expect(await judge(theirs, people({ kind: 'console', userId: 'user-p' }), lookups(), undefined)).toBe('direct')
   })
 
-  it('judges a console asker by the console alone, wherever the source is', async () => {
-    const consoleP: ReadAsker = { kind: 'console', userId: 'user-p' }
-    expect(await judge({ ...privateChannel, sessions: ['ses-tg-group'] }, people(consoleP))).toBeUndefined()
-    expect(await judge({ ...privateChannel, sessions: ['ses-other'] }, people(consoleP))).toBe('private')
-  })
-
   it('refuses when the Control Plane cannot answer', async () => {
     const offline = lookups({ console: async () => Promise.reject(new Error('offline')) })
     expect(await judge(tgGroup, people(P), offline, 'int-tg')).toBe('private')
+  })
+})
+
+describe('a console user, as the chat account they linked in the bot’s workspace', () => {
+  const consoleP: ReadAsker = { kind: 'console', userId: 'user-p' }
+
+  it('reads a public channel the agent was never in, and a private channel or group DM they are in', async () => {
+    const l = lookups()
+    expect(await judge(publicChannel, people(consoleP), l)).toBeUndefined()
+    expect(await judge(privateChannel, people(consoleP), l)).toBeUndefined()
+    expect(await judge(groupDm, people(consoleP), l)).toBeUndefined()
+    // The platform decides, even where the console would show the agent's session there.
+    expect(
+      await judge({ ...privateChannel, channel: 'C_OTHER', sessions: ['ses-tg-group'] }, people(consoleP), l)
+    ).toBe('private')
+    expect(l.console).not.toHaveBeenCalled()
+    expect(vi.mocked(l.linked).mock.calls[0]).toEqual([BOT, 'user-p'])
+  })
+
+  it("reads their own DM and never someone else's, and a webchat conversation only as its owner", async () => {
+    expect(await judge(dmOfP, people(consoleP))).toBeUndefined()
+    expect(await judge(dmOfQ, people(consoleP))).toBe('direct')
+    const l = lookups()
+    const web: SourcePlace = { platform: 'webchat', channel: 'chat-1', kind: 'webchat', sessions: ['ses-web-q'] }
+    expect(await judge(web, people(consoleP), l)).toBe('direct')
+    expect(await judge({ ...web, sessions: ['ses-web-p'] }, people(consoleP), l)).toBeUndefined()
+    expect(l.linked).not.toHaveBeenCalled()
+  })
+
+  it('reads only what a guest account they linked is in', async () => {
+    const guest = lookups({ linked: async () => 'U_GUEST' })
+    expect(await judge(publicChannel, people(consoleP), guest)).toBe('private')
+    expect(await judge({ ...publicChannel, channel: 'C_GUESTS' }, people(consoleP), guest)).toBeUndefined()
+  })
+
+  it('falls back to what the console shows when they linked no account in that workspace', async () => {
+    // Unlinked, or linked only in another workspace: the Control Plane names no member for this bot.
+    for (const linked of [async () => null, async (bot: string) => (bot === 'int-slack-other' ? 'U_P' : null)]) {
+      const l = lookups({ linked })
+      expect(await judge({ ...privateChannel, sessions: ['ses-tg-group'] }, people(consoleP), l)).toBeUndefined()
+      expect(await judge({ ...privateChannel, sessions: ['ses-other'] }, people(consoleP), l)).toBe('private')
+      expect(await judge(publicChannel, people(consoleP), l)).toBe('private')
+      expect(await judge({ ...dmOfP, sessions: ['ses-dc-dm-q'] }, people(consoleP), l)).toBe('direct')
+    }
+  })
+
+  it('refuses when the Control Plane cannot say which account they linked', async () => {
+    const l = lookups({ linked: async () => Promise.reject(new Error('linked identity unavailable')) })
+    expect(await judge({ ...privateChannel, sessions: ['ses-tg-group'] }, people(consoleP), l)).toBe('private')
+    expect(await judge(publicChannel, people(consoleP), l)).toBe('private')
+    expect(l.console).not.toHaveBeenCalled()
+  })
+
+  it('leaves a chat member on another bot judged by the console', async () => {
+    const l = lookups()
+    expect(await judge({ ...privateChannel, sessions: ['ses-tg-group'] }, people(P), l, 'int-other')).toBeUndefined()
+    expect(await judge(publicChannel, people(P), l, 'int-other')).toBe('private')
+    expect(l.linked).not.toHaveBeenCalled()
   })
 })
 

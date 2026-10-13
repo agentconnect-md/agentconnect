@@ -256,16 +256,22 @@ async function inOrganization(
   return bot !== undefined && (await lookups.fullMember(bot, id).catch(() => false))
 }
 
-/** Whether an asker could make something new in that bot's workspace: its own full member, where the platform can tell. */
+/** Whether an asker could make something new in that bot's workspace: its own full member, or a console user linked as one, where the platform can tell. */
 async function workspaceMember(
   asker: ReadAsker,
   platform: string,
   bot: string | undefined,
   lookups: ReadLookups
 ): Promise<boolean> {
-  if (asker.kind !== 'member' || asker.platform !== platform || bot === undefined || asker.integrationId !== bot)
-    return false
-  return !tellsWorkspaceMembers(platform) || (await lookups.fullMember(bot, asker.userId).catch(() => false))
+  if (bot === undefined) return false
+  const userId =
+    asker.kind === 'console'
+      ? await lookups.linked(bot, asker.userId).catch(() => null)
+      : asker.platform === platform && asker.integrationId === bot
+        ? asker.userId
+        : null
+  if (userId === null) return false
+  return !tellsWorkspaceMembers(platform) || (await lookups.fullMember(bot, userId).catch(() => false))
 }
 
 /**

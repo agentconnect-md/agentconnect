@@ -139,6 +139,25 @@ function said(userId: string, channel = 'D_P'): TurnMessage {
   return { msg, integrationId: 'int-slack' }
 }
 
+/** A console user's message: in the Playground or webchat, or a console continuation of a chat session. */
+function typed(userId: string): TurnMessage {
+  const msg = {
+    msgId: `m-${userId}`,
+    traceId: 't',
+    source: 'user',
+    platform: 'webchat',
+    channel: 'chat-1',
+    sender: { id: userId, isBot: false },
+    text: 'please',
+    mentionedBots: [],
+    isDm: true
+  } as NormalizedMessage
+  return { msg, console: true }
+}
+
+const playground = ctxAt('webchat', 'chat-1')
+
+// The console shows user-p the agent's session in C_PRIV and no other.
 const consoleVerdict = (asker: ReadAsker, sessions: readonly string[]): ConsoleVerdict =>
   asker.kind === 'console' && asker.userId === 'user-p'
     ? { asker: 'linked', visible: new Set(sessions.filter((id) => id === 'out-s-priv')) }
@@ -154,6 +173,10 @@ function harness(
     external?: string[]
     documents?: Record<string, PlatformDocumentReach>
     draft?: boolean
+    /** The chat account each console user linked, by the bot whose workspace it is in; user-p linked P by default. */
+    linked?: Record<string, Record<string, string>>
+    /** The Control Plane cannot say which account a console user linked. */
+    linkUnknown?: boolean
   } = {}
 ) {
   const members = {
@@ -169,7 +192,11 @@ function harness(
   const placeMembers = new PlaceMembers({
     now: () => 0,
     gatewayFor: (id) => (id === 'int-slack' ? gw : undefined),
-    readAccess: async (_agent, asker, sessions) => consoleVerdict(asker, sessions)
+    readAccess: async (_agent, asker, sessions) => consoleVerdict(asker, sessions),
+    linkedMember: async (_agent, integrationId, userId) => {
+      if (opts.linkUnknown) throw new Error('linked identity unavailable')
+      return (opts.linked ?? { 'int-slack': { 'user-p': P } })[integrationId]?.[userId] ?? null
+    }
   })
   let live: { messages?: TurnMessage[]; askers?: TurnAskers } = { messages: [said(P)] }
   const external = new Set(opts.external ?? ['C_SHARED'])
@@ -506,5 +533,77 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
     expect(deps.messageAgent).toHaveBeenCalledTimes(2)
     expect(draftPost).not.toHaveBeenCalled()
     expect((await ledger.get(AGENT, taken.item.id))?.summary).toBe('x')
+  })
+})
+
+describe('a console user is judged as the chat account they linked in the target bot’s workspace', () => {
+  const NOT_SHARED = "I can't share that here."
+  const continued = ctxAt('slack', 'C_DEPLOY')
+  const post = (channel: string, message = 'hello') => ({ platform: 'slack', channel, message })
+
+  it('posts from the Playground to a public channel the agent was never in, and a private channel they are in', async () => {
+    const { deps, gw, asks } = harness()
+    asks(typed('user-p'))
+    await executeTool(playground, 'sendMessage', post('C_NEW'), deps)
+    await executeTool(playground, 'sendMessage', post('C_PRIV', 'for the team'), deps)
+    await executeTool(playground, 'sendMessage', post('D_P', 'note to self'), deps)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_NEW', 'hello', undefined, expect.anything())
+    expect(gw.postMessage).toHaveBeenCalledWith('C_PRIV', 'for the team', undefined, expect.anything())
+    expect(gw.postMessage).toHaveBeenCalledWith('D_P', 'note to self', undefined, expect.anything())
+  })
+
+  it("refuses a private channel they are not in and someone else's DM, though the console shows the session", async () => {
+    const { deps, gw, asks } = harness({ members: { C_PRIV: ['U_ALICE'] } })
+    asks(typed('user-p'))
+    for (const channel of ['C_PRIV', 'D_Q']) {
+      await expect(executeTool(playground, 'sendMessage', post(channel), deps), channel).rejects.toThrow(NOT_POSTED)
+    }
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('reads and writes in a console continuation as that account', async () => {
+    const { deps, gw, asks } = harness()
+    asks(typed('user-p'))
+    await executeTool(continued, 'getChannelHistory', { channel: 'C_NEW' }, deps)
+    await executeTool(continued, 'getChannelHistory', { channel: 'C_PRIV' }, deps)
+    await executeTool(continued, 'addReaction', { channel: 'C_NEW', messageTs: '1.1', emoji: 'eyes' }, deps)
+    await executeTool(continued, 'createConversation', { name: 'launch' }, deps)
+    expect(gw.getChannelHistory).toHaveBeenCalledTimes(2)
+    expect(gw.addReaction).toHaveBeenCalledWith('C_NEW', '1.1', 'eyes')
+    expect(gw.createConversation).toHaveBeenCalledTimes(1)
+    await expect(executeTool(continued, 'getChannelHistory', { channel: 'D_Q' }, deps)).rejects.toThrow(NOT_SHARED)
+  })
+
+  it('falls back to what the console shows when they linked no account in that workspace', async () => {
+    // Unlinked, or linked only in another workspace: the console shows them the agent's session in C_PRIV alone.
+    const unlinked: Record<string, Record<string, string>>[] = [{}, { 'int-slack-other': { 'user-p': P } }]
+    for (const linked of unlinked) {
+      const { deps, gw, asks } = harness({ linked })
+      asks(typed('user-p'))
+      await executeTool(playground, 'sendMessage', post('C_PRIV', 'for the team'), deps)
+      for (const channel of ['C_NEW', 'C_DEPLOY', 'D_P']) {
+        await expect(executeTool(playground, 'sendMessage', post(channel), deps), channel).rejects.toThrow(NOT_POSTED)
+      }
+      await expect(executeTool(continued, 'getChannelHistory', { channel: 'C_NEW' }, deps)).rejects.toThrow(NOT_SHARED)
+      await expect(executeTool(continued, 'createConversation', { name: 'launch' }, deps)).rejects.toThrow(
+        /full members of this workspace/
+      )
+      expect(gw.postMessage).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('refuses when the Control Plane cannot say which account they linked', async () => {
+    const { deps, gw, asks } = harness({ linkUnknown: true })
+    asks(typed('user-p'))
+    for (const channel of ['C_PRIV', 'C_NEW']) {
+      await expect(executeTool(playground, 'sendMessage', post(channel), deps), channel).rejects.toThrow(NOT_POSTED)
+    }
+    await expect(executeTool(continued, 'getChannelHistory', { channel: 'C_PRIV' }, deps)).rejects.toThrow(NOT_SHARED)
+    await expect(executeTool(continued, 'createConversation', { name: 'launch' }, deps)).rejects.toThrow(
+      /full members of this workspace/
+    )
+    expect(gw.postMessage).not.toHaveBeenCalled()
+    expect(gw.getChannelHistory).not.toHaveBeenCalled()
+    expect(gw.createConversation).not.toHaveBeenCalled()
   })
 })

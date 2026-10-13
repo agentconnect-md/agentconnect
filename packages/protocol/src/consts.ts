@@ -442,6 +442,9 @@ export const CHAT_ACTOR_V1_FEATURE = 'chat-actor-v1'
  *  before seeing this, since a new request type is frame-fatal to an older CP; until then every cross-platform read is refused. */
 export const READ_ACCESS_V1_FEATURE = 'read-access-v1'
 
+/** CP answers `agent/read-access` `linkedOn` with the chat identity a console user linked in that bot's workspace; without it a console asker's reach through a bot is refused. */
+export const READ_ACCESS_LINKED_V1_FEATURE = 'read-access-linked-v1'
+
 /** CP mints the §14.2 broker effect lease — `purpose: 'gitlab_effect'` on a gitcred v2 request,
  *  authorized by the agent's GitLab workspace binding or an enabled gitlab hook and clamped by the
  *  grant's echoed access. A daemon must not name that purpose before seeing this: a new enum value

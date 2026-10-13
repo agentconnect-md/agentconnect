@@ -1009,15 +1009,19 @@ readable.
   up when the read happens and trusted for at most a minute;
 - the asker's own 1:1 DM with the agent. Another person's DM never.
 
-**Anywhere else** (another platform, another of the agent's bots, or any read for a console user),
-only what the console itself would show that person: they must be known as a console user, through
-the chat account they linked under Sign-in methods in their console Profile (a webchat or console
-user already is), and the console must show them the agent's sessions in that conversation. A Slack
-member linked to an organization member therefore reads a Telegram or Discord group, whose sessions
-every member sees while that platform's session access sync is off. Someone on a platform the
-console cannot match reads nothing beyond their own platform and bot. A webchat conversation and a
-DM on any platform stay readable only by their owner, even where the console shows them to every
-member.
+A console user is judged by the chat account they linked for that bot's workspace (Slack's
+workspace, Feishu/Lark's region) when they have one, as if that account had asked on that bot, and
+otherwise by what the console shows them.
+
+**Anywhere else** (another platform, another of the agent's bots, or a console user with no chat
+account linked for that workspace), only what the console itself would show that person: they must
+be known as a console user, through the chat account they linked under Sign-in methods in their
+console Profile (a webchat or console user already is), and the console must show them the agent's
+sessions in that conversation. A Slack member linked to an organization member therefore reads a
+Telegram or Discord group, whose sessions every member sees while that platform's session access
+sync is off. Someone on a platform the console cannot match reads nothing beyond their own platform
+and bot. A webchat conversation and a DM on any platform stay readable only by their owner, even
+where the console shows them to every member.
 
 **Who is asking:**
 

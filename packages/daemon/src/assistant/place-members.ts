@@ -3,7 +3,7 @@ import type { MessageGateway } from '../mcp/ops/context.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { ConsoleVerdict, ReadAsker, ReadLookups, TurnAskers } from './place-access.js'
 
-/** How long a member listing, a workspace standing or a console verdict is trusted before it is asked again. */
+/** How long a member listing, a workspace standing, a console verdict or a linked identity is trusted before it is asked again. */
 export const PLACE_MEMBERS_TTL_MS = 60_000
 const MAX_ENTRIES = 512
 
@@ -19,6 +19,8 @@ export interface PlaceMembersHost {
     sessionIds: readonly string[],
     ownerOnly: boolean
   ): Promise<ConsoleVerdict>
+  /** The member id a console user linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
+  linkedMember?(agentId: string, integrationId: string, consoleUserId: string): Promise<string | null>
 }
 
 interface Entry<T> {
@@ -30,6 +32,7 @@ export class PlaceMembers {
   private readonly members = new Map<string, Entry<ReadonlySet<string>>>()
   private readonly standing = new Map<string, Entry<boolean>>()
   private readonly verdicts = new Map<string, Entry<ConsoleVerdict>>()
+  private readonly links = new Map<string, Entry<string | null>>()
 
   constructor(private readonly host: PlaceMembersHost) {}
 
@@ -65,12 +68,21 @@ export class PlaceMembers {
     return await this.cached(this.verdicts, key, () => ask(agentId, asker, sessionIds, ownerOnly))
   }
 
+  /** The member id a console user linked in that bot's workspace, null for none; rejects when it cannot be asked. */
+  async linkedMember(agentId: string, integrationId: string, consoleUserId: string): Promise<string | null> {
+    const ask = this.host.linkedMember
+    if (!ask) throw new Error('no linked identity on this daemon')
+    const key = [agentId, integrationId, consoleUserId].join('\u001f')
+    return await this.cached(this.links, key, () => ask(agentId, integrationId, consoleUserId))
+  }
+
   /** The read rule's lookups for one agent. */
   lookupsFor(agentId: string): ReadLookups {
     return {
       member: (integrationId, channel, userId) => this.isMember(integrationId, channel, userId),
       fullMember: (integrationId, userId) => this.isFullMember(integrationId, userId),
-      console: (asker, sessionIds, ownerOnly) => this.consoleVerdict(agentId, asker, sessionIds, ownerOnly)
+      console: (asker, sessionIds, ownerOnly) => this.consoleVerdict(agentId, asker, sessionIds, ownerOnly),
+      linked: (integrationId, consoleUserId) => this.linkedMember(agentId, integrationId, consoleUserId)
     }
   }
 

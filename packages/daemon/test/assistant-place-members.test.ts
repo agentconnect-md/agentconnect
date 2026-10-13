@@ -103,6 +103,30 @@ describe('PlaceMembers.isFullMember and consoleVerdict', () => {
   it('confirms nothing on a daemon that cannot ask the console', async () => {
     const members = new PlaceMembers({ now: () => 0, gatewayFor: () => undefined })
     await expect(members.consoleVerdict('agent-a', { kind: 'console', userId: 'user-p' }, [])).rejects.toThrow()
+    await expect(members.lookupsFor('agent-a').linked('int-slack', 'user-p')).rejects.toThrow()
+  })
+})
+
+describe('PlaceMembers.linkedMember', () => {
+  it("caches a console user's linked account per agent, bot and user for a minute, and drops a failed one", async () => {
+    const clock = { now: 0 }
+    const answers: Promise<string | null>[] = [Promise.reject(new Error('offline')), Promise.resolve('U_P')]
+    answers[0]!.catch(() => {})
+    const linkedMember = vi.fn(async (_agent: string, integrationId: string) =>
+      integrationId === 'int-slack' ? answers.shift()! : null
+    )
+    const members = new PlaceMembers({ now: () => clock.now, gatewayFor: () => undefined, linkedMember })
+    const lookups = members.lookupsFor('agent-a')
+    await expect(lookups.linked('int-slack', 'user-p')).rejects.toThrow('offline')
+    expect(await lookups.linked('int-slack', 'user-p')).toBe('U_P')
+    expect(await lookups.linked('int-slack', 'user-p')).toBe('U_P')
+    expect(await lookups.linked('int-other', 'user-p')).toBeNull()
+    expect(linkedMember).toHaveBeenCalledTimes(3)
+    expect(linkedMember).toHaveBeenLastCalledWith('agent-a', 'int-other', 'user-p')
+    clock.now += PLACE_MEMBERS_TTL_MS
+    answers.push(Promise.resolve(null))
+    expect(await lookups.linked('int-slack', 'user-p')).toBeNull()
+    expect(linkedMember).toHaveBeenCalledTimes(4)
   })
 })
 

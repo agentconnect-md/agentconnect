@@ -58,6 +58,7 @@ import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
+  READ_ACCESS_LINKED_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
@@ -1842,7 +1843,8 @@ export class Daemon {
   private readonly placeMembers = new PlaceMembers({
     now: () => this.clock.now(),
     gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
-    readAccess: (agentId, asker, sessionIds, ownerOnly) => this.readAccess(agentId, asker, sessionIds, ownerOnly)
+    readAccess: (agentId, asker, sessionIds, ownerOnly) => this.readAccess(agentId, asker, sessionIds, ownerOnly),
+    linkedMember: (agentId, integrationId, userId) => this.consoleLinkedMember(agentId, integrationId, userId)
   })
   /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
   private readonly subsessionOpeners = new Map<string, TurnAskers>()
@@ -8844,6 +8846,20 @@ export class Daemon {
       this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
     )
     return res.asker === 'linked' ? { asker: 'linked', visible: new Set(res.visibleSessionIds) } : { asker: res.asker }
+  }
+
+  /** The member id a console user linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
+  private async consoleLinkedMember(agentId: string, integrationId: string, userId: string): Promise<string | null> {
+    const cp = this.cpClient
+    if (cp?.supportsServerFeature?.(READ_ACCESS_LINKED_V1_FEATURE) !== true)
+      throw new Error('linked identity unavailable')
+    const res = await cp.readAccess(
+      { agentId, asker: { consoleUserId: userId }, sessionIds: [], linkedOn: integrationId },
+      this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+    )
+    // A reply without the field came from a Control Plane that cannot say, so the read or write is refused.
+    if (res.linkedMemberId === undefined) throw new Error('linked identity unavailable')
+    return res.linkedMemberId
   }
 
   /** A snapshot row for the read rule: its privacy only from a complete listing, or when it says private. */
