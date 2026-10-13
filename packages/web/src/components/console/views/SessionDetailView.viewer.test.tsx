@@ -53,8 +53,10 @@ const wire = vi.hoisted(() => ({
   steps: undefined as unknown[] | undefined,
   /** Every draft the composer wrote through `setPgInput`, newest last; the mocked `usePgDraft` reads the newest. */
   drafts: [] as string[],
-  /** The agent is in assistant mode; the Sub-sessions tab reads only for one. */
+  /** The agent is in assistant mode; the Sub-sessions tab reads for one, or for any agent whose daemon serves every agent's. */
   assistantMode: false,
+  /** What the agent's daemon advertises; unset lists no daemon at all. */
+  daemonFeatures: undefined as string[] | undefined,
   subsessions: [] as unknown[],
   subsessionCalls: [] as Array<{ agentId: string; opts: unknown }>,
   stopCalls: [] as Array<{ agentId: string; sessionId: string }>,
@@ -246,7 +248,20 @@ vi.mock('@/lib/data-context', () => ({
     getSessions: () => [session],
     sessionsLoading: false,
     crons: [],
-    daemons: [],
+    daemons: wire.daemonFeatures
+      ? [
+          {
+            daemonId: 'daemon-1',
+            name: 'edge-1',
+            pool: false,
+            memberSetId: null,
+            status: 'online',
+            caps: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: wire.daemonFeatures },
+            runtimeModels: [],
+            mcpServers: []
+          }
+        ]
+      : [],
     members: [],
     sessionActivityVersionById: {},
     sessionStreamGeneration: 0,
@@ -404,6 +419,7 @@ beforeEach(() => {
   wire.prCalls = []
   wire.prGate = null
   wire.assistantMode = false
+  wire.daemonFeatures = undefined
   wire.subsessions = []
   wire.subsessionCalls = []
   wire.stopCalls = []
@@ -1425,14 +1441,38 @@ describe('the Sub-sessions tab', () => {
     expect(container?.querySelector('[data-dock-tab="subsessions"]')).not.toBeNull()
   })
 
-  it('reads nothing and offers no tab for an agent outside assistant mode, flag or not', async () => {
+  it('reads nothing and offers no tab for an agent outside assistant mode whose daemon lists only assistant mode’s, flag or not', async () => {
     window.__AC_ENV = { FEATURE_FLAGS: 'assistant-mode' }
     wire.assistantMode = false
     wire.subsessions = [child]
+    for (const features of [undefined, ['assistant-activity-v1', 'assistant-subsession-panel-v1']]) {
+      wire.daemonFeatures = features
+      await render()
+      expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
+      expect(container?.querySelector('[data-subsessions-panel]')).toBeNull()
+      expect(wire.subsessionCalls).toEqual([])
+    }
+  })
+
+  it('lists and stops an agent’s sub-sessions outside assistant mode when its daemon serves every agent’s', async () => {
+    wire.assistantMode = false
+    wire.daemonFeatures = ['assistant-activity-v1', 'assistant-subsession-panel-v1', 'activity-every-agent-v1']
+    wire.subsessions = [child]
     await render()
-    expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
-    expect(container?.querySelector('[data-subsessions-panel]')).toBeNull()
-    expect(wire.subsessionCalls).toEqual([])
+    expect(wire.subsessionCalls[0]).toEqual({ agentId: 'agent-1', opts: { parentSessionId: 'session-1', limit: 20 } })
+    expect(container?.querySelector('[data-dock-tab="subsessions"]')?.textContent).toContain('1')
+    await openTab('subsessions')
+    const panel = container?.querySelector('[data-subsessions-panel]')
+    expect(panel?.textContent).toContain('Fix the flaky test')
+    const stop = Array.from(panel?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) =>
+      button.textContent?.includes('Stop')
+    )
+    await act(async () => {
+      stop?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(wire.stopCalls).toEqual([{ agentId: 'agent-1', sessionId: 'child-1' }])
   })
 
   it('reaches the tab from the phone’s app-bar action, in the bottom sheet', async () => {

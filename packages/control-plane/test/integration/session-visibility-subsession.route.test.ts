@@ -1,4 +1,4 @@
-// An assistant-mode agent's sub-session takes its parent's audience, which no viewer may change (assistant-mode.md §5.6).
+// An agent's sub-session, in assistant mode or not, takes its parent's audience, which no viewer may change (assistant-mode.md §5.6).
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
@@ -88,29 +88,36 @@ const put = async (app: HttpApp, id: string, visibility: 'private' | 'org') =>
   (await app.app.inject({ method: 'PUT', url: `${ORG}/sessions/${id}/visibility`, payload: { visibility } })).statusCode
 const row = (id: string) => prisma.sessionMeta.findUniqueOrThrow({ where: { id } })
 
-describe('session visibility of assistant-mode sub-sessions', () => {
-  it('inherits the parent’s audience and owner, and refuses that owner a change of its own', async () => {
-    const firstPoster = await makeUser(`sv-sub-${randomUUID()}`)
-    const daemonId = await seedDaemon(prisma, randomUUID())
-    const assistant = await agent(daemonId, true)
-    const { parentId, childId } = await lineage(assistant, assistant, 'subsession:1700000000000', firstPoster)
-    const app = appAs(firstPoster)
+describe('session visibility of an agent’s sub-sessions', () => {
+  it.each([
+    ['in assistant mode', true],
+    ['outside assistant mode', false]
+  ] as const)(
+    'inherits the parent’s audience and owner %s, and refuses that owner a change of its own',
+    async (_label, assistantMode) => {
+      const firstPoster = await makeUser(`sv-sub-${randomUUID()}`)
+      const daemonId = await seedDaemon(prisma, randomUUID())
+      const own = await agent(daemonId, assistantMode)
+      const { parentId, childId } = await lineage(own, own, 'subsession:1700000000000', firstPoster)
+      const app = appAs(firstPoster)
 
-    expect(await row(childId)).toMatchObject({ visibility: 'org', ownerIdentity: `user:${firstPoster}` })
-    expect(await detail(app, childId)).toMatchObject({ visibility: 'org', canChangeVisibility: false })
-    expect(await put(app, childId, 'private')).toBe(403)
-    expect((await row(childId)).visibility).toBe('org')
+      expect(await row(childId)).toMatchObject({ visibility: 'org', ownerIdentity: `user:${firstPoster}` })
+      expect(await detail(app, childId)).toMatchObject({ visibility: 'org', canChangeVisibility: false })
+      expect(await put(app, childId, 'private')).toBe(403)
+      expect((await row(childId)).visibility).toBe('org')
 
-    // The parent stays its owner's to change, and tightening it still reaches the sub-session.
-    expect(await detail(app, parentId)).toMatchObject({ canChangeVisibility: true })
-    expect(await put(app, parentId, 'private')).toBe(200)
-    expect(await row(childId)).toMatchObject({ visibility: 'private', ownerIdentity: `user:${firstPoster}` })
-  })
+      // The parent stays its owner's to change, and tightening it still reaches the sub-session.
+      expect(await detail(app, parentId)).toMatchObject({ canChangeVisibility: true })
+      expect(await put(app, parentId, 'private')).toBe(200)
+      expect(await row(childId)).toMatchObject({ visibility: 'private', ownerIdentity: `user:${firstPoster}` })
+    }
+  )
 
   it.each([
     ['a peer’s child on a platform thread', true, 'peer', '1700000000.000200'],
     ['the agent’s own channel-root child', true, 'self', '1700000000.000200'],
-    ['a sub-session coordinate of an agent whose assistant mode is off', false, 'self', 'subsession:1700000000000']
+    ['the own channel-root child of an agent outside assistant mode', false, 'self', '1700000000.000200'],
+    ['a peer’s child on a sub-session coordinate', false, 'peer', 'subsession:1700000000000']
   ] as const)('keeps today’s rule for %s', async (_label, assistantMode, childOf, childThread) => {
     const firstPoster = await makeUser(`sv-sub-other-${randomUUID()}`)
     const daemonId = await seedDaemon(prisma, randomUUID())

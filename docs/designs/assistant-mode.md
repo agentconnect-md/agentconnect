@@ -144,6 +144,11 @@ does not pretend to defend against effects it cannot defend against.
   API. It is a default, never an admission check: an editor may change the mode afterwards and
   the choice sticks while the mode stays on. While it is on, an agent whose mode asks every time
   gets a warning: background work will wait for approval often.
+- The console's form for a new agent preselects the same mode from the same per-runtime map,
+  narrowed to the modes the runtime reports, whether or not the agent will ever be switched on: an
+  agent that runs work nobody watches should not wait on approval by default. A runtime with
+  neither keeps the form's old preselection, the creator may still pick an asking mode, and an
+  agent created through the API or MCP without a mode keeps the runtime's default.
 - Switching it on changes no conversation's trigger, and new conversations start as any agent's
   of the same visibility do (§5.3). A place is _internal_ unless the platform detects it as
   _external_ (§5.3).
@@ -985,6 +990,14 @@ editors (§5.6): the sub-session and conversation where the viewer may open them
 wait's deadline and the request's own options, answered through the approval queue's decision so
 the first answer from any surface wins. Patrol history and the unread badge are not in it yet.
 
+Every agent has sub-sessions, drafts and sub-sessions' permission requests, so every agent has
+those sections, and the Sub-sessions tab of the session dock, once its serving daemon advertises
+`activity-every-agent-v1`. Items and proposals stay assistant mode's: the Control Plane refuses
+those routes with `ASSISTANT_MODE_OFF` for any other agent and asks its daemon for drafts without
+proposals. Who sees, stops and decides what is unchanged. Toward a daemon without the feature an
+agent outside assistant mode is refused as before, before any daemon I/O, and the console shows
+it no tab.
+
 ---
 
 ## 6. Relation to existing mechanisms
@@ -1391,3 +1404,18 @@ title resolution stay as they were.
 
 **Thirty-fifth revision (2026-10-13)**: the orchestration tools and their deadline wake are removed
 (issue #2979), so `nextCheck` falls due on the patrol's minute sweep, not a generalized deadline wake.
+
+**Thirty-sixth revision (2026-10-13)**: Activity, the session dock's Sub-sessions tab and the
+console's permission-mode default reach every agent (issues #2979, #2810; §1.8, §5.11). Every agent
+now drafts posts and opens sub-sessions, but only an assistant-mode agent's page showed them, so an
+editor of any other agent could decide a draft only from its card and could not see or stop a
+sub-session from the console. The Activity routes for sub-sessions, stopping one, drafts and
+deciding one now admit an agent outside assistant mode when its serving daemon advertises
+`activity-every-agent-v1`, and the console shows that agent an Activity tab with those sections
+and a Sub-sessions tab on its sessions; items and proposals stay assistant mode's, and an older
+daemon is never asked. The console's new-agent form preselects the runtime's auto mode, else its
+full-access one, through the same helper §1.8 uses, since background work nobody watches stalls on
+approval whatever the mode; an agent created through the API or MCP is unchanged. The Control Plane
+refuses a visibility change on any agent's own sub-session (§5.6), recognised by its reserved
+coordinate and its parent's agent, no longer only on an assistant-mode agent's; only a daemon that
+opens sub-sessions for every agent can create such a session outside assistant mode.

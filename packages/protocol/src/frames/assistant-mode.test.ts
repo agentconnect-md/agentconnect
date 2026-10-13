@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentSpec } from './agent.js'
 import { AssistantModePolicy } from './assistant-mode.js'
 import { assistantModeDefinitionRefusals, assistantModeRuntimeAdmitted } from '../assistant-mode-admission.js'
-import { assistantModePermissionModeOnEnable } from '../assistant-permission-modes.js'
+import { assistantModePermissionModeOnEnable, autoOrFullAccessPermissionMode } from '../assistant-permission-modes.js'
 
 const INTEGRATION_ID = '22222222-2222-4222-8222-222222222222'
 
@@ -113,5 +113,33 @@ describe('assistant mode permission default', () => {
     expect(assistantModePermissionModeOnEnable('some-new-runtime', 'default')).toBeUndefined()
     expect(assistantModePermissionModeOnEnable(null, 'default')).toBeUndefined()
     expect(assistantModePermissionModeOnEnable('claude-acp', 'constructor')).toBeUndefined()
+  })
+})
+
+describe('a runtime’s auto, else full-access, permission mode', () => {
+  it('picks the auto mode of every mode the runtime knows', () => {
+    expect(autoOrFullAccessPermissionMode('claude-acp')).toBe('auto')
+    expect(autoOrFullAccessPermissionMode('claude')).toBe('auto')
+    expect(autoOrFullAccessPermissionMode('codex-acp')).toBe('agent')
+    expect(autoOrFullAccessPermissionMode('codex')).toBe('agent')
+  })
+
+  it('picks among the modes the runtime’s catalog offers, full access when it offers no auto mode', () => {
+    expect(autoOrFullAccessPermissionMode('claude-acp', ['default', 'auto', 'bypassPermissions'])).toBe('auto')
+    expect(autoOrFullAccessPermissionMode('claude-acp', ['default', 'plan', 'bypassPermissions'])).toBe(
+      'bypassPermissions'
+    )
+    expect(autoOrFullAccessPermissionMode('codex-acp', ['read-only', 'agent-full-access'])).toBe('agent-full-access')
+  })
+
+  it('has none for a catalog with neither, a runtime it does not know, or no runtime', () => {
+    expect(autoOrFullAccessPermissionMode('claude-acp', ['default', 'acceptEdits', 'plan'])).toBeUndefined()
+    expect(autoOrFullAccessPermissionMode('claude-acp', [])).toBeUndefined()
+    expect(autoOrFullAccessPermissionMode('opencode')).toBeUndefined()
+    expect(autoOrFullAccessPermissionMode(null)).toBeUndefined()
+    expect(autoOrFullAccessPermissionMode('constructor')).toBeUndefined()
+    const table = { 'example-full': { ask: 'asks', open: 'full-access' } as const }
+    expect(autoOrFullAccessPermissionMode('example-full', undefined, table)).toBe('open')
+    expect(autoOrFullAccessPermissionMode('example-full', ['ask'], table)).toBeUndefined()
   })
 })
