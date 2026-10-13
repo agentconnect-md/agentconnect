@@ -1270,6 +1270,9 @@ export class CollabCoordinator {
     const link = this.childSessionLinks.get(key)
     // A newer wake owns this slot now. An old rejection must not poison its status or report.
     if (!link || link.deliveryId !== callMeta.deliveryId) return
+    // dispatch() covers the whole turn, including work after a successful parent reply.
+    // That reply still arrives; the turn engine records its later failure separately.
+    if (link.replyState === 'queued-for-parent') return
     const error = formatErr(err)
     this.childSessionLinks.set(key, { ...link, replyState: 'failed', dispatchError: error })
     await this.host.store().setSessionTurnOutcome(key, 'failed', this.host.clock().now())

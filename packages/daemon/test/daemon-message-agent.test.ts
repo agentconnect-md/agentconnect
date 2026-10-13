@@ -3450,6 +3450,46 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
     await daemon.stop()
   })
 
+  it('preserves an admitted parent reply when the child dispatch rejects later', async () => {
+    const { daemon, call } = await bootWithDispatchSpy(scaffold([{ id: 'bot-a' }, { id: 'bot-b' }]))
+    await seedSession(daemon, PARENT_KEY, { sessionId: 'sid-parent-1' })
+    await seedSession(daemon, CHILD_KEY, { originSessionId: 'sid-parent-1' })
+    let reject!: (err: Error) => void
+    const dispatch = vi.spyOn(daemon as any, 'dispatch')
+    dispatch.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail
+        })
+    )
+    const result = await call(baseReq({ needsReply: true }))
+    // Exercise the real reply admission path, rather than editing the tracked reply state.
+    expect(
+      await (daemon as any).collab.replyToSession({
+        callerAgentId: 'bot-b',
+        platform: 'slack',
+        callerChannel: 'C1',
+        callerThread: '100.1',
+        sessionId: 'sid-parent-1',
+        text: 'The completed answer.'
+      })
+    ).toMatchObject({ delivered: true })
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    // The turn engine still records the failed turn; it must not retract the queued reply.
+    await (daemon as any).store.setSessionTurnOutcome(CHILD_KEY, 'failed', 2_000)
+    reject(new Error('post-reply work failed'))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(await ask(daemon, result.targetSession)).toMatchObject({
+      status: 'failed',
+      reply: { requested: true, state: 'queued-for-parent' },
+      nextAction: 'finish-turn-and-wait'
+    })
+    expect((await ask(daemon, result.targetSession)).message).toContain('The agent replied.')
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    expect((daemon as any).collab.childSessionLinks.get(CHILD_KEY).dispatchError).toBeUndefined()
+    await daemon.stop()
+  })
+
   it('does not let an older dispatch failure poison a newer wake of the same session', async () => {
     const { daemon, call } = await bootWithDispatchSpy(scaffold([{ id: 'bot-a' }, { id: 'bot-b' }]))
     await seedSession(daemon, PARENT_KEY, { sessionId: 'sid-parent-1' })
