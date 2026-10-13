@@ -64,10 +64,29 @@ export function activityWindowStart(range: ActivityRange, nowMs: number = Date.n
   return bucketStarts(range, nowMs)[0]!
 }
 
+/** Stack key for usage no model split names: an older row, an unnamed model, or the split's shortfall. */
+export const UNATTRIBUTED_MODEL = ''
+
 export interface ActivityBucket {
   start: number
   label: string
   amount: number
+  /** Usage mode's per-model stack, each share ≥ 0 so it can be drawn; empty in top-ups mode. */
+  byModel: Record<string, number>
+}
+
+// A debit's drawable per-model shares: negative corrections drop out, and what the split leaves short of the total is unattributed.
+function modelShares(row: Extract<BillingTransaction, { type: 'debit' }>, amount: number): [string, number][] {
+  const out: [string, number][] = []
+  let named = 0
+  for (const part of row.models ?? []) {
+    const value = Number(part.amount)
+    if (!Number.isFinite(value) || value <= 0) continue
+    out.push([part.model, value])
+    named += value
+  }
+  if (amount - named > 1e-12) out.push([UNATTRIBUTED_MODEL, amount - named])
+  return out
 }
 
 /** One row per bucket, oldest first. `amount` is USD as a NUMBER because it is chart
@@ -83,6 +102,7 @@ export function bucketActivity(
   const starts = bucketStarts(range, nowMs)
   const { unit } = activityRange(range)
   const amounts = new Array<number>(starts.length).fill(0)
+  const byModel = starts.map(() => ({}) as Record<string, number>)
   for (const row of rows) {
     const at = Date.parse(row.at)
     if (!Number.isFinite(at) || at < starts[0]!) continue
@@ -101,10 +121,14 @@ export function bucketActivity(
     let i = starts.length - 1
     while (i > 0 && starts[i]! > at) i--
     amounts[i] = amounts[i]! + amount
+    if (row.type !== 'debit') continue
+    const into = byModel[i]!
+    for (const [model, share] of modelShares(row, amount)) into[model] = (into[model] ?? 0) + share
   }
   return starts.map((start, i) => ({
     start,
     label: bucketLabel(new Date(start).toISOString(), unit),
-    amount: amounts[i]!
+    amount: amounts[i]!,
+    byModel: byModel[i]!
   }))
 }

@@ -4326,7 +4326,9 @@
           "label": "90d",
           "period": "90 days"
         }
-      }
+      },
+      "otherModels": "Other",
+      "unknownModel": "Unknown model"
     },
     "membersDontPay": {
       "cardTitle": "Add credits",
@@ -4368,7 +4370,8 @@
       "receipt": "Receipt",
       "loadMore": "Load more",
       "loadingMore": "Loading…",
-      "endOfLedger": "end of ledger"
+      "endOfLedger": "end of ledger",
+      "modelShare": "{name} — {amount}"
     }
   },
   "Settings": {

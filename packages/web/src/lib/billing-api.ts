@@ -94,10 +94,19 @@ export interface BillingDebit {
    *  an older service, or a charge it could not split. Ids AND amounts are the ORG's — see the
    *  note above: gate on the CP's projection before either reaches a chip. */
   agents?: BillingDebitAgent[] | null
+  /** This charge's per-model split, org-wide and shown to every member. Absent or null ⇒ an older service or row. */
+  models?: BillingDebitModel[] | null
 }
 
 export interface BillingDebitAgent {
   agentId: string
+  /** Decimal string, NOT a number. Parse it only to display it. */
+  amount: string
+}
+
+export interface BillingDebitModel {
+  /** `""` ⇒ usage the control plane could not name a model for. */
+  model: string
   /** Decimal string, NOT a number. Parse it only to display it. */
   amount: string
 }
@@ -180,6 +189,17 @@ function isAgentSplit(v: unknown): v is BillingDebitAgent[] | null | undefined {
         !!e &&
         typeof (e as BillingDebitAgent).agentId === 'string' &&
         typeof (e as BillingDebitAgent).amount === 'string'
+    )
+  )
+}
+
+function isModelSplit(v: unknown): v is BillingDebitModel[] | null | undefined {
+  if (v === undefined || v === null) return true
+  return (
+    Array.isArray(v) &&
+    v.every(
+      (e) =>
+        !!e && typeof (e as BillingDebitModel).model === 'string' && typeof (e as BillingDebitModel).amount === 'string'
     )
   )
 }
@@ -267,6 +287,7 @@ export function assertTransactionsPage(
       // ABSENT is the older contract. A malformed split drops to `undefined` rather than
       // failing the page: the money on the row is the fact, the attribution is a garnish.
       if (!isAgentSplit(t.agents)) delete t.agents
+      if (!isModelSplit(t.models)) delete t.models
     } else {
       throw new BillingShapeError('transaction')
     }

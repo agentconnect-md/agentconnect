@@ -4326,7 +4326,9 @@
           "label": "90 天",
           "period": "90 天"
         }
-      }
+      },
+      "otherModels": "其他",
+      "unknownModel": "未知模型"
     },
     "membersDontPay": {
       "cardTitle": "充值",
@@ -4368,7 +4370,8 @@
       "receipt": "收据",
       "loadMore": "加载更多",
       "loadingMore": "加载中…",
-      "endOfLedger": "已到达账单末尾"
+      "endOfLedger": "已到达账单末尾",
+      "modelShare": "{name} — {amount}"
     }
   },
   "Settings": {
