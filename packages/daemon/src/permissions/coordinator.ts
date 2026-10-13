@@ -141,6 +141,7 @@ import {
   parseStoredJoinAsk,
   type JoinAnswer,
   type JoinAsk,
+  type JoinOffered,
   type StoredJoinAsk
 } from './join-confirmation.js'
 
@@ -1050,8 +1051,8 @@ export class PermissionCoordinator {
     return await this.trackHumanApprovalWait(p, result)
   }
 
-  /** Ask a person behind the turn before the bot joins a public channel (#2979); `offered` names whom once a card is up, and the answer may come after the turn ended. */
-  async askToJoin(p: Pending, ask: JoinAsk, waitMs: number, offered: (to: string | null) => void): Promise<JoinAnswer> {
+  /** Ask a person behind the turn before the bot joins a public channel (#2979); `offered` names whom and the turn's thread once a card is up, and the answer may come after the turn ended. */
+  async askToJoin(p: Pending, ask: JoinAsk, waitMs: number, offered: JoinOffered): Promise<JoinAnswer> {
     const { hostKey: owner, acpSessionId: sessionId } = p
     const agentId = hostKeyAgentId(owner)
     // A patrol never asks (assistant-mode.md §5.9).
@@ -1078,7 +1079,14 @@ export class PermissionCoordinator {
       resolve: resolveResult
     }
     this.pendingApprovals.set(requestId, entry)
-    const stored: StoredJoinAsk = { name: ask.name, purpose: ask.purpose, ...(ask.tool ? { tool: ask.tool } : {}) }
+    // The asking turn's thread, where its session hears the outcome even after a restart.
+    const thread = p.plan.thread
+    const stored: StoredJoinAsk = {
+      name: ask.name,
+      purpose: ask.purpose,
+      ...(ask.tool ? { tool: ask.tool } : {}),
+      ...(thread !== undefined ? { thread } : {})
+    }
     const recorded = this.noteEditorPermissionRequest(
       requestId,
       agentId,
@@ -1118,7 +1126,7 @@ export class PermissionCoordinator {
               }
             ))
       if (!posted) await this.abandonJoinAsk(requestId, entry)
-      else offered(dm?.target.displayName ?? requesterName)
+      else offered(dm?.target.displayName ?? requesterName, thread)
     }
     const res = await result
     const by = join.answeredBy ? { by: join.answeredBy } : {}

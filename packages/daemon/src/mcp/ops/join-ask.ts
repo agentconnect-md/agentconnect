@@ -5,6 +5,7 @@ import {
   JOIN_ASK_WAIT_TEXT,
   type JoinAnswer,
   type JoinAsk,
+  type JoinOffered,
   type JoinOutcome
 } from '../../permissions/join-confirmation.js'
 import { notJoinedChannel } from '../../platforms/not-joined.js'
@@ -26,6 +27,8 @@ export interface JoinParked {
   purpose: JoinRequest['purpose']
   /** Who was asked, when known. */
   to: string | null
+  /** The thread the asking turn replied in, where the turn its outcome starts replies too. */
+  thread?: string
 }
 
 /** A parked call's late outcome: what it returned, or why it did nothing. */
@@ -33,7 +36,7 @@ export type JoinDelivery = JoinParked & ({ result: unknown } | { error: string }
 
 export interface JoinAskDeps {
   /** Ask a person behind the turn whether the bot may join, calling `offered` once a card is up; absent ⇒ the bot never joins. */
-  confirmJoin?: (ctx: SessionContext, ask: JoinRequest, offered: (to: string | null) => void) => Promise<JoinAnswer>
+  confirmJoin?: (ctx: SessionContext, ask: JoinRequest, offered: JoinOffered) => Promise<JoinAnswer>
   /** Hand a parked call's outcome to its session as a message; absent ⇒ the call waits for the answer instead. */
   deliverJoinOutcome?: (ctx: SessionContext, outcome: JoinDelivery) => void
 }
@@ -93,8 +96,8 @@ async function joinAfterAsking(
       throw refused(tool, notInChannelText(name, purpose))
   const call: JoinParked = { tool, name, purpose, to: null }
   const answer = await deps
-    .confirmJoin(ctx, { integrationId, channel, name, purpose, tool, askers: askers.people }, (to) =>
-      parked?.(Object.assign(call, { to }))
+    .confirmJoin(ctx, { integrationId, channel, name, purpose, tool, askers: askers.people }, (to, thread) =>
+      parked?.(Object.assign(call, { to }, thread !== undefined ? { thread } : {}))
     )
     .catch((): JoinAnswer => ({ outcome: 'unavailable' }))
   if (answer.outcome !== 'join') throw refused(tool, ANSWERED[answer.outcome](name, purpose))
@@ -154,11 +157,11 @@ export function askingToJoin(
   })
 }
 
-/** One join confirmation in flight for a session's channel: its later answer, whom it was offered to, and calls waiting to hear that. */
+/** One join confirmation in flight for a session's channel: its later answer, whom it was offered to and in which thread, and calls waiting to hear that. */
 export interface JoinFlight {
   answer: Promise<JoinAnswer>
-  offered?: { to: string | null }
-  waiters: ((to: string | null) => void)[]
+  offered?: { to: string | null; thread?: string }
+  waiters: JoinOffered[]
 }
 
 /** The most of a late result handed back in one message. */

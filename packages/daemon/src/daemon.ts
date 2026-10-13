@@ -795,6 +795,7 @@ import {
   JOIN_ASK_TIMEOUT_MS,
   type JoinAnswer,
   type JoinLinkedAsker,
+  type JoinOffered,
   type StoredJoinAsk
 } from './permissions/join-confirmation.js'
 import {
@@ -8658,16 +8659,12 @@ export class Daemon {
   }
 
   /** Ask a person behind the live turn before the bot joins a public channel; parallel calls for one channel share one card. */
-  private async confirmJoin(
-    ctx: SessionContext,
-    ask: JoinRequest,
-    offered: (to: string | null) => void
-  ): Promise<JoinAnswer> {
+  private async confirmJoin(ctx: SessionContext, ask: JoinRequest, offered: JoinOffered): Promise<JoinAnswer> {
     const key = this.sessionKeyOf(ctx)
     const flightKey = [key, ask.integrationId, ask.channel].join('\u001f')
     const flying = this.joinAsks.get(flightKey)
     if (flying) {
-      if (flying.offered) offered(flying.offered.to)
+      if (flying.offered) offered(flying.offered.to, flying.offered.thread)
       else flying.waiters.push(offered)
       return await flying.answer
     }
@@ -8677,9 +8674,9 @@ export class Daemon {
     this.joinAsks.set(flightKey, flight)
     flight.answer = (async () => {
       const linked = await this.linkedCardAskers(ctx.agentId, live, ask.askers)
-      return await this.permissions.askToJoin(live, { ...ask, linked }, JOIN_ASK_TIMEOUT_MS, (to) => {
-        flight.offered = { to }
-        for (const waiter of flight.waiters.splice(0)) waiter(to)
+      return await this.permissions.askToJoin(live, { ...ask, linked }, JOIN_ASK_TIMEOUT_MS, (to, thread) => {
+        flight.offered = { to, ...(thread !== undefined ? { thread } : {}) }
+        for (const waiter of flight.waiters.splice(0)) waiter(to, thread)
       })
     })().finally(() => this.joinAsks.delete(flightKey))
     return await flight.answer
@@ -8714,7 +8711,13 @@ export class Daemon {
     const rec = await this.store.getSession(this.sessionKeyOf(ctx))
     if (!rec) return void this.log.debug(`join outcome for ${outcome.tool} dropped: no session row`)
     // The result continues that person's request, so the turn it starts reads and writes as them; a refusal speaks for no one.
-    this.dispatchJoinNotice(ctx.agentId, rec, joinOutcomeText(outcome), 'result' in outcome ? outcome.by : undefined)
+    this.dispatchJoinNotice(
+      ctx.agentId,
+      rec,
+      outcome.thread,
+      joinOutcomeText(outcome),
+      'result' in outcome ? outcome.by : undefined
+    )
   }
 
   /** A join card a restart left pending did nothing: its session is told so in the timeout's words, or skipped when it is gone. */
@@ -8726,12 +8729,19 @@ export class Daemon {
     this.dispatchJoinNotice(
       agentId,
       rec,
+      ask.thread,
       joinOutcomeText({ ...call, error: joinExpiredText(tool, ask.name, ask.purpose) })
     )
   }
 
-  /** A join notice as a new message in its session; `onBehalfOf` is the person the turn it starts speaks for, as a sub-session's opener is. */
-  private dispatchJoinNotice(agentId: string, rec: SessionRecord, text: string, onBehalfOf?: ReadAsker): void {
+  /** A join notice as a new message in its session, replying in the asking turn's `thread`; `onBehalfOf` is the person the turn it starts speaks for, as a sub-session's opener is. */
+  private dispatchJoinNotice(
+    agentId: string,
+    rec: SessionRecord,
+    thread: string | undefined,
+    text: string,
+    onBehalfOf?: ReadAsker
+  ): void {
     const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
     const traceId = randomUUID()
     const msg: NormalizedMessage = {
@@ -8741,7 +8751,14 @@ export class Daemon {
       source: 'agent',
       platform: rec.platform,
       channel: rec.channel,
-      ...(isAppendCoordinate(rec.thread) ? { sessionThread: rec.thread } : rec.thread ? { thread: rec.thread } : {}),
+      // Where the asking turn replied is the delivery thread, and the session's own coordinate keys it when that differs.
+      ...(thread !== undefined && thread !== rec.thread
+        ? { thread, sessionThread: rec.thread }
+        : isAppendCoordinate(rec.thread)
+          ? { sessionThread: rec.thread }
+          : rec.thread
+            ? { thread: rec.thread }
+            : {}),
       ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
       sender: { id: 'join-confirmation', isBot: true },
       text,

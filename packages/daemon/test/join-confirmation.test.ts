@@ -131,7 +131,7 @@ async function world(
     ...(over.joinCardExpired ? { joinCardExpired: over.joinCardExpired } : {})
   }
   const coordinator = new PermissionCoordinator(host)
-  const offered = vi.fn((_to: string | null) => {})
+  const offered = vi.fn((_to: string | null, _thread?: string) => {})
   const requestId = async (): Promise<string> => {
     await vi.waitFor(async () => expect(await store.listPermissionRequests(AGENT)).toHaveLength(1), WAIT)
     return (await store.listPermissionRequests(AGENT))[0]!.id
@@ -182,8 +182,9 @@ describe('the card in the conversation the request came from', () => {
     expect(card).toContain('Let Butler join #general to read it?')
     expect(card).toContain('"text":"Join"')
     expect(card).toContain('"text":"Don’t join"')
-    // The call is told whom it asked as soon as the card is up, so it can return before the answer.
+    // The call is told whom it asked, and the thread its turn replied in, as soon as the card is up.
     await vi.waitFor(() => expect(w.offered).toHaveBeenCalledTimes(1), WAIT)
+    expect(w.offered.mock.calls[0]![1]).toBe('100.1')
 
     await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'join', actor: { userId: 'U-ada' } })
     await expect(asked).resolves.toEqual({ outcome: 'join', by: ADA })
@@ -441,8 +442,8 @@ describe('a restart', () => {
     const joinCardExpired = vi.fn()
     const restarted = await world({ database, joinCardExpired })
     await restarted.coordinator.retireOrphanedCards('int-1')
-    // Its session is told the call did nothing, in the words a timeout uses.
-    expect(joinCardExpired).toHaveBeenCalledWith(AGENT, ACP, { name: 'general', purpose: 'read' })
+    // Its session is told the call did nothing, in the words a timeout uses, in the thread that asked.
+    expect(joinCardExpired).toHaveBeenCalledWith(AGENT, ACP, { name: 'general', purpose: 'read', thread: '100.1' })
     const swept = restarted.slack.updateBlocks.mock.calls
     expect(swept).toHaveLength(1)
     expect(swept[0]![0]).toBe('C1')
