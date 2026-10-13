@@ -1138,6 +1138,30 @@ A card still waiting when the daemon restarts is rewritten as expired once its i
 reconnects, and its conversation's agent is told that nothing was read or sent. The `toAgent` channel form asks nothing: where the bot is not in the channel, the
 platform refuses its post.
 
+## Local time
+
+Every agent, in assistant mode or not, reasons about "now", "today" and "this Friday" in the
+people's time zone, never its host's. Every turn it takes is told the current local date, weekday
+and time, to the minute, with the zone's name and offset, in one line given with the turn; the
+conversation's history keeps only what people wrote. The zone is the first of these that is known:
+
+1. **The person who sent the turn's message**, in their own zone: on Slack the zone in their
+   profile, looked up once per person and refreshed every six hours; in the console, their
+   browser's, sent with every message; on Feishu/Lark the zone in their user record, when the
+   platform returns one. Telegram, Discord and Google Chat report none.
+2. **A scheduled run**: the time zone its schedule is set in.
+3. **Any other turn no person sent**, such as a patrol, a task, a sub-session, a report from
+   background work, or another agent's message: the person who started it, as "Reading other
+   conversations" names them, and for a report or another agent's message the person behind the
+   conversation it came from. Their zone comes from the same sources as in step 1: a chat
+   member's profile, a console user's browser as last seen, else the profile of the chat account
+   that console user linked.
+4. **The zone last seen from a person in that conversation.**
+5. **UTC**, and the agent is told the local zone is unknown.
+
+A zone that cannot be read, because a lookup failed or took more than two seconds, is skipped for
+the next one; the turn never fails because of it. There is no setting for it.
+
 ## Assistant-mode drafts
 
 An agent in assistant mode posts directly in the conversation it is answering, one shared with
@@ -1384,16 +1408,6 @@ still posts and an older one is dropped. One that the platform refuses three tim
 conversation shared with another organization sets and receives reminders like any other (see
 "Assistant-mode places"). Background sessions, patrols and webchat cannot set reminders. A DM that
 read a private conversation for its person can still set them, since they post only in that DM.
-
-## Assistant-mode local time
-
-An agent in assistant mode reasons about "now", "today" and "this Friday" in the people's time
-zone, never its host's. Every turn it takes is told the current local date, weekday and time and
-the zone they are in: the zone of the person whose message started the turn, from their Slack
-profile or, in the console, their browser. A background sub-session, a patrol, a task, a report,
-or a person whose zone is unknown takes the zone last seen from a person in that conversation.
-When none was ever seen, as on platforms that report no zone, the agent is told it is UTC and that
-the local zone is unknown. An agent outside assistant mode is told nothing.
 
 ## Assistant-mode Activity
 

@@ -59,6 +59,8 @@ export function buildSyntheticMessage(
   // written apart from a trim, and a schedule prompt is routinely long and multi-line, so copying
   // it would persist the whole prompt as the title and push it to platform title surfaces.
   const title = deriveTitle(cron.trigger)
+  // The run's local time reads the schedule's own zone; a host clock is never presented as the people's.
+  const { zone, own } = firingZone(cron.timezone)
   // No target ⇒ headless fire: a minted key on the legacy 'slack' platform, so existing sessions stay continuous.
   const msg: NormalizedMessage = {
     msgId: `cron:${cron.id}:${traceId}`,
@@ -69,6 +71,7 @@ export function buildSyntheticMessage(
     thread: `cron:${cron.id}:${traceId}`, // fresh thread per fire (replaced by the real anchor ts when posted)
     sender: { id: `cron:${cron.id}`, isBot: false },
     text: `${scheduledRunContext(cron, now)}\n\n${cron.trigger}`,
+    ...(own ? { scheduleTimeZone: zone } : {}),
     ...(title ? { initialSessionTitle: title } : {}),
     mentionedBots: [],
     isDm: false,

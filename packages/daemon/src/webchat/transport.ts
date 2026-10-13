@@ -56,7 +56,7 @@ export interface WebchatAuthor {
   name: string
   /** Public avatar URL from the verified verdict — the identity a Slack mirror posts under. */
   pictureUrl?: string
-  /** The author's browser time zone, for an assistant-mode turn's local time; absent from an older relay. */
+  /** The author's browser time zone, for every agent's local time; absent from an older relay. */
   timeZone?: string
 }
 

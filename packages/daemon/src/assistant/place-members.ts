@@ -134,7 +134,7 @@ export function readAccessAsker(asker: ReadAsker): ReadAccessAsker {
     : { integrationId: asker.integrationId, memberId: asker.userId }
 }
 
-const askerKey = (a: ReadAsker): string =>
+export const askerKey = (a: ReadAsker): string =>
   a.kind === 'console' ? `console\u001f${a.userId}` : `${a.platform}\u001f${a.integrationId}\u001f${a.userId}`
 
 /** Everyone a turn's messages speak for; in a sub-session, a message no person sent speaks for whoever opened it. */
