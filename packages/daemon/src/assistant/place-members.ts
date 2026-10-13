@@ -1,4 +1,5 @@
 // Who is asking on a turn, and the live lookups behind the read rule (assistant-mode.md §5.5): a short cache over the platform and the Control Plane.
+import type { ReadAccessAsker } from '@agentconnect.md/protocol'
 import type { MessageGateway } from '../mcp/ops/context.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { ConsoleVerdict, ReadAsker, ReadLookups, TurnAskers } from './place-access.js'
@@ -19,8 +20,8 @@ export interface PlaceMembersHost {
     sessionIds: readonly string[],
     ownerOnly: boolean
   ): Promise<ConsoleVerdict>
-  /** The member id a console user linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
-  linkedMember?(agentId: string, integrationId: string, consoleUserId: string): Promise<string | null>
+  /** The member id the console user behind the asker linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
+  linkedMember?(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null>
 }
 
 interface Entry<T> {
@@ -68,12 +69,12 @@ export class PlaceMembers {
     return await this.cached(this.verdicts, key, () => ask(agentId, asker, sessionIds, ownerOnly))
   }
 
-  /** The member id a console user linked in that bot's workspace, null for none; rejects when it cannot be asked. */
-  async linkedMember(agentId: string, integrationId: string, consoleUserId: string): Promise<string | null> {
+  /** The member id the console user behind the asker linked in that bot's workspace, null for none; rejects when it cannot be asked. */
+  async linkedMember(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null> {
     const ask = this.host.linkedMember
     if (!ask) throw new Error('no linked identity on this daemon')
-    const key = [agentId, integrationId, consoleUserId].join('\u001f')
-    return await this.cached(this.links, key, () => ask(agentId, integrationId, consoleUserId))
+    const key = [agentId, integrationId, askerKey(asker)].join('\u001f')
+    return await this.cached(this.links, key, () => ask(agentId, integrationId, asker))
   }
 
   /** The read rule's lookups for one agent. */
@@ -82,7 +83,7 @@ export class PlaceMembers {
       member: (integrationId, channel, userId) => this.isMember(integrationId, channel, userId),
       fullMember: (integrationId, userId) => this.isFullMember(integrationId, userId),
       console: (asker, sessionIds, ownerOnly) => this.consoleVerdict(agentId, asker, sessionIds, ownerOnly),
-      linked: (integrationId, consoleUserId) => this.linkedMember(agentId, integrationId, consoleUserId)
+      linked: (integrationId, asker) => this.linkedMember(agentId, integrationId, asker)
     }
   }
 
@@ -124,6 +125,13 @@ export function askerOf(m: TurnMessage, bot: string | undefined): ReadAsker | nu
   if (m.console) return { kind: 'console', userId: msg.sender.id }
   const integrationId = m.integrationId ?? bot
   return integrationId ? { kind: 'member', platform: msg.platform, integrationId, userId: msg.sender.id } : null
+}
+
+/** How the Control Plane is told who asks: a console user directly, or a chat member by the bot they spoke on. */
+export function readAccessAsker(asker: ReadAsker): ReadAccessAsker {
+  return asker.kind === 'console'
+    ? { consoleUserId: asker.userId }
+    : { integrationId: asker.integrationId, memberId: asker.userId }
 }
 
 const askerKey = (a: ReadAsker): string =>

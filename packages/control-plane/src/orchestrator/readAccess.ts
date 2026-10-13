@@ -42,7 +42,7 @@ export async function resolveReadAccess(
   deps: ReadAccessDeps,
   expectedOrgId?: string
 ): Promise<AgentReadAccessOk> {
-  // Asked with `linkedOn`, every answer says whether that console user linked a chat identity in the bot's workspace.
+  // Asked with `linkedOn`, every answer says which chat identity the asker's console user linked in that bot's workspace.
   const noLink = req.linkedOn ? { linkedMemberId: null } : {}
   const agent = await deps.agent.getUnscoped(AgentId(req.agentId))
   if (!agent || (expectedOrgId && agent.orgId !== expectedOrgId)) return { ...unidentifiable, ...noLink }
@@ -51,10 +51,9 @@ export async function resolveReadAccess(
   const visibleSessionIds = req.sessionIds.length
     ? await deps.sessionsVisible(viewer, req.agentId, req.sessionIds, req.ownerOnly === true)
     : []
-  const linked =
-    req.linkedOn && 'consoleUserId' in req.asker
-      ? { linkedMemberId: await linkedMemberOn(req.agentId, req.linkedOn, viewer.userId, deps) }
-      : noLink
+  const linked = req.linkedOn
+    ? { linkedMemberId: await linkedMemberOn(req.agentId, req.linkedOn, viewer.userId, deps) }
+    : {}
   return { asker: 'linked', visibleSessionIds, consoleUserId: viewer.userId, ...linked }
 }
 
@@ -72,7 +71,7 @@ async function botTenant(
   return tenant ? { platform: integration.platform, tenant } : null
 }
 
-/** The member id a console user linked in that bot's tenant, null for none; two there cannot be told apart, so it throws. */
+/** The member id this console user linked in that bot's tenant, null for none; two there cannot be told apart, so it throws. */
 async function linkedMemberOn(
   agentId: string,
   integrationId: string,

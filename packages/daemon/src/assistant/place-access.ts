@@ -58,8 +58,8 @@ export interface ReadLookups {
   fullMember(integrationId: string, userId: string): Promise<boolean>
   /** The console's own session visibility for whoever is behind the asker, `ownerOnly` for a DM or webchat source; rejects when the Control Plane cannot answer. */
   console(asker: ReadAsker, sessionIds: readonly string[], ownerOnly: boolean): Promise<ConsoleVerdict>
-  /** The member id a console user linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
-  linked(integrationId: string, consoleUserId: string): Promise<string | null>
+  /** The member id the console user behind the asker linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
+  linked(integrationId: string, asker: ReadAsker): Promise<string | null>
 }
 
 /** Lookups that confirm nothing, for a host that wires none. */
@@ -115,7 +115,7 @@ async function sameBotMayRead(
   return membersAuthoritative(source.platform) && (await lookups.member(bot, source.channel, userId))
 }
 
-/** May this person read the source on bot `bot`? On their own bot, or as the chat account a console user linked in its workspace, as the platform says; elsewhere only as the console would show it. */
+/** May this person read the source on bot `bot`? On their own bot, or as the chat account they linked in its workspace, as the platform says; else only as the console would show it. */
 export async function askerMayRead(
   asker: ReadAsker,
   source: SourcePlace,
@@ -124,9 +124,9 @@ export async function askerMayRead(
 ): Promise<boolean> {
   if (asker.kind === 'member' && bot !== undefined && asker.platform === source.platform && asker.integrationId === bot)
     return await sameBotMayRead(asker.userId, source, bot, lookups)
-  // A webchat source stays its owner's, so only a platform conversation asks for the console user's linked account.
-  if (asker.kind === 'console' && bot !== undefined && source.kind !== 'webchat') {
-    const linked = await lookups.linked(bot, asker.userId)
+  // A webchat source stays its owner's, so only a platform conversation asks for the person's linked account.
+  if (bot !== undefined && source.kind !== 'webchat') {
+    const linked = await lookups.linked(bot, asker)
     if (linked !== null) return await sameBotMayRead(linked, source, bot, lookups)
   }
   const sessions = source.sessions ?? []

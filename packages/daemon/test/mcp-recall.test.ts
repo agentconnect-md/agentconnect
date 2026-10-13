@@ -525,22 +525,23 @@ interface ConsoleWorld {
   accounts?: Record<string, string>
 }
 
-/** Every Slack member is linked by default, P as user-p, who sees the Telegram group the console shows as org-visible. */
+/** The console user behind an asker: every Slack member is linked by default, P as user-p; no other platform's member is. */
+function personOf(world: ConsoleWorld, asker: ReadAsker): string | null | undefined {
+  if (asker.kind === 'console') return asker.userId
+  if (asker.platform !== 'slack') return null
+  if (world.linked) return world.linked[asker.userId]
+  return asker.userId === P ? 'user-p' : `user-${asker.userId}`
+}
+
+/** user-p sees the Telegram group the console shows as org-visible. */
 function consoleVerdict(
   world: ConsoleWorld,
   asker: ReadAsker,
   sessions: readonly string[],
   ownerOnly: boolean
 ): ConsoleVerdict {
-  if (asker.kind === 'member' && asker.platform !== 'slack') return { asker: 'unidentifiable' }
-  const user =
-    asker.kind === 'console'
-      ? asker.userId
-      : world.linked
-        ? world.linked[asker.userId]
-        : asker.userId === P
-          ? 'user-p'
-          : `user-${asker.userId}`
+  const user = personOf(world, asker)
+  if (user === null) return { asker: 'unidentifiable' }
   if (!user) return { asker: 'unlinked' }
   const visible = (world.visible ?? { 'user-p': ['out-s-tg'] })[user] ?? []
   const owners: Record<string, string> = { 'out-s-dm-p': 'user-p', 'out-s-dm-q': 'user-q', ...world.owners }
@@ -594,8 +595,10 @@ function perAsker(
     now: () => clock.now,
     gatewayFor: (id) => (id === 'int-slack' ? gw : undefined),
     readAccess,
-    linkedMember: async (_agent, integrationId, userId) =>
-      (integrationId === 'int-slack' ? opts.console?.accounts?.[userId] : undefined) ?? null
+    linkedMember: async (_agent, integrationId, asker) => {
+      const user = personOf(opts.console ?? {}, asker)
+      return (integrationId === 'int-slack' && user ? opts.console?.accounts?.[user] : undefined) ?? null
+    }
   })
   const live: Live = { messages: [{ msg: fromP, integrationId: 'int-slack' }] }
   const readLookups = vi.fn((agentId: string) => placeMembers.lookupsFor(agentId))

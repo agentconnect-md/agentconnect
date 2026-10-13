@@ -19,6 +19,7 @@ import {
 } from '../src/assistant/place-access.js'
 
 const BOT = 'int-slack'
+const LARK = 'int-feishu'
 const publicChannel: SourcePlace = { platform: 'slack', channel: 'C_PUB', kind: 'channel', private: false }
 const privateChannel: SourcePlace = { platform: 'slack', channel: 'C_PRIV', kind: 'channel', private: true }
 const groupDm: SourcePlace = { platform: 'slack', channel: 'G_MPIM', kind: 'group_dm', private: true }
@@ -29,15 +30,21 @@ const P: ReadAsker = { kind: 'member', platform: 'slack', integrationId: BOT, us
 const GUEST: ReadAsker = { kind: 'member', platform: 'slack', integrationId: BOT, userId: 'U_GUEST' }
 const people = (...p: ReadAsker[]): TurnAskers => ({ people: p, nobody: false })
 
-/** A Slack workspace where P and Q are full members and the guest is in C_GUESTS alone; the console knows U_P as user-p, who linked it in this bot's workspace. */
+/** A Slack workspace where P and Q are full members and the guest is in C_GUESTS alone; the console knows U_P as user-p, who linked it here and a Feishu account too. */
 function lookups(over: Partial<ReadLookups> = {}): ReadLookups {
   const members: Record<string, string[]> = {
     C_PRIV: ['U_P'],
     G_MPIM: ['U_P', 'U_Q'],
     D_P: ['U_P', 'B_BOT'],
     D_Q: ['U_Q', 'B_BOT'],
-    C_GUESTS: ['U_GUEST']
+    C_GUESTS: ['U_GUEST'],
+    oc_group: ['on_p'],
+    oc_other: ['on_q']
   }
+  // The chat account each console user linked, by the bot whose workspace it is in.
+  const accounts: Record<string, Record<string, string>> = { 'user-p': { [BOT]: 'U_P', [LARK]: 'on_p' } }
+  const personOf = (asker: ReadAsker) =>
+    asker.kind === 'console' ? asker.userId : asker.platform === 'slack' && asker.userId === 'U_P' ? 'user-p' : ''
   // The console shows user-p an org-visible DM someone else owns; only its owner may read it.
   const visibleTo: Record<string, string[]> = {
     'user-p': ['ses-tg-group', 'ses-web-p', 'ses-web-q', 'ses-dc-dm-p', 'ses-dc-dm-q', 'ses-dm-unowned']
@@ -60,7 +67,7 @@ function lookups(over: Partial<ReadLookups> = {}): ReadLookups {
         return { asker: 'linked', visible: new Set(sessions.filter(sees)) }
       }
     ),
-    linked: vi.fn(async (bot: string, user: string) => (bot === BOT && user === 'user-p' ? 'U_P' : null)),
+    linked: vi.fn(async (bot: string, asker: ReadAsker) => accounts[personOf(asker)]?.[bot] ?? null),
     ...over
   }
 }
@@ -210,7 +217,7 @@ describe('across platforms and bots: as the console would show it to the person'
   })
 })
 
-describe('a console user, as the chat account they linked in the bot’s workspace', () => {
+describe('a person the product can identify, as the chat account they linked in the target’s workspace', () => {
   const consoleP: ReadAsker = { kind: 'console', userId: 'user-p' }
 
   it('reads a public channel the agent was never in, and a private channel or group DM they are in', async () => {
@@ -223,7 +230,7 @@ describe('a console user, as the chat account they linked in the bot’s workspa
       await judge({ ...privateChannel, channel: 'C_OTHER', sessions: ['ses-tg-group'] }, people(consoleP), l)
     ).toBe('private')
     expect(l.console).not.toHaveBeenCalled()
-    expect(vi.mocked(l.linked).mock.calls[0]).toEqual([BOT, 'user-p'])
+    expect(vi.mocked(l.linked).mock.calls[0]).toEqual([BOT, consoleP])
   })
 
   it("reads their own DM and never someone else's, and a webchat conversation only as its owner", async () => {
@@ -260,11 +267,28 @@ describe('a console user, as the chat account they linked in the bot’s workspa
     expect(l.console).not.toHaveBeenCalled()
   })
 
-  it('leaves a chat member on another bot judged by the console', async () => {
+  it('judges a chat member off their own bot as the account they linked in the target workspace', async () => {
     const l = lookups()
-    expect(await judge({ ...privateChannel, sessions: ['ses-tg-group'] }, people(P), l, 'int-other')).toBeUndefined()
-    expect(await judge(publicChannel, people(P), l, 'int-other')).toBe('private')
-    expect(l.linked).not.toHaveBeenCalled()
+    const lark = (channel: string): SourcePlace => ({ platform: 'feishu', channel, kind: 'channel', private: true })
+    // A Slack member reads a Feishu group they are in that the agent never visited, and not one they are not in.
+    expect(await judge(lark('oc_group'), people(P), l, LARK)).toBeUndefined()
+    expect(await judge({ ...lark('oc_other'), sessions: ['ses-tg-group'] }, people(P), l, LARK)).toBe('private')
+    // Through another of the agent's bots in their own workspace, as the account they linked there.
+    const viaOtherBot: ReadAsker = { ...P, integrationId: 'int-slack-2' }
+    expect(await judge(privateChannel, people(viaOtherBot), l)).toBeUndefined()
+    expect(await judge({ ...privateChannel, channel: 'C_OTHER' }, people(viaOtherBot), l)).toBe('private')
+    expect(l.console).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the console for a chat member who linked nothing in the target workspace', async () => {
+    const l = lookups()
+    // Telegram and Discord accounts cannot be linked, so a conversation there is judged by the console.
+    const tgGroup: SourcePlace = { ...privateChannel, platform: 'telegram', sessions: ['ses-tg-group'] }
+    expect(await judge(tgGroup, people(P), l, 'int-tg')).toBeUndefined()
+    expect(await judge({ ...publicChannel, platform: 'discord' }, people(P), l, 'int-dc')).toBe('private')
+    // Someone the console cannot identify reads nothing beyond their own bot.
+    const tgUser: ReadAsker = { kind: 'member', platform: 'telegram', integrationId: 'int-tg', userId: '42' }
+    expect(await judge({ ...publicChannel, sessions: ['ses-tg-group'] }, people(tgUser), l)).toBe('private')
   })
 })
 

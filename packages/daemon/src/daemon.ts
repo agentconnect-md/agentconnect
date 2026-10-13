@@ -330,7 +330,13 @@ import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { assistantSubsessionToolsFor, type SubsessionStopper } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
-import { askerOfFollower, PlaceMembers, turnAskers, type TurnMessage } from './assistant/place-members.js'
+import {
+  askerOfFollower,
+  PlaceMembers,
+  readAccessAsker,
+  turnAskers,
+  type TurnMessage
+} from './assistant/place-members.js'
 import {
   NOBODY,
   type ConsoleVerdict,
@@ -1844,7 +1850,7 @@ export class Daemon {
     now: () => this.clock.now(),
     gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
     readAccess: (agentId, asker, sessionIds, ownerOnly) => this.readAccess(agentId, asker, sessionIds, ownerOnly),
-    linkedMember: (agentId, integrationId, userId) => this.consoleLinkedMember(agentId, integrationId, userId)
+    linkedMember: (agentId, integrationId, asker) => this.linkedAccount(agentId, integrationId, asker)
   })
   /** Who opened each sub-session, by its session key: a sub-session reads as the person whose turn started it (§5.5). */
   private readonly subsessionOpeners = new Map<string, TurnAskers>()
@@ -8836,10 +8842,7 @@ export class Daemon {
     const res = await cp.readAccess(
       {
         agentId,
-        asker:
-          asker.kind === 'console'
-            ? { consoleUserId: asker.userId }
-            : { integrationId: asker.integrationId, memberId: asker.userId },
+        asker: readAccessAsker(asker),
         sessionIds: [...sessionIds],
         ...(ownerOnly ? { ownerOnly: true } : {})
       },
@@ -8848,13 +8851,13 @@ export class Daemon {
     return res.asker === 'linked' ? { asker: 'linked', visible: new Set(res.visibleSessionIds) } : { asker: res.asker }
   }
 
-  /** The member id a console user linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
-  private async consoleLinkedMember(agentId: string, integrationId: string, userId: string): Promise<string | null> {
+  /** The member id the console user behind the asker linked in that bot's workspace, null for none; rejects when the Control Plane cannot say. */
+  private async linkedAccount(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null> {
     const cp = this.cpClient
     if (cp?.supportsServerFeature?.(READ_ACCESS_LINKED_V1_FEATURE) !== true)
       throw new Error('linked identity unavailable')
     const res = await cp.readAccess(
-      { agentId, asker: { consoleUserId: userId }, sessionIds: [], linkedOn: integrationId },
+      { agentId, asker: readAccessAsker(asker), sessionIds: [], linkedOn: integrationId },
       this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
     )
     // A reply without the field came from a Control Plane that cannot say, so the read or write is refused.
