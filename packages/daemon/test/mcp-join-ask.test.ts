@@ -91,7 +91,8 @@ function makeDeps(gw: MessageGateway, over: { nobody?: boolean; unreachable?: bo
     readLookups: () => ({
       member: async () => true,
       fullMember: async () => true,
-      console: async (_asker, sessionIds) => ({ asker: 'linked', visible: new Set(sessionIds) })
+      console: async (_asker, sessionIds) => ({ asker: 'linked', visible: new Set(sessionIds) }),
+      linked: async () => null
     }),
     placeStore: {
       listSessions: async () => [],

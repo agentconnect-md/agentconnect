@@ -438,7 +438,8 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
               'conversation by default, or the one `channel` names. Another conversation is readable only when ' +
               'the person asking may see it: a public channel (if the bot is not in it, the person asking is asked ' +
               'first whether it may join), a private channel or group DM they are in, or their own direct ' +
-              'message with you; through another of your bots, only what the console shows that person. A run no ' +
+              'message with you; through another of your bots, as the chat account they linked for that ' +
+              "bot's workspace, else only what the console shows that person. A run no " +
               'person started reads only public channels. Anything else is refused ' +
               'with one answer that never says whether it exists. A result from a private conversation carries ' +
               '`privateSource`: when you use it, say where it came from in one short clause. Results are ' +

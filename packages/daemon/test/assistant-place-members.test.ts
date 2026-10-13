@@ -103,6 +103,36 @@ describe('PlaceMembers.isFullMember and consoleVerdict', () => {
   it('confirms nothing on a daemon that cannot ask the console', async () => {
     const members = new PlaceMembers({ now: () => 0, gatewayFor: () => undefined })
     await expect(members.consoleVerdict('agent-a', { kind: 'console', userId: 'user-p' }, [])).rejects.toThrow()
+    await expect(
+      members.lookupsFor('agent-a').linked('int-slack', { kind: 'console', userId: 'user-p' })
+    ).rejects.toThrow()
+  })
+})
+
+describe('PlaceMembers.linkedMember', () => {
+  it("caches a person's linked account per agent, bot and asker for a minute, and drops a failed one", async () => {
+    const clock = { now: 0 }
+    const answers: Promise<string | null>[] = [Promise.reject(new Error('offline')), Promise.resolve('U_P')]
+    answers[0]!.catch(() => {})
+    const linkedMember = vi.fn(async (_agent: string, integrationId: string, asker: ReadAsker) =>
+      integrationId === 'int-slack' && asker.kind === 'console' ? answers.shift()! : null
+    )
+    const members = new PlaceMembers({ now: () => clock.now, gatewayFor: () => undefined, linkedMember })
+    const lookups = members.lookupsFor('agent-a')
+    const consoleP: ReadAsker = { kind: 'console', userId: 'user-p' }
+    const larkMember: ReadAsker = { kind: 'member', platform: 'feishu', integrationId: 'int-lark', userId: 'on_p' }
+    await expect(lookups.linked('int-slack', consoleP)).rejects.toThrow('offline')
+    expect(await lookups.linked('int-slack', consoleP)).toBe('U_P')
+    expect(await lookups.linked('int-slack', consoleP)).toBe('U_P')
+    expect(await lookups.linked('int-other', consoleP)).toBeNull()
+    // A chat member is asked about on their own, never served from a console user's answer.
+    expect(await lookups.linked('int-slack', larkMember)).toBeNull()
+    expect(linkedMember).toHaveBeenCalledTimes(4)
+    expect(linkedMember).toHaveBeenLastCalledWith('agent-a', 'int-slack', larkMember)
+    clock.now += PLACE_MEMBERS_TTL_MS
+    answers.push(Promise.resolve(null))
+    expect(await lookups.linked('int-slack', consoleP)).toBeNull()
+    expect(linkedMember).toHaveBeenCalledTimes(5)
   })
 })
 
