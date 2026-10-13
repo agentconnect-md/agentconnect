@@ -1,4 +1,4 @@
-// The standing summary (assistant-mode.md §5.4 ②): open items, capped, identical everywhere, on the reminder path.
+// The standing summary (assistant-mode.md §5.4 ②): open items, capped, the same in every internal place, on the reminder path.
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -151,7 +151,7 @@ describe('the standing summary on the reminder path', () => {
       origin: DM,
       followers: [{ identity: ALICE, place: DM }]
     })
-    return { s, manager, item }
+    return { s, manager, item, agent }
   }
 
   it('rides the first turn, a compaction and a restart, and nothing in between', async () => {
@@ -186,6 +186,24 @@ describe('the standing summary on the reminder path', () => {
     const { manager } = await harness()
     const restarted = await manager().handle('bot-a', msg({ ts: '100.1' }))
     expect(summaryOf(restarted.blocks)).toBeUndefined()
+  })
+
+  // #2979, B4: the ledger is internal, so a conversation shared with another organization is not told it.
+  it('is left out of a conversation shared with another organization, and kept in an internal one', async () => {
+    const { manager, agent } = await harness(ON)
+    agent.integrations.push({ id: 'int-1', platform: 'slack', core: { externalChannels: ['C0SHARED'] } } as never)
+    const sm = manager()
+    const onItsBot = await sm.handle(
+      'bot-a',
+      msg({ ts: '300.1', channel: 'C0SHARED', thread: '300.1' }),
+      undefined,
+      'int-1'
+    )
+    const noBotNamed = await sm.handle('bot-a', msg({ ts: '400.1', channel: 'C0SHARED', thread: '400.1' }))
+    const internal = await sm.handle('bot-a', msg({ ts: '100.1' }), undefined, 'int-1')
+    expect(summaryOf(onItsBot.blocks)).toBeUndefined()
+    expect(summaryOf(noBotNamed.blocks)).toBeUndefined()
+    expect(summaryOf(internal.blocks)).toContain('Ship the release notes')
   })
 })
 

@@ -1,6 +1,7 @@
 // The standing summary (assistant-mode.md §5.4 ②): open items and a main conversation's running sub-sessions, on the reminder path.
 import type { Agent } from '../agents/agent-schema.js'
 import { subsessionLabel } from '../permissions/subsession-approval.js'
+import { conversationTrustLevel } from '../router/routing-rule.js'
 import type { AssistantItemLedger, AssistantItemOverview } from '../store/assistant-items.js'
 import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
 import type { SessionRecord } from '../store/local-store.js'
@@ -26,12 +27,31 @@ export function renderStandingSummary(items: readonly AssistantItemOverview[], m
   )
 }
 
-/** The summary for an agent's session, or undefined when the agent is not in assistant mode or has no open item. */
+/** The conversation a session belongs to, through the agent's bot when it is known. */
+export interface SummaryPlace {
+  platform: string
+  channel: string
+  integrationId?: string
+}
+
+/** Whether the agent holds the conversation shared with another organization: on the named bot, else on any bot of that platform. */
+function sharedWithOutsiders(agent: Pick<Agent, 'integrations'>, place: SummaryPlace): boolean {
+  return agent.integrations.some(
+    (int) =>
+      (place.integrationId ? int.id === place.integrationId : int.platform === place.platform) &&
+      conversationTrustLevel(int, place.channel) === 'external'
+  )
+}
+
+/** The summary for an agent's session, or undefined outside assistant mode, with no open item, or where people from outside the organization are. */
 export async function standingSummaryFor(
   ledger: Pick<AssistantItemLedger, 'list'>,
-  agent: Pick<Agent, 'id' | 'assistantMode'> | undefined
+  agent: Pick<Agent, 'id' | 'assistantMode' | 'integrations'> | undefined,
+  place?: SummaryPlace
 ): Promise<string | undefined> {
   if (agent?.assistantMode?.enabled !== true) return undefined
+  // The ledger is internal, so a conversation shared with another organization is not told it (#2979, B4).
+  if (place && sharedWithOutsiders(agent, place)) return undefined
   const items = await ledger.list(agent.id, { status: ['active', 'waiting'], limit: STANDING_SUMMARY_LIMIT + 1 })
   return renderStandingSummary(items.slice(0, STANDING_SUMMARY_LIMIT), items.length > STANDING_SUMMARY_LIMIT)
 }

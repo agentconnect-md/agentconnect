@@ -368,9 +368,7 @@ matters in workspaces where 👀 already carries a meaning between people. Only 
 the write is refused — the app lacks the scope, the API fails, the turn shows no
 indicator — does the reaction fall back in, so a Slack turn never shows neither.
 A typing hint is not an indicator in this sense: it acknowledges nothing, so
-Telegram and Discord react as before. An assistant-mode reply drafted in an external
-place shows no indicator at all, so there the reaction is the acknowledgement (see
-"Assistant-mode drafts").
+Telegram and Discord react as before.
 
 Google Chat has neither: an app can react only with user authentication, and it has
 no typing indicator. There the acknowledgement is one placeholder message in the
@@ -985,23 +983,24 @@ joining it, found with one user lookup per join (a person who joins several conv
 is looked up once). A member of another workspace of the same Enterprise Grid organization is not
 from outside, and having a console account or not plays no part. Before posting something no
 message from the conversation prompted, such as a scheduled run and its opening message, a report
-from background work, a reminder, a post from another conversation or an approval card, the agent
-asks Slack whether the conversation is shared now, at most once a minute per conversation. Every
-agent detects outsiders this way, in assistant mode or not, and what it found applies wherever a
-rule names an external conversation: an approval there goes to an internal member, its memory is
-its own place layer, and a post into it from another conversation is drafted or refused. When
-Slack cannot answer, a post from another conversation waits for approval as in an external place.
-A share is lifted once Slack no longer reports it; a guest or an outside member never is.
-Enabling a 1:1 DM trusts the person in it, so a DM never turns external.
+from background work, a post from another conversation or an approval card, the agent asks Slack
+whether the conversation is shared now, at most once a minute per conversation. Every agent
+detects outsiders this way, in assistant mode or not, and what it found applies wherever a rule
+names an external conversation. When Slack cannot answer, a post from another conversation waits
+for approval as in an external place. A share is lifted once Slack no longer reports it; a guest or
+an outside member never is. Enabling a 1:1 DM trusts the person in it, so a DM never turns
+external.
 
-The rest applies to an agent in assistant mode only. A post it makes with no message from the
-conversation behind it also waits for approval when Slack cannot answer. When an enabled place
-turns external, the reply already in progress there is stopped before it can post; messages
-waiting behind it or arriving while it stops, and everything the agent knows, are kept, and those
-messages are then answered as drafts. Only that place is affected: the agent's other
-conversations keep running and keep taking messages. An agent outside assistant mode keeps
-replying in an external conversation as before: nothing is stopped and its replies are not
-drafted.
+Every agent, in assistant mode or not, replies in an external conversation as it does anywhere
+else: the reply streams under the working indicator, its other writes there go through, and a
+scheduled run's opening message and a reminder there are posted, never drafted. A conversation
+that turns external while the agent is answering is not interrupted. Reads there are judged by who
+is asking and memory by its audience, so what to share is the person's call. Only four things
+differ in an external conversation: an approval goes to an internal member (see "What people can
+do in chat"), its memory is its own place layer (see "Memory layers"), a post into it from another
+conversation is drafted or refused (see "Writing to other conversations"), and one newly found
+starts Off (see "Per-conversation trigger"). An agent in assistant mode is also not reminded there
+of its open items, since its item ledger is internal.
 
 ## Reading other conversations
 
@@ -1165,25 +1164,20 @@ the next one; the turn never fails because of it. There is no setting for it.
 
 ## Assistant-mode drafts
 
-An agent in assistant mode posts directly in the conversation it is answering and wherever
-"Writing to other conversations" allows. Two kinds of post wait for an internal member's approval
-instead:
+An agent in assistant mode posts directly in the conversation it is answering, one shared with
+another organization included (see "Assistant-mode places"), and wherever "Writing to other
+conversations" allows. One kind of post waits for an internal member's approval instead: a post
+into an external place from elsewhere. `sendMessage` from another conversation into a conversation
+shared with another organization, or one Slack could not confirm is not shared, is drafted instead
+of sent; so is a post of a turn no person is behind into any conversation but its own. Its target
+need not be a conversation where the agent is enabled. A forwarded file cannot be drafted and is
+refused. The agent-to-agent forms and the parent-session reply are unchanged.
 
-- **A reply in an external place.** In a conversation the platform reports as shared with
-  another organization (a Slack Connect channel), the reply is drafted, not posted. The
-  conversation sees no working indicator, no streaming and no tool progress: only a reaction
-  on the message that started the turn, where the platform has reactions, and never text. A
-  scheduled run's opening message there is drafted too.
-  Other platform writes there are refused; reads are unchanged.
-- **A post into an external place from elsewhere.** `sendMessage` from another conversation into
-  a conversation shared with another organization, or one Slack could not confirm is not shared, is
-  drafted instead of sent; so is a post of a turn no person is behind into any conversation but its
-  own. Its target need not be a conversation where the agent is enabled. A forwarded file cannot be
-  drafted and is refused. The agent-to-agent forms and the parent-session reply are unchanged.
-
-An agent outside assistant mode drafts only the first kind's post from elsewhere, and only to the
-person who asked when they are a full member of the organization (see "Writing to other
-conversations"); it has no Activity view, so the card is where its draft is decided.
+An agent outside assistant mode drafts only a post from elsewhere into an external place, and only
+to the person who asked when they are a full member of the organization (see "Writing to other
+conversations"); it has no Activity view, so the card is where its draft is decided. A reply that
+was drafted in an external place before such replies were posted directly stays waiting and is
+decided like any other draft.
 
 The draft goes as a card to one internal member's direct message: the person who asked when
 they are an internal member (on Slack, a full member of the installing workspace, not a guest
@@ -1197,7 +1191,7 @@ counts, re-verified like an approval DM's when the responsible user was chosen f
 the fallback conversation may decide. An agent editor may also decide it from the agent's
 Activity view (see "Assistant-mode Activity"), including a draft no one could be reached for.
 
-Approve posts the text unchanged, once, a reply in its original thread. The approved post is
+Approve posts the text unchanged, once, where it was aimed. The approved post is
 recorded and threaded like any message the agent sends, so a reply to it reaches the agent; no
 turn runs for it. Discard drops it. A
 draft expires after 24 hours and is never posted afterwards. A post whose outcome is uncertain
@@ -1243,8 +1237,9 @@ it promises a check then, never an action. When an open item already covers a re
 whether to attach the request to that item instead, and the asker follows the existing item on
 a yes. The ledger is visible to the whole organization: an item records who asked for what and
 where it stands, never the wording of a direct message, and the agent says so when it takes an
-item asked in a DM. Every conversation of the agent is reminded of the same list of open items.
-An agent outside assistant mode is offered no item tools.
+item asked in a DM. Every conversation of the agent is reminded of the same list of open items,
+except one shared with another organization, since the ledger is internal; its item tools still
+answer there when asked. An agent outside assistant mode is offered no item tools.
 
 ## Assistant-mode sub-sessions
 
@@ -1410,11 +1405,9 @@ only the reminders of the conversation it is in.
 
 While the agent is paused nothing posts; after it resumes, a reminder less than 24 hours late
 still posts and an older one is dropped. One that the platform refuses three times is dropped. A
-conversation shared with another organization cannot set reminders, and in one that turned
-external after a reminder was set, the text goes to an internal member for approval like any
-reply there (see "Assistant-mode drafts"). Background sessions, patrols and webchat cannot set
-reminders. A DM that read a private conversation for its person can still set them, since they
-post only in that DM.
+conversation shared with another organization sets and receives reminders like any other (see
+"Assistant-mode places"). Background sessions, patrols and webchat cannot set reminders. A DM that
+read a private conversation for its person can still set them, since they post only in that DM.
 
 ## Assistant-mode Activity
 

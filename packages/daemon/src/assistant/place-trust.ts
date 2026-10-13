@@ -1,4 +1,4 @@
-// A place turning external (assistant-mode.md §5.3): every agent's detections and their report to the CP; assistant mode's downgrade transition.
+// A place turning external (assistant-mode.md §5.3): every agent's detections and their report to the CP.
 import {
   mergePlaceExternalReason,
   placeExternalReasonSticky,
@@ -17,13 +17,8 @@ const MAX_SHARE_ENTRIES = 512
 export interface PlaceTrustDeps {
   /** The live integration, as turns read it. */
   integration: (integrationId: string) => Integration | undefined
-  /** Whether an agent in assistant mode owns the integration; only its turn is cut when a place turns external. */
-  assistantOwned: (integrationId: string) => boolean
   /** Hand a detection to the CP, which stores it and re-pushes the spec. */
   report: (integrationId: string, channel: IntegrationChannel) => void
-  /** Cut the in-flight turn of every session posting into the place, except the sessions in `spare`. */
-  interrupt: (integrationId: string, channel: string, spare: ReadonlySet<string>) => Promise<void>
-  warn: (message: string) => void
   now: () => number
   /** The platform's word on whether a conversation is shared now; undefined where the platform reports no share. */
   shareLookup: (integrationId: string) => ((channel: string) => Promise<PlaceExternalReason | null>) | undefined
@@ -32,8 +27,6 @@ export interface PlaceTrustDeps {
 interface ShareAnswer {
   at: number
   reason: Promise<PlaceExternalReason | null>
-  /** The sessions whose turn asked: a share found for them drafts their reply, so it never cuts them. */
-  spare: Set<string>
 }
 
 export class PlaceTrust {
@@ -58,7 +51,7 @@ export class PlaceTrust {
   }
 
   /** Before a post no event from the place triggered: external, internal, or `unknown` when the platform could not say; one lookup per place per TTL. */
-  async confirm(integrationId: string, channel: string, spare?: string): Promise<PlaceTrustLevel | 'unknown'> {
+  async confirm(integrationId: string, channel: string): Promise<PlaceTrustLevel | 'unknown'> {
     const int = this.deps.integration(integrationId)
     if (int && integrationCore(int).externalChannels.includes(channel)) return 'external'
     const lookup = this.deps.shareLookup(integrationId)
@@ -67,23 +60,22 @@ export class PlaceTrust {
     const now = this.deps.now()
     let answer = this.shares.get(key)
     if (!answer || now - answer.at >= PLACE_SHARE_TTL_MS) {
-      const fresh: ShareAnswer = { at: now, reason: lookup(channel), spare: new Set() }
+      const fresh: ShareAnswer = { at: now, reason: lookup(channel) }
       answer = fresh
       this.shares.delete(key)
       this.shares.set(key, fresh)
       const oldest = this.shares.size > MAX_SHARE_ENTRIES ? this.shares.keys().next().value : undefined
       if (oldest !== undefined) this.shares.delete(oldest)
-      // Registered before any caller awaits, so a share found is the same downgrade an event's flag makes; a failure is asked again.
+      // Registered before any caller awaits, so a share found is the same detection an event's flag makes; a failure is asked again.
       void fresh.reason.then(
         (reason) => {
-          if (reason) this.detected([integrationId], channel, reason, fresh.spare)
+          if (reason) this.detected([integrationId], channel, reason)
         },
         () => {
           if (this.shares.get(key) === fresh) this.shares.delete(key)
         }
       )
     }
-    if (spare) answer.spare.add(spare)
     try {
       return (await answer.reason) ? 'external' : 'internal'
     } catch {
@@ -91,13 +83,8 @@ export class PlaceTrust {
     }
   }
 
-  /** A platform found the place external, for every agent: it reads external at once, the CP records it, and an assistant-mode place is downgraded. */
-  detected(
-    integrationIds: readonly string[],
-    channel: string,
-    reason: PlaceExternalReason,
-    spare: ReadonlySet<string> = new Set()
-  ): void {
+  /** A platform found the place external, for every agent: it reads external at once and the CP records it. */
+  detected(integrationIds: readonly string[], channel: string, reason: PlaceExternalReason): void {
     for (const id of integrationIds) {
       const int = this.deps.integration(id)
       if (!int) continue
@@ -108,11 +95,10 @@ export class PlaceTrust {
       held.set(channel, mergePlaceExternalReason(held.get(channel) ?? null, reason) ?? reason)
       this.pending.set(id, held)
       this.deps.report(id, { id: channel, externalReason: reason })
-      if (!wasExternal && this.deps.assistantOwned(id)) void this.downgrade(id, channel, spare)
     }
   }
 
-  /** A CP spec was applied: a held place it misses stays external, a held share it lists is the CP's now, and a newly listed place reads external, downgraded in assistant mode. */
+  /** A CP spec was applied: a held place it misses stays external, a held share it lists is the CP's now, and a newly listed place reads external. */
   specApplied(integrationId: string, next: Integration, added: readonly string[]): void {
     const held = this.pending.get(integrationId)
     if (held) {
@@ -124,14 +110,9 @@ export class PlaceTrust {
       }
       if (held.size === 0) this.pending.delete(integrationId)
     }
-    if (added.length === 0) return
     const live = this.deps.integration(integrationId)
-    const downgrades = this.deps.assistantOwned(integrationId)
-    for (const channel of added) {
-      // The live integration is replaced only once the push reconciles; until then it must read external too.
-      if (live) noteExternalChannel(live, channel)
-      if (downgrades) void this.downgrade(integrationId, channel, new Set())
-    }
+    // The live integration is replaced only once the push reconciles; until then it must read external too.
+    if (live) for (const channel of added) noteExternalChannel(live, channel)
   }
 
   /** A complete membership listing's rows, carrying what is held: its null lifts a held share, never a guest or an outside member. */
@@ -176,14 +157,5 @@ export class PlaceTrust {
   /** Drop what an unbound integration held, as its cached snapshot is. */
   forget(integrationId: string): void {
     this.pending.delete(integrationId)
-  }
-
-  // The transition changes the output path, not the context: only the in-flight turn is cut, nothing is retired.
-  private async downgrade(integrationId: string, channel: string, spare: ReadonlySet<string>): Promise<void> {
-    try {
-      await this.deps.interrupt(integrationId, channel, spare)
-    } catch (err) {
-      this.deps.warn(`assistant: interrupting the turn in a place turned external failed: ${(err as Error).message}`)
-    }
   }
 }

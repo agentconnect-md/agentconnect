@@ -253,8 +253,6 @@ export type TurnInterruptReason =
   | 'handover'
   // The stall watchdog (#1915): a prompt whose runtime went silent past `limits.turnStallTimeoutMs`.
   | 'stalled'
-  // assistant-mode.md §5.3: the place turned external, so the turn's reply must not post unapproved.
-  | 'place turned external'
   // assistant-mode.md §5.6: a sub-session's permission request went unanswered past `permissionWaitHours`.
   | 'approval wait expired'
 
@@ -700,8 +698,6 @@ export interface Pending {
   /** Agent questions this turn has already told the channel it could not render (#1794), so a
    *  runtime re-raising the same unrenderable ask posts one notice rather than one per attempt. */
   declinedElicitNotices?: Set<string>
-  /** Assistant mode: the reply sections an external place's turn drafts instead of posting (assistant-mode.md §5.5). */
-  draftSections?: string[]
 }
 
 /** Visible Slack thread messages that establish a new chronological boundary. Any live

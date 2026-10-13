@@ -1,9 +1,10 @@
-// A place of an assistant-mode agent turning external mid-turn (assistant-mode.md §5.3): only that place's turn is cut.
+// A place turning external mid-turn (#2979, B4): its turn runs on and posts directly, in assistant mode as anywhere.
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
+import { conversationTrustLevel } from '../src/router/routing-rule.js'
 import type { AssistantDraft } from '../src/store/assistant-drafts.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -207,75 +208,46 @@ async function boot() {
 }
 
 describe('a place turning external mid-turn', () => {
-  it("leaves the agent's other places alone: their turns, queued messages and new arrivals run as before", async () => {
+  it('cuts nothing: the turn in flight posts its reply directly, and so does one starting there meanwhile', async () => {
     const h = await boot()
     try {
       void h.send('C_A', 'TA', 'msg-a1')
       await vi.waitFor(() => expect(h.held.sessionOf('msg-a1')).toBeDefined(), WAIT)
-      void h.send('C_B', 'TB', 'msg-b1')
-      await vi.waitFor(() => expect(h.held.sessionOf('msg-b1')).toBeDefined(), WAIT)
-      expect(await h.send('C_B', 'TB', 'msg-b2')).toMatchObject({ accepted: true, queued: true })
-      const sessionA = h.held.sessionOf('msg-a1')
-      const sessionB = h.held.sessionOf('msg-b1')
 
+      // A guest joins while the turn runs.
       h.daemon.placeTrust.detected([INT], 'C_A', 'guestMember')
-      await vi.waitFor(() => expect(h.held.host.cancel).toHaveBeenCalledWith(sessionA), WAIT)
-
-      // While the cut turn winds down, the other places still take messages: one busy, one idle.
-      expect(await h.send('C_B', 'TB', 'msg-b3')).toMatchObject({ accepted: true })
-      expect(await h.send('C_C', 'TC', 'msg-c1')).toMatchObject({ accepted: true })
-      await vi.waitFor(() => expect(h.held.sessionOf('msg-c1')).toBeDefined(), WAIT)
-      const sessionC = h.held.sessionOf('msg-c1')
-      const pendingB = [...h.daemon.pending.values()].find((p: any) => p.acpSessionId === sessionB)
-      expect(pendingB.outputSuppressed).toBeUndefined()
+      expect(conversationTrustLevel(h.daemon.agents.get('bot-a').integrations[0], 'C_A')).toBe('external')
+      expect(await h.send('C_A', 'TA2', 'msg-a2')).toMatchObject({ accepted: true })
+      await vi.waitFor(() => expect(h.held.sessionOf('msg-a2')).toBeDefined(), WAIT)
 
       await vi.waitFor(() => {
-        h.held.releaseOn(sessionB, sessionC)
-        expect(h.posted('C_B')).toContain('reply to msg-b3')
-        expect(h.posted('C_C')).toContain('reply to msg-c1')
+        h.held.releaseOn(h.held.sessionOf('msg-a1'), h.held.sessionOf('msg-a2'))
+        expect(h.posted('C_A').sort()).toEqual(['reply to msg-a1', 'reply to msg-a2'])
       }, WAIT)
-      for (const tag of ['msg-b1', 'msg-b2', 'msg-b3']) expect(h.held.reached(sessionB, tag)).toBe(true)
-      expect(h.held.host.cancel.mock.calls).toEqual([[sessionA]])
+      expect(h.held.host.cancel).not.toHaveBeenCalled()
+      expect(await h.drafts()).toEqual([])
     } finally {
       await h.close()
     }
   })
 
-  it('cuts every turn in the place without posting their late output, and keeps what arrives there to answer as drafts', async () => {
+  it('answers a message queued behind the turn directly once the turn ends', async () => {
     const h = await boot()
     try {
-      // Two conversations of the place are mid-turn: two threads of the channel.
       void h.send('C_A', 'TA', 'msg-a1')
-      void h.send('C_A', 'TA2', 'msg-a2')
-      await vi.waitFor(() => expect(h.held.sessionOf('msg-a2')).toBeDefined(), WAIT)
       await vi.waitFor(() => expect(h.held.sessionOf('msg-a1')).toBeDefined(), WAIT)
-      const cut = [h.held.sessionOf('msg-a1'), h.held.sessionOf('msg-a2')]
+      const session = h.held.sessionOf('msg-a1')
 
       h.daemon.placeTrust.detected([INT], 'C_A', 'guestMember')
-      await vi.waitFor(() => expect(h.held.host.cancel.mock.calls.map(([s]) => s).sort()).toEqual(cut.sort()), WAIT)
+      expect(await h.send('C_A', 'TA', 'msg-a2')).toMatchObject({ accepted: true, queued: true })
 
-      // Arrivals in the place while the cut turns wind down: both conversations, and a new thread.
-      expect(await h.send('C_A', 'TA', 'msg-a3')).toMatchObject({ accepted: true, queued: true })
-      expect(await h.send('C_A', 'TA2', 'msg-a4')).toMatchObject({ accepted: true, queued: true })
-      expect(await h.send('C_A', 'TA3', 'msg-a5')).toMatchObject({ accepted: true })
-
-      // The cut turns flush a last chunk as they unwind.
-      h.held.release('msg-a1')
-      h.held.release('msg-a2')
-      await vi.waitFor(async () => {
-        h.held.releaseOn(...cut, h.held.sessionOf('msg-a5'))
-        expect(await h.drafts()).toHaveLength(3)
+      await vi.waitFor(() => {
+        h.held.releaseOn(session)
+        expect(h.posted('C_A')).toContain('reply to msg-a2')
       }, WAIT)
-
-      const drafted = await h.drafts()
-      expect(drafted.map((d) => [d.target.thread, d.text, d.targetExternal]).sort()).toEqual([
-        ['TA', 'reply to msg-a3', true],
-        ['TA2', 'reply to msg-a4', true],
-        ['TA3', 'reply to msg-a5', true]
-      ])
-      // Nothing reaches the place unapproved, and the cut turns' output reaches no draft either.
-      expect(h.posted('C_A')).toEqual([])
-      expect(JSON.stringify(h.conn.postBlocks.mock.calls)).not.toMatch(/reply to msg-a[12]\b/)
+      expect(h.held.reached(session, 'msg-a2')).toBe(true)
+      expect(h.held.host.cancel).not.toHaveBeenCalled()
+      expect(await h.drafts()).toEqual([])
     } finally {
       await h.close()
     }
