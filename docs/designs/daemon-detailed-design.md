@@ -1168,6 +1168,14 @@ conversation of every agent, webchat included and in assistant mode or not, also
 `stopSubsession` (`src/mcp/ops/assistant-subsessions.ts`, §5.8): it stops a sub-session that
 conversation opened through the console's own Stop core, on a turn a person there started.
 
+Every descriptor has to reach the model whole on both runtimes the product ships. Claude Code
+cuts a tool description at 2,048 characters and appends `… [truncated]`; when it flattens a
+top-level `oneOf`, as for `sendMessage`, the note it prepends counts toward that limit. Codex
+keeps the description whole but strips every description from an input schema whose compact
+form exceeds 5,000 bytes. So `sendMessage` keeps its rules in the tool description and the
+per-form detail in its parameter descriptions, and `test/mcp-tool-description-limits.test.ts`
+checks every descriptor against both limits.
+
 A second group is gated by a **declared port** rather than by a platform name
 (`platforms/read-ports.ts`, §7.1 of
 [integration-plugin-architecture.md](integration-plugin-architecture.md)): the bounded reads

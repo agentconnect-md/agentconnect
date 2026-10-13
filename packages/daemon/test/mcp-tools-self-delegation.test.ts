@@ -17,15 +17,14 @@ const slackInt: Integration = {
   config: { botToken: 'xoxb', appToken: 'xapp' }
 }
 
-type Branch = { required?: string[]; description?: string; properties: Record<string, { description?: string }> }
+type Branch = { required?: string[]; properties: Record<string, { description?: string }> }
 
 const sendTool = (ints: Integration[]) => toolsForIntegrations(ints).find((t) => t.name === 'sendMessage')!
 const agentBranch = (ints: Integration[]) =>
   (sendTool(ints).inputSchema as unknown as { oneOf: Branch[] }).oneOf.find((b) => b.required?.includes('toAgent'))!
 /** Every description the agent reads about `sendMessage`, joined. */
 const allText = (ints: Integration[]) => {
-  const branch = agentBranch(ints)
-  return [sendTool(ints).description, branch.description, branch.properties.toAgent!.description].join('\n')
+  return [sendTool(ints).description, agentBranch(ints).properties.toAgent!.description].join('\n')
 }
 
 const listTool = (ints: Integration[], name: string) => toolsForIntegrations(ints).find((t) => t.name === name)!
@@ -49,10 +48,8 @@ describe('sendMessage self-delegation wording', () => {
     expect(text).toContain('reports back into this conversation when it finishes or fails')
     expect(text).toContain('Keep ordinary conversation here')
     expect(text).toContain('A sub-session cannot open sub-sessions of its own.')
-    expect(text).toContain('your own ID without `channel` opens a background sub-session instead')
-    expect(text).toContain(
-      'A self wake is valid in the `toAgent` channel-root form and, as a sub-session, in the direct form above.'
-    )
+    expect(text).toContain('Without `channel`, your own ID opens a background sub-session instead')
+    expect(text).toContain('This form MAY target yourself: your own # Agent ID opens a new conversation there.')
     expect(text).not.toContain('this form cannot target yourself')
     expect(text).not.toContain('direct form may not target yourself')
     expect(text).not.toContain('a self target without `channel` is rejected')

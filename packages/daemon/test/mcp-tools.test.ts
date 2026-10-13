@@ -323,8 +323,8 @@ describe('toolsForIntegrations', () => {
     expect(agent.required).toEqual(['toAgent', 'message'])
     expect(agent.additionalProperties).toBe(false)
     expect(Object.keys(agent.properties)).toEqual(['toAgent', 'channel', 'message'])
-    expect(agent.description).toContain('direct')
-    expect(agent.description).toContain('channel root')
+    expect(agent.properties.toAgent!.description).toContain('Without `channel`')
+    expect(agent.properties.toAgent!.description).toContain('With `channel` it also posts at the channel root')
 
     const user = sendTargetBranch([slackInt], 'toUser')
     expect(user.required).toEqual(['toUser', 'message'])
@@ -337,8 +337,8 @@ describe('toolsForIntegrations', () => {
       'attachment',
       'message'
     ])
-    expect(user.description).toContain('dm')
-    expect(user.description).toContain('channel-root')
+    expect(user.properties.toUser!.description).toContain('A DM is exactly one id and no `channel`')
+    expect(user.properties.toUser!.description).toContain('one id or an array posts one channel-root message')
     expect(user.properties.toUser!.oneOf).toMatchObject([
       { type: 'string', minLength: 1 },
       { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', minLength: 1 } }
@@ -355,24 +355,22 @@ describe('toolsForIntegrations', () => {
       'attachment',
       'message'
     ])
-    expect(channel.description).toContain('without waking an agent or @-mentioning a human')
+    expect(tool.description).toContain('`{"channel":"<channel id>","message":"..."}` — no recipient')
 
     const session = sendTargetBranch([slackInt], 'sessionId')
     expect(session.required).toEqual(['sessionId', 'message'])
     expect(session.additionalProperties).toBe(false)
     expect(Object.keys(session.properties)).toEqual(['sessionId', 'message'])
 
-    expect(tool.description).toMatch(/^Send one message using exactly one target mode:/)
+    expect(tool.description).toMatch(/^Send one message using exactly one target mode/)
     expect(tool.description).toContain('{"toAgent":"<agent id>","message":"..."}')
     expect(tool.description).toContain('{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}')
     expect(tool.description).toContain('This form MAY target yourself')
     expect(tool.description).toContain('your own # Agent ID')
-    expect(tool.description).toContain('never an AgentConnect agent or your own bot identity')
+    expect(user.properties.toUser!.description).toContain('never an AgentConnect agent or your own bot identity')
     expect(tool.description).not.toContain('cannot impersonate anyone or wake yourself')
     expect(tool.description).toContain('{"toUser":"<Slack user id>","message":"..."}')
-    expect(tool.description).toContain(
-      '{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel id>","message":"..."}'
-    )
+    expect(tool.description).toContain('an id array with `channel` posts once at the channel root')
     expect(tool.description).toContain('{"channel":"<channel id>","message":"..."}')
     expect(tool.description).toContain('{"sessionId":"<Parent session>","message":"..."}')
   })
@@ -382,7 +380,7 @@ describe('toolsForIntegrations', () => {
     // "send somewhere", so an agent asked to relay an answer back to a customer picks the
     // channel it can see and posts at its root — a top-level message plus a NEW session,
     // instead of a reply in the conversation that asked. The consequence has to be ON the
-    // branch that carries it, and the tool has to say the turn's own reply already lands here.
+    // parameter that carries it, and the tool has to say the turn's own reply already lands here.
     const description = sendTool([slackInt])!.description
     // §2.1 is now the FIRST thing the tool says: to speak where you already are — including
     // to address a peer or a human there — write your ordinary reply and @-mention them.
@@ -390,20 +388,22 @@ describe('toolsForIntegrations', () => {
     expect(description).toContain('ordinary turn reply')
     expect(description).toContain('@-mention')
     expect(description).toContain('opens a NEW conversation')
-    expect(description).toContain('never by posting it at their channel root')
-    expect(sendTargetBranch([slackInt], 'sessionId').description).toContain(
-      'channel ROOT instead would start a new one'
+    expect(description).toContain('never at their channel root')
+    expect(sendTargetBranch([slackInt], 'sessionId').properties.sessionId!.description).toContain(
+      'channel ROOT would start a new one'
     )
 
-    // Every visible send is a ROOT post now (§2.2), so both the tool and the channel branch
+    // Every visible send is a ROOT post now (§2.2), so both the tool and the `channel` parameter
     // have to say so — there is no longer an in-thread form that avoids the cost.
-    for (const text of [description, sendTargetBranch([slackInt], 'channel').description!])
+    for (const text of [description, sendTargetBranch([slackInt], 'channel').properties.channel!.description!])
       expect(text).toMatch(/(at )?channel.{0,3}s? root/i)
 
     // …and the toUser mode is not DM-only: its channel-root form posts visible @-mentions,
     // which is a legitimate reason to send into a conversation the agent is not in.
     expect(description).toContain('@-mentions every listed user')
-    expect(sendTargetBranch([slackInt], 'toUser').description).toContain('@-mentions every listed user')
+    expect(sendTargetBranch([slackInt], 'toUser').properties.toUser!.description).toContain(
+      '@-mentions every listed user'
+    )
   })
 
   it('`toAgent` accepts the bare agent id OR an {agentId, needsReply} object', () => {
@@ -430,10 +430,14 @@ describe('toolsForIntegrations', () => {
 
     expect(listAgents.description).toContain('INCLUDING YOURSELF')
     expect(listAgents.description).toContain('`toAgent` + `channel`')
-    expect(agent.description).toContain('channel-root form may target YOURSELF')
-    expect(agent.description).toContain('own AgentConnect ID from the # Agent block')
-    expect(agent.description).toContain('The direct form with your own ID opens a background SUB-SESSION')
-    expect(user.description).toContain('never an AgentConnect agent or your own bot identity')
+    expect(agent.properties.toAgent!.description).toContain(
+      'your own ID there opens and activates one new conversation'
+    )
+    expect(agent.properties.toAgent!.description).toContain('your own ID from the # Agent block')
+    expect(agent.properties.toAgent!.description).toContain(
+      'Without `channel`, your own ID opens a background sub-session'
+    )
+    expect(user.properties.toUser!.description).toContain('never an AgentConnect agent or your own bot identity')
   })
 
   it('still injects the unified send tool for an agent with no integrations, but no platform read tools', () => {
