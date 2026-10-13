@@ -79,6 +79,7 @@ const bot = (over: Partial<BotRecord> = {}): BotRecord =>
 /** The owning agents the projection reads: restricted, and Everyone in assistant mode. */
 const RESTRICTED: SpecOwner = { visibility: 'restricted' }
 const ASSISTANT: SpecOwner = { visibility: 'org', assistantMode: { enabled: true } }
+const RESTRICTED_ASSISTANT: SpecOwner = { visibility: 'restricted', assistantMode: { enabled: true } }
 
 /** `integrationToSpec` with the registry + the matching bot row pre-bound, so the
  *  cases below keep reading as the trigger→bindRules fold they are testing. */
@@ -173,7 +174,7 @@ describe('integrationToSpec sessionModes', () => {
   })
 })
 
-// assistant-mode.md §5.1, §5.2: assistant mode gates the agent and gives each place one session, at projection only.
+// assistant-mode.md §5.1, §5.2: assistant mode gives each place one session, at projection only, and gates nothing.
 describe('assistant-mode places', () => {
   const decided = (channelId: string, sessionMode: 'createNew' | 'append' = 'createNew'): IntegrationChannelRecord => ({
     ...channel(channelId, 'mention', 'channel', sessionMode),
@@ -195,12 +196,26 @@ describe('assistant-mode places', () => {
   ]
   const OFF: SpecOwner = { visibility: 'org', assistantMode: { enabled: false } }
 
-  it('gates an Everyone agent in assistant mode exactly like a restricted one', async () => {
+  // #2979 B7: an Everyone agent in assistant mode takes the open defaults; an Off row it already has stays Off.
+  it('leaves an Everyone agent in assistant mode ungated, like any Everyone agent', async () => {
     expect(isGatedAgent({ visibility: 'org' })).toBe(false)
     expect(isGatedAgent(OFF)).toBe(false)
-    expect(isGatedAgent(ASSISTANT)).toBe(true)
-    expect(isGatedAgent(RESTRICTED)).toBe(true)
+    expect(isGatedAgent(ASSISTANT)).toBe(false)
     const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention'), channel('C2', 'off')], ASSISTANT)
+    expect(spec.core.gated).toBe(false)
+    expect(spec.core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(spec.core.mutedChannels).toEqual(['C2'])
+  })
+
+  it('keeps a restricted agent gated whatever its mode', async () => {
+    expect(isGatedAgent(RESTRICTED)).toBe(true)
+    expect(isGatedAgent(RESTRICTED_ASSISTANT)).toBe(true)
+    const spec = await specOf(
+      INTEGRATION,
+      SECRET,
+      [channel('C1', 'mention'), channel('C2', 'off')],
+      RESTRICTED_ASSISTANT
+    )
     expect(spec.core.gated).toBe(true)
     expect(spec.core.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
     expect(spec.core.mutedChannels).toEqual([])
@@ -237,7 +252,7 @@ describe('assistant-mode places', () => {
       rows(),
       ASSISTANT
     )
-    expect(spec?.core.gated).toBe(true)
+    expect(spec?.core.gated).toBe(false)
     expect(spec?.core.sessionModes.map((m) => m.channel)).toEqual(['C1', 'C2', 'C3', 'D1', 'C5'])
   })
 
@@ -272,7 +287,6 @@ describe('assistant-mode places', () => {
       [channel('team_eng', 'mention')],
       ASSISTANT
     )
-    expect(spec?.core.gated).toBe(true)
     expect(spec?.core.sessionModes).toEqual([])
   })
 })

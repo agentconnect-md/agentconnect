@@ -441,7 +441,7 @@ describe('conversationAdmitted', () => {
   })
 })
 
-// assistant-mode.md §5.3: enabling a place trusts it; only a platform-detected external is the exception.
+// assistant-mode.md §5.3: a place is internal unless the platform detects it as external.
 describe('conversationTrustLevel', () => {
   const int = (externalChannels?: string[]) =>
     ({

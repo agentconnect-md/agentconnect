@@ -2209,15 +2209,12 @@ export function isDirectConversation(kind: IntegrationChannelRow['kind']): boole
   return kind === 'im' || kind === 'mpim'
 }
 
-/** Why an agent answers only where enabled (resource-visibility.md §14, assistant-mode.md §5.1). */
-export type ConversationGate = 'private' | 'assistant'
+/** Why an agent answers only where enabled (resource-visibility.md §14): it is private, whatever its mode. */
+export type ConversationGate = 'private'
 
-/** The agent's conversation gate, if any; a restricted agent reads as private whatever its mode. */
-export function conversationGate(
-  agent: Pick<Agent, 'visibility' | 'assistantMode'> | undefined
-): ConversationGate | null {
-  if (agent?.visibility === 'restricted') return 'private'
-  return agent?.assistantMode?.enabled ? 'assistant' : null
+/** The agent's conversation gate, if any; assistant mode alone gates nothing (#2979 B7). */
+export function conversationGate(agent: Pick<Agent, 'visibility'> | undefined): ConversationGate | null {
+  return agent?.visibility === 'restricted' ? 'private' : null
 }
 
 export interface IntegrationRow {

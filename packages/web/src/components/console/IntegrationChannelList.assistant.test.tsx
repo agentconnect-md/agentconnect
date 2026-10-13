@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// Enabling a room or group DM of an assistant-mode agent trusts everyone in it, so it asks first (assistant-mode.md §1.8, §5.3).
+// An assistant-mode agent's conversations are enabled like any agent's, and its places keep one session (#2979 B7, assistant-mode.md §5.2).
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DecisionApi, DecisionSummary } from '@agentconnect.md/protocol/decision-api'
 import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
 import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
-import type { IntegrationChannelRow } from '@/lib/data'
+import { conversationGate, type IntegrationChannelRow } from '@/lib/data'
 
 const data = vi.hoisted(() => ({
   setChannelTrigger: vi.fn(async (..._args: unknown[]) => undefined),
@@ -87,8 +87,8 @@ afterEach(async () => {
   container = undefined
 })
 
-const WARNING =
-  'Everyone here will be able to get the content of this agent’s other places out of it. Enable only if everyone here is fully trusted.'
+/** An Everyone agent in assistant mode, as the console reads it. */
+const ASSISTANT = { visibility: 'org' as const, assistantMode: { enabled: true } }
 
 const room = (over: Partial<IntegrationChannelRow> = {}): IntegrationChannelRow => ({
   channelId: 'C1',
@@ -98,7 +98,7 @@ const room = (over: Partial<IntegrationChannelRow> = {}): IntegrationChannelRow 
   ...over
 })
 
-async function render(channels: IntegrationChannelRow[], assistantMode = true) {
+async function render(channels: IntegrationChannelRow[]) {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -112,8 +112,8 @@ async function render(channels: IntegrationChannelRow[], assistantMode = true) {
             botId="bot-1"
             agentId="agent-1"
             platform="slack"
-            gate={assistantMode ? 'assistant' : null}
-            assistantMode={assistantMode}
+            gate={conversationGate(ASSISTANT)}
+            assistantMode={ASSISTANT.assistantMode.enabled}
           />
         </DecisionsPrototypeProvider>
       </SWRConfig>
@@ -138,53 +138,40 @@ async function pick(name: string, label: string) {
   await click(all('[role="menuitemradio"]').find((node) => node.textContent?.trim() === label))
 }
 
-const warning = () => all('[role="dialog"][aria-modal="true"]').find((node) => node.textContent?.includes(WARNING))
+const dialog = () => document.body.querySelector('[role="dialog"][aria-modal="true"]')
 const button = (label: string) => all('button').find((node) => node.textContent?.trim() === label)
 
-describe('IntegrationChannelList assistant-mode places', () => {
-  it('asks before enabling an Off room, and writes only once confirmed', async () => {
+describe('IntegrationChannelList for an assistant-mode agent', () => {
+  it('shows no lock banner, and keeps a room and a Slack DM on one session', async () => {
+    await render([room({ trigger: 'mention' }), room({ channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any' })])
+    expect(document.body.querySelector('[role="note"]')).toBeNull()
+    expect(document.body.textContent).not.toContain('answers only where enabled')
+    expect(document.body.querySelector('[aria-label="Settings for general: @-mentions, Single session"]')).toBeTruthy()
+    expect(document.body.querySelector('[aria-label="Settings for alice: On, Single session"]')).toBeTruthy()
+  })
+
+  it('enables an Off room at once, with no warning', async () => {
     await render([room()])
     await pick('general', '@-mentions')
-    expect(warning()?.textContent).toContain('Enable #general?')
-    expect(data.setChannelTrigger).not.toHaveBeenCalled()
-    await click(button('Enable'))
+    expect(dialog()).toBeNull()
     expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'C1', 'mention')
-    expect(warning()).toBeUndefined()
   })
 
-  it('keeps the room Off when the warning is cancelled', async () => {
-    await render([room()])
-    await pick('general', 'All messages')
-    expect(warning()).toBeTruthy()
-    await click(button('Cancel'))
-    expect(warning()).toBeUndefined()
-    expect(data.setChannelTrigger).not.toHaveBeenCalled()
-  })
-
-  it('asks for a group DM, never for a 1:1 DM', async () => {
+  it('enables an Off group DM at once, with no warning', async () => {
     await render([room({ channelId: 'G1', name: '@alice, bob', kind: 'mpim' })])
-    await pick('alice, bob', '@-mentions')
-    expect(warning()?.textContent).toContain('Enable alice, bob?')
-    await click(button('Cancel'))
-
-    await act(async () => root?.unmount())
-    root = undefined
-    await render([room({ channelId: 'D1', name: '@alice', kind: 'im' })])
-    await pick('alice', 'On')
-    expect(warning()).toBeUndefined()
-    expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'D1', 'any')
+    await pick('alice, bob', 'All messages')
+    expect(dialog()).toBeNull()
+    expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'G1', 'any')
   })
 
-  it('asks before + Decision opens its rules on an Off room', async () => {
+  it('opens + Decision rules on an Off room at once', async () => {
     await render([room()])
     await click(document.body.querySelector('button[aria-label="Add decision"]'))
-    expect(warning()).toBeTruthy()
-    expect(document.body.querySelector('[aria-label="general · By decision rules"]')).toBeNull()
-    await click(button('Enable'))
+    expect(document.body.textContent).not.toContain('fully trusted')
     expect(document.body.querySelector('[aria-label="general · By decision rules"]')).toBeTruthy()
   })
 
-  it('applies a decision to all channels already enabled, never to an Off one', async () => {
+  it('applies a decision to every channel, an Off one included', async () => {
     const confirm = vi.fn(() => true)
     vi.stubGlobal('confirm', confirm)
     await render([
@@ -194,23 +181,8 @@ describe('IntegrationChannelList assistant-mode places', () => {
     ])
     await click(all('button[aria-label="Add decision"]')[0])
     await click(button('Apply to all channels'))
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('all 2 channels'))
-    expect(data.setChannelDecision.mock.calls.map((call) => call[1])).toEqual(['C1', 'C3'])
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('all 3 channels'))
+    expect(data.setChannelDecision.mock.calls.map((call) => call[1])).toEqual(['C1', 'C2', 'C3'])
     vi.unstubAllGlobals()
-  })
-
-  it('enables straight away outside assistant mode, and when the room is already on', async () => {
-    await render([room()], false)
-    await pick('general', '@-mentions')
-    expect(warning()).toBeUndefined()
-    expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'C1', 'mention')
-
-    await act(async () => root?.unmount())
-    root = undefined
-    data.setChannelTrigger.mockClear()
-    await render([room({ trigger: 'mention' })])
-    await pick('general', 'All messages')
-    expect(warning()).toBeUndefined()
-    expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'C1', 'any')
   })
 })

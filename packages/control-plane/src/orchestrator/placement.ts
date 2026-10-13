@@ -194,8 +194,8 @@ export type SpecOwner = Pick<AgentRecord, 'visibility' | 'assistantMode'>
 export const isAssistantModeAgent = (a: Pick<AgentRecord, 'assistantMode'>): boolean =>
   a.assistantMode?.enabled === true
 
-/** Conversation gating (resource-visibility.md §14), derived from restricted visibility or assistant mode; never stored. */
-export const isGatedAgent = (a: SpecOwner): boolean => a.visibility === 'restricted' || isAssistantModeAgent(a)
+/** Conversation gating (resource-visibility.md §14), derived from restricted visibility alone, whatever the mode; never stored. */
+export const isGatedAgent = (a: Pick<AgentRecord, 'visibility'>): boolean => a.visibility === 'restricted'
 
 /** One member of a shared bot a daemon is currently SERVING — what the route compile routes to. */
 export interface PlacedMember<T> {

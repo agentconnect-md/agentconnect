@@ -94,7 +94,8 @@ describe('assistant mode', () => {
     expect(spy.upserts.at(-1)?.spec).toHaveProperty('assistantMode', null)
   })
 
-  it("re-projects the agent's integrations as it switches, never rewriting the stored rows", async () => {
+  // #2979 B7: the switch keys places on one session and gates nothing; the Off row stays Off.
+  it("re-projects the agent's integrations as it switches, never gating them or rewriting the stored rows", async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: DAEMON, runtime: 'claude-acp' })
@@ -126,18 +127,14 @@ describe('assistant mode', () => {
 
     const on = await patch(app, agentId, { assistantMode: ON })
     expect(on.statusCode, on.body).toBe(200)
-    const gated = spy.integrations.at(-1)!
-    expect(gated.integrationId).toBe(integrationId)
-    expect(gated.core.gated).toBe(true)
-    expect(gated.core.mutedChannels).toEqual([])
-    // Already-enabled places keep their state; nothing unscoped answers anywhere else.
-    expect(byChannel(gated.core.bindRules)).toEqual([
-      { channel: 'C1', match: { kind: 'mention' } },
-      { channel: 'D1', match: { kind: 'dm' } },
-      { channel: 'G1', match: { kind: 'mention' } }
-    ])
+    const projected = spy.integrations.at(-1)!
+    expect(projected.integrationId).toBe(integrationId)
+    // The Everyone defaults still answer every conversation, and the Off row stays muted.
+    expect(projected.core.gated).toBe(false)
+    expect(projected.core.mutedChannels).toEqual(['C2'])
+    expect(projected.core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
     // One session per room and Slack DM; a group DM keeps the platform's own keying.
-    expect(byChannel(gated.core.sessionModes)).toEqual([
+    expect(byChannel(projected.core.sessionModes)).toEqual([
       { channel: 'C1', mode: 'append' },
       { channel: 'C2', mode: 'append' },
       { channel: 'D1', mode: 'append' }

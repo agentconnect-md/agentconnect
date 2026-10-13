@@ -8,9 +8,7 @@ import type { AssistantModeAdmission, AssistantModePolicy, AssistantModeRefusal 
 import { assistantModePermissionModeOnEnable } from '@agentconnect.md/protocol/assistant-permission-modes'
 import { fetchAgentAssistantModeAdmission, memberDisplayName } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
-import { chatRoomSigil } from '@/lib/platform-labels'
 import { Icon, Button } from '@/components/ui'
-import { enabledSharedPlaces, placeName, useAssistantPlaceWarning } from './AssistantPlaceWarning'
 
 const LIMIT_KEYS = [
   'maxConcurrentSubsessions',
@@ -105,7 +103,6 @@ export function AssistantModePanel({
   const [draft, setDraft] = useState(() => assistantModeDraft(assistantMode))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const placeWarning = useAssistantPlaceWarning()
 
   useEffect(() => {
     let live = true
@@ -138,14 +135,9 @@ export function AssistantModePanel({
   // Turning the switch on moves an asking mode to the runtime's auto mode, so only a mode it keeps warns.
   const asks = askEveryTime && (enabled || assistantModePermissionModeOnEnable(runtime, permissionMode) === undefined)
 
-  const agentIntegrations = integrations.filter((i) => i.agentId === agentId && i.id)
-  const agentConversations = agentIntegrations.flatMap((i) =>
-    i.channels.map((c) => ({ value: `${i.id}${SEP}${c.channelId}`, label: `${i.name} · ${c.name}` }))
-  )
-  // Turning on trusts every room and group DM already enabled, so the switch names them in its warning.
-  const sharedPlaces = agentIntegrations.flatMap((i) =>
-    enabledSharedPlaces(i.channels).map((c) => `${i.name} · ${placeName(c, chatRoomSigil(i.platform))}`)
-  )
+  const agentConversations = integrations
+    .filter((i) => i.agentId === agentId && i.id)
+    .flatMap((i) => i.channels.map((c) => ({ value: `${i.id}${SEP}${c.channelId}`, label: `${i.name} · ${c.name}` })))
   const responsibleName = (() => {
     const member = members.find((m) => m.userId === assistantMode?.responsibleUserId)
     return member ? memberDisplayName(member) : null
@@ -161,23 +153,13 @@ export function AssistantModePanel({
     setOpen(false)
   }
 
-  const persist = async (policy: AssistantModePolicy) => {
-    await updateAgent(agentId, { assistantMode: policy })
-    setOpen(false)
-  }
-
   const save = async () => {
     if (typeof result === 'string' || saving) return
-    if (result.enabled && !enabled && sharedPlaces.length > 0) {
-      return placeWarning.confirmBefore(
-        { title: t('turnOnTitle'), confirmLabel: t('turnOn'), places: sharedPlaces },
-        () => persist(result)
-      )
-    }
     setSaving(true)
     setError(null)
     try {
-      await persist(result)
+      await updateAgent(agentId, { assistantMode: result })
+      setOpen(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -376,7 +358,6 @@ export function AssistantModePanel({
           ) : null}
         </div>
       ) : null}
-      {placeWarning.dialog}
     </section>
   )
 }

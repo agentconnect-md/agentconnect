@@ -158,7 +158,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
   // §14: agents whose AgentRepo.get returns visibility 'restricted' (⇒ gated).
   let gatedAgents: Set<string>
-  // Agents switched into assistant mode, which gates them without restricting them.
+  // Agents switched into assistant mode, which keys their places on one session and gates nothing (#2979 B7).
   let assistantAgents: Set<string>
   // Agents reported with no daemonId — not placed, so they compile no routes.
   let unplacedAgents: Set<string>
@@ -992,7 +992,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.gatedAgentIds).toEqual([ALICE])
     })
 
-    it('gates an assistant-mode member like a restricted one, and keys its places on one session', async () => {
+    // #2979 B7: an assistant-mode member gets the defaults any member of its visibility gets.
+    it('keeps an Everyone assistant-mode member ungated and the default, and keys its places on one session', async () => {
       assistantAgents = new Set([ALICE])
       channels = [
         channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'mention' }),
@@ -1001,12 +1002,14 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       ]
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
-      expect(assign.defaultAgentId).toBe(BOB)
-      expect(assign.gatedAgentIds).toEqual([ALICE])
+      expect(assign.defaultAgentId).toBe(ALICE)
+      expect(assign.gatedAgentIds).toEqual([])
+      expect(assign.gatedOffChannels).toEqual([])
+      expect(assign.routes.some((r) => r.match.kind === 'keyword' && r.agentId === ALICE)).toBe(true)
       const alice = upserts.find((u) => u.daemonId === D1)!.spec as never as {
         core: { gated: boolean; sessionModes: unknown[] }
       }
-      expect(alice.core.gated).toBe(true)
+      expect(alice.core.gated).toBe(false)
       // Every room of the bot is replicated onto her install, so each keys one session for her alone.
       expect(alice.core.sessionModes).toEqual([
         { channel: 'C9', mode: 'append' },
@@ -1113,6 +1116,59 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(channels.filter((c) => c.channelId === 'D_EXT').map((c) => c.trigger)).toEqual(['off', 'off'])
       const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
       expect(assign.gatedOffChannels).toEqual(['D_EXT'])
+    })
+
+    // #2979 B7: an Everyone assistant-mode owner seeds a room on @-mentions, a DM On and an external place Off.
+    it('seeds an Everyone assistant-mode owner’s new conversations with the open defaults', async () => {
+      assistantAgents = new Set([ALICE])
+      channels = []
+      const orch = makeOrch()
+      await orch.replaceChannels(BOT, [
+        { id: 'C_NEW', name: 'deploys', externalReason: null },
+        { id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' }
+      ])
+      await orch.reportConversation(BOT, { id: 'D_NEW', name: '@Alice', dmUserId: 'U_ALICE' })
+      await orch.reportConversation(BOT, { id: 'G_NEW', name: '@@alice, bob', kind: 'mpim' })
+      const triggers = (id: string) => channels.filter((c) => c.channelId === id).map((c) => c.trigger)
+      expect(triggers('C_NEW')).toEqual(['mention', 'mention'])
+      expect(triggers('C_EXT')).toEqual(['off', 'off'])
+      expect(triggers('D_NEW')).toEqual(['any', 'any'])
+      expect(triggers('G_NEW')).toEqual(['mention', 'mention'])
+      const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.mutedChannels).toEqual(['C_EXT'])
+      expect(assign.gatedOffChannels).toEqual(['C_EXT'])
+    })
+
+    it('leaves an assistant-mode owner’s existing Off rows Off', async () => {
+      assistantAgents = new Set([ALICE])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'off' }),
+        channel({ integrationId: INT_B, channelId: 'C7', agentId: null, trigger: 'off' })
+      ]
+      const orch = makeOrch()
+      await orch.replaceChannels(BOT, [{ id: 'C7', name: 'deploys' }])
+      channels.push(
+        channel({ integrationId: INT_A, channelId: 'D7', kind: 'im', agentId: ALICE, trigger: 'off' }),
+        channel({ integrationId: INT_B, channelId: 'D7', kind: 'im', agentId: null, trigger: 'off' })
+      )
+      await orch.reportConversation(BOT, { id: 'D7', name: '@Alice', dmUserId: 'U_ALICE' })
+      expect(channels.map((c) => c.trigger)).toEqual(['off', 'off', 'off', 'off'])
+      const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect([...assign.mutedChannels].sort()).toEqual(['C7', 'D7'])
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C7' || r.scope?.channel === 'D7')).toEqual([])
+    })
+
+    it('keeps a restricted assistant-mode owner gated: its new conversations start Off', async () => {
+      gatedAgents = new Set([ALICE])
+      assistantAgents = new Set([ALICE])
+      channels = []
+      const orch = makeOrch()
+      await orch.replaceChannels(BOT, [{ id: 'C_NEW', name: 'deploys' }])
+      await orch.reportConversation(BOT, { id: 'D_NEW', name: '@Dave', dmUserId: 'U_DAVE' })
+      expect(channels.map((c) => c.trigger)).toEqual(['off', 'off', 'off', 'off'])
+      const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.gatedAgentIds).toEqual([ALICE])
+      expect(assign.defaultAgentId).toBe(BOB)
     })
 
     it('reportConversation converges a DM to one owner and one trigger', async () => {

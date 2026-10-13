@@ -944,13 +944,16 @@ a channel cannot reset a later operator choice.
 
 ## Assistant-mode places
 
-An agent in assistant mode answers only where an editor enabled it, whatever its
-visibility: its conversations are gated exactly like a Restricted agent's. Turning the
-mode on resets no conversation — every conversation already enabled, DMs included, stays enabled
-— and new conversations start Off. Switching it off restores the agent's ordinary
-defaults. The console's `assistant-mode` flag decides only whether the mode can be switched on: an
-agent already in assistant mode keeps the switch, so it can be switched off, and keeps its Activity
-tab, Sub-sessions tab and proposals in the console whatever the flag says.
+Assistant mode uses the same conversation defaults as any agent with the same visibility: an
+Everyone agent's new room answers @-mentions, a member's new 1:1 DM starts On and a conversation
+shared with another organization starts Off, while a Restricted agent stays gated (see
+"Per-conversation trigger", "Direct messages" and "Group direct messages"). Enabling a conversation
+is not what keeps the agent's other conversations out of it: a read is judged by the person asking
+(see "Reading other conversations") and memory by audience (see "Memory layers"). Turning the mode
+on or off changes no conversation's trigger, so one set Off stays Off. The console's
+`assistant-mode` flag decides only whether the mode can be switched on: an agent already in
+assistant mode keeps the switch, so it can be switched off, and keeps its Activity tab,
+Sub-sessions tab and proposals in the console whatever the flag says.
 
 Turning the mode on also sets the agent's permission mode, so background work nobody is watching
 does not stop to wait for approval: a mode that asks for approval or only reads, or no mode at
@@ -964,19 +967,11 @@ panel warns that background work will often wait for approval; while the switch 
 on, it warns only when the runtime keeps the mode. Turning the mode off leaves the permission mode
 as it is.
 
-Each enabled place keeps one long session while the mode is on: every room, and a 1:1 DM
+Each place keeps one long session while the mode is on: every room, and a 1:1 DM
 on a platform whose DMs otherwise open a session per message. A conversation gated By
 decision keeps its own session mode, and a platform whose rooms never append (a Linear
 team) is left as it is. The row shows `Single session` and offers no other choice; the
 stored choice returns when the mode is switched off.
-
-Enabling a room or group DM of such an agent asks first: everyone in it will be able to get
-the content of the agent's other places out of it, so it should be enabled only if everyone
-there is fully trusted. Turning the mode on while rooms or group DMs are already enabled
-names them in the same warning. A 1:1 DM and webchat carry no warning. Rooms are enabled
-one at a time: a decision's Apply to all reaches only the rooms already enabled. The warning
-is the same wherever a room is enabled, including a decision started from the organization's
-Bots list.
 
 A room or group DM is external when the platform says people from outside the organization are
 in it. On Slack that is a Slack Connect conversation, read from the membership listing and from
@@ -992,7 +987,7 @@ rule names an external conversation: an approval there goes to an internal membe
 its own place layer, and a post into it from another conversation is drafted or refused. When
 Slack cannot answer, a post from another conversation waits for approval as in an external place.
 A share is lifted once Slack no longer reports it; a guest or an outside member never is.
-Enabling a 1:1 DM trusts the person in it, so a DM never turns external.
+Slack is never asked about a 1:1 DM, which never turns external.
 
 The rest applies to an agent in assistant mode only. A post it makes with no message from the
 conversation behind it also waits for approval when Slack cannot answer. When an enabled place

@@ -18,8 +18,8 @@ describes how an agent behaves.
 the chart, off by default) until it changes behavior. The flag gates only switching the mode on: an
 agent already switched on keeps the switch, Activity, the Sub-sessions tab and proposals.
 
-**Builds on:** [resource-visibility.md](resource-visibility.md) §14 (conversation gating:
-authorize places), [session-visibility.md](session-visibility.md) (session visibility, the
+**Builds on:** [resource-visibility.md](resource-visibility.md) §14 (per-conversation triggers
+and their defaults), [session-visibility.md](session-visibility.md) (session visibility, the
 private-session memory exclusion), [channel-session-mode.md](channel-session-mode.md) (`append`
 long sessions), [agent-collaboration-implementation.md](agent-collaboration-implementation.md)
 (`sendMessage` with `toAgent` / `needsReply`), [memory-dreaming.md](memory-dreaming.md) (the
@@ -142,10 +142,9 @@ does not pretend to defend against effects it cannot defend against.
   API. It is a default, never an admission check: an editor may change the mode afterwards and
   the choice sticks while the mode stays on. While it is on, an agent whose mode asks every time
   gets a warning: background work will wait for approval often.
-- Once on, the agent is off everywhere; an editor enables places one by one. Enabling a place
-  trusts it as _internal_ unless the platform detects it as _external_ (§5.3); the enable flow
-  warns "everyone here will be able to get the content of its other places out of it;
-  enable only if fully trusted".
+- Switching it on changes no conversation's trigger, and new conversations start as any agent's
+  of the same visibility do (§5.3). A place is _internal_ unless the platform detects it as
+  _external_ (§5.3).
 - It acts with the agent's own identity and permissions, never someone's personal account.
 
 ---
@@ -202,7 +201,7 @@ does not pretend to defend against effects it cannot defend against.
 | Executors         | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                      | Not possible today either                                                                                                                                |
 | One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                             |
 
-Not admission criteria: platform (all allowed; enabling a place trusts it, §5.3), channel trigger mode
+Not admission criteria: platform (all allowed; a place is internal unless detected external, §5.3), channel trigger mode
 (user configuration), workspace mode and isolation (§5.6), sandboxing, permission policy (switching
 on sets a default, §1.8; an asking mode only warns), a linked identity for the responsible user (a
 fallback conversation is required when no DM can be reached).
@@ -252,18 +251,16 @@ export const AssistantModePolicy = z
   .strict()
 ```
 
-On enable: §4.1 is checked; the agent enters conversation gating (`gated` derived from
-"restricted **or** assistant mode"); already-enabled rows keep their state and, like any enabled
-place, count as internal unless the platform detects them as external (§5.3), so the switch shows
-the enable warning for them; DMs auto-enabled by §14.8 for `sharedWith` members count as internal
-(that person is an organization member). In the same row-locked write, an unset, asking or
+On enable: §4.1 is checked; conversation gating is untouched (`gated` is derived from restricted
+visibility alone, §5.3), so every row keeps its trigger and counts as internal unless the platform
+detects it as external (§5.3). In the same row-locked write, an unset, asking or
 read-only permission mode becomes the runtime's auto mode, else its full-access mode, unless the
 edit sets a mode itself (§1.8); which mode is which comes from a per-runtime map kept beside the
 admission list. Workspace isolation is untouched.
 
 ### 5.2 Places and long conversations
 
-A _place_ is an IM conversation (DM, group DM, channel) an editor enabled, or a webchat
+A _place_ is an IM conversation (DM, group DM, channel) the agent answers in, or a webchat
 conversation. Each place has exactly one long session:
 
 - **Channel**: forced `append`. Rows already in `append` are taken as they are; Linear rows are
@@ -281,13 +278,26 @@ the context with the ledger and summary as a handover note) is an open question 
 ### 5.3 Trust level
 
 The daemon has no presence data and member enumeration is not made a prerequisite. There is no
-per-place trust setting: **enabling a place on an assistant-mode agent trusts it as internal**
-(everyone here is an organization member), on top of conversation gating. The enable flow shows
-the warning "everyone here will be able to get the content of its other places out of it;
-enable only if fully trusted". The only exception is an **external** level the platform detects.
+per-place trust setting: **a place is internal** (everyone here is an organization member)
+**unless the platform detects it as external**. Enabling a place is not the trust boundary: what
+crosses between places is judged by who is asking (§5.5 "Reads") and memory by its audience
+([product conventions](../product-conventions.md#memory-layers)), so an assistant-mode agent takes
+the same conversation defaults as any agent of its visibility and is gated only when restricted.
 An external place is not walled off: the agent reads there what it reads in an internal place,
 and **every post is a draft an internal member approves first** (§5.5). External limits what
 leaves, not what the agent knows, so an agent added to a shared channel can still answer.
+
+**Conversation defaults (issue #2979, item B7).** The mode used to gate the agent like a
+restricted one: its new rooms and DMs started Off, it was never a shared bot's default member, a
+conversation it had not been enabled in was told so, and enabling a room or group DM first warned
+that everyone there could get the content of its other places out of it. That rested on enabling a
+place being the boundary recall, the ledger and memory crossed. Reads are now judged by who is
+asking and memory by audience, so the gate kept out nothing they do not, while every new place
+needed an editor. An assistant-mode agent now takes the defaults of its visibility: an Everyone
+agent's new room answers @-mentions, a member's new 1:1 DM starts On, a conversation shared with
+another organization starts Off ([resource-visibility.md](resource-visibility.md) §14.9), and it
+can be a shared bot's default member; a restricted one stays gated. Rows already Off stay Off:
+nothing is migrated or re-seeded.
 
 - Slack: a Slack Connect channel is external. The share is read from the existing membership
   listing (`is_ext_shared` / `is_pending_ext_shared`) and from the flag every event envelope
@@ -322,8 +332,9 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
   detection stays its own: its replies there are drafted, the in-flight turn is cut on the
   downgrade below, and other writes there are refused. An agent outside assistant mode keeps
   replying there as before.
-- Telegram groups, Discord channels, Feishu groups: no detection; enabled means trusted.
-- DM: enabling it is trusting that person as a member. Webchat is internal by construction.
+- Telegram groups, Discord channels, Feishu groups: no detection; such a place is internal.
+- DM: never external; what it is told is judged by its one person (§5.5). Webchat is internal by
+  construction.
 - A sub-session's place is its parent's: one born in an external place reports through that
   place's main session, so its result is drafted too.
 - **The downgrade transition (internal → external) changes the output path, not the context.**
@@ -890,7 +901,7 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 
 | Mechanism                           | Relation                                                                                                        |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Conversation gating (§14)           | `gated` derivation gains "assistant mode"; enabling a place trusts it, with a warning                           |
+| Conversation gating (§14)           | Unchanged: `gated` stays restricted visibility alone, and the mode takes the same defaults (§5.3)               |
 | Session visibility                  | The permission rules follow it; DM long sessions are fixed `private`; sub-sessions refuse visibility changes    |
 | `append`                            | Extended to Slack DMs; retention (assistant agents) and the visibility lock are prerequisites                   |
 | Memory layers                       | The same for every agent; the ledger is its own store                                                           |
@@ -950,8 +961,8 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 3. **Slack DM `append` versus Slack assistant threads** (`assistant_thread_started` is already
    supported): whether a "new conversation" button still means anything.
 4. **Webchat report rounds without a connected client** (unverified).
-5. **Trust drift**: a place that changes after it was enabled; member-joined coverage per
-   platform beyond Slack guests.
+5. **Trust drift**: a place whose members change after the agent first answered there;
+   member-joined coverage per platform beyond Slack guests.
 6. **Cost**: one long conversation per place and one main-session turn per report round; needs
    P0 measurements.
 7. **Wording of item summaries**: the restatement when an item is taken is the only review point
@@ -1205,3 +1216,11 @@ member asking about Feishu, could neither read nor post in a conversation the ag
 in, even as a full member of that workspace or a member of that private group. Someone with a
 linked account there is now judged as that account; without one, by the console as before. An
 asker on their own bot, and one the product cannot identify, are unchanged.
+
+**Twenty-eighth revision (2026-10-13)**: assistant mode no longer gates conversations (issue #2979,
+item B7; §5.3 "Conversation defaults"). Gating rested on enabling a place being the trust boundary,
+and reads judged by who is asking and memory layered by audience have taken that role. An
+assistant-mode agent now takes the conversation defaults of its visibility and can be a shared
+bot's default member; the enable warning, the turn-on warning that named enabled rooms, the
+one-room-at-a-time rule for Apply to all and the console banner are removed. Rows already Off stay
+Off. One session per place (§5.2) and the permission-mode default (§1.8) are unchanged.

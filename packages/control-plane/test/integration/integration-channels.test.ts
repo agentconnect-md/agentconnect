@@ -697,42 +697,63 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(triggers.get('D_DAVE')).toBe('off')
   })
 
-  it('starts an assistant-mode agent Off everywhere and opens no DM for a share set it kept', async () => {
-    await seedDaemon(prisma, DAEMON)
-    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
-    const id = await install(running)
+  /** An installed agent switched into assistant mode with the given visibility, on a bot in workspace T_ACME. */
+  async function assistantAgentInWorkspace(app: HttpApp, visibility: 'org' | 'restricted'): Promise<string> {
+    const id = await install(app)
     const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
-    // Everyone visibility, with a share set left from an earlier Selected audience.
     await prisma.agent.update({
       where: { id: integration.agentId },
       data: {
-        visibility: 'org',
-        sharedWith: [DEFAULT_OWNER_ID],
+        visibility,
+        sharedWith: visibility === 'restricted' ? [DEFAULT_OWNER_ID] : [],
         assistantMode: { enabled: true, responsibleUserId: DEFAULT_OWNER_ID }
       }
     })
     await prisma.bot.update({ where: { id: integration.botId }, data: { teamId: 'T_ACME' } })
-    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: ALICE_SUB } })
+    return id
+  }
 
-    await report(
-      DAEMON,
-      id,
-      [
-        { id: 'C1', name: 'deploys' },
-        { id: 'G1', name: '@@alice, bob', kind: 'mpim' },
-        { id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' }
-      ],
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { [ALICE_SUB]: { teamId: 'T_ACME', userId: 'U_ALICE' } }
-    )
+  // #2979 B7: assistant mode gates nothing, so an Everyone agent in it takes the defaults any Everyone agent takes.
+  it('gives an Everyone assistant-mode agent the open defaults and leaves an existing Off row Off', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await assistantAgentInWorkspace(running, 'org')
+    // A room seeded Off under the old gating, which nothing reopens.
+    await report(DAEMON, id, [{ id: 'C_OFF', name: 'quiet' }])
+    await prisma.integrationChannel.update({
+      where: { integrationId_channelId: { integrationId: id, channelId: 'C_OFF' } },
+      data: { trigger: 'off' }
+    })
+
+    await report(DAEMON, id, [
+      { id: 'C_OFF', name: 'quiet' },
+      { id: 'C1', name: 'deploys' },
+      { id: 'G1', name: '@@alice, bob', kind: 'mpim' },
+      { id: 'D_ALICE', name: '@alice', kind: 'im', dmUserId: 'U_ALICE' },
+      { id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' }
+    ])
+
+    const triggers = await triggersOf(id)
+    expect(triggers.get('C1')).toBe('mention')
+    expect(triggers.get('G1')).toBe('mention')
+    expect(triggers.get('D_ALICE')).toBe('any')
+    expect(triggers.get('C_EXT')).toBe('off')
+    expect(triggers.get('C_OFF')).toBe('off')
+  })
+
+  it('keeps a restricted assistant-mode agent gated: its new conversations start Off', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await assistantAgentInWorkspace(running, 'restricted')
+
+    await report(DAEMON, id, [
+      { id: 'C1', name: 'deploys' },
+      { id: 'D_DAVE', name: '@dave', kind: 'im', dmUserId: 'U_DAVE' }
+    ])
 
     const triggers = await triggersOf(id)
     expect(triggers.get('C1')).toBe('off')
-    expect(triggers.get('G1')).toBe('off')
-    expect(triggers.get('D_ALICE')).toBe('off')
+    expect(triggers.get('D_DAVE')).toBe('off')
   })
 
   // The other regression the review caught. On a direct/socket integration this handler

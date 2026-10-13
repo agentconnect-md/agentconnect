@@ -110,7 +110,6 @@ export function DecisionGateEntry({
   canWrite: writable,
   offer,
   disabled = false,
-  beforeAdd,
   onStop
 }: {
   bindingKey: string
@@ -121,8 +120,6 @@ export function DecisionGateEntry({
   /** Whether a new gate can start here; a saved one always shows. */
   offer: boolean
   disabled?: boolean
-  /** Runs `open` for a new gate, or holds it behind the caller's confirmation; absent ⇒ opens at once. */
-  beforeAdd?: (open: () => void) => void
   /** Leave By decision for the row's plain trigger. */
   onStop: () => void | Promise<void>
 }) {
@@ -177,12 +174,9 @@ export function DecisionGateEntry({
       title={t('binding.addTitle')}
       disabled={disabled}
       openProps={{ 'data-gate-entry': bindingKey }}
-      onOpen={() => {
-        const open = () =>
-          setBindingDraft(bindingKey, (current) => current ?? { decisionId: null, when: null, phase: 'editing' })
-        if (beforeAdd) beforeAdd(open)
-        else open()
-      }}
+      onOpen={() =>
+        setBindingDraft(bindingKey, (current) => current ?? { decisionId: null, when: null, phase: 'editing' })
+      }
     />
   )
 }
