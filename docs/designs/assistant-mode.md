@@ -410,7 +410,9 @@ none is running. It is kept in an external place: it names only work that conver
 started.
 
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
-another place, under §5.5.
+another place, under §5.5. Every agent has it, in assistant mode or not: the read rule it passes
+is every agent's, so it is offered wherever an assistant-mode agent's sessions offer it, with the
+same parameters and description.
 
 **④ The people's local time** is no longer assistant mode's own: every agent's turns carry it,
 by the order in [product conventions](../product-conventions.md#local-time). In assistant mode it
@@ -830,11 +832,14 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
 - **Wake on time**: an item's `nextCheck` uses the deadline wake, generalized out of the
   `orchestration` record.
 - **Two tiers of self-scheduling**: `remind` (deliver text at a time, no model turn) and
-  `patrol`. `remind` ships first, to sessions of an assistant-mode agent that have a
-  platform conversation of their own:
+  `patrol`. `remind` ships first, to every agent's sessions that have a platform conversation
+  of their own, in assistant mode or not; `patrol` stays assistant mode's:
   - `remind({ at, message })` keeps `message` verbatim for `at`, an ISO-8601 instant with an offset,
     in the future and at most 366 days ahead; the text is non-empty and at most 40,000 characters.
     `listReminders` and `cancelReminder` reach only the current conversation's pending reminders.
+    Only an agent in assistant mode is told, in `remind`'s description, to take an item with a
+    next check instead for something to be checked on at a time; the descriptions are otherwise
+    the same.
   - It lands only where the setting session's replies land, that conversation and thread; there is
     no target argument. It is refused in sub-sessions and patrols, and in webchat, which has no
     daemon-side post path without a turn. An external place sets and receives reminders like any
@@ -845,11 +850,11 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
     error is retried on later sweeps, three attempts in all, then fails with a warning; a send
     that timed out or came back without a message id may or may not have posted, so it fails at
     once.
-  - While the agent is paused or out of assistant mode nothing is delivered; afterwards a reminder
-    less than 24 hours late posts late and an older one expires. An agent holds at most 100
-    pending reminders, a fixed limit with no setting. Settled rows stay, like the other assistant
-    tables' settled rows, until the agent is removed.
-  - A session marked by a private read (§5.5) may set reminders: they land only in its own DM.
+  - While the agent is paused nothing is delivered; afterwards a reminder less than 24 hours late
+    posts late and an older one expires. Switching assistant mode off or on changes nothing: a
+    pending reminder stays and posts at its time. An agent holds at most 100 pending reminders, a
+    fixed limit with no setting. Settled rows stay, like the other assistant tables' settled rows,
+    until the agent is removed.
 - **Budget and backoff**: `dailyPatrolBudget`; after a failure the next attempt backs off by
   `min(60, 2ⁿ)` minutes, and five consecutive failures pause that item's patrols.
 - **Start condition**: not before each runtime has been tested for exactly the residual stated
@@ -1305,3 +1310,15 @@ it. Stored values stay in place for one release and are read past, so a Control 
 during the rollout never reads a policy it cannot parse; the next release drops them (§5.1). The
 assistant mode panel moves from the Memory tab to the Configuration tab and shows the derived person
 read-only; managed memory stays an admission requirement.
+
+**Thirty-second revision (2026-10-13)**: every agent has `recall` and the reminder tools (issue
+#2979; §5.4 ③, §5.9). Both were gated on assistant mode, but neither needs anything only the mode
+has: `recall` passes the read rule every agent's cross-place reads already pass (B3), and a
+reminder posts into the conversation it was set in, which every agent now does directly, one shared
+with another organization included (B4). Each is offered in the same sessions as before, minus the
+mode check: `recall` everywhere, a turn no person is behind reading only public channels on its own
+bot; the reminder tools in a platform conversation of the session's own, never a sub-session,
+patrol or webchat. Only an agent in assistant mode is told in `remind`'s description to take an
+item instead for something to be checked on at a time, since only it has items. Switching the mode
+off no longer holds back a pending reminder: it posts at its time. Items, patrols, proposals, the
+standing summary, sub-sessions, Activity and the one long session per place stay assistant mode's.

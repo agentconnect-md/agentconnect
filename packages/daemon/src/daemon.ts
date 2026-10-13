@@ -4206,9 +4206,9 @@ export class Daemon {
           now: () => this.clock.now()
         }
       },
-      // Reminders (assistant-mode.md §5.9): where they post comes from the live turn's own share target.
+      // Every agent's reminders (assistant-mode.md §5.9): where they post comes from the live turn's own share target.
       assistantReminders: {
-        ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantReminders : undefined),
+        ledger: this.store.assistantReminders,
         requesterFor: async (ctx) => {
           const msg = this.liveTurn(ctx)?.msg
           return msg && msg.source === 'user' && !msg.sender.isBot && msg.sender.id ? msg.sender.id : undefined
@@ -8426,7 +8426,7 @@ export class Daemon {
     }, PATROL_SWEEP_INTERVAL_MS)
   }
 
-  /** Assistant-mode reminders (assistant-mode.md §5.9), built on first use over the live store. */
+  /** Every agent's reminders (assistant-mode.md §5.9), built on first use over the live store. */
   private assistantReminderService?: AssistantReminders
   private get reminders(): AssistantReminders {
     this.assistantReminderService ??= new AssistantReminders({

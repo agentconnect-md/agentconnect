@@ -242,7 +242,6 @@ export async function recall(
   deps: PlaceAccessDeps
 ): Promise<unknown> {
   const { place: handle, query } = parseArgs(RECALL_ARGS, args)
-  if (!deps.assistantModeFor?.(ctx.agentId)) throw new Error('recall: available only to an agent in assistant mode')
   const store = deps.placeStore
   if (!store) throw new Error('recall: not available on this daemon')
   const places = await placesOf(ctx, store)

@@ -1,6 +1,5 @@
-// Assistant-mode reminders (assistant-mode.md §5.9): the cheap tier of self-scheduling, text the duty holder posts at its time with no model turn.
+// Every agent's reminders (assistant-mode.md §5.9): the cheap tier of self-scheduling, text the duty holder posts at its time with no model turn.
 import type { Agent } from '../agents/agent-schema.js'
-import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import { isSendQueueTimeout } from '../platforms/send-queue.js'
 import {
   ASSISTANT_REMINDER_CLAIM_STALE_MS,
@@ -16,7 +15,7 @@ const REMINDERS_PER_SWEEP = 20
 export interface AssistantRemindersHost {
   now(): number
   log: { info(message: string): void; warn(message: string): void; debug(message: string): void }
-  agents(): Iterable<Pick<Agent, 'id' | 'assistantMode'>>
+  agents(): Iterable<Pick<Agent, 'id'>>
   /** This daemon holds the agent's duty, and the agent is neither paused nor draining. */
   mayDeliver(agentId: string): boolean
   draining(): boolean
@@ -38,7 +37,7 @@ export class AssistantReminders {
     this.sweeping = true
     try {
       for (const agent of this.host.agents()) {
-        if (!assistantModeOn(agent) || !this.host.mayDeliver(agent.id)) continue
+        if (!this.host.mayDeliver(agent.id)) continue
         try {
           await this.deliverFor(agent.id)
         } catch (err) {

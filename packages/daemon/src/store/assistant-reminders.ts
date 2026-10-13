@@ -1,4 +1,4 @@
-// Assistant-mode reminders (assistant-mode.md §5.9): text the daemon posts into a conversation at a set time, with no model turn; partitioned by agent.
+// Every agent's reminders (assistant-mode.md §5.9): text the daemon posts into a conversation at a set time, with no model turn; partitioned by agent.
 import { AsyncMutex } from './async-mutex.js'
 import type { AssistantPlace } from './assistant-items.js'
 import type { StoreQueryResult } from './store-database.js'

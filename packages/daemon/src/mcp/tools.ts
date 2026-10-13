@@ -1485,8 +1485,8 @@ export function toolsForIntegrations(
   if (options.organizationKnowledge) add(KNOWLEDGE_TOOLS)
   if (options.decisions) add(DECISION_TOOLS)
   add(options.assistantMode ? ASSISTANT_COLLABORATION_TOOLS : COLLABORATION_TOOLS)
-  // Assistant mode's cross-place recall (assistant-mode.md §5.4 ③).
-  if (options.assistantMode) add([RECALL_TOOL])
+  // Every agent's cross-place recall, under the read rule (assistant-mode.md §5.4 ③, §5.5).
+  add([RECALL_TOOL])
   // The unified `sendMessage` tool is ALWAYS present (session-concept §3): even a
   // memory-only agent with no platform integration can wake a peer (`toAgent`) or reply to
   // its origin (`sessionId`). The `platform` enum is narrowed to the agent's own platforms

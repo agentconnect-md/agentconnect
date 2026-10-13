@@ -471,6 +471,7 @@ describe('toolsForIntegrations', () => {
       // still offered under the old name, for sessions already warm with it
       'listChannelAgents',
       'viewSessionStatus',
+      'recall',
       'sendMessage'
     ])
   })
