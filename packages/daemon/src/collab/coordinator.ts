@@ -273,6 +273,8 @@ export class CollabCoordinator {
       rowUpdatedAtAtAdmission: number | null
       replyRequested: boolean
       replyState: 'awaiting' | 'queued-for-parent' | 'failed'
+      deliveryId?: string
+      dispatchError?: string
       remote?: boolean
     }
   >()
@@ -1165,7 +1167,8 @@ export class CollabCoordinator {
         // so a re-wake of a finished child can't be reported with its previous turn's outcome.
         rowUpdatedAtAtAdmission: (await this.host.store().getSession(targetSession))?.updatedAt ?? null,
         replyRequested: needsReply,
-        replyState: 'awaiting'
+        replyState: 'awaiting',
+        deliveryId
       })
     }
     // send-message-routing-rework.md §3.2/§8.6 — the "internal wake first" arrival order
@@ -1235,13 +1238,114 @@ export class CollabCoordinator {
         }
       )
       .catch(async (err) => {
-        if (pairingKey !== undefined) await this.host.store().releaseActivation(pairingKey)
         this.host.log().error(`messageAgent dispatch failed for agent "${req.toAgentId}": ${formatErr(err)}`)
+        try {
+          await this.failAgentDispatch(targetSession, normalized, callMeta, err, selfDelegation)
+        } catch (reportErr) {
+          this.host.log().error(`messageAgent failure report failed for "${targetSession}": ${formatErr(reportErr)}`)
+        } finally {
+          if (pairingKey !== undefined) {
+            try {
+              await this.host.store().releaseActivation(pairingKey)
+            } catch (releaseErr) {
+              this.host.log().error(`messageAgent activation release failed: ${formatErr(releaseErr)}`)
+            }
+          }
+        }
       })
     this.host
       .log()
       .info(`messageAgent: ${req.callerAgentId} → ${req.toAgentId} (${targetSession}) delivery=${deliveryId}`)
     return record({ delivered: true, targetSession, ...(selfDelegation ? { subsession: true as const } : {}) })
+  }
+
+  /** Admission is asynchronous: a failed start must end the parent's wait even without a child row. */
+  private async failAgentDispatch(
+    key: string,
+    msg: NormalizedMessage,
+    callMeta: CallMeta,
+    err: unknown,
+    selfDelegation: boolean
+  ): Promise<void> {
+    const link = this.childSessionLinks.get(key)
+    // A newer wake owns this slot now. An old rejection must not poison its status or report.
+    if (!link || link.deliveryId !== callMeta.deliveryId) return
+    const error = formatErr(err)
+    this.childSessionLinks.set(key, { ...link, replyState: 'failed', dispatchError: error })
+    await this.host.store().setSessionTurnOutcome(key, 'failed', this.host.clock().now())
+    if (selfDelegation) {
+      await this.settleSubsessionTurn({
+        agentId: link.agentId,
+        key,
+        msg,
+        outcome: 'failed',
+        reason: error,
+        replayed: false,
+        hopCount: callMeta.hopCount
+      })
+      return
+    }
+    // A failed no-reply wake still gets visible status, but does not create an unsolicited parent turn.
+    if (!link.replyRequested || !callMeta.originSessionId) return
+    const parent = await this.host.store().getSessionByOutwardId(callMeta.originSessionId)
+    if (!parent || this.childSessionLinks.get(key)?.deliveryId !== callMeta.deliveryId) return
+    const route = sessionReplyRoute(
+      parent,
+      (...args) => this.host.integrationIdForSessionTransport(...args),
+      callMeta.originCodeHostReplyTarget
+    )
+    if (!route || hasReachedAgentCallHopLimit(callMeta.hopCount + 1)) {
+      this.host
+        .log()
+        .warn(`messageAgent failure report not delivered for "${key}": ${route ? 'hop_limit' : 'not_found'}`)
+      return
+    }
+    const deliveryId = `agentcall-failure:${callMeta.deliveryId}`
+    const report: NormalizedMessage = {
+      msgId: `agentcall:${parent.channel}:${deliveryId}`,
+      traceId: deliveryId,
+      source: 'agent',
+      platform: parent.platform,
+      channel: parent.channel,
+      ...(isAppendCoordinate(parent.thread)
+        ? { sessionThread: parent.thread }
+        : parent.thread
+          ? { thread: parent.thread }
+          : {}),
+      ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
+      transcriptTs: monotonicTs(),
+      sender: { id: link.agentId, isBot: true },
+      text: `Agent "${link.agentId}" failed to process the message for session "${key}": ${error}\nNo reply will arrive for this delivery. Report the failure; do not retry automatically.`,
+      parentReport: true,
+      mentionedBots: [],
+      isDm: false
+    }
+    // Dispatch through the parent's serial gate, just like a normal session reply. This is
+    // daemon-authored, so it needs neither a child ACP session nor reply-tool authorization.
+    void this.host
+      .dispatch(
+        parent.agentId,
+        report,
+        route.integrationId,
+        this.host.webchatTransport().webchatWakeContext(parent.platform, parent.channel),
+        {
+          callFrom: link.agentId,
+          deliveryId,
+          hopCount: callMeta.hopCount + 1,
+          ...(callMeta.correlationId !== undefined ? { correlationId: callMeta.correlationId } : {})
+        },
+        {
+          requireDurable: true,
+          onAdmission: (result) => {
+            if (!result.accepted)
+              this.host.log().warn(`messageAgent failure report refused for "${key}": ${result.reason ?? 'unknown'}`)
+          }
+        },
+        route.codeHostReply
+      )
+      .catch((reportErr) =>
+        this.host.log().error(`messageAgent failure wake failed for "${key}": ${formatErr(reportErr)}`)
+      )
   }
 
   /**
@@ -1364,6 +1468,8 @@ export class CollabCoordinator {
       rowUpdatedAtAtAdmission: existing?.rowUpdatedAtAtAdmission ?? null,
       replyRequested: existing?.replyRequested ?? child?.needsParentReply === 1,
       replyState: state,
+      ...(existing?.deliveryId ? { deliveryId: existing.deliveryId } : {}),
+      ...(existing?.dispatchError ? { dispatchError: existing.dispatchError } : {}),
       ...(existing?.remote ? { remote: true } : {})
     })
   }
@@ -1656,9 +1762,9 @@ export class CollabCoordinator {
       return {
         sessionId: req.sessionId,
         agentId: link.agentId,
-        status: 'in-progress',
-        state: 'starting',
-        ...this.childStatusGuidance('in-progress', link.replyRequested, link.replyState)
+        status: link.dispatchError ? 'failed' : 'in-progress',
+        state: link.dispatchError ? 'idle' : 'starting',
+        ...this.childStatusGuidance('in-progress', link.replyRequested, link.replyState, link.dispatchError)
       }
     }
     if (!this.isAuthorizedChildParent(child, callerSessionId)) return null
@@ -1672,8 +1778,15 @@ export class CollabCoordinator {
   private childStatusGuidance(
     status: SessionStatusResult['status'],
     replyRequested: boolean,
-    trackedReplyState?: 'awaiting' | 'queued-for-parent' | 'failed'
+    trackedReplyState?: 'awaiting' | 'queued-for-parent' | 'failed',
+    dispatchError?: string
   ): Pick<SessionStatusResult, 'reply' | 'nextAction' | 'message'> {
+    if (dispatchError)
+      return {
+        reply: { requested: replyRequested, state: 'failed' },
+        nextAction: 'report-failure',
+        message: `The child dispatch failed: ${dispatchError}. Do not retry automatically; report the failure.`
+      }
     if (trackedReplyState === 'queued-for-parent') {
       return {
         reply: { requested: replyRequested, state: 'queued-for-parent' },
@@ -1761,8 +1874,9 @@ export class CollabCoordinator {
       this.host.activeGateEntries().has(child.key) || (this.host.serialQueue().get(child.key)?.length ?? 0) > 0
     const admittedNotStarted = link !== undefined && child.updatedAt === link.rowUpdatedAtAtAdmission
     const inFlight = child.state === 'prompting' || child.state === 'cancelling' || child.state === 'resuming'
-    const status: SessionStatusResult['status'] =
-      inFlight || queuedOrRunning || admittedNotStarted
+    const status: SessionStatusResult['status'] = link?.dispatchError
+      ? 'failed'
+      : inFlight || queuedOrRunning || admittedNotStarted
         ? 'in-progress'
         : child.lastTurnOutcome === 'failed'
           ? 'failed'
@@ -1777,7 +1891,7 @@ export class CollabCoordinator {
       status,
       state: child.state,
       updatedAt: child.updatedAt,
-      ...this.childStatusGuidance(status, replyRequested, link?.replyState)
+      ...this.childStatusGuidance(status, replyRequested, link?.replyState, link?.dispatchError)
     }
   }
 
@@ -1845,9 +1959,9 @@ export class CollabCoordinator {
       return {
         found: true,
         agentId: link.agentId,
-        status: 'in-progress',
-        state: 'starting',
-        ...this.childStatusGuidance('in-progress', link.replyRequested, link.replyState)
+        status: link.dispatchError ? 'failed' : 'in-progress',
+        state: link.dispatchError ? 'idle' : 'starting',
+        ...this.childStatusGuidance('in-progress', link.replyRequested, link.replyState, link.dispatchError)
       }
     }
     if (!this.isAuthorizedChildParent(child, probe.parentSessionId)) return { found: false }
