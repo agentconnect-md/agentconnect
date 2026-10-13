@@ -402,8 +402,11 @@ describe('the approver', () => {
     )
   })
 
-  it('cards an external sub-session request to the responsible user too', async () => {
-    const w = await world()
+  it.each([
+    ['in assistant mode', { enabled: true }],
+    ['outside assistant mode', { enabled: false }]
+  ])('cards an external sub-session request %s to the responsible user too', async (_mode, policy) => {
+    const w = await world({ policy })
     const requestId = '55555555-5555-4555-8555-555555555555'
     expect(await w.drafts.cardApprover(AGENT, requestId)).toEqual({
       channel: 'D_U0RESP',
@@ -989,6 +992,17 @@ describe('a proposal in the conversation its item belongs to', () => {
       expect.objectContaining({ outcome: expect.stringContaining('Expired. Nothing was run.') })
     )
     expect(await w.store.assistantDrafts.get(lapsed.id)).toMatchObject({ status: 'expired', cardShows: 'expired' })
+    expect(w.startTask).not.toHaveBeenCalled()
+  })
+
+  it('never runs a task for an agent outside assistant mode, whose sub-sessions are delegated only', async () => {
+    const w = await world({ policy: { enabled: false } })
+    const { draft } = await w.propose(GENERAL)
+    expect(await w.decide(draft.id, 'approve')).toMatchObject({
+      result: 'decided',
+      status: 'failed',
+      failure: 'the agent is no longer in assistant mode'
+    })
     expect(w.startTask).not.toHaveBeenCalled()
   })
 

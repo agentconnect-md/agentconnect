@@ -563,7 +563,7 @@ Where a post may go, and when it waits for approval instead, is in "Writing to o
 conversations".
 
 The visible post is suppressed when the wake would be refused for a locally-decidable
-reason (capability disabled, invalid target id, a postless self-call, hop limit, or a local target that
+reason (capability disabled, invalid target id, hop limit, or a local target that
 disallows the caller), so a rejected hand-off leaves no misleading post. One accepted
 best-effort edge: a target on another daemon whose call policy terminally rejects the
 caller can still leave a visible post, because that policy verdict is only known on the
@@ -694,10 +694,8 @@ tool calls, memory recall or capture, turn evaluation, or token usage.
 When the post instead carries `toAgent`, it is an explicit activation even when the
 target is the posting agent itself. The visible root and internal wake remain one paired
 delivery, so the new child runs exactly once; the platform's echo is only the second
-observation of that delivery. A postless self-call remains invalid because it has no new
-conversation boundary and can recurse without producing a user-visible hand-off. The one
-exception is an agent in assistant mode, whose postless self-call opens a background
-sub-session (see "Assistant-mode sub-sessions").
+observation of that delivery. A postless self-call opens a background sub-session instead, one
+level deep and under a cap (see "Sub-sessions").
 
 ## A parent-session reply is injected, and the parent answers normally
 
@@ -1255,9 +1253,9 @@ item asked in a DM. Every conversation of the agent is reminded of the same list
 except one shared with another organization, since the ledger is internal; its item tools still
 answer there when asked. An agent outside assistant mode is offered no item tools.
 
-## Assistant-mode sub-sessions
+## Sub-sessions
 
-An agent in assistant mode hands long work, such as "fix this bug and open a PR", to a
+Every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
 background sub-session of its own: `sendMessage` with its own agent id and no `channel`.
 Ordinary conversation stays in the main conversation. The main conversation says the work
 has started; the sub-session runs in a session of its own, never the conversation's long
@@ -1267,8 +1265,9 @@ reporting is reported as ended, at the latest about ten minutes after nothing is
 it, and then no longer counts toward the agent's concurrent sub-sessions. It takes that
 conversation's visibility and owner, and its visibility cannot be changed on its own;
 making the main conversation private still makes it private. A sub-session cannot open
-sub-sessions of its own. Only the assistant-mode agent is told about this form; for every
-other agent, and for every other form, a postless self-call is refused as before.
+sub-sessions of its own. At most three run at once, or the limit set in the assistant mode panel for
+an agent in assistant mode; one more is refused, and the agent is told so. Every agent is told
+about this form, and a self-call in any other form than this or the channel-root one is refused.
 
 Reports follow the language of the people in the conversation they report to. The conversation
 tells a sub-session which language they use; a patrol or an approved task, which sees none of
@@ -1299,10 +1298,9 @@ started, and only for someone `!stop` accepts there; in webchat, anyone who may 
 conversation. A sub-session of another conversation is refused in the same words as one that
 does not exist. A sub-session, patrol, approved task, hook or scheduled run cannot stop one. The
 agent is reminded which sub-sessions its conversation has running, by id and label, and the
-reminder is refreshed on the next turn after one starts or ends. An agent outside assistant mode
-has no such tool and no such reminder.
+reminder is refreshed on the next turn after one starts or ends.
 
-## Assistant-mode sub-session permission requests
+## Sub-session permission requests
 
 When a background sub-session needs permission to run a tool, whether delegated or an approved
 proposal's task, the request goes to the conversation the work belongs to, and the sub-session
@@ -1323,16 +1321,16 @@ waits; its turn is not cancelled. A patrol never asks.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
   marked as from a background sub-session.
 - A conversation shared with another organization gets no card. It goes to the agent's
-  responsible user in a direct message, as drafts do, otherwise to an Agent editor in a direct
-  message, as for any other request.
+  responsible user in a direct message, in assistant mode or not, otherwise to an Agent editor in
+  a direct message, as for any other request.
 - Editors can also answer it on the sub-session's own page and in the Activity view.
 
 The first answer from any of these places decides it, and the other cards show that decision. If
-nobody answers within the agent's "Hours to wait for approval" (12 unless set), the request is
-denied, the sub-session stops, and the conversation is told it ended; delegating the work again
-asks again. A request whose turn ends any other way, a restart included, expires and can no
-longer be answered. A main conversation's own requests, and agents outside assistant mode, keep
-today's behavior.
+nobody answers within the agent's "Hours to wait for approval" (12 unless set in assistant mode),
+the request is denied, the sub-session stops, and the conversation is told it ended; delegating the
+work again asks again. A request whose turn ends any other way, a restart included, expires and can no
+longer be answered. A main conversation's own requests keep today's behavior. Only assistant mode
+changes an agent's permission mode, so an agent outside it asks as often as its own mode does.
 
 ## Assistant-mode patrols
 
@@ -1375,7 +1373,7 @@ replies land: its top level when it is one long conversation, else its thread. W
 the agent there may approve it: in a direct message, that person; in a channel, anyone whose own
 message would start a turn of the agent there; never a bot. A click from anyone else does nothing.
 Approving grants nothing that typing the request there would not: the task runs with the agent's
-own permissions, and its permission requests follow "Assistant-mode sub-session permission
+own permissions, and its permission requests follow "Sub-session permission
 requests". "What people can do in chat" makes no difference to proposals. A conversation shared
 with another organization, one gated By decision, one the card definitely could not be posted in,
 and conversations on other platforms get the card where drafts go instead: the agent's responsible
@@ -1476,8 +1474,7 @@ with no IM integration at all (webchat, webhook, dreaming, memory-only). A chann
 **narrow** a directory listing as an optional filter; it can never widen one. A caller
 always sees **itself** in a listing, even under a `selected` outbound policy that does not
 name it. That self entry may target the explicit `toAgent` channel-root form described
-above; a postless self-wake is still refused separately, except as an assistant-mode
-sub-session.
+above; a postless self-wake opens a sub-session instead (see "Sub-sessions").
 
 The agent-directory tool must hide peers that fail any part of this check. Message
 delivery must repeat the same authorization instead of trusting discovery: a remembered,

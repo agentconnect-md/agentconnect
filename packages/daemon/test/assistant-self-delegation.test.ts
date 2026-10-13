@@ -1,4 +1,4 @@
-// Assistant-mode self-delegation (assistant-mode.md §5.6): a postless self wake opens a background sub-session, for assistant-mode agents only.
+// Self-delegation (assistant-mode.md §5.6): a postless self wake opens a background sub-session, for every agent.
 import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -17,6 +17,16 @@ import { WAIT } from './wait-support.js'
 
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const ON = { enabled: true }
+/** Every agent delegates to itself the same way, whatever its assistant mode. */
+const MODES: [string, { enabled: boolean } | undefined][] = [
+  ['in assistant mode', ON],
+  ['with assistant mode off', { enabled: false }],
+  ['with no assistant mode', undefined]
+]
+const agentIn = (assistantMode: { enabled: boolean } | undefined) => ({
+  id: 'bot-a',
+  ...(assistantMode ? { assistantMode } : {})
+})
 
 /** One Slack agent per entry; `C1` appends for every listed agent unless `append` is false. */
 function scaffold(
@@ -156,65 +166,71 @@ const delegation = (
   ...over
 })
 
-describe('self-delegation: an assistant-mode agent opens a sub-session', () => {
-  it('opens a headless sub-session on its own coordinate, never the caller’s or the append session', async () => {
-    const { daemon, d, calls, call } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
-    const caller = await seedCaller(d)
-    const spy = vi.spyOn(monotonic, 'monotonicTs').mockReturnValue('999000111')
+describe('self-delegation: every agent opens a sub-session', () => {
+  it.each(MODES)(
+    'opens a headless sub-session on its own coordinate %s, never the caller’s or the append session',
+    async (_mode, assistantMode) => {
+      const { daemon, d, calls, call } = await boot(scaffold([agentIn(assistantMode)]))
+      const caller = await seedCaller(d)
+      const spy = vi.spyOn(monotonic, 'monotonicTs').mockReturnValue('999000111')
+      const preflight = d.collab.wakeRejectionReason(delegation(caller))
+      const res = await call(delegation(caller)).finally(() => spy.mockRestore())
 
-    expect(d.collab.wakeRejectionReason(delegation(caller))).toBeNull()
-    const res = await call(delegation(caller))
-    spy.mockRestore()
+      expect(preflight).toBeNull()
 
-    const child = sessionKey('slack', 'C1', subsessionCoordinate('999000111'), 'bot-a', caller.scope)
-    expect(res).toEqual({ delivered: true, targetSession: child, subsession: true })
-    expect(child).not.toBe(caller.key)
-    expect(await d.store.currentAppendCoordinate('bot-a', 'C1', caller.scope)).toBe(caller.coordinate)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]!.agentId).toBe('bot-a')
-    expect(calls[0]!.webchat).toBeUndefined()
-    expect(calls[0]!.msg).toMatchObject({
-      channel: 'C1',
-      thread: 'subsession:999000111',
-      transportScope: caller.scope,
-      headless: true,
-      sender: { id: 'bot-a', isBot: true },
-      text: 'From your own main conversation, as a background sub-session: fix the flaky test and open a PR',
-      // Born titled by its task, as its cards name it, never by the wrapper it reads.
-      initialSessionTitle: 'fix the flaky test and open a PR'
-    })
-    expect(subsessionLabel(undefined, calls[0]!.msg.text)).toBe(calls[0]!.msg.initialSessionTitle)
-    expect(calls[0]!.msg.sessionThread).toBeUndefined()
-    expect(isSubsessionCoordinate(calls[0]!.msg.thread)).toBe(true)
-    await daemon.stop()
-  })
+      const child = sessionKey('slack', 'C1', subsessionCoordinate('999000111'), 'bot-a', caller.scope)
+      expect(res).toEqual({ delivered: true, targetSession: child, subsession: true })
+      expect(child).not.toBe(caller.key)
+      expect(await d.store.currentAppendCoordinate('bot-a', 'C1', caller.scope)).toBe(caller.coordinate)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]!.agentId).toBe('bot-a')
+      expect(calls[0]!.webchat).toBeUndefined()
+      expect(calls[0]!.msg).toMatchObject({
+        channel: 'C1',
+        thread: 'subsession:999000111',
+        transportScope: caller.scope,
+        headless: true,
+        sender: { id: 'bot-a', isBot: true },
+        text: 'From your own main conversation, as a background sub-session: fix the flaky test and open a PR',
+        // Born titled by its task, as its cards name it, never by the wrapper it reads.
+        initialSessionTitle: 'fix the flaky test and open a PR'
+      })
+      expect(subsessionLabel(undefined, calls[0]!.msg.text)).toBe(calls[0]!.msg.initialSessionTitle)
+      expect(calls[0]!.msg.sessionThread).toBeUndefined()
+      expect(isSubsessionCoordinate(calls[0]!.msg.thread)).toBe(true)
+      await daemon.stop()
+    }
+  )
 
-  it('reports back without being asked to, and records the parent in the persistent index', async () => {
-    const { daemon, d, calls, call } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
-    const caller = await seedCaller(d)
-    const res = await call(delegation(caller))
+  it.each(MODES)(
+    'reports back without being asked to %s, and records the parent in the persistent index',
+    async (_mode, assistantMode) => {
+      const { daemon, d, calls, call } = await boot(scaffold([agentIn(assistantMode)]))
+      const caller = await seedCaller(d)
+      const res = await call(delegation(caller))
 
-    expect(calls[0]!.callMeta).toMatchObject({
-      callFrom: 'bot-a',
-      hopCount: 0,
-      originSessionId: 'sid-parent-1',
-      originCoords: { platform: 'slack', channel: 'C1', thread: caller.coordinate },
-      needsReply: true
-    })
-    expect(d.collab.childSessionLinks.get(res.targetSession)).toMatchObject({
-      parentSessionId: 'sid-parent-1',
-      agentId: 'bot-a',
-      replyRequested: true,
-      replyState: 'awaiting'
-    })
-    expect(await d.store.assistantSubsessions.get('bot-a', res.targetSession)).toMatchObject({
-      childSessionKey: res.targetSession,
-      parentSessionId: 'sid-parent-1',
-      parentSessionKey: caller.key,
-      state: 'open'
-    })
-    await daemon.stop()
-  })
+      expect(calls[0]!.callMeta).toMatchObject({
+        callFrom: 'bot-a',
+        hopCount: 0,
+        originSessionId: 'sid-parent-1',
+        originCoords: { platform: 'slack', channel: 'C1', thread: caller.coordinate },
+        needsReply: true
+      })
+      expect(d.collab.childSessionLinks.get(res.targetSession)).toMatchObject({
+        parentSessionId: 'sid-parent-1',
+        agentId: 'bot-a',
+        replyRequested: true,
+        replyState: 'awaiting'
+      })
+      expect(await d.store.assistantSubsessions.get('bot-a', res.targetSession)).toMatchObject({
+        childSessionKey: res.targetSession,
+        parentSessionId: 'sid-parent-1',
+        parentSessionKey: caller.key,
+        state: 'open'
+      })
+      await daemon.stop()
+    }
+  )
 
   it('inherits the parent’s audience through the agent-to-agent path', async () => {
     const { daemon, d, calls, call } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
@@ -271,33 +287,36 @@ describe('self-delegation: an assistant-mode agent opens a sub-session', () => {
 })
 
 describe('self-delegation: what stays refused', () => {
-  it('refuses a sub-session’s own delegation in the preflight and at admission', async () => {
-    const { daemon, d, calls, call } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
-    const caller = await seedCaller(d)
-    const opened = await call(delegation(caller))
-    const nested = delegation(caller, { callerThread: subsessionCoordinate('999000111') })
-    await d.store.upsertSession({
-      key: sessionKey('slack', 'C1', nested.callerThread, 'bot-a', caller.scope),
-      agentId: 'bot-a',
-      platform: 'slack',
-      channel: 'C1',
-      thread: nested.callerThread,
-      transportScope: caller.scope,
-      acpSessionId: 'acp-child-1',
-      sessionId: 'sid-child-1',
-      state: 'prompting',
-      lastDeliveredTs: null,
-      updatedAt: Date.now()
-    })
+  it.each(MODES)(
+    'refuses a sub-session’s own delegation %s in the preflight and at admission',
+    async (_mode, assistantMode) => {
+      const { daemon, d, calls, call } = await boot(scaffold([agentIn(assistantMode)]))
+      const caller = await seedCaller(d)
+      const opened = await call(delegation(caller))
+      const nested = delegation(caller, { callerThread: subsessionCoordinate('999000111') })
+      await d.store.upsertSession({
+        key: sessionKey('slack', 'C1', nested.callerThread, 'bot-a', caller.scope),
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: nested.callerThread,
+        transportScope: caller.scope,
+        acpSessionId: 'acp-child-1',
+        sessionId: 'sid-child-1',
+        state: 'prompting',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
 
-    expect(d.collab.wakeRejectionReason(nested)).toBe('subsession_nesting')
-    const res = await call(nested)
-    expect(res).toMatchObject({ delivered: false, reason: 'subsession_nesting' })
-    expect(res.message).toMatch(/cannot open another sub-session/)
-    expect(calls).toHaveLength(1)
-    expect(opened.subsession).toBe(true)
-    await daemon.stop()
-  })
+      expect(d.collab.wakeRejectionReason(nested)).toBe('subsession_nesting')
+      const res = await call(nested)
+      expect(res).toMatchObject({ delivered: false, reason: 'subsession_nesting' })
+      expect(res.message).toMatch(/cannot open another sub-session/)
+      expect(calls).toHaveLength(1)
+      expect(opened.subsession).toBe(true)
+      await daemon.stop()
+    }
+  )
 
   it('refuses a delegation with no parent session to inherit from', async () => {
     const { daemon, d, calls, call } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
@@ -305,26 +324,6 @@ describe('self-delegation: what stays refused', () => {
     const res = await call(delegation({ scope, coordinate: 'append:1' }))
     expect(res).toMatchObject({ delivered: false, reason: 'no_parent_session' })
     expect(calls).toHaveLength(0)
-    await daemon.stop()
-  })
-
-  it.each([
-    ['assistant mode off', { enabled: false }],
-    ['no assistant mode', undefined]
-  ])('still refuses a postless self wake as self with %s', async (_label, assistantMode) => {
-    const { daemon, d, calls, call } = await boot(
-      scaffold([{ id: 'bot-a', ...(assistantMode ? { assistantMode } : {}) }])
-    )
-    const caller = await seedCaller(d)
-    const req = delegation(caller)
-    expect(d.collab.wakeRejectionReason(req)).toBe('self')
-    expect(await call(req)).toEqual({
-      delivered: false,
-      targetSession: sessionKey('slack', 'C1', '100.1', 'bot-a'),
-      reason: 'self'
-    })
-    expect(calls).toHaveLength(0)
-    expect(await d.store.assistantSubsessions.get('bot-a', caller.key)).toBeUndefined()
     await daemon.stop()
   })
 
@@ -377,87 +376,93 @@ describe('self-delegation: through the sendMessage tool', () => {
     integrations: [{ id: 'int-bot-a', platform: 'slack' }]
   })
 
-  it('tells the caller the sub-session started and that it reports back, and refuses one from inside it', async () => {
-    const { daemon, d, calls } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
-    const caller = await seedCaller(d)
-    const postMessage = vi.fn(async () => '100.250000')
-    d.connByIntegration.set('int-bot-a', { postMessage })
-    const deps = { ...d.mcp.deps, canRun: () => true }
+  it.each(MODES)(
+    'tells the caller %s the sub-session started and that it reports back, and refuses one from inside it',
+    async (_mode, assistantMode) => {
+      const { daemon, d, calls } = await boot(scaffold([agentIn(assistantMode)]))
+      const caller = await seedCaller(d)
+      const postMessage = vi.fn(async () => '100.250000')
+      d.connByIntegration.set('int-bot-a', { postMessage })
+      const deps = { ...d.mcp.deps, canRun: () => true }
 
-    const started = (await executeTool(
-      ctx(caller),
-      'sendMessage',
-      { toAgent: 'bot-a', message: 'fix it' },
-      deps
-    )) as any
-    expect(started).toMatchObject({
-      ok: true,
-      wake: { delivered: true, subsession: true },
-      reply: { requested: true, state: 'awaiting' },
-      nextAction: 'finish-turn-and-wait'
-    })
-    expect(started.childSessionId).toBe(started.wake.targetSession)
-    expect(started.message).toMatch(/Sub-session started in the background/)
-    expect(started.post).toBeUndefined()
+      const started = (await executeTool(
+        ctx(caller),
+        'sendMessage',
+        { toAgent: 'bot-a', message: 'fix it' },
+        deps
+      )) as any
+      expect(started).toMatchObject({
+        ok: true,
+        wake: { delivered: true, subsession: true },
+        reply: { requested: true, state: 'awaiting' },
+        nextAction: 'finish-turn-and-wait'
+      })
+      expect(started.childSessionId).toBe(started.wake.targetSession)
+      expect(started.message).toMatch(/Sub-session started in the background/)
+      expect(started.post).toBeUndefined()
 
-    const inside = ctx(caller, subsessionCoordinate('1'))
-    const nested = (await executeTool(inside, 'sendMessage', { toAgent: 'bot-a', message: 'and this' }, deps)) as any
-    expect(nested.wake).toMatchObject({ delivered: false, reason: 'subsession_nesting' })
-    expect(nested.childSessionId).toBeUndefined()
-    expect(postMessage).not.toHaveBeenCalled()
-    expect(calls).toHaveLength(1)
-    await daemon.stop()
-  })
+      const inside = ctx(caller, subsessionCoordinate('1'))
+      const nested = (await executeTool(inside, 'sendMessage', { toAgent: 'bot-a', message: 'and this' }, deps)) as any
+      expect(nested.wake).toMatchObject({ delivered: false, reason: 'subsession_nesting' })
+      expect(nested.childSessionId).toBeUndefined()
+      expect(postMessage).not.toHaveBeenCalled()
+      expect(calls).toHaveLength(1)
+      await daemon.stop()
+    }
+  )
 })
 
 describe('self-delegation: through the turn engine', () => {
-  it('runs the sub-session as a lineage child that reports back into its parent, never posting', async () => {
-    const { daemon, d } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]), { spy: false })
-    const caller = await seedCaller(d)
-    const postMessage = vi.fn(async () => '100.250000')
-    d.connByIntegration.set('int-bot-a', { postMessage })
-    const real = d.dispatch.bind(d)
-    const dispatched: { msg: NormalizedMessage; callMeta?: any }[] = []
-    d.dispatch = (
-      agentId: string,
-      msg: NormalizedMessage,
-      integrationId?: string,
-      webchat?: any,
-      callMeta?: any,
-      ...rest: any[]
-    ) => {
-      dispatched.push({ msg, callMeta })
-      return real(agentId, msg, integrationId, webchat, callMeta, ...rest)
+  it.each(MODES)(
+    'runs the sub-session %s as a lineage child that reports back into its parent, never posting',
+    async (_mode, assistantMode) => {
+      const { daemon, d } = await boot(scaffold([agentIn(assistantMode)]), { spy: false })
+      const caller = await seedCaller(d)
+      const postMessage = vi.fn(async () => '100.250000')
+      d.connByIntegration.set('int-bot-a', { postMessage })
+      const real = d.dispatch.bind(d)
+      const dispatched: { msg: NormalizedMessage; callMeta?: any }[] = []
+      d.dispatch = (
+        agentId: string,
+        msg: NormalizedMessage,
+        integrationId?: string,
+        webchat?: any,
+        callMeta?: any,
+        ...rest: any[]
+      ) => {
+        dispatched.push({ msg, callMeta })
+        return real(agentId, msg, integrationId, webchat, callMeta, ...rest)
+      }
+
+      const res = await d.collab.messageAgent(delegation(caller))
+      // The child's turn ends without a report of its own, so the daemon infers one into the parent.
+      await vi.waitFor(() => expect(dispatched.some((c) => c.msg.parentReport === true)).toBe(true), WAIT)
+
+      const child = await d.store.getSession(res.targetSession)
+      expect(child).toMatchObject({
+        agentId: 'bot-a',
+        channel: 'C1',
+        thread: dispatched[0]!.msg.thread,
+        originSessionId: 'sid-parent-1',
+        needsParentReply: 1,
+        title: 'fix the flaky test and open a PR'
+      })
+      // The metadata the console stores for it, which Activity, the Sub-sessions panel and its page show.
+      const listed = await d.sessionMetadataOutbox.sessionListProjection(child.sessionId, 'bot-a')
+      expect(listed).toMatchObject({ title: 'fix the flaky test and open a PR' })
+      expect(await d.store.getSessionClassificationByKey(res.targetSession)).not.toHaveProperty('directDestination')
+      const report = dispatched.find((c) => c.msg.parentReport === true)!
+      expect(report.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate, source: 'agent' })
+      expect(report.callMeta).toMatchObject({ callFrom: 'bot-a', originSessionId: child.sessionId })
+      // Neither the sub-session nor the resumed parent, whose runtime said nothing, posted anywhere.
+      expect(postMessage).not.toHaveBeenCalled()
+      await daemon.stop()
     }
-
-    const res = await d.collab.messageAgent(delegation(caller))
-    // The child's turn ends without a report of its own, so the daemon infers one into the parent.
-    await vi.waitFor(() => expect(dispatched.some((c) => c.msg.parentReport === true)).toBe(true), WAIT)
-
-    const child = await d.store.getSession(res.targetSession)
-    expect(child).toMatchObject({
-      agentId: 'bot-a',
-      channel: 'C1',
-      thread: dispatched[0]!.msg.thread,
-      originSessionId: 'sid-parent-1',
-      needsParentReply: 1,
-      title: 'fix the flaky test and open a PR'
-    })
-    // The metadata the console stores for it, which Activity, the Sub-sessions panel and its page show.
-    const listed = await d.sessionMetadataOutbox.sessionListProjection(child.sessionId, 'bot-a')
-    expect(listed).toMatchObject({ title: 'fix the flaky test and open a PR' })
-    expect(await d.store.getSessionClassificationByKey(res.targetSession)).not.toHaveProperty('directDestination')
-    const report = dispatched.find((c) => c.msg.parentReport === true)!
-    expect(report.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate, source: 'agent' })
-    expect(report.callMeta).toMatchObject({ callFrom: 'bot-a', originSessionId: child.sessionId })
-    // Neither the sub-session nor the resumed parent, whose runtime said nothing, posted anywhere.
-    expect(postMessage).not.toHaveBeenCalled()
-    await daemon.stop()
-  })
+  )
 })
 
 describe('self-delegation: what the runtime is told', () => {
-  it('gives an assistant-mode session the sub-session guidance, and every other agent the old rule', async () => {
+  it('gives every agent’s session the sub-session guidance, in assistant mode or not', async () => {
     const root = scaffold([{ id: 'bot-a', assistantMode: ON }, { id: 'bot-b' }])
     const { daemon, d, hosts } = await boot(root, { spy: false })
     const caller = await seedCaller(d)
@@ -474,10 +479,10 @@ describe('self-delegation: what the runtime is told', () => {
           .filter((entry) => entry.agentId === agentId)
           .flatMap(({ host }) => [...host.newSession.mock.calls, ...host.prompt.mock.calls])
       )
-    expect(told('bot-a')).toContain('opens a background SUB-SESSION for long work')
-    expect(told('bot-a')).not.toContain('may not target yourself')
-    expect(told('bot-b')).toContain('may not target yourself')
-    expect(told('bot-b')).not.toContain('SUB-SESSION')
+    for (const agentId of ['bot-a', 'bot-b']) {
+      expect(told(agentId)).toContain('opens a background SUB-SESSION for long work')
+      expect(told(agentId)).not.toContain('may not target yourself')
+    }
     await daemon.stop()
   })
 })

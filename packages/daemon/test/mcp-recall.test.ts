@@ -472,13 +472,12 @@ describe('recall is offered to every agent', () => {
     config: { botToken: 'x', appToken: 'y' }
   } as unknown as Integration
 
-  it('adds the same tool in or out of assistant mode, webchat included, and reserves its name', () => {
+  it('adds the same tool to every session, webchat included, and reserves its name', () => {
     const recallIn = (integrations: Integration[], options: Parameters<typeof toolsForIntegrations>[1]) =>
       toolsForIntegrations(integrations, options).find((t) => t.name === 'recall')
-    const offered = recallIn([slack], { assistantMode: true })
+    const offered = recallIn([slack], {})
     expect(offered).toBeDefined()
-    expect(recallIn([slack], {})).toBe(offered)
-    expect(recallIn([slack], { assistantMode: false, currentPlatform: 'slack' })).toBe(offered)
+    expect(recallIn([slack], { currentPlatform: 'slack' })).toBe(offered)
     expect(recallIn([], { currentPlatform: 'webchat', consoleImages: true })).toBe(offered)
     expect(ALL_TOOL_NAMES).toContain('recall')
   })

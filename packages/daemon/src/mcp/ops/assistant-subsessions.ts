@@ -1,7 +1,6 @@
 // The main conversation's stop of a sub-session it opened (assistant-mode.md §1.4, §5.8), through the console's own Stop.
 import { z } from 'zod'
 import { originKindOf } from '@agentconnect.md/protocol'
-import type { Agent } from '../../agents/agent-schema.js'
 import { stopIndexedSubsession } from '../../cp/assistant-activity.js'
 import { isSyntheticA2aChannel } from '../../cp/cp-collab-routes.js'
 import { isSubsessionCoordinate } from '../../session/subsession-coordinate.js'
@@ -9,7 +8,6 @@ import type { AssistantSubsession } from '../../store/assistant-subsessions.js'
 import { sessionKey } from '../../store/local-store.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { parseArgs, requiredString } from './args.js'
-import { assistantModeOn } from './assistant-items.js'
 import type { SessionContext, ToolHandler } from './context.js'
 
 /** Who started the live turn, when today's `!stop` sender rule lets them stop work here, else why not. */
@@ -18,8 +16,6 @@ export type SubsessionStopper =
 
 export interface AssistantSubsessionDeps {
   assistantSubsessions?: {
-    /** Whether the agent is in assistant mode now, read per call. */
-    enabled(agentId: string): boolean
     stopper(ctx: SessionContext): Promise<SubsessionStopper>
     /** The index row of one of the agent's sub-sessions, by its session key or its outward id. */
     find(agentId: string, id: string): Promise<AssistantSubsession | undefined>
@@ -64,12 +60,11 @@ export const STOP_SUBSESSION_TOOL: ToolDescriptor = {
   )
 }
 
-/** The tool an agent's session is offered: in assistant mode, in a place's main conversation only. */
+/** The tool every agent's session is offered in a place's main conversation only. */
 export function assistantSubsessionToolsFor(
-  agent: Pick<Agent, 'assistantMode'>,
   session: Parameters<typeof assistantMainConversation>[0]
 ): ToolDescriptor[] {
-  return assistantModeOn(agent) && assistantMainConversation(session) ? [STOP_SUBSESSION_TOOL] : []
+  return assistantMainConversation(session) ? [STOP_SUBSESSION_TOOL] : []
 }
 
 const NOTHING = 'Nothing was stopped.'
@@ -79,7 +74,7 @@ const refused = (reason: string) => ({ result: 'refused' as const, reason: `${re
 export const stopSubsession: ToolHandler<AssistantSubsessionDeps> = async (ctx, args, deps) => {
   const { sessionId } = parseArgs(STOP_SUBSESSION_ARGS, args)
   const port = deps.assistantSubsessions
-  if (!port?.enabled(ctx.agentId)) return refused('Only an agent in assistant mode can stop a sub-session.')
+  if (!port) return refused('Stopping a sub-session is not available on this daemon.')
   if (!assistantMainConversation(ctx))
     return refused('Only the conversation that opened a sub-session can stop it, and this is not one.')
   const stopper = await port.stopper(ctx)

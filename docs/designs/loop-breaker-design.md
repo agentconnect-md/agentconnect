@@ -486,7 +486,9 @@ Applying a vague "messages per minute" rule would harm legitimate fanout while
 still failing to constrain recursion precisely. Therefore:
 
 - `source:"agent"` does not enter L1.
-- Self-calls are always rejected.
+- Self-calls are rejected, except the paired channel-root form and a postless delegation, which
+  opens a sub-session one level deep under a concurrency cap
+  ([assistant-mode.md](assistant-mode.md) §5.6).
 - The daemon/relay manages hops; model inputs contain no trusted hop value.
 - Same-daemon and cross-daemon paths both check the cap before admission.
 - Exceeding the cap returns typed `hop_limit` without dispatching the target.

@@ -89,6 +89,7 @@ import {
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
+  ACTIVITY_EVERY_AGENT_V1_FEATURE,
   AUTO_MERGE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
   SANDBOX_KEEP_ALIVE_FEATURE,
@@ -4219,7 +4220,6 @@ export class Daemon {
       },
       // A main conversation's stop of its own sub-session (assistant-mode.md §5.8), through the console's Stop core.
       assistantSubsessions: {
-        enabled: (agentId) => assistantModeOn(this.agents.get(agentId)),
         stopper: async (ctx) => this.subsessionStopper(ctx),
         find: async (agentId, id) =>
           (await this.store.assistantSubsessions.get(agentId, id)) ??
@@ -4555,7 +4555,6 @@ export class Daemon {
           decisions:
             !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
           currentPlatform: platform,
-          assistantMode: agent.assistantMode?.enabled === true,
           // Static descriptor, dynamic authority: a console turn may reach any session, and execution re-checks it.
           consoleImages: this.relays?.supportsWebchatImages?.() === true
         })
@@ -4567,8 +4566,8 @@ export class Daemon {
         tools = [...tools, ...assistantItemToolsFor(agent)]
         // Its reminders (§5.9), in a platform conversation of the session's own only.
         tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
-        // Stopping a sub-session it opened (§5.8), in a place's main conversation only.
-        tools = [...tools, ...assistantSubsessionToolsFor(agent, { platform, channel, thread, integrationId })]
+        // Stopping a sub-session it opened (§5.8), for every agent, in a place's main conversation only.
+        tools = [...tools, ...assistantSubsessionToolsFor({ platform, channel, thread, integrationId })]
         // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
         const managedRepo = this.managedWorkspaceRepo(agent.id)
         if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
@@ -7689,6 +7688,8 @@ export class Daemon {
       ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
       // Lists one conversation's approval requests and decides one only for that conversation; static.
       CONVERSATION_PERMISSION_REQUESTS_FEATURE,
+      // Serves Activity's permission requests, sub-sessions and drafts for an agent outside assistant mode too; static.
+      ACTIVITY_EVERY_AGENT_V1_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
       ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
@@ -13802,11 +13803,10 @@ export class Daemon {
     }
   }
 
-  /** Where a background sub-session's permission request goes: the conversation it belongs to (assistant-mode.md §5.6). */
+  /** Where any agent's background sub-session's permission request goes: the conversation it belongs to (assistant-mode.md §5.6). */
   private async subsessionApprovalRoute(p: Pending): Promise<SubsessionApprovalRoute | undefined> {
     const { agentId, sessionKey: key } = p.plan
     const agent = this.agents.get(agentId)
-    if (!assistantModeOn(agent)) return undefined
     const row = await this.store.assistantSubsessions.get(agentId, key)
     if (!row || row.kind === 'patrol') return undefined
     const parent = await this.store.getSessionByOutwardId(row.parentSessionId, agentId)

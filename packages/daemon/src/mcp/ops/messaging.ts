@@ -305,12 +305,7 @@ export interface MessagingDeps extends GatewayDeps {
    *  the same-daemon delivery (policy check, coord/integration resolution, dispatch)
    *  and the cross-daemon `not_local` stub. */
   messageAgent: (req: MessageAgentReq) => Promise<MessageAgentResult>
-  /** Side-effect-free preflight for a peer wake: returns a typed rejection reason if
-   *  {@link MessagingDeps.messageAgent} would refuse this wake for a locally-decidable reason (capability
-   *  disabled, invalid target id, a postless self-call, hop-limit, caller outbound policy, or a LOCAL
-   *  target's inbound policy/channel membership), else null. `sendMessage` uses it to skip the visible channel post for a
-   *  `toAgent`+`channel` wake that will not be delivered. Absent in the chat CLI / tests with
-   *  no daemon ⇒ the post is not gated (treated as null). */
+  /** Side-effect-free: the reason {@link MessagingDeps.messageAgent} would refuse this wake locally, else null, so no post precedes it; absent ⇒ not gated. */
   preflightWake?: (req: MessageAgentReq) => string | null
   /** Reply into an existing session addressed by its stable id (session-concept §5.2). The
    *  daemon fills the trusted caller identity from the session context, authorizes `sessionId`
@@ -596,13 +591,7 @@ export async function sendMessage(
           ...(channel === undefined ? { postless: true } : {})
         }
       : undefined
-  // PREFLIGHT (side-effect-free): would messageAgent refuse this wake for a locally-decidable
-  // reason (capability off / bad target id / postless self-call / hop-limit / a local target
-  // that disallows this caller)? If so we must NOT leave a misleading public post for a peer that is never
-  // woken — so the post below is gated on `wakeRejection === null`. The wake itself still runs
-  // through messageAgent (it re-checks, emits the evaluation event, and returns the typed
-  // reason). A REMOTE target's call-policy can't be preflighted here (that verdict lives on the
-  // owning daemon); such a rare reject can still leave a post — an accepted residual.
+  // No visible post for a wake messageAgent would refuse locally; a remote target's call policy can still leave one (accepted).
   const wakeRejection = baseWakeReq !== undefined ? (deps.preflightWake?.(baseWakeReq) ?? null) : null
 
   // (A) Post a visible IM at a platform channel's ROOT, or to a user's DM. The

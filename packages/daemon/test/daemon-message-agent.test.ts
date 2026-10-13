@@ -11,6 +11,7 @@ import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import * as monotonic from '../src/store/monotonic-ts.js'
 import { isAppendCoordinate } from '../src/session/append-coordinate.js'
+import { isSubsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -297,11 +298,11 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
-  it('rejects a postless self-message before any lookup', async () => {
+  it('takes a postless self-message as a delegation, which opens nothing without a session to inherit from', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     const res = await call(baseReq({ toAgentId: 'bot-a', postless: true }))
-    expect(res).toMatchObject({ delivered: false, reason: 'self' })
+    expect(res).toMatchObject({ delivered: false, reason: 'no_parent_session' })
     expect(calls.length).toBe(0)
     await daemon.stop()
   })
@@ -386,42 +387,66 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
-  it('refuses a postless self wake as self in the preflight and at admission, ahead of policy and the hop cap', async () => {
+  it('takes a postless self wake as a delegation past the outbound policy, still under the hop cap', async () => {
     const root = scaffold([{ id: 'bot-a', outboundPolicy: 'selected', allowedTargetAgentIds: [] }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     const d = daemon as any
     const req = baseReq({ toAgentId: 'bot-a', postless: true })
-    expect(d.collab.wakeRejectionReason(req)).toBe('self')
-    expect(await call(req)).toEqual({ delivered: false, targetSession: 'slack:C1:100.1:bot-a', reason: 'self' })
-    // A caller turn already at the cap still reads as self on both sides.
+    expect(d.collab.wakeRejectionReason(req)).toBeNull()
+    expect(await call(req)).toMatchObject({ delivered: false, reason: 'no_parent_session' })
+    // A caller turn already at the cap reads as the hop cap on both sides.
     d.activeTurnCallMeta.set('slack:C1:100.1:bot-a', {
       callFrom: 'bot-b',
       hopCount: MAX_AGENT_CALL_HOPS - 1,
       deliveryId: 'd0'
     })
-    expect(d.collab.wakeRejectionReason(req)).toBe('self')
-    expect(await call(req)).toMatchObject({ delivered: false, reason: 'self' })
+    expect(d.collab.wakeRejectionReason(req)).toBe('hop_limit')
+    expect(await call(req)).toMatchObject({ delivered: false, reason: 'hop_limit' })
     expect(calls).toHaveLength(0)
     await daemon.stop()
   })
 
-  it.each<[string, string | null, Partial<MessageAgentReq>]>([
-    ['no proof', null, {}],
-    ['only the post ts', null, { transcriptTs: '200.2' }],
-    ['only the pairing id', null, { agentCallDeliveryId: 'paired-self-1' }],
-    [
-      'a full pairing plus the postless marker',
-      'self',
-      { transcriptTs: '200.2', agentCallDeliveryId: 'paired-self-1', postless: true }
-    ]
-  ])('refuses at admission an internal self wake carrying %s (preflight: %s)', async (_label, preflight, proof) => {
+  it.each<[string, Partial<MessageAgentReq>]>([
+    ['no proof', {}],
+    ['only the post ts', { transcriptTs: '200.2' }],
+    ['only the pairing id', { agentCallDeliveryId: 'paired-self-1' }]
+  ])('refuses at admission an internal self wake carrying %s', async (_label, proof) => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     const req = baseReq({ toAgentId: 'bot-a', thread: '200.2', ...proof })
-    // The preflight runs before the root post exists, so only the postless marker refuses there.
-    expect((daemon as any).collab.wakeRejectionReason(req)).toBe(preflight)
+    // The preflight runs before the root post exists, so it cannot tell this from the channel-root form.
+    expect((daemon as any).collab.wakeRejectionReason(req)).toBeNull()
     expect(await call(req)).toEqual({ delivered: false, targetSession: 'slack:C1:200.2:bot-a', reason: 'self' })
     expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('takes a self wake carrying the postless marker as a delegation, whatever pairing it also carries', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    await (daemon as any).store.upsertSession({
+      key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-parent-1',
+      sessionId: 'sid-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const req = baseReq({
+      toAgentId: 'bot-a',
+      thread: '200.2',
+      transcriptTs: '200.2',
+      agentCallDeliveryId: 'paired-self-1',
+      postless: true
+    })
+    expect((daemon as any).collab.wakeRejectionReason(req)).toBeNull()
+    expect(await call(req)).toMatchObject({ delivered: true, subsession: true })
+    expect(calls).toHaveLength(1)
+    expect(isSubsessionCoordinate(calls[0]!.msg.thread)).toBe(true)
     await daemon.stop()
   })
 
