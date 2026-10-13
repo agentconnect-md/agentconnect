@@ -138,6 +138,18 @@ it.each([
   expect(await created()).toMatchObject({ permissionMode: expected })
 })
 
+it.each([
+  ['Google Antigravity’s full-access mode', 'antigravity-acp', ['default', 'auto_edit', 'yolo'], 'default', 'yolo'],
+  ['Qwen Code’s auto mode', 'qwen-code', ['plan', 'default', 'auto-edit', 'auto', 'yolo'], 'default', 'auto'],
+  ['the runtime’s own default for an unclassified runtime', 'cursor', ['agent', 'plan', 'ask'], 'agent', 'agent']
+])('preselects %s', async (_label, id, modes, defaultMode, expected) => {
+  runtime(id, { permissionModes: modes.map((value) => ({ value })), defaultPermissionMode: defaultMode })
+  await open()
+  await openRunSettings()
+  expect(approval()?.value).toBe(expected)
+  expect(await created()).toMatchObject({ permissionMode: expected })
+})
+
 it('creates the agent with an asking mode when one is picked', async () => {
   await open()
   await openRunSettings()

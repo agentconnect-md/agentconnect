@@ -151,6 +151,12 @@ does not pretend to defend against effects it cannot defend against.
   agent that runs work nobody watches should not wait on approval by default. A runtime with
   neither keeps the form's old preselection, the creator may still pick an asking mode, and an
   agent created through the API or MCP without a mode keeps the runtime's default.
+- The map covers every runtime that reports a mode whose own description says it decides by the
+  runtime's review or classifier (auto) or never asks (full access); the form's pick per runtime
+  is listed in product-conventions.md, "A new agent's permission mode". A mode whose description
+  leaves approvals open, such as one that runs tools "based on configured permissions", or that
+  refuses rather than asks, like `dontAsk`, stays out of the map. Only an admitted runtime (§4.1)
+  reaches the switch-on default above, so the map's other runtimes change only the form.
 - Switching it on changes no conversation's trigger, and new conversations start as any agent's
   of the same visibility do (§5.3). A place is _internal_ unless the platform detects it as
   _external_ (§5.3).
@@ -1449,3 +1455,11 @@ responsible user, whom the Control Plane derives whatever the mode. The daemon's
 answers every agent (`activity-every-agent-v1`) with permission requests, sub-sessions and drafts,
 and so do its console stop of a sub-session and its draft decisions; items, patrols, proposals and
 reminders stay assistant mode's.
+
+**Thirty-eighth revision (2026-10-13)**: the console's permission-mode default reaches every runtime
+with an auto or full-access mode (issue #2979; §1.8). The per-runtime map named only Claude Code and
+Codex, so a new agent on any other runtime kept the form's old preselection, often a mode that asks
+and then waits for nobody. The map now classifies each mode by the description its runtime reports
+and covers every runtime with a mode that decides on its own or never asks; a mode whose
+description leaves approvals open stays out. No runtime is newly admitted, so switching the mode
+on is unchanged, and an agent created through the API or MCP still keeps its runtime's default.

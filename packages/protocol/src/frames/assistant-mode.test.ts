@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { AgentSpec } from './agent.js'
 import { AssistantModePolicy } from './assistant-mode.js'
 import { assistantModeDefinitionRefusals, assistantModeRuntimeAdmitted } from '../assistant-mode-admission.js'
-import { assistantModePermissionModeOnEnable, autoOrFullAccessPermissionMode } from '../assistant-permission-modes.js'
+import {
+  ASSISTANT_MODE_PERMISSION_MODES,
+  assistantModePermissionModeOnEnable,
+  autoOrFullAccessPermissionMode
+} from '../assistant-permission-modes.js'
 
 const INTEGRATION_ID = '22222222-2222-4222-8222-222222222222'
 
@@ -124,17 +128,69 @@ describe('a runtime’s auto, else full-access, permission mode', () => {
     expect(autoOrFullAccessPermissionMode('codex')).toBe('agent')
   })
 
+  const COPILOT_MODE = 'https://agentclientprotocol.com/protocol/session-modes#'
+
+  it.each([
+    ['antigravity-acp', { default: 'asks', auto_edit: 'asks', yolo: 'full-access' }, 'yolo'],
+    [
+      'codebuddy-code',
+      {
+        default: 'asks',
+        acceptEdits: 'asks',
+        plan: 'read-only',
+        auto: 'auto',
+        bypassPermissions: 'full-access',
+        fullAccess: 'full-access'
+      },
+      'auto'
+    ],
+    ['devin', { ask: 'read-only', smart: 'auto', bypass: 'full-access' }, 'smart'],
+    [
+      'dsh-acp',
+      { 'read-only': 'read-only', 'workspace-write': 'asks', 'danger-full-access': 'full-access' },
+      'danger-full-access'
+    ],
+    ['github-copilot-cli', { [`${COPILOT_MODE}autopilot`]: 'full-access' }, `${COPILOT_MODE}autopilot`],
+    ['qoder', { default: 'asks', acceptEdits: 'asks', auto: 'auto', yolo: 'full-access' }, 'auto'],
+    ['qoder-cli', { default: 'asks', acceptEdits: 'asks', auto: 'auto', yolo: 'full-access' }, 'auto'],
+    ['qoder-cli-cn', { default: 'asks', acceptEdits: 'asks', auto: 'auto', yolo: 'full-access' }, 'auto'],
+    [
+      'qwen-code',
+      { plan: 'read-only', default: 'asks', 'auto-edit': 'asks', auto: 'auto', yolo: 'full-access' },
+      'auto'
+    ]
+  ])('classifies %s’s reported modes and picks its auto, else full-access, one', (runtime, modes, picked) => {
+    expect(ASSISTANT_MODE_PERMISSION_MODES[runtime]).toEqual(modes)
+    expect(autoOrFullAccessPermissionMode(runtime)).toBe(picked)
+  })
+
+  it('leaves out every runtime with no reported mode that approves on its own', () => {
+    for (const runtime of ['opencode', 'cline', 'cursor', 'kilo', 'omp', 'hermes-agent', 'kiro-cli', 'gemini']) {
+      expect(ASSISTANT_MODE_PERMISSION_MODES[runtime]).toBeUndefined()
+    }
+  })
+
   it('picks among the modes the runtime’s catalog offers, full access when it offers no auto mode', () => {
     expect(autoOrFullAccessPermissionMode('claude-acp', ['default', 'auto', 'bypassPermissions'])).toBe('auto')
     expect(autoOrFullAccessPermissionMode('claude-acp', ['default', 'plan', 'bypassPermissions'])).toBe(
       'bypassPermissions'
     )
     expect(autoOrFullAccessPermissionMode('codex-acp', ['read-only', 'agent-full-access'])).toBe('agent-full-access')
+    expect(autoOrFullAccessPermissionMode('qwen-code', ['plan', 'default', 'auto-edit', 'yolo'])).toBe('yolo')
+    expect(autoOrFullAccessPermissionMode('codebuddy-code', ['default', 'fullAccess', 'bypassPermissions'])).toBe(
+      'bypassPermissions'
+    )
+    expect(autoOrFullAccessPermissionMode('devin', ['accept-edits', 'ask', 'bypass'])).toBe('bypass')
   })
 
   it('has none for a catalog with neither, a runtime it does not know, or no runtime', () => {
     expect(autoOrFullAccessPermissionMode('claude-acp', ['default', 'acceptEdits', 'plan'])).toBeUndefined()
     expect(autoOrFullAccessPermissionMode('claude-acp', [])).toBeUndefined()
+    expect(autoOrFullAccessPermissionMode('qoder-cli', ['default', 'acceptEdits', 'dontAsk'])).toBeUndefined()
+    expect(autoOrFullAccessPermissionMode('devin', ['accept-edits', 'ask', 'plan'])).toBeUndefined()
+    expect(
+      autoOrFullAccessPermissionMode('github-copilot-cli', [`${COPILOT_MODE}agent`, `${COPILOT_MODE}plan`])
+    ).toBeUndefined()
     expect(autoOrFullAccessPermissionMode('opencode')).toBeUndefined()
     expect(autoOrFullAccessPermissionMode(null)).toBeUndefined()
     expect(autoOrFullAccessPermissionMode('constructor')).toBeUndefined()
