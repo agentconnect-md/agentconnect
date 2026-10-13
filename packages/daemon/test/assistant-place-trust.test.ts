@@ -1,4 +1,4 @@
-// A place of an assistant-mode agent turning external (assistant-mode.md §5.3): it reads external at once, reaches the CP, and cuts only that place's turn.
+// A place turning external (assistant-mode.md §5.3): for every agent it reads external at once and reaches the CP; assistant mode also cuts that place's turn.
 import { describe, expect, it, vi } from 'vitest'
 import { mergePlaceExternalReason, type IntegrationChannel, type PlaceExternalReason } from '@agentconnect.md/protocol'
 import { PLACE_SHARE_TTL_MS, PlaceTrust, type PlaceTrustDeps } from '../src/assistant/place-trust.js'
@@ -16,7 +16,7 @@ const integrationOf = (id: string, externalChannels: string[] = [], mode: 'direc
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
-/** A PlaceTrust over fakes: which integrations an assistant-mode agent owns, what each lists external, and the platform's share lookup. */
+/** A PlaceTrust over fakes: which integrations are an assistant-mode agent's (true) or another agent's (false), what each lists external, and the platform's share lookup. */
 function world(
   owned: Record<string, boolean>,
   external: Record<string, string[]> = {},
@@ -43,14 +43,17 @@ function world(
 }
 
 describe('PlaceTrust', () => {
-  it('downgrades an internal place of an assistant-mode agent once: it reads external, is reported, and its turn is cut', async () => {
+  it('marks an internal place external for every agent and reports it once, cutting the turn only in assistant mode', async () => {
     const w = world({ 'int-a': true, 'int-b': false })
     w.trust.detected(['int-a', 'int-b'], 'C1', 'guestMember')
     w.trust.detected(['int-a', 'int-b'], 'C1', 'externallyShared')
     await settle()
     expect(conversationTrustLevel(w.integrations.get('int-a')!, 'C1')).toBe('external')
-    expect(conversationTrustLevel(w.integrations.get('int-b')!, 'C1')).toBe('internal')
-    expect(w.reports).toEqual([['int-a', { id: 'C1', externalReason: 'guestMember' }]])
+    expect(conversationTrustLevel(w.integrations.get('int-b')!, 'C1')).toBe('external')
+    expect(w.reports).toEqual([
+      ['int-a', { id: 'C1', externalReason: 'guestMember' }],
+      ['int-b', { id: 'C1', externalReason: 'guestMember' }]
+    ])
     expect(w.interrupts).toEqual([['int-a', 'C1']])
   })
 
@@ -79,12 +82,13 @@ describe('PlaceTrust', () => {
     ])
   })
 
-  it('runs the transition for a place the spec newly lists, holding it on the live integration until it reconciles', async () => {
+  it('holds a place the spec newly lists on the live integration until it reconciles, running the transition in assistant mode', async () => {
     const w = world({ 'int-a': true, 'int-b': false })
     w.trust.specApplied('int-a', integrationOf('int-a', ['C1']), ['C1'])
     w.trust.specApplied('int-b', integrationOf('int-b', ['C1']), ['C1'])
     await settle()
     expect(conversationTrustLevel(w.integrations.get('int-a')!, 'C1')).toBe('external')
+    expect(conversationTrustLevel(w.integrations.get('int-b')!, 'C1')).toBe('external')
     expect(w.interrupts).toEqual([['int-a', 'C1']])
     expect(w.reports).toEqual([])
   })
@@ -139,10 +143,12 @@ describe('PlaceTrust', () => {
     expect(w.trust.heldIntegrations()).toEqual([])
   })
 
-  it('watches member joins only where an assistant-mode agent owns an integration', () => {
+  it('watches member joins on every agent’s integration, whatever its mode, and on no unknown one', () => {
     const w = world({ 'int-a': true, 'int-b': false })
-    expect(w.trust.watches(['int-b'])).toBe(false)
-    expect(w.trust.watches(['int-b', 'int-a'])).toBe(true)
+    expect(w.trust.watches(['int-b'])).toBe(true)
+    expect(w.trust.watches(['int-a'])).toBe(true)
+    expect(w.trust.watches(['int-gone'])).toBe(false)
+    expect(w.trust.watches([])).toBe(false)
   })
 })
 
@@ -246,12 +252,11 @@ describe('the daemon downgrade transition', () => {
       preserveQueued: true,
       keepAdmission: true
     })
-    expect(daemon.cpClient.emitIntegrationChannels).toHaveBeenCalledTimes(1)
-    expect(daemon.cpClient.emitIntegrationChannels).toHaveBeenCalledWith({
-      integrationId: 'int-a',
-      channels: [{ id: 'C1', externalReason: 'guestMember' }],
-      authoritative: false
-    })
+    // The agent outside assistant mode records the place too, but keeps its turn.
+    expect(daemon.cpClient.emitIntegrationChannels.mock.calls).toEqual([
+      [{ integrationId: 'int-a', channels: [{ id: 'C1', externalReason: 'guestMember' }], authoritative: false }],
+      [{ integrationId: 'int-b', channels: [{ id: 'C1', externalReason: 'guestMember' }], authoritative: false }]
+    ])
   })
 
   it('replays a guest found before any listing, while the CP was away', async () => {
@@ -333,7 +338,7 @@ describe('the daemon downgrade transition', () => {
     ])
   })
 
-  it('looks up a member the relay forwarded only for an assistant-mode owner', async () => {
+  it('looks up a member the relay forwarded for every agent, cutting a turn only in assistant mode', async () => {
     const daemon = daemonWorld()
     const joinedMemberReason = vi.fn(async () => 'guestMember')
     daemon.connByIntegration.set('int-a', { joinedMemberReason })
@@ -349,10 +354,19 @@ describe('the daemon downgrade transition', () => {
         payload: { kind: 'member-joined', channelId: 'C1', userId: 'UGUEST' }
       })
     expect(await join('bot-b', 'int-b')).toEqual({ msgId: 'm-bot-b', accepted: true })
-    expect(joinedMemberReason).not.toHaveBeenCalled()
-    expect(await join('bot-a', 'int-a')).toEqual({ msgId: 'm-bot-a', accepted: true })
     await settle()
     expect(joinedMemberReason).toHaveBeenCalledWith('UGUEST', false)
+    expect(conversationTrustLevel(daemon.agents.get('bot-b').integrations[0], 'C1')).toBe('external')
+    expect(daemon.cpClient.emitIntegrationChannels).toHaveBeenCalledWith({
+      integrationId: 'int-b',
+      channels: [{ id: 'C1', externalReason: 'guestMember' }],
+      authoritative: false
+    })
+    expect(daemon.interruptTurn).not.toHaveBeenCalled()
+    expect(await join('bot-a', 'int-a')).toEqual({ msgId: 'm-bot-a', accepted: true })
+    await settle()
+    expect(joinedMemberReason).toHaveBeenCalledTimes(2)
+    expect(daemon.interruptTurn).toHaveBeenCalledTimes(1)
     expect(daemon.interruptTurn).toHaveBeenCalledWith(
       'bot-a',
       'a-c1',

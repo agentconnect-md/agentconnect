@@ -294,29 +294,42 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
   already carries (`is_ext_shared_channel`), so the first event after a share marks the place —
   no `channel_shared` subscription, no manifest change. A later listing that no longer reports
   the share lifts it.
-- For assistant-mode agents only, a member joining is looked up once (`users.info`): a guest
-  (`is_restricted` / `is_ultra_restricted`) or a member from another organization makes the place
-  external, and that detection is never lifted by a later listing.
+- A member joining is looked up once (`users.info`): a guest (`is_restricted` /
+  `is_ultra_restricted`) or a member from another organization makes the place external, and that
+  detection is never lifted by a later listing. Another workspace of the same Enterprise Grid
+  organization is the same organization; a console account plays no part. The connection keeps
+  each person's answer for a minute and runs at most four lookups at once, so a burst of joins
+  costs one lookup per person and queues rather than fans out.
 - **Output no event triggered asks first.** A place learns of a share from its next event, so
   before a post no event from that place triggered — a scheduled or hook run and its anchor
   message, a report round, a post from another place, a reminder, a
   sub-session's permission card, a patrol's proposal card — the daemon asks the platform whether
-  the place is shared now, for assistant-mode agents only: on Slack the share flags of
+  the place is shared now: on Slack the share flags of
   `conversations.info`, read through the channel lookup a platform module declares
   (`sharedConversations`). The answer is cached per place for a minute, the bound the membership
   read in §5.5 uses: repeated posts cost one lookup, and a share made after an answer goes unseen
-  for at most that minute. A 1:1 DM is never asked. A share found this way is the downgrade below,
-  and the post is drafted like any other in an external place. A lookup that fails drafts the
-  post too, without marking the place: posting as internal on no answer could reach another
-  organization, while a needless draft costs one approval. No event subscription is added.
+  for at most that minute. A 1:1 DM is never asked. A share found this way is a detection like an
+  event's flag. A lookup that fails marks nothing and confirms nothing: a post from another place
+  is then drafted or refused like one into an external place, and in assistant mode the post is
+  drafted too, since posting as internal on no answer could reach another organization, while a
+  needless draft costs one approval. No event subscription is added.
+- **Detection is the same for every agent.** The member-join lookup, the event-envelope flag and
+  the check before output no event triggered run whether or not the agent is in assistant mode,
+  and every detection is reported to the Control Plane, so `externalChannels` reflects it for any
+  agent. What already applies to every agent then follows: an approval in the place goes to an
+  internal member, the place's memory goes to its own place layer (never the shared one), and a
+  post into it from another place is drafted or refused (§5.5). What assistant mode does with a
+  detection stays its own: its replies there are drafted, the in-flight turn is cut on the
+  downgrade below, and other writes there are refused. An agent outside assistant mode keeps
+  replying there as before.
 - Telegram groups, Discord channels, Feishu groups: no detection; enabled means trusted.
 - DM: enabling it is trusting that person as a member. Webchat is internal by construction.
 - A sub-session's place is its parent's: one born in an external place reports through that
   place's main session, so its result is drafted too.
 - **The downgrade transition (internal → external) changes the output path, not the context.**
-  On a downgrade — a detected share, a guest or outside member joining — the daemon
-  interrupts the place's in-flight turn, whose reply would otherwise post unapproved; from the
-  next turn on, replies are drafts. The interrupt is scoped to the place. Unlike `!stop`, it
+  In assistant mode only, on a downgrade — a detected share, a guest or outside member joining —
+  the daemon interrupts the place's in-flight turn, whose reply would otherwise post unapproved;
+  from the next turn on, replies are drafts. The interrupt is scoped to the place. Unlike `!stop`, it
   raises no agent-wide hold on new messages, so the agent's other places keep their turns, their
   queued messages and whatever arrives there. In the place itself, a message that is queued or
   arrives while the cut turn winds down is kept and never steered into that turn; it runs after

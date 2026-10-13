@@ -425,7 +425,7 @@ export interface SlackDeps {
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
-  /** Whether an assistant-mode agent owns an integration on this socket, so a member join is worth a lookup (assistant-mode.md §5.3). */
+  /** Whether an agent's integration is on this socket, in any mode, so a member join is worth a lookup (assistant-mode.md §5.3). */
   checksJoinedMembers?: () => boolean
   /** Fired when a member join shows a channel is external: a guest, an outside member, or a share. */
   onPlaceExternal?: (channel: string, reason: PlaceExternalReason) => void
@@ -778,6 +778,10 @@ const MEMBER_ENRICH_CAP = 50
 /** One `conversations.members` page, and how many pages a membership listing follows before it fails closed. */
 const MEMBER_PAGE_SIZE = 1000
 const MEMBER_PAGE_CAP = 20
+/** A joined member's standing is asked once a minute however many channels they join, a few people at a time. */
+const JOIN_LOOKUP_TTL_MS = 60_000
+const JOIN_LOOKUP_ENTRIES = 512
+const JOIN_LOOKUPS_IN_FLIGHT = 4
 const SLACK_CHANNEL_HISTORY_DEFAULT_LIMIT = 100
 const SLACK_CHANNEL_HISTORY_MAX_LIMIT = 200
 const SLACK_FILE_ORIGIN = 'https://files.slack.com'
@@ -1022,6 +1026,10 @@ export class SlackConnection implements PlatformConnection {
   private teamId = ''
   /** The installing Enterprise Grid organization, which tells its other workspaces apart from outside members. */
   private enterpriseId = ''
+  /** Each joined member's standing, by user, so a burst of joins asks once per person. */
+  private readonly joinedMembers = new Map<string, { at: number; reason: Promise<PlaceExternalReason | null> }>()
+  private joinLookupsRunning = 0
+  private readonly joinLookupWaiters: (() => void)[] = []
   /** A workspace-wide missing scope should create one card, not one per streamed write. */
   private missingScopes = new Set<string>()
   private permissionUpdateAnnounced = false
@@ -1186,7 +1194,7 @@ export class SlackConnection implements PlatformConnection {
     this.app.event('member_joined_channel', async ({ event, body }) => {
       const ev = event as { user?: string; channel?: string }
       if (ev.user !== this.botUserId) {
-        // Someone else joined: only an assistant-mode owner looks them up (assistant-mode.md §5.3).
+        // Someone else joined: looked up for every agent (assistant-mode.md §5.3).
         if (!ev.user || !ev.channel || this.deps.checksJoinedMembers?.() !== true) return
         const reason = await this.joinedMemberReason(ev.user, slackEnvelopeExternallyShared(body))
         if (reason) this.deps.onPlaceExternal?.(ev.channel, reason)
@@ -2671,16 +2679,47 @@ export class SlackConnection implements PlatformConnection {
   /** Why a member who joined makes the channel external: one `users.info` for a guest or an outside member, else the envelope's share, else null. */
   async joinedMemberReason(user: string, externallyShared = false): Promise<PlaceExternalReason | null> {
     try {
-      const res = await this.app.client.users.info({ user })
-      const reason = slackMemberExternalReason(res.user ?? {}, {
-        ...(this.teamId ? { teamId: this.teamId } : {}),
-        ...(this.enterpriseId ? { enterpriseId: this.enterpriseId } : {})
-      })
+      const reason = await this.joinedMemberStanding(user)
       if (reason) return reason
     } catch (err) {
       this.deps.log?.warn(`slack: looking up a member who joined ${user} failed: ${(err as Error).message}`)
     }
     return externallyShared ? 'externallyShared' : null
+  }
+
+  /** One lookup per person within the TTL, shared by joins in flight; a failed one is dropped so the next join asks again. */
+  private joinedMemberStanding(user: string): Promise<PlaceExternalReason | null> {
+    const now = Date.now()
+    const hit = this.joinedMembers.get(user)
+    if (hit && now - hit.at < JOIN_LOOKUP_TTL_MS) return hit.reason
+    const reason = this.inJoinLookupSlot(async () => {
+      const res = await this.app.client.users.info({ user })
+      return slackMemberExternalReason(res.user ?? {}, {
+        ...(this.teamId ? { teamId: this.teamId } : {}),
+        ...(this.enterpriseId ? { enterpriseId: this.enterpriseId } : {})
+      })
+    })
+    this.joinedMembers.delete(user)
+    this.joinedMembers.set(user, { at: now, reason })
+    reason.catch(() => {
+      if (this.joinedMembers.get(user)?.reason === reason) this.joinedMembers.delete(user)
+    })
+    const oldest = this.joinedMembers.size > JOIN_LOOKUP_ENTRIES ? this.joinedMembers.keys().next().value : undefined
+    if (oldest !== undefined) this.joinedMembers.delete(oldest)
+    return reason
+  }
+
+  /** Runs a join lookup once fewer than JOIN_LOOKUPS_IN_FLIGHT are running, so a burst queues instead of fanning out. */
+  private async inJoinLookupSlot<T>(lookup: () => Promise<T>): Promise<T> {
+    while (this.joinLookupsRunning >= JOIN_LOOKUPS_IN_FLIGHT)
+      await new Promise<void>((resolve) => this.joinLookupWaiters.push(resolve))
+    this.joinLookupsRunning++
+    try {
+      return await lookup()
+    } finally {
+      this.joinLookupsRunning--
+      this.joinLookupWaiters.shift()?.()
+    }
   }
 
   async getUserProfile(

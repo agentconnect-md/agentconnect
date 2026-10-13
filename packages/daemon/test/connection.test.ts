@@ -723,9 +723,9 @@ describe('SlackConnection membership events', () => {
     expect(changed).toBe(3)
   })
 
-  // assistant-mode.md §5.3: another member joining is looked up once, and only for an assistant-mode owner.
+  // assistant-mode.md §5.3: another member joining is looked up once, for every agent's integration.
   describe('a member joining', () => {
-    const joinWorld = (users: Record<string, object>, watched: boolean) => {
+    const joinWorld = (users: Record<string, object>, watched: boolean, home: object = { team_id: 'T1' }) => {
       const handlers = new Map<string, (a: { event: unknown; body?: unknown }) => unknown>()
       const info = vi.fn(async ({ user }: { user: string }) => ({ user: users[user] }))
       const external: [string, string][] = []
@@ -739,14 +739,14 @@ describe('SlackConnection membership events', () => {
           ({
             ...fakeAppWithEvents(handlers),
             client: {
-              auth: { test: async () => ({ user_id: 'UBOT', team_id: 'T1' }) },
+              auth: { test: async () => ({ user_id: 'UBOT', ...home }) },
               views: { open: async () => {}, update: async () => {} },
               users: { info }
             }
           }) as any
       )
-      const join = async (user: string, body?: unknown) =>
-        await handlers.get('member_joined_channel')!({ event: { user, channel: 'C1' }, ...(body ? { body } : {}) })
+      const join = async (user: string, body?: unknown, channel = 'C1') =>
+        await handlers.get('member_joined_channel')!({ event: { user, channel }, ...(body ? { body } : {}) })
       return { conn, info, external, join }
     }
 
@@ -784,11 +784,73 @@ describe('SlackConnection membership events', () => {
       ])
     })
 
-    it('makes no lookup for an integration no assistant-mode agent owns', async () => {
+    it('makes no lookup when no agent’s integration is on the socket', async () => {
       const w = joinWorld({ UGUEST: { id: 'UGUEST', team_id: 'T1', is_restricted: true } }, false)
       await w.conn.start()
       await w.join('UGUEST', { is_ext_shared_channel: true })
       expect(w.info).not.toHaveBeenCalled()
+      expect(w.external).toEqual([])
+    })
+
+    it('keeps a member of a sibling workspace of the same Enterprise Grid internal, and not one of another organization', async () => {
+      const w = joinWorld(
+        {
+          USIB: { id: 'USIB', team_id: 'T2', enterprise_user: { enterprise_id: 'E1' } },
+          UOUT: { id: 'UOUT', team_id: 'T3', enterprise_user: { enterprise_id: 'E9' } }
+        },
+        true,
+        { team_id: 'T1', enterprise_id: 'E1' }
+      )
+      await w.conn.start()
+      await w.join('USIB')
+      expect(w.external).toEqual([])
+      await w.join('UOUT')
+      expect(w.external).toEqual([['C1', 'externalMember']])
+    })
+
+    it('asks once per person however many channels they join, and asks again after a minute', async () => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+      try {
+        const w = joinWorld({ UGUEST: { id: 'UGUEST', team_id: 'T1', is_restricted: true } }, true)
+        await w.conn.start()
+        await Promise.all(['C1', 'C2', 'C3'].map((channel) => w.join('UGUEST', undefined, channel)))
+        await w.join('UGUEST', undefined, 'C4')
+        expect(w.info).toHaveBeenCalledTimes(1)
+        expect(w.external.map(([channel]) => channel).sort()).toEqual(['C1', 'C2', 'C3', 'C4'])
+        now.mockReturnValue(1_000_000 + 60_000)
+        await w.join('UGUEST', undefined, 'C5')
+        expect(w.info).toHaveBeenCalledTimes(2)
+      } finally {
+        now.mockRestore()
+      }
+    })
+
+    it('looks up a burst of different people a few at a time instead of all at once', async () => {
+      const users = Object.fromEntries(
+        Array.from({ length: 12 }, (_, i) => [`U${i}`, { id: `U${i}`, team_id: 'T1' }] as const)
+      )
+      const w = joinWorld(users, true)
+      let running = 0
+      let peak = 0
+      const waiting: (() => void)[] = []
+      w.info.mockImplementation(async ({ user }: { user: string }) => {
+        running++
+        peak = Math.max(peak, running)
+        await new Promise<void>((resolve) => waiting.push(resolve))
+        running--
+        return { user: users[user] }
+      })
+      await w.conn.start()
+      const joins = Object.keys(users).map((user) => w.join(user))
+      await vi.waitFor(() => expect(waiting).toHaveLength(4))
+      expect(w.info).toHaveBeenCalledTimes(4)
+      while (waiting.length > 0 || w.info.mock.calls.length < 12) {
+        waiting.shift()?.()
+        await new Promise((resolve) => setImmediate(resolve))
+      }
+      await Promise.all(joins)
+      expect(w.info).toHaveBeenCalledTimes(12)
+      expect(peak).toBe(4)
       expect(w.external).toEqual([])
     })
   })

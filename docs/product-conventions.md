@@ -981,18 +981,27 @@ Bots list.
 A room or group DM is external when the platform says people from outside the organization are
 in it. On Slack that is a Slack Connect conversation, read from the membership listing and from
 every event Slack delivers from the conversation, or a guest or a member of another organization
-joining it, found with one user lookup per join. Before posting something no message from the
-conversation prompted, such as a scheduled run and its opening message, a report from background
-work, a reminder, a post from another conversation or an approval card, the agent asks
-Slack whether the conversation is shared now, at most once a minute per conversation; when Slack
-cannot answer, the post waits for approval as in an external place. These lookups are made only
-for an agent in assistant mode; no other agent changes. A share is lifted once Slack no longer
-reports it; a guest or an outside member never is. When an enabled place turns external, the
-reply already in progress there is stopped before it can post; messages waiting behind it or
-arriving while it stops, and everything the agent knows, are kept, and those messages are then
-answered as drafts. Only that place is affected: the agent's other conversations keep running
-and keep taking messages. Enabling a 1:1 DM trusts the person in it, so a DM never turns
-external.
+joining it, found with one user lookup per join (a person who joins several conversations at once
+is looked up once). A member of another workspace of the same Enterprise Grid organization is not
+from outside, and having a console account or not plays no part. Before posting something no
+message from the conversation prompted, such as a scheduled run and its opening message, a report
+from background work, a reminder, a post from another conversation or an approval card, the agent
+asks Slack whether the conversation is shared now, at most once a minute per conversation. Every
+agent detects outsiders this way, in assistant mode or not, and what it found applies wherever a
+rule names an external conversation: an approval there goes to an internal member, its memory is
+its own place layer, and a post into it from another conversation is drafted or refused. When
+Slack cannot answer, a post from another conversation waits for approval as in an external place.
+A share is lifted once Slack no longer reports it; a guest or an outside member never is.
+Enabling a 1:1 DM trusts the person in it, so a DM never turns external.
+
+The rest applies to an agent in assistant mode only. A post it makes with no message from the
+conversation behind it also waits for approval when Slack cannot answer. When an enabled place
+turns external, the reply already in progress there is stopped before it can post; messages
+waiting behind it or arriving while it stops, and everything the agent knows, are kept, and those
+messages are then answered as drafts. Only that place is affected: the agent's other
+conversations keep running and keep taking messages. An agent outside assistant mode keeps
+replying in an external conversation as before: nothing is stopped and its replies are not
+drafted.
 
 ## Reading other conversations
 
@@ -1624,8 +1633,8 @@ Your memory on the agent's Memory page; nobody else sees it, editors included. D
 it; person and place layers are not dreamed. External memory is the shared layer alone: it
 captures only from conversations that use the shared layer, has no person layer, and saves
 an explicit write from anywhere else only when the person asks to remember it for everyone.
-Guest detection runs only for agents in assistant mode today, so for any other agent a
-Slack public channel with a guest the product never detected still counts as shared.
+Every agent detects a guest or an outside member who joins, so a Slack public channel they
+joined keeps a place layer of its own.
 
 **Agents on native runtime memory are the exception, and the product must say so.** With
 that backend the runtime persists memory inside its own process for the whole agent, with
