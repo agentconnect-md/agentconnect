@@ -128,6 +128,16 @@ describe('assertTransactionsPage', () => {
     ).not.toThrow()
   })
 
+  it('keeps a well-formed model split and drops a malformed one without refusing the page', () => {
+    const good = { ...debit, models: [{ model: 'model-a', amount: '0.4' }] }
+    const bad = { ...debit, id: 'bad', models: [{ model: 7, amount: '0.4' }] }
+    const page = { items: [good, bad, { ...debit, id: 'old', models: null }], nextCursor: null }
+    expect(() => assertTransactionsPage(page)).not.toThrow()
+    expect(page.items[0]!.models).toEqual([{ model: 'model-a', amount: '0.4' }])
+    expect('models' in page.items[1]!).toBe(false)
+    expect(page.items[2]!.models).toBeNull()
+  })
+
   it('refuses a row whose type this build cannot read', () => {
     // Unlike an unknown `kind`, an unknown `type` has no sensible fallback rendering.
     expect(() => assertTransactionsPage({ items: [{ ...tx, type: 'hold' }], nextCursor: null })).toThrow(

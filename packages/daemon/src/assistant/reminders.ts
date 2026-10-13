@@ -23,12 +23,8 @@ export interface AssistantRemindersHost {
   reminders: AssistantReminderLedger
   /** The agent is enabled in this conversation (conversation gating). */
   placeEnabled(agentId: string, integrationId: string, channel: string): boolean
-  /** External, or not confirmed internal by the platform just now (§5.3); a 1:1 DM never is. */
-  placeExternal(agentId: string, integrationId: string, channel: string, dm: boolean): Promise<boolean>
   /** Post the text as the agent, the way an approved draft posts; the message id, or undefined when none came back. Throws on a platform error. */
   post(reminder: AssistantReminder): Promise<string | undefined>
-  /** Draft the text for an internal member's approval, the way an external place's reply is drafted (§5.5); the draft's id. */
-  draft(reminder: AssistantReminder): Promise<string>
 }
 
 export class AssistantReminders {
@@ -68,7 +64,7 @@ export class AssistantReminders {
     }
   }
 
-  /** Claim, then post once: directly, as a draft where the place turned external, or not at all. */
+  /** Claim, then post once in its conversation, shared with another organization or not (#2979, B4), or not at all. */
   private async deliver(reminder: AssistantReminder): Promise<void> {
     const { reminders, log } = this.host
     const { agentId, id, integrationId } = reminder
@@ -80,17 +76,12 @@ export class AssistantReminders {
     }
     if (!this.host.placeEnabled(agentId, integrationId, reminder.place.channel))
       return await fail('the agent is no longer enabled in that conversation')
-    // An external place posts nothing unapproved (§5.5): the text goes to an internal member as a draft.
-    const external = await this.host.placeExternal(agentId, integrationId, reminder.place.channel, reminder.targetDm)
-    let outcome: { status: 'delivered'; messageId: string } | { status: 'drafted'; draftId: string }
+    let outcome: { status: 'delivered'; messageId: string }
     try {
-      if (external) outcome = { status: 'drafted', draftId: await this.host.draft(reminder) }
-      else {
-        const messageId = await this.host.post(reminder)
-        // Some platforms swallow a failed send and return no id: unconfirmed, so never delivered and never retried.
-        if (!messageId) return await fail('the platform returned no message id, so it may not have posted; not retried')
-        outcome = { status: 'delivered', messageId }
-      }
+      const messageId = await this.host.post(reminder)
+      // Some platforms swallow a failed send and return no id: unconfirmed, so never delivered and never retried.
+      if (!messageId) return await fail('the platform returned no message id, so it may not have posted; not retried')
+      outcome = { status: 'delivered', messageId }
     } catch (err) {
       const failure = (err as Error).message
       // The queue abandoned the send but it keeps running and may still land, so a retry could post twice.
@@ -104,10 +95,6 @@ export class AssistantReminders {
     }
     // Outside the retry: a settle that fails leaves the claim to go stale, never to post twice.
     await reminders.settle(agentId, id, outcome, this.host.now())
-    if (outcome.status === 'drafted')
-      log.info(
-        `reminder ${id}: its conversation is external or could not be confirmed internal; drafted as ${outcome.draftId}`
-      )
-    else log.debug(`reminder ${id} of agent ${agentId} delivered`)
+    log.debug(`reminder ${id} of agent ${agentId} delivered`)
   }
 }

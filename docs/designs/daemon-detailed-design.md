@@ -1322,14 +1322,14 @@ the write's target is resolved and before anything is written. `sendMessage`'s p
 it through `judgePost` (a channel target before a named thread is read, a `toUser` DM once its
 conversation is open); `scheduleMessage`, `addReaction`, `deleteMessage`, the bookmark, canvas and
 list writes and `createConversation` call it through `judgeWrite`, which the dispatcher hands every
-handler with the session context bound; `shareFile` is judged in the dispatcher, always against the
-current conversation. The current conversation always passes, except that an assistant-mode agent
-writes nothing but its drafted reply in an external place. Another conversation passes when
-`askerMayRead` passes for every person on the turn; a `toUser` DM when its recipient is a full member
-of the target bot's workspace (`workspaceMembers`); something new (`createConversation`, a canvas
-outside any conversation) for an asker who is a full member there, opened only with such members;
-a canvas or a list as a write into every conversation the platform's `documentReach` lists (Slack's
-`files.info`), and as something new where the whole workspace may open it or none holds it. A turn
+handler with the session context bound; `shareFile` writes only into the current conversation. The
+current conversation always passes, one shared with another organization included (#2979, B4).
+Another conversation passes when `askerMayRead` passes for every person on the turn; a `toUser` DM
+when its recipient is a full member of the target bot's workspace (`workspaceMembers`); something
+new (`createConversation`, a canvas outside any conversation) for an asker who is a full member
+there, opened only with such members; a canvas or a list as a write into every conversation the
+platform's `documentReach` lists (Slack's `files.info`), and as something new where the whole
+workspace may open it or none holds it. A turn
 no person is behind writes only to its own conversation. A target the integration lists as external
 (or, in assistant mode, one `PlaceTrust.confirm` cannot confirm internal) takes a post only as a
 draft (`AssistantDrafts.interceptPost`, for every agent; outside assistant mode only the asker who

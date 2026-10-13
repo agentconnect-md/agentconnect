@@ -87,7 +87,7 @@ describe('steer admission policy', () => {
     // A paused or loop-tripped turn takes no more input.
     expect(selectSteerTarget([pending({ outputSuppressed: 'pause' })], 'slack:C1:T1:bot-a')).toBeUndefined()
     // Nor does a turn an interrupt has marked but not yet silenced: what it took would go with it.
-    const marked = pending({ entry: { cancelledReason: 'place turned external' } as never })
+    const marked = pending({ entry: { cancelledReason: 'superseded' } as never })
     expect(selectSteerTarget([marked], 'slack:C1:T1:bot-a')).toBeUndefined()
   })
 

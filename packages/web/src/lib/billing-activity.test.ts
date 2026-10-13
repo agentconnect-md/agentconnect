@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { activityWindowStart, bucketActivity } from '@/lib/billing-activity'
+import { UNATTRIBUTED_MODEL, activityWindowStart, bucketActivity } from '@/lib/billing-activity'
 import type { BillingTransaction } from '@/lib/billing-api'
 
 const credit = (at: string, amountMicro: number, kind: 'purchase' | 'refund' = 'purchase'): BillingTransaction => ({
@@ -94,5 +94,53 @@ describe('bucketActivity across a spring-forward', () => {
     expect(buckets.every((b) => new Date(b.start).getHours() === 0)).toBe(true)
     const mar9 = buckets.findIndex((b) => new Date(b.start).getDate() === 9)
     expect(buckets[mar9]!.start - buckets[mar9 - 1]!.start).toBe(23 * 3_600_000)
+  })
+})
+
+describe('bucketActivity model stack', () => {
+  const split = (
+    at: string,
+    amount: string,
+    models: { model: string; amount: string }[] | null
+  ): BillingTransaction => ({
+    type: 'debit',
+    id: `m-${at}-${amount}`,
+    period: at.slice(0, 7),
+    amount,
+    at,
+    models
+  })
+
+  it('stacks each debit by model and folds the shortfall and older rows into the unattributed key', () => {
+    const rows = [
+      split(dayStart(1), '3', [
+        { model: 'model-a', amount: '2' },
+        { model: 'model-b', amount: '0.5' }
+      ]),
+      split(dayStart(1, 18), '1', [{ model: 'model-a', amount: '1' }]),
+      split(dayStart(1, 20), '0.25', null)
+    ]
+    const bucket = bucketActivity(rows, 'd7', 'usage', now)[5]!
+    expect(bucket.amount).toBeCloseTo(4.25)
+    expect(bucket.byModel['model-a']).toBeCloseTo(3)
+    expect(bucket.byModel['model-b']).toBeCloseTo(0.5)
+    expect(bucket.byModel[UNATTRIBUTED_MODEL]).toBeCloseTo(0.75)
+  })
+
+  it('drops negative model corrections from the stack but keeps the true total', () => {
+    const rows = [
+      split(dayStart(0), '3', [
+        { model: 'model-a', amount: '5' },
+        { model: 'model-b', amount: '-2' }
+      ])
+    ]
+    const bucket = bucketActivity(rows, 'd7', 'usage', now)[6]!
+    expect(bucket.amount).toBeCloseTo(3)
+    expect(bucket.byModel).toEqual({ 'model-a': 5 })
+  })
+
+  it('leaves the stack empty in top-ups mode', () => {
+    const rows = [credit(dayStart(0), 10_000_000)]
+    expect(bucketActivity(rows, 'd7', 'topups', now)[6]!.byModel).toEqual({})
   })
 })
