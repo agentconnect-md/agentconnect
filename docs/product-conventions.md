@@ -2086,15 +2086,32 @@ and delivery rules are documented in [Pull-request feedback continuation](design
 
 ## A new agent's permission mode
 
-The console's form for a new agent preselects the runtime's auto mode (Claude Code's Auto, Codex's
-Auto review), or its full-access mode where the runtime offers no auto mode, so work nobody is
-watching does not stop to wait for approval. It is the same pick turning assistant mode on makes
-(see "Assistant-mode places"), taken from the modes the runtime reports when it reports them. A
-runtime with neither keeps the mode the form always preselected. Choosing another runtime
-preselects that runtime's mode again. The person creating the agent may still pick any other mode,
-one that asks included, and with Manual the assistant mode panel warns as it always has. Only the
-console form does this: an agent created through the API or the AgentConnect MCP tools without a
-permission mode keeps the runtime's own default, as before.
+The console's form for a new agent preselects the runtime's auto mode, where the runtime's own
+review or classifier decides, or its full-access mode where the runtime offers no auto mode, so
+work nobody is watching does not stop to wait for approval. It is the same pick turning assistant
+mode on makes (see "Assistant-mode places"), taken from the modes the runtime reports when it
+reports them. Which mode is which follows the description each runtime reports for it:
+
+| Runtime                    | Preselected mode |
+| -------------------------- | ---------------- |
+| Claude Code                | Auto             |
+| Codex                      | Auto review      |
+| CodeBuddy Code             | Auto             |
+| Devin                      | Smart            |
+| Qoder CLI and Qoder CN CLI | Auto             |
+| Qwen Code                  | Auto             |
+| Google Antigravity         | YOLO             |
+| DeepSeek Harness           | Full access      |
+| Copilot                    | Autopilot        |
+
+A runtime is listed only when the description it reports for a mode says that mode decides on its
+own or never asks. Where a listed runtime reports no auto mode, the form takes its full-access mode
+instead (Claude Code's Bypass permissions, for one); one that reports neither, and every runtime
+not listed, keeps the mode the form always preselected. Choosing another runtime preselects that
+runtime's mode again. The person creating the agent may still pick any other mode, one that asks
+included, and with Manual the assistant mode panel warns as it always has. Only the console form
+does this: an agent created through the API or the AgentConnect MCP tools without a permission
+mode keeps the runtime's own default, as before.
 
 ## Agent model credentials
 
