@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   slackEnvelopeExternallyShared,
   slackExternalReason,
+  slackFullMember,
   slackMemberExternalReason
 } from '../src/slack-place-trust.js'
 
@@ -51,5 +52,35 @@ describe('slackMemberExternalReason', () => {
 
   it('cannot tell an organization apart without knowing its own, so it reports only guests then', () => {
     expect(slackMemberExternalReason({ id: 'U7', team_id: 'T9' }, {})).toBeNull()
+  })
+})
+
+// assistant-mode.md §5.5: only a full member of the installing workspace approves a draft.
+describe('slackFullMember', () => {
+  const home = { teamId: 'T1' }
+
+  it('takes a person of the installing workspace, and no guest, outside member, bot or deactivated account', () => {
+    expect(slackFullMember({ id: 'U1', team_id: 'T1' }, home)).toBe(true)
+    for (const user of [
+      { id: 'U2', team_id: 'T1', is_restricted: true },
+      { id: 'U3', team_id: 'T1', is_ultra_restricted: true },
+      { id: 'U4', team_id: 'T9' },
+      { id: 'U5', team_id: 'T1', is_stranger: true },
+      { id: 'U6', team_id: 'T1', is_bot: true },
+      { id: 'U7', team_id: 'T1', deleted: true }
+    ])
+      expect(slackFullMember(user, home), user.id).toBe(false)
+  })
+
+  it('does not take a member of another workspace of the same enterprise, whom detection keeps internal', () => {
+    const grid = { teamId: 'T1', enterpriseId: 'E1' }
+    const sibling = { id: 'U8', team_id: 'T2', enterprise_user: { enterprise_id: 'E1' } }
+    expect(slackMemberExternalReason(sibling, grid)).toBeNull()
+    expect(slackFullMember(sibling, grid)).toBe(false)
+  })
+
+  it('takes no one without knowing its own workspace', () => {
+    expect(slackFullMember({ id: 'U9', team_id: 'T1' }, {})).toBe(false)
+    expect(slackFullMember({ id: 'U9', team_id: '' }, { teamId: '' })).toBe(false)
   })
 })
