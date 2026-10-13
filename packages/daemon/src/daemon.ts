@@ -852,7 +852,8 @@ import {
   stableMessageId,
   stableTurnId,
   type NormalizedMessage,
-  sessionThreadOf
+  sessionThreadOf,
+  wakeThreadFields
 } from './messages/normalized.js'
 import { isAppendCoordinate } from './session/append-coordinate.js'
 import { isPatrolCoordinate, isSubsessionCoordinate, isTaskCoordinate } from './session/subsession-coordinate.js'
@@ -8757,13 +8758,7 @@ export class Daemon {
       platform: rec.platform,
       channel: rec.channel,
       // Where the asking turn replied is the delivery thread, and the session's own coordinate keys it when that differs.
-      ...(thread !== undefined && thread !== rec.thread
-        ? { thread, sessionThread: rec.thread }
-        : isAppendCoordinate(rec.thread)
-          ? { sessionThread: rec.thread }
-          : rec.thread
-            ? { thread: rec.thread }
-            : {}),
+      ...wakeThreadFields(rec.thread, thread),
       ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
       sender: { id: 'join-confirmation', isBot: true },
       text,
@@ -21327,11 +21322,8 @@ export class Daemon {
       source: 'system',
       platform: session.platform,
       channel: session.channel,
-      ...(isAppendCoordinate(session.thread)
-        ? { sessionThread: session.thread }
-        : session.thread
-          ? { thread: session.thread }
-          : {}),
+      // Keyed by the session alone, so it replies where the session's latest turn did.
+      ...wakeThreadFields(session.thread, session.replyThread ?? undefined),
       ...(session.transportScope ? { transportScope: session.transportScope } : {}),
       sender: { id: provider.provider, name: displayName, isBot: true },
       text,
@@ -22417,7 +22409,9 @@ export class Daemon {
             description: typeof m.description === 'string' ? m.description : undefined,
             isSubagent: typeof m.subagent_type === 'string' && m.subagent_type.length > 0,
             // The feed carries no start time; this edge's arrival is the only one there is.
-            startedAt: this.clock.now()
+            startedAt: this.clock.now(),
+            // The live turn's reply thread, where the task's completion wake replies too.
+            ...(liveTurn?.plan.thread !== undefined ? { thread: liveTurn.plan.thread } : {})
           })
         break
       case 'task_notification':
@@ -22539,6 +22533,8 @@ export class Daemon {
       integrationId && !isSubsessionCoordinate(rec.thread) ? this.connForIntegration(integrationId) : undefined
     // No surface at all ⇒ keep today's drop, and do NOT claim delivery to the wake.
     if (mode !== 'none' && !conn) return
+    // Where the turn that started the latest settled task replied; a synthetic coordinate is no platform thread, so none.
+    const narrationThread = wakeThreadFields(rec.thread, lease.settled.at(-1)?.thread).thread
     if (mode !== 'none' && conn) {
       this.log.info(`drain delivery: ${text.length} chars → ${rec.key}`)
       const agent = this.agents.get(agentId)
@@ -22559,9 +22555,6 @@ export class Daemon {
         const sections = splitIntoSections(text)
         let lastTs: string | undefined
         for (const [i, section] of sections.entries()) {
-          // A synthetic coordinate is no platform thread: narrate at the channel root rather
-          // than handing Slack `append:…` as a thread ts, which it would reject.
-          const narrationThread = isAppendCoordinate(rec.thread) ? undefined : rec.thread || undefined
           lastTs = await (conn as SlackConnection).postMessage(rec.channel, section, narrationThread, {
             ...options,
             ...(footer && i === sections.length - 1 ? { trailingBlocks: footer.blocks } : {})
@@ -22575,8 +22568,7 @@ export class Daemon {
           this.lastFooterReply.set(rec.key, { channel: rec.channel, ts: lastTs, text: sections.at(-1) ?? text })
         } else if (footer) this.lastFooterReply.delete(rec.key)
       } else {
-        // Same guard as the Slack branch above: a synthetic coordinate is no reply target.
-        await conn.postMessage(rec.channel, text, isAppendCoordinate(rec.thread) ? undefined : rec.thread || undefined)
+        await conn.postMessage(rec.channel, text, narrationThread)
       }
     }
     // Claimed only past the post: a throwing post above leaves no stamp, so the wake still
@@ -22584,8 +22576,8 @@ export class Daemon {
     if (rec.thread) {
       await this.store.appendTranscript({
         channel: transcriptChannelKey(rec.channel, rec.transportScope),
-        // A session whose coordinate is synthetic belongs to no physical thread; leave it unknown.
-        ...(isAppendCoordinate(rec.thread) ? {} : { thread: rec.thread }),
+        // The thread it was posted in; a synthetic coordinate with none recorded belongs to no physical thread, so unknown.
+        ...(narrationThread !== undefined ? { thread: narrationThread } : {}),
         admission: { agentId, sessionKey: rec.key },
         ts: monotonicTs(),
         sender: agentId,
@@ -22858,7 +22850,8 @@ export class Daemon {
       source: 'agent',
       platform,
       channel: rec.channel,
-      ...(isAppendCoordinate(rec.thread) ? { sessionThread: rec.thread } : rec.thread ? { thread: rec.thread } : {}),
+      // It replies where the turn that started the task did.
+      ...wakeThreadFields(rec.thread, settledRec?.thread),
       ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
       sender: { id: `background-task:${taskId}`, isBot: true },
       text:

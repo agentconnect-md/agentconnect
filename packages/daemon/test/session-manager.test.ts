@@ -116,6 +116,28 @@ describe('SessionManager', () => {
     await s.close()
   })
 
+  // A wake keyed by the session alone, as a pull request's feedback is, replies where the session's latest turn did.
+  it('records where an append session’s latest turn replied, and nothing for a per-thread session', async () => {
+    const store = await newStore()
+    const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
+    const coordinate = 'append:1700000000000'
+    const key = sessionKey('slack', 'C1', coordinate, 'bot-a')
+    const s = await store
+
+    await sm.handle('bot-a', msg({ ts: '100.1', thread: '100.1', text: 'first', sessionThread: coordinate }))
+    expect((await s.getSession(key))?.replyThread).toBe('100.1')
+    await sm.handle('bot-a', msg({ ts: '200.1', thread: '200.1', text: 'second', sessionThread: coordinate }))
+    expect((await s.getSession(key))?.replyThread).toBe('200.1')
+    // A turn at the conversation's top level replies in no thread.
+    await sm.handle('bot-a', msg({ ts: '300.1', thread: undefined, text: 'third', sessionThread: coordinate }))
+    expect((await s.getSession(key))?.replyThread).toBeNull()
+
+    // A per-thread session is its own reply thread, so nothing is recorded.
+    await sm.handle('bot-a', msg({ ts: '400.1', thread: '400.1', text: 'fourth' }))
+    expect((await s.getSession(sessionKey('slack', 'C1', '400.1', 'bot-a')))?.replyThread ?? null).toBeNull()
+    await s.close()
+  })
+
   // message-intake.md §4: an append session's transcript is ONE coherent read through its
   // admissions. The rows themselves carry the PHYSICAL thread — the conversation they were in —
   // and the coordinate lives only on the admission, so nothing is filed under `append:*`.

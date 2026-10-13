@@ -4000,7 +4000,7 @@ describe.skipIf(pg)('decision table migrations', () => {
   }
 
   it('creates the decision tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(48)
+    expect(SCHEMA_VERSION).toBe(49)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual([
@@ -4461,6 +4461,42 @@ describe.skipIf(usingPostgresStore())('the v47 → v48 join ask on SQLite', () =
       }
     ])
     await restarted.close()
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v48 → v49 reply thread on SQLite', () => {
+  it('adds the column to a v48 store, keeps its sessions, and reads back where the session replied', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-reply-v48-')), 'local.sqlite')
+    const key = sessionKey('slack', 'D1', 'append:1000', 'bot-a')
+    const fresh = await LocalStore.open(path)
+    await fresh.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'D1',
+      thread: 'append:1000',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    await fresh.close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE sessions DROP COLUMN replyThread')
+    old.exec('PRAGMA user_version = 48')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    // A row from before the column replies where the session is.
+    expect((await upgraded.getSession(key))?.replyThread).toBeNull()
+    await upgraded.setSessionReplyThread(key, '1700.0001')
+    expect((await upgraded.getSession(key))?.replyThread).toBe('1700.0001')
+    await upgraded.setSessionReplyThread(key, null)
+    expect((await upgraded.getSession(key))?.replyThread).toBeNull()
+    await upgraded.close()
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
   })
 })
 

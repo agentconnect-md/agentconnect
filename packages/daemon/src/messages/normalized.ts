@@ -1,8 +1,9 @@
-import type {
-  NormalizedPlatformMessage,
-  PlatformAttachment,
-  SessionImageAttachment,
-  UserTurnBody
+import {
+  isAppendCoordinate,
+  type NormalizedPlatformMessage,
+  type PlatformAttachment,
+  type SessionImageAttachment,
+  type UserTurnBody
 } from '@agentconnect.md/protocol'
 import type { ChannelIntake } from '../decisions/evidence.js'
 
@@ -152,6 +153,17 @@ export function fromPlatformMessage(message: NormalizedPlatformMessage, transpor
  */
 export function sessionThreadOf(msg: Pick<NormalizedMessage, 'sessionThread' | 'thread' | 'msgId'>): string {
   return msg.sessionThread ?? msg.thread ?? msg.msgId
+}
+
+/** A daemon-made message's threads: it replies in `replyThread` with the session's coordinate as `sessionThread` where the two differ, else where the session is. */
+export function wakeThreadFields(
+  sessionCoordinate: string,
+  replyThread?: string
+): Pick<NormalizedMessage, 'thread' | 'sessionThread'> {
+  if (replyThread !== undefined && replyThread !== sessionCoordinate)
+    return { thread: replyThread, sessionThread: sessionCoordinate }
+  if (isAppendCoordinate(sessionCoordinate)) return { sessionThread: sessionCoordinate }
+  return sessionCoordinate ? { thread: sessionCoordinate } : {}
 }
 
 type MessageIdentityFields = Pick<NormalizedMessage, 'msgId' | 'platform' | 'traceId' | 'transportScope'>

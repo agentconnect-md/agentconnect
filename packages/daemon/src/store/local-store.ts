@@ -336,6 +336,8 @@ export interface SessionRecord {
   birthStrategy?: string | null
   // The repositories the selector chose for this session (multi-repository-workspaces.md decision 19), a JSON array pinned once by `pinSelectedRepos`; null until then and on a session born before the selector.
   selectedRepos?: string | null
+  // Where an appending session's latest turn replied (channel-session-mode.md §3.1), written by `setSessionReplyThread`; null at the conversation's top level and on every other session.
+  replyThread?: string | null
 }
 
 /** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
@@ -1354,7 +1356,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 48
+export const SCHEMA_VERSION = 49
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1943,6 +1945,16 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       (c) => c.name
     )
     if (!columns.includes('joinAsk')) await db.exec('ALTER TABLE permission_requests ADD COLUMN joinAsk TEXT')
+  },
+  // v49 keeps where an appending session's latest turn replied, so a wake keyed by the session alone replies there too.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS replyThread TEXT')
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
+    if (!columns.some((c) => c.name === 'replyThread'))
+      await db.exec('ALTER TABLE sessions ADD COLUMN replyThread TEXT')
   }
 ]
 
@@ -2257,7 +2269,7 @@ export class LocalStore {
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
-        onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT
+        onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -3931,6 +3943,11 @@ export class LocalStore {
     await this.db
       .prepare('DELETE FROM thread_participation WHERE sessionKey = ? AND transportScope != ?')
       .run(p.sessionKey, p.transportScope ?? '')
+  }
+
+  /** Where an appending session's latest turn replied, or null at its top level; a wake keyed by the session alone replies there. */
+  async setSessionReplyThread(key: string, thread: string | null): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET replyThread = ? WHERE key = ?').run(thread, key)
   }
 
   /** Record how the turn that just ended went (§7.3 companion of {@link setSessionState}):
