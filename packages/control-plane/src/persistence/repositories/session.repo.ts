@@ -37,6 +37,7 @@ import type {
   SessionFacetQuery,
   SessionFacetRecord,
   SessionFacetIndex,
+  SessionConversationRecord,
   EventSessionInput,
   SessionUsageCounts,
   SessionQuery,
@@ -1511,6 +1512,24 @@ export class PgSessionRepo implements SessionRepo {
       channels: channels.map(toFacetRecord),
       triggers: triggers.map(toFacetRecord)
     }
+  }
+
+  async conversationsIn(q: SessionFacetQuery, channels: readonly string[]): Promise<SessionConversationRecord[]> {
+    if (channels.length === 0 || queryAgentIds(q).length === 0) return []
+    const rows = await this.db.$queryRaw<
+      { channel: string; platform: string; channelName: string | null }[]
+    >(Prisma.sql`
+      SELECT
+        s."channel",
+        COALESCE(s."platform", 'slack') AS "platform",
+        (array_agg(s."channelName" ORDER BY s."lastActivityAt" DESC, s."startedAt" DESC, s."id" DESC)
+          FILTER (WHERE s."channelName" IS NOT NULL))[1] AS "channelName"
+      FROM "session_meta" AS s
+      ${pageWhereSql(q, false)}
+        AND s."channel" IN (${Prisma.join([...new Set(channels)])})
+      GROUP BY s."channel", COALESCE(s."platform", 'slack')
+    `)
+    return rows.map((row) => ({ channel: row.channel, platform: row.platform, channelName: row.channelName }))
   }
 
   async list(q: SessionQuery): Promise<SessionListRecord[]> {

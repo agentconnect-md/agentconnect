@@ -67,6 +67,7 @@ import {
   GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   MEMORY_PERSON_LAYER_FEATURE,
+  MEMORY_PLACE_CLEAR_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   REPO_CANDIDATES_V1_FEATURE,
@@ -7711,6 +7712,7 @@ export class Daemon {
       MEMORY_ENTRIES_WRITE_V1_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
       MEMORY_PERSON_LAYER_FEATURE,
+      MEMORY_PLACE_CLEAR_FEATURE,
       ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),
       SESSION_VISIBILITY_FEATURE,
       SLACK_SESSION_AUDIENCE_FEATURE,
@@ -7950,6 +7952,7 @@ export class Daemon {
         return undefined
       }
     },
+    placeName: async (place) => (await this.store.getDisplayNames([place.channel])).get(place.channel),
     now: () => this.clock.now(),
     log: (message) => this.log.info(message)
   })
@@ -8010,6 +8013,8 @@ export class Daemon {
     const { layer, scope } = await this.memoryLayerFor(this.memoryPlaceOf(ctx.agentId, ctx, rec, msg))
     // External memory is the shared layer alone, so a conversation with a narrower audience writes there only when asked.
     if (!managed && call.mode === 'write' && layer !== 'shared') throw new Error(MEMORY_SHARED_LAYER_ONLY)
+    // A write refreshes the name its place layer is listed under; best-effort, never delaying the write.
+    if (call.mode === 'write' && layer === 'place') void this.memoryLayers.notePlace(scope)
     return { ...scope, ...(call.layer === 'here' ? { alone: true } : {}), ...turn }
   }
 

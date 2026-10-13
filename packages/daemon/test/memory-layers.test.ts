@@ -9,7 +9,7 @@ import { localMemoryHome } from '../src/memory/home.js'
 import { MemoryLayers, layerOfPlace, personId, type MemoryLayerDeps, type MemoryPlace } from '../src/memory/layers.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import { createMemoryReader } from '../src/cp/memory-reader.js'
-import { listChannelMemoryKeys, memoryChannelKey, memoryPersonKey } from '../src/memory/store.js'
+import { listChannelMemoryKeys, memoryChannelKey, memoryPersonKey, readChannelMemoryMeta } from '../src/memory/store.js'
 
 const AGENT = 'agent-a'
 const AGENT_UUID = '0b0b0b0b-0000-4000-8000-000000000001'
@@ -96,7 +96,7 @@ describe('which layer a place uses', () => {
     const priv = await l.resolve(place({ channel: 'C2' }))
     expect(priv).toEqual({
       layer: 'place',
-      scope: { agentId: AGENT, channelKey: memoryChannelKey('C2'), channel: 'C2' }
+      scope: { agentId: AGENT, channelKey: memoryChannelKey('C2'), channel: 'C2', platform: 'slack' }
     })
     expect((await l.resolve(place({ channel: 'C3', kinds: ['channel'] }))).layer).toBe('place')
     expect((await l.resolve(place({ channel: 'G1', kinds: ['group_dm'] }))).layer).toBe('place')
@@ -316,7 +316,7 @@ describe('what a session reads and is injected with', () => {
     const two = await l.resolve(place({ channel: 'D2', kinds: ['dm'], opener: AGENT_UUID }))
     expect(one).toEqual({
       layer: 'place',
-      scope: { agentId: AGENT, channelKey: memoryChannelKey('D1'), channel: 'D1' }
+      scope: { agentId: AGENT, channelKey: memoryChannelKey('D1'), channel: 'D1', platform: 'slack' }
     })
     expect(two.scope.channelKey).toBe(memoryChannelKey('D2'))
     // An earlier session the person opened there names them.
@@ -343,5 +343,36 @@ describe('what a session reads and is injected with', () => {
     ).toBe(memoryPersonKey('user:user-1'))
     const alone = await l.resolve(place({ platform: 'webchat', channel: 'conv-2', opener: AGENT_UUID }))
     expect(alone.layer).toBe('place')
+  })
+})
+
+describe('a place layer names its conversation', () => {
+  it('records its platform and the name this daemon last saw, and a write refreshes a changed name', async () => {
+    const { fs, mem } = tree()
+    let name: string | undefined = 'launch-room'
+    const { layers: base } = layers({ described: { C2: { kind: 'channel', private: true }, C1: PUBLIC }, fs })
+    const l = new MemoryLayers({ ...(base as unknown as { deps: MemoryLayerDeps }).deps, placeName: async () => name })
+    const { scope } = await l.resolve(place({ channel: 'C2' }))
+    expect(scope).toMatchObject({ channel: 'C2', platform: 'slack', channelName: 'launch-room' })
+    await mem.ensure(scope, 'Butler')
+    await vi.waitFor(async () =>
+      expect(await readChannelMemoryMeta(fs, scope.channelKey!)).toEqual({
+        channel: 'C2',
+        platform: 'slack',
+        name: 'launch-room'
+      })
+    )
+    name = 'launch-war-room'
+    await l.notePlace((await l.resolve(place({ channel: 'C2' }))).scope)
+    expect((await readChannelMemoryMeta(fs, scope.channelKey!))?.name).toBe('launch-war-room')
+    // A name this daemon no longer knows keeps the recorded one.
+    name = undefined
+    await l.notePlace((await l.resolve(place({ channel: 'C2' }))).scope)
+    expect((await readChannelMemoryMeta(fs, scope.channelKey!))?.name).toBe('launch-war-room')
+    // A shared channel writes the shared layer, so it records nothing of its own.
+    const shared = await l.resolve(place({ channel: 'C1' }))
+    expect(shared.scope).not.toHaveProperty('channelName')
+    await l.notePlace(shared.scope)
+    expect(await readChannelMemoryMeta(fs, memoryChannelKey('C1'))).toBeNull()
   })
 })

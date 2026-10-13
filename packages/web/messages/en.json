@@ -3056,7 +3056,13 @@
         "sharedLayer": "Shared",
         "yourMemory": "Your memory",
         "yourMemoryEmpty": "The agent keeps nothing for you yet.",
-        "yourMemoryUnavailable": "Your memory can't be read right now. Try again later."
+        "yourMemoryUnavailable": "Your memory can't be read right now. Try again later.",
+        "notVisibleToYou": "{name} — not visible to you",
+        "notVisibleBody": "You can’t see any of this conversation’s sessions, so you can’t read its memory.",
+        "clearLayer": "Clear this layer",
+        "clearLayerTitle": "Clear this memory layer?",
+        "clearLayerBody": "Every file the agent keeps for {name} is deleted, with its history, and none of it is shown to you. This can’t be undone.",
+        "clearingLayer": "Clearing…"
       },
       "assistantMode": {
         "title": "Assistant mode",

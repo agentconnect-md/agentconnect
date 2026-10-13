@@ -273,7 +273,7 @@ export interface HttpDeps {
      *  serialized cross-instance via advisory mutation scopes ('busy' ⇒ 409). */
     memoryConnectionWriter: MemoryConnectionWriter
     /** The change log of a `control-plane` memory home — `memory/history` is answered from it, never proxied. */
-    agentMemoryHistory: Pick<AgentMemoryHistoryRepo, 'page'>
+    agentMemoryHistory: Pick<AgentMemoryHistoryRepo, 'page' | 'deleteRoot'>
     /** Pending config-token auto-install sessions (§Tier B); holds secret material, never DTO'd. */
     slackInstall: SlackInstallStore
     /** Pending platform-app installs (preset-agents.md §5.3): OAuth state → tenancy, no secrets. */

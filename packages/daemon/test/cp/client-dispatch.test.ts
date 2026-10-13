@@ -1182,6 +1182,19 @@ describe('CpClient dispatch', () => {
     expect(refused.payload.message).toContain('homeMigration')
   })
 
+  it('answers a place-layer clear with whether there was one, and nothing else', async () => {
+    const clearChannel = vi.fn(async (req: { agentId: string; channelKey: string }) => ({ ...req, cleared: true }))
+    const { t } = await readyClient({ memoryReader: { clearChannel } as any })
+    const f = JSON.parse(frame('memory/channel/clear', { agentId: 'a1', channelKey: 'place-1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('memory/channel/clear/ok')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload).toEqual({ agentId: 'a1', channelKey: 'place-1', cleared: true })
+    expect(clearChannel).toHaveBeenCalledWith({ agentId: 'a1', channelKey: 'place-1' })
+  })
+
   it('maps an unknown-agent workspace git violation to BAD_PAYLOAD', async () => {
     const { t } = await readyClient({
       workspaceGit: {

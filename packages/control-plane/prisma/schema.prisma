@@ -3098,6 +3098,7 @@ enum AuditKind {
   api_key_revoke
   mcp_tool_call
   agent_api_change
+  memory_change
 }
 
 model AuditEvent {

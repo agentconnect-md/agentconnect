@@ -369,4 +369,13 @@ export class PgAgentMemoryHistoryRepo implements AgentMemoryHistoryRepo {
       await tx.$executeRaw(Prisma.sql`DELETE FROM "agent_memory_history" WHERE "agentId" = ${agentId}::uuid`)
     })
   }
+
+  async deleteRoot(agentId: AgentId, root: string): Promise<void> {
+    await withAmbientTx(this.db, async (tx) => {
+      await lockTree(tx, `agent-memory-history:${agentId}`)
+      await tx.$executeRaw(
+        Prisma.sql`DELETE FROM "agent_memory_history" WHERE "agentId" = ${agentId}::uuid AND "root" = ${root}`
+      )
+    })
+  }
 }

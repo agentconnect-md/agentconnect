@@ -50,6 +50,7 @@ import { executorPrepare, executorRelease, type ExecutorControlDeps } from './ex
 import { integrationForget, integrationLeave, integrationRemove, integrationUpsert } from './integration.js'
 import { mcpServerRemove, mcpServerUpsert } from './mcpserver.js'
 import {
+  memoryChannelClear,
   memoryChannels,
   memoryHistory,
   memoryList,
@@ -206,6 +207,7 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['sandbox/keepalive', sandboxKeepAlive],
   ['agent/wake', agentWake],
   ['memory/channels', memoryChannels],
+  ['memory/channel/clear', memoryChannelClear],
   ['memory/entries/write/v1', memoryEntriesWrite],
   ['memory/entries/read/v1', memoryEntriesRead],
   ['memory/list', memoryList],

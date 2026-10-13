@@ -4,6 +4,7 @@ import type {
   MemoryEntriesReadReq,
   MemoryEntriesReadResult,
   AnyFrame,
+  MemoryChannelClearReq,
   MemoryChannelsReq,
   MemoryHistoryReq,
   MemoryListReq,
@@ -41,6 +42,14 @@ export const memoryChannels: ControlHandler<MemoryControlDeps> = (frame: AnyFram
     .channels(frame.payload as MemoryChannelsReq)
     .then((page) => wire.reply(frame, 'memory/channels/page', page))
     .catch((err) => memoryError(wire, frame.id, 'memory/channels', err))
+}
+
+export const memoryChannelClear: ControlHandler<MemoryControlDeps> = (frame: AnyFrame, deps, wire) => {
+  // Deletes one place layer whole; the reply says only whether there was one.
+  deps.memoryReader
+    .clearChannel(frame.payload as MemoryChannelClearReq)
+    .then((ok) => wire.reply(frame, 'memory/channel/clear/ok', ok))
+    .catch((err) => memoryError(wire, frame.id, 'memory/channel/clear', err))
 }
 
 export const memoryList: ControlHandler<MemoryControlDeps> = (frame: AnyFrame, deps, wire) => {

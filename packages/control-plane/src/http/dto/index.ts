@@ -3666,22 +3666,36 @@ export const MemoryFilesDto = z.object({
   exists: z.boolean(), // false ⇒ the memory dir does not exist yet
   files: z.array(MemoryFileEntryDto)
 })
+/** What naming a place layer means, for every route that takes one. */
+export const PLACE_LAYER_KEY_DESCRIPTION =
+  "A place layer's key, from GET /agents/:id/memory/channels; absent means the shared layer. A layer whose conversation shows the caller no session in the console answers 404, as an absent one does."
 /** A place layer's folder key; absent ⇒ the shared layer. */
 const MemoryChannelKeyQuery = z
   .string()
   .min(1)
   .max(120)
   .regex(/^[A-Za-z0-9._-]+$/)
+  .describe(PLACE_LAYER_KEY_DESCRIPTION)
   .optional()
 /** Query for listing memory files, optionally scoped to one channel folder. */
 export const MemoryFilesQueryDto = z.object({ channelKey: MemoryChannelKeyQuery })
-/** One channel with its own memory folder (console channel selector). */
+/** One conversation's place layer in the console's layer picker. */
 export const MemoryChannelDto = z.object({
   channelKey: z.string(),
   channel: z.string().nullable(),
-  transportScope: z.string().nullable()
+  transportScope: z.string().nullable(),
+  /** The conversation's platform id, when the daemon or one of its sessions names it. */
+  platform: z.string().nullable(),
+  /** The conversation's display name, from the daemon or else from the agent's sessions there. */
+  name: z.string().nullable(),
+  /** False for an organization owner's entry of a layer whose conversation shows them no session: listed, never readable. */
+  visible: z.boolean(),
+  /** The caller may clear this layer: an organization owner, toward a daemon that can. */
+  clearable: z.boolean()
 })
 export const MemoryChannelsDto = z.object({ channels: z.array(MemoryChannelDto) })
+/** `DELETE /agents/:id/memory/channels/:channelKey` — whether there was a layer to clear; never its content. */
+export const MemoryChannelClearDto = z.object({ cleared: z.boolean() })
 /** Query for reading one memory file: `path` (defaults to the MEMORY.md index) + slice. */
 export const MemoryFileQueryDto = z.object({
   channelKey: MemoryChannelKeyQuery,
@@ -3691,6 +3705,8 @@ export const MemoryFileQueryDto = z.object({
 })
 /** Query for reading one file of the caller's own memory layer: the same slice, and never a place layer. */
 export const MyMemoryFileQueryDto = MemoryFileQueryDto.omit({ channelKey: true })
+/** Query for reading one file a dream staged: the same slice, and never a place layer, since dreams consolidate the shared one. */
+export const DreamFileQueryDto = MemoryFileQueryDto.omit({ channelKey: true })
 /** `GET /agents/:id/memory[/file]` — one byte slice of a memory file. A
  *  not-yet-created file is data (`exists:false`), not an error. Always utf8 text. */
 export const AgentMemoryDto = z.object({

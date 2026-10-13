@@ -3056,7 +3056,13 @@
         "sharedLayer": "共享",
         "yourMemory": "你的记忆",
         "yourMemoryEmpty": "Agent 还没有为你保存任何内容。",
-        "yourMemoryUnavailable": "暂时无法读取你的记忆，请稍后再试。"
+        "yourMemoryUnavailable": "暂时无法读取你的记忆，请稍后再试。",
+        "notVisibleToYou": "{name} — 你看不到",
+        "notVisibleBody": "这个对话的会话你都看不到，所以也无法读取它的记忆。",
+        "clearLayer": "清空这一层",
+        "clearLayerTitle": "清空这一层记忆？",
+        "clearLayerBody": "Agent 为 {name} 保存的所有文件及其历史都会被删除，内容不会向你展示。此操作无法撤销。",
+        "clearingLayer": "正在清空…"
       },
       "assistantMode": {
         "title": "助理模式",
