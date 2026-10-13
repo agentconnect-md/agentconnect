@@ -14,6 +14,7 @@ import {
   AssistantActivitySubsessionState,
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
+  SUBSESSIONS_ANY_AGENT_FEATURE,
   AssistantDraftStatus,
   AssistantSubsessionCursor,
   AgentPermissionOption,
@@ -285,7 +286,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       return row
     }
 
-    // Visible agent → editor (when asked) → assistant mode → serving daemon with the feature; the reply is sent on refusal.
+    // Visible agent → editor (when asked) → assistant mode (unless `anyMode`) → serving daemon with the feature; the reply is sent on refusal.
     const admit = async (
       req: FastifyRequest,
       reply: FastifyReply,
@@ -293,8 +294,9 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       need: { feature: string; refusal: string } = {
         feature: ASSISTANT_ACTIVITY_FEATURE,
         refusal: 'this agent version cannot show its activity; upgrade its daemon'
-      }
-    ): Promise<{ agent: AgentRecord; daemonId: DaemonId } | null> => {
+      },
+      anyMode = false
+    ): Promise<{ agent: AgentRecord; daemonId: DaemonId; modeOffUnserved: boolean } | null> => {
       const agent = await deps.repos.agent.get(orgOf(req), AgentId((req.params as { id: string }).id))
       if (!agent || !canView(agent, ctxOf(req))) {
         await send(reply, notFound('agent not found'))
@@ -307,7 +309,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           return null
         }
       }
-      if (agent.assistantMode?.enabled !== true) {
+      const modeOff = agent.assistantMode?.enabled !== true
+      if (modeOff && !anyMode) {
         await send(reply, MODE_OFF)
         return null
       }
@@ -322,6 +325,9 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         return null
       }
       const daemon = await deps.registry.getAvailable(orgOf(req), daemonId)
+      // An older daemon serves sub-sessions in assistant mode only, so outside it the caller decides what to answer.
+      if (modeOff && !daemon?.capabilities.features.includes(SUBSESSIONS_ANY_AGENT_FEATURE))
+        return { agent, daemonId, modeOffUnserved: true }
       if (!daemon?.capabilities.features.includes(need.feature)) {
         await reply.code(409).send({
           error: 'Conflict',
@@ -331,7 +337,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         })
         return null
       }
-      return { agent, daemonId }
+      return { agent, daemonId, modeOffUnserved: false }
     }
 
     const readSection = async <O extends AssistantActivityReadReq['operation']>(
@@ -462,8 +468,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Agents],
-          summary: 'List an assistant-mode agent’s sub-sessions',
-          description: `Lists the background sub-sessions the agent opened, running ones first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only those that conversation opened, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that opened it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. Nothing is stored by this call.`,
+          summary: 'List an agent’s sub-sessions',
+          description: `Lists the background sub-sessions the agent opened, in or outside assistant mode, running ones first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only those that conversation opened, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that opened it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An older daemon opens none outside assistant mode, so the list is empty there. Nothing is stored by this call.`,
           operationId: 'listAssistantSubsessions',
           params: IdParam,
           querystring: SubsessionsQuery,
@@ -477,8 +483,16 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
             .code(400)
             .send({ error: 'Bad Request', statusCode: 400, message: 'cursor pages a parentSessionId listing only' })
         }
-        const admitted = await admit(req, reply, false, parentSessionId === undefined ? undefined : SUBSESSION_PANEL)
+        const admitted = await admit(
+          req,
+          reply,
+          false,
+          parentSessionId === undefined ? undefined : SUBSESSION_PANEL,
+          true
+        )
         if (!admitted) return reply
+        // Such a daemon opened none outside assistant mode, so there is nothing to list.
+        if (admitted.modeOffUnserved) return { subsessions: [], truncated: false, nextCursor: null }
         let parentRow: SessionMetaRecord | null = null
         if (parentSessionId !== undefined) {
           // Only a conversation of this agent the caller may view, so a filter never confirms one they cannot see.
@@ -540,17 +554,18 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Agents],
-          summary: 'Stop an assistant-mode agent’s sub-session',
+          summary: 'Stop an agent’s sub-session',
           description:
-            'Interrupts the current turn of one background sub-session the agent opened, exactly as a stop from the conversation composer would: nothing is muted, the sub-session reports back that it ended, and nothing it already did is undone; a process its runtime started in the background may keep running. The answer is `stopped`, or `not_running` when it had no turn to interrupt. Only callers who may continue that sub-session’s session may stop it, and they are named in its transcript. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot stop a sub-session.',
+            'Interrupts the current turn of one background sub-session the agent opened, exactly as a stop from the conversation composer would: nothing is muted, the sub-session reports back that it ended, and nothing it already did is undone; a process its runtime started in the background may keep running. The answer is `stopped`, or `not_running` when it had no turn to interrupt. Only callers who may continue that sub-session’s session may stop it, and they are named in its transcript. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot stop a sub-session, and 409 `ASSISTANT_MODE_OFF` when an older daemon serves an agent outside assistant mode.',
           operationId: 'stopAssistantSubsession',
           params: SubsessionParam,
           response: { 200: SubsessionStopDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const admitted = await admit(req, reply, false, SUBSESSION_PANEL)
+        const admitted = await admit(req, reply, false, SUBSESSION_PANEL, true)
         if (!admitted) return reply
+        if (admitted.modeOffUnserved) return send(reply, MODE_OFF)
         const row = await deps.repos.session.get(orgOf(req), SessionId(req.params.sessionId))
         // A sub-session of this agent only: its coordinate is the one the daemon mints for a delegation.
         if (!row || row.agentId !== admitted.agent.id || !isSubsessionCoordinate(row.thread)) {

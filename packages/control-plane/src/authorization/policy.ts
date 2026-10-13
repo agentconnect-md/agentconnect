@@ -40,8 +40,6 @@ export interface SubsessionFacts {
   /** The parent session's agent; null when there is no parent row. */
   parentAgentId: string | null
   agentId: string
-  /** The agent's assistant mode is on. */
-  assistantMode: boolean
 }
 
 export type AuthorizationRequest =
@@ -80,14 +78,11 @@ function resourceIsEditable(resource: Shareable, principal: ViewCtx): boolean {
   return principal.role !== 'viewer' && resourceIsVisible(resource, principal)
 }
 
-/** An assistant-mode agent's own sub-session takes its parent's audience, so none of its viewers may change it. */
-function isAssistantSubsession(resource: SessionViewable): boolean {
+/** An agent's own sub-session takes its parent's audience, so none of its viewers may change it. */
+function isAgentSubsession(resource: SessionViewable): boolean {
   if (!isSubsessionCoordinate(resource.thread)) return false
   const facts = resource.subsession
-  return (
-    facts === undefined ||
-    (facts.parentSessionId !== null && facts.parentAgentId === facts.agentId && facts.assistantMode)
-  )
+  return facts === undefined || (facts.parentSessionId !== null && facts.parentAgentId === facts.agentId)
 }
 
 function identityOwnsSession(resource: SessionViewable, identitySet: ReadonlySet<string>): boolean {
@@ -155,7 +150,7 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
         !request.resource.externalProvider &&
         request.resource.thread !== undefined &&
         !isAppendCoordinate(request.resource.thread) &&
-        !isAssistantSubsession(request.resource) &&
+        !isAgentSubsession(request.resource) &&
         identityOwnsSession(request.resource, request.identitySet)
       )
     // Continuation is an organization WRITE riding on view (webchat-cross-

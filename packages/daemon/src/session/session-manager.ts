@@ -665,8 +665,7 @@ export class SessionManager {
           usesMeta,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
           // standing, so it never lands as a leading user block or a transcript row.
-          ...(platformStanding ? { platformStanding } : {}),
-          ...(assistantModeOn(agent) ? { assistantMode: true } : {})
+          ...(platformStanding ? { platformStanding } : {})
         }))())
 
     // Born titled: the ingress title when the platform minted one (GitHub/GitLab hooks), else

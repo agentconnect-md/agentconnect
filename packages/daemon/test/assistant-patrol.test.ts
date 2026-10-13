@@ -1073,7 +1073,7 @@ describe('item tool text', () => {
             config: { botToken: 'xoxb', appToken: 'xapp' }
           } as never
         ],
-        { organizationKnowledge: true, decisions: true, currentPlatform: 'slack', assistantMode: true }
+        { organizationKnowledge: true, decisions: true, currentPlatform: 'slack' }
       ),
       ...ASSISTANT_ITEM_TOOLS
     ]

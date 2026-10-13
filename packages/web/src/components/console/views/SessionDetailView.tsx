@@ -3198,9 +3198,8 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
-  // The conversation whose sub-sessions the dock lists: the focused participant's session, while that agent is in assistant mode.
-  const subsessionsAgent = filesAgentId ? agentById.get(filesAgentId) : undefined
-  const subsessionsSessionId = !MOCK_MODE && subsessionsAgent?.assistantMode?.enabled === true ? tasksSessionId : null
+  // The conversation whose sub-sessions the dock lists: the focused participant's session; the tab appears once it opened one.
+  const subsessionsSessionId = !MOCK_MODE ? tasksSessionId : null
   // An isolated session's own wake, with its own agent; the panel presses it only when the read says this session's arm places the watcher.
   const prSessionIsolation =
     currentSessionDetail && currentSessionDetail.id === prSessionId

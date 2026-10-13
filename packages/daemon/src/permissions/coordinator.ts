@@ -399,7 +399,7 @@ export interface PermissionSurfaceHost {
   approvalDmIntegrations(agentId: string, preferred?: string): string[]
   /** Unconditional shared-target block_id for a DM card (§5.3). */
   slackDmSessionTarget(p: Pick<Pending, 'plan'>, integrationId: string): string
-  // ── assistant-mode sub-sessions (assistant-mode.md §5.6) ──
+  // ── background sub-sessions (assistant-mode.md §5.6) ──
   /** Where a background sub-session's request goes; undefined for every other turn. */
   subsessionApprovalRoute?(p: Pending): Promise<SubsessionApprovalRoute | undefined>
   /** The approver an external place's card goes to instead, as drafts route theirs (§5.5). */

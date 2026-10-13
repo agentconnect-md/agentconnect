@@ -12,6 +12,9 @@ export const ASSISTANT_DRAFT_DECISION_FEATURE = 'assistant-draft-decision-v1'
 /** Daemon serves a `subsessions` read narrowed to one conversation and `stop-subsession` writes; an older daemon would list every conversation's. */
 export const ASSISTANT_SUBSESSION_PANEL_FEATURE = 'assistant-subsession-panel-v1'
 
+/** Daemon opens, lists and stops sub-sessions for every agent; an older daemon refuses each one outside assistant mode. */
+export const SUBSESSIONS_ANY_AGENT_FEATURE = 'subsessions-any-agent-v1'
+
 /** Daemon serves a `drafts` read narrowed to one webchat conversation's proposals and a `decide-draft` bound to one; an older daemon would ignore both and answer for every draft. */
 export const ASSISTANT_CONVERSATION_PROPOSALS_FEATURE = 'assistant-conversation-proposals-v1'
 

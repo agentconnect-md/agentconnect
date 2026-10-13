@@ -401,7 +401,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
 })
 
 describe('who is offered stopSubsession', () => {
-  it('is a place’s main conversation of an assistant-mode agent, on any platform, and nothing else', async () => {
+  it('is a place’s main conversation of any agent, on any platform, and nothing else', async () => {
     const h = await boot()
     try {
       const tool = (agent: Record<string, unknown>, session: Record<string, unknown>) => {
@@ -454,22 +454,21 @@ describe('who is offered stopSubsession', () => {
         false
       )
       expect(offered(on, { channel: 'cron:c-1', thread: 'cron:c-1:t-1', integrationId: undefined })).toBe(false)
-      // An agent outside assistant mode is offered nothing new.
-      expect(offered({}, {})).toBe(false)
-      expect(offered({ assistantMode: { enabled: false } }, {})).toBe(false)
+      // Any agent opens sub-sessions, so one outside assistant mode is offered the tool too.
+      expect(offered({}, {})).toBe(true)
+      expect(offered({ assistantMode: { enabled: false } }, {})).toBe(true)
     } finally {
       await h.close()
     }
   })
 
-  it('is refused for an agent outside assistant mode even if called', async () => {
+  it('stops a sub-session for an agent outside assistant mode too', async () => {
     const h = await boot({ assistantMode: false })
     try {
       const dm = await conversation(h, DM)
-      expect(await stop(h, dm, 'slack:D0ALICE:subsession:x:bot-a')).toEqual({
-        result: 'refused',
-        reason: 'Only an agent in assistant mode can stop a sub-session. Nothing was stopped.'
-      })
+      await liveTurn(h, dm)
+      const child = await delegate(h, dm)
+      expect(await stop(h, dm, child)).toMatchObject({ result: 'stopped', sessionId: child })
     } finally {
       await h.close()
     }

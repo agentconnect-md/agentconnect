@@ -76,15 +76,17 @@ export interface AssistantActivity {
 
 const OPEN: AssistantItemStatus[] = ['active', 'waiting']
 const CLOSED: AssistantItemStatus[] = ['done', 'dropped']
+// Any agent opens sub-sessions (assistant-mode.md §5.6), so listing and stopping them needs no assistant mode.
+const SUBSESSION_OPERATIONS = new Set(['subsessions', 'stop-subsession'])
 // Room for the answer's own fields around its list.
 const ANSWER_OVERHEAD_BYTES = 1_024
 
 export function createAssistantActivity(deps: AssistantActivityDeps): AssistantActivity {
-  // Only an agent this daemon holds, and only while it is in assistant mode: the view exists for nothing else.
-  const admit = (agentId: string): void => {
+  // Only an agent this daemon holds; everything but its sub-sessions also needs assistant mode.
+  const admit = (agentId: string, operation: string): void => {
     const agent = deps.agent(agentId)
     if (!agent) throw new AssistantActivityViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
-    if (!assistantModeOn(agent))
+    if (!SUBSESSION_OPERATIONS.has(operation) && !assistantModeOn(agent))
       throw new AssistantActivityViolationError(`agent "${agentId}" is not in assistant mode`, 'assistant-mode-off')
   }
   // The agent's own webchat conversation by its session's outward id; a sub-session's page is none.
@@ -100,7 +102,7 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
 
   return {
     async read(req) {
-      admit(req.agentId)
+      admit(req.agentId, req.operation)
       const store = deps.store()
       switch (req.operation) {
         case 'items': {
@@ -190,7 +192,7 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
     },
 
     async write(req) {
-      admit(req.agentId)
+      admit(req.agentId, req.operation)
       const store = deps.store()
       switch (req.operation) {
         case 'delete-item':

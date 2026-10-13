@@ -311,20 +311,18 @@ describe('self-delegation: what stays refused', () => {
   it.each([
     ['assistant mode off', { enabled: false }],
     ['no assistant mode', undefined]
-  ])('still refuses a postless self wake as self with %s', async (_label, assistantMode) => {
+  ])('opens a sub-session all the same with %s', async (_label, assistantMode) => {
     const { daemon, d, calls, call } = await boot(
       scaffold([{ id: 'bot-a', ...(assistantMode ? { assistantMode } : {}) }])
     )
     const caller = await seedCaller(d)
     const req = delegation(caller)
-    expect(d.collab.wakeRejectionReason(req)).toBe('self')
-    expect(await call(req)).toEqual({
-      delivered: false,
-      targetSession: sessionKey('slack', 'C1', '100.1', 'bot-a'),
-      reason: 'self'
-    })
-    expect(calls).toHaveLength(0)
-    expect(await d.store.assistantSubsessions.get('bot-a', caller.key)).toBeUndefined()
+    expect(d.collab.wakeRejectionReason(req)).toBeNull()
+    const res = await call(req)
+    expect(res).toMatchObject({ delivered: true, subsession: true })
+    expect(isSubsessionCoordinate(calls[0]!.msg.thread)).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(await d.store.assistantSubsessions.get('bot-a', res.targetSession)).toMatchObject({ state: 'open' })
     await daemon.stop()
   })
 
@@ -457,7 +455,7 @@ describe('self-delegation: through the turn engine', () => {
 })
 
 describe('self-delegation: what the runtime is told', () => {
-  it('gives an assistant-mode session the sub-session guidance, and every other agent the old rule', async () => {
+  it('gives every session the sub-session guidance, in assistant mode or not', async () => {
     const root = scaffold([{ id: 'bot-a', assistantMode: ON }, { id: 'bot-b' }])
     const { daemon, d, hosts } = await boot(root, { spy: false })
     const caller = await seedCaller(d)
@@ -474,10 +472,10 @@ describe('self-delegation: what the runtime is told', () => {
           .filter((entry) => entry.agentId === agentId)
           .flatMap(({ host }) => [...host.newSession.mock.calls, ...host.prompt.mock.calls])
       )
-    expect(told('bot-a')).toContain('opens a background SUB-SESSION for long work')
-    expect(told('bot-a')).not.toContain('may not target yourself')
-    expect(told('bot-b')).toContain('may not target yourself')
-    expect(told('bot-b')).not.toContain('SUB-SESSION')
+    for (const agentId of ['bot-a', 'bot-b']) {
+      expect(told(agentId)).toContain('opens a background SUB-SESSION for long work')
+      expect(told(agentId)).not.toContain('may not target yourself')
+    }
     await daemon.stop()
   })
 })

@@ -584,7 +584,7 @@ describe('the Activity view: deciding a draft', () => {
 })
 
 describe('the Activity view: who it answers', () => {
-  it('refuses an agent it does not hold, and one not in assistant mode, before touching the store', async () => {
+  it('refuses an agent it does not hold, and one not in assistant mode outside its sub-sessions, before touching the store', async () => {
     const { s, a, off, activity } = await setup()
     const item = await createItem(s, off)
     await createItem(s, a, { origin: WEBCHAT, followers: [] })
@@ -603,9 +603,9 @@ describe('the Activity view: who it answers', () => {
     expect(await refusal(() => activity.write({ agentId: unknown, operation: 'delete-item', itemId: item.id }))).toBe(
       'unknown-agent'
     )
-    for (const operation of ['drafts', 'subsessions'] as const) {
-      expect(await refusal(() => activity.read({ agentId: off, operation, limit: 10 }))).toBe('assistant-mode-off')
-    }
+    expect(await refusal(() => activity.read({ agentId: off, operation: 'drafts', limit: 10 }))).toBe(
+      'assistant-mode-off'
+    )
     expect(await refusal(() => activity.read({ agentId: off, operation: 'items', section: 'open', limit: 10 }))).toBe(
       'assistant-mode-off'
     )
@@ -613,13 +613,19 @@ describe('the Activity view: who it answers', () => {
       'assistant-mode-off'
     )
     expect(await s.assistantItems.get(off, item.id)).toBeDefined()
-    const stopOff = activity.write({
-      agentId: off,
-      operation: 'stop-subsession',
-      sessionId: 'sid-child',
-      actor: { userId: 'usr-1', name: null }
+    // Any agent opens sub-sessions, so listing and stopping them is answered outside assistant mode too.
+    expect(await activity.read({ agentId: off, operation: 'subsessions', limit: 10 })).toMatchObject({
+      operation: 'subsessions',
+      subsessions: []
     })
-    expect(await refusal(() => stopOff)).toBe('assistant-mode-off')
+    expect(
+      await activity.write({
+        agentId: off,
+        operation: 'stop-subsession',
+        sessionId: 'sid-child',
+        actor: { userId: 'usr-1', name: null }
+      })
+    ).toEqual({ operation: 'stop-subsession', result: 'not-found' })
   })
 })
 

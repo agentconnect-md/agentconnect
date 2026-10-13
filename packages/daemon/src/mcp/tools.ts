@@ -34,9 +34,7 @@ import { STOP_SUBSESSION_TOOL } from './ops/assistant-subsessions.js'
  * ordinary reply cannot do: a postless agent call, a direct message, a channel-root post,
  * or a parent-session reply. A visible send is always at the channel ROOT.
  */
-function buildSendMessageTool(platforms: string[], options: { assistantMode?: boolean } = {}): ToolDescriptor {
-  // assistant-mode.md §5.6: only an assistant-mode agent may delegate to itself, so only it is told how.
-  const selfDelegation = options.assistantMode === true
+function buildSendMessageTool(platforms: string[]): ToolDescriptor {
   const platform = {
     type: 'string',
     ...(platforms.length > 0 ? { enum: platforms } : {}),
@@ -86,10 +84,8 @@ function buildSendMessageTool(platforms: string[], options: { assistantMode?: bo
       '@-mentions the target in it, and anchors the target to that post. The channel-root form may target YOURSELF: ' +
       'use your own AgentConnect ID from the # Agent block (never your Slack `U…` bot identity) to open and activate ' +
       'one new conversation there. ' +
-      (selfDelegation
-        ? 'The direct form with your own ID opens a background SUB-SESSION for long work instead (see the tool ' +
-          'description). '
-        : 'The direct form may not target yourself. ') +
+      'The direct form with your own ID opens a background SUB-SESSION for long work instead (see the tool ' +
+      'description). ' +
       'To reach an agent in the thread you are ' +
       'ALREADY in, do not use this tool — @-mention it in your ordinary reply instead. Either form takes ' +
       '`needsReply` (see `toAgent`), and you need it whenever you expect an answer back: the peer answers in ITS ' +
@@ -109,9 +105,7 @@ function buildSendMessageTool(platforms: string[], options: { assistantMode?: bo
             'fails. The result tells you to end the current turn and wait; use `viewSessionStatus` on the returned ' +
             '`childSessionId` only for optional diagnostics. To ' +
             'open a new channel-root conversation with YOURSELF, pass your own ID from the # Agent block together ' +
-            (selfDelegation
-              ? 'with `channel`; your own ID without `channel` opens a background sub-session instead.'
-              : 'with `channel`; a self target without `channel` is rejected.'),
+            'with `channel`; your own ID without `channel` opens a background sub-session instead.',
           oneOf: [
             {
               type: 'string',
@@ -275,14 +269,11 @@ function buildSendMessageTool(platforms: string[], options: { assistantMode?: bo
       'into the parent session.\n' +
       '- toAgent — wake exactly one AgentConnect agent (id from listAgents or your own # Agent ID; never a ' +
       'platform member id):\n' +
-      (selfDelegation
-        ? '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless wake: nothing is posted anywhere. With ' +
-          'your own # Agent ID it opens a background SUB-SESSION for long work ("fix this bug and open a PR"): it ' +
-          'works on its own, posts nothing, and reports back into this conversation when it finishes or fails, so ' +
-          'say it has started and end your turn. Keep ordinary conversation here — questions, lookups and short ' +
-          'answers never need one. A sub-session cannot open sub-sessions of its own.\n'
-        : '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless PEER wake: nothing is posted anywhere; ' +
-          'this form cannot target yourself.\n') +
+      '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless wake: nothing is posted anywhere. With ' +
+      'your own # Agent ID it opens a background SUB-SESSION for long work ("fix this bug and open a PR"): it ' +
+      'works on its own, posts nothing, and reports back into this conversation when it finishes or fails, so ' +
+      'say it has started and end your turn. Keep ordinary conversation here — questions, lookups and short ' +
+      'answers never need one. A sub-session cannot open sub-sessions of its own.\n' +
       '  • channel root: `{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}` — also posts one ' +
       'visible message at that channel’s ROOT, @-mentions the target, and anchors it to that post. This form MAY ' +
       'target yourself: use your own # Agent ID to open and activate one new conversation there.\n' +
@@ -315,9 +306,7 @@ function buildSendMessageTool(platforms: string[], options: { assistantMode?: bo
       'Every visible send except the `thread` update lands at the channel ROOT and opens a NEW conversation of ' +
       'your own there. Write ' +
       '`message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone. A self ' +
-      (selfDelegation
-        ? 'wake is valid in the `toAgent` channel-root form and, as a sub-session, in the direct form above.'
-        : 'wake is valid only in the explicit `toAgent` channel-root form above.'),
+      'wake is valid in the `toAgent` channel-root form and, as a sub-session, in the direct form above.',
     inputSchema: unionOf([agentTarget, userTarget, channelTarget, sessionTarget])
   }
 }
@@ -1040,7 +1029,7 @@ const LIST_AGENTS_INPUT_SCHEMA = () =>
     }
   })
 
-const listAgentsDescription = (selfDelegation: boolean): string =>
+const LIST_AGENTS_DESCRIPTION =
   'List the AI agents you can work with — INCLUDING YOURSELF — with their id, name, displayName, description, and ' +
   'status, so you ' +
   'can discover peers to collaborate with. By DEFAULT this lists every agent in your organization that you are ' +
@@ -1052,22 +1041,19 @@ const listAgentsDescription = (selfDelegation: boolean): string =>
   'in a channel post. Pass `channel` only as a FILTER, to narrow the list to the agents present in that channel. ' +
   'Only agents you are allowed to reach are returned. Your own entry is included so you can use its agent id with ' +
   '`toAgent` + `channel` to open and activate a new channel-root conversation with yourself; ' +
-  // assistant-mode.md §5.6: only an assistant-mode agent may delegate to itself, so only it is told so.
-  (selfDelegation
-    ? 'without `channel`, your own id opens a background sub-session for long work instead (see `sendMessage`).'
-    : 'a postless self-call is rejected.')
+  'without `channel`, your own id opens a background sub-session for long work instead (see `sendMessage`).'
 
-const collaborationTools = (selfDelegation: boolean): ToolDescriptor[] => [
+export const COLLABORATION_TOOLS: ToolDescriptor[] = [
   {
     name: 'listAgents',
-    description: listAgentsDescription(selfDelegation),
+    description: LIST_AGENTS_DESCRIPTION,
     inputSchema: LIST_AGENTS_INPUT_SCHEMA()
   },
   {
     // Kept so a session already warm with the old tool set (and prompts/skills that
     // learned the old name) keeps working; the daemon routes both names to one handler.
     name: 'listChannelAgents',
-    description: `Deprecated alias of \`listAgents\` — prefer that name. ${listAgentsDescription(selfDelegation)}`,
+    description: `Deprecated alias of \`listAgents\` — prefer that name. ${LIST_AGENTS_DESCRIPTION}`,
     inputSchema: LIST_AGENTS_INPUT_SCHEMA()
   },
   {
@@ -1087,9 +1073,6 @@ const collaborationTools = (selfDelegation: boolean): ToolDescriptor[] => [
     )
   }
 ]
-
-export const COLLABORATION_TOOLS: ToolDescriptor[] = collaborationTools(false)
-const ASSISTANT_COLLABORATION_TOOLS: ToolDescriptor[] = collaborationTools(true)
 
 /**
  * RETIRED from the advertised tool surface — kept here, and still dispatchable by
@@ -1467,7 +1450,6 @@ export function toolsForIntegrations(
     organizationKnowledge?: boolean
     decisions?: boolean
     currentPlatform?: string
-    assistantMode?: boolean
     /** The console can show shared images, so a session with no IM integration still gets `shareFile`. */
     consoleImages?: boolean
   } = {}
@@ -1484,7 +1466,7 @@ export function toolsForIntegrations(
   add(MEMORY_TOOLS)
   if (options.organizationKnowledge) add(KNOWLEDGE_TOOLS)
   if (options.decisions) add(DECISION_TOOLS)
-  add(options.assistantMode ? ASSISTANT_COLLABORATION_TOOLS : COLLABORATION_TOOLS)
+  add(COLLABORATION_TOOLS)
   // Every agent's cross-place recall, under the read rule (assistant-mode.md §5.4 ③, §5.5).
   add([RECALL_TOOL])
   // The unified `sendMessage` tool is ALWAYS present (session-concept §3): even a
@@ -1492,7 +1474,7 @@ export function toolsForIntegrations(
   // its origin (`sessionId`). The `platform` enum is narrowed to the agent's own platforms
   // so it can post to any of them (empty ⇒ no channel posting, only wake/reply).
   const platforms = [...new Set(integrations.map((i) => i.platform))]
-  add([buildSendMessageTool(platforms, { assistantMode: options.assistantMode === true })])
+  add([buildSendMessageTool(platforms)])
   // Platform read helpers only make sense once the agent has at least one integration.
   if (platforms.length > 0) {
     add(buildReadTools(platforms, options.currentPlatform))

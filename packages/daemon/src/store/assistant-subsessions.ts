@@ -1,4 +1,4 @@
-// The persistent parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6), partitioned by agent.
+// The persistent parent–child index of sub-sessions (assistant-mode.md §5.6), partitioned by agent.
 import { AsyncMutex } from './async-mutex.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
 

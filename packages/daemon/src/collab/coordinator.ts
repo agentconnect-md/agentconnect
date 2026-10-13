@@ -10,7 +10,6 @@ import {
   isTaskCoordinate,
   subsessionCoordinate
 } from '../session/subsession-coordinate.js'
-import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import type { HostKey } from '../acp/host-key.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type { Clock, TimerHandle } from '@agentconnect.md/connection'
@@ -311,13 +310,9 @@ export class CollabCoordinator {
     return cached?.displayName?.trim() || cached?.name || agentId
   }
 
-  /** assistant-mode.md §5.6, the one gate of self-delegation: an assistant-mode caller, itself as target, the postless form. */
+  /** assistant-mode.md §5.6, the one gate of self-delegation: the caller itself as target, in the postless form. */
   selfDelegation(req: MessageAgentReq): boolean {
-    return (
-      req.toAgentId === req.callerAgentId &&
-      req.postless === true &&
-      assistantModeOn(this.host.agents().get(req.callerAgentId))
-    )
+    return req.toAgentId === req.callerAgentId && req.postless === true
   }
 
   /** assistant-mode.md §5.6: how many sub-sessions the agent may have running at once. */

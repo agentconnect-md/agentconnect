@@ -662,8 +662,8 @@ budget and queueing over the cap are deferred until use shows they are needed; t
 section and §5.7 describe that target. Permission-request routing and its wait cap (items 2 and 3
 below) have shipped, and so has stopping from the main conversation (§5.8).
 
-- **Opening**: self-delegation without a post — the direct form of `sendMessage({ toAgent })`
-  accepts a self target (both admission checks exempt it; `targetSessionCoordinate` is skipped),
+- **Opening**: self-delegation without a post — for every agent, in assistant mode or not (the
+  thirty-fifth revision) — the direct form of `sendMessage({ toAgent })` accepts a self target (both admission checks exempt it; `targetSessionCoordinate` is skipped),
   and the sub-session gets **its own coordinate**: a reserved `subsession:` thread segment minted
   per delegation, on which every turn runs headless and which the Control Plane also recognises.
   It inherits the parent's visibility and owner through the A2A path; **visibility changes on
@@ -711,7 +711,7 @@ below) have shipped, and so has stopping from the main conversation (§5.8).
      an asking mode an editor picks afterwards (asking every time gets the warning in §1.8).
      Nothing else changes the permission mode.
 - **Webchat**: the session-detail dock's Sub-sessions panel (#2885) lists the sub-sessions a
-  conversation opened (patrols included) and stops a running one; who may stop is whoever may
+  conversation opened (patrols included), for any agent, and stops a running one; who may stop is whoever may
   continue that session today. A sub-session's own page is read-only (#2893): talking to one
   directly is deferred.
 - **What stopping guarantees**: the current turn; a background process the runtime started may
@@ -1389,3 +1389,13 @@ owner-only `agent/read-access` ask (feature `read-access-batch-v1`, up to 64 ses
 it still lists only public conversations. A webchat title also resolves when it is unique among the
 asker's own conversations. A Control Plane without the feature is not asked, and the listing and
 title resolution stay as they were.
+
+**Thirty-fifth revision (2026-10-13)**: sub-sessions no longer need assistant mode (§5.6). Opening
+one is the agent's own choice from a conversation it is already in, with its parent's audience, so
+the mode added no boundary, while it left a webchat conversation with no way to start background
+work at all: the channel-root self wake needs a platform post, which webchat has none of. Every
+agent is now told that its direct self-call opens a sub-session; the stop tool, the permission
+request routing, the console's Sub-sessions panel and the refusal to change a sub-session's
+visibility follow. The cap stays `maxConcurrentSubsessions`, its default for an agent outside the
+mode. A daemon advertises `subsessions-any-agent-v1`; for an older one the Control Plane lists no
+sub-sessions and refuses a stop outside assistant mode, as that daemon would.

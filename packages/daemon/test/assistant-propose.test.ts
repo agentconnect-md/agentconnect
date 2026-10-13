@@ -391,7 +391,7 @@ describe('a patrol proposes', () => {
     // An agent outside assistant mode has no item tools at all, and no patrol coordinate gives it one.
     const botB = h.d.agents.get('bot-b')
     const offered = [
-      ...toolsForIntegrations(botB.integrations, { currentPlatform: 'slack', assistantMode: false }),
+      ...toolsForIntegrations(botB.integrations, { currentPlatform: 'slack' }),
       ...assistantItemToolsFor(botB)
     ].map((t) => t.name)
     expect(offered).not.toContain('propose')

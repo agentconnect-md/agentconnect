@@ -1425,14 +1425,12 @@ describe('the Sub-sessions tab', () => {
     expect(container?.querySelector('[data-dock-tab="subsessions"]')).not.toBeNull()
   })
 
-  it('reads nothing and offers no tab for an agent outside assistant mode, flag or not', async () => {
-    window.__AC_ENV = { FEATURE_FLAGS: 'assistant-mode' }
+  it('lists the sub-sessions of an agent outside assistant mode too, since any agent opens them', async () => {
     wire.assistantMode = false
     wire.subsessions = [child]
     await render()
-    expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
-    expect(container?.querySelector('[data-subsessions-panel]')).toBeNull()
-    expect(wire.subsessionCalls).toEqual([])
+    expect(wire.subsessionCalls).toHaveLength(1)
+    expect(container?.querySelector('[data-dock-tab="subsessions"]')).not.toBeNull()
   })
 
   it('reaches the tab from the phone’s app-bar action, in the bottom sheet', async () => {

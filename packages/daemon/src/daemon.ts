@@ -87,6 +87,7 @@ import {
   ASSISTANT_ACTIVITY_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
+  SUBSESSIONS_ANY_AGENT_FEATURE,
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
   AUTO_MERGE_FEATURE,
@@ -4222,7 +4223,6 @@ export class Daemon {
       },
       // A main conversation's stop of its own sub-session (assistant-mode.md §5.8), through the console's Stop core.
       assistantSubsessions: {
-        enabled: (agentId) => assistantModeOn(this.agents.get(agentId)),
         stopper: async (ctx) => this.subsessionStopper(ctx),
         find: async (agentId, id) =>
           (await this.store.assistantSubsessions.get(agentId, id)) ??
@@ -4558,7 +4558,6 @@ export class Daemon {
           decisions:
             !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
           currentPlatform: platform,
-          assistantMode: agent.assistantMode?.enabled === true,
           // Static descriptor, dynamic authority: a console turn may reach any session, and execution re-checks it.
           consoleImages: this.relays?.supportsWebchatImages?.() === true
         })
@@ -4571,7 +4570,7 @@ export class Daemon {
         // Its reminders (§5.9), in a platform conversation of the session's own only.
         tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
         // Stopping a sub-session it opened (§5.8), in a place's main conversation only.
-        tools = [...tools, ...assistantSubsessionToolsFor(agent, { platform, channel, thread, integrationId })]
+        tools = [...tools, ...assistantSubsessionToolsFor({ platform, channel, thread, integrationId })]
         // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
         const managedRepo = this.managedWorkspaceRepo(agent.id)
         if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
@@ -7689,6 +7688,8 @@ export class Daemon {
       ASSISTANT_DRAFT_DECISION_FEATURE,
       // Lists one conversation's sub-sessions and stops one through the `!cancel` core; static.
       ASSISTANT_SUBSESSION_PANEL_FEATURE,
+      // Opens, lists and stops sub-sessions outside assistant mode too; static.
+      SUBSESSIONS_ANY_AGENT_FEATURE,
       // Lists one webchat conversation's proposals and decides one only for that conversation; static.
       ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
       // Lists one conversation's approval requests and decides one only for that conversation; static.
@@ -13810,7 +13811,6 @@ export class Daemon {
   private async subsessionApprovalRoute(p: Pending): Promise<SubsessionApprovalRoute | undefined> {
     const { agentId, sessionKey: key } = p.plan
     const agent = this.agents.get(agentId)
-    if (!assistantModeOn(agent)) return undefined
     const row = await this.store.assistantSubsessions.get(agentId, key)
     if (!row || row.kind === 'patrol') return undefined
     const parent = await this.store.getSessionByOutwardId(row.parentSessionId, agentId)

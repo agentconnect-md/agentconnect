@@ -1,4 +1,4 @@
-// An assistant-mode agent's sub-session takes its parent's audience, which no viewer may change (assistant-mode.md §5.6).
+// An agent's sub-session takes its parent's audience, which no viewer may change (assistant-mode.md §5.6).
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
@@ -31,14 +31,9 @@ function appAs(userId: string): HttpApp {
   return app
 }
 
-async function agent(daemonId: string, assistantMode: boolean): Promise<AgentId> {
+async function agent(daemonId: string, assistantMode = false): Promise<AgentId> {
   const id = await seedAgent(prisma, randomUUID(), { daemonId })
-  if (assistantMode) {
-    await prisma.agent.update({
-      where: { id },
-      data: { assistantMode: { enabled: true } }
-    })
-  }
+  if (assistantMode) await prisma.agent.update({ where: { id }, data: { assistantMode: { enabled: true } } })
   return id
 }
 
@@ -88,34 +83,40 @@ const put = async (app: HttpApp, id: string, visibility: 'private' | 'org') =>
   (await app.app.inject({ method: 'PUT', url: `${ORG}/sessions/${id}/visibility`, payload: { visibility } })).statusCode
 const row = (id: string) => prisma.sessionMeta.findUniqueOrThrow({ where: { id } })
 
-describe('session visibility of assistant-mode sub-sessions', () => {
-  it('inherits the parent’s audience and owner, and refuses that owner a change of its own', async () => {
-    const firstPoster = await makeUser(`sv-sub-${randomUUID()}`)
-    const daemonId = await seedDaemon(prisma, randomUUID())
-    const assistant = await agent(daemonId, true)
-    const { parentId, childId } = await lineage(assistant, assistant, 'subsession:1700000000000', firstPoster)
-    const app = appAs(firstPoster)
+describe('session visibility of sub-sessions', () => {
+  it.each([
+    ['in assistant mode', true],
+    ['outside assistant mode', false]
+  ] as const)(
+    'inherits the parent’s audience and owner, and refuses that owner a change of its own, %s',
+    async (_label, assistantMode) => {
+      const firstPoster = await makeUser(`sv-sub-${randomUUID()}`)
+      const daemonId = await seedDaemon(prisma, randomUUID())
+      const self = await agent(daemonId, assistantMode)
+      const { parentId, childId } = await lineage(self, self, 'subsession:1700000000000', firstPoster)
+      const app = appAs(firstPoster)
 
-    expect(await row(childId)).toMatchObject({ visibility: 'org', ownerIdentity: `user:${firstPoster}` })
-    expect(await detail(app, childId)).toMatchObject({ visibility: 'org', canChangeVisibility: false })
-    expect(await put(app, childId, 'private')).toBe(403)
-    expect((await row(childId)).visibility).toBe('org')
+      expect(await row(childId)).toMatchObject({ visibility: 'org', ownerIdentity: `user:${firstPoster}` })
+      expect(await detail(app, childId)).toMatchObject({ visibility: 'org', canChangeVisibility: false })
+      expect(await put(app, childId, 'private')).toBe(403)
+      expect((await row(childId)).visibility).toBe('org')
 
-    // The parent stays its owner's to change, and tightening it still reaches the sub-session.
-    expect(await detail(app, parentId)).toMatchObject({ canChangeVisibility: true })
-    expect(await put(app, parentId, 'private')).toBe(200)
-    expect(await row(childId)).toMatchObject({ visibility: 'private', ownerIdentity: `user:${firstPoster}` })
-  })
+      // The parent stays its owner's to change, and tightening it still reaches the sub-session.
+      expect(await detail(app, parentId)).toMatchObject({ canChangeVisibility: true })
+      expect(await put(app, parentId, 'private')).toBe(200)
+      expect(await row(childId)).toMatchObject({ visibility: 'private', ownerIdentity: `user:${firstPoster}` })
+    }
+  )
 
   it.each([
-    ['a peer’s child on a platform thread', true, 'peer', '1700000000.000200'],
-    ['the agent’s own channel-root child', true, 'self', '1700000000.000200'],
-    ['a sub-session coordinate of an agent whose assistant mode is off', false, 'self', 'subsession:1700000000000']
-  ] as const)('keeps today’s rule for %s', async (_label, assistantMode, childOf, childThread) => {
+    ['a peer’s child on a platform thread', 'peer', '1700000000.000200'],
+    ['a peer’s child on a sub-session coordinate', 'peer', 'subsession:1700000000000'],
+    ['the agent’s own channel-root child', 'self', '1700000000.000200']
+  ] as const)('keeps today’s rule for %s', async (_label, childOf, childThread) => {
     const firstPoster = await makeUser(`sv-sub-other-${randomUUID()}`)
     const daemonId = await seedDaemon(prisma, randomUUID())
-    const parentAgent = await agent(daemonId, assistantMode)
-    const childAgent = childOf === 'self' ? parentAgent : await agent(daemonId, assistantMode)
+    const parentAgent = await agent(daemonId)
+    const childAgent = childOf === 'self' ? parentAgent : await agent(daemonId)
     const { childId } = await lineage(parentAgent, childAgent, childThread, firstPoster)
     const app = appAs(firstPoster)
 

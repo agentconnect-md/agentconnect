@@ -6,6 +6,7 @@ import {
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
+  SUBSESSIONS_ANY_AGENT_FEATURE,
   SUBSESSION_COORDINATE_PREFIX,
   TASK_LIST_FEATURE,
   type AssistantActivityDraft,
@@ -588,6 +589,35 @@ describe('one conversation’s sub-sessions', () => {
       data: { assistantMode: { enabled: true } }
     })
     expect((await stop(app(control, member), teamChild)).json()).toMatchObject({ code: 'DAEMON_OFFLINE' })
+  })
+
+  it('lists and stops an agent’s sub-sessions outside assistant mode, through a daemon that opens them', async () => {
+    await seedAssistant({ enabled: false, features: [...CAPABILITIES.features, SUBSESSIONS_ANY_AGENT_FEATURE] })
+    const { team, teamChild } = await seedConversations()
+    const control = new ActivitySpy()
+    control.subsessions = [
+      { sessionId: teamChild, parentSessionId: team, state: 'open', createdAt: '2026-10-09T09:00:00.000Z' }
+    ]
+    const listed = await get(app(control), `/subsessions?parentSessionId=${team}`)
+    expect(listed.statusCode, listed.body).toBe(200)
+    expect(listed.json().subsessions).toEqual([expect.objectContaining({ sessionId: teamChild, canStop: true })])
+    expect((await stop(app(control), teamChild)).json()).toEqual({ result: 'stopped' })
+    expect(control.reads).toHaveLength(1)
+    expect(control.writes).toHaveLength(1)
+    // The rest of Activity stays assistant mode's.
+    expect((await get(app(control), '/items')).json()).toMatchObject({ code: 'ASSISTANT_MODE_OFF' })
+  })
+
+  it('answers an older daemon outside assistant mode with no sub-sessions and no stop, before any daemon I/O', async () => {
+    await seedAssistant({ enabled: false })
+    const { team, teamChild } = await seedConversations()
+    const control = new ActivitySpy()
+    const listed = await get(app(control), `/subsessions?parentSessionId=${team}`)
+    expect(listed.statusCode, listed.body).toBe(200)
+    expect(listed.json()).toEqual({ subsessions: [], truncated: false, nextCursor: null })
+    expect((await stop(app(control), teamChild)).json()).toMatchObject({ statusCode: 409, code: 'ASSISTANT_MODE_OFF' })
+    expect(control.reads).toEqual([])
+    expect(control.writes).toEqual([])
   })
 })
 
