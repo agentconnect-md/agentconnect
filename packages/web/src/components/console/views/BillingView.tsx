@@ -1129,110 +1129,134 @@ export default function BillingView() {
                       >
                         <Icon name={credit ? 'arrow-down-left' : 'arrow-up-right'} size={14} strokeWidth={2} />
                       </span>
-                      <span className="flex min-w-0 items-center gap-2">
-                        <span className="truncate font-sans text-[13px] font-medium leading-normal">
-                          {credit
-                            ? (KNOWN_KINDS as readonly string[]).includes(tx.kind)
-                              ? t(`kindLabels.${tx.kind}`)
-                              : tx.kind
-                            : t('transactions.usagePeriod', { period: tx.period })}
-                        </span>
-                        <span
-                          className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
-                          style={
-                            positive
-                              ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
-                              : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
-                          }
-                        >
-                          {credit ? tx.kind : t('transactions.usageTag')}
-                        </span>
-                        {/* Who the charge is attributed to. An agent is named only when it is in
+                      <span className="flex min-w-0 flex-col gap-1">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="truncate font-sans text-[13px] font-medium leading-normal">
+                            {credit
+                              ? (KNOWN_KINDS as readonly string[]).includes(tx.kind)
+                                ? t(`kindLabels.${tx.kind}`)
+                                : tx.kind
+                              : t('transactions.usagePeriod', { period: tx.period })}
+                          </span>
+                          <span
+                            className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
+                            style={
+                              positive
+                                ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
+                                : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
+                            }
+                          >
+                            {credit ? tx.kind : t('transactions.usageTag')}
+                          </span>
+                          {/* Who the charge is attributed to. An agent is named only when it is in
                             the viewer's roster; everything else is one id-less rollup with a
                             default avatar. See `rowAttribution` and billing-api.ts. */}
-                        {!credit &&
-                          (() => {
-                            // Nothing at all while the roster is in flight: fail closed applies
-                            // to a MISSING answer, not a pending one.
-                            const split = rosterPending ? [] : rowAttribution(tx.agents, agentById)
-                            // The description column shares the row with the amount, so the
-                            // NAMED chips are capped. The rollup is appended after the cap: it
-                            // is the one chip that must never be hidden behind a `+N`.
-                            const named = split.filter((c) => c.agent)
-                            const rollup = split.find((c) => !c.agent)
-                            const shown = named.slice(0, TX_AGENT_CHIPS)
-                            const rest = named.length - shown.length
-                            return (
-                              <>
-                                {/* On desktop the per-agent amount is disclosure, not decoration:
+                          {!credit &&
+                            (() => {
+                              // Nothing at all while the roster is in flight: fail closed applies
+                              // to a MISSING answer, not a pending one.
+                              const split = rosterPending ? [] : rowAttribution(tx.agents, agentById)
+                              // The description column shares the row with the amount, so the
+                              // NAMED chips are capped. The rollup is appended after the cap: it
+                              // is the one chip that must never be hidden behind a `+N`.
+                              const named = split.filter((c) => c.agent)
+                              const rollup = split.find((c) => !c.agent)
+                              const shown = named.slice(0, TX_AGENT_CHIPS)
+                              const rest = named.length - shown.length
+                              return (
+                                <>
+                                  {/* On desktop the per-agent amount is disclosure, not decoration:
                                     eight visible dollar figures per row drowned the row's own
                                     amount, so it lives in `title` — the console TooltipLayer shows
                                     it on hover AND on keyboard focus (the chip is tabbable for
                                     exactly that). Touch has neither, so ≤768px keeps the amount
                                     visible in the chip; that card already scrolls sideways. */}
-                                {[...shown, ...(rollup ? [rollup] : [])].map((chip) => {
-                                  const share = chip.agent
-                                    ? t('transactions.agentShare', {
-                                        name: agentLabel(chip.agent),
-                                        amount: fmtDecimalUsd(chip.amount)
-                                      })
-                                    : t('transactions.withheldShare', { amount: fmtDecimalUsd(chip.amount) })
-                                  return (
-                                    <span
-                                      key={chip.key}
-                                      data-tx-agent="true"
-                                      tabIndex={0}
-                                      title={share}
-                                      aria-label={share}
-                                      className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
-                                        chip.agent ? '' : 'desktop:pr-[2px]'
-                                      }`}
-                                    >
-                                      <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
-                                        {chip.agent ? (
-                                          <AgentIconView
-                                            icon={chip.agent.icon}
-                                            runtime={chip.agent.runtime}
-                                            size={17}
-                                          />
-                                        ) : (
-                                          // The default avatar. This viewer may not learn which
-                                          // agents these are, how many, or how the amount splits
-                                          // between them — only that the rest of the charge is
-                                          // theirs.
-                                          <span
-                                            data-tx-agent-default="true"
-                                            className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
-                                          >
-                                            <Icon name="bot" size={10} strokeWidth={2} />
-                                          </span>
+                                  {[...shown, ...(rollup ? [rollup] : [])].map((chip) => {
+                                    const share = chip.agent
+                                      ? t('transactions.agentShare', {
+                                          name: agentLabel(chip.agent),
+                                          amount: fmtDecimalUsd(chip.amount)
+                                        })
+                                      : t('transactions.withheldShare', { amount: fmtDecimalUsd(chip.amount) })
+                                    return (
+                                      <span
+                                        key={chip.key}
+                                        data-tx-agent="true"
+                                        tabIndex={0}
+                                        title={share}
+                                        aria-label={share}
+                                        className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
+                                          chip.agent ? '' : 'desktop:pr-[2px]'
+                                        }`}
+                                      >
+                                        <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
+                                          {chip.agent ? (
+                                            <AgentIconView
+                                              icon={chip.agent.icon}
+                                              runtime={chip.agent.runtime}
+                                              size={17}
+                                            />
+                                          ) : (
+                                            // The default avatar. This viewer may not learn which
+                                            // agents these are, how many, or how the amount splits
+                                            // between them — only that the rest of the charge is
+                                            // theirs.
+                                            <span
+                                              data-tx-agent-default="true"
+                                              className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
+                                            >
+                                              <Icon name="bot" size={10} strokeWidth={2} />
+                                            </span>
+                                          )}
+                                        </span>
+                                        {chip.agent && (
+                                          <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
                                         )}
-                                      </span>
-                                      {chip.agent && (
-                                        <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
-                                      )}
-                                      {/* Touch's reachable copy of the share; desktop keeps it
+                                        {/* Touch's reachable copy of the share; desktop keeps it
                                           in the tooltip. */}
-                                      <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
-                                        {fmtDecimalUsd(chip.amount)}
+                                        <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
+                                          {fmtDecimalUsd(chip.amount)}
+                                        </span>
                                       </span>
-                                    </span>
-                                  )
-                                })}
-                                {rest > 0 && (
-                                  <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
-                                )}
-                              </>
-                            )
-                          })()}
-                        {/* The charge's model split, org-wide; the amount lives in the tooltip on desktop like the agent chips. */}
+                                    )
+                                  })}
+                                  {rest > 0 && (
+                                    <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
+                                  )}
+                                </>
+                              )
+                            })()}
+                          {/* Free operator text, rendered as TEXT — truncated, with the whole
+                            note on hover, so a long one cannot push the amount column out. */}
+                          {credit && tx.note && (
+                            <span
+                              className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+                              title={tx.note}
+                            >
+                              {tx.note}
+                            </span>
+                          )}
+                          {credit && tx.receiptUrl && (
+                            <a
+                              className="inline-flex flex-none items-center gap-0.5 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"
+                              href={tx.receiptUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              {t('transactions.receipt')}
+                              <Icon name="arrow-up-right" size={11} />
+                            </a>
+                          )}
+                        </span>
+                        {/* The charge's model split, org-wide, on its own wrapping line so it never squeezes the label or the amount. */}
                         {!credit &&
                           (() => {
                             const models = (tx.models ?? []).filter((m) => Number(m.amount) > 0)
+                            if (!models.length) return null
                             const shown = models.slice(0, TX_MODEL_CHIPS)
                             const rest = models.length - shown.length
                             return (
-                              <>
+                              <span className="flex min-w-0 flex-wrap items-center gap-1.5">
                                 {shown.map((m) => {
                                   const name = m.model === UNATTRIBUTED_MODEL ? t('activity.unknownModel') : m.model
                                   const share = t('transactions.modelShare', { name, amount: fmtDecimalUsd(m.amount) })
@@ -1243,10 +1267,10 @@ export default function BillingView() {
                                       tabIndex={0}
                                       title={share}
                                       aria-label={share}
-                                      className="inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] border border-(--border-subtle) px-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
+                                      className="inline-flex h-[21px] min-w-0 max-w-full items-center gap-[5px] rounded-[4px] border border-(--border-subtle) px-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
                                     >
                                       <Icon name="cpu" size={11} strokeWidth={2} color="var(--text-tertiary)" />
-                                      <span className="mono max-w-[140px] truncate text-[11px]">{name}</span>
+                                      <span className="mono min-w-0 truncate text-[11px]">{name}</span>
                                       <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
                                         {fmtDecimalUsd(m.amount)}
                                       </span>
@@ -1256,30 +1280,9 @@ export default function BillingView() {
                                 {rest > 0 && (
                                   <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
                                 )}
-                              </>
+                              </span>
                             )
                           })()}
-                        {/* Free operator text, rendered as TEXT — truncated, with the whole
-                            note on hover, so a long one cannot push the amount column out. */}
-                        {credit && tx.note && (
-                          <span
-                            className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
-                            title={tx.note}
-                          >
-                            {tx.note}
-                          </span>
-                        )}
-                        {credit && tx.receiptUrl && (
-                          <a
-                            className="inline-flex flex-none items-center gap-0.5 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"
-                            href={tx.receiptUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            {t('transactions.receipt')}
-                            <Icon name="arrow-up-right" size={11} />
-                          </a>
-                        )}
                       </span>
                       {/* A debit is recorded as a positive amount that was taken away, so the
                           sign belongs here. The rounded figure carries the exact wire string
