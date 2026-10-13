@@ -48,8 +48,9 @@ does not pretend to defend against effects it cannot defend against.
   it, and leaves it to that person whether to share what it finds; nobody can get at another
   person's DM, and when something cannot be shared it says "I can't share that here".
 - **Shared with another organization.** In a place the platform reports as external (a Slack
-  Connect channel) it still knows everything, but every reply is a draft that an internal member
-  approves in a DM before it is posted.
+  Connect channel) it answers as it does anywhere else, and what it shares there is the asking
+  person's call. Approvals there go to an internal member, the place keeps its own memory, and its
+  list of open items is not brought there.
 
 ### 1.2 Asking it to do things
 
@@ -285,9 +286,10 @@ per-place trust setting: **enabling a place on an assistant-mode agent trusts it
 (everyone here is an organization member), on top of conversation gating. The enable flow shows
 the warning "everyone here will be able to get the content of its other places out of it;
 enable only if fully trusted". The only exception is an **external** level the platform detects.
-An external place is not walled off: the agent reads there what it reads in an internal place,
-and **every post is a draft an internal member approves first** (§5.5). External limits what
-leaves, not what the agent knows, so an agent added to a shared channel can still answer.
+An external place is not walled off: the agent reads there for whoever is asking and **replies
+there directly**, as every agent does (§5.5, "Replies in an external place"). External changes
+who approves, which memory layer the place uses and how a post from elsewhere reaches it; it does
+not change what the agent says in the place itself.
 
 - Slack: a Slack Connect channel is external. The share is read from the existing membership
   listing (`is_ext_shared` / `is_pending_ext_shared`) and from the flag every event envelope
@@ -302,7 +304,7 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
   costs one lookup per person and queues rather than fans out.
 - **Output no event triggered asks first.** A place learns of a share from its next event, so
   before a post no event from that place triggered — a scheduled or hook run and its anchor
-  message, a report round, a post from another place, a reminder, a
+  message, a report round, a post from another place, a
   sub-session's permission card, a patrol's proposal card — the daemon asks the platform whether
   the place is shared now: on Slack the share flags of
   `conversations.info`, read through the channel lookup a platform module declares
@@ -310,32 +312,27 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
   read in §5.5 uses: repeated posts cost one lookup, and a share made after an answer goes unseen
   for at most that minute. A 1:1 DM is never asked. A share found this way is a detection like an
   event's flag. A lookup that fails marks nothing and confirms nothing: a post from another place
-  is then drafted or refused like one into an external place, and in assistant mode the post is
-  drafted too, since posting as internal on no answer could reach another organization, while a
-  needless draft costs one approval. No event subscription is added.
+  is then drafted or refused like one into an external place, while the place's own run, report
+  round or reminder posts there as it would anywhere. No event subscription is added.
 - **Detection is the same for every agent.** The member-join lookup, the event-envelope flag and
   the check before output no event triggered run whether or not the agent is in assistant mode,
   and every detection is reported to the Control Plane, so `externalChannels` reflects it for any
   agent. What already applies to every agent then follows: an approval in the place goes to an
   internal member, the place's memory goes to its own place layer (never the shared one), and a
-  post into it from another place is drafted or refused (§5.5). What assistant mode does with a
-  detection stays its own: its replies there are drafted, the in-flight turn is cut on the
-  downgrade below, and other writes there are refused. An agent outside assistant mode keeps
-  replying there as before.
+  post into it from another place is drafted or refused (§5.5). Assistant mode adds one thing of
+  its own: the standing summary of items is not injected there (§5.4 ②). Its replies, its other
+  writes there and its turns are what any agent's are.
 - Telegram groups, Discord channels, Feishu groups: no detection; enabled means trusted.
 - DM: enabling it is trusting that person as a member. Webchat is internal by construction.
 - A sub-session's place is its parent's: one born in an external place reports through that
-  place's main session, so its result is drafted too.
-- **The downgrade transition (internal → external) changes the output path, not the context.**
-  In assistant mode only, on a downgrade — a detected share, a guest or outside member joining —
-  the daemon interrupts the place's in-flight turn, whose reply would otherwise post unapproved;
-  from the next turn on, replies are drafts. The interrupt is scoped to the place. Unlike `!stop`, it
-  raises no agent-wide hold on new messages, so the agent's other places keep their turns, their
-  queued messages and whatever arrives there. In the place itself, a message that is queued or
-  arrives while the cut turn winds down is kept and never steered into that turn; it runs after
-  it, under the new trust, so its reply is a draft. The long session and its sub-sessions keep
-  their context: what they know was never the risk, what they post is. An upgrade (external →
-  internal) needs no transition; drafts already pending stay approvable.
+  place's main session, which answers there like any other turn.
+- **A place turning external (internal → external) has no transition.** A detected share, or a
+  guest or outside member joining, interrupts nothing: the turn in flight posts its reply, and
+  what is queued or arrives next runs as before. From then on the place's approvals, memory layer
+  and posts from elsewhere follow the external rules, and the standing summary stops being
+  injected there. Until #2979 item B4, assistant mode cut the place's in-flight turn here, since
+  its reply would have posted unapproved; with replies posted directly there is nothing to cut.
+  Drafts still pending from before stay approvable.
 - A confirmed join of a public Slack channel ("Joining a public channel" in product-conventions.md)
   does not create a place: an off row is not a place, and no filtering of such joins is attempted.
 
@@ -365,12 +362,15 @@ leaves, not what the agent knows, so an agent added to a shared channel can stil
 
 **② The standing summary**: `id`, title, status and followers' places of active and waiting
 items; capped at 30; injected through the existing reminder path (`shouldRemind`, which already
-handles first turn, restart and compaction); every place receives the same summary. Incremental injection (`lastInjectedVersion`) is not in P0.
+handles first turn, restart and compaction); every internal place receives the same summary. Incremental injection (`lastInjectedVersion`) is not in P0.
+An external place (§5.3) receives none, sub-sessions born there included: the ledger is internal,
+and nobody there asked for it. The item tools still answer there when someone asks (#2979, B4).
 A main conversation's summary also lists the sub-sessions that conversation opened which are
 running now, each by its id and label, at most 10 and then a count. The block is omitted when
 none runs. It rides the same points and is re-injected on the next turn after one starts or
 ends, so the list the model holds stays current (§5.8); after the last one ends, that turn says
-none is running.
+none is running. It is kept in an external place: it names only work that conversation itself
+started.
 
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
 another place, under §5.5.
@@ -398,38 +398,59 @@ line is context, not an instruction; no tool's parameters change, and instants t
 > external place from elsewhere is a draft an internal member approves (below). Item and report
 > traffic across places goes through §5.7 as structured fields. The agent-to-agent forms of
 > `sendMessage` are unchanged.
-> **External**: an external place reads like an internal one; what it posts is a draft.
+> **External**: an external place reads and posts like an internal one, for every agent (§5.5
+> "Replies in an external place"); its approvals go to an internal member, and a post into it from
+> elsewhere is a draft.
 
-| Current place                | Readable sources                                             | Memory / knowledge | Output                                                |
-| ---------------------------- | ------------------------------------------------------------ | ------------------ | ----------------------------------------------------- |
-| P's DM                       | itself, and whatever P may see (§5.5 "Reads")                | all¹               | posted                                                |
-| Internal channel or group DM | itself, and whatever every person asking on the turn may see | all¹               | posted                                                |
-| External channel or group DM | itself, and whatever every person asking on the turn may see | all¹               | **drafted**: posted after an internal member approves |
-| Webchat                      | itself, and whatever the console shows its console user      | all¹               | posted                                                |
+| Current place                | Readable sources                                             | Memory / knowledge | Output  |
+| ---------------------------- | ------------------------------------------------------------ | ------------------ | ------- |
+| P's DM                       | itself, and whatever P may see (§5.5 "Reads")                | all¹               | posted  |
+| Internal channel or group DM | itself, and whatever every person asking on the turn may see | all¹               | posted  |
+| External channel or group DM | itself, and whatever every person asking on the turn may see | all¹ ²             | posted² |
+| Webchat                      | itself, and whatever the console shows its console user      | all¹               | posted  |
 
 ¹ The shared memory layer never holds content from DMs, webchat, private places or places with
 outsiders (memory layers, below), so opening it everywhere does not reopen what the read rule closes.
+² The standing summary of items is not injected there (§5.4 ②), and its approvals go to an internal
+member (below).
 
-**Drafts in an external place:**
+**Replies in an external place (issue #2979, item B4):**
 
-- The turn's reply becomes a draft; other platform write tools are refused there. The place sees
-  no streaming or tool progress; the triggering message gets a reaction where the platform
-  supports one, never text.
-- The draft goes as a card to an internal member's DM: the asker when the asker is an internal
-  member (on Slack, a full member of the installing workspace — not a guest, not from the other
-  organization), otherwise the responsible user or the fallback conversation. **Approve** posts
-  the text unchanged in the original thread; **discard** drops it.
+- **The change.** Until B4 an assistant-mode agent drafted its reply in an external place for an
+  internal member to approve: the place saw no working indicator, streaming or tool progress, only
+  a reaction on the triggering message; other platform writes there were refused; a scheduled
+  run's opening message and a reminder there were drafted; and a place turning external cut the
+  reply in flight. Drafting existed because an assistant-mode agent carried every enabled place's
+  knowledge into each of them. B3 and B6 removed that reason: a read is judged by who is asking,
+  and memory is layered by audience, so the shared layer never holds what a private conversation
+  or one with outsiders said. What to share is then the asking person's call, as it is everywhere
+  else, while drafting every reply made the agent unusable in a shared support channel. Every agent
+  now replies there as it does anywhere: the reply streams under its indicator, other writes there
+  go through, the anchor and a reminder post directly, and nothing is cut when the place turns
+  external (§5.3).
+- **What stays external**, for every agent: an approval there goes to an internal member (below);
+  the place keeps its own memory layer; a post into it from another place is drafted or refused
+  (below); a newly found one starts Off (#2980). Assistant mode also does not inject its standing
+  summary there (§5.4 ②), since the item ledger is internal.
+- A reply drafted before the change stays approvable and posts unchanged in its original thread.
+
+**Drafts:**
+
+- A post that needs approval goes as a card to an internal member's DM: the asker when the asker
+  is an internal member (on Slack, a full member of the installing workspace — not a guest, not
+  from the other organization), otherwise the responsible user or the fallback conversation.
+  **Approve** posts the text unchanged where it was aimed; **discard** drops it.
 - A draft is an approval record (§5.10) whose action is "post this text to this place"; the
   daemon executes it itself, with no sub-session. It expires after 24 hours.
-- Any other card that would land in an external place (a runtime permission request, a
-  `propose`) goes to the same DM instead: a card is output too.
+- Any card that would land in an external place (a runtime permission request, a `propose`) goes
+  to the same DM instead: a card is output too.
 
 **Posts from another place into an external one:**
 
 - A post into an external place from another conversation, or into one the platform could not
-  confirm is not shared now, is drafted to the same approver as an external place's draft, showing
-  the target and the exact text; **approve** posts it unchanged, **discard** drops it. Any other
-  write aimed at an external place from elsewhere is refused.
+  confirm is not shared now, is drafted to that approver, showing the target and the exact text;
+  **approve** posts it unchanged, **discard** drops it. Any other write aimed at an external place
+  from elsewhere is refused.
 - Whether a post needs approval follows from where it goes, never from the model's own judgment
   of how sensitive it is — a judgment a message in the conversation could talk it out of.
 - A session no person is behind (a hook, a cron run that records no person) drafts every platform
@@ -782,15 +803,15 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
     in the future and at most 366 days ahead; the text is non-empty and at most 40,000 characters.
     `listReminders` and `cancelReminder` reach only the current conversation's pending reminders.
   - It lands only where the setting session's replies land, that conversation and thread; there is
-    no target argument. It is refused in sub-sessions and patrols, in an external place, and in
-    webchat, which has no daemon-side post path without a turn.
+    no target argument. It is refused in sub-sessions and patrols, and in webchat, which has no
+    daemon-side post path without a turn. An external place sets and receives reminders like any
+    other (#2979, B4).
   - The duty holder's sweep, on the patrol cadence, claims a due reminder atomically and posts it
     through the executed-draft post path as the agent: no ACP, no turn. A claim cut short by a
     restart or handover fails and is never posted again, so delivery is at most once. A platform
     error is retried on later sweeps, three attempts in all, then fails with a warning; a send
     that timed out or came back without a message id may or may not have posted, so it fails at
-    once. A place that turned external after the reminder was set gets the text as that place's
-    reply draft.
+    once.
   - While the agent is paused or out of assistant mode nothing is delivered; afterwards a reminder
     less than 24 hours late posts late and an older one expires. An agent holds at most 100
     pending reminders, a fixed limit with no setting. Settled rows stay, like the other assistant
@@ -814,7 +835,7 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   or the thread its long session lives in. An external place's card, or one the place cannot take,
   goes where a draft with no asker goes instead (§5.5): the responsible user's DM, else the
   fallback conversation.
-- **Drafts are the record's first use** (P0a): action "post" — into an external place or into
+- **Drafts are the record's first use** (P0a): action "post" — into an external place from
   another place (§5.5) — executed by the daemon. General
   `propose` actions come with P1.
 - **Approvers of a proposal are whoever could ask the agent in its place**: a DM's own person; in
@@ -934,7 +955,8 @@ the first answer from any surface wins. Patrol history and the unread badge are 
 - an "add this to the ledger" card; the "allow for this session" memory-write bypass;
   `tool_call.kind`-based retry;
 - per-place restrictions on `!stop`, `!new` or pause; filtering self-initiated Slack joins;
-- closing reads or memory in external places — their output is drafted instead; editing a draft
+- closing reads or memory in external places — reads are judged by who is asking and memory by
+  audience instead (§5.5); drafting replies there (removed by #2979, B4); editing a draft
   before approval (discard and ask again);
 - runtimes outside the admission list, external memory plugins, self-hosted groups without a
   shared store.
@@ -1205,3 +1227,15 @@ member asking about Feishu, could neither read nor post in a conversation the ag
 in, even as a full member of that workspace or a member of that private group. Someone with a
 linked account there is now judged as that account; without one, by the console as before. An
 asker on their own bot, and one the product cannot identify, are unchanged.
+
+**Twenty-eighth revision (2026-10-13)**: every agent replies directly in a conversation shared with
+another organization (issue #2979, item B4; §5.5 "Replies in an external place"). Assistant mode
+drafted those replies because the agent carried every enabled place's knowledge into each of them;
+with reads judged by who is asking (B3) and memory layered by audience (B6), that reason is gone,
+and drafting every reply made the agent unusable in a shared support channel. Assistant mode stops
+drafting the turn's reply, a scheduled run's opening message and a reminder there, stops hiding the
+indicator, streaming and tool progress, stops refusing other writes into the conversation, and no
+longer cuts the turn in flight when a place turns external, so the interrupt and its place scoping
+(#2970) are removed. Detection, approvals routed to an internal member, the place's own memory
+layer, drafts of posts from elsewhere and the starting Off stay for every agent. The standing
+summary of items is no longer injected there, since the ledger is internal.

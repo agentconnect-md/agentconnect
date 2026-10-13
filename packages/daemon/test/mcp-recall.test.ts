@@ -783,12 +783,11 @@ describe('reads judged by who is asking', () => {
 
   it('reads for the asker alike in a group DM and an external place', async () => {
     const { deps, asks } = perAsker()
-    const withExternal = { ...deps, placeExternal: (ctx: SessionContext) => ctx.channel === 'C_SHARED' }
     for (const ctx of [ctxAt('slack', 'G_MPIM'), ctxAt('slack', 'C_SHARED')]) {
       asks(from(P, ctx.channel))
-      expect(await excerptsOf(ctx, 'slack:C_PRIV', withExternal), ctx.channel).toEqual(['secret merger talk'])
-      expect(await listedPlaces(ctx, withExternal), ctx.channel).not.toContain('slack:C_PRIV')
-      await executeTool(ctx, 'getChannelHistory', { channel: 'C_PRIV' }, withExternal)
+      expect(await excerptsOf(ctx, 'slack:C_PRIV', deps), ctx.channel).toEqual(['secret merger talk'])
+      expect(await listedPlaces(ctx, deps), ctx.channel).not.toContain('slack:C_PRIV')
+      await executeTool(ctx, 'getChannelHistory', { channel: 'C_PRIV' }, deps)
     }
   })
 

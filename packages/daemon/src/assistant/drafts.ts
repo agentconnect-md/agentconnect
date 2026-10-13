@@ -222,29 +222,6 @@ export class AssistantDrafts {
     return { handled: true, result: draftedResult(draft, rung) }
   }
 
-  /** The turn's reply in an external place, or one not confirmed internal (§5.5): drafted to an internal member, never posted unapproved. */
-  async draftReply(input: {
-    agentId: string
-    target: AssistantDraftTarget
-    targetDm: boolean
-    /** False where the platform could not confirm the place either way; the card then claims no share. */
-    targetExternal?: boolean
-    text: string
-    source: AssistantDraftSource
-    asker: DraftAsker | undefined
-  }): Promise<AssistantDraft> {
-    const destination = await this.host.describeDestination(input.target, { dm: input.targetDm }).catch(() => ({}))
-    const { draft, rung } = await this.create({
-      ...input,
-      kind: 'reply',
-      targetExternal: input.targetExternal ?? true,
-      destination
-    })
-    if (!rung)
-      this.host.log.warn(`assistant draft ${draft.id}: no approver could be reached for agent "${draft.agentId}"`)
-    return draft
-  }
-
   /**
    * A card button. True when the id names a draft — its click is then consumed here, whatever came of it.
    * `integrationId` / `agentId` come with a relayed click and must match the card's own.

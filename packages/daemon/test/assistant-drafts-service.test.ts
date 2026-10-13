@@ -468,20 +468,28 @@ describe('after an approved post', () => {
   })
 })
 
-describe('an external place reply', () => {
-  it('drafts the reply for the same thread', async () => {
+describe('an external place reply drafted before such replies were posted directly', () => {
+  it('stays approvable, and posts unchanged in its thread', async () => {
     const w = await world()
-    w.port.isFullMember.mockResolvedValue(true)
-    const draft = await w.drafts.draftReply({
+    const draft = await w.store.assistantDrafts.create({
+      id: 'draft-reply-1',
       agentId: AGENT,
+      kind: 'reply',
       target: { platform: 'slack', integrationId: INT, channel: 'C0SHARED', thread: '1700000000.000100' },
-      targetDm: false,
+      targetExternal: true,
       text: 'Here is the answer.',
       source: { ...HERE, channel: 'C0SHARED', sessionKey: 'key-shared' },
-      asker: { integrationId: INT, userId: 'U0ALICE', trusted: false }
+      approver: {
+        kind: 'member',
+        integrationId: INT,
+        channel: 'D_U0ALICE',
+        userId: 'U0ALICE',
+        teamId: 'T0EXAMPLE',
+        consoleUserId: null
+      },
+      now: 10_000
     })
     expect(draft).toMatchObject({ kind: 'reply', targetExternal: true, status: 'awaiting_review' })
-    expect(w.port.postCard.mock.calls[0]![1]).toMatchObject({ view: { kind: 'reply' } })
     await w.click(draft.id, 'approve')
     expect(w.gateway.postMessage).toHaveBeenCalledWith(
       'C0SHARED',

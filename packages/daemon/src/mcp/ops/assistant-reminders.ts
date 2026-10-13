@@ -14,14 +14,12 @@ import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { parseArgs, requiredString } from './args.js'
 import { assistantModeOn, OFFSET_INSTANT, placeOfSession } from './assistant-items.js'
 import type { SessionContext, ToolHandler } from './context.js'
-import type { PlaceAccessDeps } from './place-gate.js'
 import type { ShareFileDeps } from './share-file.js'
 
 /** The ledger calls the tools make. */
 export type AssistantReminderLedgerPort = Pick<AssistantReminderLedger, 'create' | 'listOpen' | 'cancel'>
 
-export interface AssistantReminderDeps
-  extends Pick<ShareFileDeps, 'shareTarget'>, Pick<PlaceAccessDeps, 'placeExternal'> {
+export interface AssistantReminderDeps extends Pick<ShareFileDeps, 'shareTarget'> {
   assistantReminders?: {
     /** The agent's reminders while its assistant mode is on, else undefined: checked per call. */
     ledgerFor(agentId: string): AssistantReminderLedgerPort | undefined
@@ -58,8 +56,7 @@ export const ASSISTANT_REMINDER_TOOLS: ToolDescriptor[] = [
       'It posts into this conversation only, never anywhere else. Use it for fixed text at a set time ("remind me at ' +
       '9 to send the report"); for something to be checked on at a time, take an item with a next check instead. ' +
       'Say the time and the exact text in your reply. It posts within about a minute of `at`; while the agent is ' +
-      'paused nothing is posted, and a reminder more than 24 hours late is dropped. Not available in a conversation ' +
-      'shared with another organization.',
+      'paused nothing is posted, and a reminder more than 24 hours late is dropped.',
     inputSchema: obj(
       {
         at: {
@@ -140,12 +137,6 @@ function conversationOf(ctx: SessionContext, deps: AssistantReminderDeps) {
     throw new Error(
       'remind: reminders post through a chat platform, and this conversation has none the daemon can post to on ' +
         'its own (webchat is not supported yet). Nothing was set.'
-    )
-  }
-  if (deps.placeExternal?.(ctx)) {
-    throw new Error(
-      'remind: this conversation is shared with another organization, where every post needs an internal ' +
-        "member's approval, so reminders cannot be set here. Nothing was set."
     )
   }
   return { integrationId, thread: target.thread ?? null }

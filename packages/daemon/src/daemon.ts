@@ -1872,17 +1872,11 @@ export class Daemon {
   private readonly joinWakeOpeners = new Map<string, TurnAskers>()
   /** Join confirmations in flight, by session, bot and channel, so parallel calls share one card (#2979). */
   private readonly joinAsks = new Map<string, JoinFlight>()
-  /** Places turning external, for every agent; assistant mode's transition follows (assistant-mode.md §5.3). */
+  /** Places turning external, for every agent (assistant-mode.md §5.3). */
   private readonly placeTrust = new PlaceTrust({
     integration: (integrationId) => this.integrationConfigById(integrationId),
-    assistantOwned: (integrationId) =>
-      [...this.agents.values()].some(
-        (agent) => assistantModeOn(agent) && agent.integrations.some((integration) => integration.id === integrationId)
-      ),
     report: (integrationId, channel) =>
       this.cpClient?.emitIntegrationChannels({ integrationId, channels: [channel], authoritative: false }),
-    interrupt: (integrationId, channel, spare) => this.interruptPlaceTurns(integrationId, channel, spare),
-    warn: (message) => this.log.warn(message),
     now: () => this.clock.now(),
     shareLookup: (integrationId) => {
       const platform = this.integrationConfigById(integrationId)?.platform
@@ -3984,8 +3978,6 @@ export class Daemon {
       // Only a complete membership listing confirms a channel public; an observed row's `false` is asked again.
       placeSnapshot: (integrationId, channel) => this.readPlaceSnapshot(integrationId, channel),
       placeStore: this.store,
-      // An assistant-mode agent writes nothing but its drafted reply in an external place (assistant-mode.md §5.5).
-      placeExternal: (ctx) => this.placeKnownExternal(ctx.agentId, ctx.integrationId, ctx.channel),
       // A write's target shared with another organization; for every agent the platform is asked first (§5.3).
       targetExternal: async (agentId, integrationId, channel, dm) =>
         !(await this.placeConfirmedInternal(agentId, integrationId, channel, { dm })),
@@ -8439,15 +8431,12 @@ export class Daemon {
         const int = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)
         return int !== undefined && conversationAdmitted(integrationRouting(int), channel)
       },
-      placeExternal: async (agentId, integrationId, channel, dm) =>
-        !(await this.placeConfirmedInternal(agentId, integrationId, channel, { dm })),
-      post: (reminder) => this.postReminder(reminder),
-      draft: (reminder) => this.draftReminder(reminder)
+      post: (reminder) => this.postReminder(reminder)
     })
     return this.assistantReminderService
   }
 
-  /** The session a reminder was set in, as a post's lineage and a draft's source. */
+  /** The session a reminder was set in, as its post's lineage. */
   private async reminderSource(reminder: AssistantReminder): Promise<AssistantDraftSource> {
     const { agentId, place } = reminder
     const key = sessionKey(place.platform, place.channel, reminder.thread, agentId, place.transportScope ?? undefined)
@@ -8487,60 +8476,6 @@ export class Daemon {
       )
     }
     return messageId
-  }
-
-  /** A due reminder whose conversation turned external: drafted like that place's reply, to an internal member (§5.5). */
-  private async draftReminder(reminder: AssistantReminder): Promise<string> {
-    const draft = await this.drafts.draftReply({
-      agentId: reminder.agentId,
-      target: {
-        platform: reminder.place.platform,
-        integrationId: reminder.integrationId,
-        channel: reminder.place.channel,
-        thread: reminder.targetThread
-      },
-      targetDm: reminder.targetDm,
-      targetExternal: this.placeKnownExternal(reminder.agentId, reminder.integrationId, reminder.place.channel),
-      text: reminder.message,
-      source: await this.reminderSource(reminder),
-      asker: reminder.requesterId
-        ? { integrationId: reminder.integrationId, userId: reminder.requesterId, trusted: false }
-        : undefined
-    })
-    return draft.id
-  }
-
-  /** A run's anchor where the place is external or unconfirmed: drafted at the conversation's root, like that place's reply (§5.5). */
-  private async draftAnchor(
-    agentId: string,
-    msg: NormalizedMessage,
-    integrationId: string,
-    channel: string,
-    text: string,
-    key: string
-  ): Promise<void> {
-    try {
-      await this.drafts.draftReply({
-        agentId,
-        target: { platform: msg.platform, integrationId, channel, thread: null },
-        targetDm: false,
-        targetExternal: this.placeKnownExternal(agentId, integrationId, channel),
-        text,
-        source: {
-          platform: msg.platform,
-          integrationId,
-          channel,
-          thread: sessionThreadOf(msg),
-          transportScope: msg.transportScope ?? null,
-          sessionKey: key,
-          sessionId: (await this.store.getSession(key).catch(() => undefined))?.sessionId ?? null,
-          place: true
-        },
-        asker: undefined
-      })
-    } catch (err) {
-      this.log.warn(`assistant draft of the anchor for ${key} failed; nothing was posted: ${formatErr(err)}`)
-    }
   }
 
   /** Record an agent-sent message into the posting session's transcript, in the thread it belongs to. */
@@ -8658,41 +8593,28 @@ export class Daemon {
     agentId: string,
     integrationId: string | undefined,
     channel: string,
-    opts: { dm?: boolean; spare?: string } = {}
+    opts: { dm?: boolean } = {}
   ): Promise<boolean> {
     if (!integrationId) return true
     if (this.placeKnownExternal(agentId, integrationId, channel)) return false
-    return opts.dm === true || (await this.placeTrust.confirm(integrationId, channel, opts.spare)) === 'internal'
+    return opts.dm === true || (await this.placeTrust.confirm(integrationId, channel)) === 'internal'
   }
 
-  /** Whether a turn's reply is drafted rather than posted: an assistant-mode agent answering in an external place (§5.5). */
-  private assistantDraftsReply(
-    agentId: string,
-    integrationId: string | undefined,
-    msg: NormalizedMessage,
-    webchat: { continuation?: boolean } | undefined
-  ): boolean {
-    if (msg.headless || (webchat && !webchat.continuation)) return false
-    return assistantModeOn(this.agents.get(agentId)) && this.placeKnownExternal(agentId, integrationId, msg.channel)
-  }
-
-  /** The same for a turn about to run: one no event from its place started confirms the place first, for every agent; only assistant mode drafts. */
-  private async assistantDraftsReplyNow(
+  /** Before a turn no event from its place started, for every agent: a share found since reads external for its memory and approvals (§5.3). */
+  private async confirmPlaceBeforeTurn(
     agentId: string,
     integrationId: string | undefined,
     msg: NormalizedMessage,
     webchat: { continuation?: boolean } | undefined,
     key: string
-  ): Promise<boolean> {
-    if (this.assistantDraftsReply(agentId, integrationId, msg, webchat)) return true
-    if (!integrationId || msg.headless || (webchat && !webchat.continuation)) return false
+  ): Promise<void> {
+    if (!integrationId || msg.headless || (webchat && !webchat.continuation)) return
     // A person's message from the place carried its share flag; a report round, a run or a console continuation did not.
-    if (msg.source === 'user' && msg.adoptedSession !== true) return false
+    if (msg.source === 'user' && msg.adoptedSession !== true) return
     const dm =
       (msg.isDm && msg.isGroupDm !== true) ||
       (await this.store.getSession(key).catch(() => undefined))?.conversationKind === 'dm'
-    const confirmed = await this.placeConfirmedInternal(agentId, integrationId, msg.channel, { dm, spare: key })
-    return !confirmed && assistantModeOn(this.agents.get(agentId))
+    await this.placeConfirmedInternal(agentId, integrationId, msg.channel, { dm })
   }
 
   /** A post the write rule sent for an internal member's approval (§5.5). */
@@ -8731,44 +8653,6 @@ export class Daemon {
       assistantModeOn(this.agents.get(ctx.agentId)) &&
       !this.placeKnownExternal(ctx.agentId, ctx.integrationId, ctx.channel)
     return { integrationId: asker.integrationId, userId: asker.userId, trusted }
-  }
-
-  /** Draft the turn's reply in an external place (assistant-mode.md §5.5); contained, so it never fails the turn. */
-  private async draftExternalReply(p: Pending, run: TurnRun): Promise<void> {
-    const text = (p.draftSections ?? []).join('\n\n').trim()
-    const { plan, entry } = run
-    if (!text || isNoResponseBody(text) || !plan.integrationId) return
-    const { msg } = entry
-    try {
-      await this.drafts.draftReply({
-        agentId: plan.agentId,
-        target: {
-          platform: plan.platform,
-          integrationId: plan.integrationId,
-          channel: plan.channel,
-          thread: plan.thread ?? null
-        },
-        targetDm: plan.isDm,
-        targetExternal: this.placeKnownExternal(plan.agentId, plan.integrationId, plan.channel),
-        text,
-        source: {
-          platform: plan.platform,
-          integrationId: plan.integrationId,
-          channel: plan.channel,
-          thread: plan.sessionThread,
-          transportScope: msg.transportScope ?? null,
-          sessionKey: plan.sessionKey,
-          sessionId: p.outwardSessionId,
-          place: true
-        },
-        asker:
-          msg.source === 'user' && !msg.sender.isBot
-            ? { integrationId: plan.integrationId, userId: msg.sender.id, trusted: false }
-            : undefined
-      })
-    } catch (err) {
-      this.log.warn(`assistant draft for ${plan.sessionKey} failed: ${formatErr(err)}`)
-    }
   }
 
   /** Ask a person behind the live turn before the bot joins a public channel; parallel calls for one channel share one card. */
@@ -14148,8 +14032,6 @@ export class Daemon {
       sessionThread?: string
       /** The turn's acknowledgement, which takes the notice in place of the answer it stood in for. */
       acknowledgement?: TurnAcknowledgement
-      /** A drafted reply's place hears nothing, not even a failure (assistant-mode.md §5.5). */
-      draftReply?: boolean
     }
   ): Promise<void> {
     // turnFailureReason digs the runtime's own message out of an ACP RequestError's
@@ -14179,8 +14061,8 @@ export class Daemon {
         })
       else if (!replaced) void ctx.replyConn.postMessage(ctx.channel, notice, ctx.thread)
     }
-    // A platform with no free-text reply transport surfaces the failure through its own sink, unless the reply is drafted.
-    if (!replaced && !ctx.draftReply)
+    // A platform with no free-text reply transport surfaces the failure through its own sink.
+    if (!replaced)
       await this.platformFailureSinks
         .get(ctx.platform)?.({ reason, integrationId: ctx.integrationId, thread: ctx.thread, channel: ctx.channel })
         .catch((err2: unknown) => this.log.warn(`${ctx.platform}: failure notice failed: ${formatErr(err2)}`))
@@ -14927,8 +14809,7 @@ export class Daemon {
             !msg.headless &&
             msg.source === 'user' &&
             !webchat &&
-            callMeta?.initializeOnly !== true &&
-            !this.assistantDraftsReply(agentId, integrationId, msg, undefined)
+            callMeta?.initializeOnly !== true
           ) {
             try {
               const agent = this.agents.get(agentId)
@@ -15750,6 +15631,7 @@ export class Daemon {
         )
       }
     }
+    await this.confirmPlaceBeforeTurn(agentId, integrationId, msg, webchat, key)
     // Every decision this turn can make before it touches a host, a row or a connection.
     const plan = buildTurnPlan({
       entry,
@@ -15762,16 +15644,15 @@ export class Daemon {
       protectedAddresses: this.compoundMentionAddresses(agentId, msg),
       codexUsageIsPerPrompt: this.isCodexRuntime(agentId),
       features: { turnFinalContextRefresh: this.cfg.features.turnFinalContextRefresh },
-      turnSurfaces: this.turnSurfaces,
-      draftReply: await this.assistantDraftsReplyNow(agentId, integrationId, msg, webchat, key)
+      turnSurfaces: this.turnSurfaces
     })
     // The recorder captures the full activity log (tool/reasoning) independent of
     // output mode — `conv` (built below, once the session key is known) only decides
     // what reaches Slack, never the transcript.
     const rec = new TranscriptRecorder()
     const replyConn = plan.suppressReplyConn ? undefined : this.replyConnFor(agentId, integrationId)
-    // ONE egress lookup, so the leased client is the one the surface writes through; a drafted reply leases none.
-    const egressConn = plan.draftReply ? undefined : this.platformTurnEgress.get(msg.platform)?.(plan.integrationId)
+    // ONE egress lookup, so the leased client is the one the surface writes through.
+    const egressConn = this.platformTurnEgress.get(msg.platform)?.(plan.integrationId)
     const run: TurnRun = { entry, key, plan, agent, replyConn, ...(egressConn ? { egressConn } : {}), evaluation }
     // Startup notices and replies share the queue entry's index and terminal fence from before openSession.
     const pendingWebchat = webchat
@@ -15932,7 +15813,6 @@ export class Daemon {
       await this.commitWebchatReply(p, run, outcome)
       await this.flushPlatformFinals(p, run, sessionId, currentAttributionInfo)
       await this.finalizeDelivery(p, run, { rec, sessionId, handled, outcome, memoryCaptureTarget })
-      if (plan.draftReply) await this.draftExternalReply(p, run)
     } catch (err) {
       const caught = await this.surfaceTurnCatch(err, p, run, sessionId, settlement, currentAttributionInfo)
       if (caught === 'suppressed') return null
@@ -16265,8 +16145,7 @@ export class Daemon {
             thread: msg.thread,
             statusThread: plan.statusThread,
             sessionThread: plan.sessionThread,
-            ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {}),
-            ...(plan.draftReply ? { draftReply: true } : {})
+            ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
           })
       } finally {
         releaseReplyConn()
@@ -16844,7 +16723,6 @@ export class Daemon {
       ...(run.egressConn ? { egress: run.egressConn } : {}),
       ...(callMeta ? { callMeta } : {}),
       ...(turn.webchat ? { webchat: turn.webchat } : {}),
-      ...(plan.draftReply ? { draftSections: [] } : {}),
       ...(plan.githubTurnEligible && githubReply
         ? {
             github: {
@@ -18252,28 +18130,6 @@ export class Daemon {
     }
   }
 
-  /** The downgrade transition (assistant-mode.md §5.3): cut the place's in-flight turns and nothing else; what waits or arrives there runs next, as external. */
-  private async interruptPlaceTurns(integrationId: string, channel: string, spare: ReadonlySet<string>): Promise<void> {
-    // Only a turn delivering into the place is cut; a headless run posts nothing there, and a spared one is about to be drafted.
-    const inPlace = [...this.activeGateEntries].filter(
-      ([key, entry]) =>
-        !spare.has(key) &&
-        entry.integrationId === integrationId &&
-        entry.msg.channel === channel &&
-        !entry.msg.headless &&
-        assistantModeOn(this.agents.get(entry.agentId))
-    )
-    await Promise.all(
-      inPlace.map(([key, entry]) =>
-        this.interruptTurn(entry.agentId, key, 'place turned external', undefined, {
-          integrationId,
-          preserveQueued: true,
-          keepAdmission: true
-        })
-      )
-    )
-  }
-
   // ── §7.3 force-cancel backstop ──────────────────────────────────────────────
 
   // Interrupt matching active/cold and queued work by logical session key; callers own muting.
@@ -18288,8 +18144,6 @@ export class Daemon {
       integrationId?: string
       allowSameKeyAdmissions?: boolean
       allowReviewLane?: string
-      /** Raise no admission gate: the agent keeps taking messages everywhere, and this key's followers wait on its serial gate. */
-      keepAdmission?: boolean
       /** Duty handoff: stop running the work here, but leave its durable rows for the successor. */
       handoffInbox?: boolean
       /** The human who raised it, when one did — recorded in the transcript. */
@@ -18311,7 +18165,7 @@ export class Daemon {
         (activeEntry !== undefined && this.activeGateEntries.get(key) === activeEntry))
     // A scoped removal must never cancel a retained head or a successor that reuses its ACP id.
     if (opts.only && !exact()) return
-    if (!opts.keepAdmission && (opts.integrationId === undefined || activeEntry)) {
+    if (opts.integrationId === undefined || activeEntry) {
       this.beginSafetyDrain(
         agentId,
         reason,
@@ -19850,7 +19704,7 @@ export class Daemon {
     return false
   }
 
-  /** Acknowledge the triggering message (product-conventions.md, "A trigger is acknowledged before it is answered"); a drafted reply's place gets only the reaction. */
+  /** Acknowledge the triggering message (product-conventions.md, "A trigger is acknowledged before it is answered"). */
   private acknowledgeTrigger(run: TurnRun, indicatorShown: Promise<boolean> = Promise.resolve(false)): void {
     const { entry, plan, replyConn } = run
     const { msg } = entry
@@ -19860,14 +19714,6 @@ export class Daemon {
     if (entry.githubReply) {
       if (plan.githubTurnEligible)
         void this.githubReviews.acknowledgeTrigger(entry.agentId, entry.githubReply).catch(() => {})
-      return
-    }
-    // A drafted reply's place gets a reaction where the platform has one, never text (assistant-mode.md §5.5).
-    if (plan.draftReply) {
-      const conn = this.replyConnFor(entry.agentId, entry.integrationId)
-      const react = (conn as Partial<SlackConnection> | undefined)?.react
-      const at = nativeMessageCoordinates(msg)
-      if (react && at) void react.call(conn, at.channel, at.messageId, 'seen').catch(() => {})
       return
     }
     // A surface with no reaction and no indicator acknowledges with its own output (§7.3 `acknowledge`).
@@ -19898,13 +19744,6 @@ export class Daemon {
 
   /** Serialize action application per session, so in-place edits never race on a remembered message ts; routed by platform. */
   private enqueueApply(p: Pending, action: DaemonRenderAction, opts: { allowWhenSuppressed?: boolean } = {}): void {
-    // A drafted reply keeps its reply sections and drops everything else: the place sees nothing (assistant-mode.md §5.5).
-    if (p.draftSections) {
-      const body = action.kind === 'post' && !('recordOnly' in action && action.recordOnly)
-      if (body && !p.outputSuppressed && !('attributed' in action && action.attributed === false))
-        p.draftSections.push(action.text)
-      return
-    }
     if (p.outputSuppressed && !opts.allowWhenSuppressed) return
     p.signals.applyChain = p.signals.applyChain.then(() => {
       // Check again at execution time: actions queued before an interrupt must not
@@ -23715,8 +23554,7 @@ export class Daemon {
       thread: msg.thread,
       statusThread: p.plan.statusThread,
       sessionThread: p.plan.sessionThread,
-      ...(p.entry.acknowledgement ? { acknowledgement: p.entry.acknowledgement.handle } : {}),
-      ...(p.plan.draftReply ? { draftReply: true } : {})
+      ...(p.entry.acknowledgement ? { acknowledgement: p.entry.acknowledgement.handle } : {})
     })
   }
 
@@ -25363,17 +25201,8 @@ export class Daemon {
                 .catch(() => undefined)
             )?.isIm ?? msg.isDm
           if (isDmTarget) msg = { ...msg, isDm: true }
-          // An anchor is a post no event triggered, confirmed first for every agent; assistant mode drafts it unless internal (§5.3).
-          const integrationId = target.integrationId
-          const confirmed = await this.placeConfirmedInternal(agentId, integrationId, target.channel, {
-            dm: isDmTarget
-          })
-          if (integrationId && !confirmed && assistantModeOn(this.agents.get(agentId))) {
-            await this.draftAnchor(agentId, msg, integrationId, target.channel, anchorText, key)
-            // The synthetic thread names no platform thread, so the run's own reply goes to the conversation's root.
-            const { thread: _synthetic, ...rootward } = msg
-            return { message: rootward, postAttempted: false }
-          }
+          // An anchor is a post no event triggered, so the place is confirmed first, for every agent; it posts either way (§5.3).
+          await this.placeConfirmedInternal(agentId, target.integrationId, target.channel, { dm: isDmTarget })
           // slackAgentPostOptions guards on the platform internally: a non-Slack
           // target (or an unresolved agent) yields undefined and the anchor posts
           // plain, which is exactly the old else arm.

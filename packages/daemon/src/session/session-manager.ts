@@ -991,13 +991,13 @@ export class SessionManager {
       promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
       reminded = true
     }
+    const place = { platform: msg.platform, channel: msg.channel, thread, integrationId }
     // Assistant mode's standing summary rides the same points: first turn, restart, compaction, every 12th turn (§5.4 ②).
     if (opening || reminded) {
-      const summary = await standingSummaryFor(this.deps.store.assistantItems, agent)
+      const summary = await standingSummaryFor(this.deps.store.assistantItems, agent, place)
       if (summary) promptPrelude.push({ type: 'text', text: summary })
     }
     // A main conversation's running sub-sessions ride the same points, and any turn after that list changed (§5.6).
-    const place = { platform: msg.platform, channel: msg.channel, thread, integrationId }
     if (assistantModeOn(agent) && rec.sessionId && assistantMainConversation(place)) {
       // A list that cannot be read is left for a later turn, never a reason to fail this one.
       const running = await runningSubsessionsBlock(
