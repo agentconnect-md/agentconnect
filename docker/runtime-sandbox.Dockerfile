@@ -7,7 +7,7 @@ ARG AGENT_BROWSER_VERSION=0.39.0
 ARG CLAUDE_ACP_VERSION=0.89.1
 ARG CODEX_ACP_VERSION=2.2.2-agentconnect.1
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.37
-ARG OPENCODE_VERSION=1.18.32
+ARG OPENCODE_VERSION=1.19.0
 
 # Release builds install applications over stable system bases, then add daemon-versioned helpers.
 
@@ -122,14 +122,14 @@ RUN --mount=type=bind,source=docker/runtime-sandbox/install-core-harnesses.sh,ta
   --mount=type=bind,source=docker/runtime-sandbox/bake-dsh-preset.mjs,target=/tmp/bake-dsh-preset.mjs \
   HOME=/root sh /tmp/install-core-harnesses.sh
 
-ARG CLINE_VERSION=3.0.65
+ARG CLINE_VERSION=3.0.70
 ARG PI_ACP_VERSION=0.0.34
-ARG PI_VERSION=0.87.1
-ARG QWEN_CODE_VERSION=0.24.5
-ARG COPILOT_VERSION=1.0.88
-ARG GROK_VERSION=1.0.41
-ARG QODER_VERSION=1.1.63
-ARG QODER_CN_VERSION=1.1.63
+ARG PI_VERSION=1.2.0
+ARG QWEN_CODE_VERSION=0.25.1
+ARG COPILOT_VERSION=1.0.96
+ARG GROK_VERSION=1.0.52
+ARG QODER_VERSION=1.1.69
+ARG QODER_CN_VERSION=1.1.69
 # pi-acp delegates to the separately installed pi CLI; all launches use local executables.
 RUN export HOME=/root \
   && npm install --global --no-fund --no-audit \
