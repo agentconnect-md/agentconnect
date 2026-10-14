@@ -1177,7 +1177,7 @@ async function acquireGitlabSkillSource(
   if (source.ref !== undefined && COMMIT_SHA.test(source.ref) && source.ref.toLowerCase() !== commit) {
     throw new Error('skill GitLab source did not resolve to its pinned commit')
   }
-  const token = await gitlabSkillReads().token(opts.agentId, repository.externalId)
+  const token = await gitlabSkillReads().token(opts.agentId, repository)
   const repositoryDir = join(opts.destination, 'repository')
   await fsp.mkdir(repositoryDir, { recursive: true, mode: 0o700 })
   const controller = new AbortController()

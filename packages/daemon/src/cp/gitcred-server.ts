@@ -427,7 +427,8 @@ export class GitCredServer {
         denied: 'repository'
       })
     }
-    const key = { plane: 'git' as const, repo, provider: 'gitlab' as const }
+    // The read PAT on the glab plane, keyed by project path: never the git-plane entry an additional-repository grant may hold writable.
+    const key = { plane: 'glab' as const, repo, provider: 'gitlab' as const }
     if (req.op === 'erase') {
       this.cache.invalidate(req.agentId, req.password, key)
       this.audit('erased', req.agentId, 'git', repo)

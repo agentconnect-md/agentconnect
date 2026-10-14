@@ -288,7 +288,7 @@ describe('credentialed GitLab Sources (daemon path)', () => {
         resolved.push(`${agentId}:${entry.ref ?? 'HEAD'}`)
         return { ok: true, commit: COMMIT, ref: 'refs/heads/main', checkedAt: 0 }
       },
-      token: async (agentId, projectId) => `token-${agentId}-${projectId}`
+      token: async (agentId, repository) => `token-${agentId}-${repository.externalId}`
     })
     const archive = tarGzip({ 'skills/alpha/SKILL.md': '# alpha\n' }, `skills-${COMMIT.slice(0, 12)}`)
     const calls: Array<{ url: string; token: string | null; redirect: RequestInit['redirect'] }> = []

@@ -3492,8 +3492,13 @@ export class Daemon {
       host: (agentId) => this.agents.get(agentId)?.gitlabHost,
       resolve: (entry, agentId) =>
         resolveCredentialedSkillRef(this.codeHostRefs, entry, agentId, this.agents.get(agentId)?.gitlabHost),
-      token: async (agentId, projectId) =>
-        (await skillTokens.get(agentId, gitlabRepository.readTokenAsk({ externalId: projectId }))).token
+      token: async (agentId, repository) =>
+        (
+          await skillTokens.get(
+            agentId,
+            gitlabRepository.readTokenAsk({ externalId: repository.externalId, repoFullName: repository.path })
+          )
+        ).token
     })
   }
 

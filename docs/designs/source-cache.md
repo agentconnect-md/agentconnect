@@ -1092,8 +1092,11 @@ In-pod acquisition (P3, CP3.3b, in-pod path):
   field. The planned commit is the daemon's `resolveRef`, as for GitHub.
 - The pod-subject window names a GitLab project as `gitlab:<path>`, which can
   never collide with a GitHub `owner/repo`. Through that window alone, `gitcred`
-  serves the project's read credential by numeric id on the `git` plane. The
-  shim hands the Git child a helper for that instance only.
+  serves the project's read credential by numeric id for a `git` ask. It is
+  cached as the read token keyed by project path, so it never shares an entry
+  that an additional-repository grant may hold writable. The daemon path keys
+  its own read token the same way, apart from the workspace's. The shim hands
+  the Git child a helper for that instance only.
 - A GitLab Source's `cred` cache key is `gitlab:<projectId>`. An anonymous
   Source off GitHub keys `anon` on its URL.
 - Anything a pod cannot carry stays on the daemon path above. That covers a

@@ -633,7 +633,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       expect(await askVia(sockPath, greeting, window.capability, gitlab)).toMatchObject({ ok: true })
       expect(gets.at(-1)).toEqual({
         agentId: 'a1',
-        opts: { plane: 'git', repo: PROJECT, provider: 'gitlab', externalRepoId: '77', requestedAccess: 'read' }
+        opts: { plane: 'glab', repo: PROJECT, provider: 'gitlab', externalRepoId: '77', requestedAccess: 'read' }
       })
     })
 
