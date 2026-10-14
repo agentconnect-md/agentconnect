@@ -294,3 +294,30 @@ describe('begun workspace uploads', () => {
     expect(tickets.rows.size).toBe(0)
   })
 })
+
+describe('console uploads', () => {
+  it('reserves an upload under its agent and looks it up under the asking agent', async () => {
+    const seen: unknown[] = []
+    const transfer: FileTransfer = {
+      ...signer(),
+      grantUpload: async (input) => {
+        seen.push({ grantUpload: input })
+        return { uploadId: 'u', url: 'https://store.example.test/u', headers: {}, expiresAt: 1 }
+      },
+      uploadedFileUrl: async (input) => {
+        seen.push({ uploadedFileUrl: input })
+        return undefined
+      }
+    }
+    const unused = control({ exists: false }, async () => ({ bytes: 0, sha256: SHA }))
+    const service = createFileTransferService({ transfer, control: unused, tickets: memoryTickets() })
+    await service.reserveUpload({ orgId: 'org', agentId: 'agent-a', size: 5, sha256: SHA })
+    const uploadId = '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c'
+    const req = { agentId: 'agent-b', uploadId, size: 5, sha256: SHA, network: 'public' as const }
+    expect(await service.uploadedFile('org', req)).toEqual({})
+    expect(seen).toEqual([
+      { grantUpload: { org: 'org', agentId: 'agent-a', size: 5, sha256: SHA } },
+      { uploadedFileUrl: { org: 'org', ...req } }
+    ])
+  })
+})

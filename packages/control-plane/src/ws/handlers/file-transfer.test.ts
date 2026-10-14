@@ -35,7 +35,7 @@ describe('transfer/get', () => {
   it('signs a GET only for an agent this daemon serves, in that agent’s organization', async () => {
     const { agent, fileTransfer, conn, deps, c } = setup()
     await handleTransferGet(get, c, deps)
-    expect(fileTransfer.uploadedFile).toHaveBeenCalledWith(orgId, expect.objectContaining({ uploadId }))
+    expect(fileTransfer.uploadedFile).toHaveBeenCalledWith(orgId, expect.objectContaining({ agentId, uploadId }))
     expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'transfer/get/ok', {
       url: 'https://store.example.test/g',
       expiresAt: 1
@@ -48,6 +48,16 @@ describe('transfer/get', () => {
     expect(fileTransfer.uploadedFile).toHaveBeenCalledTimes(1)
     expect(conn.sendError).toHaveBeenCalledTimes(2)
     expect(conn.sendError).toHaveBeenLastCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
+  })
+
+  it('looks the upload up under the stored agent id, not the frame’s spelling of it', async () => {
+    const { fileTransfer, deps, c } = setup()
+    await handleTransferGet(
+      frameOf('transfer/get', { agentId: agentId.toUpperCase(), uploadId, size: 5, sha256, network: 'public' }),
+      c,
+      deps
+    )
+    expect(fileTransfer.uploadedFile).toHaveBeenCalledWith(orgId, expect.objectContaining({ agentId, uploadId }))
   })
 
   it('refuses everything on a deployment without a transfer bucket', async () => {

@@ -38,14 +38,14 @@ type Download = Parameters<FileTransferService['workspaceDownload']>[0]
 
 class TransferSpy implements FileTransferService {
   readonly maxBytes = 1024
-  uploads: Array<{ orgId: string; size: number; sha256: string }> = []
+  uploads: Array<{ orgId: string; agentId: string; size: number; sha256: string }> = []
   downloads: Download[] = []
   statuses: Array<{ agentId: string; operationId: string }> = []
   failure: Error | null = null
   /** When set, a download answers this operation as still uploading. */
   pending: string | null = null
 
-  async reserveUpload(input: { orgId: string; size: number; sha256: string }) {
+  async reserveUpload(input: { orgId: string; agentId: string; size: number; sha256: string }) {
     this.uploads.push(input)
     if (this.failure) throw this.failure
     return {
@@ -123,7 +123,7 @@ describe('POST /agents/:id/uploads', () => {
       payload: upload
     })
     expect(res.statusCode).toBe(200)
-    expect(transfer.uploads).toEqual([{ orgId: DEFAULT_ORG_ID, size: 1234, sha256: SHA }])
+    expect(transfer.uploads).toEqual([{ orgId: DEFAULT_ORG_ID, agentId: AGENT, size: 1234, sha256: SHA }])
     expect(res.json()).toMatchObject({
       uploadId: '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b',
       headers: { 'x-amz-checksum-sha256': SHA },

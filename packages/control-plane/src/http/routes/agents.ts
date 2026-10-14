@@ -4170,6 +4170,7 @@ export function agentRoutes(deps: HttpDeps) {
         try {
           const grant = await transfers.reserveUpload({
             orgId: agent.orgId,
+            agentId: agent.id,
             size: req.body.size,
             sha256: req.body.sha256
           })
