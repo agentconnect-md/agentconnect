@@ -3,6 +3,7 @@ import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { deriveTitle } from '../session/derive-title.js'
 import {
   SUBSESSION_COORDINATE_PREFIX,
+  isDelegationCoordinate,
   isSubsessionCoordinate,
   isTaskCoordinate,
   subsessionCoordinate
@@ -38,8 +39,16 @@ import type { WebchatTransport } from '../webchat/transport.js'
 import type { WebchatTurnContext } from '../webchat/types.js'
 import { formatErr } from '../daemon/text.js'
 import { ACTIVATION_PAIRING_TTL_MS, activationKey } from '../daemon/helpers.js'
-import { pendingTurnKey, sdkLeaseKey, type CallMeta, type Pending, type QueueEntry } from '../daemon/turn-types.js'
+import {
+  FailStopError,
+  pendingTurnKey,
+  sdkLeaseKey,
+  type CallMeta,
+  type Pending,
+  type QueueEntry
+} from '../daemon/turn-types.js'
 import type {
+  ContinueSubsessionReq,
   MessageAgentReq,
   MessageAgentResult,
   ReplyToSessionReq,
@@ -59,6 +68,15 @@ export const DEFAULT_MAX_CONCURRENT_SUBSESSIONS = 3
 export const SUBSESSION_START_GRACE_MS = 10 * 60_000
 /** How long an `open` sub-session may have nothing running for it before the sweep reports it ended (assistant-mode.md §5.7). */
 export const SUBSESSION_IDLE_END_MS = 10 * 60_000
+/** send-message-guide.md §8.6: one refusal for an unknown sub-session and another conversation's, so it names nothing. */
+export const SUBSESSION_NOT_FOUND = 'subsession_not_found'
+export const SUBSESSION_NOT_FOUND_MESSAGE =
+  'This conversation has no sub-session with that id. Nothing was sent. Pass the `childSessionId` a messageSubsession ' +
+  'call here returned, or omit `sessionId` to start a new sub-session.'
+/** The previous round's end report is still on its way to this conversation, so no new round opens yet. */
+export const SUBSESSION_REPORTING = 'subsession_reporting'
+/** The same submission of a parent message is still being admitted; it is not sent twice. */
+export const SUBSESSION_INPUT_IN_FLIGHT = 'submission_in_flight'
 
 /** How a sub-session's turn, or its refused start, ended (assistant-mode.md §5.7). */
 export interface SubsessionTurnEnd {
@@ -74,6 +92,8 @@ export interface SubsessionTurnEnd {
   replayed: boolean
   /** The ended turn's hop depth, which the daemon's report continues. */
   hopCount?: number | undefined
+  /** The work round the turn's input belonged to; absent for a turn no parent input started (a background wake). */
+  round?: number | undefined
 }
 
 /** How many refused admissions a sub-session's failure report gets before it is given up (assistant-mode.md §5.7). */
@@ -103,11 +123,15 @@ export interface DaemonReport {
   hopCount?: number | undefined
 }
 
-/** What a `reporting` row holds to send its failure report again after a refusal or a restart. */
+/** What a `reporting` row holds to send its round-end report again after a refusal or a restart. */
 interface SubsessionEndReport {
   text: string
   hopCount: number
   caller: DaemonReportCaller
+  /** The round it ends; absent means the first. */
+  round?: number
+  /** How the round settles once the report is admitted; absent means `failed`. */
+  settles?: 'done' | 'failed'
 }
 
 function subsessionEndReportOf(json: string | undefined): SubsessionEndReport | undefined {
@@ -127,17 +151,38 @@ function subsessionEndReportOf(json: string | undefined): SubsessionEndReport | 
 export const REPORT_ANSWER_LANGUAGE =
   'Speak to the people here in the language they use, even when this report is in another.'
 
-/** The one short report a sub-session that ended without its own gets in its parent. */
+/** How the parent continues a sub-session, closing every round-end report. */
+const continueHint = (key: string): string =>
+  `To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${key}","message":"..."}.`
+
+/** The one report a delegated sub-session's work round ends with (send-message-guide.md §8.5). */
+function subsessionRoundReport(
+  key: string,
+  end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>,
+  output?: string
+): string {
+  if (end.outcome === 'completed') {
+    return output
+      ? `[sub-session finished] Sub-session ${key} finished this round of work. Its final output, delivered on its behalf:\n\n${output}\n\n${continueHint(key)}`
+      : `[sub-session finished] Sub-session ${key} finished this round of work without a final output; any reply it sent before this is its result. ${continueHint(key)}`
+  }
+  return `[sub-session ended] Sub-session ${key} stopped before finishing (${endReason(end)}). Anything it sent before this is all it reported. ${continueHint(key)}`
+}
+
+/** Why a round stopped, as its report names it. */
+function endReason(end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
+  return end.outcome === 'failed'
+    ? 'error'
+    : end.outcome === 'refused'
+      ? `not started: ${end.reason ?? 'refused'}`
+      : (end.reason ?? 'interrupted')
+}
+
+/** The one short report a task sub-session that ended without its own gets in its parent. */
 function subsessionEndReport(key: string, end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
   const tail = 'It sent no result; delegate again if the work is still needed.'
   if (end.outcome === 'completed') return `[sub-session ended] Sub-session ${key} ended without reporting back. ${tail}`
-  const why =
-    end.outcome === 'failed'
-      ? 'error'
-      : end.outcome === 'refused'
-        ? `not started: ${end.reason ?? 'refused'}`
-        : (end.reason ?? 'interrupted')
-  return `[sub-session ended] Sub-session ${key} stopped before finishing (${why}). ${tail}`
+  return `[sub-session ended] Sub-session ${key} stopped before finishing (${endReason(end)}). ${tail}`
 }
 
 /** Process-wide daemon state the collaboration path reads. */
@@ -271,7 +316,13 @@ export class CollabCoordinator {
   // Per sub-session: its own report and its turn's settlement take turns, so only one of them reaches the parent.
   private readonly subsessionReportLocks = new Map<string, Promise<void>>()
   // Sub-sessions whose failure report is being sent right now, so a sweep or replay does not send it alongside.
-  private readonly subsessionReportSends = new Set<string>()
+  private readonly subsessionReportSends = new Map<string, Promise<void>>()
+  // Parent messages decided into a sub-session's open round and not yet admitted, so the round does not settle under them.
+  private readonly subsessionAdmitting = new Map<string, number>()
+  // A delegated sub-session's latest final output, which its round-end report carries (send-message-guide.md §8.5).
+  private readonly subsessionFinalOutputs = new Map<string, { round?: number | undefined; text: string }>()
+  // Submissions being admitted right now, so a concurrent replay of one waits for its receipt instead.
+  private readonly subsessionSubmissions = new Set<string>()
   // When the sweep first saw an `open` sub-session with nothing running for it, keyed by its session key.
   private readonly subsessionIdleSince = new Map<string, number>()
 
@@ -337,21 +388,25 @@ export class CollabCoordinator {
       req.callerAgentId,
       req.callerTransportScope
     )
+    // send-message-guide.md §8.3: a delegated sub-session's reply is a message, so only a settled round refuses it.
+    const rounds = isDelegationCoordinate(req.callerThread)
     return await this.withSubsessionReportLock(key, async () => {
       const index = this.host.store().assistantSubsessions
-      const state = (await index.get(req.callerAgentId, key))?.state
-      if (state === 'failed' || state === 'reporting') {
+      const row = await index.get(req.callerAgentId, key)
+      const ended = rounds && row?.kind !== 'patrol' ? row !== undefined && row.state !== 'open' : undefined
+      if (ended ?? (row?.state === 'failed' || row?.state === 'reporting')) {
         this.host.log().info(`sub-session ${key}: a report after its end was already reported is not delivered`)
         return { delivered: false, reason: 'subsession_ended' }
       }
       const result = await this.deliverReply(req)
-      if (result.delivered) await this.markSubsessionReported(req.callerAgentId, key)
+      if (result.delivered && ended === undefined) await this.markSubsessionReported(req.callerAgentId, key)
       return result
     })
   }
 
   /** assistant-mode.md §5.7: once a sub-session's turn ends, leave `open` and report a failure it will not report itself, held in `reporting` until admitted. */
   async settleSubsessionTurn(end: SubsessionTurnEnd): Promise<void> {
+    if (isDelegationCoordinate(sessionThreadOf(end.msg))) return await this.settleSubsessionRound(end)
     const { agentId, key } = end
     const inferred = this.subsessionInferences.get(key)
     this.subsessionInferences.delete(key)
@@ -392,6 +447,46 @@ export class CollabCoordinator {
     }
   }
 
+  /** send-message-guide.md §8.4–§8.5: a delegated sub-session's turn ended; once nothing of its round is left, claim the round's one report. */
+  private async settleSubsessionRound(end: SubsessionTurnEnd): Promise<void> {
+    const { agentId, key } = end
+    try {
+      if (end.replayed) return
+      const index = this.host.store().assistantSubsessions
+      const claimed = await this.withSubsessionReportLock(key, async () => {
+        const row = await index.get(agentId, key)
+        if (row?.state !== 'open') return false
+        const round = row.round ?? 1
+        // A late outcome of an older round never settles a newer one.
+        if (end.round !== undefined && end.round !== round) return false
+        const continues = end.outcome === 'completed' || end.outcome === 'interrupted'
+        // Input admitted into this round and not yet run keeps it going; its own turn settles it.
+        if (continues && ((this.host.serialQueue().get(key)?.length ?? 0) > 0 || this.subsessionAdmitting.has(key)))
+          return false
+        if (end.outcome === 'completed' && (await this.awaitsBackgroundWake(agentId, key))) return false
+        const stashed = this.subsessionFinalOutputs.get(key)
+        this.subsessionFinalOutputs.delete(key)
+        const output = stashed && (stashed.round === undefined || stashed.round === round) ? stashed.text : undefined
+        const report: SubsessionEndReport = {
+          text: subsessionRoundReport(key, end, end.outcome === 'completed' ? output : undefined),
+          hopCount: end.hopCount ?? 0,
+          caller: {
+            platform: end.msg.platform,
+            channel: end.msg.channel,
+            thread: sessionThreadOf(end.msg),
+            ...(end.msg.transportScope !== undefined ? { transportScope: end.msg.transportScope } : {})
+          },
+          ...(round > 1 ? { round } : {}),
+          settles: end.outcome === 'completed' ? 'done' : 'failed'
+        }
+        return await index.claimReport(agentId, key, JSON.stringify(report), round)
+      })
+      if (claimed) void this.sendSubsessionEndReport(agentId, key)
+    } catch (err) {
+      this.host.log().warn(`sub-session ${key}: could not settle its round: ${formatErr(err)}`)
+    }
+  }
+
   /** A background task the sub-session started is still live, or its completion wake is armed. */
   private async awaitsBackgroundWake(agentId: string, key: string): Promise<boolean> {
     const sessionId = (await this.host.store().getSession(key))?.acpSessionId ?? undefined
@@ -403,7 +498,12 @@ export class CollabCoordinator {
   /** §5.7: send a `reporting` row's failure report; once admitted it is `failed`, and a refusal counts an attempt until the last gives up. */
   private async sendSubsessionEndReport(agentId: string, key: string): Promise<void> {
     if (this.subsessionReportSends.has(key)) return
-    this.subsessionReportSends.add(key)
+    const sending = this.sendSubsessionEndReportOnce(agentId, key)
+    this.subsessionReportSends.set(key, sending)
+    await sending
+  }
+
+  private async sendSubsessionEndReportOnce(agentId: string, key: string): Promise<void> {
     try {
       const index = this.host.store().assistantSubsessions
       const row = await index.get(agentId, key)
@@ -426,11 +526,12 @@ export class CollabCoordinator {
           : report.caller,
         parentSessionId: row.parentSessionId,
         text: report.text,
-        reportId: `subsession-end:${key}`,
+        // Each round's report is its own, so a later round's is not mistaken for an earlier one already admitted.
+        reportId: (report.round ?? 1) > 1 ? `subsession-end:${key}:${report.round}` : `subsession-end:${key}`,
         hopCount: report.hopCount
       })
       if (result.admitted) {
-        if (await index.settleReport(agentId, key))
+        if (await index.settleReport(agentId, key, report.settles ?? 'failed'))
           await this.markChildParentReply(key, row.parentSessionId, 'queued-for-parent')
         return
       }
@@ -502,6 +603,7 @@ export class CollabCoordinator {
   private subsessionRunning(agentId: string, key: string): boolean {
     if (this.host.activeGateEntries().has(key) || (this.host.serialQueue().get(key)?.length ?? 0) > 0) return true
     if (this.subsessionInferences.has(key) || this.subsessionReportSends.has(key)) return true
+    if (this.subsessionAdmitting.has(key)) return true
     for (const p of this.host.pending().values())
       if (p.entry.agentId === agentId && p.plan.sessionKey === key) return true
     return false
@@ -515,7 +617,8 @@ export class CollabCoordinator {
       const index = this.host.store().assistantSubsessions
       const caller = await this.subsessionCaller(row)
       const claimed = await this.withSubsessionReportLock(key, async () => {
-        if ((await index.get(agentId, key))?.state !== 'open' || this.subsessionRunning(agentId, key)) return false
+        const current = await index.get(agentId, key)
+        if (current?.state !== 'open' || this.subsessionRunning(agentId, key)) return false
         if (!caller) {
           await index.finish(agentId, key, 'failed')
           this.host
@@ -523,8 +626,19 @@ export class CollabCoordinator {
             .warn(`sub-session ${key} has nothing running, and its place is unknown; settled with no report`)
           return false
         }
-        const text = subsessionEndReport(key, { outcome: 'interrupted', reason: 'no longer running' })
-        return await index.claimReport(agentId, key, JSON.stringify({ text, hopCount: 0, caller }))
+        const ended = { outcome: 'interrupted' as const, reason: 'no longer running' }
+        const round = current.round ?? 1
+        if (!isDelegationCoordinate(caller.thread)) {
+          const text = subsessionEndReport(key, ended)
+          return await index.claimReport(agentId, key, JSON.stringify({ text, hopCount: 0, caller }))
+        }
+        const report: SubsessionEndReport = {
+          text: subsessionRoundReport(key, ended),
+          hopCount: 0,
+          caller,
+          ...(round > 1 ? { round } : {})
+        }
+        return await index.claimReport(agentId, key, JSON.stringify(report), round)
       })
       if (!claimed) return
       this.host
@@ -1024,6 +1138,7 @@ export class CollabCoordinator {
       // §5.3: `toAgent.needsReply` — tell the child to report its outcome back to that origin.
       // Meaningless without an origin to reply into, so it rides the same condition.
       ...(needsReply && originSessionId !== undefined ? { needsReply: true } : {}),
+      ...(selfDelegation ? { subsessionRound: 1 } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
       ...(originSessionId !== undefined && (await this.host.store().isCaptureExcluded(req.callerAgentId, callerKey))
@@ -1210,7 +1325,8 @@ export class CollabCoordinator {
         outcome: 'failed',
         reason: error,
         replayed: false,
-        hopCount: callMeta.hopCount
+        hopCount: callMeta.hopCount,
+        round: callMeta.subsessionRound
       })
       return
     }
@@ -1325,6 +1441,14 @@ export class CollabCoordinator {
     callMeta: CallMeta | undefined,
     p: { reply: { text: string }; outputSuppressed?: string | undefined }
   ): Promise<void> {
+    // send-message-guide.md §8.5: a delegated sub-session's output rides its round-end report instead.
+    if (isDelegationCoordinate(sessionThreadOf(msg))) {
+      const output = p.outputSuppressed ? '' : p.reply.text.trim()
+      if (output && !isNoResponseBody(output))
+        this.subsessionFinalOutputs.set(childKey, { round: callMeta?.subsessionRound, text: output })
+      else this.subsessionFinalOutputs.delete(childKey)
+      return
+    }
     if (this.host.draining()) return
     if (!callMeta?.needsReply || callMeta.originSessionId === undefined) return
     if (p.outputSuppressed) return
@@ -1415,7 +1539,302 @@ export class CollabCoordinator {
 
   async replyToSession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
     if (isSubsessionCoordinate(req.callerThread)) return await this.reportFromSubsession(req)
+    // send-message-guide.md §8.2: a reply into a delegated sub-session is parent input, so it takes the round accounting.
+    const target = await this.host.store().getSessionByOutwardId(req.sessionId)
+    if (target && target.agentId === req.callerAgentId && isDelegationCoordinate(target.thread)) {
+      const row = await this.host.store().assistantSubsessions.get(target.agentId, target.key)
+      if (row && row.kind !== 'patrol') return await this.replyIntoSubsession(req, target.key)
+    }
     return await this.deliverReply(req)
+  }
+
+  /** The reciprocal reply from a parent into its own sub-session: origin-authorized as before, then admitted like `messageSubsession`. */
+  private async replyIntoSubsession(req: ReplyToSessionReq, childKey: string): Promise<ReplyToSessionResult> {
+    const callerKey = sessionKey(
+      req.platform,
+      req.callerChannel,
+      req.callerThread,
+      req.callerAgentId,
+      req.callerTransportScope
+    )
+    const inbound = this.host.activeTurnCallMeta().get(callerKey)
+    const callerRec = await this.host.store().getSession(callerKey)
+    const authorizedOrigin = inbound?.originSessionId ?? callerRec?.originSessionId ?? undefined
+    if (!authorizedOrigin || req.sessionId !== authorizedOrigin) return { delivered: false, reason: 'not_authorized' }
+    const result = await this.continueSubsession({ ...req, sessionId: childKey })
+    if (result.delivered) return { delivered: true, targetSession: childKey }
+    const reason: ReplyToSessionResult['reason'] =
+      result.reason === SUBSESSION_NOT_FOUND
+        ? 'not_authorized'
+        : result.reason === 'hop_limit' || result.reason === 'queue_full'
+          ? result.reason
+          : 'busy'
+    return { delivered: false, ...(reason === 'not_authorized' ? {} : { targetSession: childKey }), reason }
+  }
+
+  /** The direct child this caller session opened, by its key or outward id; anything else is undefined, which names nothing. */
+  private async ownedSubsession(
+    agentId: string,
+    id: string,
+    callerKey: string
+  ): Promise<{ row: AssistantSubsession; caller: DaemonReportCaller } | undefined> {
+    const store = this.host.store()
+    const index = store.assistantSubsessions
+    const row =
+      (await index.get(agentId, id)) ??
+      (await store
+        .getSessionByOutwardId(id, agentId)
+        .then((child) => (child ? index.get(agentId, child.key) : undefined)))
+    if (!row || row.kind === 'patrol' || row.parentSessionKey !== callerKey) return undefined
+    // The recorded parent, by outward id too: a rotated or recreated caller session is not the one that opened it.
+    if (!(await store.getSession(callerKey))) return undefined
+    const callerId = await store.ensureOutwardSessionId(callerKey, agentId, this.host.clock().now())
+    if (row.parentSessionId !== callerId) return undefined
+    const caller = await this.subsessionCaller(row)
+    if (!caller || !isDelegationCoordinate(caller.thread)) return undefined
+    return { row, caller }
+  }
+
+  /**
+   * send-message-guide.md §8: deliver a parent's message into its existing direct child — the open round when one runs, else
+   * a new round under the per-agent cap — through the child's serial input path; never creates or retargets a session.
+   */
+  async continueSubsession(req: ContinueSubsessionReq): Promise<MessageAgentResult> {
+    const agentId = req.callerAgentId
+    const callerKey = sessionKey(req.platform, req.callerChannel, req.callerThread, agentId, req.callerTransportScope)
+    const refuse = (reason: string, message: string, targetSession = req.sessionId): MessageAgentResult => ({
+      delivered: false,
+      targetSession,
+      reason,
+      message
+    })
+    const notFound = () => refuse(SUBSESSION_NOT_FOUND, SUBSESSION_NOT_FOUND_MESSAGE)
+    if (isSubsessionCoordinate(req.callerThread)) return notFound()
+    const owned = await this.ownedSubsession(agentId, req.sessionId, callerKey)
+    if (!owned) return notFound()
+    const { caller } = owned
+    const key = owned.row.childSessionKey
+    const index = this.host.store().assistantSubsessions
+    const submissionId = req.submissionId ?? randomUUID()
+    // Scoped to the calling session, so a submission id names nothing outside it.
+    const id = createHash('sha256').update(`${agentId}\n${callerKey}\n${submissionId}`).digest('hex').slice(0, 32)
+    const deliveryId = `subsession-input:${id}`
+    const receiptId = `subsession-input-receipt:${id}`
+    // §8.6: a replayed submission gets its first receipt back, and never a second input, slot or round.
+    const replayed = async (): Promise<MessageAgentResult | undefined> => {
+      const prior = await index.getInput(agentId, id)
+      if (prior?.receipt) return JSON.parse(prior.receipt) as MessageAgentResult
+      if (!prior) return undefined
+      if (this.subsessionSubmissions.has(id) || !(await this.host.store().hasInbox(receiptId)))
+        return refuse(
+          SUBSESSION_INPUT_IN_FLIGHT,
+          'This same message is already being delivered to the sub-session; do not send it again.',
+          key
+        )
+      return { delivered: true, targetSession: key, subsession: true }
+    }
+    const prior = await replayed()
+    if (prior) return prior
+    if (!(await index.claimInput(agentId, id, key, this.host.clock().now()))) {
+      return (
+        (await replayed()) ?? refuse(SUBSESSION_INPUT_IN_FLIGHT, 'This same message is already being delivered.', key)
+      )
+    }
+    this.subsessionSubmissions.add(id)
+    try {
+      const result = await this.admitSubsessionInput(req, { key, caller, callerKey, deliveryId, receiptId, refuse })
+      await index.settleInput(agentId, id, result.round, JSON.stringify(result.receipt))
+      return result.receipt
+    } finally {
+      this.subsessionSubmissions.delete(id)
+    }
+  }
+
+  /** Decide the round under the report lock, then await the child's admission outside it with the round held open. */
+  private async admitSubsessionInput(
+    req: ContinueSubsessionReq,
+    at: {
+      key: string
+      caller: DaemonReportCaller
+      callerKey: string
+      deliveryId: string
+      receiptId: string
+      refuse: (reason: string, message: string, targetSession?: string) => MessageAgentResult
+    }
+  ): Promise<{ round: number; receipt: MessageAgentResult }> {
+    const agentId = req.callerAgentId
+    const { key, caller, callerKey, refuse } = at
+    const index = this.host.store().assistantSubsessions
+    const inbound = this.host.activeTurnCallMeta().get(callerKey)
+    if (inbound !== undefined && hasReachedAgentCallHopLimit(inbound.hopCount + 1))
+      return { round: 0, receipt: refuse('hop_limit', 'The agent-call hop limit is reached. Nothing was sent.', key) }
+    // §8.4: retained idle work starts again only where this daemon may still run it.
+    if (this.host.draining() || this.host.agents().get(agentId)?.pause === true || !this.host.servesAgent(agentId)) {
+      return {
+        round: 0,
+        receipt: refuse(
+          'paused',
+          'This agent is paused or draining, so the sub-session cannot take work now. Nothing was sent.',
+          key
+        )
+      }
+    }
+    type Decided = { refusal: MessageAgentResult } | { round: number; reopenedFrom: 'done' | 'failed' | undefined }
+    const decided = await this.withSubsessionReportLock(key, async (): Promise<Decided> => {
+      let row = await index.get(agentId, key)
+      // The previous round's report is being sent right now: let it land, then open the next round.
+      if (row?.state === 'reporting') {
+        await this.subsessionReportSends.get(key)
+        row = await index.get(agentId, key)
+      }
+      if (!row) return { refusal: refuse(SUBSESSION_NOT_FOUND, SUBSESSION_NOT_FOUND_MESSAGE) }
+      const round = row.round ?? 1
+      if (row.state === 'reporting') {
+        return {
+          refusal: refuse(
+            SUBSESSION_REPORTING,
+            'Its previous round’s report has not reached this conversation yet, so it cannot take new work now. ' +
+              'Nothing was sent; end this turn and message it again after the report arrives.',
+            key
+          )
+        }
+      }
+      if (row.state === 'open') {
+        this.subsessionAdmitting.set(key, (this.subsessionAdmitting.get(key) ?? 0) + 1)
+        return { round, reopenedFrom: undefined }
+      }
+      const limit = this.subsessionLimit(agentId)
+      const now = this.host.clock().now()
+      const opened = await index.reopenWithinLimit(agentId, key, round, {
+        limit,
+        startedSince: now - SUBSESSION_START_GRACE_MS
+      })
+      if (opened !== 'opened') {
+        return {
+          refusal:
+            opened === 'limit'
+              ? refuse(
+                  SUBSESSION_LIMIT,
+                  `You already have ${limit} sub-sessions running, the limit. Nothing was sent; message it again once one reports.`,
+                  key
+                )
+              : refuse('busy', 'The sub-session changed while this message was admitted. Nothing was sent.', key)
+        }
+      }
+      this.subsessionAdmitting.set(key, (this.subsessionAdmitting.get(key) ?? 0) + 1)
+      return { round: round + 1, reopenedFrom: row.state as 'done' | 'failed' }
+    })
+    if ('refusal' in decided) return { round: 0, receipt: decided.refusal }
+    const { round, reopenedFrom } = decided
+    let accepted: { accepted: boolean; reason?: string }
+    try {
+      accepted = await this.dispatchSubsessionInput(req, { ...at, round, inbound })
+    } finally {
+      const left = (this.subsessionAdmitting.get(key) ?? 1) - 1
+      if (left > 0) this.subsessionAdmitting.set(key, left)
+      else this.subsessionAdmitting.delete(key)
+    }
+    if (accepted.accepted) {
+      this.host.noteSubsessionOpened?.(key, callerKey)
+      this.host.log().info(`messageSubsession: ${agentId} → ${key} round=${round} delivery=${at.deliveryId}`)
+      return { round, receipt: { delivered: true, targetSession: key, subsession: true } }
+    }
+    // A round this message opened never started, so it goes back to how it was; the parent hears the refusal now.
+    if (reopenedFrom) await index.finish(agentId, key, reopenedFrom, round)
+    const reason = accepted.reason ?? 'busy'
+    return {
+      round,
+      receipt: refuse(
+        reason,
+        `The sub-session did not take the message (${reason}). Nothing was sent; do not retry automatically.`,
+        key
+      )
+    }
+  }
+
+  /** One parent input on the child's own coordinate, framed and owed back to its recorded parent. */
+  private async dispatchSubsessionInput(
+    req: ContinueSubsessionReq,
+    at: {
+      key: string
+      caller: DaemonReportCaller
+      callerKey: string
+      deliveryId: string
+      receiptId: string
+      round: number
+      inbound: CallMeta | undefined
+    }
+  ): Promise<{ accepted: boolean; reason?: string }> {
+    const agentId = req.callerAgentId
+    const { key, caller, callerKey, deliveryId, round, inbound } = at
+    const store = this.host.store()
+    const parentSessionId = (await store.assistantSubsessions.get(agentId, key))?.parentSessionId
+    if (parentSessionId === undefined) return { accepted: false, reason: 'not_found' }
+    const callerSession = await store.getSession(callerKey)
+    const externalOrigin = await this.host.externalOriginForSession(agentId, callerKey)
+    const callMeta: CallMeta = {
+      callFrom: agentId,
+      hopCount: inbound ? inbound.hopCount + 1 : 0,
+      deliveryId,
+      // §8.2: the child's origin is its recorded parent on every input, never the caller's own current origin.
+      originSessionId: parentSessionId,
+      originCodeHostReplyTarget: codeHostReplySnapshot(
+        callerSession,
+        this.host.activeGateEntries().get(callerKey)?.githubReply
+      ),
+      originCoords: {
+        platform: req.platform as NonNullable<CallMeta['originCoords']>['platform'],
+        channel: req.callerChannel,
+        ...(req.callerThread ? { thread: req.callerThread } : {})
+      },
+      ...(externalOrigin ? { externalOrigin } : {}),
+      needsReply: true,
+      subsessionRound: round,
+      ...((await store.isCaptureExcluded(agentId, callerKey)) ? { parentPrivate: true } : {})
+    }
+    const resolved = this.host.resolveCpAgent(agentId, caller.platform)
+    const msg: NormalizedMessage = {
+      msgId: `agentcall:${caller.channel}:${deliveryId}`,
+      traceId: deliveryId,
+      source: 'agent',
+      platform: caller.platform as NormalizedMessage['platform'],
+      channel: caller.channel,
+      thread: caller.thread,
+      ...(caller.transportScope !== undefined ? { transportScope: caller.transportScope } : {}),
+      transcriptTs: monotonicTs(),
+      sender: { id: agentId, isBot: true },
+      text: `From your own main conversation (session ${parentSessionId}), a new message for this background sub-session: ${req.text}`,
+      mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
+      isDm: false,
+      headless: true
+    }
+    if (this.childSessionLinks.size >= 2000) this.childSessionLinks.clear()
+    this.childSessionLinks.set(key, {
+      parentSessionId,
+      agentId,
+      rowUpdatedAtAtAdmission: (await store.getSession(key))?.updatedAt ?? null,
+      replyRequested: true,
+      replyState: 'awaiting',
+      deliveryId
+    })
+    let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
+    const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => (settleAdmission = resolve))
+    void this.host
+      .dispatch(agentId, msg, resolved?.integrationId, undefined, callMeta, {
+        requireDurable: true,
+        receiptId: at.receiptId,
+        onAdmission: (result) => settleAdmission(result)
+      })
+      .catch(async (err) => {
+        settleAdmission({ accepted: false, reason: 'error' })
+        // A queued input a stop or fail-stop dropped: the turn that ended the round settles it.
+        if (err instanceof FailStopError) return
+        this.host.log().error(`messageSubsession dispatch failed for "${key}": ${formatErr(err)}`)
+        await this.failAgentDispatch(key, msg, callMeta, err, true).catch((reportErr) =>
+          this.host.log().error(`messageSubsession failure report failed for "${key}": ${formatErr(reportErr)}`)
+        )
+      })
+    return await admitted
   }
 
   private async deliverReply(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {

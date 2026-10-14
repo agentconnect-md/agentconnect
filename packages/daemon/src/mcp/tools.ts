@@ -26,9 +26,11 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
     description:
       'Send outside your current conversation. Required action: callAgent asks an agent to work (add channel to ' +
       'start visible work there; your own id with channel works as yourself in that channel); messageSubsession ' +
-      'starts a background sub-session of your own for long work (message only); replyToSession sends to your ' +
-      'origin by sessionId (a sub-session’s origin is its parent); postMessage reaches a person, a channel, or ' +
-      'another existing thread. Background work reports completion or failure automatically. For your current ' +
+      'starts a background sub-session of your own for long work (omit sessionId), or sends more work to one you ' +
+      'started (sessionId: its childSessionId), even after it finished; replyToSession sends to your origin by ' +
+      'sessionId (a sub-session’s origin is its parent, which it can message any time); postMessage reaches a ' +
+      'person, a channel, or another existing thread. Background work reports each round’s completion or failure ' +
+      'automatically. For your current ' +
       'conversation, write your ordinary reply. When requesting a peer’s result or completion notice, use ' +
       'toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
       'examples. Calls without action fail without sending anything.',
@@ -64,7 +66,12 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
         },
         channel: { type: 'string', minLength: 1, description: 'Destination channel or chat.' },
         thread: { type: 'string', minLength: 1, description: 'Existing thread root, for a bare-channel postMessage.' },
-        sessionId: { type: 'string', minLength: 1, description: 'replyToSession: your origin’s outward session id.' },
+        sessionId: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'replyToSession: your origin’s outward session id. messageSubsession: a childSessionId to continue.'
+        },
         attachment: { type: 'string', minLength: 1, description: 'Received image name from an [attached: …] marker.' },
         platform: {
           type: 'string',

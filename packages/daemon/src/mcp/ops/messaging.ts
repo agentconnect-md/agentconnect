@@ -204,6 +204,20 @@ export interface MessageAgentReq {
   postless?: boolean
 }
 
+/** A parent's message into its own existing sub-session (send-message-guide.md §8.1): only `sessionId` and `text` come from the model. */
+export interface ContinueSubsessionReq {
+  callerAgentId: string
+  platform: string
+  callerTransportScope?: string
+  callerChannel: string
+  callerThread: string
+  /** The child's handle: the `childSessionId` its creation returned, or its outward id. */
+  sessionId: string
+  text: string
+  /** A stable id of this submission, so a replay of it is admitted once; minted by the daemon when absent. */
+  submissionId?: string
+}
+
 /** The result of an agent→agent delivery. `delivered:false` carries a typed `reason`
  *  (`self` / `invalid_target` / `not_allowed` / `not_local` / `no_agent`, or a cross-daemon
  *  verdict such as `not_ready` — a target nobody could be addressed at within the retry
@@ -292,6 +306,10 @@ export interface MessagingDeps extends GatewayDeps {
   preflightWake?: (req: MessageAgentReq) => string | null
   /** Backs `sendMessage`'s SessionTarget (session-concept §5.2): origin-only, fail-closed reply into the caller's origin session. */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
+  /** Backs `messageSubsession` with `sessionId` (send-message-guide.md §8): the caller's own direct child only; absent ⇒ unavailable. */
+  continueSubsession?: (req: ContinueSubsessionReq) => Promise<MessageAgentResult>
+  /** The transport's stable id of this tool call, when it has one, so a resent call is one submission. */
+  callId?: string
   /** How a channel-ROOT post this session just made relates to the conversations the session is
    *  ALREADY part of: `parent` = the origin session waiting on an answer (named, so the caller can
    *  address it), `self` = this session's own conversation, undefined = an unrelated destination,

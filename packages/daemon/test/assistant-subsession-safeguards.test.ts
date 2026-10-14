@@ -194,6 +194,13 @@ const delegation = (
   ...over
 })
 
+/** How a delegated sub-session's round-end report continues it (send-message-guide.md §8.5). */
+const continueHint = (key: string) =>
+  `To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${key}","message":"..."}.`
+/** The report of a round that stopped before finishing. */
+const stoppedReport = (key: string, why: string) =>
+  `[sub-session ended] Sub-session ${key} stopped before finishing (${why}). Anything it sent before this is all it reported. ${continueHint(key)}\n\n${REPORT_ANSWER_LANGUAGE}`
+
 const stateOf = async (d: any, key: string) => (await d.store.assistantSubsessions.get('bot-a', key))?.state
 const rowOf = async (d: any, key: string) => await d.store.assistantSubsessions.get('bot-a', key)
 
@@ -254,9 +261,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     const [report] = reports()
     expect(report!.agentId).toBe('bot-a')
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
-    expect(report!.msg.text).toBe(
-      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (${reason}). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
-    )
+    expect(report!.msg.text).toBe(stoppedReport(res.targetSession, reason))
     // It continues the delegation's hop chain and comes from the sub-session, under a delivery id of its own.
     expect(report!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
     expect(report!.callMeta.deliveryId).toMatch(/^assistant-report:[0-9a-f]{32}$/)
@@ -282,13 +287,13 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     expect(reports()[0]!.msg).toMatchObject({
       channel: 'C1',
       sessionThread: caller.coordinate,
-      text: `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (error). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
+      text: stoppedReport(res.targetSession, 'error')
     })
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await daemon.stop()
   })
 
-  it('reports nothing more for a sub-session that already reported, even when its turn then fails', async () => {
+  it('still reports the failure of a round whose sub-session replied before its turn failed', async () => {
     const { daemon, d, rt, dispatched, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(d)
     // The runtime reports through `sendMessage {sessionId}` mid-turn, then dies.
@@ -307,15 +312,16 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     }
 
     const res = await d.collab.messageAgent(delegation(caller))
-    await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(reports()).toHaveLength(2), WAIT)
     await settled()
 
-    expect(reports().map((c) => c.msg.text)).toEqual(['PR opened'])
-    expect(await stateOf(d, res.targetSession)).toBe('done')
+    // send-message-guide.md §8.3: the reply is a message, not the round's outcome.
+    expect(reports().map((c) => c.msg.text)).toEqual(['PR opened', stoppedReport(res.targetSession, 'error')])
+    expect(await stateOf(d, res.targetSession)).toBe('failed')
     await daemon.stop()
   })
 
-  it('settles a cleanly finished sub-session done through its inferred report, with nothing extra', async () => {
+  it('settles a cleanly finished sub-session done through its round-end report, with nothing extra', async () => {
     const { daemon, d, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(d)
 
@@ -323,7 +329,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
 
-    expect(reports()[0]!.msg.text).toMatch(/^\[inferred reply\]/)
+    expect(reports()[0]!.msg.text).toMatch(/^\[sub-session finished\]/)
     expect(reports()).toHaveLength(1)
     expect(await stateOf(d, res.targetSession)).toBe('done')
     await daemon.stop()
@@ -347,7 +353,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
     expect(rt.subPrompts).toHaveLength(2)
-    expect(reports()[0]!.msg.text).toMatch(/^\[inferred reply\]/)
+    expect(reports()[0]!.msg.text).toMatch(/^\[sub-session finished\]/)
     expect(await stateOf(d, res.targetSession)).toBe('done')
     await daemon.stop()
   })
@@ -494,7 +500,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     expect(reports()).toHaveLength(0)
     expect(await stateOf(d, child)).toBe('open')
 
-    // The build settles and its wake turn ends without a report: the daemon reports that it ended.
+    // The build settles and its wake turn ends: the daemon reports that the round finished.
     d.sdkLease.delete(leaseKey)
     const sub = dispatched[0]!.msg
     await d.dispatch(
@@ -516,8 +522,8 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     )
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
-    expect(reports()[0]!.msg.text).toContain(`Sub-session ${child} ended without reporting back.`)
-    expect(await stateOf(d, child)).toBe('failed')
+    expect(reports()[0]!.msg.text).toContain(`Sub-session ${child} finished this round of work`)
+    await vi.waitFor(async () => expect(await stateOf(d, child)).toBe('done'), WAIT)
     await daemon.stop()
   })
 })
@@ -595,7 +601,7 @@ describe('a sub-session’s own report and the daemon’s end report never both 
       text: 'PR opened'
     })
 
-  it('delivers only the report already admitted when an interrupt ends the turn before it is recorded', async () => {
+  it('delivers the reply already admitted and then the stop of its round when an interrupt ends the turn', async () => {
     const { daemon, d, rt, dispatched, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(d)
     // Hold the report after the parent admitted it, before its bookkeeping runs.
@@ -619,13 +625,15 @@ describe('a sub-session’s own report and the daemon’s end report never both 
     expect(reports()).toHaveLength(1)
     await d.interruptTurn('bot-a', res.targetSession, 'stop')
     endTurn('cancelled')
+    // The parent's later prompt names sub-sessions too; it answers.
+    rt.behavior.sub = 'answer'
     await vi.waitFor(() => expect(settling).toHaveBeenCalled(), WAIT)
     releaseReport()
     expect(await report).toMatchObject({ delivered: true })
     await settled()
 
-    expect(reports().map((c) => c.msg.text)).toEqual(['PR opened'])
-    expect(await stateOf(d, res.targetSession)).toBe('done')
+    await vi.waitFor(async () => expect(await stateOf(d, res.targetSession)).toBe('failed'), WAIT)
+    expect(reports().map((c) => c.msg.text)).toEqual(['PR opened', stoppedReport(res.targetSession, 'stop')])
     await daemon.stop()
   })
 
@@ -808,9 +816,7 @@ describe('an open sub-session nothing runs for any more', () => {
 
     const [report] = reports()
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
-    expect(report!.msg.text).toBe(
-      `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (no longer running). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
-    )
+    expect(report!.msg.text).toBe(stoppedReport(res.targetSession, 'no longer running'))
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await sweepAcrossTheWait(d, clock)
     expect(reports()).toHaveLength(1)

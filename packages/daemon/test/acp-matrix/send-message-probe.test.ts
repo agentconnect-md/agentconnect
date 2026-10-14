@@ -99,20 +99,50 @@ describe('runtime matrix sendMessage probe', () => {
   it('refuses session ids outside the scenario scope', async () => {
     const reply = { action: 'replyToSession', sessionId: IDS.origin, message: 'm' }
     expect(await validateSendMessage(reply, probeTools(), { origin: IDS.origin })).toBeUndefined()
-    // The daemon refuses continuation and explicit peer sessions until they exist, whatever the scope.
+    // The daemon admits the continuation shape; its child check answers with a receipt, not an error.
     const continued = { action: 'messageSubsession', sessionId: IDS.child, message: 'm' }
-    expect(await validateSendMessage(continued, probeTools(), { child: IDS.child })).toMatch(
-      /cannot send into an existing sub-session/
+    expect(await validateSendMessage(continued, probeTools(), { child: IDS.child })).toBeUndefined()
+    expect(await validateSendMessage({ ...continued, sessionId: '' }, probeTools())).toMatch(
+      /takes `sessionId` only as the nonempty `childSessionId`/
     )
+    expect(sessionRejection(classifySendMessage(continued, IDS.self), {})).toBeUndefined()
+    // Explicit peer sessions (§9) stay refused by the daemon, whatever the scope.
     const peerSession = { action: 'callAgent', toAgent: IDS.peer, sessionId: IDS.child, message: 'm' }
     expect(await validateSendMessage(peerSession, probeTools(), { child: IDS.child })).toMatch(
       /does not accept `sessionId`/
     )
-    expect(sessionRejection(classifySendMessage(continued, IDS.self), { child: IDS.child })).toBeUndefined()
-    expect(sessionRejection(classifySendMessage(continued, IDS.self), {})).toMatch(/not a direct sub-session/)
     expect(sessionRejection(classifySendMessage(peerSession, IDS.self), { child: IDS.child })).toMatch(
       /not an existing session/
     )
+  })
+
+  it('answers a continuation with the daemon’s receipt, and an unowned id with its refusal', async () => {
+    const tools = probeTools()
+    const fixture = await sendMessageFixture(tools)
+    try {
+      const call = async (key: string, sessionId: string) =>
+        (await (
+          await fetch((fixture.descriptor(key, { child: IDS.child }) as { url: string }).url, {
+            method: 'POST',
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'tools/call',
+              params: { name: 'sendMessage', arguments: { action: 'messageSubsession', sessionId, message: 'm' } }
+            })
+          })
+        ).json()) as { result: any }
+      const owned = JSON.parse((await call('own', IDS.child)).result.content[0].text)
+      expect(owned).toMatchObject({ ok: true, wake: { delivered: true }, childSessionId: IDS.child })
+      expect(fixture.calls('own')[0]!.error).toBeUndefined()
+      const other = JSON.parse((await call('other', IDS.origin)).result.content[0].text)
+      expect(other.wake).toMatchObject({ delivered: false, reason: 'subsession_not_found' })
+      expect(fixture.calls('other')[0]!.error).toBeDefined()
+      expect(judge(scenario('continue-subsession'), fixture.calls('own')).verdict).toBe('PASS')
+      expect(judge(scenario('continue-subsession'), fixture.calls('other')).verdict).toBe('FAIL')
+    } finally {
+      fixture.server.close()
+    }
   })
 
   it('leaves new-only runs out of the matrix cell', () => {

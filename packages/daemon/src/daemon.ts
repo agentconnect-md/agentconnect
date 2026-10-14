@@ -4227,6 +4227,7 @@ export class Daemon {
       messageAgent: (req) => this.collab.messageAgent(req),
       preflightWake: (req) => this.collab.wakeRejectionReason(req),
       replyToSession: (req) => this.collab.replyToSession(req),
+      continueSubsession: (req) => this.collab.continueSubsession(req),
       viewSessionStatus: (req) => Promise.resolve(this.collab.viewSessionStatus(req)),
       rootPostRelation: (req) => this.collab.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req),
@@ -20342,7 +20343,8 @@ export class Daemon {
       outcome,
       reason: entry.cancelledReason,
       replayed: this.retainsInboxRow(entry, outcome === 'failed'),
-      hopCount: entry.callMeta?.hopCount
+      hopCount: entry.callMeta?.hopCount,
+      round: entry.callMeta?.subsessionRound
     })
   }
 

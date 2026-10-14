@@ -1308,7 +1308,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 50
+export const SCHEMA_VERSION = 51
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1917,6 +1917,18 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
     if (!columns.some((c) => c.name === 'standingDigest'))
       await db.exec('ALTER TABLE sessions ADD COLUMN standingDigest TEXT')
+  },
+  // v51 numbers a sub-session's work rounds, so a continued one reports and counts per round (send-message-guide.md §8.4).
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec(
+        'ALTER TABLE IF EXISTS assistant_subsession ADD COLUMN IF NOT EXISTS round INTEGER NOT NULL DEFAULT 1'
+      )
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(assistant_subsession)', [])).rows as { name: string }[]
+    if (columns.length > 0 && !columns.some((c) => c.name === 'round'))
+      await db.exec('ALTER TABLE assistant_subsession ADD COLUMN round INTEGER NOT NULL DEFAULT 1')
   }
 ]
 
@@ -4715,10 +4727,14 @@ export class LocalStore {
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
       // A purged sub-session leaves its parent's index (assistant-mode.md §5.6).
-      if (isSubsessionCoordinate(rec.thread))
+      if (isSubsessionCoordinate(rec.thread)) {
         await tx
           .prepare('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?')
           .run(rec.agentId, key)
+        await tx
+          .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')
+          .run(rec.agentId, key)
+      }
       await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
         // Once the local session content is gone, creating a new CP metadata row

@@ -110,21 +110,30 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
     },
     messageSubsession: {
       action: 'messageSubsession',
-      purpose: 'Start a background sub-session of your own for long work.',
+      purpose: 'Start a background sub-session of your own for long work, or send more work to one you started.',
       required: ['action', 'message'],
-      optional: [],
+      optional: ['sessionId'],
       rules: [
-        'Pass only `action` and `message`: the daemon derives you from trusted context. Not accepted: `toAgent`, ' +
-          '`channel`, `thread`, `platform`, `integrationId`, `attachment`, `needsReply`, `sessionId`.',
-        'Use it for long work ("fix this bug and open a PR"). Each call starts a new, separate sub-session that ' +
-          'inherits this conversation’s context, posts nothing, and reports back into this conversation when it ' +
-          'finishes or fails — no needsReply needed. Say it has started, end your turn, and do not do the work here too.',
+        'Without `sessionId` it starts a new, separate sub-session. With `sessionId` — the `childSessionId` a ' +
+          'messageSubsession call in this conversation returned — it sends the message into that existing sub-session, ' +
+          'which keeps its context, whether it is still running or already reported. A null or empty `sessionId` is ' +
+          'refused; it never starts a new one.',
+        'The daemon derives you from trusted context. Not accepted: `toAgent`, `channel`, `thread`, `platform`, ' +
+          '`integrationId`, `attachment`, `needsReply`.',
+        'Use it for long work ("fix this bug and open a PR"). A sub-session inherits this conversation’s context, ' +
+          'posts nothing, and reports back into this conversation each time a round of its work finishes or fails — ' +
+          'no needsReply needed. It can also send you progress or a question meanwhile; answer with messageSubsession ' +
+          'and its id. Say it has started, end your turn, and do not do the work here too.',
+        'A message to a sub-session that is still working waits for its next turn; it does not interrupt it. One ' +
+          'that already finished starts a new round of work in the same context.',
         'Say in its task which language the people here use, so it reports in that language.',
         'Keep ordinary conversation here: questions, lookups and short answers never need a sub-session.',
-        'A sub-session cannot open sub-sessions of its own (reason `subsession_nesting`), and an agent runs a limited ' +
-          'number at once (reason `subsession_limit`). Both arrive as `wake.delivered: false` with a `wake.message`.',
-        'The result carries `childSessionId`, the handle for viewSessionStatus and stopSubsession. It is not a ' +
-          'session id for replyToSession.',
+        'Only the conversation that started a sub-session can message it. A sub-session cannot open sub-sessions of ' +
+          'its own. Refusals arrive as `wake.delivered: false` with a `wake.reason` and `wake.message`: ' +
+          '`subsession_not_found` (no sub-session of this conversation has that id), `subsession_nesting`, and ' +
+          '`subsession_limit` (too many running at once; a finished one holds no slot).',
+        'The result carries `childSessionId`, the handle for messageSubsession, viewSessionStatus and stopSubsession. ' +
+          'It is not a session id for replyToSession.',
         'To work visibly as yourself in another channel instead, use callAgent with your own id and `channel`.'
       ],
       examples: [
@@ -133,6 +142,14 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           arguments: {
             action: 'messageSubsession',
             message: 'Investigate the flaky test in the background and report your findings.'
+          }
+        },
+        {
+          use: 'More work for a sub-session you started, running or finished',
+          arguments: {
+            action: 'messageSubsession',
+            sessionId: '<childSessionId returned by messageSubsession>',
+            message: 'Continue with the Windows failure and keep your earlier findings.'
           }
         }
       ]
@@ -149,10 +166,12 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
         'The message is injected into that session; nothing is posted on a platform, and that session’s own ' +
           'reply keeps its visible route. Never post the answer at the origin conversation’s channel root instead: ' +
           'that starts a separate conversation.',
+        'A background sub-session can reply to its parent any time — progress, a question, or its result — and a ' +
+          'reply does not end its work; the daemon reports the end of each round of work itself.',
         'Only `action`, `sessionId`, and `message` are accepted.',
         'The result is {delivered, targetSession?, reason?} with no `ok` wrapper. A session that is not your ' +
           'origin returns {delivered: false, reason: "not_authorized"}; other reasons report admission or routing ' +
-          'refusals. After a delivered reply, end your turn without repeating the message.'
+          'refusals. After a delivered result, end your turn without repeating the message.'
       ],
       examples: [
         {
@@ -161,6 +180,14 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
             action: 'replyToSession',
             sessionId: '<Parent session id from your # Agent block>',
             message: 'Review complete: two issues found.'
+          }
+        },
+        {
+          use: 'A sub-session’s question to its parent',
+          arguments: {
+            action: 'replyToSession',
+            sessionId: '<Parent session id from your # Agent block>',
+            message: 'The failure is isolated. Should the repair preserve the old configuration format?'
           }
         }
       ]

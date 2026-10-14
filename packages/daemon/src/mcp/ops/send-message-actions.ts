@@ -28,7 +28,7 @@ const isAction = (value: unknown): value is SendMessageAction =>
 /** Each action's target requirement and accepted keys, besides `action` and `message`. */
 const ACTION_KEYS: Record<SendMessageAction, { requires: readonly string[]; accepts: readonly string[] }> = {
   callAgent: { requires: ['toAgent'], accepts: ['toAgent', 'channel'] },
-  messageSubsession: { requires: [], accepts: [] },
+  messageSubsession: { requires: [], accepts: ['sessionId'] },
   replyToSession: { requires: ['sessionId'], accepts: ['sessionId'] },
   postMessage: {
     requires: ['toUser|channel'],
@@ -46,7 +46,11 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
     channel: channelField,
     message: messageField
   }),
-  messageSubsession: z.strictObject({ action: action('messageSubsession'), message: messageField }),
+  messageSubsession: z.strictObject({
+    action: action('messageSubsession'),
+    sessionId: requiredString('sessionId').optional(),
+    message: messageField
+  }),
   replyToSession: z.strictObject({
     action: action('replyToSession'),
     sessionId: requiredString('sessionId'),
@@ -73,10 +77,10 @@ const MISSING_ACTION =
 const UNKNOWN_ACTION =
   `\`action\` must be one of ${SEND_MESSAGE_ACTIONS.join(', ')}. Nothing was sent and no agent was woken. Call ` +
   `getToolGuide ${OVERVIEW} for the arguments and examples, then retry with a valid action`
-const NO_CONTINUATION =
-  'action `messageSubsession` does not accept `sessionId`: this daemon cannot send into an existing sub-session. ' +
-  'Nothing was sent. Omit `sessionId` only to start a separate new background sub-session; otherwise wait for the ' +
-  'existing one to report'
+const BAD_CHILD_ID =
+  'action `messageSubsession` takes `sessionId` only as the nonempty `childSessionId` string of a sub-session this ' +
+  'conversation started. Nothing was sent. Omit `sessionId` to start a new sub-session; a null or empty id never ' +
+  'starts one'
 const SELF_CALL =
   'action `callAgent` without `channel` cannot target yourself. Nothing was sent and no agent was woken. For ' +
   'background work of your own, call getToolGuide {"tool":"sendMessage","action":"messageSubsession"} and retry ' +
@@ -90,6 +94,8 @@ const strip = (pointer: string) => pointer.replace(/\.$/, '')
 export interface ValidatedSendMessage {
   action: SendMessageAction
   delivery: Record<string, unknown>
+  /** `messageSubsession` into an existing child: its handle (send-message-guide.md §8.1). */
+  childSessionId?: string
 }
 
 /** Check a `sendMessage` call's action and argument combination before any lookup or effect (send-message-guide.md §3.3). */
@@ -99,7 +105,11 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
   if (!isAction(named)) throw new ToolArgumentError([UNKNOWN_ACTION])
   const spec = ACTION_KEYS[named]
   const keys = Object.keys(args).filter((key) => key !== 'action' && key !== 'message')
-  if (named === 'messageSubsession' && keys.includes('sessionId')) throw new ToolArgumentError([NO_CONTINUATION])
+  // §8.1: a supplied child id is nonempty, never a null or empty stand-in for creation.
+  if (named === 'messageSubsession' && keys.includes('sessionId')) {
+    const id = args.sessionId
+    if (typeof id !== 'string' || id.trim() === '') throw new ToolArgumentError([BAD_CHILD_ID])
+  }
   const unexpected = keys.filter((key) => !spec.accepts.includes(key))
   const missing = spec.requires.filter((key) => key.split('|').every((alt) => !present(args[alt])))
   if (unexpected.length > 0 || missing.length > 0) {
@@ -125,7 +135,13 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
     parseArgs(present(args.toUser) ? SEND_MESSAGE_BRANCHES.toUser : SEND_MESSAGE_BRANCHES.channel, rest)
     if (Array.isArray(args.toUser) && !present(args.channel)) throw new ToolArgumentError([USER_ARRAY_NEEDS_CHANNEL])
   }
-  if (named === 'messageSubsession') return { action: named, delivery: { toAgent: ctx.agentId, message: args.message } }
+  if (named === 'messageSubsession') {
+    return {
+      action: named,
+      delivery: { toAgent: ctx.agentId, message: args.message },
+      ...(typeof args.sessionId === 'string' ? { childSessionId: args.sessionId } : {})
+    }
+  }
   if (target?.toAgent === ctx.agentId && !present(args.channel)) {
     throw new ToolArgumentError([SELF_CALL])
   }
@@ -138,5 +154,42 @@ export async function sendMessage(
   args: Record<string, unknown>,
   deps: MessagingDeps
 ): Promise<unknown> {
-  return await deliverSendMessage(ctx, validateSendMessageAction(ctx, args).delivery, deps)
+  const validated = validateSendMessageAction(ctx, args)
+  if (validated.childSessionId !== undefined) return await continueSubsession(ctx, validated.childSessionId, args, deps)
+  return await deliverSendMessage(ctx, validated.delivery, deps)
+}
+
+/** The guidance a delivered continuation hands back. */
+export const SUBSESSION_CONTINUED =
+  'Message delivered to the existing sub-session, which keeps its earlier context; it runs once any work it has ' +
+  'in hand is done. It reports back into this conversation when this round of its work ends. End this turn and ' +
+  'wait; do not send the same message again.'
+
+/** The continuation receipt, in the creation receipt's family (send-message-guide.md §8.6). */
+async function continueSubsession(
+  ctx: SessionContext,
+  childSessionId: string,
+  args: Record<string, unknown>,
+  deps: MessagingDeps
+): Promise<unknown> {
+  if (!deps.continueSubsession) throw new Error('sendMessage: continuing a sub-session is not available on this daemon')
+  const wake = await deps.continueSubsession({
+    callerAgentId: ctx.agentId,
+    platform: ctx.platform,
+    ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
+    callerChannel: ctx.channel,
+    callerThread: ctx.thread,
+    sessionId: childSessionId,
+    text: parseArgs(messageField, args.message),
+    ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
+  })
+  if (!wake.delivered) return { ok: true, wake }
+  return {
+    ok: true,
+    wake,
+    childSessionId: wake.targetSession,
+    reply: { requested: true, state: 'awaiting' as const },
+    nextAction: 'finish-turn-and-wait' as const,
+    message: SUBSESSION_CONTINUED
+  }
 }

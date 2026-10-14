@@ -25,6 +25,8 @@ export interface IpcCallToolReq {
   ask?: AskModes
   /** The host's answers to an earlier round of THIS tool call, keyed by ask key. */
   askAnswers?: Record<string, AskAnswer>
+  /** The bridge's id of this MCP request, so a resent request is one submission of a sub-session message. */
+  callId?: string
 }
 
 export type IpcRequest = IpcListToolsReq | IpcCallToolReq

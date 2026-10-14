@@ -169,7 +169,13 @@ export type { SubmitCodeReviewReq } from '../codehost/review-adapter.js'
 export type { CodeHostEffectReq } from './ops/code-host.js'
 export { SEND_MESSAGE_BRANCHES } from './ops/messaging.js'
 export { SEND_MESSAGE_ACTIONS, SEND_MESSAGE_ACTION_SCHEMAS } from './ops/send-message-actions.js'
-export type { MessageAgentReq, MessageAgentResult, ReplyToSessionReq, ReplyToSessionResult } from './ops/messaging.js'
+export type {
+  ContinueSubsessionReq,
+  MessageAgentReq,
+  MessageAgentResult,
+  ReplyToSessionReq,
+  ReplyToSessionResult
+} from './ops/messaging.js'
 export type { SessionStatusReq, SessionStatusResult } from './ops/session.js'
 export { askHost, AskRequired } from './ask.js'
 export type { AskDeps, AskOutcome, AskPort, AskSpec } from './ask.js'

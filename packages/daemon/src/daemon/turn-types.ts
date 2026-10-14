@@ -227,6 +227,8 @@ export interface CallMeta {
    *  Like `deliverHeadless` it does NOT cascade — a grandchild is only obliged if its own parent
    *  asks. Absent ⇒ an ordinary fire-and-forget wake. */
   needsReply?: boolean
+  /** send-message-guide.md §8.4: the daemon-owned work round of a sub-session this input belongs to; persisted with the inbox row. */
+  subsessionRound?: number
   /** session-visibility.md §5.1: the WAKING session is private, so this child's
    *  transcript holds prompt text copied out of it and must not feed shared agent
    *  memory. Strictly ONE-DIRECTIONAL — it can only tighten. A `false`/absent

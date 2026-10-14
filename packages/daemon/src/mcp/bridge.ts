@@ -1,4 +1,5 @@
 import net from 'node:net'
+import { randomUUID } from 'node:crypto'
 import { inputRequired, inputResponse, Server, type ElicitRequestFormParams } from '@modelcontextprotocol/server'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { decodeFrames, encodeFrame, isAskRequiredResult, type IpcListToolsResult, type IpcResponse } from './ipc.js'
@@ -14,6 +15,7 @@ type IpcCall =
       args: Record<string, unknown>
       ask?: AskModes
       askAnswers?: Record<string, AskAnswer>
+      callId?: string
     }
 
 /** One question per tool call: round 1 asks, round 2 consumes the answer (#1965). */
@@ -119,6 +121,8 @@ export async function runBridge(opts: { lazyTools?: boolean; version?: string } 
 
   // Version stated by the entry, not read from a package.json: the in-sandbox bundle is copied into the runtime image alone, and a manifest beside it would change how node reads every .js there.
   // `capabilities` stays tools-only — elicitation is a CLIENT capability no server can declare; what we do instead is READ the client's declaration below.
+  // Per bridge process, so one MCP request id names one call however often it is relayed.
+  const callNonce = randomUUID()
   const server = new Server(
     { name: 'agentconnect', version: opts.version ?? '0.0.0' },
     { capabilities: { tools: {} }, inputRequired: { maxRounds: ASK_MAX_ROUNDS, roundTimeoutMs: ASK_ROUND_TIMEOUT_MS } }
@@ -138,7 +142,8 @@ export async function runBridge(opts: { lazyTools?: boolean; version?: string } 
         name: req.params.name,
         args: (req.params.arguments ?? {}) as Record<string, unknown>,
         ...(ask ? { ask } : {}),
-        ...(askAnswers ? { askAnswers } : {})
+        ...(askAnswers ? { askAnswers } : {}),
+        callId: `${callNonce}:${String(ctx.mcpReq.id)}`
       })
       // The tool asked a question instead of answering: hand it to the SDK, which runs the elicitation leg (server→client on this 2025-era connection) and re-calls us with the answer.
       if (isAskRequiredResult(result)) {

@@ -33,3 +33,8 @@ export function taskCoordinate(deliveryId: string): string {
 export function isTaskCoordinate(thread: string | null | undefined): boolean {
   return typeof thread === 'string' && thread.startsWith(TASK_COORDINATE_PREFIX)
 }
+
+/** Whether a thread segment is a delegated sub-session's, the kind a parent can keep messaging across work rounds. */
+export function isDelegationCoordinate(thread: string | null | undefined): boolean {
+  return isSubsessionCoordinate(thread) && !isPatrolCoordinate(thread) && !isTaskCoordinate(thread)
+}

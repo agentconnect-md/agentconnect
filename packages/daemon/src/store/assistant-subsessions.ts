@@ -2,7 +2,7 @@
 import { AsyncMutex } from './async-mutex.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
 
-/** `open` from the delegation on; `done` once it reported back; `reporting` while the daemon's failure report awaits admission, then `failed`. */
+/** `open` while a work round runs and holds a slot; `reporting` while the daemon's round-end report awaits admission; then `done` or `failed` until another round opens. */
 export type AssistantSubsessionState = 'open' | 'reporting' | 'done' | 'failed'
 
 export interface AssistantSubsession {
@@ -21,6 +21,17 @@ export interface AssistantSubsession {
   endReport?: string
   /** How many times that report's admission was refused. */
   reportAttempts?: number
+  /** The current work round (send-message-guide.md §8.4); read back only past the first. */
+  round?: number
+}
+
+/** One parent message admitted into a sub-session, by its submission id, with the receipt a replay of it gets. */
+export interface AssistantSubsessionInput {
+  agentId: string
+  submissionId: string
+  childSessionKey: string
+  round: number
+  receipt?: string
 }
 
 export const ASSISTANT_SUBSESSION_SCHEMA = `
@@ -34,10 +45,22 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         kind TEXT NOT NULL DEFAULT 'delegation',
         endReport TEXT,
         reportAttempts INTEGER NOT NULL DEFAULT 0,
+        round INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (agentId, childSessionKey)
       );
       CREATE INDEX IF NOT EXISTS assistant_subsession_by_parent
         ON assistant_subsession (agentId, parentSessionId, createdAt);
+      CREATE TABLE IF NOT EXISTS assistant_subsession_input (
+        agentId TEXT NOT NULL,
+        submissionId TEXT NOT NULL,
+        childSessionKey TEXT NOT NULL,
+        round INTEGER NOT NULL DEFAULT 0,
+        receipt TEXT,
+        createdAt INTEGER NOT NULL,
+        PRIMARY KEY (agentId, submissionId)
+      );
+      CREATE INDEX IF NOT EXISTS assistant_subsession_input_by_child
+        ON assistant_subsession_input (agentId, childSessionKey);
 `
 
 /** What the index needs from the store; a capped open that claims something else at once needs its transaction. */
@@ -54,7 +77,10 @@ type Row = Record<string, unknown>
 // A listing's filter that leaves patrols out (assistant-mode.md §5.9).
 const DELEGATIONS = " AND kind = 'delegation'"
 
-type OpenInput = Omit<AssistantSubsession, 'state' | 'createdAt' | 'kind' | 'endReport' | 'reportAttempts'> & {
+type OpenInput = Omit<
+  AssistantSubsession,
+  'state' | 'createdAt' | 'kind' | 'endReport' | 'reportAttempts' | 'round'
+> & {
   now?: number
 }
 
@@ -68,9 +94,19 @@ function subsessionOf(row: Row): AssistantSubsession {
     createdAt: Number(row.createdAt),
     ...(row.kind === 'patrol' ? { kind: 'patrol' as const } : {}),
     ...(row.endReport != null ? { endReport: String(row.endReport) } : {}),
-    ...(Number(row.reportAttempts ?? 0) > 0 ? { reportAttempts: Number(row.reportAttempts) } : {})
+    ...(Number(row.reportAttempts ?? 0) > 0 ? { reportAttempts: Number(row.reportAttempts) } : {}),
+    ...(Number(row.round ?? 1) > 1 ? { round: Number(row.round) } : {})
   }
 }
+
+// A guard on one round, when the caller names it.
+const inRound = (round: number | undefined) => (round === undefined ? '' : ' AND round = ?')
+const roundParam = (round: number | undefined) => (round === undefined ? [] : [round])
+
+// The agent's running delegations, the count a capped open or a reopened round is checked against.
+const RUNNING_DELEGATIONS = `(SELECT COUNT(*) FROM assistant_subsession a
+                WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'delegation'
+                  AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey)))`
 
 export class AssistantSubsessionIndex {
   // An agent delegates only on its duty holder, so serializing this process's capped opens makes each a check-and-claim.
@@ -125,9 +161,7 @@ export class AssistantSubsessionIndex {
       `INSERT OR IGNORE INTO assistant_subsession
          (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
        SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER)
-        WHERE (SELECT COUNT(*) FROM assistant_subsession a
-                WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'delegation'
-                  AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey))) < ?`,
+        WHERE ${RUNNING_DELEGATIONS} < ?`,
       [
         input.agentId,
         input.childSessionKey,
@@ -140,6 +174,26 @@ export class AssistantSubsessionIndex {
       ]
     )
     return changes > 0
+  }
+
+  /** Open the next work round of a settled delegation in `round` only below `limit` running ones (send-message-guide.md §8.4). */
+  async reopenWithinLimit(
+    agentId: string,
+    childSessionKey: string,
+    round: number,
+    cap: { limit: number; startedSince: number }
+  ): Promise<'opened' | 'limit' | 'changed'> {
+    return await this.opening.run(async () => {
+      const { changes } = await this.db.query(
+        `UPDATE assistant_subsession SET state = 'open', round = round + 1, endReport = NULL, reportAttempts = 0
+          WHERE agentId = ? AND childSessionKey = ? AND round = ? AND state IN ('done', 'failed')
+            AND ${RUNNING_DELEGATIONS} < ?`,
+        [agentId, childSessionKey, round, agentId, cap.startedSince, cap.limit]
+      )
+      if (changes > 0) return 'opened'
+      const row = await this.get(agentId, childSessionKey)
+      return row && (row.round ?? 1) === round && (row.state === 'done' || row.state === 'failed') ? 'limit' : 'changed'
+    })
   }
 
   /** Record a patrol only while none of the agent's is running; a patrol older than `staleBefore` no longer counts. */
@@ -211,25 +265,26 @@ export class AssistantSubsessionIndex {
     }
   }
 
-  /** Settle an `open` row; false when it was already settled or is not indexed. */
+  /** Settle an `open` row, in `round` when named; false when it was already settled or is not indexed. */
   async finish(
     agentId: string,
     childSessionKey: string,
-    state: Exclude<AssistantSubsessionState, 'open' | 'reporting'>
+    state: Exclude<AssistantSubsessionState, 'open' | 'reporting'>,
+    round?: number
   ): Promise<boolean> {
     const { changes } = await this.db.query(
-      `UPDATE assistant_subsession SET state = ? WHERE agentId = ? AND childSessionKey = ? AND state = 'open'`,
-      [state, agentId, childSessionKey]
+      `UPDATE assistant_subsession SET state = ? WHERE agentId = ? AND childSessionKey = ? AND state = 'open'${inRound(round)}`,
+      [state, agentId, childSessionKey, ...roundParam(round)]
     )
     return changes > 0
   }
 
-  /** Move an `open` row to `reporting` with the failure report it owes; false when it was already settled. */
-  async claimReport(agentId: string, childSessionKey: string, report: string): Promise<boolean> {
+  /** Move an `open` row, in `round` when named, to `reporting` with the report it owes; false when it was already settled. */
+  async claimReport(agentId: string, childSessionKey: string, report: string, round?: number): Promise<boolean> {
     const { changes } = await this.db.query(
       `UPDATE assistant_subsession SET state = 'reporting', endReport = ?, reportAttempts = 0
-        WHERE agentId = ? AND childSessionKey = ? AND state = 'open'`,
-      [report, agentId, childSessionKey]
+        WHERE agentId = ? AND childSessionKey = ? AND state = 'open'${inRound(round)}`,
+      [report, agentId, childSessionKey, ...roundParam(round)]
     )
     return changes > 0
   }
@@ -244,13 +299,52 @@ export class AssistantSubsessionIndex {
     return changes > 0 ? ((await this.get(agentId, childSessionKey))?.reportAttempts ?? 0) : undefined
   }
 
-  /** Settle a `reporting` row `failed`, its report admitted or given up on; false when it was not reporting. */
-  async settleReport(agentId: string, childSessionKey: string): Promise<boolean> {
+  /** Settle a `reporting` row, `failed` unless its admitted report was a completion; false when it was not reporting. */
+  async settleReport(
+    agentId: string,
+    childSessionKey: string,
+    state: Exclude<AssistantSubsessionState, 'open' | 'reporting'> = 'failed'
+  ): Promise<boolean> {
     const { changes } = await this.db.query(
-      `UPDATE assistant_subsession SET state = 'failed' WHERE agentId = ? AND childSessionKey = ? AND state = 'reporting'`,
-      [agentId, childSessionKey]
+      `UPDATE assistant_subsession SET state = ? WHERE agentId = ? AND childSessionKey = ? AND state = 'reporting'`,
+      [state, agentId, childSessionKey]
     )
     return changes > 0
+  }
+
+  /** Claim one submission of a parent message; false when the same submission was claimed before. */
+  async claimInput(agentId: string, submissionId: string, childSessionKey: string, now: number): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `INSERT OR IGNORE INTO assistant_subsession_input (agentId, submissionId, childSessionKey, createdAt)
+       VALUES (?, ?, ?, ?)`,
+      [agentId, submissionId, childSessionKey, now]
+    )
+    return changes > 0
+  }
+
+  /** Record a claimed submission's round and the receipt a replay of it gets. */
+  async settleInput(agentId: string, submissionId: string, round: number, receipt: string): Promise<void> {
+    await this.db.query(
+      'UPDATE assistant_subsession_input SET round = ?, receipt = ? WHERE agentId = ? AND submissionId = ?',
+      [round, receipt, agentId, submissionId]
+    )
+  }
+
+  async getInput(agentId: string, submissionId: string): Promise<AssistantSubsessionInput | undefined> {
+    const row = (
+      await this.db.query('SELECT * FROM assistant_subsession_input WHERE agentId = ? AND submissionId = ?', [
+        agentId,
+        submissionId
+      ])
+    ).rows[0] as Row | undefined
+    if (!row) return undefined
+    return {
+      agentId: String(row.agentId),
+      submissionId: String(row.submissionId),
+      childSessionKey: String(row.childSessionKey),
+      round: Number(row.round ?? 0),
+      ...(row.receipt != null ? { receipt: String(row.receipt) } : {})
+    }
   }
 
   /** The agent's `open` delegations with no delivery of theirs left in the inbox, oldest first. */
@@ -344,6 +438,7 @@ export class AssistantSubsessionIndex {
   }
 
   async deleteForAgent(agentId: string): Promise<number> {
+    await this.db.query('DELETE FROM assistant_subsession_input WHERE agentId = ?', [agentId])
     return (await this.db.query('DELETE FROM assistant_subsession WHERE agentId = ?', [agentId])).changes
   }
 }

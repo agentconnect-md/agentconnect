@@ -225,8 +225,9 @@ describe('stopSubsession in a Slack DM main conversation', () => {
         result: 'stopped',
         sessionId: byTool,
         note:
-          'Its current turn was interrupted, and it reports back here that it ended. Nothing it already did is ' +
-          'undone, and a process its runtime started in the background (a build, a dev server) may keep running.'
+          'Its current turn was interrupted, messages still waiting for it were dropped, and it reports back here that ' +
+          'it ended. Nothing it already did is undone, and a process its runtime started in the background (a build, a ' +
+          'dev server) may keep running. To give it new work later, message it with messageSubsession and this sessionId.'
       })
 
       // The console's Stop, through the same seam the control plane's frame reaches.
@@ -266,7 +267,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
         await vi.waitFor(
           () =>
             expect(h.reports()).toContain(
-              `[sub-session ended] Sub-session ${key} stopped before finishing (cancel). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
+              `[sub-session ended] Sub-session ${key} stopped before finishing (cancel). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${key}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
             ),
           WAIT
         )
@@ -515,7 +516,7 @@ describe('who is offered stopSubsession', () => {
       await vi.waitFor(
         () =>
           expect(h.reports()).toContain(
-            `[sub-session ended] Sub-session ${child} stopped before finishing (cancel). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
+            `[sub-session ended] Sub-session ${child} stopped before finishing (cancel). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${child}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
           ),
         WAIT
       )

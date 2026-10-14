@@ -5,10 +5,12 @@ import { execFileSync } from 'node:child_process'
 import type { McpServer } from '@agentclientprotocol/sdk'
 import { IntegrationSchema } from '../../src/agents/agent-schema.js'
 import type { AcpHost } from '../../src/acp/acp-host.js'
+import { SUBSESSION_NOT_FOUND, SUBSESSION_NOT_FOUND_MESSAGE } from '../../src/collab/coordinator.js'
 import { executeTool, type OpsDeps } from '../../src/mcp/ops.js'
 import { ToolArgumentError } from '../../src/mcp/ops/args.js'
 import { describeToolArgumentFailure } from '../../src/mcp/ops/argument-error.js'
 import type { SessionContext } from '../../src/mcp/ops/context.js'
+import { SUBSESSION_CONTINUED } from '../../src/mcp/ops/send-message-actions.js'
 import { toolsForIntegrations } from '../../src/mcp/tools.js'
 import { buildStandingContext } from '../../src/session/turn/standing-context.js'
 import type { ToolDescriptor } from '../../src/tool-schema/descriptor.js'
@@ -177,7 +179,8 @@ const EFFECT_BOUNDARY = new Proxy({} as OpsDeps, {
 // A handler reached a dependency that `writeDeps`'s spread dropped from the proxy: also the effect boundary.
 const reachedEffect = (error: unknown): boolean =>
   error instanceof ReachedEffect ||
-  (error instanceof TypeError && /is not a function|Cannot read properties of undefined/.test(error.message))
+  (error instanceof TypeError && /is not a function|Cannot read properties of undefined/.test(error.message)) ||
+  (error instanceof Error && /^sendMessage: continuing a sub-session is not available/.test(error.message))
 
 /** The real `executeTool` pipeline up to its first dependency: the rejection text a model reads, or none. */
 async function daemonRejection(args: Record<string, unknown>, tools: ToolDescriptor[]): Promise<string | undefined> {
@@ -198,11 +201,8 @@ async function daemonRejection(args: Record<string, unknown>, tools: ToolDescrip
   }
 }
 
-/** Session-id authority the daemon checks against trusted state, modeled by the scenario's scope; reached only once the daemon admits the shape. */
-export function sessionRejection(op: SemanticOp, scope: ProbeScope): string | undefined {
-  if (op.kind === 'subsession-continue' && op.sessionId !== scope.child) {
-    return `sendMessage: session "${op.sessionId}" is not a direct sub-session of this session. Nothing was sent.`
-  }
+/** Peer-session authority (§9) the daemon would check against trusted state; it refuses the shape first today, so this never fires. */
+export function sessionRejection(op: SemanticOp, _scope: ProbeScope): string | undefined {
   if (op.kind === 'agent-call' && op.sessionId !== undefined) {
     return `sendMessage: session "${op.sessionId}" is not an existing session of agent "${op.agent}". Nothing was sent.`
   }
@@ -239,7 +239,25 @@ function receipt(op: SemanticOp, scope: ProbeScope): unknown {
           'Sub-session started in the background. Tell the people here it has started and end this turn; it reports back into this conversation when it finishes or fails. Do not do the work here as well.'
       }
     case 'subsession-continue':
-      return { ok: true, wake: { delivered: true, targetSession: op.sessionId, subsession: true } }
+      // The daemon's own continuation receipt, or its refusal of an id that is not this session's child.
+      return op.sessionId === scope.child
+        ? {
+            ok: true,
+            wake: { delivered: true, targetSession: op.sessionId, subsession: true },
+            childSessionId: op.sessionId,
+            reply: { requested: true, state: 'awaiting' },
+            nextAction: 'finish-turn-and-wait',
+            message: SUBSESSION_CONTINUED
+          }
+        : {
+            ok: true,
+            wake: {
+              delivered: false,
+              targetSession: op.sessionId,
+              reason: SUBSESSION_NOT_FOUND,
+              message: SUBSESSION_NOT_FOUND_MESSAGE
+            }
+          }
     case 'agent-call':
       return {
         ok: true,
@@ -327,9 +345,11 @@ async function callTool(
     if (error !== undefined) return { result: text(error, true), error }
     const op = classifySendMessage(args, IDS.self)
     const result = receipt(op, scope)
-    return op.kind === 'origin-reply' && op.sessionId !== scope.origin
-      ? { result: text(result), error: 'origin reply not authorized' }
-      : { result: text(result) }
+    if (op.kind === 'origin-reply' && op.sessionId !== scope.origin)
+      return { result: text(result), error: 'origin reply not authorized' }
+    if (op.kind === 'subsession-continue' && op.sessionId !== scope.child)
+      return { result: text(result), error: 'sub-session not found' }
+    return { result: text(result) }
   }
   if (name === 'getToolGuide') {
     try {

@@ -57,7 +57,7 @@ describe('sendMessage self-delegation wording', () => {
     const text = allText(ints)
     expect(text).toContain('messageSubsession starts a background sub-session of your own for long work')
     expect(text).toContain('Use it for long work ("fix this bug and open a PR")')
-    expect(text).toContain('reports back into this conversation when it finishes or fails')
+    expect(text).toContain('reports back into this conversation each time a round of its work finishes or fails')
     expect(text).toContain('Keep ordinary conversation here')
     expect(text).toContain('A sub-session cannot open sub-sessions of its own')
     expect(text).toContain('your own id without `channel` is refused — use messageSubsession')

@@ -1,6 +1,6 @@
 # `sendMessage` Actions and On-Demand Tool Guide — Proposal
 
-**Status:** Adapter (§3–§7) implemented; §8–§9 proposed
+**Status:** Adapter (§3–§7) and persistent sub-session messaging (§8) implemented; §9 proposed
 
 Keep one agent-facing `sendMessage` tool, add a required `action` discriminator,
 and move detailed argument documentation into an on-demand `getToolGuide` tool. Existing
@@ -620,18 +620,17 @@ persistent sub-session messaging and multi-origin peer calls are specified in
 
 ### 7.8 Adapter implementation record
 
-The behavior-preserving adapter (§3–§7) is implemented; §8 and §9 are not yet. Decisions
-the sections above left open:
+The behavior-preserving adapter (§3–§7) is implemented, and §8 since (§8.8); §9 is not yet.
+Decisions the sections above left open:
 
 - **Descriptor.** The §3.2 draft ships without its continuation and peer-session clauses
   (`sessionId` continuing a peer session or a child, multiple origins), because §3.2 publishes
   each capability only once its runtime exists. Measured for a Slack + Telegram agent: the
   description is 784 characters, the flat schema 1668, and `getToolGuide` description plus
   schema 480. `sessionId` is described for `replyToSession` only.
-- **Not-yet-available targets.** `messageSubsession` with any `sessionId` (including null or
-  empty) fails with its own argument error saying the daemon cannot send into an existing
-  sub-session, never falling back to creation. `callAgent` does not accept `sessionId`.
-  Both lift with §8 and §9 respectively.
+- **Not-yet-available targets.** `callAgent` does not accept `sessionId` until §9. The adapter
+  stage also refused `messageSubsession` with any `sessionId`; §8 lifted that for a nonempty
+  string, and a null, empty or mistyped id still fails as an argument error (§8.8).
 - **Validation placement.** `executeTool` validates `sendMessage` before `resolveChannelArg`,
   and the handler validates again before delegating, so a direct handler call cannot skip
   it. Validation covers the key check, the per-action zod validator, the existing strict
@@ -652,16 +651,16 @@ the sections above left open:
   and `examples` of `{use, arguments}`. Availability notes come from the session's
   integrations (platforms, direct-message and thread-update support) and from a
   sub-session coordinate. The visible self-call example uses the session's own agent id.
-  Until §8 changes report completion, the guide does not suggest progress replies from a
-  sub-session.
-- **Live probe.** The runtime-matrix probe now reads the daemon's own action errors; its
-  fabricated action checks are removed. Its session-scope check stays as the model of
-  trusted child and peer-session state for §8–§9, and the daemon's own rejection of those
-  shapes currently comes first.
+  With §8 in place, the guide also shows continuation and a sub-session's progress question.
+- **Live probe.** The runtime-matrix probe reads the daemon's own action errors; its
+  fabricated action checks are removed. With §8 its continuation receipts are the daemon's
+  own: an id other than the scenario's child gets the daemon's `subsession_not_found`
+  receipt, recorded as an error. Only the peer-session check stays as the model of §9 state,
+  and the daemon's own rejection of that shape comes first.
 
 ## 8. Persistent sub-session messaging — explicit capability extension
 
-**Status:** Proposed runtime extension; not present in the audited baseline.
+**Status:** Implemented; §8.8 records the decisions this section left open.
 
 The original [assistant-mode design §5.6](assistant-mode.md#56-sub-sessions)
 identifies steering as re-delegating into the same child and explicitly defers it.
@@ -860,6 +859,57 @@ Required additional behavior tests:
 Implement the durable round/admission state alongside indexing, dispatch, reports,
 and cancellation. Merely widening origin authorization or adding an enum value
 does not provide this contract.
+
+### 8.8 Implementation record
+
+- **Scope.** Rounds apply to delegated sub-sessions, the children `messageSubsession` creates.
+  An approved task (assistant-mode §5.10) and a patrol (§5.9) run once and are never continued,
+  so they keep the one-report lifecycle in which their own report settles them.
+- **Round state.** The sub-session index row carries `round` (store schema v51). `open` is a
+  running round that holds a slot; the round's report waits in `reporting`; `done` and `failed`
+  are retained idle states that hold none. Every parent input carries its round in
+  `CallMeta.subsessionRound`, which is persisted with the inbox row, so a replayed turn settles
+  its own round and a late outcome of an older round changes nothing.
+- **Admission.** Ownership is the index row's recorded parent: its session key and its outward
+  id must both be the trusted caller session's. A sibling, the child itself, another session of
+  the agent (including the replacement after `!new`), another agent, a patrol, a task, a purged
+  child and an unknown id all get the same `subsession_not_found` receipt. Under the
+  per-sub-session report lock, an `open` round is joined with no slot; a settled row reopens as
+  round + 1 only below the per-agent cap, so concurrent messages to one idle child open one
+  round. Pause, drain and a member that no longer serves the agent refuse before any slot is
+  taken. A reopened round whose input the child then refuses goes back to its previous state.
+- **Report race.** While the previous round's report is in `reporting`, a continuation waits
+  for a send in flight and then, if the report is still unadmitted, refuses with
+  `subsession_reporting` instead of opening a round, because that pending report lives on the
+  row.
+- **Outcomes.** A child's `replyToSession` is only delivered: it no longer marks the row done,
+  and a settled round refuses a late one with `subsession_ended`. The round's one report is the
+  daemon's, through the existing durable `reporting` outbox, once no queued input, input being
+  admitted, or background wake remains. A clean end is `[sub-session finished]` with the
+  round's last final output, which replaces the separate `[inferred reply]` for delegations; a
+  failure or stop is `[sub-session ended]`. Both name the `messageSubsession` call that
+  continues the child. Each round's report has its own delivery identity. A joined input whose
+  admission fails after the round's last turn ended leaves the round to the existing idle
+  sweep.
+- **Reciprocal path.** A parent's `replyToSession` into its own delegated child keeps the
+  origin authorization and is then admitted exactly like `messageSubsession`. It maps refusals
+  to the existing reply reasons (`not_authorized`, `busy`, `hop_limit`, `queue_full`), so the
+  reply receipt keeps its values.
+- **Submission identity.** The MCP bridge sends a `callId` (a per-process nonce plus the MCP
+  request id). The daemon scopes it to the calling session and agent, claims it once in
+  `assistant_subsession_input`, and keeps the receipt. A replay gets the first receipt; a
+  concurrent replay is told `submission_in_flight`. A call without `callId` gets a fresh
+  identity, and its delivery and inbox receipt ids derive from it either way. The bridge does
+  not retry today; the identity is there so a retry cannot double an input.
+- **Guidance.** Continuation input reads `From your own main conversation (session <parent
+id>), a new message for this background sub-session: …` and always carries the recorded
+  parent as its origin. A delegated sub-session's standing reporting block says it may reply
+  any time, that a reply does not end its work, and that the daemon reports each round's end.
+  The descriptor (925 characters for a Slack + Telegram agent), the guide, the standing
+  collaboration text and the stop note advertise continuation.
+- **Stop.** The interrupt `stopSubsession` already uses drains the child's queued inputs, so
+  they cannot restart it. The round settles stopped, and only a later explicit message opens
+  another.
 
 ## 9. Shared peer sessions with multiple origins — explicit capability extension
 

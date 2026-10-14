@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
 import { NO_RESPONSE_RULE } from '../no-response.js'
+import { isDelegationCoordinate } from '../subsession-coordinate.js'
 
 // Opening lines of the inlined agent-meta block (`# Agent\n- Name: …`). The standing
 // context that handle() inlines as a non-meta runtime's first prompt block always
@@ -290,7 +291,9 @@ const COLLAB_BEFORE_SELF =
 const COLLAB_SELF_DELEGATION =
   `For long work of your own ("fix this bug and open a PR"), \`{"action":"messageSubsession","message":"..."}\` ` +
   `opens a background SUB-SESSION: it works on its own, posts nothing, and reports back into this conversation ` +
-  `when it finishes or fails, so say it has started and end your turn. Say in its task which language the people ` +
+  `when it finishes or fails, so say it has started and end your turn. To give one more work later, even after it ` +
+  `reported, send \`{"action":"messageSubsession","sessionId":"<its childSessionId>","message":"..."}\`: it keeps ` +
+  `its context and reports again. Say in its task which language the people ` +
   `here use, so it reports in that language, and answer them in it whatever language a report comes back in. ` +
   `Keep ordinary conversation here — questions, lookups and short answers never need one. A sub-session cannot ` +
   `open sub-sessions of its own. `
@@ -328,9 +331,11 @@ export const COLLAB_APPEND = COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLA
 // delegated task into channel chatter.
 export function buildParentReplyAppend(
   needsReplyToParent: boolean,
-  parentSessionId: string | null | undefined
+  parentSessionId: string | null | undefined,
+  subsession = false
 ): string {
   if (!needsReplyToParent) return ''
+  if (subsession) return buildSubsessionParentAppend(parentSessionId)
   return (
     `# Reporting back to your parent session\n` +
     `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
@@ -344,6 +349,22 @@ export function buildParentReplyAppend(
   )
 }
 
+// send-message-guide.md §8.3: a delegated sub-session messages its parent any time, and the daemon reports each round's end.
+function buildSubsessionParentAppend(parentSessionId: string | null | undefined): string {
+  return (
+    `# Reporting back to your parent session\n` +
+    `You are a sub-session of your own main conversation, working in the background; its session is ` +
+    `${parentSessionId}. It may ` +
+    `send you more messages later; they arrive here, in this same context. To send it progress worth knowing, a ` +
+    `question you need answered, or your result, call \`sendMessage\` ` +
+    `\`{"action":"replyToSession","sessionId":"${parentSessionId}","message":"..."}\`; a reply does not end your ` +
+    `work. Send your result that way before you finish, saying whether you succeeded and what the result was (on ` +
+    `failure, what went wrong). When this round of work ends, the daemon tells your parent automatically and ` +
+    `forwards your final response, so end with one short line rather than repeating the result. If you asked a ` +
+    `question, end your turn; the answer arrives as a new message.`
+  )
+}
+
 /** Build standing instructions for native session metadata when supported, or the first prompt block otherwise. */
 export function buildStandingContext(input: StandingContextInput): StandingContext {
   const memoryAppend = buildMemoryAppend(input.memoryIndex)
@@ -351,7 +372,11 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
-  const parentReplyAppend = buildParentReplyAppend(input.needsReplyToParent, input.parentSessionId)
+  const parentReplyAppend = buildParentReplyAppend(
+    input.needsReplyToParent,
+    input.parentSessionId,
+    isDelegationCoordinate(input.thread)
+  )
   const assemble = (meta: string) => {
     const resume = [meta, workspaceRootsAppend, platformAppend, COLLAB_APPEND, parentReplyAppend, NO_RESPONSE_RULE]
       .filter(Boolean)

@@ -151,16 +151,66 @@ describe('messageSubsession', () => {
     expect(gatewayFor).not.toHaveBeenCalled()
   })
 
-  it('rejects every target field, and any supplied sessionId, without effects', async () => {
+  it('rejects every target field, and a null, empty or mistyped sessionId, without effects', async () => {
     for (const extra of ['toAgent', 'channel', 'thread', 'platform', 'integrationId', 'attachment', 'needsReply']) {
       expect(await rejection({ action: 'messageSubsession', [extra]: 'x', message: 'm' })).toContain(
         `action \`messageSubsession\` does not accept \`${extra}\``
       )
     }
-    for (const sessionId of ['slack:C_HERE:subsession:1:agent-self', '', null, 7]) {
+    for (const sessionId of ['', '  ', null, 7, {}]) {
       const text = await rejection({ action: 'messageSubsession', sessionId, message: 'm' })
-      expect(text).toContain('does not accept `sessionId`: this daemon cannot send into an existing sub-session')
+      expect(text).toContain('action `messageSubsession` takes `sessionId` only as the nonempty `childSessionId`')
+      expect(text).toContain('a null or empty id never starts one')
     }
+  })
+
+  it('sends into an existing child by its id, never through the creation path', async () => {
+    const { deps, calls } = wakeDeps()
+    const continued: unknown[] = []
+    const child = 'slack:C_HERE:subsession:1:agent-self'
+    const withChild = {
+      ...deps,
+      callId: 'call-1',
+      continueSubsession: async (req: unknown) => {
+        continued.push(req)
+        return { delivered: true, targetSession: child, subsession: true as const }
+      }
+    } as OpsDeps
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'messageSubsession', sessionId: child, message: 'also Windows' },
+      withChild
+    )) as Record<string, unknown>
+    expect(calls).toHaveLength(0)
+    expect(continued).toEqual([
+      {
+        callerAgentId: 'agent-self',
+        platform: 'slack',
+        callerChannel: 'C_HERE',
+        callerThread: '100.1',
+        sessionId: child,
+        text: 'also Windows',
+        submissionId: 'call-1'
+      }
+    ])
+    expect(res).toMatchObject({
+      ok: true,
+      wake: { delivered: true, targetSession: child, subsession: true },
+      childSessionId: child,
+      reply: { requested: true, state: 'awaiting' },
+      nextAction: 'finish-turn-and-wait'
+    })
+    expect(res.message).toContain('existing sub-session, which keeps its earlier context')
+    const refusal = { delivered: false, targetSession: child, reason: 'subsession_not_found', message: 'no' }
+    const refused = await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'messageSubsession', sessionId: child, message: 'm' },
+      { ...withChild, continueSubsession: async () => refusal } as OpsDeps
+    )
+    // A refusal keeps the creation family's shape and promises nothing.
+    expect(refused).toEqual({ ok: true, wake: refusal })
   })
 })
 
@@ -226,11 +276,15 @@ describe('getToolGuide', () => {
     expect(callAgent[0]).toMatchObject({ toAgent: { needsReply: true } })
   })
 
-  it('does not advertise sub-session continuation or explicit peer sessions', () => {
-    const guide = JSON.stringify(sendMessageGuide(ctx, 'messageSubsession'))
-    expect(guide).not.toMatch(/continu|existing child/i)
-    for (const example of examples(sendMessageGuide(ctx, 'messageSubsession')))
-      expect(example.arguments).not.toHaveProperty('sessionId')
+  it('advertises sub-session continuation, but not explicit peer sessions', () => {
+    const subsession = examples(sendMessageGuide(ctx, 'messageSubsession')).map((example) => example.arguments)
+    expect(subsession[0]).not.toHaveProperty('sessionId')
+    expect(subsession).toContainEqual(
+      expect.objectContaining({ sessionId: '<childSessionId returned by messageSubsession>' })
+    )
+    expect(JSON.stringify(sendMessageGuide(ctx, 'replyToSession'))).toContain('a reply does not end its work')
+    const send = toolsForIntegrations([slack as Integration]).find((tool) => tool.name === 'sendMessage')!
+    expect(send.description).toContain('sends more work to one you started (sessionId: its childSessionId)')
     for (const example of examples(sendMessageGuide(ctx, 'callAgent')))
       expect(example.arguments).not.toHaveProperty('sessionId')
   })

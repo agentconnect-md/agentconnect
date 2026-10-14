@@ -96,8 +96,9 @@ export const stopSubsession: ToolHandler<AssistantSubsessionDeps> = async (ctx, 
       result: 'stopped',
       sessionId: id,
       note:
-        'Its current turn was interrupted, and it reports back here that it ended. Nothing it already did is ' +
-        'undone, and a process its runtime started in the background (a build, a dev server) may keep running.'
+        'Its current turn was interrupted, messages still waiting for it were dropped, and it reports back here that ' +
+        'it ended. Nothing it already did is undone, and a process its runtime started in the background (a build, a ' +
+        'dev server) may keep running. To give it new work later, message it with messageSubsession and this sessionId.'
     }
   }
   return {

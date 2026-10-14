@@ -989,7 +989,7 @@ describe('through the daemon', () => {
       await vi.waitFor(() => expect(reports).toHaveLength(1), WAIT)
       expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }])
       expect(reports[0]!.text).toBe(
-        `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
+        `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${res.targetSession}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
       )
       expect((await d.store.listPermissionRequests(agentId))[0]).toMatchObject({
         status: 'denied',
