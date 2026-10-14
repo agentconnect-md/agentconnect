@@ -3069,8 +3069,6 @@
         "on": "开启",
         "off": "关闭",
         "locked": "不可用",
-        "patrolsDegraded": "巡检已降级",
-        "patrolsDegradedHint": "巡检以只读方式在 Agent 自己的主机上运行，使用它的凭据。",
         "responsibleNamed": "负责人：{name}",
         "edit": "编辑",
         "close": "关闭",

@@ -1362,8 +1362,7 @@ platform write, no `sendMessage`, no new item and no draft, and any other tool i
 Its runtime runs in its own read-only mode (`read-only`, else `plan`) whatever the agent's permission
 mode, and anything that would ask for approval is refused, never asked. It still runs on the
 agent's own host, with the agent's credentials and workspace: the runtime's read-only mode is what
-keeps it from writing there, and reads over the network that need no approval stay possible. The
-assistant mode panel therefore marks patrols as degraded.
+keeps it from writing there, and reads over the network that need no approval stay possible.
 
 ## Assistant-mode proposals
 

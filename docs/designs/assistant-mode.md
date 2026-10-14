@@ -838,12 +838,12 @@ killed sub-sessions do not restart. Stopping never undoes completed effects.
 - **Wake**: only an item's `nextCheck` wakes a patrol — a duty-gated sweep on the daemon, once per
   `nextCheck` value; pause suspends it and an overdue item is checked once. `patrolSchedule`, hook
   events and triage come later.
-- **Where it runs**: a read-only sub-session on the **agent's own host** — no credential-less host
-  yet. Read-only rests on layers (a) and (c) below: AgentConnect tools filtered to reads plus the
-  item tools it needs to record what it saw, and the runtime's read-only mode with a daemon policy
-  that refuses anything needing approval. Layer (b) is missing, so every runtime's patrol is
-  marked _degraded_ on the settings page and the residual is that of a degraded runtime plus the
-  agent's own credentials on the host.
+- **Where it runs**: a read-only sub-session on the **agent's own host**, with the agent's
+  credentials, until the credential-less patrol host exists. Read-only rests on layers (a) and (c)
+  below: AgentConnect tools filtered to reads plus the item tools it needs to record what it saw,
+  and the runtime's read-only mode with a daemon policy that refuses anything needing approval.
+  Layer (b) is missing, so the residual is that of a degraded runtime plus the agent's own
+  credentials on the host.
 - **Outcomes**: a report, a `propose` (§5.10), or silence; the item gets an observation either
   way, and a run that records nothing counts as a failure. The report goes to the item's **origin
   place** through the existing parent-report path into that place's long session, which speaks;
