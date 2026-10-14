@@ -338,6 +338,8 @@ export interface SessionRecord {
   selectedRepos?: string | null
   // Where an appending session's latest turn replied (channel-session-mode.md §3.1), written by `setSessionReplyThread`; null at the conversation's top level and on every other session.
   replyThread?: string | null
+  // A digest of the standing context its model last received (session-concept.md §2.3), written by `setSessionStandingDigest`; null on a session from before it was recorded.
+  standingDigest?: string | null
 }
 
 /** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
@@ -1306,7 +1308,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 49
+export const SCHEMA_VERSION = 50
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1905,6 +1907,16 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
     if (!columns.some((c) => c.name === 'replyThread'))
       await db.exec('ALTER TABLE sessions ADD COLUMN replyThread TEXT')
+  },
+  // v50 keeps a digest of the standing context a session's model last received, so a resume can tell whether it changed.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS standingDigest TEXT')
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
+    if (!columns.some((c) => c.name === 'standingDigest'))
+      await db.exec('ALTER TABLE sessions ADD COLUMN standingDigest TEXT')
   }
 ]
 
@@ -2219,7 +2231,8 @@ export class LocalStore {
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
-        onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT
+        onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT,
+        standingDigest TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -3886,6 +3899,11 @@ export class LocalStore {
   /** Where an appending session's latest turn replied, or null at its top level; a wake keyed by the session alone replies there. */
   async setSessionReplyThread(key: string, thread: string | null): Promise<void> {
     await this.db.prepare('UPDATE sessions SET replyThread = ? WHERE key = ?').run(thread, key)
+  }
+
+  /** The digest of the standing context this session's model just received, compared when the session resumes. */
+  async setSessionStandingDigest(key: string, digest: string): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET standingDigest = ? WHERE key = ?').run(digest, key)
   }
 
   /** Record how the turn that just ended went (§7.3 companion of {@link setSessionState}):

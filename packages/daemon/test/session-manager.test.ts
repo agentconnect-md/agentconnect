@@ -3177,7 +3177,8 @@ it('refreshes the bounded catalog on native resume without adding it to user pro
     loadSession: vi.fn(async () => {}),
     hasSession: vi.fn(() => false),
     loadSupported: () => true,
-    usesMetaSystemPrompt: () => true
+    usesMetaSystemPrompt: () => true,
+    appliesSystemPromptOnLoad: () => true
   } as any
   const resumed = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory: provider })
   const result = await resumed.handle('bot-a', msg({ ts: '100.2', text: 'second', platform: 'telegram' }))
@@ -3388,7 +3389,7 @@ describe('SessionManager — standing context composed only where a prompt reads
   )
 
   it.each([false, true])(
-    'composes it on a resume only for a host that re-asserts it on load (meta %s)',
+    'composes it once on a resume, to re-assert it on load or compare it on the first prompt (meta %s)',
     async (meta) => {
       const { store, workspaces, sm } = await setup(meta)
       await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
@@ -3405,9 +3406,9 @@ describe('SessionManager — standing context composed only where a prompt reads
       expect(load.created).toBe(false)
       if (meta) expect(host2.loadSession.mock.calls[0][4]).toContain(rootsLine)
       else expect(host2.loadSession.mock.calls[0][4]).toBeUndefined()
-      expect(workspaces.reads).toBe(meta ? 2 : 1)
+      expect(workspaces.reads).toBe(2)
       await resumed.handle('bot-a', msg({ ts: '100.3', text: 'third' }))
-      expect(workspaces.reads).toBe(meta ? 2 : 1)
+      expect(workspaces.reads).toBe(2)
       await store.close()
     }
   )

@@ -34,7 +34,12 @@ import {
   OUTSIDE_HUMAN_SCOPE_REMINDER
 } from './no-response.js'
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
-import { AGENT_META_OPENING, buildStandingContext, type StandingContext } from './turn/standing-context.js'
+import {
+  AGENT_META_OPENING,
+  buildStandingContext,
+  standingRefreshBlock,
+  type StandingContext
+} from './turn/standing-context.js'
 import { backfillThreadHistory } from './turn/thread-backfill.js'
 import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
 import { openRuntimeSession } from './turn/runtime-session.js'
@@ -321,6 +326,8 @@ export class SessionManager {
   private readonly lastContextUsed = new Map<string, number>()
   // The running-sub-session list each main conversation was last shown, so a change re-injects it.
   private readonly runningSubsessionsShown = new Map<string, string>()
+  // Sessions resumed on a runtime that keeps the standing context it started with, until their next prompt compares it.
+  private readonly standingRefreshDue = new Set<string>()
 
   /**
    * Every agent that is ALREADY part of this thread — open sessions first, then ones
@@ -763,6 +770,16 @@ export class SessionManager {
     }
     const created = opened.created
     const additionalMcpServersAttached = opened.additionalMcpAttached
+    // Record the standing context the model now holds, so a resume can tell whether it changed (session-concept.md §2.3).
+    const recordStanding = async (session: SessionRecord, digest: string): Promise<void> => {
+      if (session.standingDigest === digest) return
+      await this.deps.store.setSessionStandingDigest(key, digest)
+      session.standingDigest = digest
+    }
+    if (created && usesMeta) await recordStanding(rec, (await standingContext()).sessionDigest)
+    else if (opened.resumed && usesMeta && host.appliesSystemPromptOnLoad?.())
+      await recordStanding(rec, (await standingContext()).resumeDigest)
+    else if (opened.resumed) this.standingRefreshDue.add(key)
 
     // A channel-root message posted by this same agent creates the thread's session cursor
     // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
@@ -794,8 +811,12 @@ export class SessionManager {
       rec.lastDeliveredTs !== null && ordering?.coordinate(rec.lastDeliveredTs) === null ? null : rec.lastDeliveredTs
     const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
     const opening = created || firstPromptAfterOwnRootInitialization
-    // Only an inline opening prelude or a restate reads it below, so a warm turn never samples the workspace roots.
-    const preludeStanding = (opening ? !usesMeta : restateParentReply) ? await standingContext() : undefined
+    const inlineOpening = opening && !usesMeta
+    // A resumed session's first prompt compares the standing context its runtime kept; an inline opening restates it anyway.
+    const refreshDue = !inlineOpening && this.standingRefreshDue.has(key)
+    // Only an inline opening prelude, a restate or a due refresh reads it below, so a warm turn never samples the workspace roots.
+    const preludeStanding =
+      (opening ? !usesMeta : restateParentReply) || refreshDue ? await standingContext() : undefined
     // The warm-thread provider snapshot (§8.4/§8.5) lives in turn/thread-backfill.ts;
     // handle() only supplies the coordinates and consumes the stable window it returns.
     // §6.3: an append session spans many threads and its coordinate is no thread's, so
@@ -977,11 +998,21 @@ export class SessionManager {
 
     // A new session or an initialized root's first prompt inlines the standing context unless `_meta` has it (#398).
     const promptPrelude: ContentBlock[] = []
+    // Whether this prompt hands the model the standing context inline, recorded with the turn.
+    let standingInline = false
+    this.standingRefreshDue.delete(key)
+    if (refreshDue && preludeStanding && preludeStanding.sessionDigest !== rec.standingDigest) {
+      standingInline = true
+      promptPrelude.push({ type: 'text', text: standingRefreshBlock(preludeStanding.sessionContext) })
+    }
     let reminded = false
     if (opening) {
       // Start the reminder epoch: this session just received the full rule, inline or via `_meta`.
       this.turnsSinceReminder.set(key, 0)
-      if (preludeStanding?.sessionContext) promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
+      if (inlineOpening && preludeStanding?.sessionContext) {
+        standingInline = true
+        promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
+      }
     } else if (restateParentReply && preludeStanding) {
       // An open session's standing context lacks this obligation or names another parent, so state it as a turn block.
       promptPrelude.push({ type: 'text', text: preludeStanding.parentReplyAppend })
@@ -1042,6 +1073,7 @@ export class SessionManager {
     // that already has it passes 1 straight back through.
     if (needsReplyToParent) rec.needsParentReply = 1
     await this.deps.store.upsertSession(rec)
+    if (standingInline && preludeStanding) await recordStanding(rec, preludeStanding.sessionDigest)
     // Where an appending session's turn replies, for a later wake keyed by the session alone (a pull request's feedback).
     const replyThread = isAppendCoordinate(thread) ? (msg.thread ?? null) : null
     if ((rec.replyThread ?? null) !== replyThread) {
