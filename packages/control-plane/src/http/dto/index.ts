@@ -55,7 +55,7 @@ import {
   UsageReport,
   MAX_GIT_REPO_LENGTH,
   MAX_ENVIRONMENT_VALUE_LENGTH,
-  normalizeGitHubSkillSource,
+  normalizeSkillSource,
   normalizeGitCloneUrl,
   redactGitUrlSecrets,
   normalizeRepoSubdir,
@@ -605,13 +605,13 @@ const SkillSourceArg = z
   .refine(
     (s) => {
       try {
-        normalizeGitHubSkillSource(s)
+        normalizeSkillSource(s)
         return true
       } catch {
         return false
       }
     },
-    { message: 'source must be a bounded GitHub repository source' }
+    { message: 'source must be a bounded GitHub repository source or an HTTPS Git address' }
   )
 
 const SkillSourceRef = z
@@ -1234,14 +1234,18 @@ export const UpdateSkillSourceBody = z
 /** `POST /skill-sources/preview` — best-effort GitHub scan for the import dialog.
  *  Takes an installation + repo (same shape as the branches picker) and returns the
  *  ref choices + the SKILL.md manifest. Scan failure ⇒ empty skills (install all). */
-export const PreviewSkillSourceBody = z
-  .object({
-    installationId: z.string(),
-    owner: z.string().min(1),
-    repo: z.string().min(1),
-    ref: z.string().optional()
-  })
-  .strict()
+export const PreviewSkillSourceBody = z.union([
+  z
+    .object({
+      installationId: z.string(),
+      owner: z.string().min(1),
+      repo: z.string().min(1),
+      ref: z.string().optional()
+    })
+    .strict(),
+  // A project address on the deployment's GitLab instance (source-cache.md §11), scanned through the GitLab API.
+  z.object({ source: SkillSourceArg, ref: SkillSourceRef.optional(), subDir: SkillSourceSubDir.optional() }).strict()
+])
 
 export const SkillSourcePreviewDto = z.object({
   branches: z.array(z.string()),
@@ -1296,6 +1300,8 @@ export const SkillSourceDto = z.object({
   subDir: z.string().nullable(),
   skills: z.array(z.string()), // the source's own skill filter ([] ⇒ all)
   private: z.boolean(), // repo was private at bind time ⇒ acquired through the org GitHub App
+  // Who vouches for the source: a provider-qualified repository/project id; null ⇒ anonymous.
+  credential: z.object({ provider: z.enum(['github', 'gitlab']), repoId: z.string() }).nullable(),
   visibility: z.string(), // 'org' | 'restricted'
   sharedWith: z.array(z.string()),
   createdBy: z.string().nullable(),

@@ -38,11 +38,17 @@ describe('SkillSourceArg', () => {
     }
   })
 
-  it('rejects hosts and transports outside the bounded GitHub acquisition contract', () => {
+  it('accepts a plain HTTPS address on any other host; the route decides whether that host is admitted', () => {
+    for (const good of ['https://gitlab.com/example-org/kit', 'https://gitlab.example.test/group/sub/kit.git']) {
+      expect({ good, accepted: accepts(good) }).toEqual({ good, accepted: true })
+    }
+  })
+
+  it('rejects transports and GitHub spellings outside the bounded acquisition contract', () => {
     for (const bad of [
-      'https://gitlab.com/example-org/kit',
       'ssh://git@git.example.test/ops/skills.git',
-      'https://example.test/example-org/kit',
+      'git@gitlab.com:example-org/kit.git',
+      'http://gitlab.example.test/example-org/kit',
       'https://github.com:8443/example-org/kit',
       'ssh://git@github.com:2222/example-org/kit',
       'ssh://deploy@github.com/example-org/kit',

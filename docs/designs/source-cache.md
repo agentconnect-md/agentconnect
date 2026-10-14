@@ -1018,6 +1018,27 @@ Wire identity (P3, CP3.1):
 - Until a daemon can acquire other hosts, it skips a non-GitHub entry with a
   warning. That skip becomes a reason code in CP3.4.
 
+GitLab admission (P3, CP3.2):
+
+- A source on the deployment's GitLab instance is stored as
+  `<base>/<path_with_namespace>`, the project's current path; a `/-/` route
+  path is refused, since ref and subdirectory travel separately.
+- An anonymous project read decides visibility. A public project is admitted
+  anonymously. Otherwise the project must be a managed binding in the
+  organization: the row records `gitlab` plus the numeric project id, re-read
+  through the installer connection (the binding's own facts when no connection
+  answers), and converges its `CodeHostRepository` row.
+- The preview and the skill picker scan `SKILL.md` through the repository tree
+  API with GitHub's layout precedence: anonymously for a public project, with
+  the installer connection's token for a managed one.
+- Enabling a credentialed GitLab source is a read grant. The account repository
+  counts each enabling agent as a Reporter consumer of the project (§7.2 of
+  [gitlab-com-integration.md](gitlab-com-integration.md)). An enable-list
+  change re-converges the affected projects. The GitLab gitcred broker serves
+  the read PAT for that project under a `read` clamp when neither the workspace
+  nor an explicit grant covers it (`gitlab/skill-source.ts`,
+  `gitlab/gitcred.service.ts`).
+
 ## 12. Configuration and degradation
 
 The Source Cache is optional. The Helm chart gains `sourceCache.*` values (off by

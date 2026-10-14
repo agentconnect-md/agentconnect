@@ -27,6 +27,8 @@ export interface GitlabGitcredDeps {
   credentialSecrets: Pick<GitlabProjectCredentialSecretStore, 'get'>
   /** The §8.3 additional-project allowlist — the second authority beside the workspace. */
   repoAuths: Pick<AgentRepoAuthorizationRepo, 'listForAgent'>
+  /** The third, read-only authority: projects of the credentialed GitLab skill sources the agent enables (shared-skills.md §3). */
+  skillSourceProjects?: (agent: AgentRecord) => Promise<bigint[]>
   clock: Clock
   /** The normalized instance base URL (§24.1), echoed on every grant so the consumer can
    *  verify the host exactly as it verifies provider and project id (§24.4). */
@@ -147,12 +149,7 @@ export class GitlabGitcredService {
     return account
   }
 
-  /**
-   * The project this request may be served for, and the ceiling it carries (§13.1
-   * step 3, §8.3). Two authorities, exactly as GitHub has: the agent's workspace
-   * project, and an explicit additional authorization. A project that is neither is
-   * a denial, never a fallback onto the workspace.
-   */
+  /** The project served and its ceiling (§13.1 step 3, §8.3): workspace, explicit grant, or enabled private skill source (read); else denied, never the workspace. */
   private async authority(
     agent: AgentRecord,
     requestedExternalRepoId?: bigint
@@ -170,6 +167,10 @@ export class GitlabGitcredService {
     }
     const grants = await this.deps.repoAuths.listForAgent(agent.id)
     const grant = grants.find((row) => row.provider === 'gitlab' && row.repoId === requestedExternalRepoId)
+    // Enabling a private skill source IS a read grant on its project; an explicit grant's tier wins over it.
+    if (!grant && (await this.deps.skillSourceProjects?.(agent))?.includes(requestedExternalRepoId)) {
+      return { projectId: requestedExternalRepoId, clamp: 'read' }
+    }
     if (!grant) {
       throw new GitCredDeniedError(
         'requested project is neither this agent’s workspace nor an authorized additional project',

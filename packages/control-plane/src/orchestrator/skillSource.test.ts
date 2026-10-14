@@ -4,6 +4,7 @@ import {
   parseSkillRef,
   redactSourceCredentials,
   resolveAgentSkillEntries,
+  resolveGitlabSkillSourceProjects,
   resolvePrivateSkillSourceRepos
 } from './skillSource.js'
 import type { SkillSourceRecord, SkillSourceRepo } from '../persistence/ports.js'
@@ -313,5 +314,29 @@ describe('private skill sources (shared-skills.md §3)', () => {
       { repoId: 555n, repoFullName: 'Acme/Platform-Skills' },
       { repoId: 556n, repoFullName: 'acme/mono' }
     ])
+  })
+
+  it('derives the GitLab read-grant set from enabled credentialed GitLab sources only, once per project', async () => {
+    const gitlab = (name: string, repoId: bigint) =>
+      source({
+        name,
+        id: name,
+        source: `https://gitlab.example.test/group/${name}`,
+        githubRepoId: null,
+        credential: { provider: 'gitlab', repoId }
+      })
+    const repo = repoWith([
+      gitlab('one', 9n),
+      gitlab('same-project', 9n),
+      gitlab('two', 10n),
+      gitlab('not-enabled', 11n),
+      source({ name: 'anon', source: 'https://gitlab.example.test/group/anon', githubRepoId: null }),
+      source({ name: 'platform', private: true, githubRepoId: 555n })
+    ])
+    const projects = await resolveGitlabSkillSourceProjects(
+      { orgId: ORG, skills: ['one/review', 'one/*', 'same-project', 'two/*', 'anon/*', 'platform/*'] },
+      repo
+    )
+    expect(projects).toEqual([9n, 10n])
   })
 })
