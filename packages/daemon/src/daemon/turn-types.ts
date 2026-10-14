@@ -387,6 +387,8 @@ export interface HandledTurnSession {
   contextEvents?: { ts: string; text?: string }[]
   providerCheckpoint?: string
   additionalMcpServersAttached?: boolean
+  /** The digest of the standing context the blocks carry inline, recorded once the runtime answers the prompt. */
+  standingDigest?: string
 }
 
 /** The handles every `dispatchOne` phase shares: the entry being run, the pure plan for it,

@@ -3901,8 +3901,8 @@ export class LocalStore {
     await this.db.prepare('UPDATE sessions SET replyThread = ? WHERE key = ?').run(thread, key)
   }
 
-  /** The digest of the standing context this session's model just received, compared when the session resumes. */
-  async setSessionStandingDigest(key: string, digest: string): Promise<void> {
+  /** The digest of the standing context this session's model holds, or null for none yet; compared when the session resumes. */
+  async setSessionStandingDigest(key: string, digest: string | null): Promise<void> {
     await this.db.prepare('UPDATE sessions SET standingDigest = ? WHERE key = ?').run(digest, key)
   }
 

@@ -15909,7 +15909,14 @@ export class Daemon {
       await this.openTurnChrome(p, run, currentAttributionInfo)
       const prompt = await this.prePromptContextRefresh(p, run, sessionId, handled)
       this.emitTurnStarted(run, host, sessionId, created, prompt.finalCaptureInput, turnModel)
-      const outcome = await this.runPromptLoop(p, run, { ...prompt, host, sessionId, turnModel, settlement })
+      const outcome = await this.runPromptLoop(p, run, {
+        ...prompt,
+        host,
+        sessionId,
+        turnModel,
+        settlement,
+        ...(handled.standingDigest !== undefined ? { standingDigest: handled.standingDigest } : {})
+      })
       if (outcome.kind === 'cancelled') return null
       if (!p.signals.runtimeReportedModel) turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
       await this.settleUsage(p, run, sessionId)
@@ -17356,6 +17363,8 @@ export class Daemon {
       finalCaptureInput: string
       baseRevision: number
       providerCheckpoint: string | undefined
+      /** The digest of the standing context the first prompt carries inline (SessionManager.standingDelivered). */
+      standingDigest?: string
     }
   ): Promise<TurnPromptOutcome> {
     const { entry, key, plan, agent, evaluation } = run
@@ -17368,7 +17377,7 @@ export class Daemon {
     let generation = 0
     let regenerationStartedAt: number | undefined
     let regenerationApprovalWaitBaseline = 0
-    let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint } = turn
+    let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint, standingDigest } = turn
     const codexUsageIsPerPrompt = this.isCodexRuntime(entry.agentId, key)
 
     while (true) {
@@ -17382,6 +17391,11 @@ export class Daemon {
       // Start-fence linearization: no await occurs between queue coalescing above
       // (or the prior regeneration decision) and initiating this ACP request.
       const result = await this.promptTurn(p, host, sessionId, promptBlocks)
+      // ACP acknowledges a prompt only with its response, whatever the stop reason; a rejected one leaves the refresh due.
+      if (standingDigest !== undefined) {
+        await this.sessions.standingDelivered(key, standingDigest)
+        standingDigest = undefined
+      }
       // The runtime's notifications are handled off the prompt call, so drain this
       // session's update chain before the turn reads what they wrote.
       await this.acpUpdateChains.get(acpUpdateChainKey(p.hostKey, sessionId))

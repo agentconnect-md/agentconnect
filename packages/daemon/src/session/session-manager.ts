@@ -326,7 +326,7 @@ export class SessionManager {
   private readonly lastContextUsed = new Map<string, number>()
   // The running-sub-session list each main conversation was last shown, so a change re-injects it.
   private readonly runningSubsessionsShown = new Map<string, string>()
-  // Sessions resumed on a runtime that keeps the standing context it started with, until their next prompt compares it.
+  // Sessions whose runtime may not hold the current standing context, until a delivered prompt carries it (see standingDelivered).
   private readonly standingRefreshDue = new Set<string>()
 
   /**
@@ -418,6 +418,8 @@ export class SessionManager {
     contextEvents?: { ts: string; text?: string }[]
     /** Incremental provider read checkpoint associated with the assembled snapshot. */
     providerCheckpoint?: string
+    /** The digest of the standing context these blocks carry inline; hand it to `standingDelivered` once the runtime takes the prompt. */
+    standingDigest?: string
     /** False when session creation/loading rejected the trusted additional MCP
      * descriptors and the runtime session succeeded only after retrying with
      * the ordinary server set. Absent when no additional descriptors existed. */
@@ -770,16 +772,15 @@ export class SessionManager {
     }
     const created = opened.created
     const additionalMcpServersAttached = opened.additionalMcpAttached
-    // Record the standing context the model now holds, so a resume can tell whether it changed (session-concept.md §2.3).
-    const recordStanding = async (session: SessionRecord, digest: string): Promise<void> => {
-      if (session.standingDigest === digest) return
+    // What the model holds of the standing context (session-concept.md §2.3); an inline copy counts once its prompt is delivered.
+    const recordStanding = async (session: SessionRecord, digest: string | null): Promise<void> => {
       await this.deps.store.setSessionStandingDigest(key, digest)
       session.standingDigest = digest
     }
-    if (created && usesMeta) await recordStanding(rec, (await standingContext()).sessionDigest)
-    else if (opened.resumed && usesMeta && host.appliesSystemPromptOnLoad?.())
-      await recordStanding(rec, (await standingContext()).resumeDigest)
-    else if (opened.resumed) this.standingRefreshDue.add(key)
+    const appliesOnLoad = usesMeta && (host.appliesSystemPromptOnLoad?.() ?? false)
+    if (created) await recordStanding(rec, usesMeta ? (await standingContext()).sessionDigest : null)
+    else if (opened.resumed && appliesOnLoad) await recordStanding(rec, (await standingContext()).resumeDigest)
+    if ((created && !usesMeta) || (opened.resumed && !appliesOnLoad)) this.standingRefreshDue.add(key)
 
     // A channel-root message posted by this same agent creates the thread's session cursor
     // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
@@ -998,11 +999,11 @@ export class SessionManager {
 
     // A new session or an initialized root's first prompt inlines the standing context unless `_meta` has it (#398).
     const promptPrelude: ContentBlock[] = []
-    // Whether this prompt hands the model the standing context inline, recorded with the turn.
-    let standingInline = false
-    this.standingRefreshDue.delete(key)
-    if (refreshDue && preludeStanding && preludeStanding.sessionDigest !== rec.standingDigest) {
-      standingInline = true
+    // The digest of the standing context this prompt carries inline, recorded by standingDelivered once the runtime takes it.
+    let standingDigest: string | undefined
+    if (refreshDue && preludeStanding?.sessionDigest === rec.standingDigest) this.standingRefreshDue.delete(key)
+    else if (refreshDue && preludeStanding) {
+      standingDigest = preludeStanding.sessionDigest
       promptPrelude.push({ type: 'text', text: standingRefreshBlock(preludeStanding.sessionContext) })
     }
     let reminded = false
@@ -1010,7 +1011,7 @@ export class SessionManager {
       // Start the reminder epoch: this session just received the full rule, inline or via `_meta`.
       this.turnsSinceReminder.set(key, 0)
       if (inlineOpening && preludeStanding?.sessionContext) {
-        standingInline = true
+        standingDigest = preludeStanding.sessionDigest
         promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
       }
     } else if (restateParentReply && preludeStanding) {
@@ -1073,7 +1074,6 @@ export class SessionManager {
     // that already has it passes 1 straight back through.
     if (needsReplyToParent) rec.needsParentReply = 1
     await this.deps.store.upsertSession(rec)
-    if (standingInline && preludeStanding) await recordStanding(rec, preludeStanding.sessionDigest)
     // Where an appending session's turn replies, for a later wake keyed by the session alone (a pull request's feedback).
     const replyThread = isAppendCoordinate(thread) ? (msg.thread ?? null) : null
     if ((rec.replyThread ?? null) !== replyThread) {
@@ -1090,8 +1090,15 @@ export class SessionManager {
       contextRevision,
       contextEvents,
       ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {}),
-      ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {})
+      ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {}),
+      ...(standingDigest !== undefined ? { standingDigest } : {})
     }
+  }
+
+  /** The runtime took a prompt that carried the standing context inline: record what it now holds and stop refreshing it. */
+  async standingDelivered(key: string, digest: string): Promise<void> {
+    await this.deps.store.setSessionStandingDigest(key, digest)
+    this.standingRefreshDue.delete(key)
   }
 
   /** The local-time line, in the first zone found: the sender's, a run's schedule's, its starter's, the place's last seen, UTC. */
