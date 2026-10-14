@@ -213,6 +213,8 @@ export {
   normalizeAllowedWorkspaceGitUrl,
   normalizeGitCloneUrl,
   normalizeGitHubSkillSource,
+  normalizeSkillSource,
+  isGitHubSkillSource,
   normalizeGithubRepoUrl,
   normalizeGitUrl,
   normalizeWorkspaceGitOrigin,

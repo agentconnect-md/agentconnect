@@ -997,6 +997,27 @@ the `CodeHostRepository` reference for a credentialed Source. `githubRepoId`
 stays decodable during migration, as the workspace contract's `github` and
 `gitlab` arms do ([git-workspace-model.md](git-workspace-model.md) §8).
 
+Wire identity (P3, CP3.1):
+
+- `AgentSkillEntry.source` is GitHub's bounded vocabulary or a plain HTTPS
+  address on any other host (`normalizeSkillSource`). Ref and subdirectory
+  travel separately.
+- `githubRepoId` is required exactly when the source names github.com.
+- `credential` must match the host: `github` only on github.com, `gitlab` only
+  elsewhere.
+- A GitHub credential is still projected beside the legacy `private: true`, so
+  a daemon that predates `credential` acquires as before. `skillSourceCredential`
+  reads either spelling.
+- The daemon's spec digest treats that restated credential as the same content,
+  so the projection change needs no `configRevision` bump.
+- `skill_source` stores the reference as `credentialProvider` +
+  `credentialRepoId`; the migration backfills every private, bound row as
+  `github`.
+- A row written by an older replica with only `private` reads the same way.
+- A credentialed GitHub bind converges its `CodeHostRepository` catalog row.
+- Until a daemon can acquire other hosts, it skips a non-GitHub entry with a
+  warning. That skip becomes a reason code in CP3.4.
+
 ## 12. Configuration and degradation
 
 The Source Cache is optional. The Helm chart gains `sourceCache.*` values (off by

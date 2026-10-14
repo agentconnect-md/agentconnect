@@ -199,6 +199,31 @@ export function normalizeGitHubSkillSource(input: string): string {
   return normalized
 }
 
+function skillSourceHost(normalized: string): string {
+  const scp = SCP_PARTS_RE.exec(normalized)
+  return (scp ? scp[2]! : new URL(normalized).hostname).toLowerCase().replace(/\.+$/, '')
+}
+
+/** True when a skill source names github.com, the one host whose sources carry a GitHub numeric identity. */
+export function isGitHubSkillSource(input: string): boolean {
+  try {
+    return skillSourceHost(normalizeGitCloneUrl(input)) === 'github.com'
+  } catch {
+    return false
+  }
+}
+
+/** Normalize a skill source on any host: GitHub keeps its bounded vocabulary; any other host is a plain HTTPS address (source-cache.md §11). */
+export function normalizeSkillSource(input: string): string {
+  const normalized = normalizeGitCloneUrl(input)
+  if (skillSourceHost(normalized) === 'github.com') return normalizeGitHubSkillSource(input)
+  if (SCP_PARTS_RE.test(normalized) || !/^https:\/\//i.test(normalized)) {
+    invalidCloneUrl('a skill source outside GitHub must use https')
+  }
+  if (DOT_PATH_SEGMENT_RE.test(normalized)) invalidCloneUrl('skill source must not contain dot path segments')
+  return normalized
+}
+
 function assertGitHubSkillRepositoryPath(path: string, allowTree: boolean, urlPath: boolean): void {
   // URL pathnames have exactly one structural leading slash; scp paths have
   // none. Do not trim an arbitrary run here: doing so would admit nonstandard

@@ -23,7 +23,11 @@ import {
   type InPodSkillDeps,
   type SandboxSkillReconcileDeps
 } from '../src/skills/sandbox-skill-reconcile.js'
-import { createSkillRefPlanResolution, type SkillRefPlan } from '../src/skills/skill-ref-resolution.js'
+import {
+  createSkillRefPlanResolution,
+  isCredentialedSkillSource,
+  type SkillRefPlan
+} from '../src/skills/skill-ref-resolution.js'
 import { GitSkillRefTracker } from '../src/skills/git-skill-ref-tracker.js'
 import { nameGitSkillRef, runBoundedGit } from '../src/skills/git-skill-ref-name.js'
 import { bundleKey, parseSourceCacheObjectKey, skillPointerKey, anonRepoId } from '../src/source-cache/keys.js'
@@ -240,6 +244,7 @@ async function installed(workspace: string): Promise<Record<string, string>> {
 }
 
 interface Run {
+  skills?: AgentSkillEntry[]
   resolve?: (entry: AgentSkillEntry) => SkillRefPlan
   inPod?: Partial<InPodSkillDeps>
   logs?: string[]
@@ -255,7 +260,7 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
       commit: tipOf(entry),
       ref: 'refs/heads/main',
       pinned: false,
-      credentialed: entry.private === true
+      credentialed: isCredentialedSkillSource(entry)
     }))
   const deps: SandboxSkillReconcileDeps = {
     store: box.store.store,
@@ -291,7 +296,7 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
   }
   return await reconcileSandboxSkillSources(deps, {
     agentId: 'a',
-    skills: [PUBLIC, PRIVATE],
+    skills: options.skills ?? [PUBLIC, PRIVATE],
     managed: [w.managed],
     dreamed: [w.dream],
     priorLedger: await box.store.ledger(),
@@ -420,6 +425,31 @@ describe('sandbox skill reconcile: routing', () => {
       expect(closed).toBe(1)
       const reconcile = pod.requests.find((r) => r.op === 'reconcile')!
       expect(reconcile.credentialWindow).toEqual({ capability: 'w'.repeat(43) })
+    })
+  }, 120_000)
+
+  it('reads a credential without the legacy flag as private, and skips a Source on another host', async () => {
+    await withWorld(async (w) => {
+      const pod = await sandbox(w, 'pod')
+      const opened: string[][] = []
+      const logs: string[] = []
+      const { private: _legacy, ...credentialOnly } = PRIVATE
+      const elsewhere = AgentSkillEntry.parse({ name: 'elsewhere', source: 'https://git.example.test/team/skills' })
+      await run(w, pod, 'pod', {
+        logs,
+        skills: [PUBLIC, { ...credentialOnly, credential: { provider: 'github' } }, elsewhere],
+        inPod: {
+          openWindow: (repos) => {
+            opened.push(repos)
+            return { capability: 'w'.repeat(43), close() {} }
+          }
+        }
+      })
+      expect(opened).toEqual([['acme/private']])
+      expect(logs).toContainEqual(
+        expect.stringContaining('skipped Git source 3; this daemon installs GitHub sources only')
+      )
+      expect(pod.gitPlans()[0]!.map((plan) => plan.sourceId.split(':')[1])).toEqual(['0', '1'])
     })
   }, 120_000)
 

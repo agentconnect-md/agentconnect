@@ -6588,6 +6588,12 @@ export interface McpProviderOauthStateStore {
 //   Shareable, so the same visibility policy as agents/MCP.
 // ───────────────────────────────────────────────────────────────────────────
 
+/** Who vouches for a skill source: the provider-qualified numeric id of its CodeHostRepository (source-cache.md §11). */
+export interface SkillSourceCredentialRef {
+  provider: 'github' | 'gitlab'
+  repoId: bigint
+}
+
 /** Domain view of a `skill_source` row. Shareable (visibility + complete
  *  Selected audience). Nothing here is secret. */
 export interface SkillSourceRecord extends Shareable {
@@ -6599,7 +6605,8 @@ export interface SkillSourceRecord extends Shareable {
   ref: string | null
   subDir: string | null
   skills: string[] // empty ⇒ install every skill; else only these
-  private: boolean // repo was private at bind time ⇒ daemons acquire through the org GitHub App
+  private: boolean // credential is GitHub ⇒ daemons acquire through the org GitHub App
+  credential: SkillSourceCredentialRef | null // null ⇒ anonymous
   createdByUserId: string | null
   createdAt: Date
   updatedAt: Date
@@ -6613,7 +6620,7 @@ export interface CreateSkillSourceInput {
   ref?: string | null
   subDir?: string | null
   skills?: string[]
-  private?: boolean // default false
+  credential?: SkillSourceCredentialRef | null // default anonymous
   visibility?: ResourceVisibility // default 'org'
   sharedWith?: string[]
   createdByUserId?: string
@@ -6626,7 +6633,7 @@ export interface UpdateSkillSourceInput {
   ref?: string | null
   subDir?: string | null
   skills?: string[]
-  private?: boolean
+  credential?: SkillSourceCredentialRef | null
 }
 
 export interface SkillSourceRepo {

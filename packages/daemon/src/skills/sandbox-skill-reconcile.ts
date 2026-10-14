@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AgentSkillEntry } from '@agentconnect.md/protocol'
+import { AgentSkillEntry, type CompatibleAgentSkillEntry } from '@agentconnect.md/protocol'
 import type { ClusterSkillClient } from '../shim/skill-client.js'
 import {
   GitSkillPlanSchema,
@@ -30,7 +30,7 @@ import {
 } from './install-skills.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
 import { gitSkillRepositoryPath, resolveBoundedGitSkillSource } from './skill-git-source.js'
-import type { SkillRefPlan } from './skill-ref-resolution.js'
+import { isCredentialedSkillSource, type SkillRefPlan } from './skill-ref-resolution.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skill-source-snapshot.js'
 
 // One sandbox skill reconcile (source-cache.md §8): Git Sources acquired by the daemon, or planned for an image that clones them in-pod.
@@ -80,8 +80,8 @@ export interface SandboxSkillReconcileDeps {
 
 export interface SandboxSkillReconcileInput {
   agentId: string
-  /** The agent's entries as replicated; one without a numeric repository id predates current admission. */
-  skills: ReadonlyArray<Omit<AgentSkillEntry, 'githubRepoId'> & { githubRepoId?: string }>
+  /** The agent's entries as replicated; strict admission below drops what this daemon cannot install. */
+  skills: ReadonlyArray<CompatibleAgentSkillEntry>
   managed: LocalSkillSource[]
   dreamed: LocalSkillSource[]
   priorLedger?: ClusterSkillLedger
@@ -107,10 +107,12 @@ export async function reconcileSandboxSkillSources(
   input: SandboxSkillReconcileInput
 ): Promise<SandboxSkillReconcileResult> {
   const configured = input.skills.flatMap((entry, index) => {
-    if (!entry.githubRepoId) return []
     const parsed = AgentSkillEntry.safeParse(entry)
     if (parsed.success && parsed.data.githubRepoId) return [{ index, entry: parsed.data }]
-    deps.log.warn(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
+    if (parsed.success)
+      deps.log.warn(`skills: skipped Git source ${index + 1}; this daemon installs GitHub sources only`)
+    else if (entry.githubRepoId)
+      deps.log.warn(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
     return []
   })
   let journaled: string | undefined
@@ -353,7 +355,7 @@ async function planInPod(
   const routed = configured.filter(({ entry }) => {
     if (inPod.daemonOnly?.(entry)) return false
     // A pod without the gitcred tunnel, or a repo no window would admit, cannot fill a private Source; the daemon path still can.
-    if (entry.private !== true) return true
+    if (!isCredentialedSkillSource(entry)) return true
     const repo = gitSkillRepositoryPath(entry)?.toLowerCase()
     return inPod.servesGitcred && repo !== undefined && inPod.windowAdmits(repo)
   })
@@ -463,7 +465,7 @@ async function planInPod(
   for (const { source, plan } of fitted) {
     commits.set(gitResolutionDigest(source.entry), plan.plannedCommit)
     const repo = gitSkillRepositoryPath(source.entry)
-    if (source.entry.private === true && !plan.keepInstalled && repo) {
+    if (isCredentialedSkillSource(source.entry) && !plan.keepInstalled && repo) {
       privateRepos.add(repo.toLowerCase())
       privateSourceIds.push(plan.sourceId)
     }

@@ -382,7 +382,10 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(cli.calls).toHaveLength(1)
     expect(result.installed).toContain('.runtime/skills/valid')
     expect(await readFile(join(cwd, '.runtime/skills/valid/SKILL.md'), 'utf8')).toContain('# valid')
-    expect(warnings).toContainEqual(expect.stringContaining('omitted historical Git source 1'))
+    // An HTTPS address on another host is a current entry this daemon cannot acquire yet, not a historical one.
+    expect(warnings).toContainEqual(
+      expect.stringContaining('skipped Git source 1; this daemon installs GitHub sources only')
+    )
     expect(warnings).toContainEqual(expect.stringContaining('omitted historical Git source 2'))
   })
 

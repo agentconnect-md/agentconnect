@@ -12,7 +12,7 @@
  *
  * There is NO secret side-table (unlike MCP providers): skills carry no upstream
  * credential of their own. A PRIVATE repository is admitted only when the org's
- * GitHub App installation covers its owner; the row records `private: true`, and
+ * GitHub App installation covers its owner; the row records a GitHub credential reference, and
  * the gitcred broker treats an agent's enabled private sources as its read-only,
  * repository-scoped grant set (github/service.ts), so the daemon acquires it with a
  * short-lived installation token rather than anonymously. The definition is not
@@ -161,6 +161,17 @@ export function skillSourceRoutes(deps: HttpDeps) {
       // daemon refuses the entry (see canonicalizeSource).
       return { status: 'ok', ...hit, canonicalSource: canonicalizeSource(source, parsed, hit.fullName) }
     }
+
+    // A credentialed source references its CodeHostRepository (source-cache.md §5), so the catalog row converges on bind.
+    const convergeCatalog = (orgId: OrgId, binding: Extract<RepoBinding, { status: 'ok' }>) =>
+      deps.repos.codeHostRepository.upsert({
+        orgId,
+        provider: 'github',
+        externalId: binding.repoId,
+        displayPath: binding.fullName,
+        cloneUrl: `https://github.com/${binding.fullName}`,
+        defaultBranch: binding.defaultBranch
+      })
 
     // A private repository is installable only through the org GitHub App: that
     // installation is what the gitcred broker mints the daemon's read token from.
@@ -380,6 +391,9 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // A subdir source needs a ref; if we couldn't resolve one reject rather than
         // let the daemon assume `main`.
         if (req.body.subDir && !ref) return reply.code(400).send(subdirNeedsRef)
+        // Credentialed only from the read that bound the id; a client cannot declare a repo private.
+        const credentialed = binding.status === 'ok' && repoId === binding.repoId && binding.private
+        if (credentialed) await convergeCatalog(orgOf(req), binding)
         // Name-capture guard — the mirror image of the delete guard: agents bind
         // by NAME, so registering a source under a name agents already enable
         // would capture their installs onto this new source without any per-agent
@@ -394,10 +408,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
           ...(ref !== undefined ? { ref } : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
           skills: req.body.skills,
-          // Recorded from the SAME read that bound the id: a client cannot declare a
-          // repo private (which would make daemons request credentials for it), and a
-          // body-supplied id that skipped the lookup binds as public.
-          private: binding.status === 'ok' && repoId === binding.repoId ? binding.private : false,
+          credential: credentialed ? { provider: 'github', repoId } : null,
           ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
           ...(sharedWith ? { sharedWith } : {}),
           ...(req.principal ? { createdByUserId: req.principal.userId } : {})
@@ -468,6 +479,9 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // A subdir source needs a ref; reject if we couldn't resolve one rather than
         // let the daemon assume `main`.
         if (effSubDir && !resolvedRef) return reply.code(400).send(subdirNeedsRef)
+        // A write that bound the id refreshes visibility from that read; unreachable GitHub keeps the stored credential.
+        const credentialed = bound ? binding.private : existing.credential?.provider === 'github'
+        if (bound && binding.private) await convergeCatalog(orgOf(req), binding)
         const source = await deps.repos.skillSource.update(orgOf(req), existing.id, {
           ...(canonicalSource !== existing.source ? { source: canonicalSource } : {}),
           githubRepoId: repoId,
@@ -478,11 +492,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
               : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
           ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
-          // Whenever this write bound the id, the visibility observed alongside it is
-          // the truth (a repo flipped private↔public since it was registered); a
-          // `skills`-only edit that reached GitHub refreshes it too. Unreachable
-          // GitHub leaves the stored value alone.
-          ...(bound ? { private: binding.private } : {})
+          credential: credentialed ? { provider: 'github', repoId } : null
         })
         await fanOutToReferrers(orgOf(req), source.name)
         return toDto(source, ctxOf(req))

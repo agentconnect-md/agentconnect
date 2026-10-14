@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type { AgentSkillEntry } from '@agentconnect.md/protocol'
 import { MAX_RETRY_AFTER_MS } from '../codehost/rest-read.js'
 import { parseResolvableRef } from '../codehost/ref-spec.js'
+import { isCredentialedSkillSource } from './skill-ref-resolution.js'
 import { nameGitSkillRef, type GitSkillRefNaming, type NameGitSkillRefInput } from './git-skill-ref-name.js'
 import {
   GitSkillCommitResolutionError,
@@ -108,7 +109,7 @@ export class GitSkillRefTracker {
 
   private async tracked(entry: AgentSkillEntry): Promise<TrackedSkillRef | null> {
     // A credentialed Source is never answered here: its answer would be shared across agents.
-    if (entry.private === true || isPinnedGitSkillRef(entry)) return null
+    if (isCredentialedSkillSource(entry) || isPinnedGitSkillRef(entry)) return null
     const key = this.keyOf(entry)
     const cached = this.cache.get(key)
     if (cached && this.isFresh(cached)) return this.served(cached)

@@ -8,7 +8,7 @@ import { AssistantModePolicy } from './assistant-mode.js'
 import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
 import { ExecutorStrategyName } from './executor.js'
-import { normalizeGitHubSkillSource } from '../git-url.js'
+import { isGitHubSkillSource, normalizeSkillSource } from '../git-url.js'
 
 /**
  * Agent lifecycle (protocol §4.4, §7.4, §8).
@@ -254,50 +254,88 @@ const GitHubRepositoryId = z
   .string()
   .regex(/^[1-9]\d{0,19}$/, { message: 'must be a canonical positive GitHub repository id' })
 
-export const AgentSkillEntry = z.object({
-  // Display/log label — the org-level source name. NOT passed to the CLI.
-  name: z.string().min(1).max(64),
-  // Credential-free Git acquisition input (owner/repo, clone URL, or a
-  // tree/<ref>/<subdir> path). The CLI sees only the resulting local snapshot.
-  source: z
-    .string()
-    .min(1)
-    .max(512)
-    .refine((s) => !s.startsWith('-'), { message: 'must not start with "-"' })
-    .refine(
-      (s) => {
-        try {
-          normalizeGitHubSkillSource(s)
-          return true
-        } catch {
-          return false
-        }
-      },
-      { message: 'must be a bounded GitHub repository source' }
-    ),
-  // Rename-proof GitHub identity. Current CP projections must carry this exact
-  // decimal id; the daemon verifies it through the numeric endpoint before any
-  // name-based fetch.
-  githubRepoId: GitHubRepositoryId,
-  // Optional branch/tag/commit. The daemon composes it into the source when set;
-  // a tag/commit pins content, a branch/absent tracks the head (design §5).
-  ref: SkillRef.optional(),
-  // Optional repo-relative install directory.
-  subDir: SkillSubDir.optional(),
-  // Which skills from the source to install (passed as repeated `-s`). Empty ⇒
-  // install every skill the source exposes (no `-s`).
-  skills: z
-    .array(SkillSelectionArg)
-    .max(64)
-    .refine((skills) => new Set(skills).size === skills.length, { message: 'skill selections must be unique' })
-    .default([]),
-  // The repository was private when the CP bound it. The daemon then acquires it
-  // through the org GitHub App's read-only credential (the CP mints a
-  // contents:read token scoped to exactly this repository because the agent
-  // enables the source) instead of anonymously. Absent/false ⇒ public.
-  private: z.boolean().optional()
-})
+// Who vouches for a skill Source (source-cache.md §5, §11): the workspace credential shape minus gitea; absent ⇒ anonymous.
+export const SkillSourceCredential = z.discriminatedUnion('provider', [
+  z.object({ provider: z.literal('github') }),
+  z.object({ provider: z.literal('gitlab'), projectId: z.string().regex(/^[1-9]\d{0,19}$/) })
+])
+export type SkillSourceCredential = z.infer<typeof SkillSourceCredential>
+
+export const AgentSkillEntry = z
+  .object({
+    // Display/log label — the org-level source name. NOT passed to the CLI.
+    name: z.string().min(1).max(64),
+    // Credential-free Git acquisition input: GitHub's bounded vocabulary, or a plain HTTPS address on any other host.
+    source: z
+      .string()
+      .min(1)
+      .max(512)
+      .refine((s) => !s.startsWith('-'), { message: 'must not start with "-"' })
+      .refine(
+        (s) => {
+          try {
+            normalizeSkillSource(s)
+            return true
+          } catch {
+            return false
+          }
+        },
+        { message: 'must be a bounded GitHub source or an HTTPS Git address' }
+      ),
+    // Rename-proof GitHub identity, required exactly when the source names github.com; the daemon verifies it before any name-based fetch.
+    githubRepoId: GitHubRepositoryId.optional(),
+    // Optional branch/tag/commit. The daemon composes it into the source when set;
+    // a tag/commit pins content, a branch/absent tracks the head (design §5).
+    ref: SkillRef.optional(),
+    // Optional repo-relative install directory.
+    subDir: SkillSubDir.optional(),
+    // Which skills from the source to install (passed as repeated `-s`). Empty ⇒
+    // install every skill the source exposes (no `-s`).
+    skills: z
+      .array(SkillSelectionArg)
+      .max(64)
+      .refine((skills) => new Set(skills).size === skills.length, { message: 'skill selections must be unique' })
+      .default([]),
+    // Absent ⇒ anonymous. Read through `skillSourceCredential`, which also honors the legacy `private` flag.
+    credential: SkillSourceCredential.optional(),
+    // Legacy spelling of `credential: { provider: 'github' }`, still projected beside it for daemons that predate it.
+    private: z.boolean().optional()
+  })
+  .superRefine((entry, ctx) => {
+    const github = isGitHubSkillSource(entry.source)
+    if (github && entry.githubRepoId === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['githubRepoId'], message: 'a GitHub source needs its repository id' })
+    }
+    if (!github && entry.githubRepoId !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['githubRepoId'],
+        message: 'only a GitHub source has a GitHub repository id'
+      })
+    }
+    const provider = entry.credential?.provider
+    if (provider !== undefined && (provider === 'github') !== github) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['credential'],
+        message: `a ${provider} credential does not match the source host`
+      })
+    }
+    if (entry.private === true && (!github || (provider !== undefined && provider !== 'github'))) {
+      ctx.addIssue({ code: 'custom', path: ['private'], message: 'private marks only a credentialed GitHub source' })
+    }
+  })
 export type AgentSkillEntry = z.infer<typeof AgentSkillEntry>
+
+/** The credential an entry acquires with: a valid `credential`, else the legacy `private` GitHub flag; also reads undecoded entries. */
+export function skillSourceCredential(entry: {
+  credential?: unknown
+  private?: boolean
+}): SkillSourceCredential | undefined {
+  const parsed = SkillSourceCredential.safeParse(entry.credential)
+  if (parsed.success) return parsed.data
+  return entry.private === true ? { provider: 'github' } : undefined
+}
 
 /** Current-CP projection boundary. Kept separate from the rolling-compatible
  * wire decoder below: a new daemon may briefly receive an old CP's previously
@@ -323,8 +361,11 @@ export const CompatibleAgentSkillEntry = z.object({
   ref: z.string().optional(),
   subDir: z.string().optional(),
   skills: z.array(LegacySkillArg).default([]),
+  // Kept undecoded so one malformed credential cannot reject the snapshot; strict admission parses it.
+  credential: z.unknown().optional(),
   private: z.boolean().optional()
 })
+export type CompatibleAgentSkillEntry = z.infer<typeof CompatibleAgentSkillEntry>
 
 /** One centrally accepted, immutable Agent Skills bundle enabled for an agent.
  * Content is fetched separately in bounded chunks; AgentSpec carries metadata

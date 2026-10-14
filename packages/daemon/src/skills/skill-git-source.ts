@@ -230,6 +230,12 @@ function githubRepository(cloneUrl: string): { owner: string; repo: string; path
   return { owner, repo, path: `${owner}/${repo}` }
 }
 
+/** The numeric identity a GitHub skill acquisition verifies first; admission drops an entry without one. */
+function githubRepoIdOf(entry: AgentSkillEntry): string {
+  if (entry.githubRepoId === undefined) throw new Error('skill GitHub source has no repository id')
+  return entry.githubRepoId
+}
+
 /** Admission contract for the bounded acquisition implementation. Accepted
  * inputs may use GitHub shorthand/tree/HTTPS or standard GitHub SSH/scp, but
  * the final network authority must re-authorize as exact GitHub HTTPS and the
@@ -974,7 +980,7 @@ export async function verifyGitSkillSourceAccess(
         credentialProvider: opts.credentialProvider ?? loadScopedGitSkillCredential,
         state: { credentialAttempted: false }
       },
-      entry.githubRepoId,
+      githubRepoIdOf(entry),
       github.path
     )
   } finally {
@@ -1022,7 +1028,7 @@ export async function acquireGitSkillSource(
     }
 
     const verifyRepositoryIdentity = () =>
-      verifyGithubRepositoryIdentity(commonApiOptions, entry.githubRepoId, github.path)
+      verifyGithubRepositoryIdentity(commonApiOptions, githubRepoIdOf(entry), github.path)
 
     // The numeric endpoint cannot be captured by a replacement at the old
     // owner/name. Fence both name-based operations: if the original repository

@@ -22,6 +22,8 @@ function source(over: Partial<SkillSourceRecord>): SkillSourceRecord {
     subDir: null,
     skills: [],
     private: false,
+    credential:
+      over.private && over.githubRepoId !== null ? { provider: 'github', repoId: over.githubRepoId ?? 123n } : null,
     visibility: 'org',
     sharedWith: [],
     createdByUserId: null,
@@ -252,9 +254,37 @@ describe('private skill sources (shared-skills.md §3)', () => {
     const repo = repoWith([source({ name: 'platform', private: true }), source({ name: 'public', id: 'id-2' })])
     const entries = await resolveAgentSkillEntries({ orgId: ORG, skills: ['platform/*', 'public/*'] }, repo)
     expect(entries).toEqual([
-      expect.objectContaining({ name: 'platform', private: true }),
-      expect.not.objectContaining({ private: expect.anything() })
+      expect.objectContaining({ name: 'platform', private: true, credential: { provider: 'github' } }),
+      expect.not.objectContaining({ private: expect.anything(), credential: expect.anything() })
     ])
+  })
+
+  it('projects a GitLab credential by project id, without the GitHub-only legacy flag or identity', async () => {
+    const repo = repoWith([
+      source({
+        name: 'gitlab',
+        source: 'https://gitlab.example.test/group/sub/project',
+        githubRepoId: null,
+        credential: { provider: 'gitlab', repoId: 42n }
+      })
+    ])
+    const entries = await resolveAgentSkillEntries({ orgId: ORG, skills: ['gitlab/*'] }, repo)
+    expect(entries).toEqual([
+      {
+        name: 'gitlab',
+        source: 'https://gitlab.example.test/group/sub/project',
+        skills: [],
+        credential: { provider: 'gitlab', projectId: '42' }
+      }
+    ])
+  })
+
+  it('projects an anonymous source on another host with neither credential nor GitHub identity', async () => {
+    const repo = repoWith([
+      source({ name: 'elsewhere', source: 'https://git.example.test/team/skills', githubRepoId: null })
+    ])
+    const entries = await resolveAgentSkillEntries({ orgId: ORG, skills: ['elsewhere/*'] }, repo)
+    expect(entries).toEqual([{ name: 'elsewhere', source: 'https://git.example.test/team/skills', skills: [] }])
   })
 
   it('derives the read-grant set from enabled PRIVATE, bound sources only', async () => {
@@ -267,10 +297,16 @@ describe('private skill sources (shared-skills.md §3)', () => {
         source: 'https://github.com/acme/mono/tree/main/plugins/x'
       }),
       source({ name: 'public', private: false, githubRepoId: 557n }),
-      source({ name: 'unbound', private: true, githubRepoId: null })
+      source({ name: 'unbound', private: true, githubRepoId: null }),
+      source({
+        name: 'gitlab',
+        source: 'https://gitlab.example.test/group/project',
+        githubRepoId: null,
+        credential: { provider: 'gitlab', repoId: 9n }
+      })
     ])
     const grants = await resolvePrivateSkillSourceRepos(
-      { orgId: ORG, skills: ['platform/review', 'tree/*', 'public/*', 'unbound/*', 'missing/*'] },
+      { orgId: ORG, skills: ['platform/review', 'tree/*', 'public/*', 'unbound/*', 'gitlab/*', 'missing/*'] },
       repo
     )
     expect(grants).toEqual([

@@ -1,19 +1,19 @@
 // Which resolver plans a tracking Git skill ref (source-cache.md §5): credentialed per agent, anonymous shared.
-import type { AgentSkillEntry } from '@agentconnect.md/protocol'
+import { skillSourceCredential, type AgentSkillEntry } from '@agentconnect.md/protocol'
 import type { CodeHostRefResolver } from '../codehost/ref-resolver.js'
 import { normalizeSkillRef, type CodeHostRepositoryRef, type ResolveRefResult } from '../codehost/repository.js'
 import type { GitSkillRefTracker } from './git-skill-ref-tracker.js'
 import { gitSkillRepositoryPath, isPinnedGitSkillRef, resolveBoundedGitSkillSource } from './skill-git-source.js'
 
-/** A Source read with a CP-minted credential: today every private GitHub skill repository. */
-export function isCredentialedSkillSource(entry: AgentSkillEntry): boolean {
-  return entry.private === true
+/** A Source read with a CP-minted credential: its `credential`, or the legacy `private` flag an older CP sends alone. */
+export function isCredentialedSkillSource(entry: { credential?: unknown; private?: boolean }): boolean {
+  return skillSourceCredential(entry) !== undefined
 }
 
 /** The credentialed repository a skill entry names, or undefined when the entry is not a bounded GitHub source. */
 export function skillSourceRepository(entry: AgentSkillEntry): CodeHostRepositoryRef | undefined {
   const path = gitSkillRepositoryPath(entry)
-  if (path === undefined) return undefined
+  if (path === undefined || entry.githubRepoId === undefined) return undefined
   return {
     provider: 'github',
     externalId: entry.githubRepoId,

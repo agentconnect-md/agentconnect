@@ -38,6 +38,7 @@ import type { ExecutionPlane, PlaneResolver, PlaneScope } from '../execution/pla
 import { makeLogger } from '../log.js'
 import { withStartupPhase } from '../session/startup-progress.js'
 import { installSkills, type LocalSkillSource } from '../skills/install-skills.js'
+import { isCredentialedSkillSource } from '../skills/skill-ref-resolution.js'
 import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
 import { reserveBuiltinSkills } from '../skills/builtin-skills.js'
 import { bundlePathsFromCheckoutRoot, excludeManagedSkillBundles } from './git-exclude.js'
@@ -567,7 +568,7 @@ export class WorkspaceManager {
    *  repository-scoped token for exactly those (shared-skills.md §3). A scratch
    *  or anonymous-git agent with only public sources keeps acquiring anonymously. */
   skillGitCredentialEnabled(agent: Agent): boolean {
-    return this.usesGithubApp(agent) || (agent.skills ?? []).some((entry) => entry.private === true)
+    return this.usesGithubApp(agent) || (agent.skills ?? []).some((entry) => isCredentialedSkillSource(entry))
   }
 
   /** Which managed credential backs this workspace's remote git; undefined ⇒ anonymous. */
