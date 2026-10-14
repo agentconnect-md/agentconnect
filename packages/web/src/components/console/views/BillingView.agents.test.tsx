@@ -33,7 +33,13 @@ const debit = (id: string, amount: string, agentId = AGENT_ID) => ({
   agents: [{ agentId, amount }]
 })
 const DEBITS = [
-  debit('d1', '0.006822824'),
+  {
+    ...debit('d1', '0.006822824'),
+    models: [
+      { model: 'model-small', amount: '0.001822824' },
+      { model: 'model-large', amount: '0.005' }
+    ]
+  },
   debit('d2', '0.015224848'),
   debit('d3', '0.001036384'),
   // An agent outside the viewer's roster: withheld, whatever session it ran in.
@@ -189,5 +195,23 @@ describe('the usage row', () => {
     const chip = rollups[0]!.closest('[data-tx-agent]')!
     expect(chip.getAttribute('title')).toBe('Agents you don’t have access to — $0.50')
     expect(host.innerHTML).not.toContain(OTHER_ID)
+  })
+
+  it('splits a usage row into agent and model columns, and expands its per-model spend', async () => {
+    const host = await render()
+    const headers = [...host.querySelectorAll('.row.h > span')].map((h) => h.textContent)
+    expect(headers.slice(0, 4)).toEqual(['', 'Agent', 'Models', 'Amount'])
+    // Only the row the service split by model gets a toggle; the others stay plain rows.
+    const toggles = [...host.querySelectorAll<HTMLButtonElement>('[data-tx-toggle]')]
+    expect(toggles).toHaveLength(1)
+    expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
+    expect(host.querySelector('[data-tx-models]')).toBeNull()
+    await act(async () => toggles[0]!.click())
+    expect(toggles[0]!.getAttribute('aria-expanded')).toBe('true')
+    const lines = [...host.querySelectorAll('[data-tx-models] > div')].map((l) => l.textContent)
+    expect(lines).toEqual(['model-large73.3%-$0.005', 'model-small26.7%-$0.001823'])
+    // Clicking anywhere on the row toggles too.
+    await act(async () => (toggles[0]!.closest('.row') as HTMLElement).click())
+    expect(host.querySelector('[data-tx-models]')).toBeNull()
   })
 })

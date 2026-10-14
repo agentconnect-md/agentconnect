@@ -4361,7 +4361,9 @@
       "columns": {
         "description": "描述",
         "amount": "金额",
-        "posted": "记账时间（{tz}）"
+        "posted": "记账时间（{tz}）",
+        "agent": "Agent",
+        "models": "模型"
       },
       "empty": {
         "usageTitle": "暂无用量记录",
@@ -4371,14 +4373,15 @@
         "allTitle": "暂无交易记录",
         "allBody": "组织完成充值后，购买记录和用量扣费会显示在这里。"
       },
-      "usagePeriod": "用量 — {period}",
       "agentShare": "{name} — {amount}",
       "withheldShare": "你无权访问的 agent — {amount}",
       "receipt": "收据",
       "loadMore": "加载更多",
       "loadingMore": "加载中…",
       "endOfLedger": "已到达账单末尾",
-      "modelShare": "{name} — {amount}"
+      "modelShare": "{name} — {amount}",
+      "expand": "展开",
+      "collapse": "收起"
     }
   },
   "Settings": {

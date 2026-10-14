@@ -108,12 +108,12 @@ describe('Transactions — the ledger-side filter', () => {
     await mount()
     // The stub answers with both sides whatever the request said, which is exactly what a
     // billing image predating `?type=` does. On Usage the credit must not survive that.
-    expect(host.innerHTML).toContain('Usage — 2026-08')
+    expect(host.innerHTML).toContain('-$0.42')
     expect(host.innerHTML).not.toContain('Promotional credit')
 
     await clickPill('Top-ups')
     expect(host.innerHTML).toContain('Promotional credit')
-    expect(host.innerHTML).not.toContain('Usage — 2026-08')
+    expect(host.innerHTML).not.toContain('-$0.42')
   })
 
   it('keeps the never-funded banner off the table’s filter', async () => {

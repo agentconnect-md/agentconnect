@@ -4361,7 +4361,9 @@
       "columns": {
         "description": "Description",
         "amount": "Amount",
-        "posted": "Posted ({tz})"
+        "posted": "Posted ({tz})",
+        "agent": "Agent",
+        "models": "Models"
       },
       "empty": {
         "usageTitle": "No usage yet",
@@ -4371,14 +4373,15 @@
         "allTitle": "No transactions yet",
         "allBody": "Purchases and usage deductions will appear here once your org is funded."
       },
-      "usagePeriod": "Usage — {period}",
       "agentShare": "{name} — {amount}",
       "withheldShare": "Agents you don’t have access to — {amount}",
       "receipt": "Receipt",
       "loadMore": "Load more",
       "loadingMore": "Loading…",
       "endOfLedger": "end of ledger",
-      "modelShare": "{name} — {amount}"
+      "modelShare": "{name} — {amount}",
+      "expand": "Expand",
+      "collapse": "Collapse"
     }
   },
   "Settings": {
