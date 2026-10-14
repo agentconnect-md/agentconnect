@@ -1,4 +1,4 @@
-import type { AgentSkillEntry } from '@agentconnect.md/protocol'
+import { skillSourceCredential, type AgentSkillEntry } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import { isCredentialedSkillSource, type SkillRefPlan } from '../skills/skill-ref-resolution.js'
 import { resolveBoundedGitSkillSource } from '../skills/skill-git-source.js'
@@ -313,8 +313,12 @@ export function createSkillReadPlanner(
     let repo: string
     if (isCredentialedSkillSource(entry)) {
       found.repoClass = 'cred'
-      if (!resolution.credentialed || entry.githubRepoId === undefined) return miss('unauthorized', 'no_resolve_ref')
-      repo = credRepoId('github', entry.githubRepoId)
+      if (!resolution.credentialed) return miss('unauthorized', 'no_resolve_ref')
+      // The provider-qualified id `resolveRef` just checked for this agent (source-cache.md §4).
+      const credential = skillSourceCredential(entry)
+      if (credential?.provider === 'gitlab') repo = credRepoId('gitlab', credential.projectId)
+      else if (entry.githubRepoId !== undefined) repo = credRepoId('github', entry.githubRepoId)
+      else return miss('unauthorized', 'no_resolve_ref')
     } else {
       // An anonymous declaration reads only the URL's own anon entry, whatever the repository's visibility.
       found.repoClass = 'anon'

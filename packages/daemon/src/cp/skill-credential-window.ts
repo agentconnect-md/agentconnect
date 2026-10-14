@@ -5,6 +5,9 @@ import { SKILLS_RECONCILE_TIMEOUT_MS } from '../shim/skill-protocol.js'
 /** The subject of a window the daemon opens for Git it runs itself, as opposed to a pod's. */
 export const DAEMON_SKILL_WINDOW_SUBJECT = 'daemon'
 
+/** A window's key for a GitLab skill project (`gitlab:<path>`), so it can never collide with a GitHub `owner/repo`. */
+export const GITLAB_SKILL_WINDOW_PREFIX = 'gitlab:'
+
 /** No window outlives the skills request it serves. */
 export const MAX_SKILL_WINDOW_TTL_MS = SKILLS_RECONCILE_TIMEOUT_MS
 

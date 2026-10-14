@@ -50,7 +50,7 @@ export const SHIM_PARENT_FD_ENV = 'AC_SHIM_PARENT_FD'
 /** `1` under a boundary that passes stdio alone: stdin stays open past the identity line, and its end-of-file means stop or a gone daemon. */
 export const SHIM_STDIN_LIFELINE_ENV = 'AC_SHIM_STDIN_LIFELINE'
 
-/** `cluster-skills-v2` widens the manifest; `source-cache-bundle-v1` serves `bundle`; `skill-git-in-pod-v1` `skills-git`; `skill-git-writeback-v1` `skills-git-writeback`. */
+/** `cluster-skills-v2` widens the manifest; `source-cache-bundle-v1` serves `bundle`; each `skill-git-*` feature serves its `skills-git*` grant. */
 export const ShimFeatureSchema = z.enum([
   'cluster-skills-v1',
   'cluster-skills-v2',
@@ -58,6 +58,7 @@ export const ShimFeatureSchema = z.enum([
   'source-cache-bundle-v1',
   'skill-git-in-pod-v1',
   'skill-git-writeback-v1',
+  'skill-git-gitlab-v1',
   'workspace-transfer-v1'
 ])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>
@@ -92,6 +93,8 @@ export const ShimCapabilitySchema = z.enum([
   'skills-git',
   // A Git plan entry may ask the shim to bundle its clone for write-back, uploaded over `bundle` (source-cache.md §9, §13).
   'skills-git-writeback',
+  // A Git plan entry may name a GitLab instance whose credential the pod's window carries (source-cache.md §8, §11).
+  'skills-git-gitlab',
   // Create, upload and discard a shim-minted Source Cache bundle handle (source-cache.md §9, §13).
   'bundle',
   // Snapshot one workspace file into a `bundle` handle for a console file transfer (source-cache-file-transfer.md).

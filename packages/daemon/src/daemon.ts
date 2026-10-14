@@ -33,6 +33,7 @@ import {
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
   AgentActivate as AgentActivateSchema,
   AgentSkillEntry as AgentSkillEntrySchema,
+  skillSourceCredential,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
@@ -503,7 +504,9 @@ import {
 } from './skills/skill-ref-resolution.js'
 import { configureGitlabSkillReads } from './skills/gitlab-skill-source.js'
 import { gitlabRepository } from './gitlab/repository.js'
-import { reconcileSandboxSkillSources, type InPodSkillDeps } from './skills/sandbox-skill-reconcile.js'
+import { reconcileSandboxSkillSources, skillWindowKey, type InPodSkillDeps } from './skills/sandbox-skill-reconcile.js'
+import { resolveSkillRefInPod } from './skills/pod-skill-ref.js'
+import { GITLAB_SKILL_WINDOW_PREFIX } from './cp/skill-credential-window.js'
 import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
 import { ClusterSkillCoordinator, clusterSkillSupportRequired } from './skills/cluster-skill-coordinator.js'
 import {
@@ -1198,6 +1201,8 @@ type HostRetirement = {
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
 const RELAY_ACK_SLOW_MS = 4000
+// One pod-local skill ref listing, the same bound the daemon's own ref naming has.
+const POD_SKILL_REF_TIMEOUT_MS = 10_000
 
 /** Claude Code asks for a retry "in a minute" when its OAuth refresh lock is contended. */
 const OAUTH_REFRESH_CONTENTION_RETRY_MS = 60_000
@@ -3248,6 +3253,19 @@ export class Daemon {
         return (this.agents.get(agentId)?.workspace.additionalRepos ?? []).some(
           (row) => row.provider === IMPLICIT_CREDENTIAL_PROVIDER && row.repoFullName.toLowerCase() === wanted
         )
+      },
+      // A credentialed GitLab skill source the spec enables, by the path its project is measured at on the spec's instance.
+      privateGitlabSkillProjectOf: (agentId: string, projectPath: string) => {
+        const agent = this.agents.get(agentId)
+        const wanted = `${GITLAB_SKILL_WINDOW_PREFIX}${projectPath.toLowerCase()}`
+        for (const value of agent?.skills ?? []) {
+          const parsed = AgentSkillEntrySchema.safeParse(value)
+          if (!parsed.success) continue
+          const credential = skillSourceCredential(parsed.data)
+          if (credential?.provider === 'gitlab' && skillWindowKey(parsed.data, agent?.gitlabHost) === wanted)
+            return credential.projectId
+        }
+        return undefined
       },
       // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): issued only inside a skill credential window.
       privateGithubSkillRepoOf: (agentId: string, repoFullName: string) => {
@@ -6890,6 +6908,16 @@ export class Daemon {
               this.skillCachePlan!({ agentId: agent.id, entry, resolution }, options)
           }
         : {}),
+      // A pod resolves an anonymous Source off GitHub itself, so the daemon never contacts that host (source-cache.md §5).
+      ...(this.k8sPlane?.podGitRunner
+        ? {
+            resolveInPod: async (entry: AgentSkillEntrySchema) => {
+              const runner = this.k8sPlane?.podGitRunner?.(pod.subject, AbortSignal.timeout(POD_SKILL_REF_TIMEOUT_MS))
+              return runner ? await resolveSkillRefInPod(entry, runner) : { ok: false as const }
+            }
+          }
+        : {}),
+      ...(agent.gitlabHost !== undefined ? { gitlabHost: agent.gitlabHost } : {}),
       // A public entry naming a repository the agent capability grants keeps that grant on the daemon path.
       daemonOnly: (entry) => {
         if (isCredentialedSkillSource(entry)) return false

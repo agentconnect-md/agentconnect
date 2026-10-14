@@ -1,7 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AgentSkillEntry, isGitHubSkillSource, type CompatibleAgentSkillEntry } from '@agentconnect.md/protocol'
+import {
+  AgentSkillEntry,
+  isGitHubSkillSource,
+  skillSourceCredential,
+  type CompatibleAgentSkillEntry
+} from '@agentconnect.md/protocol'
+import { GITLAB_SKILL_WINDOW_PREFIX } from '../cp/skill-credential-window.js'
 import type { ClusterSkillClient } from '../shim/skill-client.js'
 import {
   GitSkillPlanSchema,
@@ -29,6 +35,7 @@ import {
   type LocalSkillSource
 } from './install-skills.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
+import { gitlabSkillRepository } from './gitlab-skill-source.js'
 import { gitSkillRepositoryPath, resolveBoundedGitSkillSource } from './skill-git-source.js'
 import { isCredentialedSkillSource, type SkillRefPlan } from './skill-ref-resolution.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skill-source-snapshot.js'
@@ -62,6 +69,10 @@ export interface InPodSkillDeps {
   ): Promise<SkillSourceCachePlan>
   /** A Source only the daemon path can fill, e.g. a public entry naming a repository the agent capability grants. */
   daemonOnly?(entry: AgentSkillEntry): boolean
+  /** An anonymous Source off GitHub, resolved by this pod itself (source-cache.md §5); absent ⇒ the daemon path acquires it. */
+  resolveInPod?(entry: AgentSkillEntry): Promise<SkillRefPlan>
+  /** The GitLab instance the agent's spec names, for a credentialed GitLab Source's window key and credential host. */
+  gitlabHost?: string
 }
 
 export interface SandboxSkillReconcileDeps {
@@ -351,15 +362,23 @@ async function planInPod(
   inPod: InPodSkillDeps
 ): Promise<PodPlan> {
   const routed = configured.filter(({ entry }) => {
-    // A Source off GitHub is acquired by the daemon until the pod can resolve and credential it itself.
-    if (!isGitHubSkillSource(entry.source)) return false
     if (inPod.daemonOnly?.(entry)) return false
+    // An anonymous Source off GitHub goes in-pod only where the pod can resolve it itself.
+    if (!isCredentialedSkillSource(entry)) return isGitHubSkillSource(entry.source) || inPod.resolveInPod !== undefined
+    // A GitLab Source needs an image that credentials its instance.
+    if (!isGitHubSkillSource(entry.source) && !input.target.client.gitlabPlans) return false
     // A pod without the gitcred tunnel, or a repo no window would admit, cannot fill a private Source; the daemon path still can.
-    if (!isCredentialedSkillSource(entry)) return true
-    const repo = gitSkillRepositoryPath(entry)?.toLowerCase()
-    return inPod.servesGitcred && repo !== undefined && inPod.windowAdmits(repo)
+    const key = skillWindowKey(entry, inPod.gitlabHost)
+    return inPod.servesGitcred && key !== undefined && inPod.windowAdmits(key)
   })
-  const resolutions = await Promise.all(routed.map(({ entry }) => inPod.resolve(entry)))
+  // The pod's own answer for an anonymous Source off GitHub is used by this preparation alone (source-cache.md §5).
+  const resolutions = await Promise.all(
+    routed.map(({ entry }) =>
+      isCredentialedSkillSource(entry) || isGitHubSkillSource(entry.source)
+        ? inPod.resolve(entry)
+        : inPod.resolveInPod!(entry)
+    )
+  )
   const priorCommits = new Map(
     currentGitResolutions(
       configured.map(({ entry }) => entry),
@@ -390,6 +409,7 @@ async function planInPod(
     }
     // The daemon's origin policy runs here, before any URL reaches the pod.
     const parsed = resolveBoundedGitSkillSource(entry)
+    const gitlab = gitlabSkillRepository(entry, parsed.cloneUrl, inPod.gitlabHost)
     const ref = resolution.ok && !resolution.pinned ? resolution.ref : undefined
     // The widest write-back request is measured with the plan; the real one, or none, replaces it below.
     const writeBack =
@@ -401,6 +421,7 @@ async function planInPod(
       ...(ref ? { ref } : {}),
       plannedCommit: commit,
       ...(parsed.subDir ? { subDir: parsed.subDir } : {}),
+      ...(gitlab ? { credentialHost: gitlab.baseUrl } : {}),
       selections: [...entry.skills],
       ...(keepInstalled ? { keepInstalled: true } : {}),
       ...(writeBack ? { writeBack } : {})
@@ -464,13 +485,24 @@ async function planInPod(
   const privateSourceIds: string[] = []
   for (const { source, plan } of fitted) {
     commits.set(gitResolutionDigest(source.entry), plan.plannedCommit)
-    const repo = gitSkillRepositoryPath(source.entry)
-    if (isCredentialedSkillSource(source.entry) && !plan.keepInstalled && repo) {
-      privateRepos.add(repo.toLowerCase())
+    const key = skillWindowKey(source.entry, inPod.gitlabHost)
+    if (isCredentialedSkillSource(source.entry) && !plan.keepInstalled && key) {
+      privateRepos.add(key)
       privateSourceIds.push(plan.sourceId)
     }
   }
   return { plans, commits, unresolved, privateRepos: [...privateRepos], writeBacks, privateSourceIds }
+}
+
+/** The key a skill credential window names a credentialed Source by: GitHub's `owner/repo`, or `gitlab:<project path>`. */
+export function skillWindowKey(entry: AgentSkillEntry, gitlabHost: string | undefined): string | undefined {
+  if (skillSourceCredential(entry)?.provider !== 'gitlab') return gitSkillRepositoryPath(entry)?.toLowerCase()
+  try {
+    const gitlab = gitlabSkillRepository(entry, resolveBoundedGitSkillSource(entry).cloneUrl, gitlabHost)
+    return gitlab && `${GITLAB_SKILL_WINDOW_PREFIX}${gitlab.path.toLowerCase()}`
+  } catch {
+    return undefined
+  }
 }
 
 function planBytes(plan: GitSkillPlan): number {
