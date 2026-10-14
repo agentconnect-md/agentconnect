@@ -51,7 +51,9 @@ import { Button, Icon } from '@/components/ui'
 
 // Fixed tracks keep each `.row` grid aligned with its header; mobile scrolls the card sideways.
 // Usage columns: expand toggle · agent · models · amount · posted.
-const USAGE_GRID = 'grid-cols-[28px_minmax(0,1fr)_minmax(0,1.3fr)_132px_190px] gap-2'
+// ≤768px floors the agent/model tracks and widens each row to their sum so the card scrolls instead of clipping names.
+const USAGE_MIN_W = 'max-desktop:min-w-[754px]'
+const USAGE_GRID = `grid-cols-[28px_minmax(0,1fr)_minmax(0,1.3fr)_132px_190px] max-desktop:grid-cols-[28px_minmax(160px,1fr)_minmax(180px,1.3fr)_132px_190px] ${USAGE_MIN_W} gap-2`
 // Top-up columns: description · amount · posted.
 const TOPUP_GRID = 'grid-cols-[minmax(0,1fr)_132px_190px] gap-2'
 // A usage row's agent or model entry: icon + name, no frame, flush with its column header.
@@ -1339,7 +1341,7 @@ export default function BillingView() {
                       {open && (
                         <div
                           data-tx-models="true"
-                          className="border-b border-(--border-subtle) bg-(--surface-app) py-1.5"
+                          className={`border-b border-(--border-subtle) bg-(--surface-app) py-1.5 ${USAGE_MIN_W}`}
                         >
                           {models.map((m) => {
                             const pct = chargeTotal > 0 ? (Number(m.amount) / chargeTotal) * 100 : 0
