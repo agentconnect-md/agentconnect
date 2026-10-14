@@ -63,6 +63,31 @@ export const DIRECT_AGENT_CALL_REMINDER =
   `normally. Do not return ${NO_RESPONSE_SENTINEL} merely because the body names or discusses another agent.\n` +
   `</system-reminder>`
 
+/** Routing context for a webchat continuation the human's @mention left out (webchat-multi-agents.md §5.2a). */
+export const OUTSIDE_HUMAN_SCOPE_REMINDER =
+  `<system-reminder>\n` +
+  `Routing fact: In this multi-agent conversation the human @-mentioned other participants, not you, and the ` +
+  `post that woke you does not @-mention you. Stay out of their exchange: unless that post asks you something ` +
+  `directly, your entire reply must be exactly ${NO_RESPONSE_SENTINEL}.\n` +
+  `</system-reminder>`
+
+/** A replacement generation of a left-out turn now carries an activation addressed to this agent (§5.2a). */
+export const ADDRESSED_AFTER_OUTSIDE_SCOPE_REMINDER =
+  `<system-reminder>\n` +
+  `Routing fact: A newer post in this update is addressed to you, so the earlier instruction to stay out of the ` +
+  `exchange no longer applies. Respond to it normally.\n` +
+  `</system-reminder>`
+
+/** A replacement generation of an addressed turn absorbed posts from an exchange the human addressed to others (§5.2a). */
+export function absorbedOutsideScopeReminder(authors: readonly string[]): string {
+  return (
+    `<system-reminder>\n` +
+    `Routing fact: The newer post(s) from ${authors.map((a) => `[${a}]`).join(', ')} in this update belong to an ` +
+    `exchange the human addressed to other participants. Answer what was asked of you; do not take up theirs.\n` +
+    `</system-reminder>`
+  )
+}
+
 /** True while `trimmedBody` could still become the bare sentinel as more chunks stream
  *  in — i.e. it is a prefix of (or exactly) the sentinel. Convergers use this to HOLD
  *  buffered body instead of posting it, so a streamed sentinel never leaks a partial

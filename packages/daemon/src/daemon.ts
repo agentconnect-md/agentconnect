@@ -746,7 +746,7 @@ import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-i
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
-import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
+import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { codeHostReplySnapshot, sessionReplyRoute } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
@@ -1031,6 +1031,12 @@ import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/t
 import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/caller-role.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as webchatTurnOutput from './webchat/turn-output.js'
+import {
+  WEBCHAT_ROUTING_UPDATE_TEXT,
+  foldWebchatRouting,
+  initialWebchatRouting,
+  webchatRoutingNoteBlocks
+} from './webchat/narrowed-scope.js'
 import {
   publishWebchatSharedImage,
   resolveSharedImageOriginal,
@@ -13288,7 +13294,8 @@ export class Daemon {
   private async coalesceEntryIntoTurn(
     entry: QueueEntry,
     sessionId: string | null,
-    reason: 'coalesced_into_turn' | 'steered_into_turn' = 'coalesced_into_turn'
+    reason: 'coalesced_into_turn' | 'steered_into_turn' = 'coalesced_into_turn',
+    routingFolded = false
   ): Promise<void> {
     if (entry.webchat && !entry.webchat.doneSent) {
       entry.webchat.doneSent = true
@@ -13300,13 +13307,16 @@ export class Daemon {
     }
     const { thread, ts } = transcriptCoords(entry.msg)
     const mention = attachmentMention(entry.msg.attachments)
+    const liveKey = sessionKey(entry.msg.platform, entry.msg.channel, thread, entry.agentId, entry.msg.transportScope)
+    // §5.2a: the live webchat turn now also answers this activation, so its routing and reply scope fold it in.
+    const live = routingFolded
+      ? undefined
+      : [...this.pending.values()].find((p) => p.webchat && p.plan.sessionKey === liveKey)
+    if (live) live.webchatRouting = foldWebchatRouting(live.webchatRouting ?? initialWebchatRouting(live.entry), entry)
     await this.store.appendTranscript({
       channel: transcriptChannelKey(entry.msg.channel, entry.msg.transportScope),
       thread: entry.msg.thread ?? entry.msg.msgId,
-      admission: {
-        agentId: entry.agentId,
-        sessionKey: sessionKey(entry.msg.platform, entry.msg.channel, thread, entry.agentId, entry.msg.transportScope)
-      },
+      admission: { agentId: entry.agentId, sessionKey: liveKey },
       ts,
       sender: entry.msg.sender.id,
       // Carried so a live agent-wake post (postAgentWakeInbound) reconciles against
@@ -13345,12 +13355,18 @@ export class Daemon {
     target.steerCount = (target.steerCount ?? 0) + 1
     // Before the runtime has it, so no read in the live turn can run without its sender; a declined steer only narrows.
     this.noteFoldedMessage(key, entry)
+    // §5.2a: the steered blocks consume this activation, so they carry the routing it folds in (committed only if the runtime takes it).
+    const routing = target.webchat
+      ? foldWebchatRouting(target.webchatRouting ?? initialWebchatRouting(target.entry), entry)
+      : undefined
     let outcome: Awaited<ReturnType<AcpHost['steer']>>
     try {
       // `promptRequired`: a steer that races the turn end is declined, never a turn we did not admit.
-      outcome = await host.steer(target.acpSessionId, steerPromptBlocks(entry.msg, await this.steerIntakeText(entry)), {
-        idleBehavior: 'promptRequired'
-      })
+      const blocks = [
+        ...steerPromptBlocks(entry.msg, await this.steerIntakeText(entry)),
+        ...(routing ? webchatRoutingNoteBlocks(routing, false) : [])
+      ]
+      outcome = await host.steer(target.acpSessionId, blocks, { idleBehavior: 'promptRequired' })
     } catch (err) {
       this.log.warn(`steer: ${key} failed, queueing instead — ${(err as Error).message}`)
       return false
@@ -13364,7 +13380,8 @@ export class Daemon {
     const { ts } = transcriptCoords(entry.msg)
     this.noteAbsorbedContext(key, new Map([[ts, steeredTranscriptText(entry.msg)]]))
     this.claimAbsorbedContext(key, ts)
-    await this.coalesceEntryIntoTurn(entry, target.acpSessionId, 'steered_into_turn')
+    if (routing) target.webchatRouting = { ...routing, notes: { becameAddressed: false, absorbedOutsideFrom: [] } }
+    await this.coalesceEntryIntoTurn(entry, target.acpSessionId, 'steered_into_turn', routing !== undefined)
     defaultTurnOutputMetrics.queueSteered(entry.msg.platform, 1)
     this.log.info(`steer: delivered 1 message into the live turn for ${key} (${outcome})`)
     return true
@@ -16152,6 +16169,7 @@ export class Daemon {
           runtimeTarget: this.sessionRuntimes.get(key),
           // CallMeta marks a real A2A delivery, not a synthetic `source: agent` wake; a webchat roster continuation carries it but is no address (webchat-multi-agents.md §5.2a).
           directAgentCall: plan.directAgentCall,
+          outsideHumanScope: callMeta?.outsideHumanScope === true,
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
           ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
           ...(webchatIsolation ? { workspaceIsolation: webchatIsolation } : {}),
@@ -17236,6 +17254,16 @@ export class Daemon {
       this.claimAbsorbedContext(key, transcriptCoords(msg).ts)
       baseRevision = await this.store.threadTranscriptRevision(this.planReadScope(p.plan))
       providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
+      // §5.2a: this first prompt consumes the activations it absorbed, so it carries their routing; an absorbed invitation drops the stale stay-out reminder.
+      if (p.webchatRouting?.notes.becameAddressed) {
+        const stale = promptBlocks.findIndex((b) => b.type === 'text' && b.text === OUTSIDE_HUMAN_SCOPE_REMINDER)
+        if (stale !== -1) {
+          promptBlocks.splice(stale, 1)
+          // With the reminder gone there is nothing left to lift.
+          p.webchatRouting = { ...p.webchatRouting, notes: { ...p.webchatRouting.notes, becameAddressed: false } }
+        }
+      }
+      promptBlocks.push(...this.takeWebchatRoutingNotes(p, false))
     }
     // What this conversation's live MCP App frames asked the next turn to know
     // (webchat-mcp-apps.md §7.3). Appended last and labelled as page-authored data: the words come
@@ -17444,7 +17472,8 @@ export class Daemon {
         .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
       const finalRevision = await this.store.threadTranscriptRevision(this.planReadScope(p.plan))
 
-      if (invalidatingEvents.length === 0) {
+      // A routing correction no prompt delivered yet (a late-admitted invitation) regenerates even without new rows (§5.2a).
+      if (invalidatingEvents.length === 0 && !this.webchatRoutingNotesOwed(p)) {
         if (p.plan.stageAnswer) this.commitStagedSegment(p)
         if (generation > 0) defaultTurnOutputMetrics.regeneration(p.plan.platform, 'accepted')
         defaultTurnOutputMetrics.generations(generation + 1)
@@ -17557,10 +17586,14 @@ export class Daemon {
           type: 'text',
           // Segments already committed at a boundary were delivered and stand; the model
           // must be told so, or it regenerates (and re-says) the whole answer.
-          text: contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents), {
-            deliveredPrefix: p.plan.stageAnswer && p.reply.text.length > 0
-          })
-        }
+          text:
+            invalidatingEvents.length > 0
+              ? contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents), {
+                  deliveredPrefix: p.plan.stageAnswer && p.reply.text.length > 0
+                })
+              : WEBCHAT_ROUTING_UPDATE_TEXT
+        },
+        ...this.takeWebchatRoutingNotes(p, true)
       ]
       finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...promptBlocks])
       // The wall-clock budget covers replacement work only. A slow original
@@ -17582,6 +17615,20 @@ export class Daemon {
     }
 
     return { kind: 'answered', stopReason, usage: evaluationUsage ?? usage, finalCaptureInput }
+  }
+
+  /** Whether a webchat turn still owes the model a §5.2a routing correction that no prompt has delivered. */
+  private webchatRoutingNotesOwed(p: Pending): boolean {
+    const notes = p.webchatRouting?.notes
+    return !!p.webchat && !!notes && (notes.becameAddressed || notes.absorbedOutsideFrom.length > 0)
+  }
+
+  /** §5.2a routing facts owed after coalescing, consumed by the prompt that carries them; a replacement prompt also re-reminds a still-left-out turn. */
+  private takeWebchatRoutingNotes(p: Pending, replacement: boolean): Array<{ type: 'text'; text: string }> {
+    if (!p.webchat) return []
+    const routing = p.webchatRouting ?? initialWebchatRouting(p.entry)
+    p.webchatRouting = { ...routing, notes: { becameAddressed: false, absorbedOutsideFrom: [] } }
+    return webchatRoutingNoteBlocks(routing, replacement)
   }
 
   /** Fold the turn's token totals into the status bar and report the session's merged
@@ -17636,6 +17683,7 @@ export class Daemon {
   ): Promise<void> {
     if (!p.webchat) return
     const agentId = p.entry.agentId
+    const scope = hopCount !== undefined ? (p.webchatRouting ?? initialWebchatRouting(p.entry)).scope : undefined
     const replyTs = await webchatTurnOutput.appendWebchatTextRow(
       this.store,
       p.plan.transcriptChannel,
@@ -17654,7 +17702,12 @@ export class Daemon {
       post: {
         postId: segment.postId,
         conversationId: p.webchat.conversationId,
-        author: { kind: 'agent', agentId, ...(hopCount !== undefined ? { hopCount } : {}) },
+        author: {
+          kind: 'agent',
+          agentId,
+          ...(hopCount !== undefined ? { hopCount } : {}),
+          ...(scope ? { addressedAgentIds: scope } : {})
+        },
         text: segment.text,
         at: Number(replyTs)
       },

@@ -5,6 +5,7 @@ import type { DutyGrantEntry, EventSession, ExternalSessionAudience, SessionKey 
 import type { AcpHost } from '../acp/acp-host.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { TurnPlan } from './turn-plan.js'
+import type { WebchatRouting } from '../webchat/narrowed-scope.js'
 import type { TurnEvaluationReporter } from './turn-evaluation.js'
 import type { KeyGrant } from '../key-server/client.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
@@ -180,6 +181,10 @@ export interface CallMeta {
    * with the inbox row like the rest of CallMeta.
    */
   conversationContinuation?: true
+  /** §5.2a: the human's webchat @mention scope a continuation inherits and stamps on its own reply. */
+  addressedAgentIds?: string[]
+  /** §5.2a: the human addressed other participants and the waking post does not @-name this one. */
+  outsideHumanScope?: true
   /** A self-authored channel-root post initializes its new session but is not a model turn.
    *  Persisted with the inbox row so crash replay cannot accidentally activate the model. */
   initializeOnly?: boolean
@@ -598,6 +603,8 @@ export interface TurnSignals {
  *  through it; the mutable rest is grouped by who writes it — platform chrome cursors,
  *  reply accumulation, the approval-wait meter (permissions/), and completion signals. */
 export interface Pending {
+  /** §5.2a: this webchat turn's routing once coalesced activations folded in; absent means the entry's own. */
+  webchatRouting?: WebchatRouting
   // Completed tool calls already projected into a native dialog during this turn.
   nativeAppToolCallIds?: Set<string>
   /** The same trusted workspace link resolver used by every output surface for this turn. */

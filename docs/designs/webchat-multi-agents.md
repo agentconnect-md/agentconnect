@@ -496,6 +496,52 @@ seam, keeping the relay's pre-addressed fan-out as the roster walk:
   commits advances the chain by one, and an alternating conversation
   terminates by REACHING A LIMIT rather than by an agent declining to address
   anyone — the same operator expectation #549 recorded for channels.
+- **A human @mention tells left-out peers to stay silent** (#2865). It does
+  not gate the wake, which would break the #549 parity the activation parity
+  spec pins. When the human's turn carries structured mentions, the addressed
+  agent's activating post carries them as `WebchatPost.author.addressedAgentIds`.
+  A peer outside that scope, which the post does not @-name by agent id, name,
+  or display name (`postNamesAgent`), is still woken, but its prompt carries
+  `OUTSIDE_HUMAN_SCOPE_REMINDER`: unless the post asks it something directly,
+  it answers `AC_NO_RESPONSE`. An invited continuation inherits the scope plus
+  itself, so two agents the human or a reply brought in can keep alternating
+  while the rest of the roster is reminded each time. **Speaking is not an
+  invitation**: a left-out peer that replies anyway carries the scope
+  unchanged, so it stays reminded on later posts. An unnarrowed send
+  materializes the standing mention as the whole roster (section 4.2), so its
+  scope leaves no one out; a post without the field (an older daemon or
+  browser) adds no reminder.
+  - **What counts as an invitation** is lexical: a whole-token `@name` outside
+    quoted lines, inline or fenced code, bare URLs, and Markdown links and
+    images (label and alt text included). Negation is not parsed —
+    "no need for @x" still invites x, and the response-choice rule decides.
+  - **Coalescing.** When activations fold into a live turn (absorbed by the
+    first prompt's pre-prompt refresh or a context-refresh generation, a late
+    admission, or a steer), the turn's routing folds them in too
+    (`foldWebchatRouting`). The reply answers only addressing activations: an
+    addressed turn that absorbs a left-out post keeps its scope and is told
+    that post's author belongs to someone else's exchange. A left-out turn
+    that absorbs an invitation becomes addressed, takes the invitation's
+    scope, and is released from the earlier reminder. Addressing activations
+    merge their scopes, and an unscoped one leaves no one out.
+  - **Delivery of the correction.** The prompt that consumes an activation
+    carries its routing correction: the first prompt drops its stale reminder
+    and appends the note, a steer appends it to the steered blocks, and a
+    replacement generation appends it after the context update. A correction
+    that no prompt delivered (a late admission whose row an earlier prompt
+    already carried) forces one replacement generation before the reply
+    commits.
+  - **Silence.** A continuation wake streams nothing to the browser; only its
+    committed post is visible, and a reply whose final line is the sentinel
+    commits none.
+
+  This is a prompt rule, so a model can still choose to reply; the daemon
+  tests use scripted runtimes, and measuring unwanted participation and false
+  silence with real runtimes over repeated trials is follow-up evaluation work.
+  Agents currently see peers by id in their context (the section 4.3
+  participant line is not implemented yet), so naming a peer is most reliable
+  when the human's text already used its name.
+
 - **The response-choice contract still decides participation.** The wake is
   presented as a conversation post (`[<author>] <text>`), not as a direct
   agent call, so a participant whose role is to observe silently answers
