@@ -38,6 +38,9 @@ const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const PROJECT = 4455667n
 const ROOT_GROUP = 900n
 const PRIVATE_URL = 'https://gitlab.com/example-group/example-project'
+/** A second managed project under the SAME top-level group, so both share the agent's account. */
+const SECOND_PROJECT = 4455668n
+const SECOND_URL = 'https://gitlab.com/example-group/example-second'
 const PUBLIC_URL = 'https://gitlab.com/example-group/public-kit'
 const clock = trackedTestClock()
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
@@ -53,6 +56,7 @@ afterEach(async () => {
 
 async function harness() {
   const fake = new FakeGitlab({
+    pathById: { [String(SECOND_PROJECT)]: 'example-group/example-second' },
     publicPaths: { 'example-group/public-kit': 77 },
     repositories: {
       'example-group/public-kit': { files: ['skills/review/SKILL.md'], tags: ['v1'] },
@@ -135,6 +139,15 @@ async function harness() {
     axisBaseUrl: fake.opts.baseUrl
   })
   expect(await provisioner.provision(DEFAULT_ORG_ID, binding.id)).toEqual({ state: 'ready' })
+  const second = await bindings.createWithClaim({
+    orgId: DEFAULT_ORG_ID,
+    projectId: SECOND_PROJECT,
+    projectPath: 'example-group/example-second',
+    cloneUrl: `${fake.opts.baseUrl}/example-group/example-second.git`,
+    installerConnectionId: connection.id,
+    axisBaseUrl: fake.opts.baseUrl
+  })
+  expect(await provisioner.provision(DEFAULT_ORG_ID, second.id)).toEqual({ state: 'ready' })
   const gitcred = new GitlabGitcredService({
     bindings,
     accounts,
@@ -291,6 +304,36 @@ describe('GitLab skill-source read grant (CP3.2)', () => {
     const unselected = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
     await expect(h.gitcred.grantForAgent(unselected, PROJECT)).rejects.toBeInstanceOf(GitCredDeniedError)
     expect(h.fake.members.has(Number(account!.serviceAccountUserId))).toBe(false)
+  })
+
+  it('moving between private sources in one group keeps the shared account (destination converges first)', async () => {
+    const h = await harness()
+    expect((await create(h, { name: 'first', source: PRIVATE_URL })).statusCode).toBe(201)
+    expect((await create(h, { name: 'second', source: SECOND_URL })).statusCode).toBe(201)
+    const made = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'skill-mover', runtime: 'claude', skills: ['first/*'] }
+    })
+    expect(made.statusCode).toBe(201)
+    const agentId = made.json().id as string
+    await h.settled()
+    const before = await h.accounts.byAgentRoot(DEFAULT_ORG_ID, agentId, ROOT_GROUP)
+    expect(before?.serviceAccountUserId).not.toBeNull()
+
+    const moved = await h.a.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { skills: ['second/*'] }
+    })
+    expect(moved.statusCode).toBe(200)
+    await h.settled()
+    const after = await h.accounts.byAgentRoot(DEFAULT_ORG_ID, agentId, ROOT_GROUP)
+    expect(after?.id).toBe(before!.id)
+    expect(h.fake.deletedServiceAccounts).not.toContain(Number(before!.serviceAccountUserId))
+    const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    expect(await h.gitcred.grantForAgent(agent, SECOND_PROJECT)).toMatchObject({ access: 'read' })
+    await expect(h.gitcred.grantForAgent(agent, PROJECT)).rejects.toBeInstanceOf(GitCredDeniedError)
   })
 
   it('a public source grants nothing', async () => {

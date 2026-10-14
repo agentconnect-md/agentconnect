@@ -1574,7 +1574,8 @@ export function agentRoutes(deps: HttpDeps) {
           resolveGitlabSkillSourceProjects({ orgId, skills: before }, deps.repos.skillSource),
           resolveGitlabSkillSourceProjects({ orgId, skills: after }, deps.repos.skillSource)
         ])
-        const changed = [...was.filter((id) => !now.includes(id)), ...now.filter((id) => !was.includes(id))]
+        // Destinations first, so a shared account keeps a live membership and is never retired mid-move.
+        const changed = [...now.filter((id) => !was.includes(id)), ...was.filter((id) => !now.includes(id))]
         for (const id of changed) await gitlab.provisioner.convergeProject(orgId, id).catch(warn)
       })().catch(warn)
     }

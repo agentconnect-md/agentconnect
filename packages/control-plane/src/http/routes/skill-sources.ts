@@ -207,14 +207,18 @@ export function skillSourceRoutes(deps: HttpDeps) {
     ): void => {
       const gitlab = deps.gitlab
       if (!gitlab) return
-      const ids = new Set<bigint>()
-      for (const ref of [before, after]) if (ref?.provider === 'gitlab') ids.add(ref.repoId)
       if (before?.provider === 'gitlab' && after?.provider === 'gitlab' && before.repoId === after.repoId) return
-      for (const id of ids) {
-        void gitlab.provisioner
-          .convergeProject(orgId, id)
-          .catch((err: unknown) => app.log.warn({ err, projectId: String(id) }, 'skill source: gitlab converge failed'))
-      }
+      // Destination first, then source, so a shared account keeps a live membership and is never retired mid-move.
+      const ids = [after, before].flatMap((ref) => (ref?.provider === 'gitlab' ? [ref.repoId] : []))
+      void (async () => {
+        for (const id of ids) {
+          await gitlab.provisioner
+            .convergeProject(orgId, id)
+            .catch((err: unknown) =>
+              app.log.warn({ err, projectId: String(id) }, 'skill source: gitlab converge failed')
+            )
+        }
+      })()
     }
 
     const rejectGitlab = (reply: FastifyReply, project: Exclude<GitlabSkillProject, { status: 'ok' }>) =>
