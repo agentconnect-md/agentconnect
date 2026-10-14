@@ -257,18 +257,33 @@ describe('every agent posts wherever the people asking could post', () => {
 
     it(`posts into a private channel the asker is in, and refuses a non-member opaquely (${mode})`, async () => {
       const member = harness({ assistant })
-      await executeTool(inDmOfP, 'sendMessage', { channel: 'C_PRIV', message: 'for the team' }, member.deps)
-      await executeTool(inDmOfP, 'sendMessage', { channel: 'G_MPIM', thread: '7.7', message: 'update' }, member.deps)
+      await executeTool(
+        inDmOfP,
+        'sendMessage',
+        { action: 'postMessage', channel: 'C_PRIV', message: 'for the team' },
+        member.deps
+      )
+      await executeTool(
+        inDmOfP,
+        'sendMessage',
+        { action: 'postMessage', channel: 'G_MPIM', thread: '7.7', message: 'update' },
+        member.deps
+      )
       expect(member.gw.postMessage).toHaveBeenCalledWith('C_PRIV', 'for the team', undefined, expect.anything())
       expect(member.gw.postMessage).toHaveBeenCalledWith('G_MPIM', 'update', '7.7', expect.anything())
       expect(member.draftPost).not.toHaveBeenCalled()
 
       const outsider = harness({ assistant, members: { C_PRIV: ['U_ALICE'], G_MPIM: ['U_BOB'] } })
       await expect(
-        executeTool(inDmOfP, 'sendMessage', { channel: 'C_PRIV', message: 'hi' }, outsider.deps)
+        executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', channel: 'C_PRIV', message: 'hi' }, outsider.deps)
       ).rejects.toThrow(NOT_POSTED)
       await expect(
-        executeTool(inDmOfP, 'sendMessage', { channel: 'G_MPIM', thread: '7.7', message: 'hi' }, outsider.deps)
+        executeTool(
+          inDmOfP,
+          'sendMessage',
+          { action: 'postMessage', channel: 'G_MPIM', thread: '7.7', message: 'hi' },
+          outsider.deps
+        )
       ).rejects.toThrow(NOT_POSTED)
       // Refused before anything reads the target, so no error can tell a closed place from a missing one.
       expect(outsider.gw.getThreadReplies).not.toHaveBeenCalled()
@@ -278,23 +293,33 @@ describe('every agent posts wherever the people asking could post', () => {
 
     it(`opens a public channel to a full member and refuses a guest (${mode})`, async () => {
       const { deps, gw, asks } = harness({ assistant })
-      await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'shipped' }, deps)
+      await executeTool(
+        inDmOfP,
+        'sendMessage',
+        { action: 'postMessage', channel: 'C_DEPLOY', message: 'shipped' },
+        deps
+      )
       expect(gw.postMessage).toHaveBeenCalledTimes(1)
       asks(said(GUEST, 'D_GUEST'))
       await expect(
-        executeTool(ctxAt('slack', 'D_GUEST'), 'sendMessage', { channel: 'C_DEPLOY', message: 'hi' }, deps)
+        executeTool(
+          ctxAt('slack', 'D_GUEST'),
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_DEPLOY', message: 'hi' },
+          deps
+        )
       ).rejects.toThrow(NOT_POSTED)
       expect(gw.postMessage).toHaveBeenCalledTimes(1)
     })
 
     it(`sends a direct message to a full member of the organization only (${mode})`, async () => {
       const { deps, gw, draftPost } = harness({ assistant })
-      await executeTool(inDmOfP, 'sendMessage', { toUser: 'U_Q', message: 'psst' }, deps)
+      await executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', toUser: 'U_Q', message: 'psst' }, deps)
       expect(gw.postMessage).toHaveBeenCalledWith('D_U_Q', 'psst', undefined, expect.anything())
       for (const user of [GUEST, 'U_OUTSIDE']) {
-        await expect(executeTool(inDmOfP, 'sendMessage', { toUser: user, message: 'hi' }, deps)).rejects.toThrow(
-          /a direct message goes only to a member of your organization/
-        )
+        await expect(
+          executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', toUser: user, message: 'hi' }, deps)
+        ).rejects.toThrow(/a direct message goes only to a member of your organization/)
       }
       expect(gw.postMessage).toHaveBeenCalledTimes(1)
       expect(draftPost).not.toHaveBeenCalled()
@@ -331,10 +356,20 @@ describe('every agent posts wherever the people asking could post', () => {
       const { deps, gw, asks } = harness({ assistant })
       const shared = ctxAt('slack', 'C_DEPLOY')
       asks(said(P, 'C_DEPLOY'), said('U_ALICE', 'C_DEPLOY'))
-      await executeTool(shared, 'sendMessage', { channel: 'C_PRIV', message: 'both of us are in' }, deps)
+      await executeTool(
+        shared,
+        'sendMessage',
+        { action: 'postMessage', channel: 'C_PRIV', message: 'both of us are in' },
+        deps
+      )
       asks(said(P, 'C_DEPLOY'), said('U_BOB', 'C_DEPLOY'))
       await expect(
-        executeTool(shared, 'sendMessage', { channel: 'C_PRIV', message: 'one of us is not' }, deps)
+        executeTool(
+          shared,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_PRIV', message: 'one of us is not' },
+          deps
+        )
       ).rejects.toThrow(NOT_POSTED)
       await expect(
         executeTool(shared, 'addReaction', { channel: 'C_PRIV', messageTs: '1.1', emoji: 'eyes' }, deps)
@@ -392,8 +427,13 @@ describe('every agent posts wherever the people asking could post', () => {
 
     it(`leaves the agent-to-agent forms and the parent-session reply alone (${mode})`, async () => {
       const { deps, draftPost } = harness({ assistant })
-      await executeTool(inDmOfP, 'sendMessage', { toAgent: 'peer-1', message: 'hi' }, deps)
-      await executeTool(inDmOfP, 'sendMessage', { sessionId: 'parent-1', message: 'done' }, deps)
+      await executeTool(inDmOfP, 'sendMessage', { action: 'callAgent', toAgent: 'peer-1', message: 'hi' }, deps)
+      await executeTool(
+        inDmOfP,
+        'sendMessage',
+        { action: 'replyToSession', sessionId: 'parent-1', message: 'done' },
+        deps
+      )
       expect(deps.messageAgent).toHaveBeenCalledTimes(1)
       expect(deps.replyToSession).toHaveBeenCalledTimes(1)
       expect(draftPost).not.toHaveBeenCalled()
@@ -407,9 +447,14 @@ describe('a conversation shared with another organization', () => {
 
     it(`drafts a post into it from elsewhere for approval and refuses any other write there (${mode})`, async () => {
       const { deps, gw, draftPost } = harness({ assistant })
-      expect(await executeTool(inDmOfP, 'sendMessage', { channel: 'C_SHARED', message: 'hello' }, deps)).toEqual(
-        drafted.result
-      )
+      expect(
+        await executeTool(
+          inDmOfP,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_SHARED', message: 'hello' },
+          deps
+        )
+      ).toEqual(drafted.result)
       expect(draftPost.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
         { platform: 'slack', integrationId: 'int-slack', channel: 'C_SHARED', text: 'hello', directMessage: false }
       ])
@@ -423,7 +468,12 @@ describe('a conversation shared with another organization', () => {
     it(`refuses the post where no draft can be made, and a file in any case (${mode})`, async () => {
       const undraftable = harness({ assistant, draft: false })
       await expect(
-        executeTool(inDmOfP, 'sendMessage', { channel: 'C_SHARED', message: 'hello' }, undraftable.deps)
+        executeTool(
+          inDmOfP,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_SHARED', message: 'hello' },
+          undraftable.deps
+        )
       ).rejects.toThrow(/shared with another organization/)
       const withFile = harness({ assistant })
       withFile.gw.uploadFile = vi.fn(async () => ({ ok: true as const }))
@@ -432,7 +482,12 @@ describe('a conversation shared with another organization', () => {
         resolveAttachment: vi.fn(async () => ({ bytes: Buffer.from('x'), name: 'a.png', mimeType: 'image/png' }))
       }
       await expect(
-        executeTool(inDmOfP, 'sendMessage', { channel: 'C_SHARED', attachment: 'a.png', message: 'see' }, deps)
+        executeTool(
+          inDmOfP,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_SHARED', attachment: 'a.png', message: 'see' },
+          deps
+        )
       ).rejects.toThrow(/a file cannot be sent for approval/)
       expect(withFile.gw.uploadFile).not.toHaveBeenCalled()
       expect(undraftable.gw.postMessage).not.toHaveBeenCalled()
@@ -445,7 +500,7 @@ describe('a conversation shared with another organization', () => {
     it(`takes every write inside it as the current conversation, with nothing drafted (${mode})`, async () => {
       const { deps, gw, asks, draftPost } = harness({ assistant })
       asks(said(P, 'C_SHARED'))
-      await executeTool(inShared, 'sendMessage', { channel: 'C_SHARED', message: 'hi' }, deps)
+      await executeTool(inShared, 'sendMessage', { action: 'postMessage', channel: 'C_SHARED', message: 'hi' }, deps)
       await executeTool(inShared, 'addReaction', { messageTs: '1.1', emoji: 'eyes' }, deps)
       await executeTool(inShared, 'scheduleMessage', { message: 'later', postAt: later() }, deps)
       expect(gw.postMessage).toHaveBeenCalledWith('C_SHARED', 'hi', undefined, expect.anything())
@@ -465,7 +520,12 @@ describe('a turn no person is behind', () => {
       const { deps, gw, nobody } = harness({ assistant })
       nobody()
       const anchored = ctxAt('slack', 'C_DEPLOY')
-      await executeTool(anchored, 'sendMessage', { channel: 'C_DEPLOY', message: 'nightly report' }, deps)
+      await executeTool(
+        anchored,
+        'sendMessage',
+        { action: 'postMessage', channel: 'C_DEPLOY', message: 'nightly report' },
+        deps
+      )
       await executeTool(anchored, 'scheduleMessage', { message: 'reminder', postAt: later() }, deps)
       expect(gw.postMessage).toHaveBeenCalledTimes(1)
       expect(gw.scheduleMessage).toHaveBeenCalledWith('C_DEPLOY', 'reminder', expect.any(Number))
@@ -475,10 +535,10 @@ describe('a turn no person is behind', () => {
   it('drafts a post anywhere else in assistant mode, and refuses every other write', async () => {
     const { deps, gw, draftPost, nobody } = harness({ assistant: true })
     nobody()
-    expect(await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'status' }, deps)).toEqual(
-      drafted.result
-    )
-    await executeTool(inDmOfP, 'sendMessage', { toUser: 'U_Q', message: 'status' }, deps)
+    expect(
+      await executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', channel: 'C_DEPLOY', message: 'status' }, deps)
+    ).toEqual(drafted.result)
+    await executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', toUser: 'U_Q', message: 'status' }, deps)
     expect(draftPost).toHaveBeenCalledTimes(2)
     await expect(
       executeTool(inDmOfP, 'addReaction', { channel: 'C_DEPLOY', messageTs: '1.1', emoji: 'eyes' }, deps)
@@ -493,8 +553,8 @@ describe('a turn no person is behind', () => {
     const { deps, gw, draftPost, nobody } = harness()
     nobody()
     for (const args of [
-      { channel: 'C_DEPLOY', message: 'status' },
-      { toUser: 'U_Q', message: 'status' }
+      { action: 'postMessage', channel: 'C_DEPLOY', message: 'status' },
+      { action: 'postMessage', toUser: 'U_Q', message: 'status' }
     ]) {
       await expect(executeTool(inDmOfP, 'sendMessage', args, deps)).rejects.toThrow(/no person started this run/)
     }
@@ -512,7 +572,7 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
 
   it('posts to an internal conversation directly', async () => {
     const { deps, gw, draftPost } = harness({ assistant: true })
-    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'shipped' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', channel: 'C_DEPLOY', message: 'shipped' }, deps)
     await executeTool(inDmOfP, 'addReaction', { channel: 'C_DEPLOY', messageTs: '1.1', emoji: 'eyes' }, deps)
     expect(gw.postMessage).toHaveBeenCalledTimes(1)
     expect(gw.addReaction).toHaveBeenCalledTimes(1)
@@ -529,14 +589,24 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
     }
     await executeTool(inDmOfP, 'getChannelHistory', { channel: 'C_PRIV' }, deps)
     expect(gw.getChannelHistory).toHaveBeenCalledWith('C_PRIV', {})
-    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'for the team' }, deps)
-    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_PRIV', message: 'for leadership' }, deps)
+    await executeTool(
+      inDmOfP,
+      'sendMessage',
+      { action: 'postMessage', channel: 'C_DEPLOY', message: 'for the team' },
+      deps
+    )
+    await executeTool(
+      inDmOfP,
+      'sendMessage',
+      { action: 'postMessage', channel: 'C_PRIV', message: 'for leadership' },
+      deps
+    )
     const taken = (await executeTool(inDmOfP, 'takeItem', { title: 'Ship it', doneWhen: 'shipped' }, deps)) as {
       item: { id: string; version: number }
     }
     await executeTool(inDmOfP, 'updateItem', { itemId: taken.item.id, version: taken.item.version, summary: 'x' }, deps)
-    await executeTool(inDmOfP, 'sendMessage', { toAgent: 'peer-1', message: 'look into it' }, deps)
-    await executeTool(inDmOfP, 'sendMessage', { toAgent: AGENT, message: 'work on it' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { action: 'callAgent', toAgent: 'peer-1', message: 'look into it' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { action: 'messageSubsession', message: 'work on it' }, deps)
     expect(gw.postMessage).toHaveBeenCalledTimes(2)
     expect(deps.messageAgent).toHaveBeenCalledTimes(2)
     expect(draftPost).not.toHaveBeenCalled()
@@ -547,7 +617,7 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
 describe('a person the product can identify is judged as the chat account they linked in the target bot’s workspace', () => {
   const NOT_SHARED = "I can't share that here."
   const continued = ctxAt('slack', 'C_DEPLOY')
-  const post = (channel: string, message = 'hello') => ({ platform: 'slack', channel, message })
+  const post = (channel: string, message = 'hello') => ({ action: 'postMessage', platform: 'slack', channel, message })
 
   it('posts from the Playground to a public channel the agent was never in, and a private channel they are in', async () => {
     const { deps, gw, asks } = harness()
@@ -617,7 +687,7 @@ describe('a person the product can identify is judged as the chat account they l
 
   it('posts for a Slack member into a Feishu group the agent was never in, as the account they linked there', async () => {
     const { deps, lark } = harness({ linked: { 'int-feishu': { 'user-p': 'on_p' } } })
-    const toLark = (channel: string) => ({ platform: 'feishu', channel, message: 'hello' })
+    const toLark = (channel: string) => ({ action: 'postMessage', platform: 'feishu', channel, message: 'hello' })
     await executeTool(inDmOfP, 'sendMessage', toLark('oc_group'), deps)
     expect(lark.postMessage).toHaveBeenCalledWith('oc_group', 'hello', undefined, expect.anything())
     await expect(executeTool(inDmOfP, 'sendMessage', toLark('oc_other'), deps)).rejects.toThrow(NOT_POSTED)
@@ -628,7 +698,12 @@ describe('a person the product can identify is judged as the chat account they l
     const { deps, gw, discord, asks } = harness()
     // Discord accounts cannot be linked, and the agent has no session in that channel.
     await expect(
-      executeTool(inDmOfP, 'sendMessage', { platform: 'discord', channel: 'dc-1', message: 'hi' }, deps)
+      executeTool(
+        inDmOfP,
+        'sendMessage',
+        { action: 'postMessage', platform: 'discord', channel: 'dc-1', message: 'hi' },
+        deps
+      )
     ).rejects.toThrow(NOT_POSTED)
     expect(discord.postMessage).not.toHaveBeenCalled()
     // A Telegram member is no console user, so Slack takes nothing from them.
@@ -691,7 +766,7 @@ describe('a channel named by its name resolves among the channels the bot lists,
       expect(read).toMatchObject({ channel: ROOM, privateSource: expect.stringContaining('private channel') })
       await executeTool(inDmOfP, 'getThreadHistory', { channel, thread: '7.7' }, deps)
       expect(gw.getThreadReplies).toHaveBeenCalledWith(ROOM, '7.7', expect.any(Number), expect.anything())
-      await executeTool(inDmOfP, 'sendMessage', { channel, message: 'for the team' }, deps)
+      await executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', channel, message: 'for the team' }, deps)
       expect(gw.postMessage).toHaveBeenCalledWith(ROOM, 'for the team', undefined, expect.anything())
       await executeTool(inDmOfP, 'scheduleMessage', { channel, message: 'later', postAt: later() }, deps)
       expect(gw.scheduleMessage).toHaveBeenCalledWith(ROOM, 'later', expect.any(Number))
@@ -701,7 +776,8 @@ describe('a channel named by its name resolves among the channels the bot lists,
   it('refuses a non-member by name exactly as by id', async () => {
     const { deps, gw } = byName({ members: { [ROOM]: ['U_ALICE'] } })
     const read = (channel: string) => refusal(executeTool(inDmOfP, 'getChannelHistory', { channel }, deps))
-    const post = (channel: string) => refusal(executeTool(inDmOfP, 'sendMessage', { channel, message: 'hi' }, deps))
+    const post = (channel: string) =>
+      refusal(executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', channel, message: 'hi' }, deps))
     expect(await read('project-room')).toBe(await read(ROOM))
     expect(await read('project-room')).toContain(NOT_SHARED)
     expect(await post('#project-room')).toBe(await post(ROOM))
@@ -715,16 +791,16 @@ describe('a channel named by its name resolves among the channels the bot lists,
     await expect(executeTool(inDmOfP, 'getChannelHistory', { channel: 'secret-room' }, deps)).rejects.toThrow(
       NOT_SHARED
     )
-    await expect(executeTool(inDmOfP, 'sendMessage', { channel: '#secret-room', message: 'hi' }, deps)).rejects.toThrow(
-      NOT_POSTED
-    )
+    await expect(
+      executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', channel: '#secret-room', message: 'hi' }, deps)
+    ).rejects.toThrow(NOT_POSTED)
     expect(gw.getChannelHistory).not.toHaveBeenCalled()
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
   it('never looks a channel id up by name', async () => {
     const { deps, list } = byName()
-    await executeTool(inDmOfP, 'sendMessage', { channel: 'C_DEPLOY', message: 'shipped' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { action: 'postMessage', channel: 'C_DEPLOY', message: 'shipped' }, deps)
     await executeTool(inDmOfP, 'getChannelHistory', { channel: 'C_PRIV' }, deps)
     expect(list).not.toHaveBeenCalled()
   })

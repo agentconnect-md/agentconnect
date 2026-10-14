@@ -137,7 +137,7 @@ describe('McpControlServer IPC', () => {
       token,
       op: 'callTool',
       name: 'sendMessage',
-      args: { toUser: 'U9', channel: 'C1', message: 'hello' }
+      args: { action: 'postMessage', toUser: 'U9', channel: 'C1', message: 'hello' }
     })
     expect(res.ok).toBe(true)
     // A deliberate sendMessage with no `thread` posts to the channel ROOT (undefined), not the
@@ -197,7 +197,7 @@ describe('McpControlServer IPC', () => {
       token,
       op: 'callTool',
       name: 'sendMessage',
-      args: { toUser: 'U9', channel: 'C1', message: 'x' }
+      args: { action: 'postMessage', toUser: 'U9', channel: 'C1', message: 'x' }
     })
     expect(res.ok).toBe(false)
     expect(res.error).toMatch(/slack down/)

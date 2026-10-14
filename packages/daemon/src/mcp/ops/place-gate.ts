@@ -347,7 +347,7 @@ async function judgeDocument(
   return 'post'
 }
 
-/** Whether `sendMessage` is a platform post: not an agent-to-agent form, and not the parent-session reply. */
+/** Whether `sendMessage` is a platform post: only `postMessage`, never an agent call, a sub-session, or an origin reply. */
 export function isPlatformPost(args: Record<string, unknown>): boolean {
-  return absent(args.sessionId) && absent(args.toAgent)
+  return args.action === 'postMessage' && absent(args.sessionId) && absent(args.toAgent)
 }

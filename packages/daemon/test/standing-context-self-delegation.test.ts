@@ -16,13 +16,13 @@ const BASE = {
 }
 
 describe('standing collaboration guidance', () => {
-  it('tells every agent that its direct self-call opens a sub-session, wherever it is read', () => {
+  it('tells every agent that messageSubsession opens a sub-session, wherever it is read', () => {
     const context = buildStandingContext(BASE)
     expect(context.collabAppend).toBe(COLLAB_APPEND)
     expect(context.collabAppend).not.toContain('may not target yourself')
     expect(context.collabAppend).toContain(
-      'never your platform bot identity. A direct `toAgent` call to yourself without `channel` opens a background ' +
-        'SUB-SESSION for long work ("fix this bug and open a PR")'
+      'never your platform bot identity. For long work of your own ("fix this bug and open a PR"), ' +
+        '`{"action":"messageSubsession","message":"..."}` opens a background SUB-SESSION'
     )
     expect(context.collabAppend).toContain('reports back into this conversation when it finishes or fails')
     expect(context.collabAppend).toContain(

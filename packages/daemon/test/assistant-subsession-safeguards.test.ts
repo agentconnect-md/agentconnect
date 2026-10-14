@@ -717,9 +717,9 @@ describe('the sub-session cap', () => {
     }
     const deps = { ...d.mcp.deps, canRun: () => true }
 
-    const first = (await executeTool(ctx, 'sendMessage', { toAgent: 'bot-a', message: 'one' }, deps)) as any
+    const first = (await executeTool(ctx, 'sendMessage', { action: 'messageSubsession', message: 'one' }, deps)) as any
     expect(first.wake).toMatchObject({ delivered: true, subsession: true })
-    const second = (await executeTool(ctx, 'sendMessage', { toAgent: 'bot-a', message: 'two' }, deps)) as any
+    const second = (await executeTool(ctx, 'sendMessage', { action: 'messageSubsession', message: 'two' }, deps)) as any
     expect(second.wake).toMatchObject({
       delivered: false,
       reason: 'subsession_limit',

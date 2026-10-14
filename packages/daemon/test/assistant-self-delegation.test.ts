@@ -387,7 +387,7 @@ describe('self-delegation: through the sendMessage tool', () => {
       const started = (await executeTool(
         ctx(caller),
         'sendMessage',
-        { toAgent: 'bot-a', message: 'fix it' },
+        { action: 'messageSubsession', message: 'fix it' },
         deps
       )) as any
       expect(started).toMatchObject({
@@ -401,7 +401,12 @@ describe('self-delegation: through the sendMessage tool', () => {
       expect(started.post).toBeUndefined()
 
       const inside = ctx(caller, subsessionCoordinate('1'))
-      const nested = (await executeTool(inside, 'sendMessage', { toAgent: 'bot-a', message: 'and this' }, deps)) as any
+      const nested = (await executeTool(
+        inside,
+        'sendMessage',
+        { action: 'messageSubsession', message: 'and this' },
+        deps
+      )) as any
       expect(nested.wake).toMatchObject({ delivered: false, reason: 'subsession_nesting' })
       expect(nested.childSessionId).toBeUndefined()
       expect(postMessage).not.toHaveBeenCalled()
@@ -479,7 +484,8 @@ describe('self-delegation: what the runtime is told', () => {
           .flatMap(({ host }) => [...host.newSession.mock.calls, ...host.prompt.mock.calls])
       )
     for (const agentId of ['bot-a', 'bot-b']) {
-      expect(told(agentId)).toContain('opens a background SUB-SESSION for long work')
+      expect(told(agentId)).toContain('messageSubsession')
+      expect(told(agentId)).toContain('opens a background SUB-SESSION')
       expect(told(agentId)).not.toContain('may not target yourself')
     }
     await daemon.stop()

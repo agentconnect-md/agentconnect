@@ -161,8 +161,6 @@ export interface ProbeScope {
   child?: string
 }
 
-const ACTIONS = ['callAgent', 'messageSubsession', 'replyToSession', 'postMessage'] as const
-
 /** Thrown by every fixture dependency: the call passed every check the daemon makes before an effect. */
 class ReachedEffect extends Error {}
 
@@ -200,35 +198,7 @@ async function daemonRejection(args: Record<string, unknown>, tools: ToolDescrip
   }
 }
 
-/** Design §3.1/§3.5 rejections on the `action` shape, applied when the daemon itself let the call through. */
-export function actionRejection(args: Record<string, unknown>): string | undefined {
-  const action = args.action
-  if (action === undefined) {
-    return (
-      'sendMessage: missing required argument `action`. Nothing was sent and no agent was woken.\n' +
-      'Use an action listed by getToolGuide for this daemon. The complete tool supports callAgent,\n' +
-      'messageSubsession, replyToSession, and postMessage.\n' +
-      'Call getToolGuide {"tool":"sendMessage"} to get the arguments and examples, then retry\n' +
-      'sendMessage with the appropriate action.'
-    )
-  }
-  if (typeof action !== 'string' || !(ACTIONS as readonly string[]).includes(action)) {
-    return (
-      'sendMessage: `action` must be one of callAgent, messageSubsession, replyToSession, postMessage. ' +
-      'Nothing was sent. Call getToolGuide {"tool":"sendMessage"} for the arguments and examples, then retry.'
-    )
-  }
-  const op = classifySendMessage(args, IDS.self)
-  if (op.kind === 'agent-call' && op.agent === IDS.self && op.channel === undefined && op.sessionId === undefined) {
-    return (
-      'sendMessage: action `callAgent` without `channel` cannot target yourself. Nothing was sent and no agent was woken. ' +
-      'Call getToolGuide {"tool":"sendMessage","action":"messageSubsession"} to start background work, then retry.'
-    )
-  }
-  return undefined
-}
-
-/** Session-id authority the daemon checks against trusted state the fixture models with the scenario's scope. */
+/** Session-id authority the daemon checks against trusted state, modeled by the scenario's scope; reached only once the daemon admits the shape. */
 export function sessionRejection(op: SemanticOp, scope: ProbeScope): string | undefined {
   if (op.kind === 'subsession-continue' && op.sessionId !== scope.child) {
     return `sendMessage: session "${op.sessionId}" is not a direct sub-session of this session. Nothing was sent.`
@@ -245,13 +215,7 @@ export async function validateSendMessage(
   tools: ToolDescriptor[],
   scope: ProbeScope = {}
 ): Promise<string | undefined> {
-  const daemon = await daemonRejection(args, tools)
-  if (daemon !== undefined) return daemon
-  if (toolShape(tools) === 'action') {
-    const shaped = actionRejection(args)
-    if (shaped !== undefined) return shaped
-  }
-  return sessionRejection(classifySendMessage(args, IDS.self), scope)
+  return (await daemonRejection(args, tools)) ?? sessionRejection(classifySendMessage(args, IDS.self), scope)
 }
 
 /** A plausible delivery receipt for a validated call; nothing is posted, woken, or injected. */

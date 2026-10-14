@@ -298,7 +298,12 @@ async function proposed(h: Awaited<ReturnType<typeof boot>>, channel = 'C1') {
 const reportsBack =
   (deps: any) =>
   async (ctx: SessionContext): Promise<void> => {
-    await executeTool(ctx, 'sendMessage', { sessionId: 'sid-parent-bot-a', message: 'Rebased and pushed.' }, deps)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'replyToSession', sessionId: 'sid-parent-bot-a', message: 'Rebased and pushed.' },
+      deps
+    )
   }
 
 describe('a patrol proposes', () => {

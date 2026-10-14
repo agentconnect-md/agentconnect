@@ -71,7 +71,7 @@ describe('buildIntroMessage', () => {
     expect(msg.text).toContain('listAgents')
     // Waking a peer is now a complete sendMessage agent-target call (a silent wake), not messageAgent.
     expect(msg.text).toContain('sendMessage')
-    expect(msg.text).toContain('{"toAgent":"<their id>","message":"<short introduction>"}')
+    expect(msg.text).toContain('{"action":"callAgent","toAgent":"<their id>","message":"<short introduction>"}')
     expect(msg.text).not.toContain('messageAgent')
   })
 })
@@ -97,8 +97,8 @@ describe('introPrompt', () => {
   it('gives a complete sendMessage agent-target call (silent wake), not dotted pseudo-syntax', () => {
     const p = introPrompt('C1', 'bot-a')
     expect(p).toContain('sendMessage')
-    expect(p).toContain('{"toAgent":"<their id>","message":"<short introduction>"}')
-    expect(p).toContain('silent wake')
+    expect(p).toContain('{"action":"callAgent","toAgent":"<their id>","message":"<short introduction>"}')
+    expect(p).toContain('silent call')
     expect(p).not.toContain('`toAgent`') // a complete call, never dotted pseudo-syntax
     expect(p).not.toContain('messageAgent')
   })

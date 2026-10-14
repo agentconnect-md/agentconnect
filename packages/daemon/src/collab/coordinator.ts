@@ -1346,7 +1346,7 @@ export class CollabCoordinator {
     const text =
       finalOutput && !isNoResponseBody(finalOutput)
         ? `[inferred reply] The delegated session finished its turn without sending its report ` +
-          `(no sendMessage {"sessionId"} call). This is its final output, delivered on its behalf:\n\n${finalOutput}`
+          `(no sendMessage replyToSession call). This is its final output, delivered on its behalf:\n\n${finalOutput}`
         : `[inferred reply] The delegated session finished its turn without sending its report and ` +
           `produced no final output. Treat the delegation as ended without a result.`
     this.host

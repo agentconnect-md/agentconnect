@@ -292,6 +292,7 @@ async function roundTrip(provider: 'github' | 'gitlab' | 'gitea', explicit: bool
         parentInputs.push(text)
         if (parentInputs.length === 1) {
           delegateResult = await callDaemonTool(bindings.get(sid)!, 'sendMessage', {
+            action: 'callAgent',
             toAgent: { agentId: CHILD, needsReply: true },
             message: 'Investigate and report back.'
           })
@@ -312,6 +313,7 @@ async function roundTrip(provider: 'github' | 'gitlab' | 'gitea', explicit: bool
             .map((m) => m[1])
             .find((v) => !v!.startsWith('<'))
           childResult = await callDaemonTool(bindings.get(sid)!, 'sendMessage', {
+            action: 'replyToSession',
             sessionId: parentId,
             message: 'Private child findings.'
           })

@@ -158,7 +158,11 @@ describe('inferred parent reply (#800 mechanism fix)', () => {
       const sessionId = [...text.matchAll(/"sessionId":"([^"]+)"/g)].map((m) => m[1]).find((v) => !v!.startsWith('<'))
       const binding = [...run.bindings.entries()].find(([sid]) => sid.includes(CHILD))?.[1]
       if (!binding || !sessionId) return `cannot report: ${Boolean(binding)}/${sessionId}`
-      const result = await callDaemonTool(binding, 'sendMessage', { sessionId, message: 'REAL-REPORT: 42.' })
+      const result = await callDaemonTool(binding, 'sendMessage', {
+        action: 'replyToSession',
+        sessionId,
+        message: 'REAL-REPORT: 42.'
+      })
       return result.ok ? 'reported.' : `report failed: ${result.error}`
     })
     try {

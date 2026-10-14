@@ -103,18 +103,21 @@ describe('executeTool argument errors', () => {
         {
           name: 'sendMessage',
           description: '',
-          inputSchema: obj({ toAgent: { type: 'object' }, message: { type: 'string' } }, ['toAgent', 'message'])
+          inputSchema: obj({ action: { type: 'string' }, toAgent: { type: 'object' }, message: { type: 'string' } }, [
+            'action',
+            'message'
+          ])
         }
       ]
     }
     const call = executeTool(
       withSend,
       'sendMessage',
-      { toAgent: { agentId: 'peer', needsReply: 123 }, message: 'hi' },
+      { action: 'callAgent', toAgent: { agentId: 'peer', needsReply: 123 }, message: 'hi' },
       deps()
     )
     await expect(call).rejects.toThrow(/^sendMessage: invalid arguments — /)
-    await expect(call).rejects.toThrow(/Received keys: toAgent, message\.$/)
+    await expect(call).rejects.toThrow(/Received keys: action, toAgent, message\.$/)
     await expect(call).rejects.not.toThrow(/Not accepted by sendMessage/)
   })
 

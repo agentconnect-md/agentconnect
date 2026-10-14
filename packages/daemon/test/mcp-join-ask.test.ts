@@ -213,7 +213,9 @@ describe('posting into a public channel the bot has not joined', () => {
   it('asks to post there and returns at once; Join posts once and hands the post back', async () => {
     const gw = gateway()
     const w = makeDeps(gw)
-    await expect(executeTool(ctx, 'sendMessage', { channel: 'C-GEN', message: 'hi' }, w.deps)).resolves.toEqual({
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C-GEN', message: 'hi' }, w.deps)
+    ).resolves.toEqual({
       ...PARKED,
       note: expect.stringContaining('nothing was sent yet')
     })
@@ -229,7 +231,7 @@ describe('posting into a public channel the bot has not joined', () => {
   it('sends nothing when the person declines, and says so to the session', async () => {
     const gw = gateway()
     const w = makeDeps(gw)
-    await executeTool(ctx, 'sendMessage', { channel: 'C-GEN', message: 'hi' }, w.deps)
+    await executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C-GEN', message: 'hi' }, w.deps)
     expect(await w.settle('declined')).toMatchObject({
       error: expect.stringMatching(/sendMessage: the bot did not join #general.*Nothing was sent/)
     })
@@ -240,7 +242,12 @@ describe('posting into a public channel the bot has not joined', () => {
     const gw = gateway()
     const w = makeDeps(gw)
     w.deps.resolveAttachment = async () => ({ bytes: Buffer.from('png'), name: 'a.png', mimeType: 'image/png' })
-    await executeTool(ctx, 'sendMessage', { channel: 'C-GEN', message: 'look', attachment: 'a.png' }, w.deps)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'postMessage', channel: 'C-GEN', message: 'look', attachment: 'a.png' },
+      w.deps
+    )
     await w.settle('join')
     expect(w.confirmJoin).toHaveBeenCalledTimes(1)
     expect(gw.uploadFile).toHaveBeenCalledTimes(2)
@@ -250,7 +257,12 @@ describe('posting into a public channel the bot has not joined', () => {
     const gw = gateway()
     const w = makeDeps(gw)
     await expect(
-      executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C-GEN', message: 'over to you' }, w.deps)
+      executeTool(
+        ctx,
+        'sendMessage',
+        { action: 'callAgent', toAgent: 'peer-1', channel: 'C-GEN', message: 'over to you' },
+        w.deps
+      )
     ).rejects.toThrow('not_in_channel')
     expect(w.confirmJoin).not.toHaveBeenCalled()
   })

@@ -436,8 +436,8 @@ describe('who is offered stopSubsession', () => {
               type: 'string',
               minLength: 1,
               description:
-                "The sub-session's id: the `childSessionId` `sendMessage` returned when you opened it, or one listed " +
-                'as running in your standing summary.'
+                "The sub-session's id: the `childSessionId` `sendMessage` `messageSubsession` returned, or one listed as " +
+                'running in your standing summary.'
             }
           },
           required: ['sessionId'],

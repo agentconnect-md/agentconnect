@@ -52,7 +52,7 @@ export const STOP_SUBSESSION_TOOL: ToolDescriptor = {
         type: 'string',
         minLength: 1,
         description:
-          "The sub-session's id: the `childSessionId` `sendMessage` returned when you opened it, or one listed as " +
+          "The sub-session's id: the `childSessionId` `sendMessage` `messageSubsession` returned, or one listed as " +
           'running in your standing summary.'
       }
     },

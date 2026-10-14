@@ -1,6 +1,6 @@
 # `sendMessage` Actions and On-Demand Tool Guide — Proposal
 
-**Status:** Proposed
+**Status:** Adapter (§3–§7) implemented; §8–§9 proposed
 
 Keep one agent-facing `sendMessage` tool, add a required `action` discriminator,
 and move detailed argument documentation into an on-demand `getToolGuide` tool. Existing
@@ -617,6 +617,47 @@ This adapter does not introduce arbitrary session targeting, peer feedback-defau
 changes, cross-platform agent selectors, or a new cancellation tool. The requested
 persistent sub-session messaging and multi-origin peer calls are specified in
 §8–§9 rather than hidden inside the adapter or described as existing behavior.
+
+### 7.8 Adapter implementation record
+
+The behavior-preserving adapter (§3–§7) is implemented; §8 and §9 are not yet. Decisions
+the sections above left open:
+
+- **Descriptor.** The §3.2 draft ships without its continuation and peer-session clauses
+  (`sessionId` continuing a peer session or a child, multiple origins), because §3.2 publishes
+  each capability only once its runtime exists. Measured for a Slack + Telegram agent: the
+  description is 784 characters, the flat schema 1668, and `getToolGuide` description plus
+  schema 480. `sessionId` is described for `replyToSession` only.
+- **Not-yet-available targets.** `messageSubsession` with any `sessionId` (including null or
+  empty) fails with its own argument error saying the daemon cannot send into an existing
+  sub-session, never falling back to creation. `callAgent` does not accept `sessionId`.
+  Both lift with §8 and §9 respectively.
+- **Validation placement.** `executeTool` validates `sendMessage` before `resolveChannelArg`,
+  and the handler validates again before delegating, so a direct handler call cannot skip
+  it. Validation covers the key check, the per-action zod validator, the existing strict
+  branch for `postMessage` (so `thread` and `toUser` array rules fail before any lookup),
+  and the postless self-target check. The adapter then removes `action` (or, for
+  `messageSubsession`, builds `{toAgent: <trusted caller>, message}`) for the unchanged
+  delivery path.
+- **Error text.** Every rejection is a `ToolArgumentError` through the #2084 path, so §3.5's
+  sentences appear after `sendMessage: invalid arguments — ` and are followed by the
+  accepted-arguments and received-keys lines. An unknown action is named by argument, not
+  by its supplied value.
+- **Classification.** `isPlatformPost` is true only for `action: "postMessage"` (still
+  excluding `toAgent` and `sessionId`), so `callAgent` with `channel` and both sub-session
+  and origin-reply actions keep their non-post write and join handling.
+- **Guide shape.** `getToolGuide` returns JSON. The overview has `rules`, one `actions`
+  entry per action (`purpose`, `required`, `optional`, one `example`, optional
+  `availability`), and a `next` pointer; an action guide has the same fields plus `rules`
+  and `examples` of `{use, arguments}`. Availability notes come from the session's
+  integrations (platforms, direct-message and thread-update support) and from a
+  sub-session coordinate. The visible self-call example uses the session's own agent id.
+  Until §8 changes report completion, the guide does not suggest progress replies from a
+  sub-session.
+- **Live probe.** The runtime-matrix probe now reads the daemon's own action errors; its
+  fabricated action checks are removed. Its session-scope check stays as the model of
+  trusted child and peer-session state for §8–§9, and the daemon's own rejection of those
+  shapes currently comes first.
 
 ## 8. Persistent sub-session messaging — explicit capability extension
 

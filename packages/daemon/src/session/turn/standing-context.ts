@@ -271,27 +271,25 @@ function onDemandCloneTarget(dir: string, repoFullName: string): string {
   return join(dir, segments[0]!, segments.at(-1)!)
 }
 
-// Standing guidance for agent↔agent collaboration. `sendMessage` can wake a peer, reach
-// humans, post at a channel root, or reply into a parent session. It has no visible
-// in-thread form: speaking in the current conversation is an ordinary reply. `toAgent`
-// without a `channel` is the postless, channel-invisible wake.
+// Standing collaboration guidance in `sendMessage`'s action forms; the current conversation is always an ordinary reply.
 const COLLAB_BEFORE_SELF =
   `# Collaborating with other agents\n` +
-  `- To reach a specific agent privately, call \`sendMessage\` with ` +
-  `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
-  `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
+  `- Every \`sendMessage\` call names an \`action\`; \`getToolGuide\` \`{"tool":"sendMessage"}\` lists them with ` +
+  `examples. To reach a specific agent privately, call \`sendMessage\` with ` +
+  `\`{"action":"callAgent","toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly ` +
+  `to it (nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
   `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
   `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
-  `— send \`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, which obliges ` +
-  `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
-  `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
+  `— send \`{"action":"callAgent","toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, ` +
+  `which obliges it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
+  `(\`{"action":"callAgent","toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`) ` +
   `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
-  `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
+  `That channel form may target YOURSELF to open and activate one new conversation there: use your own ` +
   `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. `
-// assistant-mode.md §5.6: every agent's direct self-call opens a background sub-session.
+// assistant-mode.md §5.6: every agent's background self-work is `messageSubsession`.
 const COLLAB_SELF_DELEGATION =
-  `A direct \`toAgent\` call to yourself without \`channel\` opens a background SUB-SESSION for long work ` +
-  `("fix this bug and open a PR"): it works on its own, posts nothing, and reports back into this conversation ` +
+  `For long work of your own ("fix this bug and open a PR"), \`{"action":"messageSubsession","message":"..."}\` ` +
+  `opens a background SUB-SESSION: it works on its own, posts nothing, and reports back into this conversation ` +
   `when it finishes or fails, so say it has started and end your turn. Say in its task which language the people ` +
   `here use, so it reports in that language, and answer them in it whatever language a report comes back in. ` +
   `Keep ordinary conversation here — questions, lookups and short answers never need one. A sub-session cannot ` +
@@ -299,15 +297,16 @@ const COLLAB_SELF_DELEGATION =
 const COLLAB_AFTER_SELF =
   `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
   `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
-  `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
+  `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use \`postMessage\` with \`toUser\` — never put ` +
   `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
-  `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
+  `\`{"action":"postMessage","toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
   `@-mention at the channel root. In that channel form, pass ` +
   `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
   `message; arrays are never DMs. If you were woken by another ` +
-  `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
-  `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`. Every ` +
-  `visible \`sendMessage\` lands at a channel root and opens a new conversation there.\n` +
+  `session, reply with \`{"action":"replyToSession","sessionId":"<Parent session>","message":"..."}\`. To leave a ` +
+  `visible note others catch up on later without waking anyone, use ` +
+  `\`{"action":"postMessage","channel":"<channel id>","message":"..."}\`. Every visible \`sendMessage\` except a ` +
+  `\`thread\` update lands at a channel root and opens a new conversation there.\n` +
   `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
   `agents unless a human explicitly tells you to.\n` +
   `- Be quiet about successful mechanics: don't narrate each step or post a message per action, and don't restate ` +
@@ -336,7 +335,7 @@ export function buildParentReplyAppend(
     `# Reporting back to your parent session\n` +
     `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
     `cannot finish — reply to it with ` +
-    `\`sendMessage\` \`{"sessionId":"${parentSessionId}","message":"..."}\`, saying whether you ` +
+    `\`sendMessage\` \`{"action":"replyToSession","sessionId":"${parentSessionId}","message":"..."}\`, saying whether you ` +
     `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
     `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful. ` +
     `Your ordinary assistant response in this child session is not delivered to the parent. Do not write the ` +

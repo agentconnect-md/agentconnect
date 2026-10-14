@@ -1280,7 +1280,7 @@ describe('SessionManager', () => {
       await wake(sm, 'do this and tell me', true)
       const metaArg = host.newSession.mock.calls[0][3] as string
       expect(metaArg).toContain('# Reporting back to your parent session')
-      expect(metaArg).toContain('{"sessionId":"origin-sess-9","message":"..."}')
+      expect(metaArg).toContain('{"action":"replyToSession","sessionId":"origin-sess-9","message":"..."}')
       expect(metaArg).toContain('after the tool reports successful delivery, end your turn immediately')
       expect(metaArg).toContain('without repeating the message')
       // Persisted, so later turns and resumes keep it.
@@ -2623,15 +2623,17 @@ describe('SessionManager — collaboration preamble', () => {
     expect(first).toContain('# Collaborating with other agents')
     // Waking / replying / posting each get a complete sendMessage target example, not dotted pseudo-syntax.
     expect(first).toContain('`sendMessage`')
-    expect(first).toContain('{"toAgent":"<agent id>","message":"..."}')
-    expect(first).toContain('channel-root form may target YOURSELF')
+    expect(first).toContain('{"action":"callAgent","toAgent":"<agent id>","message":"..."}')
+    expect(first).toContain('{"action":"messageSubsession","message":"..."}')
+    expect(first).toContain('getToolGuide')
+    expect(first).toContain('channel form may target YOURSELF')
     expect(first).toContain('use your own ID from the # Agent block')
     expect(first).toContain('never your platform bot identity')
     expect(first).toContain('never put an AgentConnect agent or your own bot identity in `toUser`')
-    expect(first).toContain('{"sessionId":"<Parent session>","message":"..."}')
-    expect(first).toContain('{"toUser":"<Slack user id>","message":"..."}')
+    expect(first).toContain('{"action":"replyToSession","sessionId":"<Parent session>","message":"..."}')
+    expect(first).toContain('{"action":"postMessage","toUser":"<Slack user id>","message":"..."}')
     expect(first).toContain('"toUser":["<user id 1>","<user id 2>"]')
-    expect(first).toContain('Every visible `sendMessage` lands at a channel root')
+    expect(first).toContain('Every visible `sendMessage` except a `thread` update lands at a channel root')
     expect(first).toContain('write your ordinary turn reply and @-mention them in it')
     expect(first).not.toContain('"thread":"<thread id>"')
     expect(first).not.toContain('in-thread form')
@@ -2655,7 +2657,9 @@ describe('SessionManager — collaboration preamble', () => {
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }))
     const metaArg = host.newSession.mock.calls[0][3] as string
-    expect(metaArg).toContain('{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}')
+    expect(metaArg).toContain(
+      '{"action":"callAgent","toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}'
+    )
     expect(metaArg).toContain('FIRE-AND-FORGET')
     // The trigger, so the rule is actionable rather than a definition of the flag.
     expect(metaArg).toMatch(/asks a question or requests a result/)

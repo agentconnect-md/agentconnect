@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ToolDescriptor } from '../../src/tool-schema/descriptor.js'
 import {
-  actionRejection,
   aggregate,
   classifySendMessage,
   describeOp,
@@ -16,24 +14,6 @@ import {
   validateSendMessage,
   type SendMessageRun
 } from './send-message-probe.js'
-
-/** The real tools with `sendMessage` given the post-refactor `action` property, so the action-shape checks run today. */
-function actionShapedTools(): ToolDescriptor[] {
-  return probeTools().map((tool) => {
-    if (tool.name !== 'sendMessage') return tool
-    const schema = tool.inputSchema as { properties?: Record<string, unknown> }
-    return {
-      ...tool,
-      inputSchema: {
-        ...schema,
-        properties: {
-          action: { type: 'string', enum: ['callAgent', 'messageSubsession', 'replyToSession', 'postMessage'] },
-          ...schema.properties
-        }
-      }
-    } as unknown as ToolDescriptor
-  })
-}
 
 const run = (scenario: string, verdict: SendMessageRun['verdict'], comparable = true): SendMessageRun => ({
   runtime: 'r',
@@ -80,46 +60,59 @@ describe('runtime matrix sendMessage probe', () => {
 
   it('returns the daemon validation error a model reads', async () => {
     const tools = probeTools()
-    expect(await validateSendMessage({ toAgent: IDS.peer, message: 'm' }, tools)).toBeUndefined()
-    expect(await validateSendMessage({ toAgent: IDS.self, message: 'm' }, tools)).toBeUndefined()
+    expect(await validateSendMessage({ action: 'callAgent', toAgent: IDS.peer, message: 'm' }, tools)).toBeUndefined()
+    expect(await validateSendMessage({ action: 'messageSubsession', message: 'm' }, tools)).toBeUndefined()
     expect(
-      await validateSendMessage({ channel: IDS.updateChannel, thread: IDS.updateThread, message: 'm' }, tools)
+      await validateSendMessage(
+        { action: 'postMessage', channel: IDS.updateChannel, thread: IDS.updateThread, message: 'm' },
+        tools
+      )
     ).toBeUndefined()
-    expect(await validateSendMessage({ toAgent: IDS.peer, thread: IDS.updateThread, message: 'm' }, tools)).toMatch(
-      /sendMessage: invalid arguments/
-    )
+    expect(
+      await validateSendMessage(
+        { action: 'callAgent', toAgent: IDS.peer, thread: IDS.updateThread, message: 'm' },
+        tools
+      )
+    ).toMatch(/sendMessage: invalid arguments — action `callAgent` does not accept `thread`/)
   })
 
-  it('rejects an action-less or self-postless call whenever the served sendMessage takes an action', async () => {
-    const tools = actionShapedTools()
+  it('rejects an action-less or self-postless call with the daemon’s own error', async () => {
+    const tools = probeTools()
     expect(toolShape(tools)).toBe('action')
     const peer = scenario('ask-peer-for-result')
     const legacy = { toAgent: { agentId: IDS.peer, needsReply: true }, message: 'm' }
     const error = await validateSendMessage(legacy, tools)
     expect(error).toMatch(/missing required argument `action`/)
     expect(judge(peer, [{ tool: 'sendMessage', args: legacy, error: error! }]).verdict).toBe('FAIL')
-    expect(await validateSendMessage(legacy, probeTools())).toBeUndefined()
-    // Today's daemon rejects `action` itself; these are the checks that apply once it accepts one.
-    expect(actionRejection({ ...legacy, action: 'wakeAgent' })).toMatch(/`action` must be one of/)
-    expect(actionRejection({ action: 'callAgent', toAgent: IDS.self, message: 'm' })).toMatch(
+    expect(await validateSendMessage({ ...legacy, action: 'wakeAgent' }, tools)).toMatch(/`action` must be one of/)
+    expect(await validateSendMessage({ action: 'callAgent', toAgent: IDS.self, message: 'm' }, tools)).toMatch(
       /"action":"messageSubsession"/
     )
-    expect(actionRejection({ action: 'callAgent', toAgent: IDS.self, channel: IDS.workChannel, message: 'm' })).toBe(
-      undefined
-    )
+    expect(
+      await validateSendMessage(
+        { action: 'callAgent', toAgent: IDS.self, channel: IDS.workChannel, message: 'm' },
+        tools
+      )
+    ).toBeUndefined()
   })
 
   it('refuses session ids outside the scenario scope', async () => {
-    const reply = { sessionId: IDS.origin, message: 'm' }
+    const reply = { action: 'replyToSession', sessionId: IDS.origin, message: 'm' }
     expect(await validateSendMessage(reply, probeTools(), { origin: IDS.origin })).toBeUndefined()
-    const continued = classifySendMessage({ action: 'messageSubsession', sessionId: IDS.child, message: 'm' }, IDS.self)
-    expect(sessionRejection(continued, { child: IDS.child })).toBeUndefined()
-    expect(sessionRejection(continued, {})).toMatch(/not a direct sub-session/)
-    const peerSession = classifySendMessage(
-      { action: 'callAgent', toAgent: IDS.peer, sessionId: IDS.child, message: 'm' },
-      IDS.self
+    // The daemon refuses continuation and explicit peer sessions until they exist, whatever the scope.
+    const continued = { action: 'messageSubsession', sessionId: IDS.child, message: 'm' }
+    expect(await validateSendMessage(continued, probeTools(), { child: IDS.child })).toMatch(
+      /cannot send into an existing sub-session/
     )
-    expect(sessionRejection(peerSession, { child: IDS.child })).toMatch(/not an existing session/)
+    const peerSession = { action: 'callAgent', toAgent: IDS.peer, sessionId: IDS.child, message: 'm' }
+    expect(await validateSendMessage(peerSession, probeTools(), { child: IDS.child })).toMatch(
+      /does not accept `sessionId`/
+    )
+    expect(sessionRejection(classifySendMessage(continued, IDS.self), { child: IDS.child })).toBeUndefined()
+    expect(sessionRejection(classifySendMessage(continued, IDS.self), {})).toMatch(/not a direct sub-session/)
+    expect(sessionRejection(classifySendMessage(peerSession, IDS.self), { child: IDS.child })).toMatch(
+      /not an existing session/
+    )
   })
 
   it('leaves new-only runs out of the matrix cell', () => {
@@ -166,9 +159,12 @@ describe('runtime matrix sendMessage probe', () => {
           })
         ).json()) as { result: any }
       expect((await rpc('tools/list')).result.tools).toEqual(tools)
-      const call = await rpc('tools/call', { name: 'sendMessage', arguments: { sessionId: IDS.origin, message: 'm' } })
+      const reply = { action: 'replyToSession', sessionId: IDS.origin, message: 'm' }
+      const call = await rpc('tools/call', { name: 'sendMessage', arguments: reply })
       expect(call.result.isError).toBeUndefined()
-      expect(fixture.calls('k')).toEqual([{ tool: 'sendMessage', args: { sessionId: IDS.origin, message: 'm' } }])
+      expect(fixture.calls('k')).toEqual([{ tool: 'sendMessage', args: reply }])
+      const guide = await rpc('tools/call', { name: 'getToolGuide', arguments: { tool: 'sendMessage' } })
+      expect(JSON.parse(guide.result.content[0].text).actions).toHaveLength(4)
       const other = fixture.descriptor('other') as { url: string }
       const refused = (await (
         await fetch(other.url, {
@@ -177,7 +173,10 @@ describe('runtime matrix sendMessage probe', () => {
             jsonrpc: '2.0',
             id: 2,
             method: 'tools/call',
-            params: { name: 'sendMessage', arguments: { sessionId: IDS.origin, message: 'm' } }
+            params: {
+              name: 'sendMessage',
+              arguments: { action: 'replyToSession', sessionId: IDS.origin, message: 'm' }
+            }
           })
         })
       ).json()) as { result: any }

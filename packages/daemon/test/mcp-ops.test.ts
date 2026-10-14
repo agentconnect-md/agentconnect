@@ -181,9 +181,9 @@ describe('executeTool: sendMessage (channel post)', () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
     d.canRun = () => false
-    await expect(executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', message: 'late' }, d)).rejects.toThrow(
-      /stopped/
-    )
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C_CURRENT', message: 'late' }, d)
+    ).rejects.toThrow(/stopped/)
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
@@ -192,10 +192,12 @@ describe('executeTool: sendMessage (channel post)', () => {
     const { deps: d, recorded } = deps(gw)
     // A deliberate send with no `thread` posts top-level — "reply here" is the agent's normal
     // turn output, not this tool. So thread resolves to root (undefined), NOT the session thread.
-    const res = (await executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', message: 'hi' }, d)) as Record<
-      string,
-      unknown
-    >
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'postMessage', channel: 'C_CURRENT', message: 'hi' },
+      d
+    )) as Record<string, unknown>
 
     expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined, authorIdentity)
     expect(res).toMatchObject({
@@ -229,7 +231,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       const res = (await executeTool(
         ctx,
         'sendMessage',
-        { channel: 'C_OTHER', thread: '900.1', message: 'shipped' },
+        { action: 'postMessage', channel: 'C_OTHER', thread: '900.1', message: 'shipped' },
         d
       )) as Record<string, unknown>
 
@@ -252,7 +254,12 @@ describe('executeTool: sendMessage (channel post)', () => {
       const spawn = vi.fn(async () => true)
       const { deps: d } = deps(gw)
       d.spawnChannelRootSession = spawn
-      await executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', thread: '900.1', message: 'shipped' }, d)
+      await executeTool(
+        ctx,
+        'sendMessage',
+        { action: 'postMessage', channel: 'C_OTHER', thread: '900.1', message: 'shipped' },
+        d
+      )
       expect(spawn).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: 'bot-a',
@@ -271,7 +278,12 @@ describe('executeTool: sendMessage (channel post)', () => {
       const gw = gatewayWithThread('111.1')
       const { deps: d } = deps(gw)
       await expect(
-        executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', thread: '111.1', message: 'hi' }, d)
+        executeTool(
+          ctx,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_CURRENT', thread: '111.1', message: 'hi' },
+          d
+        )
       ).rejects.toThrow(/ordinary reply/)
       expect(gw.postMessage).not.toHaveBeenCalled()
     })
@@ -281,7 +293,12 @@ describe('executeTool: sendMessage (channel post)', () => {
       const gw = gatewayWithThread()
       const { deps: d } = deps(gw)
       await expect(
-        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', thread: '900.7', message: 'hi' }, d)
+        executeTool(
+          ctx,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_OTHER', thread: '900.7', message: 'hi' },
+          d
+        )
       ).rejects.toThrow(/not a thread root/)
       expect(gw.postMessage).not.toHaveBeenCalled()
     })
@@ -299,7 +316,7 @@ describe('executeTool: sendMessage (channel post)', () => {
         executeTool(
           tgCtx,
           'sendMessage',
-          { channel: 'C_OTHER', thread: '900.1', platform: 'telegram', message: 'hi' },
+          { action: 'postMessage', channel: 'C_OTHER', thread: '900.1', platform: 'telegram', message: 'hi' },
           d
         )
       ).rejects.toThrow(/cannot post inside an existing thread/)
@@ -310,7 +327,7 @@ describe('executeTool: sendMessage (channel post)', () => {
   it('posts a cross-channel send at that channel’s root', async () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
-    await executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', message: 'yo' }, d)
+    await executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C_OTHER', message: 'yo' }, d)
     expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'yo', undefined, authorIdentity)
   })
 
@@ -335,7 +352,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       const res = (await executeTool(
         ctx,
         'sendMessage',
-        { channel: 'C_OTHER', attachment: 'shot.png', message: 'from telegram' },
+        { action: 'postMessage', channel: 'C_OTHER', attachment: 'shot.png', message: 'from telegram' },
         d
       )) as Record<string, unknown>
 
@@ -357,7 +374,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       const res = (await executeTool(
         ctx,
         'sendMessage',
-        { channel: 'C_OTHER', attachment: 'shot.png', message: 'look' },
+        { action: 'postMessage', channel: 'C_OTHER', attachment: 'shot.png', message: 'look' },
         d
       )) as Record<string, unknown>
 
@@ -376,7 +393,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       const res = (await executeTool(
         ctx,
         'sendMessage',
-        { channel: 'C_OTHER', attachment: 'shot.png', message: 'look' },
+        { action: 'postMessage', channel: 'C_OTHER', attachment: 'shot.png', message: 'look' },
         d
       )) as Record<string, unknown>
       expect(res).toMatchObject({ ok: true, notice: expect.stringContaining('its caption did not post') })
@@ -391,7 +408,12 @@ describe('executeTool: sendMessage (channel post)', () => {
       const { deps: d, recorded } = deps(gw)
       Object.assign(d, resolves())
       await expect(
-        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'shot.png', message: 'hi' }, d)
+        executeTool(
+          ctx,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_OTHER', attachment: 'shot.png', message: 'hi' },
+          d
+        )
       ).rejects.toThrow(/rejected the file "shot.png" \(forbidden\)/)
       expect(recorded).toEqual([])
     })
@@ -401,14 +423,24 @@ describe('executeTool: sendMessage (channel post)', () => {
       const { deps: d } = deps(gw)
       Object.assign(d, resolves())
       await expect(
-        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' }, d)
+        executeTool(
+          ctx,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' },
+          d
+        )
       ).rejects.toThrow(/"nope.png" cannot be forwarded/)
       expect(gw.uploadFile).not.toHaveBeenCalled()
       expect(gw.postMessage).not.toHaveBeenCalled()
       // An agent read an earlier phrasing backwards and asked the user to re-send the picture
       // AS a document — the one move that cannot help. The refusal now forecloses it.
       await expect(
-        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' }, d)
+        executeTool(
+          ctx,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' },
+          d
+        )
       ).rejects.toThrow(/Do NOT ask anyone to re-send it/)
     })
 
@@ -417,7 +449,12 @@ describe('executeTool: sendMessage (channel post)', () => {
       const { deps: d } = deps(gw)
       Object.assign(d, resolves())
       await expect(
-        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'shot.png', message: 'hi' }, d)
+        executeTool(
+          ctx,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_OTHER', attachment: 'shot.png', message: 'hi' },
+          d
+        )
       ).rejects.toThrow(/cannot post files/)
       expect(gw.postMessage).not.toHaveBeenCalled()
     })
@@ -706,7 +743,12 @@ describe('executeTool: sendMessage (channel post)', () => {
 
     it('keys the spawned session and its transcript row alike', async () => {
       const { d, spawns, recorded } = tgDeps()
-      await executeTool(tgCtx, 'sendMessage', { platform: 'telegram', channel: '-100123', message: 'hi' }, d)
+      await executeTool(
+        tgCtx,
+        'sendMessage',
+        { action: 'postMessage', platform: 'telegram', channel: '-100123', message: 'hi' },
+        d
+      )
       // The session key is canonical; the RAW ts travels beside it for the transcript row, which
       // must stay a real, comparable platform ts.
       expect(spawns[0]).toMatchObject({ thread: 'tg:172', postTs: '172' })
@@ -726,14 +768,19 @@ describe('executeTool: sendMessage (channel post)', () => {
         integrations: [{ id: 'int-tg', platform: 'telegram' }]
       }
       const { d, wakes } = tgDeps()
-      await executeTool(tgSession, 'sendMessage', { toAgent: 'peer-1', channel: '-100123', message: 'hi' }, d)
+      await executeTool(
+        tgSession,
+        'sendMessage',
+        { action: 'callAgent', toAgent: 'peer-1', channel: '-100123', message: 'hi' },
+        d
+      )
       expect(wakes[0]).toMatchObject({ thread: 'tg:172', transcriptTs: '172' })
     })
 
     it('keys a non-Telegram root post by the platform’s own conversation model', async () => {
       // Slack's ts already IS the thread segment, so the post opens a session on itself.
       const slack = tgDeps({ gatewayFor: () => fakeGateway() })
-      await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'hi' }, slack.d)
+      await executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C_X', message: 'hi' }, slack.d)
       expect(slack.spawns[0]).toMatchObject({ thread: 'ts-123', postTs: 'ts-123' })
     })
 
@@ -745,7 +792,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       await executeTool(
         withIntegration('discord', 'int-dc'),
         'sendMessage',
-        { platform: 'discord', channel: 'C42', message: 'hi' },
+        { action: 'postMessage', platform: 'discord', channel: 'C42', message: 'hi' },
         discord.d
       )
       expect(discord.spawns[0]).toMatchObject({ thread: '900', postTs: '900' })
@@ -765,7 +812,12 @@ describe('executeTool: sendMessage (channel post)', () => {
           getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: false }))
         }
       )
-      await executeTool(gchat, 'sendMessage', { platform: 'googlechat', channel: 'spaces/S', message: 'hi' }, space.d)
+      await executeTool(
+        gchat,
+        'sendMessage',
+        { action: 'postMessage', platform: 'googlechat', channel: 'spaces/S', message: 'hi' },
+        space.d
+      )
       expect(space.spawns[0]).toMatchObject({ thread: 'spaces/S/threads/T', postTs: posted })
       expect(space.recorded[0]).toMatchObject({ thread: 'spaces/S/threads/T', ts: posted })
 
@@ -777,7 +829,12 @@ describe('executeTool: sendMessage (channel post)', () => {
           getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: true }))
         }
       )
-      await executeTool(gchat, 'sendMessage', { platform: 'googlechat', channel: 'spaces/D', message: 'hi' }, dm.d)
+      await executeTool(
+        gchat,
+        'sendMessage',
+        { action: 'postMessage', platform: 'googlechat', channel: 'spaces/D', message: 'hi' },
+        dm.d
+      )
       expect(dm.spawns[0]).toMatchObject({ thread: 'spaces/D', postTs: 'spaces/D/messages/T.M' })
     })
 
@@ -787,7 +844,7 @@ describe('executeTool: sendMessage (channel post)', () => {
         executeTool(
           withIntegration('discord', 'int-dc'),
           'sendMessage',
-          { platform: 'discord', channel: 'C42', message: 'hi' },
+          { action: 'postMessage', platform: 'discord', channel: 'C42', message: 'hi' },
           discord.d
         )
       ).rejects.toThrow(/required thread could not be created/)
@@ -800,14 +857,19 @@ describe('executeTool: sendMessage (channel post)', () => {
       // knows which chats those are, so ops asks — and asks only where the answer changes the key.
       const asDm = { getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: true })) }
       const tgDm = tgDeps({}, asDm)
-      await executeTool(tgCtx, 'sendMessage', { platform: 'telegram', channel: '555', message: 'hi' }, tgDm.d)
+      await executeTool(
+        tgCtx,
+        'sendMessage',
+        { action: 'postMessage', platform: 'telegram', channel: '555', message: 'hi' },
+        tgDm.d
+      )
       expect(tgDm.spawns[0]).toMatchObject({ thread: 'dm', postTs: '172' })
 
       const feishuDm = tgDeps({}, asDm)
       await executeTool(
         withIntegration('feishu', 'int-fs'),
         'sendMessage',
-        { platform: 'feishu', channel: 'oc_42', message: 'hi' },
+        { action: 'postMessage', platform: 'feishu', channel: 'oc_42', message: 'hi' },
         feishuDm.d
       )
       expect(feishuDm.spawns[0]).toMatchObject({ thread: 'oc_42', postTs: '172' })
@@ -817,7 +879,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       await executeTool(
         withIntegration('discord', 'int-dc'),
         'sendMessage',
-        { platform: 'discord', channel: 'D42', message: 'hi' },
+        { action: 'postMessage', platform: 'discord', channel: 'D42', message: 'hi' },
         discordDm.d
       )
       expect(discordDm.spawns[0]).toMatchObject({ thread: 'D42', postTs: '900' })
@@ -828,7 +890,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       await executeTool(
         withIntegration('feishu', 'int-fs'),
         'sendMessage',
-        { platform: 'feishu', channel: 'oc_43', message: 'hi' },
+        { action: 'postMessage', platform: 'feishu', channel: 'oc_43', message: 'hi' },
         feishuGroup.d
       )
       expect(feishuGroup.spawns[0]).toMatchObject({ thread: '172', postTs: '172' })
@@ -838,14 +900,19 @@ describe('executeTool: sendMessage (channel post)', () => {
       // Slack and Discord key the same way for DMs and channels, so no send pays for a lookup it does not need; the one here is the write rule describing another conversation.
       const getChannelInfo = vi.fn(async (id: string) => ({ id }))
       const slack = tgDeps({}, { getChannelInfo })
-      await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'hi' }, slack.d)
+      await executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C_X', message: 'hi' }, slack.d)
       expect(getChannelInfo).toHaveBeenCalledTimes(1)
     })
 
     it('falls back to a non-DM key when the platform lookup fails', async () => {
       // The post already happened; a failed classification must not fail the call.
       const flaky = tgDeps({}, { getChannelInfo: vi.fn(async () => Promise.reject(new Error('rate limited'))) })
-      await executeTool(tgCtx, 'sendMessage', { platform: 'telegram', channel: '555', message: 'hi' }, flaky.d)
+      await executeTool(
+        tgCtx,
+        'sendMessage',
+        { action: 'postMessage', platform: 'telegram', channel: '555', message: 'hi' },
+        flaky.d
+      )
       expect(flaky.spawns[0]).toMatchObject({ thread: 'tg:172', postTs: '172' })
     })
   })
@@ -856,7 +923,9 @@ describe('executeTool: sendMessage (channel post)', () => {
     const rootPostDeps = (over: Partial<OpsDeps> = {}) =>
       makeDeps({ gatewayFor: () => fakeGateway(), spawnChannelRootSession: () => true, now: () => 1000, ...over })
     const send = (d: OpsDeps, to: Record<string, unknown>, from: SessionContext = ctx) =>
-      executeTool(from, 'sendMessage', { ...to, message: 'the answer' }, d) as Promise<{ notice?: string }>
+      executeTool(from, 'sendMessage', { action: 'postMessage', ...to, message: 'the answer' }, d) as Promise<{
+        notice?: string
+      }>
 
     // Which conversation a post landed on is the DAEMON's verdict (it owns transport-scope
     // identity and the durable parent link); ops only formats what it is told.
@@ -873,7 +942,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       // itself is dispatched fire-and-forget, so the notice never states a session as fact.
       expect(res.notice).toContain('starts a separate context there instead of answering')
       expect(res.notice).not.toMatch(/opened a (NEW )?session/)
-      expect(res.notice).toContain('{"sessionId":"sess-parent"}')
+      expect(res.notice).toContain('{"action":"replyToSession","sessionId":"sess-parent","message":"..."}')
     })
 
     it('points a post into its own conversation back at the turn’s ordinary reply', async () => {
@@ -938,7 +1007,12 @@ describe('executeTool: sendMessage (channel post)', () => {
   it('synthesizes a ts when the platform returns none', async () => {
     const gw = fakeGateway({ postMessage: vi.fn(async () => undefined) })
     const { deps: d } = deps(gw)
-    const res = (await executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', message: 'hi' }, d)) as {
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'postMessage', channel: 'C_CURRENT', message: 'hi' },
+      d
+    )) as {
       post: { ts: string }
     }
     expect(res.post.ts).toBe('local-1000')
@@ -946,13 +1020,15 @@ describe('executeTool: sendMessage (channel post)', () => {
 
   it('rejects a missing message argument', async () => {
     const { deps: d } = deps(fakeGateway())
-    await expect(executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT' }, d)).rejects.toThrow(/message/)
+    await expect(executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C_CURRENT' }, d)).rejects.toThrow(
+      /message/
+    )
   })
 
   it('rejects a platform the agent has no integration for', async () => {
     const { deps: d } = deps(fakeGateway())
     await expect(
-      executeTool(ctx, 'sendMessage', { platform: 'discord', channel: 'D1', message: 'hi' }, d)
+      executeTool(ctx, 'sendMessage', { action: 'postMessage', platform: 'discord', channel: 'D1', message: 'hi' }, d)
     ).rejects.toThrow(/no discord integration/)
   })
 
@@ -964,7 +1040,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     const res = (await executeTool(
       dual,
       'sendMessage',
-      { platform: 'telegram', channel: '-100123', message: 'hi' },
+      { action: 'postMessage', platform: 'telegram', channel: '-100123', message: 'hi' },
       d
     )) as { post: Record<string, unknown> }
     expect(gw.postMessage).toHaveBeenCalledWith('-100123', 'hi', undefined, authorIdentity)
@@ -978,9 +1054,9 @@ describe('executeTool: sendMessage (channel post)', () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
     const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
-    await expect(executeTool(dual, 'sendMessage', { platform: 'telegram', message: 'hi' }, d)).rejects.toThrow(
-      /Valid targets:.*toAgent.*toUser.*channel.*sessionId/
-    )
+    await expect(
+      executeTool(dual, 'sendMessage', { action: 'postMessage', platform: 'telegram', message: 'hi' }, d)
+    ).rejects.toThrow(/action `postMessage` requires `toUser` or `channel`.*getToolGuide/)
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
@@ -998,7 +1074,12 @@ describe('executeTool: sendMessage (channel post)', () => {
     }
     // A same-platform send must resolve through int-b (the session's bot), not int-a (the
     // first candidate). Thread defaults to root (undefined) for a deliberate send.
-    const res = (await executeTool(multi, 'sendMessage', { channel: 'C_CURRENT', message: 'hi' }, d)) as {
+    const res = (await executeTool(
+      multi,
+      'sendMessage',
+      { action: 'postMessage', channel: 'C_CURRENT', message: 'hi' },
+      d
+    )) as {
       post: Record<string, unknown>
     }
     expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined, authorIdentity)
@@ -1009,7 +1090,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
     const withIdentity = { ...ctx, agentName: 'Bot A', iconUrl: 'https://x/y.png' }
-    await executeTool(withIdentity, 'sendMessage', { channel: 'C_CURRENT', message: 'hi' }, d)
+    await executeTool(withIdentity, 'sendMessage', { action: 'postMessage', channel: 'C_CURRENT', message: 'hi' }, d)
     expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined, {
       username: 'Bot A',
       icon_url: 'https://x/y.png',
@@ -1020,14 +1101,19 @@ describe('executeTool: sendMessage (channel post)', () => {
   it('stamps the stable author id when the session has no visual identity', async () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
-    await executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', message: 'hi' }, d)
+    await executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C_CURRENT', message: 'hi' }, d)
     expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined, authorIdentity)
   })
 
   it('toUser alone sends a Slack DM without changing the message body', async () => {
     const gw = fakeGateway()
     const { deps: d, recorded } = deps(gw)
-    const res = (await executeTool(ctx, 'sendMessage', { toUser: 'U9', message: 'ping' }, d)) as {
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'postMessage', toUser: 'U9', message: 'ping' },
+      d
+    )) as {
       post: Record<string, unknown>
     }
     expect(gw.openDirectMessage).toHaveBeenCalledWith('U9')
@@ -1045,7 +1131,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     // carries a label instead of core carrying the literal.
     const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
     await expect(
-      executeTool(dual, 'sendMessage', { toUser: '42', platform: 'telegram', message: 'x' }, d)
+      executeTool(dual, 'sendMessage', { action: 'postMessage', toUser: '42', platform: 'telegram', message: 'x' }, d)
     ).rejects.toThrow('sendMessage: toUser is only supported on Slack (not telegram) yet')
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
@@ -1058,7 +1144,12 @@ describe('executeTool: sendMessage (channel post)', () => {
     const { deps: d } = deps(gw)
     const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
     await expect(
-      executeTool(dual, 'sendMessage', { toUser: '42', channel: '-100123', platform: 'telegram', message: 'x' }, d)
+      executeTool(
+        dual,
+        'sendMessage',
+        { action: 'postMessage', toUser: '42', channel: '-100123', platform: 'telegram', message: 'x' },
+        d
+      )
     ).rejects.toThrow('sendMessage: toUser is only supported on Slack (not telegram) yet')
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
@@ -1078,7 +1169,12 @@ describe('executeTool: sendMessage (channel post)', () => {
         { id: 'int-1', platform: 'slack' }
       ]
     }
-    const res = (await executeTool(fromTelegram, 'sendMessage', { toUser: 'U9', message: 'ping' }, d)) as {
+    const res = (await executeTool(
+      fromTelegram,
+      'sendMessage',
+      { action: 'postMessage', toUser: 'U9', message: 'ping' },
+      d
+    )) as {
       post: Record<string, unknown>
     }
     expect(gw.openDirectMessage).toHaveBeenCalledWith('U9')
@@ -1097,9 +1193,9 @@ describe('executeTool: sendMessage (channel post)', () => {
       integrationId: 'int-tg',
       integrations: [{ id: 'int-tg', platform: 'telegram' }]
     }
-    await expect(executeTool(telegramOnly, 'sendMessage', { toUser: '42', message: 'x' }, d)).rejects.toThrow(
-      'this agent has no slack integration'
-    )
+    await expect(
+      executeTool(telegramOnly, 'sendMessage', { action: 'postMessage', toUser: '42', message: 'x' }, d)
+    ).rejects.toThrow('this agent has no slack integration')
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
@@ -1108,9 +1204,9 @@ describe('executeTool: sendMessage (channel post)', () => {
     // send-only connection). The live probe is the second, narrower gate.
     const gw = fakeGateway({ openDirectMessage: undefined })
     const { deps: d } = deps(gw)
-    await expect(executeTool(ctx, 'sendMessage', { toUser: 'U9', message: 'ping' }, d)).rejects.toThrow(
-      'sendMessage: the selected Slack integration cannot open direct messages'
-    )
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'postMessage', toUser: 'U9', message: 'ping' }, d)
+    ).rejects.toThrow('sendMessage: the selected Slack integration cannot open direct messages')
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 })
@@ -1190,13 +1286,25 @@ describe('executeTool: read tools', () => {
       await expect(executeTool(ctx, 'getThreadHistory', { channel: 'G_PRIVATE', thread: '1' }, d)).rejects.toThrow(
         NOT_SHARED
       )
-      await expect(executeTool(ctx, 'sendMessage', { channel: 'G_PRIVATE', message: 'hi' }, d)).rejects.toThrow(refused)
       await expect(
-        executeTool(ctx, 'sendMessage', { toUser: ['U1'], channel: 'G_PRIVATE', message: 'hi' }, d)
+        executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'G_PRIVATE', message: 'hi' }, d)
+      ).rejects.toThrow(refused)
+      await expect(
+        executeTool(
+          ctx,
+          'sendMessage',
+          { action: 'postMessage', toUser: ['U1'], channel: 'G_PRIVATE', message: 'hi' },
+          d
+        )
       ).rejects.toThrow(refused)
       // The agent-to-agent channel form keeps the reach rule.
       await expect(
-        executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'G_PRIVATE', message: 'hi' }, d)
+        executeTool(
+          ctx,
+          'sendMessage',
+          { action: 'callAgent', toAgent: 'peer-1', channel: 'G_PRIVATE', message: 'hi' },
+          d
+        )
       ).rejects.toThrow(/private Slack conversation/)
       expect(gw.getChannelHistory).not.toHaveBeenCalled()
       expect(gw.getThreadReplies).not.toHaveBeenCalled()
@@ -1225,9 +1333,9 @@ describe('executeTool: read tools', () => {
       await expect(executeTool(ctx, 'getChannelHistory', { channel: 'D_OTHER' }, nobody(gw))).rejects.toThrow(
         NOT_SHARED
       )
-      await expect(executeTool(ctx, 'sendMessage', { channel: 'D_OTHER', message: 'hi' }, nobody(gw))).rejects.toThrow(
-        /no person started this run/
-      )
+      await expect(
+        executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'D_OTHER', message: 'hi' }, nobody(gw))
+      ).rejects.toThrow(/no person started this run/)
     })
 
     it('reads and posts in a public channel, and in its own private conversation without asking', async () => {
@@ -1235,7 +1343,7 @@ describe('executeTool: read tools', () => {
       const { deps: d } = deps(gw)
       await executeTool(ctx, 'getChannelHistory', { channel: 'C_PUBLIC' }, d)
       expect(gw.getChannelHistory).toHaveBeenCalledWith('C_PUBLIC', {})
-      await executeTool(ctx, 'sendMessage', { channel: 'C_PUBLIC', message: 'yo' }, d)
+      await executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C_PUBLIC', message: 'yo' }, d)
       expect(gw.postMessage).toHaveBeenCalledWith('C_PUBLIC', 'yo', undefined, authorIdentity)
       // The session's own conversation is never described: being invoked there IS the consent.
       await executeTool(ctx, 'getChannelHistory', {}, d)
@@ -1257,9 +1365,9 @@ describe('executeTool: read tools', () => {
         })
         const d: OpsDeps = { ...deps(gw).deps, placeSnapshot: undefined }
         await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_GONE' }, d)).rejects.toThrow(NOT_SHARED)
-        await expect(executeTool(ctx, 'sendMessage', { channel: 'C_GONE', message: 'hi' }, d)).rejects.toThrow(
-          "I can't post there from here."
-        )
+        await expect(
+          executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C_GONE', message: 'hi' }, d)
+        ).rejects.toThrow("I can't post there from here.")
         expect(gw.getChannelHistory).not.toHaveBeenCalled()
         expect(gw.postMessage).not.toHaveBeenCalled()
       }
@@ -1276,11 +1384,11 @@ describe('executeTool: read tools', () => {
       }
       const gw = describing({ '-100999': { isPrivate: true }, '-100888': { isPrivate: false } })
       const d: OpsDeps = { ...deps(gw).deps, placeSnapshot: undefined }
-      await expect(executeTool(tgSession, 'sendMessage', { channel: '-100999', message: 'hi' }, d)).rejects.toThrow(
-        "I can't post there from here."
-      )
+      await expect(
+        executeTool(tgSession, 'sendMessage', { action: 'postMessage', channel: '-100999', message: 'hi' }, d)
+      ).rejects.toThrow("I can't post there from here.")
       // A public group needs no listing.
-      await executeTool(tgSession, 'sendMessage', { channel: '-100888', message: 'hi' }, d)
+      await executeTool(tgSession, 'sendMessage', { action: 'postMessage', channel: '-100888', message: 'hi' }, d)
       expect(gw.postMessage).toHaveBeenCalledTimes(1)
       expect(gw.postMessage).toHaveBeenCalledWith('-100888', 'hi', undefined, authorIdentity)
     })
@@ -2081,7 +2189,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
 
   it('toAgent dm form (no channel) wakes the peer at the current coords, with no channel post', async () => {
     const { deps: d, calls, gw } = wakeDeps()
-    const res = (await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', message: 'help' }, d)) as {
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: 'peer-1', message: 'help' },
+      d
+    )) as {
       ok: boolean
       wake?: { delivered: boolean }
       post?: unknown
@@ -2114,7 +2227,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const res = (await executeTool(
       ctx,
       'sendMessage',
-      { toAgent: 'peer-1', channel: 'C_X', message: 'over to you' },
+      { action: 'callAgent', toAgent: 'peer-1', channel: 'C_X', message: 'over to you' },
       d
     )) as {
       ok: boolean
@@ -2146,7 +2259,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const res = (await executeTool(
       ctx,
       'sendMessage',
-      { toAgent: 'bot-a', channel: 'C_X', message: 'continue here' },
+      { action: 'callAgent', toAgent: 'bot-a', channel: 'C_X', message: 'continue here' },
       d
     )) as {
       ok: boolean
@@ -2188,7 +2301,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const res = (await executeTool(
       ctx,
       'sendMessage',
-      { toAgent: 'bot-a', channel: 'C_X', message: 'continue here' },
+      { action: 'callAgent', toAgent: 'bot-a', channel: 'C_X', message: 'continue here' },
       d
     )) as { wake?: { delivered: boolean; reason?: string }; post?: { ts: string } }
 
@@ -2205,11 +2318,11 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     // channel post would make ingress hold that post for an internal envelope that is
     // never coming, and it would expire as a spurious delivery failure.
     const postless = wakeDeps()
-    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', message: 'quietly' }, postless.deps)
+    await executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'peer-1', message: 'quietly' }, postless.deps)
     expect(postless.calls[0]!.agentCallDeliveryId).toBeUndefined()
 
     const bare = wakeDeps()
-    await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'fyi' }, bare.deps)
+    await executeTool(ctx, 'sendMessage', { action: 'postMessage', channel: 'C_X', message: 'fyi' }, bare.deps)
     expect(bare.gw.postMessage).toHaveBeenCalledWith('C_X', 'fyi', undefined, authorIdentity)
   })
 
@@ -2218,7 +2331,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     // already in, @-mention it in your ordinary reply (§2.1).
     const { deps: d, calls, gw } = wakeDeps()
     await expect(
-      executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', thread: '222.2', message: 'ping' }, d)
+      executeTool(
+        ctx,
+        'sendMessage',
+        { action: 'callAgent', toAgent: 'peer-1', channel: 'C_X', thread: '222.2', message: 'ping' },
+        d
+      )
     ).rejects.toThrow(/thread/)
     expect(gw.postMessage).not.toHaveBeenCalled()
     expect(calls).toHaveLength(0)
@@ -2236,7 +2354,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
       mentionAddressFor: ({ agentId, channel }) =>
         agentId === 'peer-1' && channel === 'C_X' ? '<@U01PEER>' : undefined
     })
-    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', message: 'ping' }, d)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: 'peer-1', channel: 'C_X', message: 'ping' },
+      d
+    )
     expect(gw.postMessage).toHaveBeenCalledWith('C_X', '<@U01PEER> ping', undefined, pairedAuthorIdentity)
     // The wake anchors to the post's own ts, and carries it so the two collapse onto one
     // transcript row rather than duplicating the hand-off.
@@ -2247,7 +2370,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     // A peer with no platform presence there (or a shared bot with no slug) simply gets an
     // unmentioned post plus its internal wake — the delivery happens, it is only less legible.
     const { deps: d, calls, gw } = wakeDeps({ mentionAddressFor: () => undefined })
-    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', message: 'ping' }, d)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: 'peer-1', channel: 'C_X', message: 'ping' },
+      d
+    )
     expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'ping', undefined, pairedAuthorIdentity)
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', transcriptTs: 'ts-123' })
   })
@@ -2257,7 +2385,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     // skipped so no misleading hand-off is left; messageAgent still runs (it re-checks and returns
     // the typed reason — stubbed here to just record the call).
     const { deps: d, calls, gw } = wakeDeps({ preflightWake: () => 'not_allowed' })
-    const res = (await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', message: 'nope' }, d)) as {
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: 'peer-1', channel: 'C_X', message: 'nope' },
+      d
+    )) as {
       ok: boolean
       wake?: unknown
       post?: unknown
@@ -2276,10 +2409,17 @@ describe('executeTool: sendMessage (wake / reply)', () => {
       executeTool(
         ctx,
         'sendMessage',
-        { toAgent: 'peer-1', channel: 'C_OTHER', message: 'help', callerAgentId: 'victim', platform: 'telegram' },
+        {
+          action: 'callAgent',
+          toAgent: 'peer-1',
+          channel: 'C_OTHER',
+          message: 'help',
+          callerAgentId: 'victim',
+          platform: 'telegram'
+        },
         d
       )
-    ).rejects.toThrow(/allows only/)
+    ).rejects.toThrow(/action `callAgent` does not accept `callerAgentId`, `platform`/)
     expect(calls).toHaveLength(0)
   })
 
@@ -2288,7 +2428,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     // coordinates come from the TRUSTED caller session — a channel the model named is not
     // evidence the caller may reach it, so it never becomes the child's key.
     const { deps: d, calls, gw } = wakeDeps()
-    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', message: 'x' }, d)
+    await executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'peer-1', message: 'x' }, d)
     expect(gw.postMessage).not.toHaveBeenCalled()
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: ctx.channel, thread: ctx.thread })
     expect(calls[0]!.transcriptTs).toBeUndefined()
@@ -2299,14 +2439,19 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     { extra: { platform: 'slack' }, label: 'platform-only target' }
   ])('rejects $label before dispatch and returns repairable target examples', async ({ extra }) => {
     const { deps: d } = wakeDeps()
-    await expect(executeTool(ctx, 'sendMessage', { ...extra, message: 'x' }, d)).rejects.toThrow(
-      /Valid targets:.*toAgent.*toUser.*channel.*sessionId/
+    await expect(executeTool(ctx, 'sendMessage', { action: 'postMessage', ...extra, message: 'x' }, d)).rejects.toThrow(
+      /action `postMessage` requires `toUser` or `channel`.*getToolGuide/
     )
   })
 
   it('toUser plus channel is the channel-root form: posts a root @-mention', async () => {
     const { deps: d, gw } = wakeDeps()
-    const res = (await executeTool(ctx, 'sendMessage', { toUser: 'U1', channel: 'C1', message: 'private' }, d)) as {
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'postMessage', toUser: 'U1', channel: 'C1', message: 'private' },
+      d
+    )) as {
       post?: { channel: string; thread: string | null }
     }
     expect(gw.postMessage).toHaveBeenCalledWith('C1', '<@U1> private', undefined, authorIdentity)
@@ -2318,11 +2463,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const res = (await executeTool(
       ctx,
       'sendMessage',
-      {
-        toUser: ['U1', '<@U2>'],
-        channel: 'C1',
-        message: 'please review'
-      },
+      { action: 'postMessage', toUser: ['U1', '<@U2>'], channel: 'C1', message: 'please review' },
       d
     )) as { post?: { channel: string; thread: string | null } }
     expect(gw.postMessage).toHaveBeenCalledWith('C1', '<@U1> <@U2> please review', undefined, authorIdentity)
@@ -2333,16 +2474,21 @@ describe('executeTool: sendMessage (wake / reply)', () => {
   it('rejects `thread` on a toUser target — there is no visible in-thread form', async () => {
     const { deps: d, gw } = wakeDeps()
     await expect(
-      executeTool(ctx, 'sendMessage', { toUser: ['U1', 'U2'], channel: 'C1', thread: '222.2', message: 'please' }, d)
+      executeTool(
+        ctx,
+        'sendMessage',
+        { action: 'postMessage', toUser: ['U1', 'U2'], channel: 'C1', thread: '222.2', message: 'please' },
+        d
+      )
     ).rejects.toThrow(/thread/)
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
   it('rejects a toUser array without channel instead of treating it as a group DM', async () => {
     const { deps: d, gw } = wakeDeps()
-    await expect(executeTool(ctx, 'sendMessage', { toUser: ['U1', 'U2'], message: 'x' }, d)).rejects.toThrow(
-      /array requires `channel`/
-    )
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'postMessage', toUser: ['U1', 'U2'], message: 'x' }, d)
+    ).rejects.toThrow(/array requires `channel`/)
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
@@ -2353,32 +2499,34 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     { toUser: ['U1', '<@U1>'], label: 'duplicate member id' }
   ])('rejects an invalid toUser $label before posting', async ({ toUser }) => {
     const { deps: d, gw } = wakeDeps()
-    await expect(executeTool(ctx, 'sendMessage', { toUser, channel: 'C1', message: 'x' }, d)).rejects.toThrow(/toUser/)
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'postMessage', toUser, channel: 'C1', message: 'x' }, d)
+    ).rejects.toThrow(/toUser/)
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
   it('rejects `thread` on a toUser DM', async () => {
     const { deps: d } = wakeDeps()
-    await expect(executeTool(ctx, 'sendMessage', { toUser: 'U1', thread: '222.2', message: 'x' }, d)).rejects.toThrow(
-      /thread/
-    )
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'postMessage', toUser: 'U1', thread: '222.2', message: 'x' }, d)
+    ).rejects.toThrow(/thread/)
   })
 
   it('rejects mixing toAgent and toUser in one call', async () => {
     const { deps: d } = wakeDeps()
-    await expect(executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', toUser: 'U1', message: 'x' }, d)).rejects.toThrow(
-      /mutually exclusive/
-    )
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'peer-1', toUser: 'U1', message: 'x' }, d)
+    ).rejects.toThrow(/action `callAgent` does not accept `toUser`/)
   })
 
   it.each([
-    { args: { sessionId: 'sess-1', channel: 'C1' }, label: 'session + channel' },
-    { args: { toUser: 'U1', correlationId: 'o1.0' }, label: 'user + correlation' },
-    { args: { toAgent: 'peer-1', platform: 'telegram' }, label: 'agent + platform' },
-    { args: { channel: 'C1', correlationId: 'o1.0' }, label: 'channel + correlation' }
+    { args: { action: 'replyToSession', sessionId: 'sess-1', channel: 'C1' }, label: 'session + channel' },
+    { args: { action: 'postMessage', toUser: 'U1', correlationId: 'o1.0' }, label: 'user + correlation' },
+    { args: { action: 'callAgent', toAgent: 'peer-1', platform: 'telegram' }, label: 'agent + platform' },
+    { args: { action: 'postMessage', channel: 'C1', correlationId: 'o1.0' }, label: 'channel + correlation' }
   ])('rejects mixed fields on a $label instead of silently ignoring them', async ({ args }) => {
     const { deps: d } = wakeDeps()
-    await expect(executeTool(ctx, 'sendMessage', { ...args, message: 'x' }, d)).rejects.toThrow(/allows only/)
+    await expect(executeTool(ctx, 'sendMessage', { ...args, message: 'x' }, d)).rejects.toThrow(/does not accept/)
   })
 
   it('sessionId is a SessionTarget reply routed to deps.replyToSession', async () => {
@@ -2395,7 +2543,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
         return { delivered: true, targetSession: 'origin-key' }
       }
     })
-    const res = await executeTool(ctx, 'sendMessage', { sessionId: 'sess-1', message: 'done' }, d)
+    const res = await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'replyToSession', sessionId: 'sess-1', message: 'done' },
+      d
+    )
     // The ReplyToSessionResult is returned verbatim (NOT wrapped in { ok, wake, post }).
     expect(res).toEqual({ delivered: true, targetSession: 'origin-key' })
     expect(replyCalls[0]).toEqual({
@@ -2412,8 +2565,13 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const replyToSession = vi.fn()
     const d = makeDeps({ replyToSession })
     await expect(
-      executeTool(ctx, 'sendMessage', { sessionId: 'sess-1', correlationId: 'o1.0', message: 'done' }, d)
-    ).rejects.toThrow(/session target allows only `sessionId`, `message`; unexpected `correlationId`/)
+      executeTool(
+        ctx,
+        'sendMessage',
+        { action: 'replyToSession', sessionId: 'sess-1', correlationId: 'o1.0', message: 'done' },
+        d
+      )
+    ).rejects.toThrow(/action `replyToSession` does not accept `correlationId`/)
     expect(replyToSession).not.toHaveBeenCalled()
   })
 
@@ -2421,7 +2579,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
   // delegated (viewSessionStatus). Only an ADMITTED wake opened one.
   it('returns the woken session as childSessionId', async () => {
     const { deps: d } = wakeDeps()
-    const res = (await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', message: 'go' }, d)) as {
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: 'peer-1', message: 'go' },
+      d
+    )) as {
       childSessionId?: string
       wake?: { targetSession: string }
     }
@@ -2433,7 +2596,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const res = (await executeTool(
       ctx,
       'sendMessage',
-      { toAgent: { agentId: 'peer-1', needsReply: true }, message: 'go' },
+      { action: 'callAgent', toAgent: { agentId: 'peer-1', needsReply: true }, message: 'go' },
       d
     )) as Record<string, any>
     expect(res.reply).toEqual({ requested: true, state: 'awaiting' })
@@ -2445,7 +2608,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const { deps: d } = wakeDeps({
       messageAgent: async () => ({ delivered: false, targetSession: 'slack:C:root:peer-1', reason: 'not_allowed' })
     })
-    const res = (await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', message: 'go' }, d)) as {
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: 'peer-1', message: 'go' },
+      d
+    )) as {
       childSessionId?: string
       wake?: { reason?: string }
     }
@@ -2455,7 +2623,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
 
   it('omits childSessionId for a plain channel post — a post is not a delegated session', async () => {
     const { deps: d } = wakeDeps()
-    const res = (await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'fyi' }, d)) as {
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'postMessage', channel: 'C_X', message: 'fyi' },
+      d
+    )) as {
       childSessionId?: string
     }
     expect(res.childSessionId).toBeUndefined()
@@ -2466,7 +2639,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     await executeTool(
       ctx,
       'sendMessage',
-      { toAgent: { agentId: 'peer-1', needsReply: true }, message: 'take this over' },
+      { action: 'callAgent', toAgent: { agentId: 'peer-1', needsReply: true }, message: 'take this over' },
       d
     )
     expect(calls[0]!.toAgentId).toBe('peer-1')
@@ -2478,21 +2651,36 @@ describe('executeTool: sendMessage (wake / reply)', () => {
 
   it('leaves needsReply absent for the bare-string form and for an explicit false', async () => {
     const { deps: d, calls } = wakeDeps()
-    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', message: 'a' }, d)
-    await executeTool(ctx, 'sendMessage', { toAgent: { agentId: 'peer-1', needsReply: false }, message: 'b' }, d)
+    await executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'peer-1', message: 'a' }, d)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: { agentId: 'peer-1', needsReply: false }, message: 'b' },
+      d
+    )
     expect(calls[0]!.needsReply).toBeUndefined()
     expect(calls[1]!.needsReply).toBeUndefined()
   })
 
   it.each(['true', 'True', 'TRUE', 'tRuE'])('normalizes string needsReply=%s to true', async (needsReply) => {
     const { deps: d, calls } = wakeDeps()
-    await executeTool(ctx, 'sendMessage', { toAgent: { agentId: 'peer-1', needsReply }, message: 'report back' }, d)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: { agentId: 'peer-1', needsReply }, message: 'report back' },
+      d
+    )
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', needsReply: true })
   })
 
   it.each(['false', 'False', 'FALSE', 'fAlSe'])('normalizes string needsReply=%s to false', async (needsReply) => {
     const { deps: d, calls } = wakeDeps()
-    await executeTool(ctx, 'sendMessage', { toAgent: { agentId: 'peer-1', needsReply }, message: 'fire and forget' }, d)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: { agentId: 'peer-1', needsReply }, message: 'fire and forget' },
+      d
+    )
     expect(calls[0]!.needsReply).toBeUndefined()
   })
 
@@ -2501,7 +2689,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     await executeTool(
       ctx,
       'sendMessage',
-      { toAgent: '{"agentId":"peer-1","needsReply":"True"}', message: 'report back' },
+      { action: 'callAgent', toAgent: '{"agentId":"peer-1","needsReply":"True"}', message: 'report back' },
       d
     )
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', needsReply: true })
@@ -2512,7 +2700,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const res = (await executeTool(
       ctx,
       'sendMessage',
-      { toAgent: { agentId: 'peer-1', needsReply: true }, channel: 'C_X', message: 'over to you' },
+      { action: 'callAgent', toAgent: { agentId: 'peer-1', needsReply: true }, channel: 'C_X', message: 'over to you' },
       d
     )) as { post?: { ts: string }; childSessionId?: string }
     expect(gw.postMessage).toHaveBeenCalled()
@@ -2529,7 +2717,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     { toAgent: 42, label: 'a number' }
   ])('rejects $label for toAgent instead of silently dropping it', async ({ toAgent }) => {
     const { deps: d, calls } = wakeDeps()
-    await expect(executeTool(ctx, 'sendMessage', { toAgent, message: 'x' }, d)).rejects.toThrow()
+    await expect(executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent, message: 'x' }, d)).rejects.toThrow()
     expect(calls).toHaveLength(0)
   })
 
@@ -2537,7 +2725,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     'rejects malformed or ambiguous JSON-stringified toAgent: %s',
     async (toAgent) => {
       const { deps: d, calls } = wakeDeps()
-      await expect(executeTool(ctx, 'sendMessage', { toAgent, message: 'x' }, d)).rejects.toThrow()
+      await expect(executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent, message: 'x' }, d)).rejects.toThrow()
       expect(calls).toHaveLength(0)
     }
   )
@@ -3091,7 +3279,7 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
     const sent = (await executeTool(
       crossPlatform,
       'sendMessage',
-      { platform: 'telegram', integrationId: res.integrationId, channel: '-100', message: 'hi' },
+      { action: 'postMessage', platform: 'telegram', integrationId: res.integrationId, channel: '-100', message: 'hi' },
       d
     )) as { post: Record<string, unknown> }
     expect(sent.post).toMatchObject({ platform: 'telegram', integrationId: 'tg-b', channel: '-100' })
@@ -3260,7 +3448,7 @@ describe('executeTool: a cross-platform call asks which bot to act as (#1965 Gap
     const sent = (await executeTool(
       crossPlatform,
       'sendMessage',
-      { ...tg, integrationId: res.integrationId, channel: 'CB', message: 'hi' },
+      { action: 'postMessage', ...tg, integrationId: res.integrationId, channel: 'CB', message: 'hi' },
       d
     )) as { post: Record<string, unknown> }
     expect(sent.post).toMatchObject({ platform: 'telegram', integrationId: 'tg-b', channel: 'CB' })
@@ -3466,7 +3654,12 @@ describe('executeTool: a cross-platform call asks which bot to act as (#1965 Gap
       const gw = fakeGateway()
       const { deps: base } = deps(gw)
       const d: OpsDeps = ask ? { ...base, ask } : base
-      const res = (await executeTool(crossPlatform, 'sendMessage', { ...tg, channel: '-100', message: 'hi' }, d)) as {
+      const res = (await executeTool(
+        crossPlatform,
+        'sendMessage',
+        { action: 'postMessage', ...tg, channel: '-100', message: 'hi' },
+        d
+      )) as {
         post: Record<string, unknown>
       }
       expect(res.post).toMatchObject({ platform: 'telegram', integrationId: 'tg-a', channel: '-100' })

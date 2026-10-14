@@ -585,7 +585,7 @@ describe('messageAgent: same-daemon delivery', () => {
         integrations: [{ id: 'int-a', platform: 'slack' }]
       },
       'sendMessage',
-      { toAgent: 'bot-b', channel: 'C1', message: 'handoff' },
+      { action: 'callAgent', toAgent: 'bot-b', channel: 'C1', message: 'handoff' },
       { ...(daemon as any).mcp.deps, canRun: () => true }
     )) as { wake?: { delivered: boolean; reason?: string }; post?: unknown }
 
@@ -2406,6 +2406,81 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       nextAction: 'finish-turn-and-wait'
     })
     expect(status.message).toMatch(/next turn.*do not retry/i)
+    await daemon.stop()
+  })
+
+  it('keeps the reciprocal parent → child → parent → child exchange through replyToSession', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const row = (agentId: string, channel: string, thread: string, sessionId: string, originSessionId?: string) => ({
+      key: sessionKey('slack', channel, thread, agentId),
+      agentId,
+      platform: 'slack',
+      channel,
+      thread,
+      acpSessionId: `acp-${sessionId}`,
+      sessionId,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      ...(originSessionId ? { originSessionId } : {})
+    })
+    await d.store.upsertSession(row('bot-a', 'C1', '100.1', 'sid-parent-1'))
+    await d.store.upsertSession(row('bot-b', 'C2', '200.1', 'sid-child-1', 'sid-parent-1'))
+    const parentKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
+    const childKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    const as = (agentId: string, channel: string, thread: string) => ({
+      agentId,
+      platform: 'slack',
+      isDm: false,
+      channel,
+      thread,
+      deliveryThread: thread,
+      tools: [],
+      integrations: []
+    })
+    const reply = (from: ReturnType<typeof as>, sessionId: string, message: string) =>
+      executeTool(
+        from,
+        'sendMessage',
+        { action: 'replyToSession', sessionId, message },
+        {
+          ...d.mcp.deps,
+          canRun: () => true
+        }
+      )
+    const child = as('bot-b', 'C2', '200.1')
+    const parent = as('bot-a', 'C1', '100.1')
+    armTurn(d, childKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'sid-parent-1',
+      originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
+    })
+    expect(await reply(child, 'sid-parent-1', 'first result')).toMatchObject({
+      delivered: true,
+      targetSession: parentKey
+    })
+    // The parent's resumed turn names the replier as its origin, so it can answer back.
+    armTurn(d, parentKey, calls[0]!.callMeta)
+    expect(calls[0]!.callMeta.originSessionId).toBe('sid-child-1')
+    expect(await reply(parent, 'sid-child-1', 'follow-up question')).toMatchObject({
+      delivered: true,
+      targetSession: childKey
+    })
+    armTurn(d, childKey, calls[1]!.callMeta)
+    expect(calls[1]!.callMeta.originSessionId).toBe('sid-parent-1')
+    expect(await reply(child, 'sid-parent-1', 'second result')).toMatchObject({
+      delivered: true,
+      targetSession: parentKey
+    })
+    expect(calls.map((call) => [call.agentId, call.msg.text])).toEqual([
+      ['bot-a', 'first result'],
+      ['bot-b', 'follow-up question'],
+      ['bot-a', 'second result']
+    ])
     await daemon.stop()
   })
 

@@ -154,7 +154,9 @@ describe('a post from a DM to another conversation, in either mode', () => {
     const mode = assistant ? 'in assistant mode' : 'outside assistant mode'
 
     it(`posts straight into a private channel the asker is in, with no draft (${mode})`, async () => {
-      const h = await boot(assistant, [{ channel: 'C1', message: 'The launch moves to Monday.' }])
+      const h = await boot(assistant, [
+        { action: 'postMessage', channel: 'C1', message: 'The launch moves to Monday.' }
+      ])
       try {
         await h.ask()
         expect(h.results[0]).not.toBeInstanceOf(Error)
@@ -172,7 +174,9 @@ describe('a post from a DM to another conversation, in either mode', () => {
     })
 
     it(`refuses a private channel the asker is not in, opaquely, and drafts nothing (${mode})`, async () => {
-      const h = await boot(assistant, [{ channel: 'G1', message: 'The launch moves to Monday.' }])
+      const h = await boot(assistant, [
+        { action: 'postMessage', channel: 'G1', message: 'The launch moves to Monday.' }
+      ])
       try {
         await h.ask()
         expect(h.results[0]).toBeInstanceOf(Error)
@@ -185,7 +189,9 @@ describe('a post from a DM to another conversation, in either mode', () => {
     })
 
     it(`drafts a post into a shared conversation to the asker, and posts it once approved (${mode})`, async () => {
-      const h = await boot(assistant, [{ channel: 'C_SHARED', message: 'The launch moves to Monday.' }])
+      const h = await boot(assistant, [
+        { action: 'postMessage', channel: 'C_SHARED', message: 'The launch moves to Monday.' }
+      ])
       try {
         await h.ask()
         expect(h.results[0]).toMatchObject({ drafted: true, approver: 'the person who asked, in a direct message' })
@@ -222,7 +228,9 @@ describe('a post from a DM to another conversation, in either mode', () => {
     })
 
     it(`never offers a guest who asked from a place not known external as the approver (${mode})`, async () => {
-      const h = await boot(assistant, [{ channel: 'C_SHARED', message: 'The launch moves to Monday.' }])
+      const h = await boot(assistant, [
+        { action: 'postMessage', channel: 'C_SHARED', message: 'The launch moves to Monday.' }
+      ])
       try {
         // U1 is a guest the platform never reported, so their conversation with the agent is not known external.
         h.conn.isFullMember.mockResolvedValue(false)
