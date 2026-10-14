@@ -9,7 +9,13 @@
  * the registry is the authority, so an enable-list entry pointing at a deleted
  * source simply drops out rather than failing the whole spec.
  */
-import { AgentSkillEntry, normalizeGitHubSkillSource, redactGitUrlSecrets } from '@agentconnect.md/protocol'
+import {
+  AgentSkillEntry,
+  isGitHubSkillSource,
+  normalizeGitHubSkillSource,
+  normalizeSkillSource,
+  redactGitUrlSecrets
+} from '@agentconnect.md/protocol'
 import type { AgentRecord, SkillSourceRecord, SkillSourceRepo } from '../persistence/ports.js'
 
 const MAX_PROJECTED_SKILL_SOURCES = 64
@@ -53,6 +59,17 @@ export function parseGithubSkillRepo(
   const ref = parts[2] === 'tree' ? parts[3] : undefined
   const subDir = ref && parts.length > 4 ? parts.slice(4).join('/') : undefined
   return { owner, repo, ...(ref ? { ref } : {}), ...(subDir ? { subDir } : {}) }
+}
+
+/** The stored address of an anonymous source on a host the CP never reads (source-cache.md §11); null for github.com or a malformed one. */
+export function otherHostSkillSource(source: string): string | null {
+  if (isGitHubSkillSource(source)) return null
+  try {
+    // Syntax only: the daemon's workspaceGitAllowedOrigins is the one host list, so the CP neither fetches nor gates the origin.
+    return normalizeSkillSource(source)
+  } catch {
+    return null
+  }
 }
 
 /** Split "<source>/<skill>" (or "<source>/*"); a bare "<source>" ⇒ all skills. */

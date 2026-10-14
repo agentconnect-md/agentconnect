@@ -1039,6 +1039,23 @@ GitLab admission (P3, CP3.2):
   nor an explicit grant covers it (`gitlab/skill-source.ts`,
   `gitlab/gitcred.service.ts`).
 
+Other-host admission (P3, CP3.3):
+
+- A source that is neither on github.com nor on the deployment's GitLab
+  instance is admitted when `normalizeSkillSource` accepts it as a plain
+  credential-free HTTPS address, and is stored in that normalized form with no
+  identity and no credential (`otherHostSkillSource` in
+  `orchestrator/skillSource.ts`). A GitHub id on it is refused.
+- The CP holds no host list: the daemon's `workspaceGitAllowedOrigins` stays the
+  only Git-origin policy ([git-workspace-model.md](git-workspace-model.md) §10)
+  and gates the origin at acquisition.
+- No admission, edit, preview or skill listing contacts the address. The preview
+  answers `resolvable: false` with empty branch, tag and skill lists, which a
+  failed GitLab scan now answers too. A subdirectory needs an explicit ref,
+  since the CP cannot learn the default branch.
+- Without a GitLab seam, a GitLab address is just another host, as for
+  workspaces.
+
 ## 12. Configuration and degradation
 
 The Source Cache is optional. The Helm chart gains `sourceCache.*` values (off by
