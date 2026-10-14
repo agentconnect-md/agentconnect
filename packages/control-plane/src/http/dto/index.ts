@@ -3584,7 +3584,8 @@ export const WorkspaceTransferBody = z
     sha256: z
       .string()
       .regex(/^[0-9a-fA-F]{16,64}$/)
-      .optional() // the digest prefix a share recorded; the bucket's bytes must still match it
+      .optional(), // the digest prefix a share recorded; the bucket's bytes must still match it
+    poll: z.boolean().optional() // answer 202 with an operationId while the daemon uploads, instead of holding the request
   })
   .strict()
 
@@ -3595,6 +3596,27 @@ export const WorkspaceTransferDto = z.object({
   expiresAt: z.string(),
   cached: z.boolean() // the bucket already held this revision
 })
+
+/** A workspace transfer whose upload is still running; poll its operation. */
+export const WorkspaceTransferPendingDto = z.object({
+  operationId: z.string().uuid(), // GET /agents/:id/workspace/file/transfer/:operationId
+  path: z.string(),
+  size: z.number().int().nonnegative()
+})
+
+export const WorkspaceTransferOperationParams = z.object({
+  id: z.string(),
+  operationId: z.string().uuid()
+})
+
+export const WorkspaceTransferOperationQuery = z
+  .object({
+    sha256: z
+      .string()
+      .regex(/^[0-9a-fA-F]{16,64}$/)
+      .optional() // as on the POST: the bucket's bytes must still match this digest prefix
+  })
+  .strict()
 
 /** One file the console is about to upload for a webchat turn; the browser hashes it first. */
 export const FileUploadBody = z

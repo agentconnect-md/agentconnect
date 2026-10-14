@@ -59,7 +59,7 @@ import { handleApprovalRoute } from './approval-route.js'
 import { handleReadAccess } from './read-access.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleSharedImageGet, handleSharedImagePut } from './shared-image.js'
-import { handleTransferGet, handleTransferSign } from './file-transfer.js'
+import { handleTransferGet, handleTransferSettle, handleTransferSign } from './file-transfer.js'
 import { handleGithubReviewResult } from './github-review-result.js'
 import { handleCodeHostNoteResult } from './codehost-note-result.js'
 import {
@@ -116,6 +116,7 @@ export class FrameRouter {
       'agent/read-access': handleReadAccess,
       'github/review-authorize': handleGithubReviewAuthorize,
       'transfer/sign': handleTransferSign,
+      'transfer/settle': handleTransferSettle,
       'transfer/get': handleTransferGet,
       'image/original/put': handleSharedImagePut,
       'image/original/get': handleSharedImageGet,

@@ -53,7 +53,8 @@ import type {
   SessionStayedHomeReason,
   BotRevocationEvidence,
   PlaceExternalReason,
-  RuntimeStrategyEntries
+  RuntimeStrategyEntries,
+  TransferUploadOutcome
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -7757,12 +7758,26 @@ export interface UploadTicket {
   daemonId: string
   objectKey: string
   size: number
+  /** A begun upload's poll scope: the agent and path it was opened for. */
+  agentId?: string
+  path?: string
+}
+
+/** What a poller reads: the ticket and, once the daemon settled it, the outcome. */
+export interface UploadTicketState extends UploadTicket {
+  outcome?: TransferUploadOutcome
 }
 
 export interface UploadTicketRepo {
   /** Record a ticket that expires `ttlMs` after database time, sweeping expired tickets first. */
   open(id: string, ticket: UploadTicket, ttlMs: number): Promise<void>
-  /** The unexpired ticket `id` if it was issued to `daemonId`. */
+  /** The unexpired, unsettled ticket `id` if it was issued to `daemonId`. */
   find(id: string, daemonId: string): Promise<Omit<UploadTicket, 'daemonId'> | undefined>
+  /** The unexpired, unsettled ticket already uploading `objectKey` on `daemonId`, so a retry joins it. */
+  pending(objectKey: string, daemonId: string): Promise<string | undefined>
+  /** Record the outcome once and keep the row `retainMs` for pollers; false ⇒ unknown, expired or already settled. */
+  settle(id: string, daemonId: string, outcome: TransferUploadOutcome, retainMs: number): Promise<boolean>
+  /** The unexpired ticket `id`, settled or not. */
+  get(id: string): Promise<UploadTicketState | undefined>
   close(id: string): Promise<void>
 }

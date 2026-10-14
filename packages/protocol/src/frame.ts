@@ -176,6 +176,10 @@ import {
   TransferGetReq,
   TransferSignOk,
   TransferSignReq,
+  TransferSettleOk,
+  TransferSettleReq,
+  WorkspaceUploadBeginOk,
+  WorkspaceUploadBeginReq,
   WorkspaceUploadOk,
   WorkspaceUploadReq
 } from './frames/file-transfer.js'
@@ -507,6 +511,10 @@ export const FRAME_SCHEMAS = {
   // ── file transfer through the Source Cache bucket (presigned URLs only; bytes never ride this WS) ──
   'workspace/upload': WorkspaceUploadReq,
   'workspace/upload/ok': WorkspaceUploadOk,
+  'workspace/upload/begin': WorkspaceUploadBeginReq,
+  'workspace/upload/begin/ok': WorkspaceUploadBeginOk,
+  'transfer/settle': TransferSettleReq,
+  'transfer/settle/ok': TransferSettleOk,
   'transfer/sign': TransferSignReq,
   'transfer/sign/ok': TransferSignOk,
   'transfer/get': TransferGetReq,
@@ -848,6 +856,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('workspace/mkdir/ok', FRAME_SCHEMAS['workspace/mkdir/ok']),
   frame('workspace/upload', FRAME_SCHEMAS['workspace/upload']),
   frame('workspace/upload/ok', FRAME_SCHEMAS['workspace/upload/ok']),
+  frame('workspace/upload/begin', FRAME_SCHEMAS['workspace/upload/begin']),
+  frame('workspace/upload/begin/ok', FRAME_SCHEMAS['workspace/upload/begin/ok']),
+  frame('transfer/settle', FRAME_SCHEMAS['transfer/settle']),
+  frame('transfer/settle/ok', FRAME_SCHEMAS['transfer/settle/ok']),
   frame('transfer/sign', FRAME_SCHEMAS['transfer/sign']),
   frame('transfer/sign/ok', FRAME_SCHEMAS['transfer/sign/ok']),
   frame('transfer/get', FRAME_SCHEMAS['transfer/get']),

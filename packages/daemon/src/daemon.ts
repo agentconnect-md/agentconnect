@@ -105,6 +105,7 @@ import {
   WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   FILE_TRANSFER_FEATURE,
+  WORKSPACE_UPLOAD_BEGIN_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
   type SharedImageResolveOk,
   type SharedImageResolveReq,
@@ -7676,6 +7677,8 @@ export class Daemon {
       WORKSPACE_FILE_DOWNLOAD_FEATURE,
       // Snapshots workspace files onto, and fetches console uploads from, URLs the control plane signs; static.
       FILE_TRANSFER_FEATURE,
+      // Runs a workspace upload behind a short `workspace/upload/begin` and reports it with `transfer/settle`; static.
+      WORKSPACE_UPLOAD_BEGIN_FEATURE,
       // Answers `image/original/resolve` and publishes shared-image originals (webchat-generated-images.md).
       WEBCHAT_IMAGES_FEATURE,
       TASK_LIST_FEATURE,

@@ -52,6 +52,8 @@ import type {
   TransferGetReq,
   TransferSignOk,
   TransferSignReq,
+  TransferSettleOk,
+  TransferSettleReq,
   AgentApprovalRoute,
   AgentApprovalRouted,
   AgentReadAccess,
@@ -155,7 +157,7 @@ import type { AssistantControlDeps } from './control/assistant.js'
 import type { AutoMergeControlDeps } from './control/automerge.js'
 import type { SandboxKeepAliveDeps } from './control/sandbox-keepalive.js'
 import type { RuntimeProbeDeps } from './control/runtime-probe.js'
-import { GitMessagePasses, type WorkspaceReadDeps } from './control/workspace.js'
+import { GitMessagePasses, UploadBegins, type WorkspaceReadDeps } from './control/workspace.js'
 import type { ConfigApply } from './config-apply.js'
 import type { Logger } from '../log.js'
 
@@ -399,6 +401,7 @@ export class CpClient {
       workspaceGit: deps.workspaceGit,
       // Every transfer URL is signed by the control plane, over this socket.
       signTransfer: deps.signTransfer ?? ((req, orgId) => this.signTransfer(req, orgId)),
+      settleTransfer: (req, orgId) => this.settleTransfer(req, orgId),
       ...(deps.transferNetwork ? { transferNetwork: deps.transferNetwork } : {}),
       taskReader: deps.taskReader,
       assistantActivity: deps.assistantActivity,
@@ -419,6 +422,7 @@ export class CpClient {
       localSkillsReader: deps.localSkillsReader,
       runtimeCommandsReader: deps.runtimeCommandsReader,
       gitMessagePasses: new GitMessagePasses(),
+      uploadBegins: new UploadBegins(),
       codeHostNoteProjection: deps.codeHostNoteProjection,
       noteLeasesGranted: (groupIds) => this.noteLeasesGranted(groupIds),
       forgetLeaseDeadlines: (groupIds) => this.forgetLeaseDeadlines(groupIds),
@@ -1000,6 +1004,16 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected transfer/sign/ok, got ${rep.type}`, false)
     }
     return rep.payload as TransferSignOk
+  }
+
+  /** Report a begun `workspace/upload/begin` outcome; the control plane records it once on the ticket. */
+  async settleTransfer(payload: TransferSettleReq, orgId?: string): Promise<TransferSettleOk> {
+    this.requireReady('transfer/settle')
+    const rep = await this.request('transfer/settle', payload, orgId)
+    if (rep.type !== 'transfer/settle/ok') {
+      throw new WireError('INTERNAL', `expected transfer/settle/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as TransferSettleOk
   }
 
   /** Presign the PUT of a shared image's staged original (webchat-generated-images.md §5). */
