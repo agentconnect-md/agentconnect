@@ -7,7 +7,6 @@
   { "id": "dsh-acp", "command": "dsh-acp", "args": [] },
   { "id": "github-copilot-cli", "command": "copilot", "args": ["--acp"] },
   { "id": "grok-build", "command": "grok", "args": ["agent", "stdio"] },
-  { "id": "muse-acp", "command": "muse-acp", "args": [] },
   { "id": "omp", "command": "omp", "args": ["acp"] },
   { "id": "opencode", "command": "opencode", "args": ["acp"] },
   { "id": "pi-acp", "command": "pi-acp", "args": [] },

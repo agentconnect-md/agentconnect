@@ -78,31 +78,12 @@ RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
   && chmod -R a-w /out/antigravity \
   && rm /tmp/antigravity.zip
 
-# Build Muse's adapter against Bookworm: upstream Linux binaries require glibc 2.39.
-FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS muse-acp
-ARG MUSE_ACP_VERSION=0.13.0
-ARG MUSE_ACP_SOURCE_SHA256=65ac4f99ad846361cd0a50973fb236b1b552aed90dcdfec8bf748f2f28f43dc4
-RUN apt-get update \
-  && apt-get install --no-install-recommends -y ca-certificates curl \
-  && rm -rf /var/lib/apt/lists/*
-WORKDIR /build
-RUN curl --retry 5 -fsSL -o /tmp/muse-acp.tar.gz \
-  "https://codeload.github.com/BrokkAi/muse-acp/tar.gz/refs/tags/v${MUSE_ACP_VERSION}" \
-  && printf '%s  /tmp/muse-acp.tar.gz\n' "$MUSE_ACP_SOURCE_SHA256" | sha256sum -c - \
-  && tar -xzf /tmp/muse-acp.tar.gz --strip-components=1 \
-  && CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 cargo build --release --locked --jobs 1 \
-  && install -D -m 0555 target/release/muse-acp /out/bin/muse-acp \
-  && mkdir -p /out/licenses/muse-acp \
-  && cp LICENSE NOTICE /out/licenses/muse-acp/
-
 # Other native harness downloads are independent of Antigravity and agent-browser.
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS full-native-runtimes
 ARG OMP_VERSION=18.3.0
 ARG OMP_SHA256_AMD64=d2fdaa29affe96e596eb9c78d42f548f1f291df28608631bcc00750a84b94bc3
 ARG DEVIN_VERSION=3000.11.3
 ARG DEVIN_SHA256_AMD64=83b3b113c01bf2a3e9e100db08d77e6b086806a7754f091e20831bdfe215157e
-ARG MUSE_VERSION=1.4.7-R6101.1
-ARG MUSE_SHA256_AMD64=36e3dac91f56c15572b95be55d70ee9fd9685cd9ab49f747bab4746c8d7c2518
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \
@@ -120,11 +101,6 @@ RUN curl --retry 5 -fsSL -o /tmp/devin.tar.gz \
   && tar -xzf /tmp/devin.tar.gz -C /tmp bin/devin \
   && install -m 0555 /tmp/bin/devin /out/bin/devin \
   && rm -rf /tmp/devin.tar.gz /tmp/bin
-RUN curl --retry 5 -fsSL -o /tmp/muse \
-  "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=${MUSE_VERSION}&file=muse-x86-linux" \
-  && printf '%s  /tmp/muse\n' "$MUSE_SHA256_AMD64" | sha256sum -c - \
-  && install -m 0555 /tmp/muse /out/bin/muse \
-  && rm /tmp/muse
 
 FROM ${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full-apps
 USER root
@@ -165,8 +141,6 @@ RUN export HOME=/root \
     "@qoder-ai/qodercli@${QODER_VERSION}" "@qodercn-ai/qoderclicn@${QODER_CN_VERSION}" \
   && npm cache clean --force
 COPY --from=full-native-runtimes --chown=0:0 /out/bin/ /usr/local/bin/
-COPY --from=muse-acp --chown=0:0 /out/bin/muse-acp /usr/local/bin/muse-acp
-COPY --from=muse-acp --chown=0:0 /out/licenses/ /usr/local/share/licenses/
 # Bake the runtime table after all applications are installed, using a disposable non-root HOME.
 COPY docker/runtime-sandbox/generate-runtime-table.mjs /opt/agentconnect/bin/generate-runtime-table.mjs
 COPY docker/runtime-sandbox/installed-runtimes-full.json /opt/agentconnect/runtime/installed-runtimes.json
