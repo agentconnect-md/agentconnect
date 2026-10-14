@@ -2648,6 +2648,7 @@ export class Daemon {
       draining: () => this.draining,
       agentDraining: (agentId) => this.drainingAgents.has(agentId),
       turnFinalContextRefresh: () => this.cfg.features.turnFinalContextRefresh,
+      holdContextForOwnTurn: (key, ts) => this.holdContextForOwnTurn(key, ts),
       inflight: () => this.inflight,
       serialQueue: () => this.serialQueue,
       pending: () => this.pending,
@@ -13667,6 +13668,20 @@ export class Daemon {
    *  fence absorbed it is coalesced rather than prompted twice, and a row whose revision a
    *  later write bumps is not re-read as new context. FIFO-capped per key. */
   private absorbedContextTs = new Map<string, Map<string, { text?: string; settled: boolean }>>()
+  /** Rows whose message must run as its own turn — it carries uploads a folded prompt would drop — by session key. */
+  private ownTurnContextTs = new Map<string, Set<string>>()
+
+  /** Keep this row out of every fence for the key, so its queued activation runs with its download links. */
+  private holdContextForOwnTurn(key: string, ts: string): void {
+    const held = this.ownTurnContextTs.get(key) ?? new Set<string>()
+    held.add(ts)
+    while (held.size > ABSORBED_CONTEXT_TS_MEMORY) held.delete(held.values().next().value!)
+    this.ownTurnContextTs.set(key, held)
+  }
+
+  private heldForOwnTurn(key: string, event: Pick<TranscriptEntry, 'ts'>): boolean {
+    return this.ownTurnContextTs.get(key)?.has(event.ts) === true
+  }
 
   /** Record the rows one prompt represents. FIFO-capped: an observation whose activation
    *  never arrives is evicted rather than remembered forever. */
@@ -17197,7 +17212,7 @@ export class Daemon {
         p.plan.webchatRefresh
           ? initialRefresh.events.filter((event) => msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
           : initialRefresh.events
-      ).filter((event) => !this.absorbedContext(key, event))
+      ).filter((event) => !this.absorbedContext(key, event) && !this.heldForOwnTurn(key, event))
       const representedEventTs = new Map<string, string | undefined>([
         ...(handled.contextEvents ?? []).map((event) => [event.ts, event.text] as const),
         ...initialEvents.map((event) => [event.ts, event.text] as const)
@@ -17421,6 +17436,8 @@ export class Daemon {
         // A row an earlier prompt for this session already carried is not new context: the
         // async store lets a later write bump its revision and re-surface it here.
         .filter((event) => !this.absorbedContext(key, event))
+        // A message carrying uploads queues as its own turn; folding it here would drop its download links.
+        .filter((event) => !this.heldForOwnTurn(key, event))
         .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
       const finalRevision = await this.store.threadTranscriptRevision(this.planReadScope(p.plan))
 

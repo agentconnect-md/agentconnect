@@ -347,6 +347,15 @@ per-turn budget (`MAX_STEERS_PER_TURN`), or a runtime without the capability fal
 to the queue path described above; `!queue`, hook, scheduler, and agent-to-agent entries
 never steer.
 
+**A message carrying uploads runs as its own turn.** A console file upload reaches the
+agent as a presigned download link built for that message's own prompt. Steering, the
+start fence and the final refresh all deliver only the transcript text and its
+`[attached: …]` marker, so none of them may take it. The webchat transport records the
+message's transcript `ts` as held for its own turn before writing the admission row; both
+fences skip a held row, and the entry stays queued until it runs with its link. A
+steer-only console send is refused `busy` instead, and the browser re-sends it once the
+turn ends.
+
 ## 6. Proposed Interfaces and State
 
 The names below are illustrative; the separation of responsibilities is normative.
