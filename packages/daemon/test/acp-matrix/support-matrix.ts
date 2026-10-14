@@ -22,6 +22,7 @@ export type FeatureId =
   | 'vm'
   | 'mcp'
   | 'skills'
+  | 'sendMessage'
 
 export function verdictFor(feature: FeatureId, p: Profile): Verdict {
   switch (feature) {
@@ -42,6 +43,7 @@ export function verdictFor(feature: FeatureId, p: Profile): Verdict {
     case 'usage-fold':
       return p.caps.usage ? 'run' : 'degrade'
     case 'mcp':
+    case 'sendMessage':
       return p.caps.mcp.http || p.caps.mcp.sse ? 'run' : 'degrade'
     case 'skills':
       return p.caps.skillsAgentId ? 'run' : 'degrade'

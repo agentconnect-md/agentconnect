@@ -32,3 +32,21 @@ _Avoid_: Expired link (a temporary access link can expire while the original rem
 The work that makes a shared image's original available for viewing and download.
 It belongs to the shared image and can continue after the generating turn ends.
 _Avoid_: Image generation, image publication
+
+### Session collaboration
+
+**Sub-session parent**:
+The session that created and owns a background sub-session. This relationship
+persists across messages and successive rounds of work.
+_Avoid_: Most recent caller, origin (when referring specifically to ownership)
+
+**Origin session**:
+A source session from which another session has accepted a call or reply, and to
+which that receiving session may reply. A shared session can have multiple origins;
+being an origin does not make it the parent of a background sub-session.
+_Avoid_: Sole caller, fixed parent (for a shared peer session)
+
+**Reply obligation**:
+The expectation that a particular accepted call will receive an outcome in its
+source session. Replying to one source does not satisfy another source's request.
+_Avoid_: Session ownership, broadcast subscription
