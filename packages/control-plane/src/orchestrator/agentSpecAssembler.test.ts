@@ -440,6 +440,10 @@ describe('AgentSpecAssembler', () => {
     // deployment carries nothing, because then no consumer can exist.
     expect(gitlabHost(GITLAB_DEFAULT_BASE_URL, GITLAB_WORKSPACE, [], false)).toBe(GITLAB_DEFAULT_BASE_URL)
     expect(gitlabHost(undefined, GITLAB_WORKSPACE, gitlabRepo, true)).toBeUndefined()
+    // A credentialed GitLab skill Source is a consumer too, so a prefixed instance reaches a skills-only agent.
+    const gitlabSkill = [{ credential: { provider: 'gitlab' as const, projectId: '4455667' } }]
+    expect(gitlabHost(SELF_MANAGED, { mode: 'scratch' }, [], false, gitlabSkill)).toBe(SELF_MANAGED)
+    expect(gitlabHost(SELF_MANAGED, { mode: 'scratch' }, [], false, [{}])).toBeUndefined()
   })
 
   it('projects the host only for a spec with a GitLab consumer', async () => {

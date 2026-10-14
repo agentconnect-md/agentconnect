@@ -1064,7 +1064,9 @@ Daemon acquisition (P3, CP3.3b, daemon path):
   CP-minted read token: identity by project id and path, then the ref. The
   daemon then downloads the project archive by project id at that commit, so
   no name-based read follows the identity check (`skill-git-source.ts`). The
-  instance is the spec's `gitlabHost`, else the Source's own origin.
+  instance is the spec's `gitlabHost`, which the CP carries whenever a
+  credentialed GitLab skill Source rides the spec, path prefix included. A spec
+  from an older CP that omits it falls back to the Source's own origin.
 - An anonymous Source is resolved and named in one anonymous, pattern-scoped
   `git ls-remote`. It runs over https only, with no redirect, no system or
   global configuration and no credential. The answer is shared like the
