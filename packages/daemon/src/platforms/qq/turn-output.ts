@@ -6,7 +6,7 @@ import { QQPrivateStream } from './private-stream.js'
 import type { QQReplyPort } from './sender.js'
 import { QQGroupOutput } from './group-output.js'
 import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
-import type { TurnAdmissionStatus, TurnOutputContext } from '../turn-output.js'
+import type { TurnAcknowledgement, TurnAdmissionStatus, TurnOutputContext } from '../turn-output.js'
 import { QQReplyId } from './connection.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { ImageUploader } from '../../mcp/ops/context.js'
@@ -27,6 +27,21 @@ export async function QQAcknowledgeAdmission(
     steered: '📝'
   }[status]
   await conn.sendAcknowledgement(ctx.message.channel, replyId, text, signal)
+}
+
+// The 👀 is a real group message (QQ has no reactions), so a silent turn retracts it
+// like Feishu's Thinking-card recall — otherwise it reads as the bot stalling.
+export function QQAcknowledgementHandle(ctx: TurnOutputContext<NormalizedMessage>): TurnAcknowledgement | undefined {
+  if (ctx.isDm || ctx.message.headless || ctx.message.source !== 'user') return undefined
+  const replyId = QQReplyId(ctx.message)
+  const conn = ctx.egress as QQReplyPort | undefined
+  if (!replyId || !conn?.withdrawAcknowledgement) return undefined
+  return {
+    // Failure notices post as their own message; editing a sent group message is not possible.
+    replace: () => Promise.resolve(false),
+    end: (ended) =>
+      ended === 'completed' ? conn.withdrawAcknowledgement!(ctx.message.channel, replyId) : Promise.resolve()
+  }
 }
 
 export function QQAnswerDelivery(ctx: TurnOutputContext<NormalizedMessage>): 'staged' | 'live' {

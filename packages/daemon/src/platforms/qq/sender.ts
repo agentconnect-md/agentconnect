@@ -41,6 +41,7 @@ export interface QQReplyPort {
   sendText(channel: string, replyId: string, text: string): Promise<void>
   sendCard?(channel: string, replyId: string, text: string): Promise<string | undefined>
   sendAcknowledgement?(channel: string, replyId: string, text: string, signal?: AbortSignal): Promise<void>
+  withdrawAcknowledgement?(channel: string, replyId: string): Promise<void>
   sendProgress?(channel: string, replyId: string, text: string, signal?: AbortSignal): Promise<boolean>
   sendStream?(
     channel: string,
@@ -61,6 +62,7 @@ interface QQReplyState {
   sequence: number
   sends: number
   acknowledged?: boolean
+  ackMessageId?: string
   uncertainTexts?: Set<string>
 }
 
@@ -232,6 +234,7 @@ export class QQSender {
         msg_type: 0
       })
       if (!result.id) throw new Error('QQ acknowledgement returned no message id')
+      state.ackMessageId = result.id
       this.info('qq: group acknowledgement delivered')
     }).catch((error: unknown) => {
       if (!signal?.aborted && !this.signal.aborted) {
@@ -240,6 +243,29 @@ export class QQSender {
           : 'transport error or missing message id'
         this.warn(`qq: group acknowledgement unavailable (${reason}); task will continue`)
       }
+    })
+  }
+
+  // Retract the 👀 when the turn produced nothing else — mirrors Feishu's card recall on a silent end.
+  withdrawAcknowledgement(target: QQTarget, replyId: string): Promise<void> {
+    if (target.kind !== 'group') return Promise.resolve()
+    return this.enqueue(target, async () => {
+      const state = this.replyState(target, replyId)
+      if (!state.ackMessageId || state.sends !== 1) return
+      const token = await this.token()
+      this.signal.throwIfAborted()
+      await this.api.request(
+        token,
+        'DELETE',
+        `${this.path(target, 'messages')}/${encodeURIComponent(state.ackMessageId)}`
+      )
+      state.ackMessageId = undefined
+      this.info('qq: group acknowledgement withdrawn')
+    }).catch((error: unknown) => {
+      const reason = isQQApiError(error)
+        ? `HTTP ${error.httpStatus}, code ${error.bizCode ?? 'unknown'}`
+        : 'transport error'
+      this.warn(`qq: acknowledgement withdraw failed (${reason})`)
     })
   }
 

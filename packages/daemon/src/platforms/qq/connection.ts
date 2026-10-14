@@ -247,6 +247,10 @@ export class QQConnection implements PlatformConnection {
     await (await this.ensureSender()).sendAcknowledgement(QQTargetForChannel(channel), replyId, text, signal)
   }
 
+  async withdrawAcknowledgement(channel: string, replyId: string): Promise<void> {
+    await (await this.ensureSender()).withdrawAcknowledgement(QQTargetForChannel(channel), replyId)
+  }
+
   sendStream(
     channel: string,
     replyId: string,

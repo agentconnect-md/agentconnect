@@ -6,6 +6,7 @@ import { qqElicitCards } from './elicit-card.js'
 import {
   applyQQAction,
   QQAcknowledgeAdmission,
+  QQAcknowledgementHandle,
   QQAnswerDelivery,
   QQConverger,
   QQImageUploader,
@@ -18,6 +19,7 @@ export function createQQTurnOutput(
   return {
     platform: 'qq',
     onAdmission: QQAcknowledgeAdmission,
+    acknowledge: (ctx) => QQAcknowledgementHandle(ctx),
     answerDelivery: QQAnswerDelivery,
     imageUploader: (turn) => QQImageUploader(turnState<QQTurnState>(turn)),
     elicitCards: qqElicitCards,

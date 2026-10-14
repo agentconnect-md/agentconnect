@@ -6,6 +6,7 @@ import { ApiClient, TokenManager } from '@tencent-connect/qqbot-nodejs/protocol'
 import { normalizeQQMessage } from '@agentconnect.md/message'
 import { Daemon } from '../src/daemon.js'
 import { QQConnection } from '../src/platforms/qq/connection.js'
+import { NO_RESPONSE_SENTINEL } from '../src/session/no-response.js'
 
 let daemon: Daemon | undefined
 let root: string | undefined
@@ -32,6 +33,7 @@ async function boot(
     acknowledgement?: Promise<void>
     mode?: string
     steering?: boolean
+    silent?: boolean
   } = {}
 ) {
   root = mkdtempSync(join(tmpdir(), 'ac-qq-admission-'))
@@ -90,7 +92,10 @@ async function boot(
         prompt: async (session: string, blocks: { text?: string }[]) => {
           prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
           if (prompts.length === 1) await opts.work
-          update(session, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done.' } })
+          update(session, {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: opts.silent ? NO_RESPONSE_SENTINEL : 'Done.' }
+          })
           return 'end_turn'
         }
       }) as any
@@ -163,6 +168,27 @@ describe('QQ group admission feedback', () => {
     work.release()
     await first.handle.completion
     expect(prompts).toHaveLength(1)
+  })
+
+  it('withdraws the acknowledgement when the turn ends without an answer', async () => {
+    const { deliver, request, acknowledgements } = await boot({ silent: true })
+    const turn = await deliver('quiet')
+    await vi.waitFor(() => expect(acknowledgements()).toHaveLength(1))
+    await turn.handle.completion
+    await vi.waitFor(() =>
+      expect(
+        request.mock.calls.filter((call) => call[1] === 'DELETE' && String(call[2]).endsWith('/messages/reply'))
+      ).toHaveLength(1)
+    )
+  })
+
+  it('keeps the acknowledgement once an answer was delivered', async () => {
+    const { deliver, request } = await boot()
+    const turn = await deliver('loud')
+    await turn.handle.completion
+    await vi.waitFor(() => expect(request.mock.calls.some((call) => call[1] === 'POST')).toBe(true))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(request.mock.calls.filter((call) => call[1] === 'DELETE')).toHaveLength(0)
   })
 
   it('starts the runtime without waiting for the acknowledgement API', async () => {
