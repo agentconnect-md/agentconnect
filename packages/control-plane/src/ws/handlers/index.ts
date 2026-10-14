@@ -48,6 +48,7 @@ import { handleChildSessionStatus } from './child-session-status.js'
 import { handleEventSession, handleEventSessionSync } from './event-session.js'
 import { handleSessionActivity } from './event-session-activity.js'
 import { handleAgentActivity } from './agent-activity.js'
+import { handleAgentSkillStatus } from './agent-skill-status.js'
 import { handleSessionPurged } from './event-session-purged.js'
 import { handleGitCredRequest } from './gitcred.js'
 import { handleLinearCredRequest } from './linearcred.js'
@@ -132,6 +133,7 @@ export class FrameRouter {
       'event/session-sync': handleEventSessionSync,
       'event/session-activity': handleSessionActivity,
       'agent/activity': handleAgentActivity,
+      'agent/skill-status': handleAgentSkillStatus,
       'event/session-purged': handleSessionPurged,
       'gitcred/request': handleGitCredRequest,
       'linearcred/request': handleLinearCredRequest,
@@ -195,6 +197,7 @@ export {
   handleEventSessionSync,
   handleSessionActivity,
   handleAgentActivity,
+  handleAgentSkillStatus,
   handleSessionPurged,
   handleWebchatMcpGrantIssue,
   handleWebchatMcpGrantAccept,

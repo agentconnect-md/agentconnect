@@ -20,6 +20,7 @@ import { discardResponse, fetchWithRedirectPolicy, readBoundedBody, retryAfterMs
 import { GITHUB_API_BASE, githubApiHeaders, parseGithubRepositoryIdentity } from '../github/rest.js'
 import { gitlabSkillReads, gitlabSkillRepository, type GitlabSkillRepository } from './gitlab-skill-source.js'
 import { acquireAnonymousGitSkillSource, type HostedGitSkillTransport } from './skill-git-hosted.js'
+import { SkillSourceFailure, httpFailureCode, httpSkillFailure } from './skill-source-failure.js'
 
 const GITHUB_SHORTHAND = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/
 const GITHUB_TREE = /^\/([^/]+)\/([^/]+)\/tree\/([^/]+)(?:\/(.*))?$/
@@ -411,7 +412,7 @@ async function* boundedResponseChunks(
   const contentLength = response.headers.get('content-length')
   if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > maxBytes) {
     await discardResponse(response)
-    throw new Error('skill GitHub archive exceeded the compressed byte limit')
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive exceeded the compressed byte limit')
   }
   if (!response.body) throw new Error('skill GitHub archive returned no body')
 
@@ -425,7 +426,7 @@ async function* boundedResponseChunks(
       total += value.byteLength
       if (total > maxBytes) {
         await reader.cancel().catch(() => undefined)
-        throw new Error('skill GitHub archive exceeded the compressed byte limit')
+        throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive exceeded the compressed byte limit')
       }
       yield Buffer.from(value)
     }
@@ -491,23 +492,25 @@ function archiveCollisionComponent(value: string): string {
 }
 
 function registerArchivePath(state: ArchiveValidationState, key: string, type: SeenArchivePath['type']): void {
-  if (state.seen.has(key)) throw new Error('skill GitHub archive contains a normalized path collision')
+  if (state.seen.has(key))
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains a normalized path collision')
   const parts = key.split('/')
   for (let index = 1; index < parts.length; index++) {
     const ancestor = parts.slice(0, index).join('/')
     if (state.seen.get(ancestor)?.type === 'file') {
-      throw new Error('skill GitHub archive contains a file/ancestor collision')
+      throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains a file/ancestor collision')
     }
     state.ancestors.add(ancestor)
   }
   if (type === 'file' && state.ancestors.has(key))
-    throw new Error('skill GitHub archive contains a file/ancestor collision')
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains a file/ancestor collision')
   state.seen.set(key, { type })
 }
 
 function countArchiveEntry(state: ArchiveValidationState, limits: GitSkillArchiveLimits): void {
   state.entries += 1
-  if (state.entries > limits.maxEntries) throw new Error('skill GitHub archive contains too many entries')
+  if (state.entries > limits.maxEntries)
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains too many entries')
 }
 
 function validateArchiveEntry(entry: ReadEntry, state: ArchiveValidationState, limits: GitSkillArchiveLimits): void {
@@ -520,7 +523,7 @@ function validateArchiveEntry(entry: ReadEntry, state: ArchiveValidationState, l
   // directory (see rejectLinksInsideSkills). Anything else stays fatal.
   const linkLike = entry.type === 'SymbolicLink' || entry.type === 'Link'
   if (!linkLike && entry.type !== 'File' && entry.type !== 'Directory') {
-    throw new Error('skill GitHub archive contains a link or special entry')
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains a link or special entry')
   }
 
   let path = entry.path
@@ -535,7 +538,7 @@ function validateArchiveEntry(entry: ReadEntry, state: ArchiveValidationState, l
     /^[A-Za-z]:/.test(path) ||
     posix.normalize(path) !== path
   ) {
-    throw new Error('skill GitHub archive contains an unsafe path')
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains an unsafe path')
   }
   const parts = path.split('/')
   if (
@@ -544,24 +547,27 @@ function validateArchiveEntry(entry: ReadEntry, state: ArchiveValidationState, l
         !part || part === '.' || part === '..' || part !== part.normalize('NFC') || Buffer.byteLength(part) > 255
     )
   ) {
-    throw new Error('skill GitHub archive contains an unsafe path')
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains an unsafe path')
   }
   state.root ??= parts[0]
-  if (parts[0] !== state.root) throw new Error('skill GitHub archive contains multiple roots')
+  if (parts[0] !== state.root)
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains multiple roots')
 
   const relative = parts.slice(1)
   if (relative.length === 0) {
     if (entry.type !== 'Directory' || entry.size !== 0) {
       throw new Error('skill GitHub archive has an invalid root entry')
     }
-    if (state.inventory.has(path)) throw new Error('skill GitHub archive contains a duplicate path')
+    if (state.inventory.has(path))
+      throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains a duplicate path')
     state.inventory.set(path, 'directory')
     return
   }
-  if (relative.length > limits.maxDepth) throw new Error('skill GitHub archive exceeds the depth limit')
+  if (relative.length > limits.maxDepth)
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive exceeds the depth limit')
   const relativePath = relative.join('/')
   if (Buffer.byteLength(relativePath) > limits.maxPathBytes) {
-    throw new Error('skill GitHub archive contains an oversized path')
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains an oversized path')
   }
 
   if (linkLike) {
@@ -569,23 +575,25 @@ function validateArchiveEntry(entry: ReadEntry, state: ArchiveValidationState, l
     return
   }
   const type = entry.type === 'Directory' ? 'directory' : 'file'
-  if (state.inventory.has(path)) throw new Error('skill GitHub archive contains a duplicate path')
+  if (state.inventory.has(path))
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains a duplicate path')
   state.inventory.set(path, type)
 
   const collisionKey = relative.map(archiveCollisionComponent).join('/')
   registerArchivePath(state, collisionKey, type)
   if (type === 'directory') {
-    if (entry.size !== 0) throw new Error('skill GitHub archive contains an invalid directory')
+    if (entry.size !== 0)
+      throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains an invalid directory')
     return
   }
 
   if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > limits.maxFileBytes) {
-    throw new Error('skill GitHub archive contains an oversized file')
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains an oversized file')
   }
   state.files += 1
   state.totalFileBytes += entry.size
   if (!Number.isSafeInteger(state.totalFileBytes) || state.totalFileBytes > limits.maxTotalFileBytes) {
-    throw new Error('skill GitHub archive exceeds the total file byte limit')
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive exceeds the total file byte limit')
   }
 }
 
@@ -601,7 +609,10 @@ function rejectLinksInsideSkills(state: ArchiveValidationState): void {
     .map((path) => path.slice(0, -'/SKILL.md'.length))
   for (const link of state.skippedLinks) {
     if (skillDirs.some((dir) => link.startsWith(`${dir}/`))) {
-      throw new Error('skill GitHub archive contains a link or special entry inside a skill directory')
+      throw new SkillSourceFailure(
+        'limits_exceeded',
+        'skill GitHub archive contains a link or special entry inside a skill directory'
+      )
     }
   }
 }
@@ -655,7 +666,8 @@ async function validateAndExtractArchive(
     if (signal.aborted) throw error
     throw new Error('skill GitHub archive is not a valid tar stream')
   }
-  if (!state.root || state.files === 0) throw new Error('skill GitHub archive contains no files')
+  if (!state.root || state.files === 0)
+    throw new SkillSourceFailure('limits_exceeded', 'skill GitHub archive contains no files')
   rejectLinksInsideSkills(state)
 
   const remaining = new Map(state.inventory)
@@ -817,7 +829,7 @@ async function githubApiRequest(opts: {
         signal: opts.signal
       })
     } catch {
-      throw new Error('skill GitHub credentials are unavailable')
+      throw new SkillSourceFailure('access_denied', 'skill GitHub credentials are unavailable')
     }
     if (!credential.password || credential.password.length > 8 * 1024 || /[\0\r\n]/.test(credential.password)) {
       throw new Error('skill GitHub credential helper returned an invalid response')
@@ -856,20 +868,31 @@ async function verifyGithubRepositoryIdentity(
   if (identityResponse.status !== 200) {
     const status = identityResponse.status
     await discardResponse(identityResponse)
-    throw new Error(`skill GitHub repository identity lookup failed with status ${status}`)
+    // GitHub answers 404 for a private repository the reader cannot see.
+    throw new SkillSourceFailure(
+      status === 404 ? 'access_denied' : httpFailureCode(status, 'resolution_failed'),
+      `skill GitHub repository identity lookup failed with status ${status}`
+    )
   }
 
   const raw = (
     await readBoundedBody(identityResponse, MAX_REPOSITORY_METADATA_BYTES, 'skill GitHub repository identity lookup')
   ).toString('utf8')
   const identity = parseGithubRepositoryIdentity(raw)
-  if (!identity) throw new Error('skill GitHub repository identity lookup returned invalid metadata')
+  if (!identity)
+    throw new SkillSourceFailure(
+      'resolution_failed',
+      'skill GitHub repository identity lookup returned invalid metadata'
+    )
   if (
     identity.id !== githubRepoId ||
     identity.fullName === undefined ||
     identity.fullName.toLowerCase() !== repositoryPath.toLowerCase()
   ) {
-    throw new Error('skill GitHub repository identity does not match the configured source')
+    throw new SkillSourceFailure(
+      'resolution_failed',
+      'skill GitHub repository identity does not match the configured source'
+    )
   }
   // A private repository is admitted: identity and name fence it, not visibility (shared-skills.md §3).
 }
@@ -987,7 +1010,7 @@ export async function verifyGitSkillSourceAccess(
   entry: AgentSkillEntry,
   opts: Omit<AcquireGitSkillOptions, 'destination' | 'archiveLimits'> & { privateHome: string }
 ): Promise<void> {
-  const source = resolveBoundedGitSkillSource(entry)
+  const source = admittedGitSkillSource(entry)
   if (!isGitHubSkillSource(entry.source)) {
     // An anonymous Source elsewhere is trusted by URL and has nothing to re-prove; a GitLab one re-proves the project.
     if (skillSourceCredential(entry)?.provider === 'gitlab') await resolveGitlabSkillCommit(entry, source, opts.agentId)
@@ -1018,6 +1041,15 @@ export async function verifyGitSkillSourceAccess(
   }
 }
 
+/** The bounded source, or a `resolution_failed` failure when the entry or the origin policy refuses it. */
+function admittedGitSkillSource(entry: AgentSkillEntry): ParsedGitSkillSource {
+  try {
+    return resolveBoundedGitSkillSource(entry)
+  } catch (error) {
+    throw new SkillSourceFailure('resolution_failed', (error as Error).message)
+  }
+}
+
 /** Acquire one Git source as a private, commit-pinned repository snapshot and
  * return the selected local tree. The caller snapshots that tree before the CLI
  * sees it. */
@@ -1027,11 +1059,15 @@ export async function acquireGitSkillSource(
 ): Promise<{ sourceDir: string; resolvedCommit: string; source: ParsedGitSkillSource }> {
   // This final daemon boundary applies both the operator-owned exact-origin
   // policy and the narrower transport contract required for bounded archives.
-  const source = resolveBoundedGitSkillSource(entry)
+  const source = admittedGitSkillSource(entry)
   if (!isGitHubSkillSource(entry.source)) {
     const credential = skillSourceCredential(entry)
     if (credential?.provider === 'gitlab') return await acquireGitlabSkillSource(entry, source, opts)
-    if (credential) throw new Error('skill Git source outside GitHub carries a credential this daemon cannot use')
+    if (credential)
+      throw new SkillSourceFailure(
+        'resolution_failed',
+        'skill Git source outside GitHub carries a credential this daemon cannot use'
+      )
     return await acquireAnonymousGitSkillSource(source, opts)
   }
   const github = githubRepository(source.cloneUrl)
@@ -1084,7 +1120,7 @@ export async function acquireGitSkillSource(
     if (commitResponse.status !== 200) {
       const status = commitResponse.status
       await discardResponse(commitResponse)
-      throw new Error(`skill GitHub commit resolution failed with status ${status}`)
+      throw httpSkillFailure(status, 'resolution_failed', `skill GitHub commit resolution failed with status ${status}`)
     }
     const resolvedCommit = (await readBoundedBody(commitResponse, 128, 'skill GitHub commit resolution'))
       .toString('utf8')
@@ -1105,7 +1141,7 @@ export async function acquireGitSkillSource(
     if (archiveApiResponse.status !== 302) {
       const status = archiveApiResponse.status
       await discardResponse(archiveApiResponse)
-      throw new Error(`skill GitHub archive lookup failed with status ${status}`)
+      throw httpSkillFailure(status, 'fetch_failed', `skill GitHub archive lookup failed with status ${status}`)
     }
     const { url: codeloadUrl } = archiveLocation(archiveApiResponse.headers.get('location'), github, resolvedCommit)
     await discardResponse(archiveApiResponse)
@@ -1132,7 +1168,7 @@ export async function acquireGitSkillSource(
     if (archiveResponse.status !== 200) {
       const status = archiveResponse.status
       await discardResponse(archiveResponse)
-      throw new Error(`skill GitHub codeload failed with status ${status}`)
+      throw httpSkillFailure(status, 'fetch_failed', `skill GitHub codeload failed with status ${status}`)
     }
     const tarBody = await downloadAndGunzipBounded(
       archiveResponse,
@@ -1160,9 +1196,17 @@ async function resolveGitlabSkillCommit(
 ): Promise<{ repository: GitlabSkillRepository; commit: string }> {
   const reads = gitlabSkillReads()
   const repository = gitlabSkillRepository(entry, source.cloneUrl, reads.host(agentId))
-  if (!repository) throw new Error("skill GitLab source does not name a project on this deployment's GitLab instance")
+  if (!repository)
+    throw new SkillSourceFailure(
+      'resolution_failed',
+      "skill GitLab source does not name a project on this deployment's GitLab instance"
+    )
   const resolved = await reads.resolve(entry, agentId)
-  if (!resolved.ok) throw new Error(`skill GitLab source resolution failed (${resolved.reason})`)
+  if (!resolved.ok)
+    throw new SkillSourceFailure(
+      resolved.reason === 'access_denied' ? 'access_denied' : 'resolution_failed',
+      `skill GitLab source resolution failed (${resolved.reason})`
+    )
   return { repository, commit: resolved.commit.toLowerCase() }
 }
 
@@ -1175,7 +1219,7 @@ async function acquireGitlabSkillSource(
   const limits = mergedArchiveLimits(opts.archiveLimits)
   const { repository, commit } = await resolveGitlabSkillCommit(entry, source, opts.agentId)
   if (source.ref !== undefined && COMMIT_SHA.test(source.ref) && source.ref.toLowerCase() !== commit) {
-    throw new Error('skill GitLab source did not resolve to its pinned commit')
+    throw new SkillSourceFailure('commit_unavailable', 'skill GitLab source did not resolve to its pinned commit')
   }
   const token = await gitlabSkillReads().token(opts.agentId, repository)
   const repositoryDir = join(opts.destination, 'repository')
@@ -1206,7 +1250,7 @@ async function acquireGitlabSkillSource(
     if (response.status !== 200) {
       const status = response.status
       await discardResponse(response)
-      throw new Error(`skill GitLab archive download failed with status ${status}`)
+      throw httpSkillFailure(status, 'fetch_failed', `skill GitLab archive download failed with status ${status}`)
     }
     const tarBody = await downloadAndGunzipBounded(
       response,

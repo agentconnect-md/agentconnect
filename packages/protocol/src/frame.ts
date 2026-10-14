@@ -247,7 +247,7 @@ import {
   MemoryHomeMigratedReq,
   MemoryStoreReq
 } from './frames/memory-store.js'
-import { LocalSkillsReq, LocalSkillsList } from './frames/skill.js'
+import { LocalSkillsReq, LocalSkillsList, AgentSkillStatus } from './frames/skill.js'
 import { RuntimeCommandsReq, RuntimeCommandsList, RuntimeProbeReq } from './frames/runtime-command.js'
 import {
   KnowledgeSearchReq,
@@ -346,6 +346,8 @@ export const FRAME_SCHEMAS = {
   'agent/detach': AgentDetach,
   'agent/activate': AgentActivate,
   'agent/activity': AgentActivity,
+  // ── per-Source skill install outcome (source-cache.md §11): names and reason codes only.
+  'agent/skill-status': AgentSkillStatus,
   'agent/scope-denied': AgentScopeDenied,
   'agent/permission-requests': AgentPermissionRequestList,
   'agent/permission-requests/page': AgentPermissionRequestPage,
@@ -729,6 +731,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('agent/detach', FRAME_SCHEMAS['agent/detach']),
   frame('agent/activate', FRAME_SCHEMAS['agent/activate']),
   frame('agent/activity', FRAME_SCHEMAS['agent/activity']),
+  frame('agent/skill-status', FRAME_SCHEMAS['agent/skill-status']),
   frame('agent/scope-denied', FRAME_SCHEMAS['agent/scope-denied']),
   frame('agent/permission-requests', FRAME_SCHEMAS['agent/permission-requests']),
   frame('agent/permission-requests/page', FRAME_SCHEMAS['agent/permission-requests/page']),

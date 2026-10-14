@@ -122,6 +122,7 @@ import {
   PgMcpProviderOauthSecretStore,
   PgMcpProviderOauthStateStore,
   PgSkillSourceRepo,
+  PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationEnvironmentRepo,
   PgOrganizationEnvironmentResolver,
@@ -503,6 +504,7 @@ export function buildContainer(
     mcpProviderOauthSecret: new PgMcpProviderOauthSecretStore(prisma, secretCipher),
     mcpProviderOauthState: new PgMcpProviderOauthStateStore(prisma),
     skillSource: new PgSkillSourceRepo(prisma),
+    agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     // Owns its transactions: every organization-environment write runs the design
     // §5 fence (org row → agent rows → re-read → validate → persist + bump
@@ -1934,6 +1936,7 @@ export function buildContainer(
       mcpProviderOauthSecret: repos.mcpProviderOauthSecret,
       mcpProviderOauthState: repos.mcpProviderOauthState,
       skillSource: repos.skillSource,
+      agentSkillSourceStatus: repos.agentSkillSourceStatus,
       organizationKnowledge: repos.organizationKnowledge,
       organizationEnvironment: repos.organizationEnvironment,
       organizationEnvironmentSecret: repos.organizationEnvironmentSecret,
@@ -2598,6 +2601,7 @@ export function buildContainer(
     agentMemoryStore,
     agentMemoryTransaction,
     agentMemoryHistory: repos.agentMemoryHistory,
+    agentSkillSourceStatus: repos.agentSkillSourceStatus,
     ...(github ? { github } : {}),
     ...(github
       ? {

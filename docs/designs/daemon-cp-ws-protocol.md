@@ -580,6 +580,12 @@ const AgentActivity = z.object({
 })
 ```
 
+`agent/skill-status` (D→C, EVT) reports one completed skill reconcile's failed
+Git Sources: each Source's name and an enumerated reason code, never Git or CLI
+output. A Source not listed installed. The daemon sends it only to a CP that
+advertises `agent-skill-status-v1`; see
+[source-cache.md](source-cache.md#11-non-github-sources).
+
 ### 7.5 Local autonomy and degraded operation
 
 On WS drop the daemon enters **DEGRADED** (local autonomy, D1):

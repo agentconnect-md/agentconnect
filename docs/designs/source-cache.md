@@ -1104,6 +1104,27 @@ In-pod acquisition (P3, CP3.3b, in-pod path):
   an anonymous Source off GitHub where no runner for the pod's `exec` channel
   exists.
 
+Skipped-Source status (P3, CP3.4):
+
+- After every skill reconcile that commits and covers at least one Git Source,
+  the daemon sends `agent/skill-status`: each Source it could not install, by
+  name, with one code from the list above. A Source not listed installed. The
+  frame goes only to a CP that advertises `agent-skill-status-v1`, so an older
+  CP never sees it, and an older daemon never sends it.
+- Codes come from tagged failures (`skills/skill-source-failure.ts`). A 401 or
+  403 is `access_denied`, as is a GitHub identity 404. A refused entry or
+  origin is `resolution_failed`. Archive and snapshot refusals are
+  `limits_exceeded`, as is a Source the manifest budget drops. A planned-commit
+  mismatch on the daemon path is `ref_moved`. A selection or CLI failure is
+  `cli_failed`. The in-pod path reports the shim's own code. An untagged error is
+  `fetch_failed`.
+- An installed Source whose resolution failed keeps its commit and is not
+  reported. A reconcile that throws reports nothing.
+- The CP stores the latest report per agent in `agent_skill_source_status`, so a
+  Source that installs loses its row. `GET /agents/:id/skill-source-status` lists
+  the rows for Sources the agent still enables. Only the daemon serving the
+  agent may report.
+
 ## 12. Configuration and degradation
 
 The Source Cache is optional. The Helm chart gains `sourceCache.*` values (off by

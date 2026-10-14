@@ -11,6 +11,7 @@ import {
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { namingFromListing, refListingPatterns, type GitSkillRefNaming } from './git-ref-listing.js'
 import type { ParsedGitSkillSource } from './skill-git-source.js'
+import { SkillSourceFailure } from './skill-source-failure.js'
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/i
 const DEFAULT_NAMING_TIMEOUT_MS = 10_000
@@ -55,7 +56,8 @@ export async function nameHostedGitSkillRef(input: NameHostedGitSkillRefInput): 
     timeoutMs: Math.min(input.timeoutMs ?? DEFAULT_NAMING_TIMEOUT_MS, DEFAULT_SKILL_GIT_TIMEOUT_MS)
   })
   // Git's own output never reaches a log or an error: it may echo whatever the host printed.
-  if (output.code !== 0) throw new Error(`skill Git ref listing exited ${output.code}`)
+  if (output.code !== 0)
+    throw new SkillSourceFailure('resolution_failed', `skill Git ref listing exited ${output.code}`)
   return namingFromListing(output.stdout, name)
 }
 
@@ -88,7 +90,8 @@ export async function acquireAnonymousGitSkillSource(
       privateHome: home,
       ...transport
     })
-    if (naming.kind !== 'named') throw new Error(`skill Git source ref is ${naming.reason} on its host`)
+    if (naming.kind !== 'named')
+      throw new SkillSourceFailure('resolution_failed', `skill Git source ref is ${naming.reason} on its host`)
     ref = naming.ref
     commit = naming.commit
   }
@@ -108,7 +111,8 @@ export async function acquireAnonymousGitSkillSource(
     shimEnv: process.env,
     ...transport
   })
-  if (acquired.kind === 'skipped') throw new Error(`skill Git source skipped (${acquired.code}): ${acquired.reason}`)
+  if (acquired.kind === 'skipped')
+    throw new SkillSourceFailure(acquired.code, `skill Git source skipped (${acquired.code}): ${acquired.reason}`)
   try {
     // Laid out like an extracted archive, so callers and the daemon cache find the subdirectory at the same place.
     const repository = join(opts.destination, 'repository')

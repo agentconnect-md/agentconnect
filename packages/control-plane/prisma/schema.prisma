@@ -970,6 +970,7 @@ model Agent {
   repoAuths             AgentRepoAuthorization[]
   installationAuths     AgentInstallationAuthorization[]
   secrets               AgentSecret[]
+  skillSourceStatus     AgentSkillSourceStatus[]
   webchatConversations  WebchatConversation[]
   webchatParticipations WebchatConversationAgent[]
   webchatMcpDelegations WebchatMcpDelegation[]
@@ -1047,6 +1048,19 @@ model AgentSecret {
 
   @@id([agentId, key])
   @@map("agent_secret")
+}
+
+/// One agent Source's latest reported install failure code, never Git or CLI output (source-cache.md §11).
+model AgentSkillSourceStatus {
+  agentId    String   @db.Uuid
+  sourceName String // the org-level skill_source.name the agent enables
+  code       String // closed set: protocol SkillSourceFailureCode
+  reportedAt DateTime @db.Timestamptz(6)
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, sourceName])
+  @@map("agent_skill_source_status")
 }
 
 /// Access level of an AgentRepoAuthorization row. Three tiers instead of

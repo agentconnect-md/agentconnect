@@ -12,6 +12,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   AGENT_MEMORY_STORE_V1_FEATURE,
+  AGENT_SKILL_STATUS_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
@@ -178,6 +179,8 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
     expect(snap.serverFeatures).toContain(AGENT_MEMORY_STORE_V1_FEATURE)
     // assistant-mode.md §5.5: a batched ownership ask, which `recall` lists a person's own conversations by.
     expect(snap.serverFeatures).toContain(READ_ACCESS_BATCH_V1_FEATURE)
+    // source-cache.md §11: a daemon reports skill Source failures only to a CP that stores them.
+    expect(snap.serverFeatures).toContain(AGENT_SKILL_STATUS_V1_FEATURE)
 
     // assignments: exactly the one active row for this daemon, as a RouteAssign.
     expect(snap.assignments).toHaveLength(1)

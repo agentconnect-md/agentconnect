@@ -39,6 +39,12 @@ import { gitlabSkillRepository } from './gitlab-skill-source.js'
 import { gitSkillRepositoryPath, resolveBoundedGitSkillSource } from './skill-git-source.js'
 import { isCredentialedSkillSource, type SkillRefPlan } from './skill-ref-resolution.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skill-source-snapshot.js'
+import {
+  SkillSourceFailure,
+  skillSourceFailureCode,
+  uniqueSkillSourceFailures,
+  type SkillSourceFailureEntry
+} from './skill-source-failure.js'
 
 // One sandbox skill reconcile (source-cache.md §8): Git Sources acquired by the daemon, or planned for an image that clones them in-pod.
 
@@ -87,6 +93,8 @@ export interface SandboxSkillReconcileDeps {
     destination: string
   ): Promise<{ sourceDir: string; resolvedCommit: string }>
   inPod?: InPodSkillDeps
+  /** Called once a reconcile with Git Sources commits, with those it could not install. */
+  reportSourceFailures?(failures: SkillSourceFailureEntry[]): void
 }
 
 export interface SandboxSkillReconcileInput {
@@ -213,6 +221,7 @@ async function reconcileOnce(
     )
     await Promise.all(acquisitions.values())
     const gitSources: ClusterSkillReconcileSource[] = []
+    const failures: SkillSourceFailureEntry[] = []
     for (const { index, entry } of configured) {
       const plan = pod?.plans.get(index)
       if (plan) {
@@ -228,15 +237,26 @@ async function reconcileOnce(
         const { acquired, plannedCommit } = outcome
         const resolvedCommit = acquired.resolvedCommit.toLowerCase()
         if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
-          throw new Error(`Git source "${entry.name}" did not resolve to its planned commit`)
+          throw new SkillSourceFailure('ref_moved', `Git source "${entry.name}" did not resolve to its planned commit`)
         }
         resolutionsByDefinition.set(definitionDigest, resolvedCommit)
         const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
           limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
         })
-        const selected = await resolveSkillSelections(entry.name, acquired.sourceDir, inspected.files, entry.skills)
+        const selected = await resolveSkillSelections(
+          entry.name,
+          acquired.sourceDir,
+          inspected.files,
+          entry.skills
+        ).catch((error: unknown) => {
+          throw new SkillSourceFailure('cli_failed', (error as Error).message)
+        })
         // Charged last, so a source this `try` goes on to reject never spends budget later ones need.
-        admit(inspected.fileCount, inspected.totalBytes)
+        try {
+          admit(inspected.fileCount, inspected.totalBytes)
+        } catch (error) {
+          throw new SkillSourceFailure('limits_exceeded', (error as Error).message)
+        }
         gitSources.push({
           sourceId: gitSourceId(index, definitionDigest, resolvedCommit),
           sourceKind: 'agent',
@@ -246,10 +266,12 @@ async function reconcileOnce(
           limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
         })
       } catch (error) {
+        failures.push({ name: entry.name, code: skillSourceFailureCode(error) })
         deps.log.warn(`skills: Git source ${entry.name} unavailable for ${input.agentId} (${(error as Error).message})`)
       }
     }
     for (const { entry } of pod?.unresolved ?? []) {
+      failures.push({ name: entry.name, code: 'resolution_failed' })
       deps.log.warn(
         `skills: Git source ${entry.name} unresolved and not installed for ${input.agentId}; skipped this preparation`
       )
@@ -303,6 +325,8 @@ async function reconcileOnce(
       ...(journalAs ? { journalAs } : {})
     })
     logSkipped(deps, input, configured, sources, reconciled.skipped ?? [])
+    failures.push(...skippedGitFailures(configured, sources, reconciled.skipped ?? []))
+    if (configured.length > 0) deps.reportSourceFailures?.(uniqueSkillSourceFailures(failures))
     return reconciled
   } finally {
     // The window never outlives its reconcile, whatever the outcome.
@@ -352,6 +376,21 @@ function logSkipped(
     const outcome = isBudgetSkip(entry) ? 'not installed' : 'keeping what is installed'
     deps.log.warn(`skills: source ${name} skipped for ${input.agentId}; ${outcome} (${entry.reason})`)
   }
+}
+
+/** The configured Git Sources the shim skipped, in the §11 vocabulary; a code an older shim omitted reads as its stage's. */
+function skippedGitFailures(
+  configured: ConfiguredGitSource[],
+  sources: ClusterSkillReconcileSource[],
+  skipped: ClusterSkillSkippedSource[]
+): SkillSourceFailureEntry[] {
+  return skipped.flatMap((entry) => {
+    const index = /^agent:(\d+):/.exec(entry.sourceId)?.[1]
+    const name = configured.find((source) => String(source.index) === index)?.entry.name
+    if (name === undefined) return []
+    const planned = sources.some((source) => source.sourceId === entry.sourceId && source.sourceKind === 'git')
+    return [{ name, code: entry.code ?? (planned ? 'fetch_failed' : 'cli_failed') }]
+  })
 }
 
 /** Resolve, route and plan the in-pod Sources: origin policy first, then the frame bound, then GET URLs. */

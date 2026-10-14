@@ -33,6 +33,7 @@ import {
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgOrganizationKnowledgeRepo,
+  PgAgentSkillSourceStatusRepo,
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
   PgMcpProviderRepo,
@@ -399,6 +400,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     hook: repos.hook,
     externalMemoryConnection: repos.externalMemoryConnection,
     organizationKnowledge: repos.organizationKnowledge,
+    agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     relayRoster: async () => relays,
     clock,
     config: {

@@ -471,3 +471,6 @@ export const EXECUTOR_PREPARE_RELAY_BUDGET_MS = 120_000
 
 /** CP serves the `memory/store` family (memory-evolution.md §3.2.1); a daemon refuses a `control-plane` home without it. */
 export const AGENT_MEMORY_STORE_V1_FEATURE = 'agent-memory-store-v1'
+
+/** CP stores `agent/skill-status` reports (source-cache.md §11); a daemon sends none to a CP without it, which would answer UNKNOWN_FRAME. */
+export const AGENT_SKILL_STATUS_V1_FEATURE = 'agent-skill-status-v1'
