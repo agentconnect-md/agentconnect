@@ -41,10 +41,18 @@ tracks a transfer: nothing counts toward the org quota and the sweep never sees 
 
 The CP reads the bucket's lifecycle configuration at start and every 10 minutes. While
 the `pending` rule is missing, nothing would collect a transfer, so the CP refuses with
-`WORKSPACE_TRANSFER_UNAVAILABLE`. A read that fails (no `s3:GetLifecycleConfiguration`)
-leaves transfers on and logs the gap. A cached download is reused only while its
-`Last-Modified` is under one day old, well inside the 2-day rule, its length still
-matches, and the store reports its signed SHA-256 checksum. A copy without a checksum
+`WORKSPACE_TRANSFER_UNAVAILABLE`. The window length is part of the check: a transfer
+object must outlive the one-day reuse window plus the GET signed at its end
+(`limits.urlSeconds`) and the 5-minute grace, which rounds up to 2 days for every
+allowed `urlSeconds`. The CP takes the shortest expiration any enabled rule can give a
+`pending` object under `src/` (a `pending` rule at any narrower prefix such as
+`src/<org>/transfer/`, a size-filtered one, or an untagged rule) and refuses the same
+way while it is under that minimum, so a shortened abandoned-write-back window cannot
+break live download links. Transfers keep sharing the `pending` rule rather than a
+rule of their own, which would add a third rule every operator must merge. A read that
+fails (no `s3:GetLifecycleConfiguration`) leaves transfers on and logs the gap. A cached
+download is reused only while its `Last-Modified` is under one day old, well inside the
+2-day rule, its length still matches, and the store reports its signed SHA-256 checksum. A copy without a checksum
 cannot prove its bytes, so it is uploaded again.
 
 ## 3. Trust model

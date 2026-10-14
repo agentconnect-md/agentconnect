@@ -55,6 +55,7 @@ describe('Source Cache lifecycle rules document', () => {
     expect(evaluateSourceCacheLifecycle(xml, 'agentconnect')).toEqual({
       pending: true,
       unreferenced: true,
+      pendingShortestDays: 2,
       warnings: []
     })
   })
@@ -129,10 +130,16 @@ describe('Source Cache lifecycle evaluation', () => {
       andRule({ value: 'pending', prefix: 'a&amp;b/src/' }),
       andRule({ value: 'unreferenced', prefix: 'a&amp;b/src/' })
     )
-    expect(evaluateSourceCacheLifecycle(xml, 'a&b')).toEqual({ pending: true, unreferenced: true, warnings: [] })
+    expect(evaluateSourceCacheLifecycle(xml, 'a&b')).toEqual({
+      pending: true,
+      unreferenced: true,
+      pendingShortestDays: 2,
+      warnings: []
+    })
     expect(evaluateSourceCacheLifecycle(config(foreign), 'a&b')).toEqual({
       pending: false,
       unreferenced: false,
+      pendingShortestDays: undefined,
       warnings: []
     })
   })
@@ -149,5 +156,39 @@ describe('Source Cache lifecycle evaluation', () => {
     const team =
       '<Rule><ID>team</ID><Filter><And><Prefix>agentconnect/</Prefix><Tag><Key>team</Key><Value>x</Value></Tag></And></Filter><Status>Enabled</Status><Expiration><Days>30</Days></Expiration></Rule>'
     expect(evaluateSourceCacheLifecycle(config(team), 'agentconnect').warnings).toEqual([])
+  })
+
+  it('reports the shortest window any rule gives a pending object under src/', () => {
+    const unreferenced = andRule({ value: 'unreferenced', prefix: 'agentconnect/src/', days: 1 })
+    const at = (...rules: string[]) =>
+      evaluateSourceCacheLifecycle(config(...rules), 'agentconnect').pendingShortestDays
+    expect(at(andRule({ value: 'pending', prefix: 'agentconnect/src/' }), unreferenced)).toBe(2)
+    expect(at(andRule({ value: 'pending', prefix: 'agentconnect/src/', days: 1 }))).toBe(1)
+    // A narrower, size-filtered, or untagged rule does not satisfy the check, but still shortens some objects' window.
+    expect(
+      at(
+        andRule({ value: 'pending', prefix: 'agentconnect/src/' }),
+        andRule({ id: 'narrow', value: 'pending', prefix: 'agentconnect/src/org_1/transfer/', days: 1 })
+      )
+    ).toBe(1)
+    expect(
+      at(
+        andRule({ value: 'pending', prefix: 'agentconnect/src/' }),
+        andRule({ id: 's', value: 'pending', prefix: 'agentconnect/src/', days: 1, size: true })
+      )
+    ).toBe(1)
+    const wipe =
+      '<Rule><ID>wipe</ID><Filter><Prefix>agentconnect/</Prefix></Filter><Status>Enabled</Status><Expiration><Days>1</Days></Expiration></Rule>'
+    expect(at(andRule({ value: 'pending', prefix: 'agentconnect/src/' }), wipe)).toBe(1)
+    // Disabled, elsewhere-scoped, extra-tagged, and other-tag rules never touch a pending object.
+    expect(
+      at(
+        andRule({ value: 'pending', prefix: 'agentconnect/src/' }),
+        andRule({ id: 'off', value: 'pending', prefix: 'agentconnect/src/', days: 1, status: 'Disabled' }),
+        andRule({ id: 'other', value: 'pending', prefix: 'other/src/', days: 1 }),
+        andRule({ id: 'team', value: 'pending', prefix: 'agentconnect/src/', days: 1, extraTag: true })
+      )
+    ).toBe(2)
+    expect(at(unreferenced)).toBeUndefined()
   })
 })

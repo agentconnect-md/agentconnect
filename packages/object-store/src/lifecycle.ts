@@ -45,6 +45,8 @@ export function sourceCacheLifecycleRules(prefix: string): SourceCacheLifecycleD
 export interface SourceCacheLifecycleEvaluation {
   pending: boolean
   unreferenced: boolean
+  /** The shortest expiration, in days, any enabled rule can give a `pending`-tagged object under `src/`; undefined when none does. */
+  pendingShortestDays: number | undefined
   warnings: string[]
 }
 
@@ -100,12 +102,20 @@ function parseRule(xml: string): ParsedRule {
 export function evaluateSourceCacheLifecycle(xml: string, prefix: string): SourceCacheLifecycleEvaluation {
   const src = sourceCacheSrcPrefix(prefix)
   const snapshots = snapshotsPrefix(prefix)
-  const result: SourceCacheLifecycleEvaluation = { pending: false, unreferenced: false, warnings: [] }
+  const result: SourceCacheLifecycleEvaluation = {
+    pending: false,
+    unreferenced: false,
+    pendingShortestDays: undefined,
+    warnings: []
+  }
   for (const block of elements(xml, 'Rule').slice(0, MAX_RULES)) {
     const rule = parseRule(block)
     if (!rule.enabled || rule.days === undefined) continue
     const overlapsSrc = src.startsWith(rule.prefix) || rule.prefix.startsWith(src)
     const ours = rule.tags.length === 1 && rule.tags[0]!.key === TAG_KEY ? rule.tags[0]!.value : undefined
+    // Any untagged or `pending` rule reaching src/, however narrow, can cut some pending object's window short.
+    if (overlapsSrc && (rule.tags.length === 0 || ours === 'pending'))
+      result.pendingShortestDays = Math.min(result.pendingShortestDays ?? rule.days, rule.days)
     if (ours === undefined) {
       // Only an untagged rule can reach live bundles: a foreign-tag filter never matches an ac-cache-only object.
       if (overlapsSrc && rule.tags.length === 0)
