@@ -130,6 +130,18 @@ describe('installSkills reports failed Git Sources', () => {
     expect((await install()).sourceFailures).toEqual([])
   })
 
+  it('reports a Source whose bundle destination the workspace already holds', async () => {
+    // A user-authored skill at the CLI-derived destination: the build succeeds but publication must not overwrite it.
+    await mkdir(join(cwd, '.runtime', 'skills', 'git-skill'), { recursive: true })
+    await writeFile(join(cwd, '.runtime', 'skills', 'git-skill', 'SKILL.md'), 'mine\n')
+    const result = await installSkills({ id: 'a3', runtime: 'claude', skills: [other('taken')] }, cwd, {
+      stateDir,
+      acquireGit: async () => ({ sourceDir: gitDir, resolvedCommit: COMMIT }),
+      runCli: fakeCli()
+    })
+    expect(result.sourceFailures).toEqual([{ name: 'taken', code: 'cli_failed' }])
+  })
+
   it('reports an untagged acquisition error as fetch_failed and nothing without Git Sources', async () => {
     const failed = await installSkills({ id: 'a2', runtime: 'claude', skills: [other('flaky')] }, cwd, {
       stateDir,

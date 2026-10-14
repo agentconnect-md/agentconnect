@@ -593,8 +593,12 @@ async function installSkillsLocked(
     result.removed.push(...reconciled.removed)
     result.skipped = reconciled.skipped
     result.owned = reconciled.owned.map((bundle) => bundle.relativeRoot)
+    const sourceByKey = new Map(prepared.map((source) => [source.key, source]))
     for (const conflict of reconciled.conflicts) {
       result.errors.push({ source: conflict, error: 'destination is not owned by this daemon ledger; skill skipped' })
+      // A Git Source whose bundle could not be published did not install, though it built.
+      const source = sourceByKey.get(candidatesByPath.get(conflict)?.sourceKey ?? '')
+      if (source?.git) sourceFailures.push({ name: source.name, code: 'cli_failed' })
     }
     if (gitSources.length > 0) result.sourceFailures = uniqueSkillSourceFailures(sourceFailures)
     return result

@@ -12,6 +12,7 @@ import { AnyFrame } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { FakeClock } from '../fakes/fake-clock.js'
+import { AgentId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
@@ -94,6 +95,27 @@ describe('agent skill source status (source-cache.md §11)', () => {
     await report([{ name: 'public', code: 'fetch_failed' }], OTHER_DAEMON)
     await report([{ name: 'public', code: 'fetch_failed' }], DAEMON, false)
     expect(await prisma.agentSkillSourceStatus.count()).toBe(0)
+  })
+
+  it('keeps exactly the last of concurrent reports, never a mixture', async () => {
+    await seed()
+    running = buildHttpApp(prisma)
+    await Promise.all([
+      report([{ name: 'public', code: 'fetch_failed' }]),
+      report([{ name: 'other-host', code: 'access_denied' }]),
+      report([{ name: 'gitlab-private', code: 'cli_failed' }])
+    ])
+    expect((await status(running)).map((row) => row.name)).toEqual(['gitlab-private'])
+
+    // Two repositories (as two replicas would use) still never interleave a replacement.
+    const store = new PgAgentSkillSourceStatusRepo(prisma)
+    const at = new Date()
+    await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        store.replace(AgentId(AGENT), [{ sourceName: `s${i}`, code: 'fetch_failed' }], at)
+      )
+    )
+    expect(await prisma.agentSkillSourceStatus.count()).toBe(1)
   })
 
   it('lists only Sources the agent still enables', async () => {

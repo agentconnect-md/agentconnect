@@ -1,7 +1,7 @@
 // Daemon-reported skill Source failure codes per agent (source-cache.md §11): a code and a time, never Git or CLI output.
 import type { SkillSourceFailureCode } from '@agentconnect.md/protocol'
 import type { AgentId } from '../../domain/ids.js'
-import type { PrismaClient } from '../../generated/prisma/client.js'
+import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { AgentSkillSourceStatusRecord, AgentSkillSourceStatusRepo } from '../ports.js'
 
 export class PgAgentSkillSourceStatusRepo implements AgentSkillSourceStatusRepo {
@@ -12,18 +12,21 @@ export class PgAgentSkillSourceStatusRepo implements AgentSkillSourceStatusRepo 
     failed: Array<{ sourceName: string; code: SkillSourceFailureCode }>,
     reportedAt: Date
   ): Promise<void> {
-    await this.prisma.$transaction([
-      this.prisma.agentSkillSourceStatus.deleteMany({
+    await this.prisma.$transaction(async (tx) => {
+      // One report replaces the whole set: concurrent replacements for an agent, on any replica, run one at a time.
+      const key = JSON.stringify(['agent-skill-source-status', agentId])
+      await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0)) IS NULL AS "locked"`)
+      await tx.agentSkillSourceStatus.deleteMany({
         where: { agentId, sourceName: { notIn: failed.map((entry) => entry.sourceName) } }
-      }),
-      ...failed.map((entry) =>
-        this.prisma.agentSkillSourceStatus.upsert({
+      })
+      for (const entry of failed) {
+        await tx.agentSkillSourceStatus.upsert({
           where: { agentId_sourceName: { agentId, sourceName: entry.sourceName } },
           create: { agentId, sourceName: entry.sourceName, code: entry.code, reportedAt },
           update: { code: entry.code, reportedAt }
         })
-      )
-    ])
+      }
+    })
   }
 
   async list(agentId: AgentId): Promise<AgentSkillSourceStatusRecord[]> {
