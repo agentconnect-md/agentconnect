@@ -1,17 +1,12 @@
-/**
- * `icons/icon-store.ts` — the uploaded-icon object store (docs/designs/icon-uploads.md).
- *
- * A neutral S3-compatible client (SigV4 over `aws4fetch`), never bound to a vendor:
- * hosted services and local development stores differ only by the configured
- * `endpoint`. Uploaded icon bytes live here, NOT in Postgres; the
- * agent/org row keeps only the image descriptor (plus an optional opaque generation),
- * and the display/serve URL is the store's public URL for the owner's key
- * (→ `<img src>` + Slack icon_url).
- *
- * Assembled ONLY when the full `S3_*` config is present (see container.ts). Absent ⇒
- * `undefined`, the upload routes are not mounted, and the console hides Upload.
- */
-import { AwsClient } from 'aws4fetch'
+// Uploaded-icon bytes in a vendor-neutral S3-compatible store, gated on the full `S3_*` config (docs/designs/icon-uploads.md).
+import {
+  addressFor,
+  amzDate,
+  canonicalUri,
+  sha256Hex,
+  signHeaders,
+  type BucketAddressing
+} from '@agentconnect.md/object-store'
 
 export interface IconStoreConfig {
   endpoint: string // full S3 API origin, e.g. https://objects.example.test
@@ -63,38 +58,60 @@ export function joinPublicUrl(publicBase: string, key: string, version?: string 
   return `${base}/${path}${v}`
 }
 
-class S3IconStore implements IconStore {
-  private readonly aws: AwsClient
-  private readonly base: string // endpoint/bucket, no trailing slash
-  private readonly publicBase: string
+export interface IconStoreDeps {
+  fetch?: typeof fetch
+  now?: () => number
+}
 
-  constructor(cfg: IconStoreConfig) {
-    this.aws = new AwsClient({
-      accessKeyId: cfg.accessKeyId,
-      secretAccessKey: cfg.secretAccessKey,
-      region: cfg.region,
-      service: 's3'
-    })
-    this.base = `${cfg.endpoint.replace(/\/+$/, '')}/${encodeURIComponent(cfg.bucket)}`
+class S3IconStore implements IconStore {
+  private readonly address: BucketAddressing
+  private readonly basePath: string // the endpoint's own path, then /<bucket>/
+  private readonly publicBase: string
+  private readonly fetch: typeof fetch
+  private readonly now: () => number
+
+  constructor(
+    private readonly cfg: IconStoreConfig,
+    deps: IconStoreDeps
+  ) {
+    // Always path style, as before: a local store has no per-bucket DNS.
+    this.address = addressFor(cfg.endpoint, cfg.bucket, true)
+    this.basePath = `${new URL(cfg.endpoint).pathname.replace(/\/+$/, '')}${this.address.basePath}`
     this.publicBase = cfg.publicBaseUrl.replace(/\/+$/, '')
+    this.fetch = deps.fetch ?? fetch
+    this.now = deps.now ?? Date.now
   }
 
-  private objectUrl(key: string): string {
-    // Path-style; encode each segment but keep the `/` separators.
-    const path = key.split('/').map(encodeURIComponent).join('/')
-    return `${this.base}/${path}`
+  private async send(
+    method: 'PUT' | 'GET' | 'DELETE',
+    key: string,
+    body?: Uint8Array,
+    extraHeaders: Record<string, string> = {}
+  ): Promise<Response> {
+    const path = `${this.basePath}${key}`
+    const payloadHash = sha256Hex(Buffer.from(body ?? new Uint8Array()))
+    const headers = { ...extraHeaders, 'x-amz-date': amzDate(this.now()), 'x-amz-content-sha256': payloadHash }
+    const { authorization } = signHeaders({
+      method,
+      protocol: this.address.protocol,
+      host: this.address.host,
+      path,
+      headers,
+      credentials: { accessKeyId: this.cfg.accessKeyId, secretAccessKey: this.cfg.secretAccessKey },
+      region: this.cfg.region,
+      datetime: headers['x-amz-date'],
+      payloadHash
+    })
+    return await this.fetch(`${this.address.protocol}//${this.address.host}${canonicalUri(path)}`, {
+      method,
+      headers: { ...headers, authorization },
+      ...(body ? { body } : {})
+    })
   }
 
   async put(key: string, bytes: Uint8Array, contentType: string): Promise<void> {
-    // `content-type` becomes the object's stored type and its served `Content-Type`,
-    // pinning every object to a (server-sniffed) image type. Note PutObject cannot set
-    // arbitrary RESPONSE headers on the public path — `X-Content-Type-Options: nosniff`
-    // for `icon/*` is enforced by deployment-specific CDN/bucket configuration.
-    const res = await this.aws.fetch(this.objectUrl(key), {
-      method: 'PUT',
-      body: bytes,
-      headers: { 'content-type': contentType }
-    })
+    // The stored content-type is the served one; `nosniff` on `icon/*` is the deployment's CDN/bucket config.
+    const res = await this.send('PUT', key, bytes, { 'content-type': contentType })
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
       throw new Error(`icon store PUT ${key} failed: ${res.status} ${detail.slice(0, 200)}`)
@@ -102,7 +119,7 @@ class S3IconStore implements IconStore {
   }
 
   async get(key: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
-    const res = await this.aws.fetch(this.objectUrl(key))
+    const res = await this.send('GET', key)
     if (res.status === 404) return null
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
@@ -114,7 +131,7 @@ class S3IconStore implements IconStore {
   }
 
   async delete(key: string): Promise<void> {
-    const res = await this.aws.fetch(this.objectUrl(key), { method: 'DELETE' })
+    const res = await this.send('DELETE', key)
     if (!res.ok && res.status !== 404) {
       const detail = await res.text().catch(() => '')
       throw new Error(`icon store DELETE ${key} failed: ${res.status} ${detail.slice(0, 200)}`)
@@ -126,6 +143,6 @@ class S3IconStore implements IconStore {
   }
 }
 
-export function createIconStore(cfg: IconStoreConfig): IconStore {
-  return new S3IconStore(cfg)
+export function createIconStore(cfg: IconStoreConfig, deps: IconStoreDeps = {}): IconStore {
+  return new S3IconStore(cfg, deps)
 }

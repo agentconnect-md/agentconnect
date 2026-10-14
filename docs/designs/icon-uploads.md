@@ -17,7 +17,7 @@ public origin, and credentials are operator-supplied runtime configuration; the
 CP has no blob store of its own to fall back on. The contract here is:
 
 - **A neutral S3-compatible store.** The CP speaks the plain S3 REST subset
-  (`PutObject` / `GetObject` / `DeleteObject`, SigV4 via `aws4fetch`), so any S3-compatible backend
+  (`PutObject` / `GetObject` / `DeleteObject`, SigV4 via `@agentconnect.md/object-store`), so any S3-compatible backend
   (a cloud object store in prod, a local one in dev/CI) works by pointing `S3_ENDPOINT` at
   it. Nothing is vendor-bound.
 - **Config-gated / opt-in.** The store is assembled only when the full `S3_*` group is
@@ -33,7 +33,7 @@ An agent/org **display icon is control-plane configuration metadata**, authored 
 console, in the same category as the org name or the agent `displayName`. It never touches
 a conversation, so where its bytes live is orthogonal to the "CP is never on the message
 hot path" principle. Served image bytes belong in an object store rather than on the CP's
-one Postgres connection; the cost is one dependency (`aws4fetch`) and a local S3 for dev/CI.
+one Postgres connection; the cost is a local S3 for dev/CI.
 
 ## Config (`S3_*`, all neutral names)
 
