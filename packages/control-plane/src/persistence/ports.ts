@@ -7751,3 +7751,18 @@ export interface ProviderKeyStore {
   get(orgId: OrgId, provider: ProviderKeyProvider): Promise<ProviderCredentials | null>
   delete(orgId: OrgId, provider: ProviderKeyProvider): Promise<void>
 }
+
+// Console file-transfer upload tickets (source-cache-file-transfer.md §3): shared so any CP replica can sign.
+export interface UploadTicket {
+  daemonId: string
+  objectKey: string
+  size: number
+}
+
+export interface UploadTicketRepo {
+  /** Record a ticket that expires `ttlMs` after database time, sweeping expired tickets first. */
+  open(id: string, ticket: UploadTicket, ttlMs: number): Promise<void>
+  /** The unexpired ticket `id` if it was issued to `daemonId`. */
+  find(id: string, daemonId: string): Promise<Omit<UploadTicket, 'daemonId'> | undefined>
+  close(id: string): Promise<void>
+}

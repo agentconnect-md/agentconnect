@@ -1,5 +1,6 @@
 import type { WorkspaceReadContent, WorkspaceUploadReq } from '@agentconnect.md/protocol'
 import { describe, expect, it } from 'vitest'
+import type { UploadTicket, UploadTicketRepo } from '../persistence/ports.js'
 import { createFileTransferService, FileTransferRefusal, type FileTransferControl } from './service.js'
 import { FileTransferError, type FileTransfer } from './transfer.js'
 
@@ -44,6 +45,20 @@ function control(
   }
 }
 
+// The process-local stand-in for `PgUploadTicketRepo`; `test/repo/upload-ticket.repo.test.ts` covers the shared store.
+function memoryTickets(): UploadTicketRepo & { rows: Map<string, UploadTicket> } {
+  const rows = new Map<string, UploadTicket>()
+  return {
+    rows,
+    open: async (id, ticket) => void rows.set(id, ticket),
+    find: async (id, daemonId) => {
+      const row = rows.get(id)
+      return row?.daemonId === daemonId ? { objectKey: row.objectKey, size: row.size } : undefined
+    },
+    close: async (id) => void rows.delete(id)
+  }
+}
+
 const target = { orgId: 'org_1', daemonId: 'd1', agentId: 'a1', sessionId: 's1', path: 'dist/app.bin' }
 const file = { exists: true, type: 'file' as const, size: 9, mtime: MTIME }
 
@@ -53,7 +68,11 @@ describe('file transfer service', () => {
     const daemon = control(file, async () => {
       throw new Error('no upload expected')
     })
-    const service = createFileTransferService({ transfer: signer(SHA, seen), control: daemon })
+    const service = createFileTransferService({
+      transfer: signer(SHA, seen),
+      control: daemon,
+      tickets: memoryTickets()
+    })
     const got = await service.workspaceDownload(target)
     expect(got).toEqual({
       path: 'dist/app.bin',
@@ -88,12 +107,14 @@ describe('file transfer service', () => {
       expect(put.headers).toEqual({ 'content-length': '9' })
       return { bytes: 9, sha256: SHA }
     })
-    const service = createFileTransferService({ transfer: signer(undefined, seen), control: daemon })
+    const tickets = memoryTickets()
+    const service = createFileTransferService({ transfer: signer(undefined, seen), control: daemon, tickets })
     late.service = service
     const got = await service.workspaceDownload(target)
     expect(got).toMatchObject({ sha256: SHA, cached: false })
     expect(seen).toContainEqual({ signPut: expect.objectContaining({ bytes: 9, network: 'cluster' }) })
     const ticket = daemon.uploads[0]!.ticket
+    expect(tickets.rows.size).toBe(0)
     await expect(service.signUpload('d1', { ticket, bytes: 9, sha256: SHA, network: 'public' })).rejects.toBeInstanceOf(
       FileTransferRefusal
     )
@@ -102,14 +123,19 @@ describe('file transfer service', () => {
   it('refuses a missing file, a directory, an empty file, a size change and the signer’s own refusals', async () => {
     const upload = async () => ({ bytes: 9, sha256: SHA })
     const download = (stat: Parameters<typeof control>[0], transfer: FileTransfer = signer()) =>
-      createFileTransferService({ transfer, control: control(stat, upload) }).workspaceDownload(target)
+      createFileTransferService({
+        transfer,
+        control: control(stat, upload),
+        tickets: memoryTickets()
+      }).workspaceDownload(target)
     await expect(download({ exists: false })).rejects.toMatchObject({ status: 404, code: 'WORKSPACE_NOT_FOUND' })
     await expect(download({ exists: true, type: 'dir' })).rejects.toMatchObject({ code: 'WORKSPACE_NOT_A_FILE' })
     await expect(download({ ...file, size: 0 })).rejects.toMatchObject({ code: 'WORKSPACE_NOT_A_FILE' })
     await expect(
       createFileTransferService({
         transfer: signer(),
-        control: control(file, async () => ({ bytes: 8, sha256: SHA }))
+        control: control(file, async () => ({ bytes: 8, sha256: SHA })),
+        tickets: memoryTickets()
       }).workspaceDownload(target)
     ).rejects.toMatchObject({ status: 409, code: 'WORKSPACE_STALE' })
     const off = {

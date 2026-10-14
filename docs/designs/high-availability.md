@@ -270,6 +270,9 @@ flowchart LR
   may pass transiently through the forwarding CP. Bodies never enter the
   directory, delivery records, or notifications. Preserve write preconditions
   such as `ifMatchMtime` and the mutation retry rules below.
+- State a peer's follow-up RPC must find lives in PostgreSQL, not the minting
+  CP's memory: a console file-transfer upload ticket is redeemed by whichever
+  CP owns the daemon's socket when it asks `transfer/sign`.
 - Online checks, deletion guards, capability reads, and routing decisions use
   the shared view. A local registry miss or planned CP handoff is not daemon
   failure and must not remove a healthy data-plane route or reassign its duty.

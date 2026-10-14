@@ -108,6 +108,7 @@ import {
   PgWebchatMcpOperationRepo,
   PgLaunchRepo,
   PgSecretLeaseRepo,
+  PgUploadTicketRepo,
   PgIntegrationRepo,
   PgIntegrationChannelRepo,
   PgBotRepo,
@@ -478,6 +479,7 @@ export function buildContainer(
     webchatMcpOperation: new PgWebchatMcpOperationRepo(prisma),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
+    uploadTicket: new PgUploadTicketRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
     // §11 D6: which values carry this bot's demux identity is the provider's
@@ -889,7 +891,11 @@ export function buildContainer(
           objects,
           enabled: () => gate.status() !== 'missing'
         })
-        return { gate, transfer, service: createFileTransferService({ transfer, control: sender }) }
+        return {
+          gate,
+          transfer,
+          service: createFileTransferService({ transfer, control: sender, tickets: repos.uploadTicket })
+        }
       })()
     : undefined
   const fileTransfer = fileTransferBucket?.service

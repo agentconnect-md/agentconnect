@@ -4270,3 +4270,16 @@ model CodeHostDecisionRouting {
   @@index([evaluationAgentId])
   @@map("code_host_decision_routing")
 }
+
+// A console file-transfer upload ticket (source-cache-file-transfer.md §3), shared so any CP replica can answer `transfer/sign`.
+model TransferUploadTicket {
+  id        String   @id @db.Uuid
+  daemonId  String   @db.Uuid
+  objectKey String
+  size      BigInt
+  // Set and compared with database time, so replicas with skewed clocks agree.
+  expiresAt DateTime @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("transfer_upload_ticket")
+}
