@@ -162,7 +162,7 @@ describe('assistant mode', () => {
   it('refuses an unlisted runtime and external memory with their reasons', async () => {
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, {
-      runtime: 'codex-acp',
+      runtime: 'qwen-code',
       runtimeOverrides: { memory: { provider: 'native' } }
     })
     const { app } = withSpy()
@@ -238,11 +238,11 @@ describe('assistant mode', () => {
     expect(unsetOn.json()).toMatchObject({ permissionMode: 'auto' })
 
     // A refused switch changes nothing.
-    const codex = randomUUID()
-    await seedAgent(prisma, codex, { runtime: 'codex-acp', runtimeOverrides: { permissionMode: 'read-only' } })
-    expect((await patch(app, codex, { assistantMode: ON })).statusCode).toBe(409)
-    expect((await prisma.agent.findUniqueOrThrow({ where: { id: codex } })).runtimeOverrides as object).toEqual({
-      permissionMode: 'read-only'
+    const unlisted = randomUUID()
+    await seedAgent(prisma, unlisted, { runtime: 'qwen-code', runtimeOverrides: { permissionMode: 'plan' } })
+    expect((await patch(app, unlisted, { assistantMode: ON })).statusCode).toBe(409)
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: unlisted } })).runtimeOverrides as object).toEqual({
+      permissionMode: 'plan'
     })
   })
 
@@ -251,14 +251,40 @@ describe('assistant mode', () => {
     await seedAgent(prisma, agentId, { runtime: 'claude-acp' })
     const { app } = withSpy()
     expect((await patch(app, agentId, { assistantMode: ON })).statusCode).toBe(200)
-    const toCodex = await patch(app, agentId, { runtime: 'codex-acp' })
-    expect(toCodex.statusCode).toBe(409)
-    expect(toCodex.json()).toMatchObject({ code: ASSISTANT_MODE_NOT_ADMITTED })
+    const toUnlisted = await patch(app, agentId, { runtime: 'qwen-code' })
+    expect(toUnlisted.statusCode).toBe(409)
+    expect(toUnlisted.json()).toMatchObject({ code: ASSISTANT_MODE_NOT_ADMITTED })
     const toNative = await patch(app, agentId, { memory: { provider: 'native' } })
     expect(toNative.statusCode).toBe(409)
-    const offAndSwitch = await patch(app, agentId, { runtime: 'codex-acp', assistantMode: { enabled: false } })
+    const toCodex = await patch(app, agentId, { runtime: 'codex-acp' })
+    expect(toCodex.statusCode, toCodex.body).toBe(200)
+    const offAndSwitch = await patch(app, agentId, { runtime: 'qwen-code', assistantMode: { enabled: false } })
     expect(offAndSwitch.statusCode, offAndSwitch.body).toBe(200)
-    expect(offAndSwitch.json()).toMatchObject({ runtime: 'codex-acp', assistantMode: { enabled: false } })
+    expect(offAndSwitch.json()).toMatchObject({ runtime: 'qwen-code', assistantMode: { enabled: false } })
+  })
+
+  // assistant-mode.md §4.1: Codex and OpenCode resume a session by id after a restart, so neither is locked.
+  it("admits Codex and OpenCode, moving Codex to Auto review and keeping OpenCode's mode", async () => {
+    const { app } = withSpy()
+    const codex = randomUUID()
+    await seedAgent(prisma, codex, { runtime: 'codex-acp', runtimeOverrides: { permissionMode: 'workspace-write' } })
+    const opencode = randomUUID()
+    await seedAgent(prisma, opencode, { runtime: 'opencode', runtimeOverrides: { permissionMode: 'build' } })
+    for (const agentId of [codex, opencode]) {
+      expect((await admission(app, agentId)).json()).toEqual({ admitted: true, refusals: [] })
+    }
+
+    const codexOn = await patch(app, codex, { assistantMode: ON })
+    expect(codexOn.statusCode, codexOn.body).toBe(200)
+    expect(codexOn.json()).toMatchObject({ assistantMode: ON, permissionMode: 'agent' })
+    const opencodeOn = await patch(app, opencode, { assistantMode: ON })
+    expect(opencodeOn.statusCode, opencodeOn.body).toBe(200)
+    expect(opencodeOn.json()).toMatchObject({ assistantMode: ON, permissionMode: 'build' })
+
+    // Their memory rule still applies.
+    const native = randomUUID()
+    await seedAgent(prisma, native, { runtime: 'codex-acp', runtimeOverrides: { memory: { provider: 'native' } } })
+    expect((await admission(app, native)).json()).toEqual({ admitted: false, refusals: ['memory-provider'] })
   })
 
   it('takes no routing target, and names the responsible user it derives', async () => {
