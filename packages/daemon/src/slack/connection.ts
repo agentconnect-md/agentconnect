@@ -2668,11 +2668,12 @@ export class SlackConnection implements PlatformConnection {
     return out
   }
 
-  /** Every public channel of the workspace, member or not (a person is asked before the bot joins one), plus the private channels it was invited to. */
-  async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {
+  /** Every public channel of the workspace, `joined` saying whether the bot is in it (a person is asked before it joins one), plus the private channels it was invited to. */
+  async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean; joined?: boolean }[]> {
     const members = await this.listBotChannels()
     if (!members) throw new Error('failed to list Slack channels for bot membership')
-    const out: { id: string; name?: string; isPrivate?: boolean }[] = []
+    const joined = new Set(members.map((c) => c.id))
+    const out: { id: string; name?: string; isPrivate?: boolean; joined?: boolean }[] = []
     let cursor: string | undefined
     do {
       const res = await this.app.client.conversations.list({
@@ -2681,10 +2682,14 @@ export class SlackConnection implements PlatformConnection {
         limit: 1000,
         ...(cursor ? { cursor } : {})
       })
-      for (const c of res.channels ?? []) if (c.id) out.push({ id: c.id, ...(c.name ? { name: c.name } : {}) })
+      for (const c of res.channels ?? [])
+        if (c.id) out.push({ id: c.id, ...(c.name ? { name: c.name } : {}), joined: joined.has(c.id) })
       cursor = res.response_metadata?.next_cursor || undefined
     } while (cursor)
-    return [...out, ...members.filter((c) => c.isPrivate).map(({ id, name, isPrivate }) => ({ id, name, isPrivate }))]
+    return [
+      ...out,
+      ...members.filter((c) => c.isPrivate).map(({ id, name, isPrivate }) => ({ id, name, isPrivate, joined: true }))
+    ]
   }
 
   /** The id of a channel `listChannels` names, `#` optional; undefined for an id, or a name it lists for none or for several. */

@@ -95,6 +95,8 @@ export interface PlatformChannelRef {
   id: string
   name?: string
   isPrivate?: boolean
+  /** Whether the bot is in it, where a listing also names conversations it is not in (Slack's public channels). */
+  joined?: boolean
   /** Detected external on a membership listing (assistant-mode.md §5.3); null when the listing found no share. */
   externalReason?: PlaceExternalReason | null
   /** Display glyph and tint where the platform gives the conversation one (a Linear team). */

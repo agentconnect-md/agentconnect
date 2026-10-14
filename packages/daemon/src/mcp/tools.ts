@@ -398,7 +398,9 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
       name: 'listChannels',
       description:
         'List the channels/chats the bot can post to on a platform, each with its id and name — on Slack every ' +
-        'public channel of the workspace plus the private ones the bot was invited to. Pass `platform` to ' +
+        'public channel of the workspace plus the private ones the bot was invited to, with `joined` saying ' +
+        'whether the bot is in each. To join a public channel it is not in, read or post there: the person ' +
+        'asking is asked whether the bot may join, and it joins on their yes. Pass `platform` to ' +
         'target one of the platforms this agent is connected to (defaults to the current one), and `integrationId` ' +
         'to choose a specific bot when the agent has several on that platform. Note: Telegram bots cannot enumerate ' +
         'their chats live, so there Telegram returns the chats this agent has already been active in (from history); ' +
