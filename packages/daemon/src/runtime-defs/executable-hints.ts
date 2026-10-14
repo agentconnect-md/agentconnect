@@ -17,6 +17,9 @@ export function runtimeExecutableHints(runtime: RuntimeDef): RuntimeExecutableHi
   // No CODEX_PATH: codex-acp's bundled Codex matches its release, and an older global CLI would hide newer models.
   return [
     // The claude-agent-sdk finds its CLI in a bundled OPTIONAL npm dep (often absent under npx) or here.
-    ...(isClaudeRuntimeDef(runtime) ? [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }] : [])
+    ...(isClaudeRuntimeDef(runtime) ? [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }] : []),
+    ...([runtime.command, ...runtime.args].some((part) => /(?:^|[\\/@])muse-acp(?:@[^\\/]*)?$/i.test(part))
+      ? [{ envVar: 'MUSE_CLI', command: 'muse' }]
+      : [])
   ]
 }

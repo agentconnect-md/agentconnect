@@ -13,6 +13,7 @@ cross-references inside it.
 - [GLOSSARY.md](../GLOSSARY.md) — Agreed domain terms, including shared images, previews and original delivery.
 - [config-file-secrets.md](config-file-secrets.md) — The `*_DATA` secret convention for file-shaped credentials (Docker config, kubeconfig).
 - [self-host-caddy-https.md](self-host-caddy-https.md) — Publishing a self-hosted stack behind Caddy HTTPS.
+- [muse-code.md](muse-code.md) — Installing and authenticating Muse Code through its ACP adapter.
 
 ## Designs
 

@@ -6,12 +6,9 @@ interface RawRegistryEntry {
   icon?: unknown
 }
 
-// Curated ACP runtimes that are not guaranteed to exist in the public ACP
-// registry (mirrors the ids in packages/daemon CURATED_RUNTIME_CATALOG). Their
-// icons live here because the web console is their only consumer — the daemon
-// uses these ids to launch processes, not to display marks. Keep the ids in
-// sync with the daemon catalog when adding a runtime.
+// Curated display names and marks; keep ids in sync with the daemon's CURATED_RUNTIME_CATALOG.
 const CURATED_AGENTS: Record<string, { name: string; icon: string | null }> = {
+  'muse-acp': { name: 'Muse Code', icon: null },
   'hermes-agent': {
     name: 'Hermes Agent',
     icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/hermesagent.svg'

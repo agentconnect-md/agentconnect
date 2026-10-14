@@ -268,7 +268,7 @@ describe('curated native ACP runtimes', () => {
     expect(catalog.entries.qoder?.aliasOf).toBeUndefined()
   })
 
-  it('declares the ten reviewed native ACP commands', () => {
+  it('declares the reviewed native ACP commands', () => {
     expect(CURATED_RUNTIME_CATALOG).toEqual({
       'hermes-agent': {
         name: 'Hermes Agent',
@@ -293,6 +293,18 @@ describe('curated native ACP runtimes', () => {
       omp: {
         name: 'Oh My Pi',
         runtime: { command: 'omp', args: ['acp'], env: [] }
+      },
+      'muse-acp': {
+        name: 'Muse Code',
+        runtime: {
+          command: 'muse-acp',
+          args: [],
+          env: [
+            { name: 'MUSE_SERVE_ARGS', value: '--trust-workspace' },
+            { name: 'MUSE_NO_AUTO_UPDATE', value: '1' }
+          ],
+          skillsAgentId: 'universal'
+        }
       },
       'qoder-cli': {
         name: 'Qoder CLI',

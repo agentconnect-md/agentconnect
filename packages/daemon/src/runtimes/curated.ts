@@ -5,14 +5,7 @@ export interface CuratedRuntimeEntry {
   runtime: RuntimeDef
 }
 
-/**
- * Reviewed native ACP stdio commands that are not guaranteed to exist in the
- * public ACP registry. This is a launch catalog, not an installer: host
- * discovery still requires the executable and initialized local state.
- *
- * Display marks for these ids live web-side in the /api/acp-registry route
- * (packages/web) — the console is their only consumer. Keep the ids in sync.
- */
+// Reviewed ACP launchers outside the public registry; keep display names in the web registry in sync.
 export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntry>> = Object.freeze({
   'hermes-agent': {
     name: 'Hermes Agent',
@@ -37,6 +30,18 @@ export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntr
   omp: {
     name: 'Oh My Pi',
     runtime: { command: 'omp', args: ['acp'], env: [] }
+  },
+  'muse-acp': {
+    name: 'Muse Code',
+    runtime: {
+      command: 'muse-acp',
+      args: [],
+      env: [
+        { name: 'MUSE_SERVE_ARGS', value: '--trust-workspace' },
+        { name: 'MUSE_NO_AUTO_UPDATE', value: '1' }
+      ],
+      skillsAgentId: 'universal'
+    }
   },
   // Qoder CLI launches its ACP server through the native `qodercli --acp` command.
   'qoder-cli': {
