@@ -26,14 +26,14 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
     description:
       'Send outside your current conversation. Required action: callAgent asks an agent to work (sessionId ' +
       'continues its existing session from a childSessionId; channel starts visible work there; your own id with ' +
-      'channel works as yourself there); messageSubsession starts a background sub-session of your own for long ' +
-      'work (omit sessionId), or sends more work to one you started (sessionId: its childSessionId), even after it ' +
-      'finished; replyToSession answers one session that called you, by sessionId; several may, and replies are ' +
-      'never broadcast (a sub-session’s origin is its parent); postMessage reaches a ' +
-      'person, a channel, or another existing thread. Background work reports each round’s completion or failure ' +
-      'automatically. For your current conversation, write your ordinary reply. When requesting a peer’s result, ' +
-      'use toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
-      'examples. Calls without action fail without sending anything.',
+      'channel opens your own visible conversation there); messageSubsession starts a background sub-session of ' +
+      'your own for long work (omit sessionId): for "fix this bug and open a PR" or work to run in the background, ' +
+      'call it instead of doing the work here, say it started, and end your turn; it also sends more work to one you ' +
+      'started (sessionId: its childSessionId), even after it finished; replyToSession answers one session that ' +
+      'called you, by sessionId (replies are never broadcast); postMessage reaches a person, a channel, or another ' +
+      'existing thread. For your current conversation, write your ordinary reply. When requesting a peer’s result, ' +
+      'use toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments ' +
+      'and examples. Calls without action fail without sending anything.',
     inputSchema: obj(
       {
         action: { type: 'string', enum: [...SEND_MESSAGE_ACTIONS] },

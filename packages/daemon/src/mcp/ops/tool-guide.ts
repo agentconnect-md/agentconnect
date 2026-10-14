@@ -214,7 +214,9 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
     },
     postMessage: {
       action: 'postMessage',
-      purpose: 'Post to a person, a channel, or another existing thread.',
+      purpose:
+        'Post to a person, a channel, or another existing thread. It starts no work there: to work in a channel ' +
+        'yourself, use callAgent with your own id and `channel`.',
       required: ['action', 'message', 'toUser or channel'],
       optional: ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'attachment'],
       rules: [
