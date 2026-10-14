@@ -30,7 +30,11 @@ export interface QQMessageEvent {
   groupOpenid?: string
   content: string
   messageId: string
+  /** RFC3339 send time from the event payload; QQ message ids are not chronological. */
+  timestamp?: string
   attachments?: QQAttachment[]
+  /** Server-marked mention list; `is_you` flags a mention of this bot in full-mode events. */
+  mentions?: { id?: string; is_you?: boolean; bot?: boolean }[]
   msgIdx?: string
   refMsgIdx?: string
   msgElements?: { msg_idx?: string; content?: string; attachments?: QQAttachment[] }[]
@@ -106,7 +110,7 @@ function qqAttachmentMimeType(contentType: string, filename?: string, wav = fals
   return (ext && byExtension[ext]) || 'application/octet-stream'
 }
 
-// Admit DMs and explicit group mentions before core routing; ambient messages must never activate through affinity.
+// Admit DMs, group mentions, and full-mode ambient group messages; ambient traffic carries no mention so only `any` triggers (and the wake gate) can reach an agent.
 export function normalizeQQMessage(
   appId: string,
   message: QQMessageEvent,
@@ -114,7 +118,9 @@ export function normalizeQQMessage(
   reference?: QQQuotedMessage
 ): NormalizedPlatformMessage | null {
   const isDm = message.rawEventType === 'C2C_MESSAGE_CREATE' && message.kind === 'c2c'
-  const isGroup = message.rawEventType === 'GROUP_AT_MESSAGE_CREATE' && message.kind === 'group'
+  const isGroup =
+    message.kind === 'group' &&
+    (message.rawEventType === 'GROUP_AT_MESSAGE_CREATE' || message.rawEventType === 'GROUP_MESSAGE_CREATE')
   if (
     (!isDm && !isGroup) ||
     (isGroup && !message.groupOpenid) ||
@@ -175,6 +181,12 @@ export function normalizeQQMessage(
   const replyTo = message.refMsgIdx ? (reference?.messageId ?? `ref:${message.refMsgIdx}`) : undefined
   if (!text.trim() && !attachments.length && !quoteText) return null
   const senderName = message.senderName?.trim()
+  // In full mode an @-ed message also arrives as GROUP_MESSAGE_CREATE; recover the mention via `is_you` or the `<@!appId>` marker.
+  const selfMentioned =
+    message.rawEventType === 'GROUP_AT_MESSAGE_CREATE' ||
+    message.mentions?.some((m) => m?.is_you === true) === true ||
+    new RegExp(`<@!?${appId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}>`).test(message.content)
+  const platformTimeMs = message.timestamp ? Date.parse(message.timestamp) : NaN
   return {
     platform: 'qq',
     source: 'user',
@@ -192,8 +204,9 @@ export function normalizeQQMessage(
     },
     text,
     ...(attachments.length ? { attachments } : {}),
-    mentionedBots: isDm ? [] : [appId],
+    mentionedBots: isDm ? [] : selfMentioned ? [appId] : [],
     isDm,
+    ...(Number.isFinite(platformTimeMs) ? { platformTimeMs } : {}),
     ...(replyTo ? { replyTo } : {}),
     ...(replyTo && quoteText
       ? {

@@ -73,15 +73,28 @@ describe('QQ native quote association', () => {
       quoted: { messageId: 'sent-message', sender: 'QQ bot', text: 'An earlier reply' }
     })
   })
-  it('uses the pushed source on cache misses and keeps ambient messages out of the cache', () => {
+  it('uses the pushed source on cache misses and indexes ambient messages for later quotes', () => {
     const conn = connection()
-    expect(conn.normalizeMessage({ ...event, rawEventType: 'GROUP_MESSAGE_CREATE' })).toBeNull()
+    // Ambient full-mode events are real group messages: they join the quote index so a
+    // later reply to one resolves sender and text.
+    expect(
+      conn.normalizeMessage({ ...event, rawEventType: 'GROUP_MESSAGE_CREATE', content: 'ambient chatter' })
+    ).toMatchObject({ channel: 'group:g1', mentionedBots: [] })
+    const quotedAmbient = conn.normalizeMessage({
+      ...event,
+      messageId: 'reply-ambient',
+      senderId: 'Bob',
+      msgIdx: undefined,
+      refMsgIdx: 'native-index',
+      msgElements: undefined
+    })!
+    expect(quotedAmbient.quoted).toMatchObject({ messageId: 'inbound', sender: 'Alice', text: 'ambient chatter' })
     const quoted = conn.normalizeMessage({
       ...event,
       messageId: 'reply',
       msgIdx: undefined,
-      refMsgIdx: 'native-index',
-      msgElements: [{ msg_idx: 'native-index', content: 'pushed source' }]
+      refMsgIdx: 'uncached-index',
+      msgElements: [{ msg_idx: 'uncached-index', content: 'pushed source' }]
     })!
     expect(quoted.quoted).toMatchObject({ text: 'pushed source' })
     expect(quoted.quoted?.sender).toBeUndefined()

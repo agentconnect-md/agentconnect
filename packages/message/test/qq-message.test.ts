@@ -124,16 +124,20 @@ describe('QQ normalization', () => {
     expect(parseQQUserId('user')).toBeUndefined()
     expect(QQAvatarUrl('100', 'opaque/value')).toBe('https://q.qlogo.cn/qqapp/100/opaque%2Fvalue/640')
   })
-  it('ignores ambient group text and commands even when their text contains a bot mention', () => {
-    for (const content of ['hello', '!cancel', '<@!100> run this']) {
-      expect(
-        normalizeQQMessage(
-          '100',
-          { ...event, kind: 'group', rawEventType: 'GROUP_MESSAGE_CREATE', groupOpenid: 'g', content },
-          'trace'
-        )
-      ).toBeNull()
-    }
+  it('admits ambient group messages as non-addressed traffic and recovers self-mentions', () => {
+    const ambient = (content: string, extra?: object) =>
+      normalizeQQMessage(
+        '100',
+        { ...event, kind: 'group', rawEventType: 'GROUP_MESSAGE_CREATE', groupOpenid: 'g', content, ...extra },
+        'trace'
+      )
+    for (const content of ['hello', '!cancel'])
+      expect(ambient(content)).toMatchObject({ channel: 'group:g', isDm: false, mentionedBots: [] })
+    expect(ambient('<@!100> run this')).toMatchObject({ mentionedBots: ['100'], text: 'run this' })
+    expect(ambient('run this', { mentions: [{ id: 'bot', is_you: true }] })).toMatchObject({
+      mentionedBots: ['100']
+    })
+    expect(ambient('hello <@!200>', { mentions: [{ id: '200' }] })).toMatchObject({ mentionedBots: [] })
     const group = { ...event, kind: 'group', rawEventType: 'GROUP_AT_MESSAGE_CREATE', groupOpenid: 'g' }
     for (const overrides of [{ groupOpenid: '' }, { senderIsBot: true }, { content: '<@!100> ' }])
       expect(normalizeQQMessage('100', { ...group, ...overrides }, 'trace')).toBeNull()

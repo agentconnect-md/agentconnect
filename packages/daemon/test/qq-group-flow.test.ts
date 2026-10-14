@@ -100,7 +100,7 @@ describe('QQ group loop through the daemon', () => {
           senderId: user,
           senderName: user,
           messageId: id,
-          content: ambient ? '!cancel' : `${group ? '<@!100> ' : ''}request from ${user}`
+          content: ambient ? 'ambient chatter' : `${group ? '<@!100> ' : ''}request from ${user}`
         },
         `trace-${id}`
       )
@@ -110,16 +110,21 @@ describe('QQ group loop through the daemon', () => {
     await deliver('g1', 'Alice', 'm1')
     await vi.waitFor(() => expect(posts()).toHaveLength(2), { timeout: 5000 })
     await deliver('g1', 'Alice', 'm1')
+    // Ambient traffic continues a live group session through thread affinity, the same
+    // continuity rung Feishu/Discord use — a silent observer only when no session owns the room.
     await deliver('g1', 'Bob', 'ambient', true)
-    await deliver('g1', 'Bob', 'm2')
     await vi.waitFor(() => expect(posts()).toHaveLength(3), { timeout: 5000 })
-    await deliver('g2', 'Alice', 'm1')
+    await deliver('g1', 'Bob', 'm2')
     await vi.waitFor(() => expect(posts()).toHaveLength(4), { timeout: 5000 })
-    expect(prompts).toHaveLength(3)
-    expect(prompts[0]!.session).toBe(prompts[1]!.session)
-    expect(prompts[2]!.session).not.toBe(prompts[0]!.session)
+    await deliver('g2', 'Alice', 'm1')
+    await vi.waitFor(() => expect(posts()).toHaveLength(5), { timeout: 5000 })
+    expect(prompts).toHaveLength(4)
+    expect(prompts[1]!.session).toBe(prompts[0]!.session)
+    expect(prompts[2]!.session).toBe(prompts[0]!.session)
+    expect(prompts[3]!.session).not.toBe(prompts[0]!.session)
     expect(prompts[0]!.text).toContain('request from Alice')
-    expect(prompts[1]!.text).toContain('request from Bob')
+    expect(prompts[1]!.text).toContain('ambient chatter')
+    expect(prompts[2]!.text).toContain('request from Bob')
     expect(
       posts()
         .slice(1)
@@ -127,6 +132,7 @@ describe('QQ group loop through the daemon', () => {
     ).toEqual(
       [
         ['g1', 'm1'],
+        ['g1', 'ambient'],
         ['g1', 'm2'],
         ['g2', 'm1']
       ].map(([group, message]) => [
@@ -141,9 +147,9 @@ describe('QQ group loop through the daemon', () => {
     expect(request.mock.calls.some((call) => call[2].endsWith('/stream_messages'))).toBe(false)
     await deliver(undefined, 'Alice', 'm1')
     await vi.waitFor(() => expect(request.mock.calls.some((call) => call[2].startsWith('/v2/users/Alice/'))).toBe(true))
-    expect(request.mock.calls.filter((call) => (call[3] as { msg_type?: number })?.msg_type === 0)).toHaveLength(3)
-    expect(prompts).toHaveLength(4)
-    expect(prompts[3]!.session).not.toBe(prompts[0]!.session)
-    expect(prompts[3]!.session).not.toBe(prompts[2]!.session)
+    expect(request.mock.calls.filter((call) => (call[3] as { msg_type?: number })?.msg_type === 0)).toHaveLength(4)
+    expect(prompts).toHaveLength(5)
+    expect(prompts[4]!.session).not.toBe(prompts[0]!.session)
+    expect(prompts[4]!.session).not.toBe(prompts[3]!.session)
   })
 })

@@ -71,7 +71,7 @@ describe('QQ gateway lifecycle', () => {
     }
   })
 
-  it('accepts DMs and group mentions, filters ambient messages, resumes, and shuts down', async () => {
+  it('accepts DMs, group mentions and ambient messages, resumes, and shuts down', async () => {
     const server = new WebSocketServer({ port: 0 })
     await once(server, 'listening')
     const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`
@@ -147,7 +147,7 @@ describe('QQ gateway lifecycle', () => {
     })
     try {
       await conn.start()
-      await vi.waitFor(() => expect(messages).toHaveBeenCalledTimes(3))
+      await vi.waitFor(() => expect(messages).toHaveBeenCalledTimes(4))
       expect(handshakes[0]).toMatchObject({ op: 2, d: { intents: 1 << 25 } })
       expect(messages.mock.calls[0]![0]).toMatchObject({
         channel: 'group:group',
@@ -169,6 +169,12 @@ describe('QQ gateway lifecycle', () => {
         supports: () => true
       })
       expect(unavailable).toEqual([{ type: 'text', text: expect.stringContaining('QQ image unavailable') }])
+      expect(messages.mock.calls[3]![0]).toMatchObject({
+        channel: 'group:group',
+        text: '!cancel',
+        isDm: false,
+        mentionedBots: []
+      })
       expect(await conn.getChannelInfo('group:group')).toMatchObject({ isIm: false, name: 'QQ group · group' })
       expect(await conn.getChannelInfo('dm:user')).toMatchObject({ isIm: true, name: 'QQ user · user' })
       expect(await conn.getUserProfile('qq:user:100:user')).toEqual({
