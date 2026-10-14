@@ -829,7 +829,7 @@ describe('POST/PATCH /skill-sources — githubRepoId binding', () => {
       cloneUrl: 'https://github.com/anthropics/skills'
     })
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/skill-sources` })).json()).toEqual([
-      expect.objectContaining({ name: 'kit', private: true })
+      expect.objectContaining({ name: 'kit', private: true, credential: { provider: 'github' } })
     ])
 
     // A later edit re-reads visibility alongside the id: the repo went public.

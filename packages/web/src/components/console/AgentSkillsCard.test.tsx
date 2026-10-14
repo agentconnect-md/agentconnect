@@ -8,18 +8,37 @@ const mocks = vi.hoisted(() => ({
   // The org registry the caller can see.
   skillSources: [
     { id: 's1', name: 'example-ai-kit', source: 'github.com/acme/ai-kit', subDir: null, visibility: 'org' },
-    { id: 's2', name: 'internal-runbooks', source: 'github.com/acme/runbooks', subDir: null, visibility: 'org' }
+    { id: 's2', name: 'internal-runbooks', source: 'github.com/acme/runbooks', subDir: null, visibility: 'org' },
+    {
+      id: 's3',
+      name: 'ops-kit',
+      source: 'https://git.example.test/ops/kit',
+      subDir: null,
+      visibility: 'org',
+      credential: null
+    },
+    {
+      id: 's4',
+      name: 'team-kit',
+      source: 'https://gitlab.example.test/team/kit',
+      subDir: null,
+      visibility: 'org',
+      credential: { provider: 'gitlab', repoId: '42' }
+    }
   ] as unknown[],
   managed: [
     { id: 'm1', name: 'safe-deploy', currentRevision: 3, fileCount: 2, archivedAt: null, canManage: true }
   ] as unknown[],
   savedSkills: [] as string[],
-  savedManaged: [] as string[]
+  savedManaged: [] as string[],
+  failures: [] as unknown[],
+  manifest: { resolvable: true, skills: [] } as unknown,
+  updateAgent: vi.fn(async (_id: string, _patch: unknown) => undefined)
 }))
 
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
-    updateAgent: vi.fn(async () => undefined),
+    updateAgent: mocks.updateAgent,
     skillSources: mocks.skillSources,
     skillSourcesLoading: false,
     createSkillSource: vi.fn(),
@@ -31,7 +50,8 @@ vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: { id: 'u1' } }) }))
 vi.mock('@/lib/api', () => ({
   fetchAgentDto: vi.fn(async () => ({ skills: mocks.savedSkills, managedSkills: mocks.savedManaged })),
   fetchAgentSkillSources: vi.fn(async () => []),
-  fetchSkillSourceSkills: vi.fn(async () => ({ resolvable: true, skills: [] })),
+  fetchAgentSkillSourceStatus: vi.fn(async () => ({ sources: mocks.failures })),
+  fetchSkillSourceSkills: vi.fn(async () => mocks.manifest),
   listManagedSkills: vi.fn(async () => mocks.managed),
   listManagedSkillRevisions: vi.fn(async () => []),
   setManagedSkillArchived: vi.fn(async () => undefined),
@@ -79,6 +99,9 @@ afterEach(() => {
   host = undefined
   mocks.savedSkills = []
   mocks.savedManaged = []
+  mocks.failures = []
+  mocks.manifest = { resolvable: true, skills: [] }
+  mocks.updateAgent.mockClear()
 })
 
 describe('AgentSkillsCard', () => {
@@ -121,5 +144,46 @@ describe('AgentSkillsCard', () => {
     const text = await render()
     expect(text).toContain('internal-runbooks')
     expect(text).toContain('1 selected')
+  })
+
+  // An anonymous source off GitHub is marked; a credentialed GitLab one is not.
+  it('marks an anonymous other-host source as trusted by URL', async () => {
+    mocks.savedSkills = ['ops-kit/*', 'team-kit/*']
+    await render()
+    const rows = [...host!.querySelectorAll('.mono.truncate')].map((el) => el.closest('.flex.items-center'))
+    const ops = rows.find((row) => row?.textContent?.includes('ops-kit'))
+    const team = rows.find((row) => row?.textContent?.includes('team-kit'))
+    expect(ops?.textContent).toContain('trusted by URL')
+    expect(team?.textContent).not.toContain('trusted by URL')
+  })
+
+  it('shows the latest failure reason beside the source that failed', async () => {
+    mocks.savedSkills = ['ops-kit/*', 'example-ai-kit/*']
+    mocks.failures = [{ name: 'ops-kit', code: 'fetch_failed', reportedAt: '2026-10-01T00:00:00.000Z' }]
+    await render()
+    const failure = host!.querySelector('[data-skill-source-failure]')
+    expect(failure?.getAttribute('data-skill-source-failure')).toBe('fetch_failed')
+    expect(failure?.textContent).toContain('Last install failed')
+    expect(failure?.textContent).toContain('Fetching the repository failed')
+    expect(failure?.textContent).toContain('fetch_failed')
+    expect(host!.querySelectorAll('[data-skill-source-failure]')).toHaveLength(1)
+  })
+
+  it('offers a typed skill filter when the source cannot be scanned', async () => {
+    mocks.savedSkills = ['ops-kit/*']
+    mocks.manifest = { resolvable: false, skills: [] }
+    await render()
+    await act(async () => {
+      host!.querySelector<HTMLButtonElement>('button[aria-label="Choose individual skills"]')!.click()
+    })
+    const input = host!.querySelector<HTMLInputElement>('input[aria-label="Choose individual skills"]')
+    expect(input).toBeTruthy()
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'deploy, rollback')
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const apply = [...host!.querySelectorAll('button')].find((b) => b.textContent === 'Apply')
+    await act(async () => apply!.click())
+    expect(mocks.updateAgent).toHaveBeenCalledWith('a1', { skills: ['ops-kit/deploy', 'ops-kit/rollback'] })
   })
 })

@@ -2910,7 +2910,6 @@
         "chooseIndividualSkills": "选择单个技能",
         "loadingSkills": "正在加载技能…",
         "noSkillManifest": "此来源中没有找到 SKILL.md。",
-        "cannotListSkills": "无法列出此来源中的单个技能，当前已启用整个来源。",
         "skillInstallNote": "托管技能包会从固定版本安装；Git 来源会在会话开始时通过 <command>npx skills</command> 安装。移除后将停止为此 Agent 安装。",
         "skillsCommand": "npx skills",
         "servedByRuntime": "由 {runtime} Runtime 提供。移除服务器后，此 Agent 将无法使用其工具。",
@@ -2919,7 +2918,25 @@
         "noAttachedServers": "此 Agent 尚未附加 MCP 服务器。",
         "plusEverythingIn": "另外还包括",
         "workspaceKnowledge": "工作区知识和技能",
-        "sharedAcrossAgents": "，对所有 Agent 共享。"
+        "sharedAcrossAgents": "，对所有 Agent 共享。",
+        "addGitUrlSkillSource": "从 Git 地址导入…",
+        "trustedByUrl": "按地址信任",
+        "trustedByUrlHint": "其他主机上的匿名来源：按此地址原样安装，不校验仓库身份",
+        "manualSkillsHint": "控制台无法列出此来源的技能。填写要安装的技能，留空则启用整个来源。",
+        "manualSkillsPlaceholder": "review-pr, safe-deploy",
+        "applySkills": "应用",
+        "installFailed": "上次安装失败",
+        "installFailedAt": "报告于 {date}",
+        "failureCodes": {
+          "resolution_failed": "无法解析该来源：请检查地址和 ref，并确认 daemon 的 Git 来源策略允许此主机。",
+          "access_denied": "主机拒绝访问：仓库为私有，或凭据不再覆盖它。",
+          "ref_moved": "安装期间 ref 发生了变化，下次同步时会重试。",
+          "commit_unavailable": "主机上没有该提交或子目录。",
+          "sha_fetch_refused": "主机拒绝拉取固定的提交。",
+          "fetch_failed": "拉取仓库失败：主机可能无法访问，或发生了重定向。",
+          "limits_exceeded": "该来源超出安装限制，或没有 SKILL.md。",
+          "cli_failed": "skills 安装程序失败，或工作区中已有同名的技能目录。"
+        }
       },
       "reviewDialog": {
         "close": "关闭",
@@ -3432,7 +3449,7 @@
       "searchRegistryDescription": "按名称从公共注册表查找技能",
       "importGithub": "从 GitHub 导入",
       "importGithubDescription": "注册一个已知的仓库",
-      "empty": "暂无技能。可以从 skills.sh 安装，或导入 GitHub 来源。",
+      "empty": "暂无技能。可以从 skills.sh 安装，或从 GitHub 或 Git 地址导入来源。",
       "private": "私有",
       "privateRepositoryHint": "私有仓库——通过组织 GitHub App 安装",
       "managedArchived": "托管 · 已归档",
@@ -3506,6 +3523,24 @@
         "installsThousands": "{value}K 次安装",
         "installsCount": "{count, plural, other {# 次安装}}",
         "installCommand": "{source} -s {skill}"
+      },
+      "importGit": "从 Git 地址导入",
+      "importGitDescription": "GitLab 项目或任意 HTTPS Git 仓库",
+      "trustedByUrl": "按地址信任",
+      "trustedByUrlHint": "其他主机上的匿名来源：按此地址原样安装，不校验仓库身份",
+      "gitCreate": {
+        "title": "从 Git 地址导入技能",
+        "source": "仓库地址",
+        "sourcePlaceholder": "https://gitlab.example.test/group/project",
+        "sourceHint": "本部署 GitLab 上的项目，或任意 HTTPS 主机上的公开仓库。每个 SKILL.md 一个目录。",
+        "sourceInvalid": "请输入不含用户名或令牌的 https:// 地址。",
+        "check": "检查仓库",
+        "checking": "检查中…",
+        "found": "{count, plural, other {找到 # 个技能}}。全部不勾选则安装所有技能。",
+        "noneFound": "已读取仓库，但在该 ref 和子目录下没有找到 SKILL.md。",
+        "trustedTitle": "按地址信任",
+        "trustedBody": "控制台不会读取此仓库。各 daemon 按此地址原样安装，不校验身份；安装失败会显示在各智能体的该来源旁。可安装整个来源，或在下方填写要安装的技能。",
+        "subdirNeedsRef": "控制台无法读取仓库时，子目录需要同时指定 ref。"
       }
     },
     "connectors": {

@@ -1328,7 +1328,9 @@ export const AgentSkillSourceDto = z.object({
   ref: z.string().nullable(),
   subDir: z.string().nullable(),
   skills: z.array(z.string()), // the source's own skill filter ([] ⇒ all)
-  private: z.boolean()
+  private: z.boolean(),
+  // Which code host's credential acquires it; null ⇒ anonymous (the console marks an anonymous off-GitHub source "trusted by URL").
+  credential: z.object({ provider: z.enum(['github', 'gitlab']) }).nullable()
 })
 export const AgentSkillSourceListDto = z.array(AgentSkillSourceDto)
 

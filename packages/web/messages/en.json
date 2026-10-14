@@ -2910,7 +2910,6 @@
         "chooseIndividualSkills": "Choose individual skills",
         "loadingSkills": "Loading skills…",
         "noSkillManifest": "No SKILL.md found in this source.",
-        "cannotListSkills": "Can’t list individual skills for this source — the whole source is enabled.",
         "skillInstallNote": "Managed bundles install from their pinned revision; Git sources install with <command>npx skills</command> on session start. Removing one stops installing it for this agent.",
         "skillsCommand": "npx skills",
         "servedByRuntime": "Served by the {runtime} runtime. Removing a server hides its tools from this agent.",
@@ -2919,7 +2918,25 @@
         "noAttachedServers": "This agent has no MCP servers attached.",
         "plusEverythingIn": "Plus everything in",
         "workspaceKnowledge": "workspace knowledge & skills",
-        "sharedAcrossAgents": ", shared across all agents."
+        "sharedAcrossAgents": ", shared across all agents.",
+        "addGitUrlSkillSource": "Import from a Git URL…",
+        "trustedByUrl": "trusted by URL",
+        "trustedByUrlHint": "Anonymous source on another host: installed from this address as given, with no repository identity check",
+        "manualSkillsHint": "The console can’t list this source’s skills. Name the ones to install, or leave blank for the whole source.",
+        "manualSkillsPlaceholder": "review-pr, safe-deploy",
+        "applySkills": "Apply",
+        "installFailed": "Last install failed",
+        "installFailedAt": "reported {date}",
+        "failureCodes": {
+          "resolution_failed": "The source could not be resolved: check the address and ref, and that the daemon's Git-origin policy allows this host.",
+          "access_denied": "The host refused access: the repository is private, or the credential no longer covers it.",
+          "ref_moved": "The ref moved while it was installing. The next reconcile retries it.",
+          "commit_unavailable": "The commit or subdirectory is not available from the host.",
+          "sha_fetch_refused": "The host refused to fetch the pinned commit.",
+          "fetch_failed": "Fetching the repository failed: the host may be unreachable, or it redirected.",
+          "limits_exceeded": "The source is over the install limits, or has no SKILL.md.",
+          "cli_failed": "The skills installer failed, or the workspace already has a skill folder with that name."
+        }
       },
       "reviewDialog": {
         "close": "Close",
@@ -3432,7 +3449,7 @@
       "searchRegistryDescription": "Find a skill in the public registry by name",
       "importGithub": "Import from GitHub",
       "importGithubDescription": "Register a repository you already know",
-      "empty": "No skills yet. Install one from skills.sh or import a GitHub source.",
+      "empty": "No skills yet. Install one from skills.sh, or import a source from GitHub or a Git URL.",
       "private": "private",
       "privateRepositoryHint": "Private repository — installed through the org GitHub App",
       "managedArchived": "managed · archived",
@@ -3506,6 +3523,24 @@
         "installsThousands": "{value}K installs",
         "installsCount": "{count, plural, one {# install} other {# installs}}",
         "installCommand": "{source} -s {skill}"
+      },
+      "importGit": "Import from a Git URL",
+      "importGitDescription": "A GitLab project or any HTTPS Git repository",
+      "trustedByUrl": "trusted by URL",
+      "trustedByUrlHint": "Anonymous source on another host: installed from this address as given, with no repository identity check",
+      "gitCreate": {
+        "title": "Import skills from a Git URL",
+        "source": "Repository URL",
+        "sourcePlaceholder": "https://gitlab.example.test/group/project",
+        "sourceHint": "A project on this deployment's GitLab, or a public repository on any HTTPS host. One folder per SKILL.md.",
+        "sourceInvalid": "Enter a plain https:// address with no user name or token in it.",
+        "check": "Check repository",
+        "checking": "Checking…",
+        "found": "{count, plural, one {# skill found} other {# skills found}}. Leave all unchecked to install every skill.",
+        "noneFound": "The repository was read, but no SKILL.md was found at this ref and subdir.",
+        "trustedTitle": "Trusted by URL",
+        "trustedBody": "The console does not read this repository. Each daemon installs it from this address as given, with no identity check, and a failure shows beside the source on each agent. Install the whole source, or name its skills below.",
+        "subdirNeedsRef": "A subdir needs a ref when the console cannot read the repository."
       }
     },
     "connectors": {

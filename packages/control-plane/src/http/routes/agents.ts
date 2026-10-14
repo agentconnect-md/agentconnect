@@ -2490,7 +2490,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List an agent’s enabled skill sources',
           description:
-            'Resolve the agent’s skill enable-list ("<source>/<skill>" refs) into the registry rows it references. Gated on viewing the AGENT, not the source: a source restricted away from the caller still resolves, because its definition is part of what this agent installs. Refs to a source that no longer exists are omitted.',
+            'Resolve the agent’s skill enable-list ("<source>/<skill>" refs) into the registry rows it references. Gated on viewing the AGENT, not the source: a source restricted away from the caller still resolves, because its definition is part of what this agent installs. Refs to a source that no longer exists are omitted. `credential` names the code host whose credential acquires the source, or is null when it is acquired anonymously.',
           operationId: 'listAgentSkillSources',
           params: IdParam,
           response: { 200: AgentSkillSourceListDto, 404: ErrorDto }
@@ -2514,7 +2514,8 @@ export function agentRoutes(deps: HttpDeps) {
                   ref: s.ref,
                   subDir: s.subDir,
                   skills: s.skills,
-                  private: s.private
+                  private: s.private,
+                  credential: s.credential ? { provider: s.credential.provider } : null
                 }
               ]
             : []
