@@ -41,6 +41,7 @@ import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { DELETION_PENDING_REASON, GitlabAccountService } from './gitlab/account.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
 import { GitlabGitcredService } from './gitlab/gitcred.service.js'
+import { resolveGitlabSkillSourceProjects } from './orchestrator/skillSource.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
 import { GitlabRetirementSweeper } from './gitlab/retirement-sweeper.js'
 import { GitlabConvergeSweeper } from './gitlab/converge-sweeper.js'
@@ -2617,6 +2618,7 @@ export function buildContainer(
             credentials: new PgGitlabProjectCredentialRepo(prisma),
             credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
             repoAuths: repos.agentRepoAuth,
+            skillSourceProjects: (agent) => resolveGitlabSkillSourceProjects(agent, repos.skillSource),
             clock,
             baseUrl: gitlab.api.baseUrl
           })

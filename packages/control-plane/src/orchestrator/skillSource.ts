@@ -177,6 +177,20 @@ export async function resolvePrivateSkillSourceRepos(
   return out
 }
 
+/** The GitLab half of that grant set: the project ids of the credentialed GitLab sources an agent enables. */
+export async function resolveGitlabSkillSourceProjects(
+  agent: Pick<AgentRecord, 'orgId' | 'skills'>,
+  repo: Pick<SkillSourceRepo, 'getByName'>
+): Promise<bigint[]> {
+  const names = [...new Set(agent.skills.map((ref) => parseSkillRef(ref).source))]
+  const out = new Set<bigint>()
+  for (const name of names) {
+    const row = await repo.getByName(agent.orgId, name)
+    if (row?.credential?.provider === 'gitlab') out.add(row.credential.repoId)
+  }
+  return [...out]
+}
+
 /**
  * Strip secrets from a source string for display outside the source's own
  * visibility (`GET /agents/:id/skill-sources`).

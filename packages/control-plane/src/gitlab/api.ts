@@ -169,7 +169,7 @@ const LISTING_BUDGET_MS = 60_000
 /** EVERY row of a paginated GET, following GitLab's `x-next-page` header.
  *  A caller's predicate is sound only over a complete listing (§7.2), so this
  *  never returns a partial one: a bound or a stuck header raises instead. */
-async function gitlabPagedGet<T>(path: string, opts: { auth: string; client: GitlabApiClient }): Promise<T[]> {
+async function gitlabPagedGet<T>(path: string, opts: { auth: string | null; client: GitlabApiClient }): Promise<T[]> {
   const deadline = Date.now() + LISTING_BUDGET_MS
   const rows: T[] = []
   let page = 1
@@ -400,6 +400,40 @@ export async function gitlabProject(
     if (e instanceof GitlabApiError && e.code === 'NOT_FOUND') return null
     throw e
   }
+}
+
+/** A project addressed by numeric id, or by its namespaced path for an anonymous read of a public one. */
+function projectSegment(project: bigint | string): string {
+  return typeof project === 'bigint' ? String(project) : encodeURIComponent(project)
+}
+
+/** Every blob path at `ref` (default branch when absent); null auth reads a public project anonymously. */
+export async function gitlabRepositoryBlobPaths(
+  auth: string | null,
+  project: bigint | string,
+  ref: string | undefined,
+  client: GitlabApiClient
+): Promise<string[]> {
+  const query = `recursive=true${ref ? `&ref=${encodeURIComponent(ref)}` : ''}`
+  const rows = await gitlabPagedGet<{ path?: unknown; type?: unknown }>(
+    `/projects/${projectSegment(project)}/repository/tree?${query}`,
+    { auth, client }
+  )
+  return rows.flatMap((row) => (row.type === 'blob' && typeof row.path === 'string' ? [row.path] : []))
+}
+
+/** The first page of a project's branch or tag names, as the GitHub preview lists them. */
+export async function gitlabRepositoryRefNames(
+  auth: string | null,
+  project: bigint | string,
+  kind: 'branches' | 'tags',
+  client: GitlabApiClient
+): Promise<string[]> {
+  const rows = await gitlabRequest<Array<{ name?: unknown }>>(
+    `/projects/${projectSegment(project)}/repository/${kind}?per_page=100`,
+    { auth, client }
+  )
+  return Array.isArray(rows) ? rows.flatMap((row) => (typeof row.name === 'string' ? [row.name] : [])) : []
 }
 
 /** GitLab access levels this integration reasons about. */

@@ -1,37 +1,43 @@
 /**
- * `http/routes/skill-sources.ts` (design docs/designs/shared-skills.md §4).
+ * `http/routes/skill-sources.ts` (design docs/designs/shared-skills.md §4, source-cache.md §11).
  *
  * CRUD for org-level shared-skills sources. A source records only WHERE skills
- * come from (a bounded public GitHub repository/tree path) plus its numeric
- * repository identity, optional ref, and skill filter — skill CONTENT never
- * touches the CP. The numeric identity is the CP's to resolve, not the client's:
- * projection drops a source without one, so a write that cannot bind it is
- * refused here instead of producing a row that looks enabled and installs
- * nothing (issue #935). The daemon acquires a commit-bound snapshot and installs it
- * with its bundled exact CLI before the ACP host spawns.
+ * come from (a bounded GitHub repository/tree path, or a project address on the
+ * deployment's GitLab instance) plus its identity, optional ref, and skill filter
+ * — skill CONTENT never touches the CP. A GitHub source's numeric identity is the
+ * CP's to resolve, not the client's: projection drops a source without one, so a
+ * write that cannot bind it is refused here (issue #935).
  *
- * There is NO secret side-table (unlike MCP providers): skills carry no upstream
- * credential of their own. A PRIVATE repository is admitted only when the org's
- * GitHub App installation covers its owner; the row records a GitHub credential reference, and
- * the gitcred broker treats an agent's enabled private sources as its read-only,
- * repository-scoped grant set (github/service.ts), so the daemon acquires it with a
- * short-lived installation token rather than anonymously. The definition is not
- * pushed on its own frame either — it rides INLINE on each enabling agent's
- * AgentSpec.skills (resolved by agentSpecAssembler). So a source change fans out to
- * `agent/upsert` for every agent that references it (§4 trade-off).
+ * There is NO secret side-table (unlike MCP providers): a credentialed source
+ * records only a provider-qualified repository reference. A private GitHub
+ * repository needs the org GitHub App installation on its owner; a private or
+ * internal GitLab project needs a managed project binding. The gitcred brokers
+ * treat an agent's enabled credentialed sources as its read-only, repository-scoped
+ * grant set, so the daemon acquires with a short-lived token rather than
+ * anonymously. The definition rides INLINE on each enabling agent's
+ * AgentSpec.skills, so a source change fans out to `agent/upsert` for every agent
+ * that references it (§4 trade-off).
  */
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
-import type { AgentRecord, SkillSourceRecord } from '../../persistence/ports.js'
+import type { AgentRecord, SkillSourceCredentialRef, SkillSourceRecord } from '../../persistence/ports.js'
 import type { OrgId } from '../../domain/ids.js'
+import { isGitHubSkillSource } from '@agentconnect.md/protocol'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { parseSkillRef, parseGithubSkillRepo as parseGithubRepo } from '../../orchestrator/skillSource.js'
+import {
+  gitlabSkillProjectPath,
+  resolveGitlabSkillProject,
+  scanGitlabSkillProject,
+  type GitlabSkillProject,
+  type GitlabSkillSourceDeps
+} from '../../gitlab/skill-source.js'
 import {
   CreateSkillSourceBody,
   UpdateSkillSourceBody,
@@ -107,6 +113,7 @@ function toDto(s: SkillSourceRecord, ctx: ViewCtx): SkillSourceDtoT {
     subDir: s.subDir,
     skills: s.skills,
     private: s.private,
+    credential: s.credential ? { provider: s.credential.provider, repoId: s.credential.repoId.toString() } : null,
     visibility: s.visibility,
     sharedWith: s.sharedWith,
     createdBy: s.createdByUserId,
@@ -173,6 +180,56 @@ export function skillSourceRoutes(deps: HttpDeps) {
         defaultBranch: binding.defaultBranch
       })
 
+    const gitlabSkills: GitlabSkillSourceDeps | null = deps.gitlab
+      ? { api: deps.gitlab.api, oauth: deps.gitlab.oauth, bindings: deps.repos.gitlabProjectBinding }
+      : null
+    const isGitlabSource = (source: string): boolean =>
+      gitlabSkills !== null && gitlabSkillProjectPath(gitlabSkills, source) !== null
+
+    // A credentialed GitLab source references its CodeHostRepository row like a GitHub one.
+    const convergeGitlabCatalog = (orgId: OrgId, project: Extract<GitlabSkillProject, { status: 'ok' }>) =>
+      project.credential
+        ? deps.repos.codeHostRepository.upsert({
+            orgId,
+            provider: 'gitlab',
+            externalId: project.credential.projectId,
+            displayPath: project.projectPath,
+            ...(project.credential.cloneUrl ? { cloneUrl: project.credential.cloneUrl } : {}),
+            ...(project.defaultBranch ? { defaultBranch: project.defaultBranch } : {})
+          })
+        : undefined
+
+    // Enabling a credentialed GitLab source makes each referrer a project consumer (§7.2), so a changed reference re-converges both projects.
+    const convergeGitlabConsumers = (
+      orgId: OrgId,
+      before: SkillSourceCredentialRef | null,
+      after: SkillSourceCredentialRef | null
+    ): void => {
+      const gitlab = deps.gitlab
+      if (!gitlab) return
+      const ids = new Set<bigint>()
+      for (const ref of [before, after]) if (ref?.provider === 'gitlab') ids.add(ref.repoId)
+      if (before?.provider === 'gitlab' && after?.provider === 'gitlab' && before.repoId === after.repoId) return
+      for (const id of ids) {
+        void gitlab.provisioner
+          .convergeProject(orgId, id)
+          .catch((err: unknown) => app.log.warn({ err, projectId: String(id) }, 'skill source: gitlab converge failed'))
+      }
+    }
+
+    const rejectGitlab = (reply: FastifyReply, project: Exclude<GitlabSkillProject, { status: 'ok' }>) =>
+      project.status === 'unreachable'
+        ? reply.code(503).send(gitlabUnavailable)
+        : reply
+            .code(400)
+            .send(
+              project.status === 'subpath'
+                ? gitlabSubpath
+                : project.status === 'needs-binding'
+                  ? gitlabPrivateNeedsBinding
+                  : gitlabProjectNotFound
+            )
+
     // A private repository is installable only through the org GitHub App: that
     // installation is what the gitcred broker mints the daemon's read token from.
     // Seeing `private: true` from any other read (a test double, or a future
@@ -186,7 +243,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
     const rejectUnbound = (reply: FastifyReply, binding: RepoBinding) =>
       binding.status === 'unreachable'
         ? reply.code(503).send(bindingUnavailable)
-        : reply.code(400).send(binding.status === 'not-found' ? repoNotFound : notAGithubRepo)
+        : reply.code(400).send(binding.status === 'not-found' ? repoNotFound : unsupportedSource)
 
     // Re-inline a source's definition onto every agent that enables it and push
     // the refreshed spec. Best-effort per agent (the register/ok roster is the
@@ -287,7 +344,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'List a skill source’s skills',
           description:
-            'Best-effort scan of the source repo for its SKILL.md manifest, for the per-agent skill picker. Returns resolvable:false + an empty list when the source is not a scannable GitHub repo reachable by an installation (the UI then offers whole-source enablement only).',
+            'Best-effort scan of the source repo for its SKILL.md manifest, for the per-agent skill picker. GitHub sources are scanned through an App installation; GitLab sources through the GitLab API (anonymously for a public project, through the managed binding’s connection for a private one). Returns resolvable:false + an empty list when the source cannot be scanned (the UI then offers whole-source enablement only).',
           operationId: 'listSkillSourceSkills',
           params: IdParam,
           response: { 200: SkillSourceSkillsDto, 404: ErrorDto }
@@ -296,6 +353,27 @@ export function skillSourceRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const s = await deps.repos.skillSource.get(orgOf(req), req.params.id)
         if (!s || !canView(s, ctxOf(req))) return notFound(reply)
+        // Never offer skills the resolver would later drop (`resolveAgentSkillEntries` intersects with s.skills).
+        const allowed = s.skills.length > 0 ? new Set(s.skills) : null
+        const filtered = (skills: Array<{ name: string; dirPath: string }>) =>
+          allowed ? skills.filter((sk) => allowed.has(sk.name)) : skills
+        if (gitlabSkills && isGitlabSource(s.source)) {
+          const path = gitlabSkillProjectPath(gitlabSkills, s.source)!
+          const target =
+            s.credential?.provider === 'gitlab' ? { projectId: s.credential.repoId } : { projectPath: path }
+          try {
+            const scan = await scanGitlabSkillProject(
+              gitlabSkills,
+              orgOf(req),
+              target,
+              s.ref ?? undefined,
+              s.subDir ?? undefined
+            )
+            return { resolvable: true, skills: filtered(scan.skills) }
+          } catch {
+            return { resolvable: false, skills: [] }
+          }
+        }
         const gh = deps.github
         const parsed = parseGithubRepo(s.source)
         if (!gh || !parsed) return { resolvable: false, skills: [] }
@@ -311,11 +389,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
             s.ref ?? parsed.ref,
             s.subDir ?? parsed.subDir
           )
-          // Honor the source's own skill filter: never offer skills the resolver
-          // would later drop (`resolveAgentSkillEntries` intersects with s.skills).
-          const allowed = s.skills.length > 0 ? new Set(s.skills) : null
-          const skills = allowed ? scan.skills.filter((sk) => allowed.has(sk.name)) : scan.skills
-          return { resolvable: true, skills }
+          return { resolvable: true, skills: filtered(scan.skills) }
         } catch {
           return { resolvable: false, skills: [] }
         }
@@ -327,23 +401,39 @@ export function skillSourceRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Skills],
-          summary: 'Preview a GitHub skill source',
+          summary: 'Preview a skill source',
           description:
-            'Best-effort scan of a repo for the import dialog: branch + tag choices and the SKILL.md manifest. Requires a GitHub App installation reachable by the caller; scan failure yields an empty skill list (install all).',
+            'Best-effort scan of a repo for the import dialog: branch + tag choices and the SKILL.md manifest. A GitHub repo is named by installation, owner, and repo and needs a GitHub App installation reachable by the caller; a GitLab project is named by its `source` address on the deployment’s GitLab instance and is read anonymously when public, or through its managed binding when private (400 when it is private and unmanaged, 503 while GitLab is unreachable). Scan failure yields an empty skill list (install all).',
           operationId: 'previewSkillSource',
           body: PreviewSkillSourceBody,
-          response: { 200: SkillSourcePreviewDto, 403: ErrorDto, 404: ErrorDto }
+          response: { 200: SkillSourcePreviewDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
+        const body = req.body
+        if ('source' in body) {
+          if (!gitlabSkills || !isGitlabSource(body.source)) return notFound(reply)
+          const project = await resolveGitlabSkillProject(gitlabSkills, orgOf(req), body.source)
+          if (!project) return notFound(reply)
+          if (project.status !== 'ok') return rejectGitlab(reply, project)
+          const target = project.credential
+            ? { projectId: project.credential.projectId }
+            : { projectPath: project.projectPath }
+          // A failed scan is an empty manifest (install all), as for GitHub.
+          return scanGitlabSkillProject(gitlabSkills, orgOf(req), target, body.ref, body.subDir).catch(() => ({
+            branches: [] as string[],
+            tags: [] as string[],
+            skills: [] as Array<{ name: string; dirPath: string }>
+          }))
+        }
         const gh = deps.github
         if (!gh) return notFound(reply) // github-app feature off — no scan possible
-        const ins = await deps.repos.githubInstallation.get(orgOf(req), req.body.installationId)
+        const ins = await deps.repos.githubInstallation.get(orgOf(req), body.installationId)
         if (!ins || ins.revokedAt) return notFound(reply)
         const [branches, scan] = await Promise.all([
-          gh.listBranches(ins, req.body.owner, req.body.repo).catch(() => [] as string[]),
-          gh.scanSkillSource(ins, req.body.owner, req.body.repo, req.body.ref)
+          gh.listBranches(ins, body.owner, body.repo).catch(() => [] as string[]),
+          gh.scanSkillSource(ins, body.owner, body.repo, body.ref)
         ])
         return { branches, tags: scan.tags, skills: scan.skills }
       }
@@ -356,7 +446,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Register a skill source',
           description:
-            'Register an org-level GitHub skill source. The numeric repository identity is resolved server-side (org installation first, then a public read), so no client needs to know it; `githubRepoId` in the body only overrides that lookup. A private repository is accepted when the org GitHub App installation covers its owner: the row is marked `private` and daemons acquire it with a read-only installation token minted for every agent that enables the source. A repository that cannot be identified is rejected — 400 when GitHub says it does not exist, 503 while GitHub is unreachable — rather than persisted as a row the projection would silently drop. The daemon acquires a bounded local snapshot; the remote source is never passed to the CLI. `skills` empty ⇒ install every skill the snapshot exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
+            'Register an org-level skill source: a GitHub repository, or a project on the deployment’s GitLab instance named by its HTTPS address with ref and subDir separate. A public GitLab project is acquired anonymously; a private or internal one must be a managed GitLab project, and the row then records its numeric project id as the credential daemons acquire through. For GitHub, the numeric repository identity is resolved server-side (org installation first, then a public read), so no client needs to know it; `githubRepoId` in the body only overrides that lookup. A private repository is accepted when the org GitHub App installation covers its owner: the row is marked `private` and daemons acquire it with a read-only installation token minted for every agent that enables the source. A repository that cannot be identified is rejected — 400 when GitHub says it does not exist, 503 while GitHub is unreachable — rather than persisted as a row the projection would silently drop. The daemon acquires a bounded local snapshot; the remote source is never passed to the CLI. `skills` empty ⇒ install every skill the snapshot exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
           operationId: 'createSkillSource',
           body: CreateSkillSourceBody,
           response: {
@@ -375,40 +465,50 @@ export function skillSourceRoutes(deps: HttpDeps) {
           req.body.visibility === 'restricted' && req.body.sharedWith
             ? await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
             : undefined
-        const binding = await resolveRepoBinding(orgOf(req), req.body.source)
-        if (privateWithoutInstallation(binding)) return reply.code(400).send(privateNeedsInstallation)
-        // Bind the numeric identity server-side. A client-supplied id still wins (it is
-        // the same fact, already verified by the daemon before acquisition), but no
-        // client has to know it — which is what made every console-created source
-        // non-installable (#935).
-        const repoId = parseRepoId(req.body.githubRepoId) ?? (binding.status === 'ok' ? binding.repoId : undefined)
-        if (repoId === undefined) return rejectUnbound(reply, binding)
-        // Store the slug GitHub redirected us to, not the one that was typed: the
-        // daemon requires the two to agree before it will acquire anything.
-        const source = binding.status === 'ok' && repoId === binding.repoId ? binding.canonicalSource : req.body.source
-        if (source === null) return reply.code(400).send(renamedRepo)
-        const ref = req.body.ref ?? (req.body.subDir && binding.status === 'ok' ? binding.defaultBranch : undefined)
-        // A subdir source needs a ref; if we couldn't resolve one reject rather than
-        // let the daemon assume `main`.
+        let admitted: { source: string; githubRepoId: bigint | null; credential: SkillSourceCredentialRef | null }
+        let defaultBranch: string | undefined
+        if (gitlabSkills && isGitlabSource(req.body.source)) {
+          if (req.body.githubRepoId !== undefined) return reply.code(400).send(githubIdOnGitlab)
+          const project = await resolveGitlabSkillProject(gitlabSkills, orgOf(req), req.body.source)
+          if (!project) return reply.code(400).send(unsupportedSource)
+          if (project.status !== 'ok') return rejectGitlab(reply, project)
+          await convergeGitlabCatalog(orgOf(req), project)
+          defaultBranch = project.defaultBranch
+          admitted = {
+            source: project.source,
+            githubRepoId: null,
+            credential: project.credential ? { provider: 'gitlab', repoId: project.credential.projectId } : null
+          }
+        } else {
+          if (!isGitHubSkillSource(req.body.source)) return reply.code(400).send(unsupportedSource)
+          const binding = await resolveRepoBinding(orgOf(req), req.body.source)
+          if (privateWithoutInstallation(binding)) return reply.code(400).send(privateNeedsInstallation)
+          // Bind the numeric identity server-side; a client-supplied id still wins, but no client has to know it (#935).
+          const repoId = parseRepoId(req.body.githubRepoId) ?? (binding.status === 'ok' ? binding.repoId : undefined)
+          if (repoId === undefined) return rejectUnbound(reply, binding)
+          // Store the slug GitHub redirected us to: the daemon requires it to agree with the id.
+          const source =
+            binding.status === 'ok' && repoId === binding.repoId ? binding.canonicalSource : req.body.source
+          if (source === null) return reply.code(400).send(renamedRepo)
+          // Credentialed only from the read that bound the id; a client cannot declare a repo private.
+          const credentialed = binding.status === 'ok' && repoId === binding.repoId && binding.private
+          if (credentialed) await convergeCatalog(orgOf(req), binding)
+          defaultBranch = binding.status === 'ok' ? binding.defaultBranch : undefined
+          admitted = { source, githubRepoId: repoId, credential: credentialed ? { provider: 'github', repoId } : null }
+        }
+        const ref = req.body.ref ?? (req.body.subDir ? defaultBranch : undefined)
+        // A subdir source needs a ref; reject rather than let the daemon assume `main`.
         if (req.body.subDir && !ref) return reply.code(400).send(subdirNeedsRef)
-        // Credentialed only from the read that bound the id; a client cannot declare a repo private.
-        const credentialed = binding.status === 'ok' && repoId === binding.repoId && binding.private
-        if (credentialed) await convergeCatalog(orgOf(req), binding)
-        // Name-capture guard — the mirror image of the delete guard: agents bind
-        // by NAME, so registering a source under a name agents already enable
-        // would capture their installs onto this new source without any per-agent
-        // consent. The repo refuses while referenced (null), with the reference
-        // scan and the insert in one transaction under the (orgId, name) advisory
-        // scope — atomic against enable-list writes and a same-name delete.
+        // Name-capture guard: agents bind by NAME, so the repo refuses (null) while one already enables this name, under the (orgId, name) scope.
         const created = await deps.repos.skillSource.create({
           orgId: orgOf(req),
           name: req.body.name,
-          source,
-          githubRepoId: repoId,
+          source: admitted.source,
+          githubRepoId: admitted.githubRepoId,
           ...(ref !== undefined ? { ref } : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
           skills: req.body.skills,
-          credential: credentialed ? { provider: 'github', repoId } : null,
+          credential: admitted.credential,
           ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
           ...(sharedWith ? { sharedWith } : {}),
           ...(req.principal ? { createdByUserId: req.principal.userId } : {})
@@ -432,7 +532,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Update a skill source',
           description:
-            'Edit a source’s source string, ref, subdir, or skill filter. `skills` replaces the stored filter wholesale. Name is immutable (agents bind by name; recreate to rename). Changes re-push every agent that enables this source. The numeric repository identity is re-resolved when the source changes or the row never had one — which is how a historical unbound row is repaired — and clearing it is refused, since an unbound source can never install.',
+            'Edit a source’s source string, ref, subdir, or skill filter. `skills` replaces the stored filter wholesale. Name is immutable (agents bind by name; recreate to rename). Changes re-push every agent that enables this source. The numeric repository identity is re-resolved when the source changes or the row never had one — which is how a historical unbound row is repaired — and clearing it is refused, since an unbound source can never install. A GitLab source is re-resolved on every edit, so its credential follows the project’s current visibility; an unchanged one keeps its stored identity while GitLab is unreachable.',
           operationId: 'updateSkillSource',
           params: IdParam,
           body: UpdateSkillSourceBody,
@@ -445,46 +545,66 @@ export function skillSourceRoutes(deps: HttpDeps) {
         if (!existing || !canView(existing, ctxOf(req))) return notFound(reply)
         if (req.body.githubRepoId === null) return reply.code(400).send(unbindNotAllowed)
         const effSource = req.body.source ?? existing.source
-        const binding = await resolveRepoBinding(orgOf(req), effSource)
-        // Same installation guard as create, on the EFFECTIVE source — a PATCH that
-        // points an existing source at a private repo the App cannot reach is refused.
-        if (privateWithoutInstallation(binding)) return reply.code(400).send(privateNeedsInstallation)
-        // Re-bind when the identity would otherwise be wrong or missing: a changed
-        // source, or a historical row that never got one. This is what repairs the
-        // NULL rows already in the wild — PATCH had no way to fix them (#935). An
-        // unchanged, already-bound row is left alone, so an unrelated `skills` edit
-        // still succeeds while GitHub is unreachable.
         const rebind = req.body.source !== undefined && req.body.source !== existing.source
-        const repoId =
-          parseRepoId(req.body.githubRepoId) ??
-          (rebind || existing.githubRepoId === null
-            ? binding.status === 'ok'
-              ? binding.repoId
-              : undefined
-            : existing.githubRepoId)
-        if (repoId === undefined) return rejectUnbound(reply, binding)
-        // Persist the canonical slug whenever this write bound the id — including a
-        // back-fill, where the stored source may name a repo that has since moved.
-        const bound = binding.status === 'ok' && repoId === binding.repoId
-        const canonicalSource = bound ? binding.canonicalSource : effSource
-        if (canonicalSource === null) return reply.code(400).send(renamedRepo)
-        // Preserve an explicit ref across an unrelated PATCH: only resolve a default
-        // branch when the EFFECTIVE ref is absent (untouched-and-existing counts as
-        // present), so a `skills`-only edit can't silently rewrite the pinned ref.
+        let admitted: { source: string; githubRepoId: bigint | null; credential: SkillSourceCredentialRef | null }
+        let defaultBranch: string | undefined
+        if (gitlabSkills && isGitlabSource(effSource)) {
+          if (req.body.githubRepoId !== undefined) return reply.code(400).send(githubIdOnGitlab)
+          const project = await resolveGitlabSkillProject(gitlabSkills, orgOf(req), effSource)
+          if (!project) return reply.code(400).send(unsupportedSource)
+          if (project.status === 'ok') {
+            await convergeGitlabCatalog(orgOf(req), project)
+            defaultBranch = project.defaultBranch
+            admitted = {
+              source: project.source,
+              githubRepoId: null,
+              credential: project.credential ? { provider: 'gitlab', repoId: project.credential.projectId } : null
+            }
+          } else if (project.status === 'unreachable' && !rebind && existing.githubRepoId === null) {
+            // An unchanged source keeps its stored identity while GitLab is unreachable, as a bound GitHub row does.
+            admitted = { source: existing.source, githubRepoId: null, credential: existing.credential }
+          } else {
+            return rejectGitlab(reply, project)
+          }
+        } else {
+          if (rebind && !isGitHubSkillSource(effSource)) return reply.code(400).send(unsupportedSource)
+          const binding = await resolveRepoBinding(orgOf(req), effSource)
+          // Same installation guard as create, on the EFFECTIVE source.
+          if (privateWithoutInstallation(binding)) return reply.code(400).send(privateNeedsInstallation)
+          // Re-bind on a changed source or a historical unbound row (#935); an unchanged bound row survives GitHub being unreachable.
+          const repoId =
+            parseRepoId(req.body.githubRepoId) ??
+            (rebind || existing.githubRepoId === null
+              ? binding.status === 'ok'
+                ? binding.repoId
+                : undefined
+              : existing.githubRepoId)
+          if (repoId === undefined) return rejectUnbound(reply, binding)
+          // Persist the canonical slug whenever this write bound the id, including a back-fill of a moved repo.
+          const bound = binding.status === 'ok' && repoId === binding.repoId
+          const canonicalSource = bound ? binding.canonicalSource : effSource
+          if (canonicalSource === null) return reply.code(400).send(renamedRepo)
+          // A write that bound the id refreshes visibility from that read; unreachable GitHub keeps the stored credential.
+          const credentialed = bound ? binding.private : existing.credential?.provider === 'github'
+          if (bound && binding.private) await convergeCatalog(orgOf(req), binding)
+          defaultBranch = binding.status === 'ok' ? binding.defaultBranch : undefined
+          admitted = {
+            source: canonicalSource,
+            githubRepoId: repoId,
+            credential: credentialed ? { provider: 'github', repoId } : null
+          }
+        }
+        // Only resolve a default branch when the EFFECTIVE ref is absent, so a `skills`-only edit keeps a pinned ref.
         const refTouched = req.body.ref !== undefined
         const currentRef = refTouched ? (req.body.ref ?? undefined) : (existing.ref ?? undefined)
         const effSubDir =
           req.body.subDir === undefined ? (existing.subDir ?? undefined) : (req.body.subDir ?? undefined)
-        const resolvedRef = currentRef ?? (effSubDir && binding.status === 'ok' ? binding.defaultBranch : undefined)
-        // A subdir source needs a ref; reject if we couldn't resolve one rather than
-        // let the daemon assume `main`.
+        const resolvedRef = currentRef ?? (effSubDir ? defaultBranch : undefined)
+        // A subdir source needs a ref; reject rather than let the daemon assume `main`.
         if (effSubDir && !resolvedRef) return reply.code(400).send(subdirNeedsRef)
-        // A write that bound the id refreshes visibility from that read; unreachable GitHub keeps the stored credential.
-        const credentialed = bound ? binding.private : existing.credential?.provider === 'github'
-        if (bound && binding.private) await convergeCatalog(orgOf(req), binding)
         const source = await deps.repos.skillSource.update(orgOf(req), existing.id, {
-          ...(canonicalSource !== existing.source ? { source: canonicalSource } : {}),
-          githubRepoId: repoId,
+          ...(admitted.source !== existing.source ? { source: admitted.source } : {}),
+          githubRepoId: admitted.githubRepoId,
           ...(resolvedRef !== undefined
             ? { ref: resolvedRef }
             : refTouched && req.body.ref === null
@@ -492,8 +612,9 @@ export function skillSourceRoutes(deps: HttpDeps) {
               : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
           ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
-          credential: credentialed ? { provider: 'github', repoId } : null
+          credential: admitted.credential
         })
+        convergeGitlabConsumers(orgOf(req), existing.credential, source.credential)
         await fanOutToReferrers(orgOf(req), source.name)
         return toDto(source, ctxOf(req))
       }
@@ -604,10 +725,41 @@ const repoNotFound = {
     'no such GitHub repository (or a private one the org GitHub App cannot see) — a source that cannot be identified can never install'
 }
 
-const notAGithubRepo = {
+const unsupportedSource = {
   error: 'Bad Request',
   statusCode: 400,
-  message: 'source must name a GitHub repository so its numeric identity can be bound'
+  message: "source must name a GitHub repository or a project on this deployment's GitLab instance"
+}
+
+const gitlabSubpath = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'a GitLab skill source is the project address; set the ref and subdirectory separately'
+}
+
+const gitlabPrivateNeedsBinding = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message:
+    'no public GitLab project at that address; a private or internal project is read through a managed project — add it to the organization first'
+}
+
+const gitlabProjectNotFound = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: "the organization's GitLab connection cannot see that project"
+}
+
+const gitlabUnavailable = {
+  error: 'Service Unavailable',
+  statusCode: 503,
+  message: 'could not reach GitLab to identify the project — retry shortly'
+}
+
+const githubIdOnGitlab = {
+  error: 'Bad Request',
+  statusCode: 400,
+  message: 'githubRepoId applies only to a GitHub source'
 }
 
 const bindingUnavailable = {

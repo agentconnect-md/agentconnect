@@ -123,7 +123,11 @@ class McpEnableDenied extends Error {}
 /** The skill-source twin: thrown inside the source-name fence when the in-fence
  *  visibility re-check refuses a submitted skill-ref; the route maps it to a 403. */
 class SkillEnableDenied extends Error {}
-import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
+import {
+  parseSkillRef,
+  redactSourceCredentials,
+  resolveGitlabSkillSourceProjects
+} from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import {
   MemoryHomeRefusedError,
@@ -1560,6 +1564,21 @@ export function agentRoutes(deps: HttpDeps) {
       })()
     }
 
+    // An enable-list change adds or drops the agent as a consumer of each credentialed GitLab skill project (§7.2).
+    const convergeGitlabSkillProjects = (orgId: OrgId, before: string[], after: string[]): void => {
+      const gitlab = deps.gitlab
+      if (!gitlab) return
+      const warn = (err: unknown): void => app.log.warn({ err }, 'skill source: gitlab converge failed')
+      void (async () => {
+        const [was, now] = await Promise.all([
+          resolveGitlabSkillSourceProjects({ orgId, skills: before }, deps.repos.skillSource),
+          resolveGitlabSkillSourceProjects({ orgId, skills: after }, deps.repos.skillSource)
+        ])
+        const changed = [...was.filter((id) => !now.includes(id)), ...now.filter((id) => !was.includes(id))]
+        for (const id of changed) await gitlab.provisioner.convergeProject(orgId, id).catch(warn)
+      })().catch(warn)
+    }
+
     // The alive relay's HTTP origin for MCP proxy defs (ws→http/wss→https), or null
     // when no relay is live. Mirrors the mcp-providers route's relayBaseUrl.
     const relayProxyBase = async (): Promise<string | null> => {
@@ -2252,6 +2271,7 @@ export function agentRoutes(deps: HttpDeps) {
           }
           await syncMcpDefsForAgent(agent, [], agent.mcpServers)
           convergeWorkspaceRepositories(agent.orgId, [agent])
+          convergeGitlabSkillProjects(agent.orgId, [], agent.skills)
           return reply.code(201).send({
             ...toDto(
               agent,
@@ -2906,6 +2926,7 @@ export function agentRoutes(deps: HttpDeps) {
           if (agent.daemonId === existing.daemonId) {
             await syncMcpDefsForAgent(agent, existing.mcpServers, agent.mcpServers)
           }
+          if (req.body.skills !== undefined) convergeGitlabSkillProjects(agent.orgId, existing.skills, agent.skills)
           return toDto(
             agent,
             ctxOf(req),
