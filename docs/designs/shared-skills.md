@@ -13,9 +13,11 @@
 >
 > **Requirement mapping:**
 >
-> 1. The Tools & Skills page offers **Import from GitHub** and records a skills
->    source, either a repository or an install directory inside one. See the
->    Control Plane registry in section 4 and Web changes in section 7.
+> 1. The Tools & Skills page offers **Import from GitHub** and **Import from a
+>    Git URL** and records a skills source: a repository, or an install
+>    directory inside one, on GitHub, on GitLab, or (public only) on any HTTPS
+>    Git host. See section 3, the Control Plane registry in section
+>    4, and Web changes in section 7.
 > 2. After the daemon finishes cloning a workspace repository and before it
 >    starts an ACP host, it feeds every enabled Git, managed, and accepted-local
 >    source through the same exact installed `skills` CLI. The CLI chooses the
@@ -44,8 +46,9 @@ that machinery:
   agent's directory convention, so AgentConnect need not track destinations per
   runtime.
 - Upstream accepts several remote and local source forms. AgentConnect narrows
-  remote admission to bounded GitHub repository forms, acquires them itself,
-  and gives the CLI only a local immutable snapshot.
+  remote admission to bounded GitHub repository forms and plain HTTPS Git
+  addresses (section 3), acquires them itself, and gives the CLI only a local
+  immutable snapshot.
 - Installation creates a **symlink** to one canonical copy by default;
   `--copy` creates a copy instead.
 - Non-interactive flags include `-y` to skip confirmation, `-a` to select an
@@ -76,11 +79,22 @@ digests and CLI-derived relative roots outside the agent-writable workspace.
   released daemon and owns runtime layout in a private staging cell; production
   never invokes `npx` or resolves an installer package from the network. A
   trusted external ledger owns publication and cleanup in the live workspace.
-- **Cluster sandbox:** the daemon acquires and pins sources, then uploads bounded
-  immutable snapshots over the dedicated shim capability. The runtime image
-  bundles the same `skills@1.5.21` CLI; the shim validates bytes, publishes only
-  receipt-owned roots, and returns the applied ledger before ACP starts. Shared
-  journal writes are fenced by duty term and SandboxClaim UID.
+- **Cluster sandbox:** the daemon pins every Git source to a commit. A shim
+  that advertises `skill-git-in-pod-v1` fetches Git sources itself through the
+  Source Cache ([source-cache.md](source-cache.md) §8); for an older shim the
+  daemon acquires them and uploads bounded immutable snapshots over the
+  dedicated shim capability. Managed and accepted-local sources are always
+  uploaded. The runtime image bundles the same `skills@1.5.21` CLI; the shim
+  validates bytes, publishes only receipt-owned roots, and returns the applied
+  ledger before ACP starts. Shared journal writes are fenced by duty term and
+  SandboxClaim UID.
+- **Hosts:** Git sources may live on GitHub (public or private through the
+  organization's GitHub App), on the deployment's GitLab instance (public, or
+  private through a managed project), or on any other HTTPS Git host (public
+  only, trusted by URL). See section 3.
+- **Failure status:** after each committed reconcile the daemon reports every
+  Git source it could not install, by name and an enumerated reason code; the
+  console shows the latest code beside the source (section 6.3).
 
 The publisher, durable ledger, and shared shim admit up to 64 installed bundles,
 each with 64 files and relative paths of at most 1024 UTF-8 bytes. Byte ceilings follow
@@ -114,14 +128,17 @@ unstage retains its move token but does not claim duty or start a non-holder run
 
 Implementation anchors:
 
-| Building block                               | Location                                                          | Role                                                        |
-| -------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------- |
-| Organization registry and visibility         | `prisma/schema.prisma` and `http/routes/skill-sources.ts`         | Store GitHub source metadata and agent enablement           |
-| Private-source read grants                   | `github/service.ts` (`resolveAgentRepoAuthorizationByName`)       | Mint repo-scoped read tokens for enabled private sources    |
-| Per-agent projection and distribution        | `orchestrator/skillSource.ts` and `AgentSpec.skills`              | Validate/filter rows and reuse `agent/upsert`/`register/ok` |
-| Workspace clone/pull and cold-host gate      | `prepareWorkspace` in `workspace/workspace-manager.ts`            | Reconcile skills **after cloning** and before every host    |
-| Bounded GitHub acquisition and origin policy | `skills/skill-git-source.ts` and `workspace/git-origin-policy.ts` | Produce commit-bound local snapshots                        |
-| Cluster journal and shim publication         | `skills/cluster-skill-coordinator.ts` and `shim/skill-handler.ts` | Upload, replay, publish, and receipt-fence sandbox skills   |
+| Building block                          | Location                                                                                                                                                            | Role                                                                  |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Organization registry and visibility    | `prisma/schema.prisma` and `http/routes/skill-sources.ts`                                                                                                           | Store source metadata, its credential reference, and agent enablement |
+| Source admission                        | `normalizeSkillSource` in protocol `git-url.ts`; `gitlab/skill-source.ts` (`resolveGitlabSkillProject`) and `otherHostSkillSource` in `orchestrator/skillSource.ts` | Admit GitHub, GitLab, and other-host sources                          |
+| Private-source read grants              | `github/service.ts` (`resolveAgentRepoAuthorizationByName`); `gitlab/gitcred.service.ts` over `resolveGitlabSkillSourceProjects`                                    | Mint read tokens scoped to each enabled private source                |
+| Per-agent projection and distribution   | `orchestrator/skillSource.ts` and `AgentSpec.skills`                                                                                                                | Validate/filter rows and reuse `agent/upsert`/`register/ok`           |
+| Workspace clone/pull and cold-host gate | `prepareWorkspace` in `workspace/workspace-manager.ts`                                                                                                              | Reconcile skills **after cloning** and before every host              |
+| Bounded acquisition and origin policy   | `skills/skill-git-source.ts`, `skills/skill-git-hosted.ts`, and `workspace/git-origin-policy.ts`                                                                    | Produce commit-bound local snapshots on the daemon path               |
+| In-pod Git acquisition                  | `skills/sandbox-skill-reconcile.ts`, `skills/pod-skill-ref.ts`, and `shim/skill-git-acquire.ts`                                                                     | Plan, resolve, and fetch Git sources inside the pod                   |
+| Cluster journal and shim publication    | `skills/cluster-skill-coordinator.ts` and `shim/skill-handler.ts`                                                                                                   | Upload, replay, publish, and receipt-fence sandbox skills             |
+| Failure status                          | `skills/skill-source-failure.ts`; CP `ws/handlers/agent-skill-status.ts` and `GET /agents/:id/skill-source-status`                                                  | Report, store, and serve each source's latest reason code             |
 
 ## 2. Goals and non-goals
 
@@ -151,14 +168,15 @@ Implementation anchors:
 
 ## 3. Shape of a skill source
 
-> **Relocated by [source-cache.md](source-cache.md) (proposed).** From its P3,
-> the GitHub-only host restriction below is superseded: a source's identity is an
-> address plus `credential?` (GitHub, GitLab, or anonymous on any host), per
-> source-cache.md §5 and §11. The rest of this section is unchanged.
-
-One Git source is a credential-free remote repository definition plus an
-optional ref, subdirectory, and skill selection. The daemon first acquires it
-through its hardened Git path and gives the CLI only a private local snapshot:
+One Git source is a credential-free remote repository address plus an optional
+ref, subdirectory, and skill selection, and an optional `credential` naming who
+vouches for it: `{ provider: 'github' }`, `{ provider: 'gitlab', projectId }`,
+or absent for an anonymous source. A code host is a credential variant, never a
+separate source kind; the shape follows the workspace contract
+([git-workspace-model.md](git-workspace-model.md) §2–§3, and
+[source-cache.md](source-cache.md) §5 and §11). The daemon first acquires the
+source through its hardened Git path and gives the CLI only a private local
+snapshot:
 
 - `owner/repo` installs every skill from the repository.
 - `owner/repo` with `skills: ["review-pr", "safe-deploy"]` installs only those
@@ -172,36 +190,54 @@ through its hardened Git path and gives the CLI only a private local snapshot:
   transitively, since installing such an alias alone yields a broken skill —
   and the CLI output must be exactly the resolved leaf set.
 - `https://github.com/owner/repo/tree/<ref>/<subdir>` points directly to a
-  directory or ref inside the repository.
-- Accepted remote spellings are `owner/repo`, canonical
-  `https://github.com/owner/repo[.git]`, GitHub
+  directory or ref inside a GitHub repository. Every other host names the
+  repository only; ref and subdirectory travel as separate fields.
+
+**Admission vocabulary.** `normalizeSkillSource` in the protocol's
+`git-url.ts` is the one parser for protocol decode and Control Plane
+admission; the daemon checks the same rules again at acquisition:
+
+- A source naming github.com keeps the bounded GitHub vocabulary: `owner/repo`,
+  canonical `https://github.com/owner/repo[.git]`,
   `https://github.com/owner/repo/tree/<ref>[/<subdir>]`, and the standard
-  `git@github.com:owner/repo[.git]` or
-  `ssh://git@github.com/owner/repo[.git]` forms. Standard GitHub SSH inputs
-  must canonicalize to the same exact HTTPS repository authority before any
-  network effect; if the operator policy does not authorize that HTTPS origin,
-  acquisition fails closed.
-- GitLab, other Git hosts, custom ports, other SSH roles, embedded credentials,
-  query strings, fragments, and unsafe ref/subdirectory syntax are rejected at
-  protocol and Control Plane admission, before acquisition or CLI effects. The
-  canonical GitHub origin must also pass the daemon operator's Git-origin
-  policy.
-- Every installable entry carries GitHub's canonical positive decimal
+  `git@github.com:owner/repo[.git]` or `ssh://git@github.com/owner/repo[.git]`
+  forms. Standard GitHub SSH inputs must canonicalize to the same exact HTTPS
+  repository authority before any network effect; if the operator policy does
+  not authorize that HTTPS origin, acquisition fails closed. Custom ports and
+  other SSH roles on github.com are rejected.
+- A source on any other host must be a plain `https://` address with a
+  repository path. SSH and scp forms, embedded credentials, query strings,
+  fragments, and `.`/`..` path segments are rejected.
+- Unsafe ref and subdirectory syntax is rejected on every host, before
+  acquisition or CLI effects. Every canonical origin must also pass the daemon
+  operator's Git-origin policy (`workspaceGitAllowedOrigins`,
+  [git-workspace-model.md](git-workspace-model.md) §10), which is the only host
+  list: the Control Plane keeps none.
+- `githubRepoId` is present exactly when the source names github.com, and a
+  `credential` must match its host: `github` only on github.com, `gitlab` only
+  elsewhere. The legacy `private: true` flag is still projected beside a GitHub
+  credential so a daemon that predates `credential` acquires as before;
+  `skillSourceCredential` reads either spelling.
+
+**GitHub sources.**
+
+- Every installable GitHub entry carries GitHub's canonical positive decimal
   repository ID. The daemon calls the numeric repository endpoint before and
-  after the owner/name-based commit lookup and requires the returned ID,
-  and `full_name` to match exactly. A rename, deletion, or replacement at the
-  old name therefore fails closed before archive download.
-- Public repositories acquire anonymously. The normal uncached path consumes
-  four GitHub REST requests per source (two numeric-identity checks, commit
-  resolution, and archive lookup), plus one bounded codeload download. GitHub's
-  anonymous REST limit is 60 requests/hour per egress IP, so roughly fifteen
-  cold source acquisitions can exhaust that shared budget. Retained commit
-  resolutions avoid paying it on unchanged fast paths; operators must still
-  treat anonymous quota exhaustion as an availability constraint.
+  after the owner/name-based commit lookup and requires the returned ID and
+  `full_name` to match exactly. A rename, deletion, or replacement at the old
+  name therefore fails closed before archive download.
+- Public repositories acquire anonymously. On the daemon acquisition path the
+  normal uncached acquisition consumes four GitHub REST requests per source (two
+  numeric-identity checks, commit resolution, and archive lookup), plus one
+  bounded codeload download. GitHub's anonymous REST limit is 60 requests/hour
+  per egress IP, so roughly fifteen cold source acquisitions can exhaust that
+  shared budget. Retained and cached commit resolutions avoid paying it on
+  unchanged fast paths; operators must still treat anonymous quota exhaustion
+  as an availability constraint.
 - **Private repositories** are supported when the organization's GitHub App
   installation covers the repository owner. The Control Plane binds such a
   source only through that installation (the anonymous read cannot see it),
-  records `private: true` on the row, and projects the flag inline on the
+  records the `github` credential on the row, and projects it inline on the
   agent entry. **Enabling a private source on an agent is the read grant:**
   the gitcred broker treats every private skill source in the agent's
   enable-list as an implied `read` authorization for exactly that numeric
@@ -212,20 +248,57 @@ through its hardened Git path and gives the CLI only a private local snapshot:
   credential window** it opens itself ([source-cache.md](source-cache.md) §8):
   the per-agent helper capability, which the agent's runtime also holds, is
   refused for a private skill repository and the refusal is audited, so the
-  runtime (including one in a GitHub-App workspace pod) can no longer clone an
-  enabled private skill repository itself. A repository that is also the
-  workspace or an explicit additional-repo row keeps that grant. On the daemon, the anonymous numeric-identity read answers 404
-  for a private repository; the existing credential fallback then obtains the
-  token through the URL-scoped helper and every later API read carries it,
-  while codeload still receives only GitHub's short-lived archive query. A
-  private source also enables that fallback for agents whose workspace is not
-  itself a GitHub-App checkout. Authenticated reads count against the
+  runtime (including one in a GitHub-App workspace pod) cannot clone an enabled
+  private skill repository itself. A repository that is also the workspace or
+  an explicit additional-repo row keeps that grant. On the daemon path, the
+  anonymous numeric-identity read answers 404 for a private repository; the
+  credential fallback then obtains the token through the URL-scoped helper and
+  every later API read carries it, while codeload still receives only GitHub's
+  short-lived archive query. Authenticated reads count against the
   installation's 5,000 requests/hour rather than the anonymous budget.
 
+**GitLab sources.** A project on the deployment's GitLab instance is stored as
+`<base>/<path_with_namespace>`, its current path; a `/-/` route path is
+refused. An anonymous project read at admission decides visibility:
+
+- A public project is admitted with no credential and, like any anonymous
+  source off GitHub, is trusted by URL and acquired as described below.
+- A private or internal project must be a managed project of the organization.
+  The row records `{ provider: 'gitlab' }` plus the numeric project id, which is
+  the anti-replacement identity, and converges its `CodeHostRepository` catalog
+  row. **Enabling it is the read grant**, as for GitHub: each enabling agent's
+  GitLab account becomes a Reporter consumer of the project
+  ([gitlab-com-integration.md](gitlab-com-integration.md) §7.2), and the GitLab
+  gitcred broker serves that project's read token under a `read` clamp when
+  neither the workspace nor an explicit grant covers it. The daemon resolves the
+  ref through `CodeHostRepository.resolveRef` with that token (identity by
+  project id and path, then the ref). On the daemon path it then downloads the
+  project archive by project id, so no name-based read follows the identity
+  check; in a pod the shim clones it with the token served only through the
+  reconcile's skill credential window.
+- Without a configured GitLab connection, a GitLab address is just another
+  host.
+
+**Other hosts.** A source on any other HTTPS host is public only and, like a
+public GitLab project, **trusted by URL**: it carries no identity and no
+credential, and nothing proves that the repository behind the address is the
+one an administrator meant. The Control Plane admits it on syntax alone and
+never contacts it, so a subdirectory needs an explicit ref. An anonymous
+source off GitHub is resolved by one anonymous, pattern-scoped `git ls-remote`
+and fetched by the bounded Git acquisition: in the pod that will use it when
+that pod can run Git, otherwise by the daemon. Neither presents a credential,
+follows a redirect, or reads system or global Git configuration; a pod's
+answer is used only by that pod's preparation and never cached. Whether such a
+source works is learned at its first reconcile and reported as a reason code
+(section 6.3).
+
 The CLI discovers skills; the Control Plane **does not parse `SKILL.md` for
-installation**. A best-effort GitHub preview endpoint can scan `SKILL.md` files
-for UI assistance, but the current import form also accepts an explicit skill
-filter and an empty filter means all discovered skills.
+installation**. A best-effort preview scans `SKILL.md` for UI assistance: a
+GitHub source through the organization's App installation, a GitLab project
+through the GitLab API (anonymously when public, through the managed binding's
+connection otherwise). A source on another host, or a GitLab scan that fails,
+answers `resolvable: false`; the import form then accepts an explicit skill
+filter, and an empty filter means all discovered skills.
 
 ## 4. Data model and REST API in the Control Plane
 
@@ -240,12 +313,14 @@ model SkillSource {
   id              String             @id @default(uuid()) @db.Uuid
   orgId           String
   name            String             // Set at create; immutable API reference key; @@unique([orgId, name])
-  source          String             // Bounded GitHub input: owner/repo, canonical GitHub URL, or tree/<ref>/<subdir>
-  githubRepoId    BigInt?            // Nullable only for migration; unbound rows never project to an agent
+  source          String             // Bounded GitHub input, or a plain HTTPS address on any other host (section 3)
+  githubRepoId    BigInt?            // github.com only; nullable for migration; unbound rows never project
   ref             String?            // Optional branch, tag, or commit embedded in source or used for update
   subDir          String?            // Optional install directory inside the repository
   skills          String[] @default([]) // Empty means all skills; non-empty values are passed with -s
-  private         Boolean  @default(false) // Private at bind time; acquired through the org GitHub App
+  private         Boolean  @default(false) // Legacy mirror of credentialProvider = 'github'
+  credentialProvider String?         // 'github' | 'gitlab'; null means anonymous
+  credentialRepoId   BigInt?         // That provider's numeric repository or project id
   visibility      ResourceVisibility @default(org)
   sharedWith      String[]           @default([])
   createdByUserId String?
@@ -259,16 +334,23 @@ model SkillSource {
 
 There is no `SkillRepoVersion` table, manifest column, or Control Plane content
 cache. There is **no secret side table or repository grant row**: a public
-source installs anonymously, and a private source (`private: true`, recorded at
-bind time from the installation read) is authorized by the organization's GitHub
-App installation itself, resolved at mint time from the agent's enable-list.
+source installs anonymously, and a credentialed source is authorized by the
+organization's own code-host access, resolved at mint time from the agent's
+enable-list: the GitHub App installation for a `github` row, the managed GitLab
+project for a `gitlab` row. `credentialProvider` and `credentialRepoId` are the
+source's `CodeHostRepository` reference
+([gitlab-com-integration.md](gitlab-com-integration.md) §8.1); the migration
+backfilled every private, bound GitHub row as `github`, and `private` is still
+written so an older replica or daemon reads a GitHub credential the same way.
 `githubRepoId` remains nullable in the database only so rolling upgrades can read
-historical rows; a current row is installable only after it is bound to GitHub's
-numeric repository identity.
+historical rows; a current GitHub row is installable only after it is bound to
+GitHub's numeric repository identity. A GitLab or other-host row never carries
+one.
 
-**Binding is the Control Plane's job, not the client's.** No console entry point
-can know the numeric ID -- it appears in no read the browser makes -- so the
-create/patch routes resolve it from `source` themselves: the org installation
+**Binding is the Control Plane's job, not the client's.** GitLab and
+other-host admission are described in section 3. For GitHub, no console entry
+point can know the numeric ID -- it appears in no read the browser makes -- so
+the create/patch routes resolve it from `source` themselves: the org installation
 first when it covers the owner, then an anonymous public read, which is the only
 path available for a skills.sh hit whose repository belongs to no installation.
 A write that cannot bind is refused (400 when GitHub says the repository does not
@@ -317,7 +399,20 @@ array of **self-contained entries**, not a list of names:
     "ref": "v1.2.0",                       // Optional branch, tag, or commit
     "subDir": "skills",                    // Optional directory inside the repository
     "skills": ["review-pr", "safe-deploy"], // Empty means all skills and omits -s
-    "private": true                        // Optional; acquire through the App read token
+    "credential": { "provider": "github" }, // Optional; absent means anonymous
+    "private": true                        // Legacy restatement of the GitHub credential
+  },
+  {
+    "name": "team-skills",
+    "source": "https://gitlab.example.test/example-org/example-repo",
+    "ref": "main",
+    "skills": [],
+    "credential": { "provider": "gitlab", "projectId": "4242" } // Numeric project id
+  },
+  {
+    "name": "public-skills",
+    "source": "https://git.example.test/example-org/example-repo.git", // Trusted by URL
+    "skills": []
   }
 ]
 ```
@@ -331,7 +426,7 @@ configuration in the agent file.
 During a Control-Plane-first rolling upgrade, the wire decoder can still read
 the previous entry vocabulary. Projection and daemon admission then validate
 each Git source independently. An unknown source name resolves to nothing;
-malformed, duplicate, over-limit, or historical `githubRepoId`-less rows are
+malformed, duplicate, over-limit, or historical `githubRepoId`-less GitHub rows are
 omitted with a structured warning, while the remaining valid rows continue to
 reconcile. One stale registry row never rejects the entire `AgentSpec` or
 `agent.json` roster.
@@ -356,15 +451,16 @@ so the fan-out is acceptable.
 Every route follows `openapi.ts` requirements for tags, summary, and
 `operationId`.
 
-| Route                                | Semantics                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /skill-sources`                 | List sources.                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `GET /skill-sources/registry/search` | Search the public skills.sh index by skill name for the "Install from skills.sh" modal. Read-only proxy of the index `npx skills find` uses (skills.sh sends no CORS headers); each hit is normalized to `{id, name, source, installs}` and validated against the same `source` / `-s` grammars the create body enforces. Nothing is persisted, and `reachable:false` distinguishes "index down" from "no match". |
-| `POST /skill-sources/preview`        | Best-effort UI scan. Given `{installationId, owner, repo, ref?}`, use the selected GitHub App installation to return branch/tag choices and candidate `{name,dirPath}` skills. Preview is not persisted or authoritative; an empty list still permits “install all.”                                                                                                                                              |
-| `POST /skill-sources`                | Persist a GitHub source, resolving its numeric repository ID server-side (installation read, then anonymous public read). A private repository is accepted only when the installation read answered, and is stored with `private: true`. A source that cannot be bound is refused rather than stored non-installable; a body-supplied ID overrides the lookup.                                                    |
-| `PATCH /skill-sources/:id`           | Change source, numeric repository ID, ref, subdirectory, or skills (name is immutable), then **repush every agent that references it**. Re-binds the numeric ID when the source changes or the row is unbound (the repair path for historical rows); clearing it is refused.                                                                                                                                      |
-| `PUT /skill-sources/:id/sharing`     | Set `ResourceVisibility`, matching MCP providers.                                                                                                                                                                                                                                                                                                                                                                 |
-| `DELETE /skill-sources/:id`          | Delete a source only when no agent references it; otherwise return 409 and require explicit unselection first.                                                                                                                                                                                                                                                                                                    |
+| Route                                | Semantics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /skill-sources`                 | List sources.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `GET /skill-sources/registry/search` | Search the public skills.sh index by skill name for the "Install from skills.sh" modal. Read-only proxy of the index `npx skills find` uses (skills.sh sends no CORS headers); each hit is normalized to `{id, name, source, installs}` and validated against the same `source` / `-s` grammars the create body enforces. Nothing is persisted, and `reachable:false` distinguishes "index down" from "no match".                                                                                                                                                                                                                                                                                         |
+| `POST /skill-sources/preview`        | Best-effort UI scan. Given `{installationId, owner, repo, ref?}`, use the selected GitHub App installation; given `{source, ref?, subDir?}` for a GitLab project, read it through the GitLab API (anonymously when public, through the managed binding otherwise). Returns branch/tag choices, candidate `{name,dirPath}` skills, and `resolvable`. A source on any other host is never contacted and answers `resolvable:false` with empty lists, as does a failed GitLab scan. Preview is not persisted or authoritative; an empty list still permits “install all.”                                                                                                                                    |
+| `POST /skill-sources`                | Persist a source. GitHub: resolve its numeric repository ID server-side (installation read, then anonymous public read); a private repository is accepted only when the installation read answered and is stored with the `github` credential; a body-supplied ID overrides the lookup. GitLab: a public project is stored anonymously, a private or internal one only as a managed project with the `gitlab` credential and its project id (400 when unmanaged, 503 while GitLab is unreachable). Other hosts: admitted on syntax alone, anonymous, never contacted; a GitHub ID is refused and a subdirectory needs a ref. A source that cannot be bound is refused rather than stored non-installable. |
+| `PATCH /skill-sources/:id`           | Change source, numeric repository ID, ref, subdirectory, or skills (name is immutable), then **repush every agent that references it**. Re-binds the GitHub ID when the source changes or the row is unbound (the repair path for historical rows); clearing it is refused. A GitLab source is re-resolved on every edit and keeps its stored credential while GitLab is unreachable; an other-host source is re-admitted on syntax alone.                                                                                                                                                                                                                                                                |
+| `PUT /skill-sources/:id/sharing`     | Set `ResourceVisibility`, matching MCP providers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `DELETE /skill-sources/:id`          | Delete a source only when no agent references it; otherwise return 409 and require explicit unselection first.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `GET /skill-sources/:id/skills`      | Best-effort `SKILL.md` scan for the per-agent skill picker, with the same per-host rules as preview.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 #### Sharing hides a source from the registry, never from the agent that runs it
 
@@ -373,13 +469,15 @@ Sharing governs the **registry**: `GET /skill-sources` and
 invisible to a collaborator it was not shared with. It does **not** govern what an
 agent already installs. The definition rides inline on that agent's `AgentSpec`
 regardless, so hiding it from the agent's own page buys no confidentiality (a
-source string carries no secret; a private source's access is the installation's,
+source string carries no secret; a private source's access is the code host's,
 not the row's) and only leaves an unexplained row on the Tools & Skills tab.
 
 `GET /agents/:id/skill-sources` therefore resolves the agent's enable-list refs
 gated on **viewing the agent**, returning a slimmer DTO without the source's own
 `visibility`/`sharedWith` (seeing an agent does not entitle the caller to the
-source's share set). Refs to a source that no longer exists resolve to nothing and
+source's share set). It does carry the source's `credential` as `{provider}` or
+`null`, so the console can mark an anonymous other-host source "trusted by URL"
+even when it is hidden from the caller's library. Refs to a source that no longer exists resolve to nothing and
 the console renders no tile for them — they install nothing either
 (`resolveAgentSkillEntries` drops unknown names), so there is nothing truthful for
 a placeholder row to say.
@@ -399,8 +497,8 @@ authority `@`, query/fragment stripping, backslash authority ambiguity, and
 malformed historical values. Bare `owner/repo` shorthand is passed through verbatim
 (it cannot carry a secret, and the codec would expand it to a full URL). The
 registry response remains the migration/audit surface, but agent projection is
-stricter: every historical row must pass the current bounded-GitHub schema and
-carry `githubRepoId`. A failing row is omitted individually with a warning and is
+stricter: every historical row must pass the current `AgentSkillEntry` schema,
+so a GitHub row must carry `githubRepoId` and a credential must match its host. A failing row is omitted individually with a warning and is
 never copied into `AgentSpec`; valid sibling rows still ship.
 
 Adding an enablement ref is gated on seeing the **source**
@@ -524,27 +622,45 @@ effect while an old host still holds kernel write access.
 
 ### 6.2 Command
 
-> **Relocated by [source-cache.md](source-cache.md) (proposed).** On a pool
-> member whose shim advertises `skill-git-in-pod-v1`, Git acquisition moves from
-> the daemon's GitHub archive path into the pod (source-cache.md §6.1, §8). The
-> bounded no-follow snapshot, its limits, and the rejection of links and special
-> files carry over unchanged: the staged checkout reaches the CLI only through
-> it. Self-hosted daemons and older shims keep the path below.
-
 Build an ordered plan: Git entries from `agent.skills`, verified managed-cache
 directories, then accepted agent-local Dream directories. Later sources win a
 same-path collision, preserving accepted-local > managed > Git precedence.
-Every source is first copied with a bounded no-follow walker into a daemon-owned
-snapshot. Git acquisition begins with anonymous GitHub requests, falls back to
-the agent's repository-scoped read token only for a private source (or a
-GitHub-App workspace hitting a rate limit), and never passes a remote URL or
-credential to the CLI.
+Every source is first copied with a bounded no-follow walker into a private
+snapshot, and the CLI never receives a remote URL or credential.
 
-For a Git entry, the acquisition step resolves the requested ref to an exact
-GitHub commit, accepts only the matching repository/commit redirect to canonical
-`codeload.github.com`, and validates bounded archive size, expansion ratio,
-entry count, paths, types, and extraction inventory. Links and special files are
-rejected. Repository metadata never enters the local source snapshot.
+Each Git entry is first resolved to an exact commit
+([source-cache.md](source-cache.md) §5): a credentialed source by the daemon
+through `CodeHostRepository.resolveRef` with a token scoped to that one
+repository, an anonymous github.com source by the daemon's anonymous REST
+identity check, and an anonymous source off GitHub by one scoped
+`git ls-remote`. Where the bytes are then fetched depends on the runtime:
+
+- **In the pod.** On a pool member whose shim advertises `skill-git-in-pod-v1`,
+  the shim clones each Git source itself through the Source Cache
+  ([source-cache.md](source-cache.md) §6.1, §8): blobless, at the planned
+  commit, checking out only the subdirectory. The pod also runs the
+  `ls-remote` for an anonymous source off GitHub, and a credentialed GitLab
+  source goes in-pod only to a shim that also advertises `skill-git-gitlab-v1`.
+  The staged checkout reaches the CLI only through the same bounded no-follow
+  snapshot, with the same limits and the same rejection of links and special
+  files. Whatever a pod cannot carry stays on the daemon path.
+- **On the daemon.** Self-hosted daemons, executors, and older shims acquire on
+  the daemon:
+  - A GitHub source begins with anonymous GitHub requests and falls back to the
+    agent's repository-scoped read token only for a private source (or a
+    GitHub-App workspace hitting a rate limit). It resolves the requested ref to
+    an exact GitHub commit, accepts only the matching repository/commit redirect
+    to canonical `codeload.github.com`, and downloads that archive.
+  - A credentialed GitLab source downloads the project archive by numeric
+    project id at the resolved commit, with the agent's GitLab read token in a
+    request header and redirects refused.
+  - An anonymous source on any other host is fetched by the same bounded Git
+    acquisition the shim runs, in a daemon-private directory, at the commit its
+    `ls-remote` named.
+
+  Archives are validated for bounded size, expansion ratio, entry count, paths,
+  types, and extraction inventory. Links and special files are rejected.
+  Repository metadata never enters the local source snapshot.
 
 For every resulting local snapshot, invoke the same locally installed binary:
 
@@ -651,6 +767,20 @@ node <bundled skills@1.5.21 bin> add <absoluteSnapshot> \
   head still takes the unchanged fast path and a moved one cannot be served from
   the previous commit's tree. A pinned ref is never re-read. Local Dream content
   and managed revision digests participate in the plan fingerprint too.
+- **Each skipped Git source is reported.** After a reconcile that commits and
+  covers at least one Git source, the daemon sends `agent/skill-status` to a
+  Control Plane that advertises `agent-skill-status-v1`: every Git source it
+  could not install, by name, with one enumerated reason code
+  (`resolution_failed`, `access_denied`, `ref_moved`, `commit_unavailable`,
+  `sha_fetch_refused`, `fetch_failed`, `limits_exceeded`, `cli_failed`), never
+  Git's or the CLI's raw output. Codes come from tagged failures
+  (`skills/skill-source-failure.ts`); the in-pod path reports the shim's own
+  code. An installed source whose resolution failed keeps its commit and is not
+  reported, and a reconcile that throws reports nothing. The Control Plane
+  replaces the agent's stored set with each report (`agent_skill_source_status`),
+  so a source that installs loses its row, and serves it at
+  `GET /agents/:id/skill-source-status`, limited to sources the agent still
+  enables ([source-cache.md](source-cache.md) §11).
 
 ### 6.4 Legacy ownership requires explicit cleanup
 
@@ -721,26 +851,32 @@ The implemented surface follows `McpServersCard`:
 - **Import from GitHub** opens the current source form for a bounded GitHub
   source, optional name/ref/subdirectory, optional skill-name filter, and
   sharing. An empty filter installs every skill the CLI discovers.
-- Each Git **Skills library tile** shows the source name, GitHub source/ref,
-  visibility, and created date, with the existing Edit and Delete controls.
+- **Import from a Git URL** (`CreateGitUrlSkillSourceModal` in
+  `SkillSourcesCard.tsx`, also in the agent card's Add menu) takes a GitLab
+  project or any HTTPS address plus optional ref and subdirectory. Its preview
+  either lists the scanned skills to pick from, with branch and tag suggestions,
+  or, when the source is not `resolvable`, explains the "trusted by URL" trust
+  and keeps a typed skill filter.
+- Each Git **Skills library tile** shows the source name, source/ref,
+  visibility, and created date, with the existing Edit and Delete controls. An
+  anonymous source off github.com carries a **trusted by URL** badge
+  (`isTrustedByUrl` in `lib/skill-source.ts`), on the tile and on the agent's
+  skill row; a Control Plane that omits `credential` shows no badge.
   Managed-skill tiles expose immutable revision history and archive/restore in
   the same card. There is no separate installer-facts or reinstall UI contract.
 - The agent editor includes a **Skills selector** beside MCP server selection.
   Selection is at **skill granularity**: visible sources are groups, with
   individual skill checkboxes below each group. "Select all" on a group means
-  `<source>/*`.
+  `<source>/*`. A source that cannot be scanned takes a typed skill list
+  instead and refuses names outside the source's own saved filter. Each source's row shows the
+  latest reason code from `GET /agents/:id/skill-source-status` with readable
+  text; an older Control Plane's 404 reads as no failures.
 - The usual data path uses `fetchSkillSources` and related calls in
   `api.ts`, SWR state and actions in `data-context.tsx`, styling under
   `STYLE.md`, and the existing responsive Knowledge-page structure at widths
   of 768 pixels and below.
 
 ## 8. Security and trust boundaries
-
-> **Relocated by [source-cache.md](source-cache.md) (proposed).** For the in-pod
-> path, the credential bullet below is replaced by source-cache.md §8: a private
-> skill repository's scoped read token is minted to the pod's `gitcred` only
-> during a skill reconcile window, and the Source Cache's own boundaries are in
-> its §6.
 
 - **A skill is a prompt-injection surface:** imported content enters agent
   context and can drive tool calls. Import and update are therefore
@@ -750,13 +886,30 @@ The implemented surface follows `McpServersCard`:
   from the controlled organization registry, Git is acquired separately, and
   every source becomes a bounded no-follow local snapshot. The exact CLI writes
   only to a private cell; unexpected outputs and links are rejected.
-- **Credentials:** the Control Plane uses a GitHub App token for preview
-  scanning and for binding a private source. Acquisition starts anonymously; the
-  numeric identity request retries through the existing URL-scoped helper when
-  the source is private or the agent's workspace is a GitHub-App checkout, and
-  the Control Plane mints that token read-only and scoped to the one repository
-  because the agent enables the source. The CLI cell receives no Git/provider
-  token, proxy, SSH agent, npm config, or ambient HOME.
+- **Credentials:** the Control Plane uses a GitHub App token for GitHub
+  preview scanning and for binding a private GitHub source, and the managed
+  GitLab connection's token for a private GitLab project. Enabling a
+  credentialed source is the agent's read grant, and the Control Plane serves
+  only a read token scoped to that one repository or project: `contents:read`
+  for GitHub, and for GitLab a read token under a `read` clamp, its agent
+  account a Reporter member of the project. `gitcred` issues it only inside a
+  skill credential window the daemon opens for the pod or for its own fill
+  ([source-cache.md](source-cache.md) §8); the per-agent helper capability the
+  runtime holds is refused for a private skill repository, and the refusal is
+  audited. On the daemon path a GitHub acquisition starts anonymously and
+  retries the numeric identity request through the URL-scoped helper when the
+  source is private or the agent's workspace is a GitHub-App checkout. The CLI
+  cell receives no Git/provider token, proxy, SSH agent, npm config, or
+  ambient HOME.
+- **Trusted by URL:** an anonymous source off github.com (a public GitLab
+  project or any other host) has no identity check, so whoever controls that
+  address controls the skill. The console marks such a source, the operator's
+  `workspaceGitAllowedOrigins` decides which origins a daemon may contact, and
+  every fetch is anonymous, redirect-free, and bounded. **The Control Plane
+  makes no network request to a user-typed address**: it admits, previews, and
+  lists such a source without contacting it, and the daemon delegates
+  resolution to the pod that will fetch the source whenever it can. The Source
+  Cache's own boundaries are in [source-cache.md](source-cache.md) §6.
 - **Workspace isolation:** within one daemon-root/configured-`agentsDir`
   authority domain, the external SQLite ownership database, canonical workspace
   claims, active-roster overlap validation, and exact byte receipts govern
@@ -784,9 +937,9 @@ The implemented surface follows `McpServersCard`:
 
 ## 9. Main change index
 
-| Package       | Files                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Change                                                                                                       |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| protocol      | `frames/agent.ts` for strict and rolling-compatible inline skill entries; `git-url.ts` for bounded GitHub normalization                                                                                                                                                                                                                                                                                                                               | **No** `skillsource/*` frame and **no** `RegisterOk.skillSources`; sources are inline in `AgentSpec.skills`. |
-| control-plane | `prisma/schema.prisma` for the `SkillSource` registry and `Agent.skills`; `http/routes/skill-sources.ts`; `orchestrator/skillSource.ts` for per-row projection/filtering and source-change fan-out; `github/service.ts` for best-effort preview scanning                                                                                                                                                                                              | Section 4                                                                                                    |
-| daemon        | `src/skills/install-skills.ts`, `skills-cli-cell.ts`, `skill-source-snapshot.ts`, `skill-git-source.ts`, `skill-install-ledger.ts`, `skill-workspace-mutation-cli.ts`, `skill-workspace-mutator.ts`, `offline-sandbox.ts`, `dream-skills.ts`, and `runtimes/skills-capability.ts`; `workspace/workspace-manager.ts` as the cold-host trigger; `workspace/git-exclude.ts` for the managed-bundle exclude block (section 6.6); exact bundled dependency | Section 6                                                                                                    |
-| web           | `SkillSourcesCard.tsx`, `ManagedSkillTile.tsx`, `ToolsHubView.tsx`, `lib/api.ts`, `lib/data-context.tsx`, and the agent editor                                                                                                                                                                                                                                                                                                                        | Section 7                                                                                                    |
+| Package       | Files                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Change                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| protocol      | `frames/agent.ts` for strict and rolling-compatible inline skill entries and `SkillSourceCredential`; `git-url.ts` (`normalizeSkillSource`, `isGitHubSkillSource`) for source normalization; `frames/skill.ts` for `agent/skill-status` and `SkillSourceFailureCode`                                                                                                                                                                                                                                                                                                                                                                                                | **No** `skillsource/*` frame and **no** `RegisterOk.skillSources`; sources are inline in `AgentSpec.skills`. |
+| control-plane | `prisma/schema.prisma` for the `SkillSource` registry, its credential reference, `agent_skill_source_status`, and `Agent.skills`; `http/routes/skill-sources.ts`; `orchestrator/skillSource.ts` for per-row projection/filtering, other-host admission, and source-change fan-out; `github/service.ts` for GitHub preview scanning and read grants; `gitlab/skill-source.ts` and `gitlab/gitcred.service.ts` for GitLab admission, preview, and read grants; `ws/handlers/agent-skill-status.ts` and `GET /agents/:id/skill-source-status` in `http/routes/agents.ts` for failure status                                                                            | Sections 3 and 4                                                                                             |
+| daemon        | `src/skills/install-skills.ts`, `skills-cli-cell.ts`, `skill-source-snapshot.ts`, `skill-git-source.ts`, `gitlab-skill-source.ts`, `skill-git-hosted.ts`, `pod-skill-ref.ts`, `sandbox-skill-reconcile.ts`, `skill-source-failure.ts`, `skill-install-ledger.ts`, `skill-workspace-mutation-cli.ts`, `skill-workspace-mutator.ts`, `offline-sandbox.ts`, `dream-skills.ts`, and `runtimes/skills-capability.ts`; `shim/skill-git-acquire.ts` and `shim/skill-handler.ts` for in-pod acquisition; `workspace/workspace-manager.ts` as the cold-host trigger; `workspace/git-exclude.ts` for the managed-bundle exclude block (section 6.6); exact bundled dependency | Section 6                                                                                                    |
+| web           | `SkillSourcesCard.tsx`, `AgentSkillsCard.tsx`, `ManagedSkillTile.tsx`, `ToolsHubView.tsx`, `lib/skill-source.ts`, `lib/api.ts`, `lib/data-context.tsx`, and the agent editor                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Section 7                                                                                                    |
