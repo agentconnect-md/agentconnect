@@ -53,8 +53,8 @@ export interface GitlabSkillReads {
   host(agentId: string): string | undefined
   /** The agent's own resolution: identity by project id and path, then the entry's ref to a commit. */
   resolve(entry: AgentSkillEntry, agentId: string): Promise<ResolveRefResult>
-  /** A CP-minted read token for the project, as the agent's own authority. */
-  token(agentId: string, projectId: string): Promise<string>
+  /** A CP-minted read token for the project, as the agent's own authority, cached apart from the workspace's. */
+  token(agentId: string, repository: GitlabSkillRepository): Promise<string>
 }
 
 // One daemon per process, wired at start like the Git credential injection; absent ⇒ a credentialed GitLab Source fails closed.

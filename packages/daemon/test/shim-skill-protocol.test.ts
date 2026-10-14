@@ -267,6 +267,17 @@ describe('Git skill plan wire (skill-git-in-pod-v1)', () => {
       }
     ]
   }
+  it('admits a GitLab credential host only as a prefix of the clone URL', () => {
+    const gitlab = { ...plan, url: 'https://gitlab.example.test/prefix/acme/skills', getUrl: undefined }
+    expect(
+      GitSkillPlanSchema.safeParse({ ...gitlab, credentialHost: 'https://gitlab.example.test/prefix' }).success
+    ).toBe(true)
+    expect(GitSkillPlanSchema.safeParse({ ...gitlab, credentialHost: 'https://code.example.test' }).success).toBe(false)
+    expect(GitSkillPlanSchema.safeParse({ ...gitlab, credentialHost: 'https://gitlab.example.test/pre' }).success).toBe(
+      false
+    )
+  })
+
   // The reply schema a daemon predating skill-git-in-pod-v1 parses with: strict, and without the new fields.
   const OlderDaemonReplySchema = z
     .object({

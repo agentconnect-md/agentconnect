@@ -650,7 +650,7 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
    `resolvedCommit` and the leaves it staged. The per-reconcile window
    capability arrives as the reconcile's optional `credentialWindow` and
    reaches only the Git child's `AC_GITCRED_*` environment, for a github.com
-   Source.
+   Source or one on the GitLab instance its plan names (section 11).
 5. The daemon closes the credential window, records the ledger with the resolved
    commits, and later handles write-back candidates (section 9).
 
@@ -1077,7 +1077,32 @@ Daemon acquisition (P3, CP3.3b, daemon path):
   gates both.
 - The daemon's local cache keys a GitLab Source by project id and an anonymous
   one by URL and subdirectory, the only part of the tree it holds.
-- The in-pod plan still carries GitHub Sources only.
+
+In-pod acquisition (P3, CP3.3b, in-pod path):
+
+- An anonymous Source off GitHub is resolved by the pod that will fetch it.
+  The daemon sends one scoped `git ls-remote` over that pod's `exec` channel,
+  with no repository discovered (`GIT_DIR` names none) and the workspace's
+  hardened Git environment (`skills/pod-skill-ref.ts`). The answer becomes that
+  plan's planned commit and full ref. It is never cached or shared, and the
+  daemon itself never contacts the host. A pinned commit is taken as given.
+- A credentialed GitLab Source goes in-pod only to an image that advertises
+  `skill-git-gitlab-v1` (the `skills-git-gitlab` grant). Its plan entry names
+  the instance base as `credentialHost`; an older image would refuse that
+  field. The planned commit is the daemon's `resolveRef`, as for GitHub.
+- The pod-subject window names a GitLab project as `gitlab:<path>`, which can
+  never collide with a GitHub `owner/repo`. Through that window alone, `gitcred`
+  serves the project's read credential by numeric id for a `git` ask. It is
+  cached as the read token keyed by project path, so it never shares an entry
+  that an additional-repository grant may hold writable. The daemon path keys
+  its own read token the same way, apart from the workspace's. The shim hands
+  the Git child a helper for that instance only.
+- A GitLab Source's `cred` cache key is `gitlab:<projectId>`. An anonymous
+  Source off GitHub keys `anon` on its URL.
+- Anything a pod cannot carry stays on the daemon path above. That covers a
+  GitLab Source for an older image or for a window that would not admit it, and
+  an anonymous Source off GitHub where no runner for the pod's `exec` channel
+  exists.
 
 ## 12. Configuration and degradation
 

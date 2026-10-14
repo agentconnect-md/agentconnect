@@ -134,6 +134,24 @@ describe('skill read planner (source-cache.md §8)', () => {
     expect(url).toContain(bundle)
   })
 
+  it('keys a credentialed GitLab Source on its project id, and an anonymous Source off GitHub on its URL', async () => {
+    const h = harness()
+    const gitlab = AgentSkillEntry.parse({
+      name: 'gitlab',
+      source: 'https://gitlab.example.test/acme/skills',
+      credential: { provider: 'gitlab', projectId: '77' },
+      skills: []
+    })
+    const cred = h.seed('cred', 'gitlab:77', 'refs/heads/main')
+    expect(await h.reader.getUrl({ agentId: 'a', entry: gitlab, resolution: resolved() })).toBeUndefined()
+    expect(
+      await h.reader.getUrl({ agentId: 'a', entry: gitlab, resolution: resolved({ credentialed: true }) })
+    ).toContain(cred)
+    const other = AgentSkillEntry.parse({ name: 'other', source: 'https://git.example.test/acme/skills', skills: [] })
+    const anon = h.seed('anon', anonRepoId('https://git.example.test/acme/skills'), 'refs/heads/main')
+    expect(await h.reader.getUrl({ agentId: 'a', entry: other, resolution: resolved() })).toContain(anon)
+  })
+
   it('never gives an anonymous declaration of a private URL the credentialed agent’s bundle', async () => {
     const h = harness()
     h.seed('cred', 'github:42', 'refs/heads/main')

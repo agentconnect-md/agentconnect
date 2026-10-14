@@ -159,5 +159,13 @@ describe('gitlabRepository.resolve', () => {
       externalRepoId: '77',
       requestedAccess: 'read'
     })
+    // A skill project's read token keys on its path, never on the workspace's entry.
+    expect(gitlabRepository.readTokenAsk({ externalId: '77', repoFullName: 'group/skills' })).toEqual({
+      plane: 'glab',
+      provider: 'gitlab',
+      externalRepoId: '77',
+      repoFullName: 'group/skills',
+      requestedAccess: 'read'
+    })
   })
 })
