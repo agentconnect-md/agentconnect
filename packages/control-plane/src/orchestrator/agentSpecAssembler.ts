@@ -345,7 +345,7 @@ export class AgentSpecAssembler {
       managedSkillEntries,
       effective.env,
       additionalRepos,
-      gitlabHost(this.gitlabHost, a.workspace, additionalRepos, gitlabHook),
+      gitlabHost(this.gitlabHost, a.workspace, additionalRepos, gitlabHook, skillEntries),
       giteaHost(this.giteaHost, a.workspace, additionalRepos, giteaHook),
       hookRoutings,
       additionalInstallations,
@@ -384,7 +384,8 @@ export function gitlabHost(
   configured: string | undefined,
   workspace: AgentRecord['workspace'],
   additionalRepos: readonly AgentAdditionalRepo[],
-  enabledGitlabHook: boolean
+  enabledGitlabHook: boolean,
+  skillEntries: readonly Pick<AgentSkillEntry, 'credential'>[] = []
 ): string | undefined {
   if (configured === undefined) return undefined
   const consumer =
@@ -394,7 +395,9 @@ export function gitlabHost(
         // the host: the daemon widens its clone-origin allowlist from this field.
         gitlabManagedProjectPath(workspace.gitRepo, configured) !== null)) ||
     enabledGitlabHook ||
-    additionalRepos.some((repo) => repo.provider === 'gitlab')
+    additionalRepos.some((repo) => repo.provider === 'gitlab') ||
+    // A credentialed GitLab skill Source is read on this instance, path prefix included (source-cache.md §11).
+    skillEntries.some((entry) => entry.credential?.provider === 'gitlab')
   return consumer ? configured : undefined
 }
 

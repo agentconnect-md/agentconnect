@@ -1015,8 +1015,8 @@ Wire identity (P3, CP3.1):
   `github`.
 - A row written by an older replica with only `private` reads the same way.
 - A credentialed GitHub bind converges its `CodeHostRepository` catalog row.
-- Until a daemon can acquire other hosts, it skips a non-GitHub entry with a
-  warning. That skip becomes a reason code in CP3.4.
+- A daemon that predates CP3.3b skips a non-GitHub entry with a warning; a
+  current one acquires it (below).
 
 GitLab admission (P3, CP3.2):
 
@@ -1055,6 +1055,29 @@ Other-host admission (P3, CP3.3):
   since the CP cannot learn the default branch.
 - Without a GitLab seam, a GitLab address is just another host, as for
   workspaces.
+
+Daemon acquisition (P3, CP3.3b, daemon path):
+
+- The daemon path acquires a Source off GitHub itself. That path serves local
+  daemons, executors, and pods whose plan does not carry the Source.
+- A credentialed GitLab Source resolves through `resolveRef` with the agent's
+  CP-minted read token: identity by project id and path, then the ref. The
+  daemon then downloads the project archive by project id at that commit, so
+  no name-based read follows the identity check (`skill-git-source.ts`). The
+  instance is the spec's `gitlabHost`, which the CP carries whenever a
+  credentialed GitLab skill Source rides the spec, path prefix included. A spec
+  from an older CP that omits it falls back to the Source's own origin.
+- An anonymous Source is resolved and named in one anonymous, pattern-scoped
+  `git ls-remote`. It runs over https only, with no redirect, no system or
+  global configuration and no credential. The answer is shared like the
+  github.com check. The bounded in-pod Git acquisition then fetches the Source
+  on the daemon (`skill-git-hosted.ts`).
+- These are requests to a user-typed URL from the daemon. Only the daemon path
+  makes them, because it fetches the Source anyway, and the Git-origin policy
+  gates both.
+- The daemon's local cache keys a GitLab Source by project id and an anonymous
+  one by URL and subdirectory, the only part of the tree it holds.
+- The in-pod plan still carries GitHub Sources only.
 
 ## 12. Configuration and degradation
 

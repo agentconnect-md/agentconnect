@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AgentSkillEntry, type CompatibleAgentSkillEntry } from '@agentconnect.md/protocol'
+import { AgentSkillEntry, isGitHubSkillSource, type CompatibleAgentSkillEntry } from '@agentconnect.md/protocol'
 import type { ClusterSkillClient } from '../shim/skill-client.js'
 import {
   GitSkillPlanSchema,
@@ -108,10 +108,8 @@ export async function reconcileSandboxSkillSources(
 ): Promise<SandboxSkillReconcileResult> {
   const configured = input.skills.flatMap((entry, index) => {
     const parsed = AgentSkillEntry.safeParse(entry)
-    if (parsed.success && parsed.data.githubRepoId) return [{ index, entry: parsed.data }]
-    if (parsed.success)
-      deps.log.warn(`skills: skipped Git source ${index + 1}; this daemon installs GitHub sources only`)
-    else if (entry.githubRepoId)
+    if (parsed.success) return [{ index, entry: parsed.data }]
+    if (entry.githubRepoId)
       deps.log.warn(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
     return []
   })
@@ -353,6 +351,8 @@ async function planInPod(
   inPod: InPodSkillDeps
 ): Promise<PodPlan> {
   const routed = configured.filter(({ entry }) => {
+    // A Source off GitHub is acquired by the daemon until the pod can resolve and credential it itself.
+    if (!isGitHubSkillSource(entry.source)) return false
     if (inPod.daemonOnly?.(entry)) return false
     // A pod without the gitcred tunnel, or a repo no window would admit, cannot fill a private Source; the daemon path still can.
     if (!isCredentialedSkillSource(entry)) return true

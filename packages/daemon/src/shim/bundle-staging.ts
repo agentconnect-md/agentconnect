@@ -34,5 +34,7 @@ export function assertStagingPrivate(dir: string, label: string): void {
     throw new ExecRefusedError(`${label} directory is missing: ${dir}`)
   }
   assertPrivateDirectory(dir, stats, label)
-  if ((stats.mode & 0o077) !== 0) throw new ExecRefusedError(`${label} is not mode 0700: ${dir}`)
+  // Windows carries no POSIX mode bits; a daemon there stages under its own private state root instead.
+  if (process.platform !== 'win32' && (stats.mode & 0o077) !== 0)
+    throw new ExecRefusedError(`${label} is not mode 0700: ${dir}`)
 }
