@@ -1,6 +1,6 @@
 // Per-Source skill failure codes reported to the CP (source-cache.md §11): what each install path reports and the code each failure carries.
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -140,6 +140,20 @@ describe('installSkills reports failed Git Sources', () => {
       runCli: fakeCli()
     })
     expect(result.sourceFailures).toEqual([{ name: 'taken', code: 'cli_failed' }])
+  })
+
+  it.skipIf(process.platform === 'win32')('reports a conflict found through an aliased skills directory', async () => {
+    await mkdir(join(cwd, '.claude', 'skills', 'git-skill'), { recursive: true })
+    await writeFile(join(cwd, '.claude', 'skills', 'git-skill', 'SKILL.md'), 'mine\n')
+    await mkdir(join(cwd, '.runtime'))
+    await symlink('../.claude/skills', join(cwd, '.runtime', 'skills'))
+    const result = await installSkills({ id: 'a4', runtime: 'claude', skills: [other('aliased')] }, cwd, {
+      stateDir,
+      acquireGit: async () => ({ sourceDir: gitDir, resolvedCommit: COMMIT }),
+      runCli: fakeCli()
+    })
+    expect(result.errors.map((error) => error.source)).toContain('.claude/skills/git-skill')
+    expect(result.sourceFailures).toEqual([{ name: 'aliased', code: 'cli_failed' }])
   })
 
   it('reports an untagged acquisition error as fetch_failed and nothing without Git Sources', async () => {

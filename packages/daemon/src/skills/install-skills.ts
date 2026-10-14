@@ -31,6 +31,7 @@ import {
   type SkillFileReceipt
 } from './skill-install-ledger.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
+import { canonicalSkillMutationRoot } from './skill-workspace-mutator.js'
 import { acquireGitSkillSource, isPinnedGitSkillRef, resolveBoundedGitSkillSource } from './skill-git-source.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, snapshotLocalSkillSource } from './skill-source-snapshot.js'
 import {
@@ -594,10 +595,19 @@ async function installSkillsLocked(
     result.skipped = reconciled.skipped
     result.owned = reconciled.owned.map((bundle) => bundle.relativeRoot)
     const sourceByKey = new Map(prepared.map((source) => [source.key, source]))
+    // Conflicts name canonical roots, so an aliased skills directory still maps back to its candidate.
+    const candidateByRoot = new Map<string, CandidateSkillBundle>()
+    if (reconciled.conflicts.length > 0) {
+      for (const candidate of candidates) {
+        const root = await canonicalSkillMutationRoot(cwd, candidate.relativeRoot).catch(() => candidate.relativeRoot)
+        candidateByRoot.set(root, candidate)
+        candidateByRoot.set(candidate.relativeRoot, candidate)
+      }
+    }
     for (const conflict of reconciled.conflicts) {
       result.errors.push({ source: conflict, error: 'destination is not owned by this daemon ledger; skill skipped' })
       // A Git Source whose bundle could not be published did not install, though it built.
-      const source = sourceByKey.get(candidatesByPath.get(conflict)?.sourceKey ?? '')
+      const source = sourceByKey.get(candidateByRoot.get(conflict)?.sourceKey ?? '')
       if (source?.git) sourceFailures.push({ name: source.name, code: 'cli_failed' })
     }
     if (gitSources.length > 0) result.sourceFailures = uniqueSkillSourceFailures(sourceFailures)
