@@ -1967,7 +1967,7 @@ model CronRun {
   orgId      String
   startedAt  DateTime      @db.Timestamptz(6) // CronReport.firedAt
   status     CronRunStatus @default(running)
-  durationMs Int?
+  durationMs Float?       @db.DoublePrecision
   sessionId  String? // ACP session id (console deep-link); null while running / on legacy reports
   reason     String? // short failure text (status "failed")
   createdAt  DateTime      @default(now()) @db.Timestamptz(6)
@@ -2157,7 +2157,7 @@ model HookRun {
   publishedCommentKind      String?
   publishedCommentId        String?
   status                    CronRunStatus      @default(running)
-  durationMs                Int?
+  durationMs                Float?             @db.DoublePrecision
   sessionId                 String? // Console session id when the delivery has one
   reason                    String? // short failure text: daemon_offline / dispatch_timeout / orphaned / turn failure
   // Durable, metadata-only GitHub redelivery schedule. These fields are used

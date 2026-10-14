@@ -38,6 +38,41 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('GitHub projection request barriers', () => {
+  it('returns a retryable error on a store failure and ACKs only after the report persists', async () => {
+    const error = new Error('store unavailable')
+    const recordReport = vi.fn().mockRejectedValueOnce(error).mockResolvedValue(true)
+    const afterReport = vi.fn(async () => {})
+    const conn = fakeConn()
+    const frame = {
+      v: 1,
+      id: crypto.randomUUID(),
+      ts: new Date().toISOString(),
+      type: 'hook/report',
+      payload: {
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'delivery-retry',
+        ...snapshot,
+        status: 'failed'
+      }
+    } as AnyFrame
+    const deps = {
+      hook: { recordReport, get: async () => ({ id: HOOK_ID }) },
+      githubRunCoordinator: { afterReport },
+      clock: { now: () => 1_700_000_000_000 },
+      log: { error: vi.fn() }
+    } as unknown as DaemonWsDeps
+
+    await expect(handleHookReport(frame, conn, deps)).resolves.toBeUndefined()
+    expect(conn.sendError).toHaveBeenCalledWith(frame.id, 'INTERNAL', 'hook completion report failed', true)
+    expect(conn.replyTo).not.toHaveBeenCalled()
+    expect(afterReport).not.toHaveBeenCalled()
+
+    await handleHookReport(frame, conn, deps)
+    expect(afterReport).toHaveBeenCalledOnce()
+    expect(conn.replyTo).toHaveBeenCalledWith(frame, 'ack', { ok: true })
+  })
+
   it('does not ACK hook/start until the durable projection converges', async () => {
     const barrier = deferred()
     const conn = fakeConn()
