@@ -35,6 +35,11 @@ describe('postNamesAgent', () => {
     expect(postNamesAgent('run `@helper deploy` locally', ['helper'])).toBe(false)
     expect(postNamesAgent('```\nnotify(@helper)\n```\ndone', ['helper'])).toBe(false)
     expect(postNamesAgent('see https://chat.example.test/@helper/profile', ['helper'])).toBe(false)
+    // A Markdown link label or image alt text is a reference, not an invitation.
+    expect(postNamesAgent('[@helper](https://example.test)', ['helper'])).toBe(false)
+    expect(postNamesAgent('![diagram @helper](https://example.test/image.png)', ['helper'])).toBe(false)
+    expect(postNamesAgent('see [@helper][profile]', ['helper'])).toBe(false)
+    expect(postNamesAgent('[docs](https://example.test) — @helper, can you check?', ['helper'])).toBe(true)
   })
 
   it('still invites outside those spans, and does not parse negation', () => {

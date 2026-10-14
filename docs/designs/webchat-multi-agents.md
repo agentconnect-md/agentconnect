@@ -512,7 +512,8 @@ seam, keeping the relay's pre-addressed fan-out as the roster walk:
   scope leaves no one out; a post without the field (an older daemon or
   browser) adds no reminder.
   - **What counts as an invitation** is lexical: a whole-token `@name` outside
-    quoted lines, inline or fenced code, and links. Negation is not parsed —
+    quoted lines, inline or fenced code, bare URLs, and Markdown links and
+    images (label and alt text included). Negation is not parsed —
     "no need for @x" still invites x, and the response-choice rule decides.
   - **Coalescing.** When activations fold into a live turn (absorbed by the
     first prompt's pre-prompt refresh or a context-refresh generation, a late

@@ -94,7 +94,14 @@ function mergeScopes(a: string[] | undefined, b: string[] | undefined): string[]
 // A name continues past this character, so `@agent` never matches inside `@agent-2` or `foo@agent.test`.
 const NAME_CHAR_RE = /[\p{L}\p{N}_-]/u
 // Quoted, code and link text mentions an agent without inviting it.
-const NON_INVITING_RE = [/```[\s\S]*?```/g, /`[^`\n]*`/g, /^[ \t]*>.*$/gm, /\b[a-z][a-z0-9+.-]*:\/\/\S+/gi]
+const NON_INVITING_RE = [
+  /```[\s\S]*?```/g,
+  /`[^`\n]*`/g,
+  /^[ \t]*>.*$/gm,
+  // A Markdown link or image as a whole, label and alt text included, inline or reference style.
+  /!?\[[^\]\n]*\](?:\([^)\n]*\)|\[[^\]\n]*\])/g,
+  /\b[a-z][a-z0-9+.-]*:\/\/\S+/gi
+]
 
 /** Whether `text` invites any of `names` with a whole-token @mention outside quotes, code and links (negation is not parsed). */
 export function postNamesAgent(text: string, names: readonly (string | undefined)[]): boolean {
