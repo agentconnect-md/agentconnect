@@ -29,8 +29,10 @@ describe('assistant mode admission edges', () => {
 
   it('throws every definition refusal at once', () => {
     expect(() => assertAssistantModeDefinition({ runtime: 'claude-acp', memory: null })).not.toThrow()
+    expect(() => assertAssistantModeDefinition({ runtime: 'codex-acp', memory: null })).not.toThrow()
+    expect(() => assertAssistantModeDefinition({ runtime: 'opencode', memory: { provider: 'none' } })).not.toThrow()
     try {
-      assertAssistantModeDefinition({ runtime: 'codex-acp', memory: { provider: 'native' } })
+      assertAssistantModeDefinition({ runtime: 'qwen-code', memory: { provider: 'native' } })
       expect.unreachable()
     } catch (e) {
       expect(e).toBeInstanceOf(AssistantModeAdmissionRefused)

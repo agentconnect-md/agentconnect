@@ -54,10 +54,10 @@ describe('AssistantModePolicy', () => {
 
 describe('assistant mode admission', () => {
   it('admits only runtimes whose facts are all established', () => {
-    expect(assistantModeRuntimeAdmitted('claude-acp')).toBe(true)
-    expect(assistantModeRuntimeAdmitted('claude')).toBe(true)
-    expect(assistantModeRuntimeAdmitted('codex-acp')).toBe(false)
-    expect(assistantModeRuntimeAdmitted('opencode')).toBe(false)
+    for (const runtime of ['claude-acp', 'claude', 'codex-acp', 'codex', 'opencode']) {
+      expect(assistantModeRuntimeAdmitted(runtime), runtime).toBe(true)
+    }
+    expect(assistantModeRuntimeAdmitted('qwen-code')).toBe(false)
     expect(assistantModeRuntimeAdmitted('some-new-runtime')).toBe(false)
     expect(assistantModeRuntimeAdmitted('constructor')).toBe(false)
   })
@@ -65,8 +65,13 @@ describe('assistant mode admission', () => {
   it('refuses an unset or unlisted runtime and memory other than managed or none', () => {
     expect(assistantModeDefinitionRefusals({ runtime: 'claude-acp', memory: null })).toEqual([])
     expect(assistantModeDefinitionRefusals({ runtime: 'claude-acp', memory: { provider: 'none' } })).toEqual([])
+    expect(assistantModeDefinitionRefusals({ runtime: 'codex-acp', memory: { provider: 'none' } })).toEqual([])
+    expect(assistantModeDefinitionRefusals({ runtime: 'opencode', memory: null })).toEqual([])
     expect(assistantModeDefinitionRefusals({ runtime: null, memory: undefined })).toEqual(['runtime-unset'])
     expect(assistantModeDefinitionRefusals({ runtime: 'codex-acp', memory: { provider: 'native' } })).toEqual([
+      'memory-provider'
+    ])
+    expect(assistantModeDefinitionRefusals({ runtime: 'qwen-code', memory: { provider: 'native' } })).toEqual([
       'runtime-not-admitted',
       'memory-provider'
     ])

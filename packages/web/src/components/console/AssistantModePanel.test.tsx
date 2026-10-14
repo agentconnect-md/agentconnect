@@ -129,13 +129,16 @@ describe('assistant mode draft', () => {
 describe('AssistantModePanel', () => {
   it('locks the switch with each reason when admission fails', async () => {
     mocks.admission = { admitted: false, refusals: ['runtime-not-admitted', 'memory-provider'] }
-    const host = await mount({ runtime: 'codex-acp', memoryProvider: 'native' })
+    const host = await mount({ runtime: 'qwen-code', memoryProvider: 'native' })
     expect(host.querySelector('[data-assistant-mode-locked]')).toBeTruthy()
     expect(
       [...host.querySelectorAll('[data-assistant-mode-refusal]')].map((n) =>
         n.getAttribute('data-assistant-mode-refusal')
       )
     ).toEqual(['runtime-not-admitted', 'memory-provider'])
+    expect(host.querySelector('[data-assistant-mode-refusal="runtime-not-admitted"]')?.textContent).toContain(
+      'resume a session after a restart'
+    )
     await clickButton(host, 'Edit')
     const toggle = host.querySelector<HTMLInputElement>('input[type="checkbox"]')
     expect(toggle?.disabled).toBe(true)
@@ -222,5 +225,8 @@ describe('AssistantModePanel', () => {
     expect(await turningOn({})).toBe(false)
     expect(await turningOn({ permissionMode: '' })).toBe(false)
     expect(await turningOn({ runtime: 'example-runtime' })).toBe(true)
+    // Codex moves to Auto review; OpenCode has no auto or full-access mode, so it keeps its mode and warns.
+    expect(await turningOn({ runtime: 'codex-acp', permissionMode: 'workspace-write' })).toBe(false)
+    expect(await turningOn({ runtime: 'opencode', permissionMode: 'build' })).toBe(true)
   })
 })

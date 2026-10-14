@@ -216,6 +216,12 @@ does not pretend to defend against effects it cannot defend against.
 | Executors         | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                      | Not possible today either                                                                                                                                |
 | One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                             |
 
+The admission list holds Claude Code (`claude-acp`, and `claude`, its earlier id), Codex (`codex-acp`,
+and `codex`) and OpenCode (`opencode`). A runtime joins it once both facts hold for the version the
+product runs: its memory is off by a verified switch or it keeps none, and a new runtime process
+resumes a session from `session/load` with the earlier turns in the next model request, not merely
+an answered call (the thirty-ninth revision records the check for Codex and OpenCode).
+
 Not admission criteria: platform (all allowed; a place is internal unless detected external, §5.3), channel trigger mode
 (user configuration), workspace mode and isolation (§5.6), sandboxing, permission policy (switching
 on sets a default, §1.8; an asking mode only warns), a linked identity for the responsible user
@@ -1082,8 +1088,7 @@ it no tab.
 
 1. **Automatic context rollover**: a threshold on `contextUsed`; whether items and followers stay
    attached to the same place after a rollover.
-2. **Run-state reclaim for permanent sessions** (the follow-up to §4.2 item 1); whether Codex
-   resumes a session by id after a runtime restart is unverified.
+2. **Run-state reclaim for permanent sessions** (the follow-up to §4.2 item 1).
 3. **Slack DM `append` versus Slack assistant threads** (`assistant_thread_started` is already
    supported): whether a "new conversation" button still means anything.
 4. **Webchat report rounds without a connected client** (unverified).
@@ -1096,6 +1101,10 @@ it no tab.
 8. Whether distillation on a normal OpenCode host runs under `plan` (live, unverified).
 9. **Settled by B1/B2**: with no marked sessions left (§5.5 "Writes"), what a person's request
    sends out of a conversation is that person's call, through any tool.
+10. **Instructions in a resumed Codex thread**: the adapter passes native instructions only when a
+    thread starts, so the standing rules the daemon re-asserts on `session/load` do not reach a
+    resumed Codex thread, which keeps the ones it started with. The reminder, the standing summary
+    and the running sub-sessions still arrive inline on the first turn after a restart (§5.4 ②).
 
 ---
 
@@ -1463,3 +1472,22 @@ and then waits for nobody. The map now classifies each mode by the description i
 and covers every runtime with a mode that decides on its own or never asks; a mode whose
 description leaves approvals open stays out. No runtime is newly admitted, so switching the mode
 on is unchanged, and an agent created through the API or MCP still keeps its runtime's default.
+
+**Thirty-ninth revision (2026-10-14)**: Codex and OpenCode join the admission list (issue #2810;
+§4.1, §9). Native memory could already be turned off for both, but resuming a session by id after a
+runtime restart was unverified. Against a local model stub, each runtime took two turns, its whole
+process group was killed, a new process loaded the session by its old id, and the model request for
+a third turn carried both earlier turns and their replies. Codex (the managed adapter
+2.2.2-agentconnect.1 with Codex 0.160.1, and the image's previous pin 2.1.1-agentconnect.1 with
+0.159.3) resumes the thread from its rollout under `CODEX_HOME`; OpenCode (1.18.32, the image pin,
+and 1.19.0, the registry's) resumes from its session database under `XDG_DATA_HOME`. Both live in
+the runtime's private HOME, which the daemon derives again after its own restart from the agent's or
+the session's directory and which on the pool is the session's volume, and `session/load`
+re-attached the MCP servers it was given for both. Codex's `memories` feature is still the switch: on, it runs a memory
+consolidation request at startup and writes a `memories` directory; the daemon's
+`features.memories = false` over the same configuration does neither. OpenCode offers no memory
+tool and keeps no memory store. No daemon capability gates the change: the daemon never reads the
+list, and its resume path, `session/load` whenever the runtime advertises it, predates assistant
+mode and branches on that capability alone, so an older daemon resumes these runtimes the same way. Switching the
+mode on moves Codex to Auto review and keeps OpenCode's mode (§1.8). A resumed Codex thread keeps
+the instructions it started with (§9).
