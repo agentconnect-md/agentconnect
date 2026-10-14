@@ -350,7 +350,8 @@ describe('skill source visibility — the agent that enables it resolves it anyw
         ref: null,
         subDir: null,
         skills: [],
-        private: false
+        private: false,
+        credential: null
       }
     ])
     // Reading it there does NOT loosen the write gate: the ref can be dropped but

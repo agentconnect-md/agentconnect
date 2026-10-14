@@ -1126,6 +1126,24 @@ Skipped-Source status (P3, CP3.4):
   agent may report, and one agent's reports apply one at a time, in receipt
   order on a replica.
 
+Console (P3, CP3.5):
+
+- The skills library's Add menu gains "Import from a Git URL" for a GitLab
+  project or any HTTPS repository. Its preview sends `{ source, ref?, subDir? }`.
+  A scanned project offers its skills as a picker. An unread one
+  (`resolvable: false`) explains the "trusted by URL" trust and keeps a typed
+  skill filter.
+- A Source with `credential: null` off github.com carries a "trusted by URL"
+  badge in the library and on the agent's skill rows.
+  `GET /agents/:id/skill-sources` now returns that `credential` (provider only),
+  so a Source hidden from the caller's library is marked too. A CP that omits
+  the field shows no badge.
+- An agent's skill row shows the latest reason code from
+  `GET /agents/:id/skill-source-status`, with human-readable text below the row.
+  An older CP's 404 reads as no failures.
+- An agent's row for a Source that cannot be scanned accepts a typed skill list
+  in place of the per-skill toggles.
+
 ## 12. Configuration and degradation
 
 The Source Cache is optional. The Helm chart gains `sourceCache.*` values (off by

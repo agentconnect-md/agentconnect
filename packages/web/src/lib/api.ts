@@ -52,7 +52,8 @@ import type {
   SetProviderKeyInput,
   SharedImageDownload,
   SharedImageOriginal,
-  SharedImagePreview
+  SharedImagePreview,
+  SkillSourceFailureCode
 } from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { isSubsessionCoordinate } from '@agentconnect.md/protocol/subsession-coordinate'
@@ -5629,12 +5630,19 @@ export interface SkillSourceDto {
   subDir: string | null
   skills: string[] // the source's own skill filter ([] ⇒ install all)
   private: boolean // private repo — acquired through the org GitHub App's read-only token
+  credential?: SkillSourceCredentialDto | null // null ⇒ anonymous; absent on CPs that predate it
   visibility: ResourceVisibility
   sharedWith: string[]
   createdBy: string | null
   canEdit: boolean
   canManageSharing: boolean
   createdAt: string // ISO-8601
+}
+
+// The code-host credential a source is acquired through (source-cache.md §5).
+export interface SkillSourceCredentialDto {
+  provider: 'github' | 'gitlab'
+  repoId?: string
 }
 
 export interface CreateSkillSourceInput {
@@ -5658,15 +5666,12 @@ export interface UpdateSkillSourceInput {
   skills?: string[]
 }
 
-// POST /skill-sources/preview body + response — a best-effort GitHub scan for the
-// import dialog (branch/tag choices + the SKILL.md manifest).
-export interface PreviewSkillSourceInput {
-  installationId: string
-  owner: string
-  repo: string
-  ref?: string
-}
+// POST /skill-sources/preview — a GitHub repo by installation, or an HTTPS address (GitLab is scanned, other hosts never read).
+export type PreviewSkillSourceInput =
+  | { installationId: string; owner: string; repo: string; ref?: string }
+  | { source: string; ref?: string; subDir?: string }
 export interface SkillSourcePreviewDto {
+  resolvable?: boolean // false ⇒ the CP did not read the repository; absent on older CPs, which only scanned GitHub
   branches: string[]
   tags: string[]
   skills: Array<{ name: string; dirPath: string }>
@@ -5755,9 +5760,18 @@ export interface AgentSkillSourceDto {
   subDir: string | null
   skills: string[]
   private: boolean
+  credential?: { provider: 'github' | 'gitlab' } | null // null ⇒ anonymous; absent on CPs that predate it
 }
 export async function fetchAgentSkillSources(agentId: string): Promise<AgentSkillSourceDto[]> {
   return apiGet<AgentSkillSourceDto[]>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/skill-sources`)
+}
+
+// Each enabled source's latest install failure as its daemon reported it (source-cache.md §11).
+export interface AgentSkillSourceStatusDto {
+  sources: Array<{ name: string; code: SkillSourceFailureCode; reportedAt: string }>
+}
+export async function fetchAgentSkillSourceStatus(agentId: string): Promise<AgentSkillSourceStatusDto> {
+  return apiGet<AgentSkillSourceStatusDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/skill-source-status`)
 }
 
 // One hit from the public skills.sh index (GET /skill-sources/registry/search).

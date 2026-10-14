@@ -310,4 +310,125 @@ describe('organization Skills library', () => {
       ).length
     ).toBeGreaterThanOrEqual(2)
   })
+
+  it('marks an anonymous other-host source as trusted by URL', async () => {
+    mocks.skillSources = [
+      { ...mocks.skillSources[0]!, id: 'gh', name: 'gh-kit', credential: null },
+      {
+        ...mocks.skillSources[0]!,
+        id: 'other',
+        name: 'other-kit',
+        source: 'https://git.example.test/ops/kit',
+        credential: null
+      },
+      {
+        ...mocks.skillSources[0]!,
+        id: 'gl',
+        name: 'gl-kit',
+        source: 'https://gitlab.example.test/team/kit',
+        credential: { provider: 'gitlab', repoId: '42' }
+      }
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }))
+    )
+    await act(async () => {
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <SkillSourcesCard canWrite={false} canManage={true} />
+        </SWRConfig>
+      )
+    })
+    await settleUntil(() => host.textContent?.includes('other-kit') === true)
+    const marked = [...host.querySelectorAll('.badge')].filter((el) => el.textContent === 'trusted by URL')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]!.closest('.card, [class*="rounded"]')?.textContent).toContain('other-kit')
+  })
+
+  it('imports an unreadable Git URL with a typed skill filter', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const body = String(input).includes('/skill-sources/preview')
+        ? { resolvable: false, branches: [], tags: [], skills: [] }
+        : []
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await act(async () => {
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <SkillSourcesCard canWrite={true} canManage={true} />
+        </SWRConfig>
+      )
+    })
+    await act(async () => buttonWithText('Add').click())
+    await act(async () => buttonWithText('Import from a Git URL', 'body').click())
+
+    const inputs = () => [...host.querySelectorAll<HTMLInputElement>('.modalbody input.inp')]
+    await typeInto(inputs()[0]!, 'http://git.example.test/ops/kit')
+    expect(host.querySelector('.modalbody')?.textContent).toContain('Enter a plain https:// address')
+    expect(buttonWithText('Check repository', '.modalbody').disabled).toBe(true)
+
+    await typeInto(inputs()[0]!, 'https://git.example.test/ops/kit')
+    await act(async () => buttonWithText('Check repository', '.modalbody').click())
+    await settleUntil(() => host.querySelector('[data-trusted-by-url]') !== null)
+
+    const [previewCall] = fetchMock.mock.calls.filter(([input]) => String(input).includes('/skill-sources/preview'))
+    expect(JSON.parse(String((previewCall as unknown as [unknown, RequestInit])[1].body))).toEqual({
+      source: 'https://git.example.test/ops/kit'
+    })
+    // The skills field stays a typed filter, since nothing was read.
+    await typeInto(inputs()[4]!, 'deploy, rollback')
+    await act(async () => buttonWithText('Import', '.modalfoot').click())
+    expect(mocks.createSkillSource).toHaveBeenCalledWith({
+      name: 'kit',
+      source: 'https://git.example.test/ops/kit',
+      skills: ['deploy', 'rollback']
+    })
+  })
+
+  it('imports a scanned GitLab project with the skills picked from its preview', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const body = String(input).includes('/skill-sources/preview')
+          ? {
+              resolvable: true,
+              branches: ['main'],
+              tags: [],
+              skills: [
+                { name: 'deploy', dirPath: 'skills/deploy' },
+                { name: 'review', dirPath: 'skills/review' }
+              ]
+            }
+          : []
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+      })
+    )
+    await act(async () => {
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <SkillSourcesCard canWrite={true} canManage={true} />
+        </SWRConfig>
+      )
+    })
+    await act(async () => buttonWithText('Add').click())
+    await act(async () => buttonWithText('Import from a Git URL', 'body').click())
+    await typeInto(
+      host.querySelector<HTMLInputElement>('.modalbody input.inp')!,
+      'https://gitlab.example.test/team/kit'
+    )
+    await act(async () => buttonWithText('Check repository', '.modalbody').click())
+    await settleUntil(() => host.textContent?.includes('2 skills found') === true)
+    expect(host.querySelector('[data-trusted-by-url]')).toBeNull()
+
+    const review = [...host.querySelectorAll('.modalbody label')].find((el) => el.textContent?.includes('review'))
+    await act(async () => review!.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+    await act(async () => buttonWithText('Import', '.modalfoot').click())
+    expect(mocks.createSkillSource).toHaveBeenCalledWith({
+      name: 'kit',
+      source: 'https://gitlab.example.test/team/kit',
+      skills: ['review']
+    })
+  })
 })
