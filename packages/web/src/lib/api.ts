@@ -2904,16 +2904,45 @@ export interface WorkspaceTransferDto {
   cached: boolean
 }
 
-export function transferWorkspaceFile(
+/** A transfer whose daemon is still uploading; poll it by `operationId`. */
+interface WorkspaceTransferPendingDto {
+  operationId: string
+  path: string
+  size: number
+}
+
+/** Poll cadence for a running transfer, and how many failed polls in a row (a CP failover) it rides out. */
+const TRANSFER_POLL_MS = 1_000
+const TRANSFER_POLL_FAILURES = 5
+
+export async function transferWorkspaceFile(
   agentId: string,
-  opts: { path: string; sessionId?: string; repo?: string; sha256?: string }
+  opts: { path: string; sessionId?: string; repo?: string; sha256?: string },
+  wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 ): Promise<WorkspaceTransferDto> {
-  return apiPost<WorkspaceTransferDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file/transfer`, {
+  const base = `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file/transfer`
+  let state = await apiPost<WorkspaceTransferDto | WorkspaceTransferPendingDto>(base, {
     path: opts.path,
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
     ...(opts.repo ? { repo: opts.repo } : {}),
-    ...(opts.sha256 ? { sha256: opts.sha256 } : {})
+    ...(opts.sha256 ? { sha256: opts.sha256 } : {}),
+    poll: true
   })
+  const query = opts.sha256 ? `?sha256=${encodeURIComponent(opts.sha256)}` : ''
+  let failures = 0
+  while ('operationId' in state) {
+    await wait(TRANSFER_POLL_MS)
+    try {
+      state = await apiGet<WorkspaceTransferDto | WorkspaceTransferPendingDto>(
+        `${base}/${encodeURIComponent(state.operationId)}${query}`
+      )
+      failures = 0
+    } catch (err) {
+      // The operation lives in the database, so a poll that fails in transit is retried; the CP's own answers are not.
+      if ((err instanceof ApiError && err.status < 500) || ++failures >= TRANSFER_POLL_FAILURES) throw err
+    }
+  }
+  return state
 }
 
 /** A presigned object-store PUT for one chat upload: send exactly these headers and `size` bytes. */

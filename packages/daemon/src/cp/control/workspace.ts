@@ -13,11 +13,15 @@ import type {
   WorkspaceListReq,
   WorkspaceMkdirReq,
   WorkspaceReadReq,
+  WorkspaceUploadOk,
   WorkspaceUploadReq,
   WorkspaceWriteReq,
   TransferNetwork,
+  TransferSettleOk,
+  TransferSettleReq,
   TransferSignOk,
-  TransferSignReq
+  TransferSignReq,
+  TransferUploadOutcome
 } from '@agentconnect.md/protocol'
 import type { WorkspaceGit } from '../workspace-git.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from '../workspace-reader.js'
@@ -31,12 +35,15 @@ export interface WorkspaceReadDeps {
   workspaceGit: WorkspaceGit
   /** `transfer/sign` to the control plane, which signs every transfer URL (source-cache-file-transfer.md §5). */
   signTransfer?: (req: TransferSignReq, orgId?: string) => Promise<TransferSignOk>
+  /** `transfer/settle`: report a begun upload's outcome to the control plane. */
+  settleTransfer?: (req: TransferSettleReq, orgId?: string) => Promise<TransferSettleOk>
   /** Where this daemon's snapshots reach the bucket from: its sandbox pods in the cluster, or the public origin. */
   transferNetwork?: TransferNetwork
 }
 
 export interface WorkspaceControlDeps extends WorkspaceReadDeps {
   gitMessagePasses: GitMessagePasses
+  uploadBegins: UploadBegins
 }
 
 /**
@@ -98,43 +105,119 @@ export const workspaceMkdir: ControlHandler<WorkspaceControlDeps> = (frame: AnyF
 /** One snapshot upload may stage and send up to the transfer cap, so it gets far longer than a file read. */
 const WORKSPACE_UPLOAD_TIMEOUT_MS = 15 * 60_000
 
+/** Snapshot one workspace file and PUT it on the URL the control plane signs for `req.ticket`. */
+function runUpload(
+  req: WorkspaceUploadReq,
+  signTransfer: NonNullable<WorkspaceReadDeps['signTransfer']>,
+  deps: WorkspaceReadDeps,
+  orgId: string | undefined
+): Promise<WorkspaceUploadOk> {
+  const network = deps.transferNetwork ?? 'public'
+  return deps.workspaceRead.upload(
+    {
+      agentId: req.agentId,
+      ...(req.sessionId ? { sessionId: req.sessionId } : {}),
+      ...(req.repo ? { repo: req.repo } : {}),
+      path: req.path,
+      maxBytes: req.maxBytes,
+      timeoutMs: WORKSPACE_UPLOAD_TIMEOUT_MS,
+      revision: req.revision
+    },
+    async (file) => {
+      try {
+        return await signTransfer({ ticket: req.ticket, ...file, network }, orgId)
+      } catch (err) {
+        // The control plane refuses a snapshot that is not the revision it asked for as a conflict.
+        if ((err as { code?: string } | null)?.code === 'CONFLICT')
+          throw new WorkspaceConflictError('the file changed while it was copied; retry')
+        throw new WorkspaceViolationError('the control plane did not sign the upload', 'transfer-failed')
+      }
+    }
+  )
+}
+
+const noSigner = () =>
+  new WorkspaceViolationError('this daemon cannot reach the control plane signer', 'transfer-unavailable')
+
 export const workspaceUpload: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
   // The bytes go root → bucket on a URL the control plane signs for this ticket; they never ride this socket.
   const req = frame.payload as WorkspaceUploadReq
   const signTransfer = deps.signTransfer
-  if (!signTransfer) {
-    return workspaceError(
-      wire,
-      frame.id,
-      'workspace/upload',
-      new WorkspaceViolationError('this daemon cannot reach the control plane signer', 'transfer-unavailable')
-    )
-  }
-  const network = deps.transferNetwork ?? 'public'
-  deps.workspaceRead
-    .upload(
-      {
-        agentId: req.agentId,
-        ...(req.sessionId ? { sessionId: req.sessionId } : {}),
-        ...(req.repo ? { repo: req.repo } : {}),
-        path: req.path,
-        maxBytes: req.maxBytes,
-        timeoutMs: WORKSPACE_UPLOAD_TIMEOUT_MS,
-        revision: req.revision
-      },
-      async (file) => {
-        try {
-          return await signTransfer({ ticket: req.ticket, ...file, network }, frame.orgId)
-        } catch (err) {
-          // The control plane refuses a snapshot that is not the revision it asked for as a conflict.
-          if ((err as { code?: string } | null)?.code === 'CONFLICT')
-            throw new WorkspaceConflictError('the file changed while it was copied; retry')
-          throw new WorkspaceViolationError('the control plane did not sign the upload', 'transfer-failed')
-        }
-      }
-    )
+  if (!signTransfer) return workspaceError(wire, frame.id, 'workspace/upload', noSigner())
+  runUpload(req, signTransfer, deps, frame.orgId)
     .then((sent) => wire.reply(frame, 'workspace/upload/ok', sent))
     .catch((err) => workspaceError(wire, frame.id, 'workspace/upload', err))
+}
+
+/** Waits before each `transfer/settle` attempt; the control plane's poll also finds a settled upload in the bucket. */
+const SETTLE_RETRY_MS = [0, 2_000, 10_000, 30_000, 60_000, 120_000] as const
+
+/** Begun uploads by ticket, so a re-sent `workspace/upload/begin` joins the one already running. */
+export class UploadBegins {
+  private readonly running = new Set<string>()
+
+  constructor(private readonly settleRetryMs: readonly number[] = SETTLE_RETRY_MS) {}
+
+  /** Run `upload` once per ticket and report its outcome through `settle`; false ⇒ that ticket is already running. */
+  start(
+    ticket: string,
+    upload: () => Promise<WorkspaceUploadOk>,
+    settle: (outcome: TransferUploadOutcome) => Promise<unknown>,
+    log: ControlWire['log']
+  ): boolean {
+    if (this.running.has(ticket)) return false
+    this.running.add(ticket)
+    void upload()
+      .then(
+        (sent): TransferUploadOutcome => ({ ok: true, ...sent }),
+        (err: unknown) => uploadFailure(err, log)
+      )
+      .then((outcome) => this.deliver(outcome, settle, log))
+      .finally(() => this.running.delete(ticket))
+    return true
+  }
+
+  private async deliver(
+    outcome: TransferUploadOutcome,
+    settle: (outcome: TransferUploadOutcome) => Promise<unknown>,
+    log: ControlWire['log']
+  ): Promise<void> {
+    for (const wait of this.settleRetryMs) {
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait).unref?.())
+      try {
+        await settle(outcome)
+        return
+      } catch {
+        // Disconnected or refused: try again, as a reconnect may land on another control plane.
+      }
+    }
+    log.warn('cp: workspace/upload/begin could not report its outcome; the ticket will expire')
+  }
+}
+
+/** A begun upload's failure as `workspaceError` would have sent it: typed reasons pass through, anything else is generic. */
+function uploadFailure(err: unknown, log: ControlWire['log']): TransferUploadOutcome {
+  const message = (text: string) => `workspace/upload failed: ${text}`.slice(0, 500)
+  if (err instanceof WorkspaceConflictError)
+    return { ok: false, code: 'CONFLICT', reason: err.reason, message: message(err.message) }
+  if (err instanceof WorkspaceViolationError)
+    return { ok: false, code: 'BAD_PAYLOAD', reason: err.reason, message: message(err.message) }
+  log.warn(`cp: workspace/upload failed: ${(err as Error)?.message}`)
+  return { ok: false, code: 'INTERNAL', message: 'workspace/upload failed' }
+}
+
+export const workspaceUploadBegin: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {
+  // Acknowledged at once: the upload runs on, and `transfer/settle` reaches whichever control plane holds the socket then.
+  const req = frame.payload as WorkspaceUploadReq
+  const { signTransfer, settleTransfer } = deps
+  if (!signTransfer || !settleTransfer) return workspaceError(wire, frame.id, 'workspace/upload/begin', noSigner())
+  deps.uploadBegins.start(
+    req.ticket,
+    () => runUpload(req, signTransfer, deps, frame.orgId),
+    (outcome) => settleTransfer({ ticket: req.ticket, outcome }, frame.orgId),
+    wire.log
+  )
+  wire.reply(frame, 'workspace/upload/begin/ok', {})
 }
 
 export const workspaceGitStatus: ControlHandler<WorkspaceControlDeps> = (frame: AnyFrame, deps, wire) => {

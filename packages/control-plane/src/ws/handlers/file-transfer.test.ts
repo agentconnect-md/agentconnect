@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
 import { FileTransferRefusal } from '../../file-transfer/service.js'
-import { handleTransferGet, handleTransferSign } from './file-transfer.js'
+import { handleTransferGet, handleTransferSettle, handleTransferSign } from './file-transfer.js'
 
 const agentId = '11111111-1111-4111-8111-111111111111'
 const daemonId = '22222222-2222-4222-8222-222222222222'
@@ -11,7 +11,7 @@ const orgId = 'example-org'
 const uploadId = '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c'
 const sha256 = Buffer.alloc(32, 7).toString('base64')
 
-function frameOf(type: 'transfer/get' | 'transfer/sign', payload: unknown) {
+function frameOf(type: 'transfer/get' | 'transfer/sign' | 'transfer/settle', payload: unknown) {
   const decoded = decodeEnvelope(encode(buildEnvelope(type, payload as never, { orgId })))
   if (!decoded.ok) throw new Error('invalid request fixture')
   return decoded.frame
@@ -21,7 +21,8 @@ function setup() {
   const agent = vi.fn(async () => ({ id: agentId, orgId, daemonId }) as unknown)
   const fileTransfer = {
     uploadedFile: vi.fn(async () => ({ url: 'https://store.example.test/g', expiresAt: 1 })),
-    signUpload: vi.fn(async () => ({ url: 'https://store.example.test/p', headers: {} }))
+    signUpload: vi.fn(async () => ({ url: 'https://store.example.test/p', headers: {} })),
+    settleUpload: vi.fn(async () => undefined)
   }
   const conn = { daemonId, orgId, replyTo: vi.fn(), sendError: vi.fn() }
   const deps = { agent: { get: agent }, fileTransfer } as unknown as DaemonWsDeps
@@ -73,5 +74,26 @@ describe('transfer/sign', () => {
     )
     await handleTransferSign(sign, c, deps)
     expect(conn.sendError).toHaveBeenLastCalledWith(expect.any(String), 'SCOPE_DENIED', 'no open upload', false)
+  })
+})
+
+describe('transfer/settle', () => {
+  const settle = frameOf('transfer/settle', { ticket: uploadId, outcome: { ok: true, bytes: 5, sha256 } })
+
+  it('records the outcome for the connection’s own daemon and asks for a resend when it could not', async () => {
+    const { fileTransfer, conn, deps, c } = setup()
+    await handleTransferSettle(settle, c, deps)
+    expect(fileTransfer.settleUpload).toHaveBeenCalledWith(daemonId, {
+      ticket: uploadId,
+      outcome: { ok: true, bytes: 5, sha256 }
+    })
+    expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'transfer/settle/ok', {})
+
+    fileTransfer.settleUpload.mockRejectedValueOnce(new Error('database down'))
+    await handleTransferSettle(settle, c, deps)
+    expect(conn.sendError).toHaveBeenLastCalledWith(expect.any(String), 'INTERNAL', expect.any(String), true)
+
+    await handleTransferSettle(settle, c, {} as DaemonWsDeps)
+    expect(conn.sendError).toHaveBeenLastCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
   })
 })

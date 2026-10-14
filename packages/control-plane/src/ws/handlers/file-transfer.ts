@@ -1,4 +1,4 @@
-/** `transfer/sign` and `transfer/get`: the daemon's half of console file transfer, signed here (source-cache-file-transfer.md §5). */
+/** `transfer/sign`, `transfer/settle` and `transfer/get`: the daemon's half of console file transfer, signed here (source-cache-file-transfer.md §5). */
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId } from '../../domain/ids.js'
 import { FileTransferRefusal } from '../../file-transfer/service.js'
@@ -20,6 +20,21 @@ export const handleTransferSign: Handler = async (frame, conn, deps) => {
       return
     }
     conn.sendError(frame.id, 'INTERNAL', 'the upload could not be signed', true)
+  }
+}
+
+export const handleTransferSettle: Handler = async (frame, conn, deps) => {
+  if (!isFrame('transfer/settle')(frame)) return
+  if (!deps.fileTransfer) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'this deployment has no bucket for file transfers', false)
+    return
+  }
+  try {
+    // Bound to the daemon the ticket was issued to; an unknown, expired or settled ticket is acknowledged unchanged.
+    await deps.fileTransfer.settleUpload(conn.daemonId, frame.payload)
+    conn.replyTo(frame, 'transfer/settle/ok', {})
+  } catch {
+    conn.sendError(frame.id, 'INTERNAL', 'the upload outcome could not be recorded', true)
   }
 }
 

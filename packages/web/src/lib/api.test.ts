@@ -42,6 +42,7 @@ import {
   fetchUsage,
   fetchWorkspaceGitDiff,
   stageWorkspacePaths,
+  transferWorkspaceFile,
   unstageWorkspacePaths
 } from './api'
 
@@ -69,6 +70,59 @@ describe('workspace viewer repository scope', () => {
       expect(query.get('sessionId')).toBe('session-1')
       expect(query.get('repo')).toBe('acme/secondary')
     }
+  })
+})
+
+describe('workspace file transfer', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  const operationId = '0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c'
+  const ready = { path: 'dist/app.bin', size: 9, url: 'https://store.example.test/g', expiresAt: '', cached: false }
+
+  it('asks to poll and follows the operation until the link is ready, riding out a failed poll', async () => {
+    const answers = [
+      json(202, { operationId, path: 'dist/app.bin', size: 9 }),
+      json(202, { operationId, path: 'dist/app.bin', size: 9 }),
+      json(503, { error: 'Service Unavailable', message: 'restarting' }),
+      json(200, ready)
+    ]
+    const fetcher = vi.fn<typeof fetch>(async () => answers.shift()!)
+    vi.stubGlobal('fetch', fetcher)
+    setApiOrgId('org-1')
+    const waits: number[] = []
+    const got = await transferWorkspaceFile('agent-1', { path: 'dist/app.bin', sha256: 'ab'.repeat(8) }, async (ms) => {
+      waits.push(ms)
+    })
+    expect(got).toEqual(ready)
+    expect(waits).toEqual([1000, 1000, 1000])
+    const [post, ...polls] = fetcher.mock.calls
+    expect(JSON.parse(String(post![1]?.body))).toEqual({ path: 'dist/app.bin', sha256: 'ab'.repeat(8), poll: true })
+    for (const [url] of polls) {
+      expect(String(url)).toContain(`/agents/agent-1/workspace/file/transfer/${operationId}?sha256=${'ab'.repeat(8)}`)
+    }
+  })
+
+  it('stops on the control plane’s own refusal', async () => {
+    const answers = [
+      json(202, { operationId, path: 'dist/app.bin', size: 9 }),
+      json(409, { error: 'Conflict', message: 'changed', code: 'WORKSPACE_STALE' })
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(async () => answers.shift()!)
+    )
+    setApiOrgId('org-1')
+    await expect(
+      transferWorkspaceFile('agent-1', { path: 'dist/app.bin' }, async () => undefined)
+    ).rejects.toMatchObject({
+      status: 409,
+      code: 'WORKSPACE_STALE'
+    })
   })
 })
 

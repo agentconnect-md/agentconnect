@@ -79,11 +79,15 @@ cannot prove its bytes, so it is uploaded again.
   - the revision's size, so a PUT for any other length is refused as `stale`;
   - the daemon;
   - a 16-minute expiry, set and checked with database time.
+  - for a begun upload (§5.1), the agent and path it was opened for. Only that agent's
+    callers can poll it.
 
   Tickets live in PostgreSQL (`transfer_upload_ticket`), so any CP replica can answer
   `transfer/sign`, including the daemon's socket owner when the HTTP request reached another
   replica ([high-availability.md](high-availability.md#connection-ownership-and-forwarding)).
-  The CP deletes the ticket once the upload answers; the next mint sweeps expired ones.
+  A single-shot ticket is deleted once the upload answers. A begun ticket signs nothing
+  after `transfer/settle` records its outcome; it then stays readable for 10 minutes. The
+  next mint sweeps expired tickets.
 
 - **`transfer/get`** answers only for an agent the requesting daemon may act for, and only
   under that agent's organization's key prefix.
@@ -98,6 +102,10 @@ cannot prove its bytes, so it is uploaded again.
 - **Feature:** `FILE_TRANSFER_FEATURE` (`file-transfer-v2`). A daemon that advertises it
   answers `workspace/upload` and asks `transfer/sign` and `transfer/get`; every current
   daemon advertises it.
+  - `workspace-upload-begin-v1` (`WORKSPACE_UPLOAD_BEGIN_FEATURE`) adds
+    `workspace/upload/begin` and `transfer/settle` (§5.1). The CP sends the single-shot
+    `workspace/upload` only to a daemon without it, and a current daemon still answers
+    that frame, so either side can be upgraded first.
   - Both routes answer 409 `DAEMON_FEATURE_MISSING` for a daemon without it.
   - Both answer 409 `WORKSPACE_TRANSFER_UNAVAILABLE` when the CP has no bucket.
   - `file-transfer-v1`, where a pool member signed its own URLs, is retired.
@@ -105,7 +113,14 @@ cannot prove its bytes, so it is uploaded again.
   - `workspace/upload` (C→D: `agentId`, `sessionId?`, `repo?`, `path`, `revision`,
     `maxBytes`, `ticket`) → `workspace/upload/ok` (`bytes`, base64 `sha256`).
     Single-shot with a 16-minute ack budget, because the daemon stages and uploads the
-    file before it answers.
+    file before it answers. Kept only for daemons without `workspace-upload-begin-v1`.
+  - `workspace/upload/begin` (C→D: the same payload) → `workspace/upload/begin/ok` (`{}`).
+    The daemon acknowledges at once and runs the upload in the background. A re-sent
+    begin for a running ticket joins that upload.
+  - `transfer/settle` (D→C: `ticket`, `outcome`) → `transfer/settle/ok` (`{}`). The outcome
+    is either `{ ok: true, bytes, sha256 }` or `{ ok: false, code, reason?, message }`: the
+    same code, reason and message the single-shot error frame would carry. Recording it is
+    idempotent and bound to the ticket's daemon.
   - `transfer/sign` (D→C: `ticket`, `bytes`, `sha256`, `network`) → `transfer/sign/ok`
     (`url`, `headers`).
   - `transfer/get` (D→C: `agentId`, `uploadId`, `size`, `sha256`, `network`) →
@@ -132,20 +147,49 @@ cannot prove its bytes, so it is uploaded again.
 `file-transfer/service.ts` holds the transfer logic; `file-transfer/transfer.ts` builds
 keys and signs.
 
-| Route                                      | Purpose                                                        |
-| ------------------------------------------ | -------------------------------------------------------------- |
-| `POST /agents/:id/uploads`                 | Reserve an upload; answers the presigned PUT                   |
-| `POST /agents/:id/workspace/file/transfer` | Presigned GET for one workspace file; may upload first         |
-| `GET /agents/:id/workspace/file/download`  | Proxied download; any path, `sessionId` optional, `repo` added |
+| Route                                                  | Purpose                                                        |
+| ------------------------------------------------------ | -------------------------------------------------------------- |
+| `POST /agents/:id/uploads`                             | Reserve an upload; answers the presigned PUT                   |
+| `POST /agents/:id/workspace/file/transfer`             | Presigned GET for one workspace file; may upload first         |
+| `GET /agents/:id/workspace/file/transfer/:operationId` | A begun transfer: 202 while it uploads, then the GET           |
+| `GET /agents/:id/workspace/file/download`              | Proxied download; any path, `sessionId` optional, `repo` added |
 
 A workspace transfer runs in four steps:
 
 1. **Stat.** A one-byte `workspace/read` to the owning daemon serves as the stat, so
    containment, the `.git` rule, symlink refusal and root selection are the read's.
 2. **Cache check.** The CP `HEAD`s the revision key.
-3. **Upload on a miss.** The CP mints a ticket and sends `workspace/upload`. The daemon
+3. **Upload on a miss.** The CP mints a ticket and starts the upload (§5.1). The daemon
    asks `transfer/sign` for its snapshot, then PUTs it.
 4. **Sign the download.** The CP signs the browser's GET.
+
+### 5.1 Begin and poll
+
+An upload can take up to 16 minutes, longer than a control RPC or an HTTP request should
+stay open across a CP failover. For a daemon with `workspace-upload-begin-v1`, the upload
+is an operation whose state lives in PostgreSQL ([high-availability.md](high-availability.md)):
+
+1. **Begin.** The CP opens a ticket that records the agent and path, then sends
+   `workspace/upload/begin`. The daemon acknowledges within the normal ack budget. If it
+   never accepts, the CP deletes the ticket and answers the daemon's error.
+2. **Answer.** A caller that sends `poll: true` gets `202 { operationId, path, size }`;
+   the operation id is the ticket. The console always sends it and polls once a second.
+   Any other caller is held while the CP reads the ticket once a second. This matches the
+   single-shot behaviour, but the upload no longer depends on that request.
+3. **Settle.** The daemon reports the outcome with `transfer/settle` to whichever CP holds
+   its socket at that point. It retries for about 4 minutes while it is disconnected.
+4. **Poll.** `GET …/transfer/:operationId` reads the ticket on any replica:
+   - a failed outcome is answered as the single-shot error would have been, for example
+     409 `WORKSPACE_STALE` or 503 `WORKSPACE_TRANSFER_FAILED`;
+   - a successful outcome, or an unsettled ticket whose object the bucket already holds,
+     returns the signed GET. A lost settle therefore costs nothing;
+   - an unknown or expired operation answers 404 `WORKSPACE_TRANSFER_UNKNOWN`. A held
+     request whose ticket expired unsettled answers 503 `WORKSPACE_TRANSFER_FAILED`.
+
+A transfer request for a revision that is already uploading joins the open ticket and
+re-sends its begin under the same ticket. A retry after a failover therefore joins the
+running upload instead of starting a second one. A daemon that restarted mid-upload
+starts it again.
 
 The transfer route accepts a shared file's digest prefix (`sha256`), as the proxied
 download does. It compares that prefix with the object's digest and answers
@@ -158,6 +202,8 @@ recorded is therefore refused on this path too
 - **`workspace/upload`** (`cp/control/workspace.ts`) runs `WorkspaceFiles.upload` with a
   signer that asks `transfer/sign` for the frame's ticket. A refused signature is a
   `stale` conflict when the CP saw another size, and `transfer-failed` otherwise.
+- **`workspace/upload/begin`** runs the same upload under `UploadBegins`, which keys
+  running uploads by ticket, and reports the outcome with `transfer/settle`.
 - **Prompt:** a webchat file becomes an `Attachment` with `transfer`.
   - At prompt build the daemon asks `transfer/get`. `buildAttachmentBlocks` then emits a
     text block naming the file and a sample `curl -o uploads/<name>` with the presigned
@@ -227,10 +273,13 @@ the `x-amz-checksum-sha256` and `x-amz-tagging` headers (chart README).
 - **Peers see the marker only.** In a multi-agent conversation the relay gives the
   participants a turn does not address the `[attached: …]` marker in their context copy,
   never the upload itself.
-- **A long-held request.** A workspace transfer holds the HTTP request open while the
-  daemon uploads, and a CP failover mid-upload loses the reply.
-  - An ingress idle timeout shorter than the upload fails the request.
-  - Retrying is cheap once the upload has finished, because the revision is then cached.
+- **Single-shot for older daemons.** A daemon without `workspace-upload-begin-v1` still
+  gets the single-shot `workspace/upload`. That holds the HTTP request open while the
+  daemon uploads, so a CP failover mid-upload loses the reply. Retrying is cheap once the
+  upload has finished, because the revision is then cached.
+- **Mixed CP versions.** During a CP rollout a daemon may settle to a CP that predates
+  `transfer/settle`. That CP refuses the frame. A successful upload is still found in the
+  bucket. A failed one is reported only when its ticket expires.
 - **No automatic placement.** The agent downloads an upload itself; nothing
   materializes it into `uploads/` automatically
   ([inbound-file-attachments.md](inbound-file-attachments.md) §2 remains the design for

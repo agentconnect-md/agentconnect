@@ -4279,7 +4279,14 @@ model TransferUploadTicket {
   size      BigInt
   // Set and compared with database time, so replicas with skewed clocks agree.
   expiresAt DateTime @db.Timestamptz(6)
+  // A begun upload's poll scope; null on a single-shot ticket.
+  agentId   String?
+  path      String?
+  // The daemon's `transfer/settle` outcome; once set, the ticket signs nothing more.
+  outcome   Json?
+  settledAt DateTime? @db.Timestamptz(6)
 
   @@index([expiresAt])
+  @@index([objectKey])
   @@map("transfer_upload_ticket")
 }

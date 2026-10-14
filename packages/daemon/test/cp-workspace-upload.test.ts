@@ -1,6 +1,12 @@
-import type { AnyFrame, TransferSignReq } from '@agentconnect.md/protocol'
-import { describe, expect, it } from 'vitest'
-import { GitMessagePasses, workspaceUpload, type WorkspaceControlDeps } from '../src/cp/control/workspace.js'
+import type { AnyFrame, TransferSettleReq, TransferSignReq } from '@agentconnect.md/protocol'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  GitMessagePasses,
+  UploadBegins,
+  workspaceUpload,
+  workspaceUploadBegin,
+  type WorkspaceControlDeps
+} from '../src/cp/control/workspace.js'
 import type { ControlWire } from '../src/cp/control/context.js'
 import type { WorkspaceReader } from '../src/cp/workspace-reader.js'
 import type { WorkspaceUploadReq as FilesUploadReq } from '../src/workspace/workspace-files.js'
@@ -44,7 +50,13 @@ function deps(over: Partial<WorkspaceControlDeps>, uploads: FilesUploadReq[] = [
       return { bytes: 9, sha256: SHA }
     }
   } as unknown as WorkspaceReader
-  return { workspaceRead, workspaceGit: {} as never, gitMessagePasses: new GitMessagePasses(), ...over }
+  return {
+    workspaceRead,
+    workspaceGit: {} as never,
+    gitMessagePasses: new GitMessagePasses(),
+    uploadBegins: new UploadBegins([0, 0]),
+    ...over
+  }
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -104,5 +116,64 @@ describe('workspace/upload', () => {
     workspaceUpload(frame, deps({}), none.w)
     await settle()
     expect(none.errors).toEqual([{ code: 'BAD_PAYLOAD', details: { reason: 'transfer-unavailable' } }])
+  })
+})
+
+describe('workspace/upload/begin', () => {
+  const begin = { ...frame, type: 'workspace/upload/begin' } as AnyFrame
+  const signer = { signTransfer: async () => ({ url: 'https://store.example.test/k', headers: {} }) }
+
+  it('acknowledges at once and settles the outcome on the ticket, joining a re-sent begin', async () => {
+    const settled: Array<{ req: TransferSettleReq; orgId?: string }> = []
+    const uploads: FilesUploadReq[] = []
+    const { w, replies, errors } = wire()
+    const d = deps(
+      {
+        ...signer,
+        settleTransfer: async (req, orgId) => {
+          settled.push({ req, ...(orgId ? { orgId } : {}) })
+          return {}
+        }
+      },
+      uploads
+    )
+    workspaceUploadBegin(begin, d, w)
+    workspaceUploadBegin(begin, d, w)
+    expect(replies).toEqual([
+      { type: 'workspace/upload/begin/ok', payload: {} },
+      { type: 'workspace/upload/begin/ok', payload: {} }
+    ])
+    await vi.waitFor(() => expect(settled).toHaveLength(1))
+    expect(errors).toEqual([])
+    expect(uploads).toHaveLength(1)
+    expect(settled).toEqual([{ req: { ticket: TICKET, outcome: { ok: true, bytes: 9, sha256: SHA } }, orgId: 'org_1' }])
+  })
+
+  it('settles a refused snapshot with the reason the single-shot reply would carry, retrying a failed report', async () => {
+    const settled: TransferSettleReq[] = []
+    let attempts = 0
+    const { w } = wire()
+    workspaceUploadBegin(
+      begin,
+      deps({
+        signTransfer: async () => Promise.reject(Object.assign(new Error('changed'), { code: 'CONFLICT' })),
+        settleTransfer: async (req) => {
+          if (++attempts === 1) throw new Error('not connected')
+          settled.push(req)
+          return {}
+        }
+      }),
+      w
+    )
+    await vi.waitFor(() => expect(settled).toHaveLength(1))
+    expect(attempts).toBe(2)
+    expect(settled[0]!.outcome).toMatchObject({ ok: false, code: 'CONFLICT', reason: 'stale' })
+  })
+
+  it('refuses without a signer or a way to settle', async () => {
+    const { w, replies, errors } = wire()
+    workspaceUploadBegin(begin, deps(signer), w)
+    expect(replies).toEqual([])
+    expect(errors).toEqual([{ code: 'BAD_PAYLOAD', details: { reason: 'transfer-unavailable' } }])
   })
 })
