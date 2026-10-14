@@ -34,7 +34,12 @@ import {
   OUTSIDE_HUMAN_SCOPE_REMINDER
 } from './no-response.js'
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
-import { AGENT_META_OPENING, buildStandingContext, type StandingContext } from './turn/standing-context.js'
+import {
+  AGENT_META_OPENING,
+  buildStandingContext,
+  standingRefreshBlock,
+  type StandingContext
+} from './turn/standing-context.js'
 import { backfillThreadHistory } from './turn/thread-backfill.js'
 import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
 import { openRuntimeSession } from './turn/runtime-session.js'
@@ -321,6 +326,8 @@ export class SessionManager {
   private readonly lastContextUsed = new Map<string, number>()
   // The running-sub-session list each main conversation was last shown, so a change re-injects it.
   private readonly runningSubsessionsShown = new Map<string, string>()
+  // Sessions whose runtime may not hold the current standing context, until a delivered prompt carries it (see standingDelivered).
+  private readonly standingRefreshDue = new Set<string>()
 
   /**
    * Every agent that is ALREADY part of this thread — open sessions first, then ones
@@ -411,6 +418,8 @@ export class SessionManager {
     contextEvents?: { ts: string; text?: string }[]
     /** Incremental provider read checkpoint associated with the assembled snapshot. */
     providerCheckpoint?: string
+    /** The digest of the standing context these blocks carry inline; hand it to `standingDelivered` once the runtime takes the prompt. */
+    standingDigest?: string
     /** False when session creation/loading rejected the trusted additional MCP
      * descriptors and the runtime session succeeded only after retrying with
      * the ordinary server set. Absent when no additional descriptors existed. */
@@ -763,6 +772,15 @@ export class SessionManager {
     }
     const created = opened.created
     const additionalMcpServersAttached = opened.additionalMcpAttached
+    // What the model holds of the standing context (session-concept.md §2.3); an inline copy counts once its prompt is delivered.
+    const recordStanding = async (session: SessionRecord, digest: string | null): Promise<void> => {
+      await this.deps.store.setSessionStandingDigest(key, digest)
+      session.standingDigest = digest
+    }
+    const appliesOnLoad = usesMeta && (host.appliesSystemPromptOnLoad?.() ?? false)
+    if (created) await recordStanding(rec, usesMeta ? (await standingContext()).sessionDigest : null)
+    else if (opened.resumed && appliesOnLoad) await recordStanding(rec, (await standingContext()).resumeDigest)
+    if ((created && !usesMeta) || (opened.resumed && !appliesOnLoad)) this.standingRefreshDue.add(key)
 
     // A channel-root message posted by this same agent creates the thread's session cursor
     // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
@@ -794,8 +812,12 @@ export class SessionManager {
       rec.lastDeliveredTs !== null && ordering?.coordinate(rec.lastDeliveredTs) === null ? null : rec.lastDeliveredTs
     const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
     const opening = created || firstPromptAfterOwnRootInitialization
-    // Only an inline opening prelude or a restate reads it below, so a warm turn never samples the workspace roots.
-    const preludeStanding = (opening ? !usesMeta : restateParentReply) ? await standingContext() : undefined
+    const inlineOpening = opening && !usesMeta
+    // A resumed session's first prompt compares the standing context its runtime kept; an inline opening restates it anyway.
+    const refreshDue = !inlineOpening && this.standingRefreshDue.has(key)
+    // Only an inline opening prelude, a restate or a due refresh reads it below, so a warm turn never samples the workspace roots.
+    const preludeStanding =
+      (opening ? !usesMeta : restateParentReply) || refreshDue ? await standingContext() : undefined
     // The warm-thread provider snapshot (§8.4/§8.5) lives in turn/thread-backfill.ts;
     // handle() only supplies the coordinates and consumes the stable window it returns.
     // §6.3: an append session spans many threads and its coordinate is no thread's, so
@@ -977,11 +999,21 @@ export class SessionManager {
 
     // A new session or an initialized root's first prompt inlines the standing context unless `_meta` has it (#398).
     const promptPrelude: ContentBlock[] = []
+    // The digest of the standing context this prompt carries inline, recorded by standingDelivered once the runtime takes it.
+    let standingDigest: string | undefined
+    if (refreshDue && preludeStanding?.sessionDigest === rec.standingDigest) this.standingRefreshDue.delete(key)
+    else if (refreshDue && preludeStanding) {
+      standingDigest = preludeStanding.sessionDigest
+      promptPrelude.push({ type: 'text', text: standingRefreshBlock(preludeStanding.sessionContext) })
+    }
     let reminded = false
     if (opening) {
       // Start the reminder epoch: this session just received the full rule, inline or via `_meta`.
       this.turnsSinceReminder.set(key, 0)
-      if (preludeStanding?.sessionContext) promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
+      if (inlineOpening && preludeStanding?.sessionContext) {
+        standingDigest = preludeStanding.sessionDigest
+        promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
+      }
     } else if (restateParentReply && preludeStanding) {
       // An open session's standing context lacks this obligation or names another parent, so state it as a turn block.
       promptPrelude.push({ type: 'text', text: preludeStanding.parentReplyAppend })
@@ -1058,8 +1090,15 @@ export class SessionManager {
       contextRevision,
       contextEvents,
       ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {}),
-      ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {})
+      ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {}),
+      ...(standingDigest !== undefined ? { standingDigest } : {})
     }
+  }
+
+  /** The runtime took a prompt that carried the standing context inline: record what it now holds and stop refreshing it. */
+  async standingDelivered(key: string, digest: string): Promise<void> {
+    await this.deps.store.setSessionStandingDigest(key, digest)
+    this.standingRefreshDue.delete(key)
   }
 
   /** The local-time line, in the first zone found: the sender's, a run's schedule's, its starter's, the place's last seen, UTC. */

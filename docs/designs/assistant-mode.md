@@ -1101,10 +1101,14 @@ it no tab.
 8. Whether distillation on a normal OpenCode host runs under `plan` (live, unverified).
 9. **Settled by B1/B2**: with no marked sessions left (§5.5 "Writes"), what a person's request
    sends out of a conversation is that person's call, through any tool.
-10. **Instructions in a resumed Codex thread**: the adapter passes native instructions only when a
-    thread starts, so the standing rules the daemon re-asserts on `session/load` do not reach a
-    resumed Codex thread, which keeps the ones it started with. The reminder, the standing summary
-    and the running sub-sessions still arrive inline on the first turn after a restart (§5.4 ②).
+10. **Settled: instructions in a resumed session**: a runtime that does not apply native
+    instructions on `session/load` (Codex applies them only when a thread starts, OpenCode takes
+    them inline) keeps the standing rules it started with. The daemon records a digest of the
+    standing context each session's model last received; on the first prompt after a load on such
+    a runtime, a changed context rides that prompt as a block that says it replaces the earlier
+    rules ([session-concept.md](session-concept.md) §2.3). Claude applies them on load and gets no
+    block. A session whose context changes while its runtime stays up keeps what it has until it
+    next resumes.
 
 ---
 
@@ -1491,3 +1495,13 @@ list, and its resume path, `session/load` whenever the runtime advertises it, pr
 mode and branches on that capability alone, so an older daemon resumes these runtimes the same way. Switching the
 mode on moves Codex to Auto review and keeps OpenCode's mode (§1.8). A resumed Codex thread keeps
 the instructions it started with (§9).
+
+**Fortieth revision (2026-10-14)**: a resumed session gets the current standing instructions on
+every runtime (issue #2810; §9). Codex applies native instructions only when a thread starts and
+OpenCode receives them inline, so a session opened before a change kept the old rules after a
+restart while the tools it fetched afresh described the new ones; #3019's self-call rule is the
+case that showed it. Each session row now keeps a digest of the standing context its model last
+received (local store v50), and the first prompt after `session/load` on a runtime that does not
+apply instructions on load carries the current context, with a first line saying it replaces the
+earlier one, only when the digest differs. Claude applies them on load and is unchanged, as is a
+warm session on every runtime.

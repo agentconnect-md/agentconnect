@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
@@ -68,7 +69,7 @@ export type StandingContextInput = {
   /** The agent's own Slack bot user id, on Slack turns only. */
   slackSelfId?: string
   thread: string
-  /** This session's own ACP id, once minted (absent on the turn that mints it). */
+  /** This session's OUTWARD id (session-concept.md §1.1), absent on the turn that opens it. */
   sessionId?: string | null
   /** The parent session to reply into, when this session was woken by another. */
   parentSessionId?: string | null
@@ -105,6 +106,9 @@ export type StandingContext = {
   sessionContext: string
   /** `sessionContext` when the host has a meta system-prompt channel, else undefined. */
   metaContext: string | undefined
+  /** Digests of `sessionContext` and `resumeSystemContext`, which a resume compares with what the model last received. */
+  sessionDigest: string
+  resumeDigest: string
 }
 
 // Agent memory INDEX (memory/provider.ts), read fresh. It's STANDING context
@@ -349,17 +353,15 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
   const parentReplyAppend = buildParentReplyAppend(input.needsReplyToParent, input.parentSessionId)
-  const resumeSystemContext = [
-    agentMeta,
-    workspaceRootsAppend,
-    platformAppend,
-    COLLAB_APPEND,
-    parentReplyAppend,
-    NO_RESPONSE_RULE
-  ]
-    .filter(Boolean)
-    .join('\n\n')
-  const sessionContext = [resumeSystemContext, memoryAppend].filter(Boolean).join('\n\n')
+  const assemble = (meta: string) => {
+    const resume = [meta, workspaceRootsAppend, platformAppend, COLLAB_APPEND, parentReplyAppend, NO_RESPONSE_RULE]
+      .filter(Boolean)
+      .join('\n\n')
+    return { resume, session: [resume, memoryAppend].filter(Boolean).join('\n\n') }
+  }
+  const { resume: resumeSystemContext, session: sessionContext } = assemble(agentMeta)
+  // A new session's first turn precedes its own id, which never changes after, so the digests leave that line out.
+  const stable = input.sessionId ? assemble(buildAgentMeta({ ...input, sessionId: undefined })) : undefined
   return {
     memoryAppend,
     agentMeta,
@@ -369,6 +371,22 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     parentReplyAppend,
     resumeSystemContext,
     sessionContext,
-    metaContext: input.usesMeta ? sessionContext || undefined : undefined
+    metaContext: input.usesMeta ? sessionContext || undefined : undefined,
+    sessionDigest: standingDigest(stable?.session ?? sessionContext),
+    resumeDigest: standingDigest(stable?.resume ?? resumeSystemContext)
   }
+}
+
+/** The first line of a resumed session's standing-context refresh, which supersedes the copy its runtime kept. */
+const STANDING_REFRESH_HEADING =
+  '[Standing instructions updated] These replace the standing instructions given earlier in this session; where they differ, follow these.'
+
+/** The inline block that hands a resumed session the current standing context. */
+export function standingRefreshBlock(sessionContext: string): string {
+  return `${STANDING_REFRESH_HEADING}\n\n${sessionContext}`
+}
+
+/** A digest of the standing-context text a model received, recorded on the session row and compared on resume. */
+function standingDigest(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
 }

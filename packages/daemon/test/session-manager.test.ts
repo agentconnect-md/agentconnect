@@ -58,6 +58,10 @@ const agent: Agent & { dir: string; env: Record<string, string> } = {
 const fakeHost = () => ({ newSession: vi.fn(async () => 'acp-1') }) as any
 /** A prompt without the local-time line every agent's turn carries (product-conventions.md "Local time"). */
 const withoutNow = (blocks: any[]): any[] => blocks.filter((b) => !b.text?.includes('\nNow: '))
+/** What the daemon does once the runtime answers a prompt: record the standing context it carried inline. */
+async function promptDelivered(sm: SessionManager, key: string, turn: { standingDigest?: string }): Promise<void> {
+  if (turn.standingDigest !== undefined) await sm.standingDelivered(key, turn.standingDigest)
+}
 
 // The managed memory provider over the shared agent's root dir — SessionManager
 // now seeds/injects memory through it.
@@ -232,6 +236,7 @@ describe('SessionManager', () => {
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
     const standing = '# Linear\n- Issue: ENG-1 (id issue-uuid)\n\nWorking here: the issue is the record.'
     const first = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first', standingContext: standing }))
+    await promptDelivered(sm, sessionKey('slack', 'C1', '100.1', 'bot-a'), first)
     const texts = (b: any[]): string[] => b.map((block: any) => block.text ?? '')
     // Non-meta runtime: the standing context inlines as block 0, the platform block inside it.
     expect(texts(first.blocks)[0]).toContain('# Agent')
@@ -985,6 +990,7 @@ describe('SessionManager', () => {
     const opened = await sm.handle('bot-a', buildHookMessage(fire('d-1', 'opened'), 't-open'))
     expect(opened.created).toBe(true)
     const key = (await (await store).getSessionByAcpId('acp-sync-1'))!.key
+    await promptDelivered(sm, key, opened)
     expect((await (await store).getSession(key))?.title).toBe(
       'PR #1729: feat(linear): record the answer in the console transcript'
     )
@@ -1097,7 +1103,8 @@ describe('SessionManager', () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
-    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    const first = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    await promptDelivered(sm, sessionKey('slack', 'C1', '100.1', 'bot-a'), first)
     const { blocks } = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
     // second turn reuses the session (created=false) → no meta block
     expect(blocks.some((b: any) => typeof b.text === 'string' && b.text.includes('# Agent'))).toBe(false)
@@ -3177,7 +3184,8 @@ it('refreshes the bounded catalog on native resume without adding it to user pro
     loadSession: vi.fn(async () => {}),
     hasSession: vi.fn(() => false),
     loadSupported: () => true,
-    usesMetaSystemPrompt: () => true
+    usesMetaSystemPrompt: () => true,
+    appliesSystemPromptOnLoad: () => true
   } as any
   const resumed = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory: provider })
   const result = await resumed.handle('bot-a', msg({ ts: '100.2', text: 'second', platform: 'telegram' }))
@@ -3271,6 +3279,7 @@ describe('SessionManager — standing context composed only where a prompt reads
   const rootPath = '/srv/agents/bot-a/repos/acme/infra/checkout'
   const roots = [{ path: rootPath, repoFullName: 'acme/infra', branch: 'trunk' }]
   const rootsLine = `- ${rootPath} — acme/infra (trunk)`
+  const rootsKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
   // Counts the standing context's reads; `asleep` stands for the pod holding the roots going unbound.
   class RootsProbe extends WorkspaceManager {
     reads = 0
@@ -3315,7 +3324,7 @@ describe('SessionManager — standing context composed only where a prompt reads
     'composes none of it on a warm turn, which an unreadable root cannot fail (meta %s)',
     async (meta) => {
       const { store, workspaces, host, sm } = await setup(meta)
-      await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+      await promptDelivered(sm, rootsKey, await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' })))
       expect(workspaces.reads).toBe(1)
       workspaces.asleep = true
       const warm = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
@@ -3375,7 +3384,7 @@ describe('SessionManager — standing context composed only where a prompt reads
       const { store, workspaces, sm } = await setup(meta)
       const wake = (ts: string, needsReply: boolean) =>
         sm.handle('bot-a', msg({ ts, text: 'work' }), undefined, undefined, 'origin-9', undefined, needsReply)
-      await wake('100.1', false)
+      await promptDelivered(sm, rootsKey, await wake('100.1', false))
       expect(workspaces.reads).toBe(1)
       const restated = await wake('100.2', true)
       expect(restated.blocks[0]).toEqual({ type: 'text', text: buildParentReplyAppend(true, 'origin-9') })
@@ -3388,10 +3397,10 @@ describe('SessionManager — standing context composed only where a prompt reads
   )
 
   it.each([false, true])(
-    'composes it on a resume only for a host that re-asserts it on load (meta %s)',
+    'composes it once on a resume, to re-assert it on load or compare it on the first prompt (meta %s)',
     async (meta) => {
       const { store, workspaces, sm } = await setup(meta)
-      await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+      await promptDelivered(sm, rootsKey, await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' })))
       const host2 = liveHost(meta)
       const resumed = new SessionManager({
         store,
@@ -3405,9 +3414,9 @@ describe('SessionManager — standing context composed only where a prompt reads
       expect(load.created).toBe(false)
       if (meta) expect(host2.loadSession.mock.calls[0][4]).toContain(rootsLine)
       else expect(host2.loadSession.mock.calls[0][4]).toBeUndefined()
-      expect(workspaces.reads).toBe(meta ? 2 : 1)
+      expect(workspaces.reads).toBe(2)
       await resumed.handle('bot-a', msg({ ts: '100.3', text: 'third' }))
-      expect(workspaces.reads).toBe(meta ? 2 : 1)
+      expect(workspaces.reads).toBe(2)
       await store.close()
     }
   )

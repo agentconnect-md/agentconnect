@@ -184,6 +184,7 @@ export const canonicalColumns = [
   'snapshotWrites',
   'sourceBindingKind',
   'spaceId',
+  'standingDigest',
   'statusBarTs',
   'stayedHomeReason',
   'stopReason',
