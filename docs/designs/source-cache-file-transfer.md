@@ -30,7 +30,7 @@ Transfer objects live in the [Source Cache](source-cache.md) bucket, beside bund
 under the same org scope:
 
 ```
-<prefix>/src/<org>/transfer/up/<uuid>                  one browser upload
+<prefix>/src/<org>/transfer/up/<agentId>/<uuid>        one browser upload, for one agent
 <prefix>/src/<org>/transfer/dl/<sha256(identity)>      one revision of one workspace file
 ```
 
@@ -79,8 +79,13 @@ cannot prove its bytes, so it is uploaded again.
 - **The agent's GET is a bearer URL.** Anyone holding it can read that one object on the
   origin its network names until it expires. The agent may pass it to the model provider's API,
   so it can leave the cluster for up to `limits.urlSeconds`.
-- **An upload is org-scoped, not agent-bound.** Any daemon serving any agent in the org can
-  `transfer/get` an upload given its uuid, size and SHA-256; the unguessable uuid is the guard.
+- **An upload is bound to the agent it was reserved for.** `POST /agents/:id/uploads`
+  puts the agent's id in the key. `transfer/get` looks the upload up under the agent the
+  frame names, and the CP has already checked that the requesting daemon may act for that
+  agent. A daemon serving a different agent in the org therefore finds no object for that
+  uuid and gets no URL. In a multi-agent conversation, a file reaches only the agent it was
+  reserved for (the composer's agent). Other targeted agents see the file named as
+  unavailable.
 - **A daemon may sign only what it was asked to upload.** `transfer/sign` names a ticket
   the CP minted for one `workspace/upload` to that daemon. The ticket is bound to:
   - the object key;
@@ -98,7 +103,7 @@ cannot prove its bytes, so it is uploaded again.
   next mint sweeps expired tickets.
 
 - **`transfer/get`** answers only for an agent the requesting daemon may act for, and only
-  under that agent's organization's key prefix.
+  under that agent's own upload prefix.
 - **A download GET** carries `response-content-disposition: attachment` and
   `response-content-type: application/octet-stream`, so nothing renders on the bucket's
   origin.

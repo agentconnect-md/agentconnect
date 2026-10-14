@@ -45,14 +45,18 @@ export const handleTransferGet: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'this deployment has no bucket for file transfers', false)
     return
   }
-  // The upload's key is org-scoped, so a daemon reads only files sent to an agent it serves.
+  // An upload's key names the agent it was reserved for, so a daemon reads only uploads for an agent it serves.
   const agent = await deps.agent.get(orgId, AgentId(frame.payload.agentId))
   if (!agent || !(await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, conn.daemonId))) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'this daemon does not serve that agent', false)
     return
   }
   try {
-    conn.replyTo(frame, 'transfer/get/ok', await deps.fileTransfer.uploadedFile(orgId, frame.payload))
+    conn.replyTo(
+      frame,
+      'transfer/get/ok',
+      await deps.fileTransfer.uploadedFile(orgId, { ...frame.payload, agentId: agent.id })
+    )
   } catch {
     conn.sendError(frame.id, 'INTERNAL', 'the upload could not be located', true)
   }

@@ -78,7 +78,7 @@ export function isTransferPending(result: WorkspaceTransferResult): result is Wo
 
 export interface FileTransferService {
   readonly maxBytes: number
-  reserveUpload(input: { orgId: string; size: number; sha256: string }): Promise<{
+  reserveUpload(input: { orgId: string; agentId: string; size: number; sha256: string }): Promise<{
     uploadId: string
     url: string
     headers: Record<string, string>
@@ -102,7 +102,7 @@ export interface FileTransferService {
   settleUpload(daemonId: string, req: TransferSettleReq): Promise<void>
   /** `transfer/sign` from `daemonId`: presign the PUT one of its open tickets allows. */
   signUpload(daemonId: string, req: TransferSignReq): Promise<TransferSignOk>
-  /** `transfer/get`: presign the agent's GET of a console upload in its own organization. */
+  /** `transfer/get`: presign the agent's GET of a console upload reserved for that agent. */
   uploadedFile(orgId: string, req: TransferGetReq): Promise<TransferGetOk>
 }
 
@@ -156,9 +156,9 @@ export function createFileTransferService(deps: {
   return {
     maxBytes: transfer.maxBytes,
 
-    async reserveUpload({ orgId, size, sha256 }) {
+    async reserveUpload({ orgId, agentId, size, sha256 }) {
       try {
-        return await transfer.grantUpload({ org: orgId, size, sha256 })
+        return await transfer.grantUpload({ org: orgId, agentId, size, sha256 })
       } catch (err) {
         throw refusal(err)
       }
@@ -257,6 +257,7 @@ export function createFileTransferService(deps: {
     async uploadedFile(orgId, req) {
       const get = await transfer.uploadedFileUrl({
         org: orgId,
+        agentId: req.agentId,
         uploadId: req.uploadId,
         size: req.size,
         sha256: req.sha256,

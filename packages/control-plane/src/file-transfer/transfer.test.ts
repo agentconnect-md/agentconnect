@@ -15,6 +15,8 @@ import {
 const NOW = Date.UTC(2026, 9, 9, 12, 0, 0)
 const ORG = 'org_1'
 const UPLOAD_ID = '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c'
+const AGENT = '11111111-1111-4111-8111-111111111111'
+const OTHER_AGENT = '44444444-4444-4444-8444-444444444444'
 const SHA = createHash('sha256').update('hello').digest('base64')
 
 const credentials: CredentialsProvider = {
@@ -45,8 +47,11 @@ function transfer(head: SourceCacheObjectHead, opts: { enabled?: boolean; cfg?: 
 }
 
 describe('transfer keys', () => {
-  it('builds org-scoped upload and download keys under src/<org>/transfer/', () => {
-    expect(transferUploadKey(ORG, UPLOAD_ID)).toBe(`src/${ORG}/transfer/up/${UPLOAD_ID}`)
+  it('builds agent-bound upload and org-scoped download keys under src/<org>/transfer/', () => {
+    const up = transferUploadKey(ORG, AGENT, UPLOAD_ID)
+    expect(up).toBe(`src/${ORG}/transfer/up/${AGENT}/${UPLOAD_ID}`)
+    expect(isTransferObjectKey(up)).toBe(true)
+    expect(transferUploadKey(ORG, OTHER_AGENT, UPLOAD_ID)).not.toBe(up)
     const dl = transferDownloadKey(ORG, ['agent', null, null, 'a.bin', 5, 'mtime'])
     expect(dl).toMatch(/^src\/org_1\/transfer\/dl\/[0-9a-f]{64}$/)
     expect(transferDownloadKey(ORG, ['agent', null, null, 'a.bin', 6, 'mtime'])).not.toBe(dl)
@@ -55,8 +60,9 @@ describe('transfer keys', () => {
   })
 
   it('refuses an org or upload id that could leave its prefix', () => {
-    expect(() => transferUploadKey('../x', UPLOAD_ID)).toThrow()
-    expect(() => transferUploadKey(ORG, '../../etc')).toThrow()
+    expect(() => transferUploadKey('../x', AGENT, UPLOAD_ID)).toThrow()
+    expect(() => transferUploadKey(ORG, AGENT, '../../etc')).toThrow()
+    expect(() => transferUploadKey(ORG, '..', UPLOAD_ID)).toThrow()
   })
 
   it('writes an RFC 6266 disposition with an ASCII fallback', () => {
@@ -68,10 +74,10 @@ describe('transfer keys', () => {
 
 describe('file transfer signing', () => {
   it('presigns the browser PUT on the public endpoint with the exact length, checksum and pending tag', async () => {
-    const grant = await transfer({ exists: false }).grantUpload({ org: ORG, size: 5, sha256: SHA })
+    const grant = await transfer({ exists: false }).grantUpload({ org: ORG, agentId: AGENT, size: 5, sha256: SHA })
     const url = new URL(grant.url)
     expect(url.host).toBe('store.example.test')
-    expect(url.pathname).toMatch(new RegExp(`^/ac-cache/src/${ORG}/transfer/up/[0-9a-f-]{36}$`))
+    expect(url.pathname).toMatch(new RegExp(`^/ac-cache/src/${ORG}/transfer/up/${AGENT}/[0-9a-f-]{36}$`))
     expect(url.pathname.endsWith(grant.uploadId)).toBe(true)
     expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;host;x-amz-checksum-sha256;x-amz-tagging')
     expect(grant.headers).toEqual({
@@ -84,15 +90,20 @@ describe('file transfer signing', () => {
 
   it('refuses an upload over the cap, and any transfer while the lifecycle rules are missing', async () => {
     const capped = transfer({ exists: false }, { cfg: config({ limits: { maxBytes: 4 } }) })
-    await expect(capped.grantUpload({ org: ORG, size: 5, sha256: SHA })).rejects.toMatchObject({ reason: 'too-large' })
+    await expect(capped.grantUpload({ org: ORG, agentId: AGENT, size: 5, sha256: SHA })).rejects.toMatchObject({
+      reason: 'too-large'
+    })
     const off = transfer({ exists: false }, { enabled: false })
-    await expect(off.grantUpload({ org: ORG, size: 5, sha256: SHA })).rejects.toBeInstanceOf(FileTransferError)
+    await expect(off.grantUpload({ org: ORG, agentId: AGENT, size: 5, sha256: SHA })).rejects.toBeInstanceOf(
+      FileTransferError
+    )
   })
 
   it('hands the agent a GET on the network it is on, only for the bytes that were declared', async () => {
     const landed = transfer({ exists: true, contentLength: 5, checksumSha256: SHA })
     const pod = await landed.uploadedFileUrl({
       org: ORG,
+      agentId: AGENT,
       uploadId: UPLOAD_ID,
       size: 5,
       sha256: SHA,
@@ -102,6 +113,7 @@ describe('file transfer signing', () => {
     expect(pod!.expiresAt).toBe(NOW + 1800_000)
     const local = await landed.uploadedFileUrl({
       org: ORG,
+      agentId: AGENT,
       uploadId: UPLOAD_ID,
       size: 5,
       sha256: SHA,
@@ -111,13 +123,50 @@ describe('file transfer signing', () => {
 
     const missing = transfer({ exists: false })
     expect(
-      await missing.uploadedFileUrl({ org: ORG, uploadId: UPLOAD_ID, size: 5, sha256: SHA, network: 'public' })
+      await missing.uploadedFileUrl({
+        org: ORG,
+        agentId: AGENT,
+        uploadId: UPLOAD_ID,
+        size: 5,
+        sha256: SHA,
+        network: 'public'
+      })
     ).toBeUndefined()
     const other = createHash('sha256').update('other').digest('base64')
     const swapped = transfer({ exists: true, contentLength: 5, checksumSha256: other })
     expect(
-      await swapped.uploadedFileUrl({ org: ORG, uploadId: UPLOAD_ID, size: 5, sha256: SHA, network: 'public' })
+      await swapped.uploadedFileUrl({
+        org: ORG,
+        agentId: AGENT,
+        uploadId: UPLOAD_ID,
+        size: 5,
+        sha256: SHA,
+        network: 'public'
+      })
     ).toBeUndefined()
+  })
+
+  it('signs no GET for an upload reserved for another agent', async () => {
+    const heads: string[] = []
+    const store = createFileTransfer({
+      config: config({ publicEndpoint: 'https://store.example.test' }),
+      credentials,
+      objects: {
+        head: async (key) => {
+          heads.push(key)
+          return key === transferUploadKey(ORG, AGENT, UPLOAD_ID)
+            ? { exists: true, contentLength: 5, checksumSha256: SHA }
+            : { exists: false }
+        }
+      },
+      enabled: () => true,
+      now: () => NOW
+    })
+    const input = { org: ORG, uploadId: UPLOAD_ID, size: 5, sha256: SHA, network: 'public' as const }
+    expect(await store.uploadedFileUrl({ ...input, agentId: OTHER_AGENT })).toBeUndefined()
+    expect(heads).toEqual([transferUploadKey(ORG, OTHER_AGENT, UPLOAD_ID)])
+    const own = await store.uploadedFileUrl({ ...input, agentId: AGENT })
+    expect(new URL(own!.url).pathname).toBe(`/ac-cache/src/${ORG}/transfer/up/${AGENT}/${UPLOAD_ID}`)
   })
 
   it('reuses only a recent copy whose checksum the store reports', async () => {

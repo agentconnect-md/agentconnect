@@ -23,7 +23,7 @@ const ORG_RE = /^[A-Za-z0-9_-]{1,64}$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const ANY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TRANSFER_KEY_RE =
-  /^src\/[A-Za-z0-9_-]{1,64}\/transfer\/(?:up\/[0-9a-f-]{36}|dl\/[0-9a-f]{64}|img\/[0-9a-f-]{36}\/[0-9a-f-]{36})$/
+  /^src\/[A-Za-z0-9_-]{1,64}\/transfer\/(?:up\/[0-9a-f-]{36}\/[0-9a-f-]{36}|dl\/[0-9a-f]{64}|img\/[0-9a-f-]{36}\/[0-9a-f-]{36})$/
 const CHECKSUM_RE = /^[A-Za-z0-9+/]{43}=$/
 /** A cached download is reused only while it is well inside the 2-day `pending` lifecycle rule. */
 const CACHED_DOWNLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -38,11 +38,12 @@ function assertOrg(org: string): void {
   if (!ORG_RE.test(org)) throw new Error('org must be 1-64 characters of [A-Za-z0-9_-]')
 }
 
-/** `src/<org>/transfer/up/<uuid>`: one browser upload. */
-export function transferUploadKey(org: string, uploadId: string): TransferObjectKey {
+/** `src/<org>/transfer/up/<agentId>/<uuid>`: one browser upload, readable only through the agent it was reserved for. */
+export function transferUploadKey(org: string, agentId: string, uploadId: string): TransferObjectKey {
   assertOrg(org)
+  if (!ANY_UUID_RE.test(agentId)) throw new Error('agent id must be a lower-case UUID')
   if (!UUID_RE.test(uploadId)) throw new Error('upload id must be a lower-case v4 UUID')
-  return `src/${org}/transfer/up/${uploadId}` as TransferObjectKey
+  return `src/${org}/transfer/up/${agentId}/${uploadId}` as TransferObjectKey
 }
 
 /** `src/<org>/transfer/dl/<sha256(identity)>`: one revision of one workspace file. */
@@ -91,11 +92,17 @@ export interface FileTransferDeps {
 export interface FileTransfer {
   enabled(): boolean
   maxBytes: number
-  /** Reserve a key and presign the browser's PUT for exactly this length and digest. */
-  grantUpload(input: { org: string; size: number; sha256: string }): Promise<TransferUrl & { uploadId: string }>
-  /** Presign the agent's GET for an upload, or undefined when the bucket does not hold exactly those bytes. */
+  /** Reserve a key under `agentId` and presign the browser's PUT for exactly this length and digest. */
+  grantUpload(input: {
+    org: string
+    agentId: string
+    size: number
+    sha256: string
+  }): Promise<TransferUrl & { uploadId: string }>
+  /** Presign the agent's GET for an upload reserved for it, or undefined when the bucket does not hold exactly those bytes. */
   uploadedFileUrl(input: {
     org: string
+    agentId: string
     uploadId: string
     size: number
     sha256: string
@@ -211,10 +218,10 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
     enabled: () => deps.enabled(),
     maxBytes,
 
-    async grantUpload({ org, size, sha256 }) {
+    async grantUpload({ org, agentId, size, sha256 }) {
       assertEnabled()
       const uploadId = randomUUID()
-      const key = transferUploadKey(org, uploadId)
+      const key = transferUploadKey(org, agentId, uploadId)
       const put = await sign({
         method: 'PUT',
         key,
@@ -225,8 +232,9 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
       return { ...put, uploadId }
     },
 
-    async uploadedFileUrl({ org, uploadId, size, sha256, network }) {
-      const key = transferUploadKey(org, uploadId)
+    async uploadedFileUrl({ org, agentId, uploadId, size, sha256, network }) {
+      // Another agent's upload is a different key, so it reads as absent.
+      const key = transferUploadKey(org, agentId, uploadId)
       const head = await objects.head(key)
       // The PUT signed the checksum, so a matching one proves these bytes; a store that omits it is trusted on length alone.
       if (!head.exists || head.contentLength !== size) return undefined
