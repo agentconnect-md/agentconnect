@@ -5,12 +5,17 @@ import { execFileSync } from 'node:child_process'
 import type { McpServer } from '@agentclientprotocol/sdk'
 import { IntegrationSchema } from '../../src/agents/agent-schema.js'
 import type { AcpHost } from '../../src/acp/acp-host.js'
-import { SUBSESSION_NOT_FOUND, SUBSESSION_NOT_FOUND_MESSAGE } from '../../src/collab/coordinator.js'
+import {
+  PEER_SESSION_NOT_FOUND,
+  PEER_SESSION_NOT_FOUND_MESSAGE,
+  SUBSESSION_NOT_FOUND,
+  SUBSESSION_NOT_FOUND_MESSAGE
+} from '../../src/collab/coordinator.js'
 import { executeTool, type OpsDeps } from '../../src/mcp/ops.js'
 import { ToolArgumentError } from '../../src/mcp/ops/args.js'
 import { describeToolArgumentFailure } from '../../src/mcp/ops/argument-error.js'
 import type { SessionContext } from '../../src/mcp/ops/context.js'
-import { SUBSESSION_CONTINUED } from '../../src/mcp/ops/send-message-actions.js'
+import { PEER_SESSION_CALLED, SUBSESSION_CONTINUED } from '../../src/mcp/ops/send-message-actions.js'
 import { toolsForIntegrations } from '../../src/mcp/tools.js'
 import { buildStandingContext } from '../../src/session/turn/standing-context.js'
 import type { ToolDescriptor } from '../../src/tool-schema/descriptor.js'
@@ -157,10 +162,11 @@ export function describeOp(op: SemanticOp): string {
   }
 }
 
-/** The sessions a scenario's caller may address by id: its origin, and the direct child it already started. */
+/** The sessions a scenario's caller may address by id: its origin, the direct child it already started, and a peer's session it may join. */
 export interface ProbeScope {
   origin?: string
   child?: string
+  peerSession?: string
 }
 
 /** Thrown by every fixture dependency: the call passed every check the daemon makes before an effect. */
@@ -201,21 +207,13 @@ async function daemonRejection(args: Record<string, unknown>, tools: ToolDescrip
   }
 }
 
-/** Peer-session authority (§9) the daemon would check against trusted state; it refuses the shape first today, so this never fires. */
-export function sessionRejection(op: SemanticOp, _scope: ProbeScope): string | undefined {
-  if (op.kind === 'agent-call' && op.sessionId !== undefined) {
-    return `sendMessage: session "${op.sessionId}" is not an existing session of agent "${op.agent}". Nothing was sent.`
-  }
-  return undefined
-}
-
-/** A `sendMessage` call checked by the daemon's own pipeline plus the trusted checks it cannot make here: the error text the model would read, or none. */
+/** A `sendMessage` call checked by the daemon's own pipeline: the error text the model would read, or none. */
 export async function validateSendMessage(
   args: Record<string, unknown>,
   tools: ToolDescriptor[],
-  scope: ProbeScope = {}
+  _scope: ProbeScope = {}
 ): Promise<string | undefined> {
-  return (await daemonRejection(args, tools)) ?? sessionRejection(classifySendMessage(args, IDS.self), scope)
+  return await daemonRejection(args, tools)
 }
 
 /** A plausible delivery receipt for a validated call; nothing is posted, woken, or injected. */
@@ -259,6 +257,31 @@ function receipt(op: SemanticOp, scope: ProbeScope): unknown {
             }
           }
     case 'agent-call':
+      // The daemon's own answer to an existing-session call: its receipt in scope, else its refusal.
+      if (op.sessionId !== undefined) {
+        return op.sessionId === scope.peerSession
+          ? {
+              ok: true,
+              wake: { delivered: true, targetSession: op.sessionId },
+              childSessionId: op.sessionId,
+              ...(op.needsReply
+                ? {
+                    reply: { requested: true, state: 'awaiting' },
+                    nextAction: 'finish-turn-and-wait',
+                    message: PEER_SESSION_CALLED
+                  }
+                : {})
+            }
+          : {
+              ok: true,
+              wake: {
+                delivered: false,
+                targetSession: op.sessionId,
+                reason: PEER_SESSION_NOT_FOUND,
+                message: PEER_SESSION_NOT_FOUND_MESSAGE
+              }
+            }
+      }
       return {
         ok: true,
         wake: { delivered: true, targetSession: childSessionId },
@@ -349,6 +372,8 @@ async function callTool(
       return { result: text(result), error: 'origin reply not authorized' }
     if (op.kind === 'subsession-continue' && op.sessionId !== scope.child)
       return { result: text(result), error: 'sub-session not found' }
+    if (op.kind === 'agent-call' && op.sessionId !== undefined && op.sessionId !== scope.peerSession)
+      return { result: text(result), error: 'peer session not found' }
     return { result: text(result) }
   }
   if (name === 'getToolGuide') {

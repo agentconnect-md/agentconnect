@@ -282,7 +282,9 @@ const COLLAB_BEFORE_SELF =
   `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
   `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
   `— send \`{"action":"callAgent","toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, ` +
-  `which obliges it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
+  `which obliges it to report into YOUR session when it finishes or fails. To continue a peer's existing ` +
+  `session — the \`childSessionId\` an earlier call returned — add \`"sessionId":"<that id>"\`: it reaches that ` +
+  `session only, posts nothing, and never starts another. Add a \`channel\` ` +
   `(\`{"action":"callAgent","toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`) ` +
   `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
   `That channel form may target YOURSELF to open and activate one new conversation there: use your own ` +
@@ -306,7 +308,8 @@ const COLLAB_AFTER_SELF =
   `@-mention at the channel root. In that channel form, pass ` +
   `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
   `message; arrays are never DMs. If you were woken by another ` +
-  `session, reply with \`{"action":"replyToSession","sessionId":"<Parent session>","message":"..."}\`. To leave a ` +
+  `session, reply with \`{"action":"replyToSession","sessionId":"<Parent session>","message":"..."}\`; when several ` +
+  `sessions called you, each message names its session, and you answer each one by its own id. To leave a ` +
   `visible note others catch up on later without waking anyone, use ` +
   `\`{"action":"postMessage","channel":"<channel id>","message":"..."}\`. Every visible \`sendMessage\` except a ` +
   `\`thread\` update lands at a channel root and opens a new conversation there.\n` +
@@ -363,6 +366,40 @@ function buildSubsessionParentAppend(parentSessionId: string | null | undefined)
     `forwards your final response, so end with one short line rather than repeating the result. If you asked a ` +
     `question, end your turn; the answer arrives as a new message.`
   )
+}
+
+/** The most reply addresses one turn lists; the rest stay valid and are counted (send-message-guide.md §9.3). */
+export const MAX_LISTED_REPLY_SOURCES = 8
+
+/** One session this session may reply to, as a turn lists it. */
+export type ReplySourceLine = { sessionId: string; agentId: string; awaiting: number }
+
+// send-message-guide.md §9.3: which session sent this input, and every session this one may answer, one call each.
+export function buildReplySourcesBlock(input: {
+  from?: { sessionId: string; agentId?: string }
+  sources: readonly ReplySourceLine[]
+  more: number
+}): string {
+  const lines = input.sources.map(
+    (source) =>
+      `- ${source.sessionId} (agent ${source.agentId})` +
+      (source.awaiting > 0
+        ? ` — waiting on your reply to ${source.awaiting === 1 ? 'one request' : `${source.awaiting} requests`}`
+        : '')
+  )
+  return [
+    '# Sessions you can reply to',
+    ...(input.from
+      ? [
+          `This message comes from session ${input.from.sessionId}${input.from.agentId ? ` (agent ${input.from.agentId})` : ''}.`
+        ]
+      : []),
+    'More than one session can call this conversation. Answer each one separately with `sendMessage` ' +
+      '`{"action":"replyToSession","sessionId":"<session>","message":"..."}`; a reply reaches only the session it ' +
+      'names, never the others, so send one call per session that needs an answer:',
+    ...lines,
+    ...(input.more > 0 ? [`- and ${input.more} more earlier sessions, which you can still answer.`] : [])
+  ].join('\n')
 }
 
 /** Build standing instructions for native session metadata when supported, or the first prompt block otherwise. */

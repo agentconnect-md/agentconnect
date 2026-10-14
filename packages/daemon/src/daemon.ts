@@ -386,7 +386,7 @@ import {
   type DreamOperationPolicy,
   type DreamPlaces
 } from './dream/runner.js'
-import { describePlace, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
+import { describePlace, judgeSessionParticipation, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
 import { PLACE_SHARE_TTL_MS, PlaceTrust } from './assistant/place-trust.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
@@ -8159,6 +8159,25 @@ export class Daemon {
   }
   private readonly memoryShares = new Map<string, { at: number; external: boolean }>()
 
+  /** send-message-guide.md §9.2: may the people on a calling turn join this agent's session, judged as a read of its conversation. */
+  private async sessionParticipation(
+    target: SessionRecord,
+    callerPlace: { platform: string; channel: string },
+    askers: TurnAskers
+  ): Promise<boolean> {
+    return await judgeSessionParticipation({
+      callerPlace,
+      target,
+      askers,
+      bot: this.integrationIdForSessionTransport(target.agentId, target.platform, target.transportScope),
+      lookups: this.placeMembers.lookupsFor(target.agentId),
+      deps: {
+        gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
+        placeSnapshot: (integrationId, channel) => this.readPlaceSnapshot(integrationId, channel)
+      }
+    })
+  }
+
   /** describePlace's inputs for memory: the snapshot row, plus the privacy a channel lookup cached; `isPrivate: true` from either wins. */
   private memoryPlaceDeps(): Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'> {
     return {
@@ -8873,6 +8892,46 @@ export class Daemon {
     return this.activeGateEntries.get(this.sessionKeyOf(ctx))
   }
 
+  /** send-message-guide.md §9.3–§9.4: record an admitted delivery's source on the session it reached, and its request for a reply. */
+  private async noteReplySource(agentId: string, key: string, thread: string, callMeta: CallMeta): Promise<void> {
+    const source = callMeta.originSessionId
+    // A sub-session keeps its one parent (§8.2), and a root seed was never called.
+    if (source === undefined || callMeta.initializeOnly === true || isSubsessionCoordinate(thread)) return
+    try {
+      const now = this.clock.now()
+      // A session is never its own source.
+      if ((await this.store.getSession(key))?.sessionId === source) return
+      const coords = callMeta.originCoords
+      await this.store.sessionSources.record({
+        sessionKey: key,
+        agentId,
+        sourceSessionId: source,
+        sourceAgentId: callMeta.callFrom,
+        ...(coords
+          ? {
+              sourcePlatform: coords.platform,
+              sourceChannel: coords.channel,
+              ...(coords.thread !== undefined ? { sourceThread: coords.thread } : {})
+            }
+          : {}),
+        ...(callMeta.originCodeHostReplyTarget !== undefined
+          ? { codeHostReplyTarget: JSON.stringify(callMeta.originCodeHostReplyTarget) }
+          : {}),
+        now
+      })
+      if (callMeta.needsReply === true)
+        await this.store.sessionSources.openObligation({
+          sessionKey: key,
+          agentId,
+          deliveryId: callMeta.deliveryId,
+          sourceSessionId: source,
+          now
+        })
+    } catch (err) {
+      this.log.warn(`reply source for ${key} not recorded: ${formatErr(err)}`)
+    }
+  }
+
   /** Who is asking on a session's live turn: its message's sender and every message folded into it (assistant-mode.md §5.5). */
   private async readAskersFor(ctx: SessionContext): Promise<TurnAskers> {
     const key = this.sessionKeyOf(ctx)
@@ -8923,7 +8982,12 @@ export class Daemon {
   /** A message folded into the live turn joins the people it reads for; recorded before the model can see it. */
   private noteFoldedMessage(key: string, entry: QueueEntry): void {
     const live = this.activeGateEntries.get(key)
-    if (live && live !== entry) (live.foldedMessages ??= []).push(this.turnMessageOf(entry))
+    if (!live || live === entry) return
+    ;(live.foldedMessages ??= []).push(this.turnMessageOf(entry))
+    // send-message-guide.md §9.4: a call folded into this turn makes its final output no one call's answer.
+    const call = entry.callMeta
+    if (call?.originSessionId !== undefined)
+      (live.foldedCalls ??= []).push({ deliveryId: call.deliveryId, originSessionId: call.originSessionId })
   }
 
   /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */
@@ -12330,6 +12394,27 @@ export class Daemon {
       ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
     }
 
+    // send-message-guide.md §9.2: an existing-session call is admitted here, the owning daemon, into that session or nowhere.
+    if (msg.deliveryKind === 'session-call') {
+      if (msg.targetSessionId === undefined) return record(nak('not_found'))
+      const admitted = await this.collab.admitSessionCall({
+        toAgentId: msg.toAgentId,
+        callerAgentId: msg.trustedFromAgentId,
+        targetSessionId: msg.targetSessionId,
+        callerPlace: msg.originCoords ?? msg.coords,
+        askers: msg.callerAskers ?? NOBODY,
+        text: msg.text,
+        callMeta
+      })
+      if (!admitted.accepted)
+        return record(
+          nak(admitted.reason === 'not_found' || admitted.reason === 'queue_full' ? admitted.reason : 'busy')
+        )
+      this.log.info(
+        `relay: rd/agentmsg/fwd session call ${msg.trustedFromAgentId} → ${msg.toAgentId} (${admitted.key}) delivery=${msg.deliveryId}`
+      )
+      return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId: admitted.key })
+    }
     // The source daemon checks origin authority; an agent-scoped lookup here prevents session aliasing.
     if (msg.lineageReplyTo !== undefined) {
       const origin = await this.store.getSessionByOutwardId(msg.lineageReplyTo, msg.toAgentId)
@@ -13971,6 +14056,9 @@ export class Daemon {
       noteSubsessionOpened: (childKey, parentKey) => this.noteSubsessionOpener(childKey, parentKey),
       sdkLease: () => this.sdkLease,
       safetyDrained: (agentId) => this.waitForSafetyDrain(agentId),
+      callerAskers: async (agentId, key, thread, integrationId) =>
+        this.askersOfKey(key, integrationId, await this.openerOf(agentId, thread, key)),
+      sessionParticipation: (target, callerPlace, askers) => this.sessionParticipation(target, callerPlace, askers),
       cpClient: () => this.cpClient,
       cpAgents: () => this.cpAgents,
       cpCollab: () => this.cpCollab,
@@ -14967,6 +15055,9 @@ export class Daemon {
               await this.store.releaseActivation(activationKey)
             }
           }
+          // send-message-guide.md §9.3: an admitted call or reply makes its source one this session may reply to.
+          if (result.accepted && !result.duplicate && callMeta !== undefined)
+            await this.noteReplySource(agentId, key, sessionThreadOf(msg), callMeta)
           await opts?.onAdmission?.(result)
           const surface = this.turnSurfaces.exact(msg.platform)
           if (

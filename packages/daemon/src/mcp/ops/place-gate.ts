@@ -211,6 +211,44 @@ export async function assertPlaceRead(
   return verdict.privateSource
 }
 
+/**
+ * send-message-guide.md §9.2: whether the people on a calling turn may take part in an existing session, judged on the
+ * session's owning daemon as a read of its conversation from the caller's place; a nobody turn is never admitted.
+ */
+export async function judgeSessionParticipation(input: {
+  /** The caller's current conversation, which the read rule always lets read itself. */
+  callerPlace: PlaceRef
+  /** The target session, as its owning daemon recorded it. */
+  target: Pick<SessionRecord, 'platform' | 'channel' | 'conversationKind' | 'sessionId'>
+  askers: TurnAskers
+  /** The target agent's bot behind the session, which a same-bot asker is judged on. */
+  bot: string | undefined
+  /** The target agent's lookups: the console answers only for that agent's sessions. */
+  lookups: ReadLookups
+  deps: Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'>
+  recorder?: PlaceReadMetrics
+}): Promise<boolean> {
+  const { target, bot, lookups } = input
+  const place: PlaceRef = { platform: target.platform, channel: target.channel }
+  const described = await describePlace(
+    place,
+    kindFromRows(target.platform, [target.conversationKind]),
+    bot,
+    input.deps
+  )
+  const source: SourcePlace = { ...described, sessions: target.sessionId ? [target.sessionId] : [] }
+  const refusal = await checkPlaceRead(
+    'callAgent',
+    input.callerPlace,
+    source,
+    input.askers,
+    (asker) => askerMayRead(asker, source, bot, lookups),
+    false,
+    input.recorder
+  )
+  return refusal === undefined
+}
+
 /** Where a platform write lands: a conversation (a direct message by its recipient), something new with these people, or a hosted document. */
 export type WriteTarget =
   | { kind: 'conversation'; platform: string; integrationId?: string; channel: string; recipient?: string }

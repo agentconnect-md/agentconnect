@@ -300,6 +300,8 @@ export interface QueueEntry {
   msg: NormalizedMessage
   /** Messages coalesced or steered into this live turn: the read rule reads for their senders too (assistant-mode.md §5.5). */
   foldedMessages?: TurnMessage[]
+  /** Agent calls folded into this live turn, by delivery and source (send-message-guide.md §9.4). */
+  foldedCalls?: { deliveryId: string; originSessionId: string }[]
   /** Cancels the entire cold SessionManager initialization path after the bounded
    *  host-stop backstop, including non-host awaits such as workspace/history I/O. */
   initAbort: AbortController

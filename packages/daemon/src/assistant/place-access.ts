@@ -41,7 +41,14 @@ export const NOBODY: TurnAskers = { people: [], nobody: true }
 export type PlaceRefusal = 'direct' | 'private' | 'undetermined'
 
 /** The tools whose cross-place reads pass the rule; a closed set, so it can label a metric. */
-export type PlaceReadTool = 'recall' | 'getChannelHistory' | 'getThreadHistory' | 'getReactions' | 'listBookmarks'
+export type PlaceReadTool =
+  | 'recall'
+  | 'getChannelHistory'
+  | 'getThreadHistory'
+  | 'getReactions'
+  | 'listBookmarks'
+  // send-message-guide.md §9.2: a call into another agent's existing session is judged as a read of its conversation.
+  | 'callAgent'
 
 /** How a source reads on its own bot: open to anyone who may see the workspace, to its members, or not at all. */
 export type SourceClass = 'public' | 'members' | 'direct' | 'webchat' | 'undetermined'

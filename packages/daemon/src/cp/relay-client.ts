@@ -15,6 +15,7 @@ import {
   buildRelayDaemonFrame,
   decodeRelayDaemonFrame,
   NIL_UUID,
+  RD_AGENT_SESSION_CALL_V1,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
@@ -67,6 +68,8 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
+  // send-message-guide.md §9.2: a `session-call` is admitted only into the session it names.
+  RD_AGENT_SESSION_CALL_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   // The relay refuses the webchat `attach` probe for daemons without this.
   RD_WEBCHAT_ATTACH_V1,

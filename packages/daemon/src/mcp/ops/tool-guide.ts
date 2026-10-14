@@ -52,7 +52,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
       action: 'callAgent',
       purpose: 'Ask another AgentConnect agent to work, or work visibly as yourself in another channel.',
       required: ['action', 'toAgent', 'message'],
-      optional: ['channel'],
+      optional: ['channel', 'sessionId'],
       rules: [
         '`toAgent` is an AgentConnect agent id from listAgents or an [agent-id] sender envelope, never a platform ' +
           'member id such as a Slack `U…` id. Pass the bare id, or {"agentId":"<id>","needsReply":true}.',
@@ -67,7 +67,14 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           'visible conversation of your own there, where people can follow and respond; it is not a background ' +
           'sub-session.',
         'The target may continue in context it already has; a call does not promise a fresh session.',
-        'Not accepted: `platform`, `integrationId`, `thread`, `attachment`, `sessionId`, `toUser`.',
+        '`sessionId` names an existing session of that agent — the `childSessionId` an earlier callAgent returned, ' +
+          'yours or one someone shared with you — and delivers into exactly that session: nothing is posted, it keeps ' +
+          'its context and its other callers, and you become one more session it can reply to. It cannot be combined ' +
+          'with `channel`, never names your own sessions (use messageSubsession for your sub-session), and never ' +
+          'falls back to another session: an unknown id, another agent’s id, a background sub-session, or a ' +
+          'conversation the people asking you may not read returns `wake.delivered: false` with `wake.reason: ' +
+          '"session_not_found"`.',
+        'Not accepted: `platform`, `integrationId`, `thread`, `attachment`, `toUser`.',
         'The result is {ok, wake: {delivered, targetSession, reason?}, post?, childSessionId?, reply?, nextAction?}. ' +
           '`ok` alone is not delivery: read `wake.delivered` and `wake.reason`. When the result says ' +
           '`nextAction: finish-turn-and-wait`, end your turn; the reply arrives in a later turn. `viewSessionStatus` ' +
@@ -95,6 +102,15 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
             toAgent: ctx.agentId,
             channel: '<project-channel-id>',
             message: 'Investigate this project’s failing build here and discuss the findings in this conversation.'
+          }
+        },
+        {
+          use: 'Continue an existing session of a peer, reporting back to you',
+          arguments: {
+            action: 'callAgent',
+            toAgent: { agentId: '<agent-id>', needsReply: true },
+            sessionId: '<childSessionId an earlier callAgent returned>',
+            message: 'Continue the discussion here and check the Windows behavior as well.'
           }
         },
         {
@@ -156,21 +172,24 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
     },
     replyToSession: {
       action: 'replyToSession',
-      purpose: 'Reply directly into the session that is waiting on you (your origin).',
+      purpose: 'Reply directly into one session that called you (an origin).',
       required: ['action', 'sessionId', 'message'],
       optional: [],
       rules: [
-        '`sessionId` is your origin’s outward session id: the `Parent session` line of your # Agent block, or the ' +
-          'session your standing instructions tell you to report to. A background sub-session’s origin is the ' +
-          'conversation that opened it. Never pass a `childSessionId` handle here.',
+        '`sessionId` is one origin’s session id: the `Parent session` line of your # Agent block, the session your ' +
+          'instructions tell you to report to, or one listed under "Sessions you can reply to". A background ' +
+          'sub-session’s origin is the conversation that opened it. Never pass a `childSessionId` handle here.',
+        'Several sessions can call one conversation, and each stays one you can answer, whichever called last. A ' +
+          'reply reaches only the session it names — it is never broadcast and never redirected — so answer each ' +
+          'session that needs it with its own call.',
         'The message is injected into that session; nothing is posted on a platform, and that session’s own ' +
           'reply keeps its visible route. Never post the answer at the origin conversation’s channel root instead: ' +
           'that starts a separate conversation.',
         'A background sub-session can reply to its parent any time — progress, a question, or its result — and a ' +
           'reply does not end its work; the daemon reports the end of each round of work itself.',
         'Only `action`, `sessionId`, and `message` are accepted.',
-        'The result is {delivered, targetSession?, reason?} with no `ok` wrapper. A session that is not your ' +
-          'origin returns {delivered: false, reason: "not_authorized"}; other reasons report admission or routing ' +
+        'The result is {delivered, targetSession?, reason?} with no `ok` wrapper. A session that never called you ' +
+          'returns {delivered: false, reason: "not_authorized"}; other reasons report admission or routing ' +
           'refusals. After a delivered result, end your turn without repeating the message.'
       ],
       examples: [

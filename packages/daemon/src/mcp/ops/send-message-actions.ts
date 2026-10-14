@@ -27,7 +27,7 @@ const isAction = (value: unknown): value is SendMessageAction =>
 
 /** Each action's target requirement and accepted keys, besides `action` and `message`. */
 const ACTION_KEYS: Record<SendMessageAction, { requires: readonly string[]; accepts: readonly string[] }> = {
-  callAgent: { requires: ['toAgent'], accepts: ['toAgent', 'channel'] },
+  callAgent: { requires: ['toAgent'], accepts: ['toAgent', 'channel', 'sessionId'] },
   messageSubsession: { requires: [], accepts: ['sessionId'] },
   replyToSession: { requires: ['sessionId'], accepts: ['sessionId'] },
   postMessage: {
@@ -44,6 +44,7 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
     action: action('callAgent'),
     toAgent: AGENT_TARGET,
     channel: channelField,
+    sessionId: requiredString('sessionId').optional(),
     message: messageField
   }),
   messageSubsession: z.strictObject({
@@ -81,6 +82,17 @@ const BAD_CHILD_ID =
   'action `messageSubsession` takes `sessionId` only as the nonempty `childSessionId` string of a sub-session this ' +
   'conversation started. Nothing was sent. Omit `sessionId` to start a new sub-session; a null or empty id never ' +
   'starts one'
+const BAD_PEER_SESSION =
+  'action `callAgent` takes `sessionId` only as the nonempty id of an existing session of the agent in `toAgent`, ' +
+  'such as the `childSessionId` an earlier callAgent returned. Nothing was sent and no agent was woken. Omit ' +
+  '`sessionId` to call the agent without naming a session; a null or empty id never starts one'
+const PEER_SESSION_WITH_CHANNEL =
+  'action `callAgent` takes `channel` or `sessionId`, not both: `sessionId` delivers into that existing session ' +
+  'and posts nothing. Nothing was sent and no agent was woken'
+const SELF_SESSION =
+  'action `callAgent` with `sessionId` reaches another agent’s session, never one of yours. Nothing was sent and no ' +
+  'agent was woken. To message your own background sub-session, call getToolGuide ' +
+  '{"tool":"sendMessage","action":"messageSubsession"} and retry with action `messageSubsession` and its `sessionId`'
 const SELF_CALL =
   'action `callAgent` without `channel` cannot target yourself. Nothing was sent and no agent was woken. For ' +
   'background work of your own, call getToolGuide {"tool":"sendMessage","action":"messageSubsession"} and retry ' +
@@ -96,6 +108,8 @@ export interface ValidatedSendMessage {
   delivery: Record<string, unknown>
   /** `messageSubsession` into an existing child: its handle (send-message-guide.md §8.1). */
   childSessionId?: string
+  /** `callAgent` into an existing session of the target agent: its handle (send-message-guide.md §9.2). */
+  peerSessionId?: string
 }
 
 /** Check a `sendMessage` call's action and argument combination before any lookup or effect (send-message-guide.md §3.3). */
@@ -105,10 +119,12 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
   if (!isAction(named)) throw new ToolArgumentError([UNKNOWN_ACTION])
   const spec = ACTION_KEYS[named]
   const keys = Object.keys(args).filter((key) => key !== 'action' && key !== 'message')
-  // §8.1: a supplied child id is nonempty, never a null or empty stand-in for creation.
-  if (named === 'messageSubsession' && keys.includes('sessionId')) {
+  // §8.1 and §9.2: a supplied session id is nonempty, never a null or empty stand-in for creation.
+  if ((named === 'messageSubsession' || named === 'callAgent') && keys.includes('sessionId')) {
     const id = args.sessionId
-    if (typeof id !== 'string' || id.trim() === '') throw new ToolArgumentError([BAD_CHILD_ID])
+    if (typeof id !== 'string' || id.trim() === '')
+      throw new ToolArgumentError([named === 'callAgent' ? BAD_PEER_SESSION : BAD_CHILD_ID])
+    if (named === 'callAgent' && present(args.channel)) throw new ToolArgumentError([PEER_SESSION_WITH_CHANNEL])
   }
   const unexpected = keys.filter((key) => !spec.accepts.includes(key))
   const missing = spec.requires.filter((key) => key.split('|').every((alt) => !present(args[alt])))
@@ -142,8 +158,13 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
       ...(typeof args.sessionId === 'string' ? { childSessionId: args.sessionId } : {})
     }
   }
+  if (target?.toAgent === ctx.agentId && typeof args.sessionId === 'string') throw new ToolArgumentError([SELF_SESSION])
   if (target?.toAgent === ctx.agentId && !present(args.channel)) {
     throw new ToolArgumentError([SELF_CALL])
+  }
+  if (named === 'callAgent' && typeof args.sessionId === 'string') {
+    const { sessionId, ...call } = rest
+    return { action: named, delivery: call, peerSessionId: sessionId as string }
   }
   return { action: named, delivery: rest }
 }
@@ -156,7 +177,49 @@ export async function sendMessage(
 ): Promise<unknown> {
   const validated = validateSendMessageAction(ctx, args)
   if (validated.childSessionId !== undefined) return await continueSubsession(ctx, validated.childSessionId, args, deps)
+  if (validated.peerSessionId !== undefined) return await callPeerSession(ctx, validated.peerSessionId, args, deps)
   return await deliverSendMessage(ctx, validated.delivery, deps)
+}
+
+/** The guidance a delivered call into an existing peer session hands back when a reply was asked for. */
+export const PEER_SESSION_CALLED =
+  'Message delivered into that existing session, which keeps its context and its other callers. The agent will ' +
+  'reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
+
+/** `callAgent` with `sessionId` (send-message-guide.md §9.2): postless, into that session or nowhere, with the agent-call receipt. */
+async function callPeerSession(
+  ctx: SessionContext,
+  sessionId: string,
+  args: Record<string, unknown>,
+  deps: MessagingDeps
+): Promise<unknown> {
+  const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
+  const wake = await deps.messageAgent({
+    callerAgentId: ctx.agentId,
+    platform: ctx.platform,
+    ...(ctx.integrationId !== undefined ? { callerIntegrationId: ctx.integrationId } : {}),
+    ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
+    callerChannel: ctx.channel,
+    callerThread: ctx.thread,
+    toAgentId: toAgent!,
+    text: parseArgs(messageField, args.message),
+    channel: ctx.channel,
+    ...(needsReply ? { needsReply: true } : {}),
+    targetSessionId: sessionId
+  })
+  if (!wake.delivered) return { ok: true, wake }
+  return {
+    ok: true,
+    wake,
+    childSessionId: wake.targetSession,
+    ...(needsReply
+      ? {
+          reply: { requested: true, state: 'awaiting' as const },
+          nextAction: 'finish-turn-and-wait' as const,
+          message: PEER_SESSION_CALLED
+        }
+      : {})
+  }
 }
 
 /** The guidance a delivered continuation hands back. */

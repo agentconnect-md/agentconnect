@@ -1,6 +1,6 @@
 # `sendMessage` Actions and On-Demand Tool Guide — Proposal
 
-**Status:** Adapter (§3–§7) and persistent sub-session messaging (§8) implemented; §9 proposed
+**Status:** Implemented: the adapter (§3–§7), persistent sub-session messaging (§8), and shared peer sessions with multiple origins (§9)
 
 Keep one agent-facing `sendMessage` tool, add a required `action` discriminator,
 and move detailed argument documentation into an on-demand `getToolGuide` tool. Existing
@@ -620,7 +620,7 @@ persistent sub-session messaging and multi-origin peer calls are specified in
 
 ### 7.8 Adapter implementation record
 
-The behavior-preserving adapter (§3–§7) is implemented, and §8 since (§8.8); §9 is not yet.
+The behavior-preserving adapter (§3–§7) is implemented, and §8 (§8.8) and §9 (§9.6) since.
 Decisions the sections above left open:
 
 - **Descriptor.** The §3.2 draft ships without its continuation and peer-session clauses
@@ -628,9 +628,9 @@ Decisions the sections above left open:
   each capability only once its runtime exists. Measured for a Slack + Telegram agent: the
   description is 784 characters, the flat schema 1668, and `getToolGuide` description plus
   schema 480. `sessionId` is described for `replyToSession` only.
-- **Not-yet-available targets.** `callAgent` does not accept `sessionId` until §9. The adapter
-  stage also refused `messageSubsession` with any `sessionId`; §8 lifted that for a nonempty
-  string, and a null, empty or mistyped id still fails as an argument error (§8.8).
+- **Not-yet-available targets.** The adapter stage refused `callAgent.sessionId` and
+  `messageSubsession` with any `sessionId`; §8 and §9 lifted those for a nonempty string, and a
+  null, empty or mistyped id still fails as an argument error (§8.8, §9.6).
 - **Validation placement.** `executeTool` validates `sendMessage` before `resolveChannelArg`,
   and the handler validates again before delegating, so a direct handler call cannot skip
   it. Validation covers the key check, the per-action zod validator, the existing strict
@@ -655,8 +655,9 @@ Decisions the sections above left open:
 - **Live probe.** The runtime-matrix probe reads the daemon's own action errors; its
   fabricated action checks are removed. With §8 its continuation receipts are the daemon's
   own: an id other than the scenario's child gets the daemon's `subsession_not_found`
-  receipt, recorded as an error. Only the peer-session check stays as the model of §9 state,
-  and the daemon's own rejection of that shape comes first.
+  receipt, recorded as an error. With §9 the fabricated peer-session check is gone too: a
+  peer-session call gets the daemon's own receipt, or its `session_not_found` refusal for an id
+  outside the scenario's scope.
 
 ## 8. Persistent sub-session messaging — explicit capability extension
 
@@ -913,7 +914,7 @@ id>), a new message for this background sub-session: …` and always carries the
 
 ## 9. Shared peer sessions with multiple origins — explicit capability extension
 
-**Status:** Proposed runtime extension; not the single-origin baseline audited in §7.
+**Status:** Implemented; §9.6 records the decisions this section left open.
 
 A peer session can receive calls from several source sessions. Its origin is
 therefore a set of authorized reply destinations, not a single slot overwritten
@@ -982,19 +983,36 @@ changing its conversation identity, or creating a replacement on failure. Do not
 infer a headless/visible output change from the addressing form: preserve the
 target's established output behavior and trusted delivery rules.
 
-**Proposed admission rule:** retain existing organization, directional agent-call,
-hop, and execution checks, and require authority to participate in that specific
-session under its conversation/audience rules. Knowing the id or merely being
-allowed to call agent B does not by itself grant access to all of B's contexts.
-Read-only console visibility is not an invocation grant. Session-specific admission
-must be enforced on the owning daemon for local and remote calls alike; a caller
-must not register a source relation before that admission succeeds.
+**Admission rule.** A call into an existing session is admitted only when all of these hold:
 
-This session-participation rule is a new design requirement, not a claim that the
-current `toAgent` path already checks an explicit session id. Its exact authority
-projection must be implemented and tested before enabling the new form. An explicit
-owner invitation can be a future means of granting participation, but no invitation
-tool or automatic sharing operation is added here.
+1. The existing checks of any agent call pass: the caller's outbound policy and the target's
+   caller policy, the org-scoped directional call policy (`CpCollabRoutes.admits`), coordinate
+   integrity of the caller's own channel, and the hop limit. Remotely, the relay and the owning
+   daemon's terminal verify apply them again, as for an ordinary wake.
+2. On the owning daemon, `sessionId` resolves to a session of the agent named by `toAgent`: by
+   its session key (the `childSessionId` a call returned) or by its outward id, never by an ACP
+   id. A background sub-session (patrol and task coordinates included) is refused, and so is the
+   caller's own session.
+3. The people on the calling turn may read the target session's conversation under the
+   daemon's existing cross-conversation read rule — the one `getChannelHistory` and `recall`
+   pass (assistant-mode.md §5.5, `judgePlaceRead`). The caller's current conversation is the
+   current place, so a target in the same platform conversation is admitted; otherwise the
+   target is described from its own session row and bot, and every person behind the calling
+   turn must be allowed by `askerMayRead` with the target agent's lookups and the target
+   session's outward id. A turn no person is behind (another agent's wake, a hook, an
+   unattributed schedule) is never admitted, because the rule reads only public channels for
+   such a turn and only on its own bot.
+4. Execution admission succeeds: the owning daemon serves the agent, it is not paused or
+   draining, and the session's serial gate accepts the input durably.
+
+The owning daemon makes checks 2–4 for local and remote calls alike. A remote call carries
+`deliveryKind: "session-call"`, the `targetSessionId`, and the calling turn's people
+(`callerAskers`), asserted by the authenticated source daemon like the rest of its lineage. The
+relay forwards it only to a daemon that advertised `agent-session-call-v1`; an older relay
+cannot decode the kind and fails closed. Knowing the id, or being allowed to call agent B, is
+not enough by itself, and read-only console visibility is honored only through the same
+console verdict the read rule already uses. A source relation is recorded only once the input
+is admitted (§9.3). No invitation tool or automatic sharing operation is added.
 
 A private background sub-session is not turned into a shared peer session through
 this field. Reject `callAgent.sessionId` aimed at an indexed sub-session and direct
@@ -1082,6 +1100,52 @@ Implement session-id resolution, trusted session admission, durable reply
 relations, per-call outcome correlation, and model-facing origin discovery as one
 reviewable capability. A new optional field plus an array replacing
 `originSessionId` alone is insufficient.
+
+### 9.6 Implementation record
+
+- **Refusals.** Every resolution or participation failure — an unknown id, an ACP id, another
+  agent's session, a sub-session, a session the calling people may not read, a turn no person
+  is behind — returns one receipt, `wake: {delivered: false, reason: "session_not_found"}` with
+  a message pointing to `childSessionId` and to `messageSubsession` for a sub-session, so a
+  refusal never says that a session exists. A remote one is the ack's `not_found`. Policy, hop
+  and execution refusals keep their existing reasons (`not_allowed`, `hop_limit`, `busy`,
+  `queue_full`, `offline`, `unsupported`). Nothing is posted, no replacement session is opened,
+  and no relation is recorded.
+- **Arguments.** `callAgent.sessionId` is validated before any lookup: a null, empty or mistyped
+  id, `sessionId` beside `channel`, and your own agent id in `toAgent` are argument errors; the
+  last points to the `messageSubsession` guide. The call is postless and its receipt is the
+  agent-call one (`{ok, wake, childSessionId, reply?, nextAction?, message?}`).
+- **Delivery.** The input lands on the target session's own coordinates and its ordinary reply
+  route, the way a reply into an origin does: no `headless` stamp, no root post, no new
+  conversation, and the caller-framed `From <caller>: …` text.
+- **Relations.** The daemon records a source wherever it settles an admission
+  (`dispatch`), so local and remote wakes, session calls, paired channel calls and origin
+  replies all add one: the table `session_reply_source` keeps the replying session's key and
+  agent, the source's outward id and agent, its landing coordinates and its code-host reply
+  snapshot. A sub-session records none (§8.2), a duplicate admission adds nothing, and a session
+  is never its own source. Purging a session or removing an agent drops its relations.
+- **Reply authority.** `replyToSession` is authorized for this turn's origin, the session's
+  durable origin, or any recorded source, and refused for the caller's own id and for anything
+  else. A remote destination is reached by its recorded coordinates and agent, so a later turn
+  or a restart can still answer it; the durable origin keeps its bound code-host snapshot.
+- **Obligations.** Each admitted call with `needsReply` opens a row in
+  `session_reply_obligation`, keyed by its delivery. A delivered reply to a source answers one
+  of that source's open requests — the current turn's own call (or a call folded into it) if
+  open, else the oldest — never every request and never another source's. Inference and the
+  failure report read the call's own row instead of the single parent link, so a newer caller
+  never cancels an earlier one's report, and both go only to the call's own source. A turn into
+  which another call was folded infers nothing, leaving its requests open. Sessions with no
+  tracked request keep the sticky `needsParentReply` behavior.
+- **Model-facing context.** Standing context names the durable origin as `Parent session`; its
+  report-back directive stands for that origin's own open request once requests are tracked. A
+  call asking for a reply from another source gets a turn block naming that source. A turn of a
+  session with several sources, or whose input came from another source, carries a "Sessions
+  you can reply to" block: the input's source, and up to eight sources (newest first, with
+  their open requests), the rest counted and still valid. The descriptor (1014 characters for a
+  Slack + Telegram agent), the guide and the collaboration text advertise the form.
+- **Probe.** The fabricated peer-session rejection is removed. A peer-session call now passes the
+  daemon's validation and gets its own receipt, or its `session_not_found` refusal for an id
+  outside the scenario's scope.
 
 ## 10. Runtime matrix verification
 

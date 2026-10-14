@@ -86,6 +86,9 @@ export const RD_HEADLESS_AGENT_DELIVERY_V1 = 'headless-agent-delivery-v1'
 /** Both relay and daemon preserve immutable code-host reply targets across delegation and return. */
 export const RD_CODEHOST_REPLY_TARGET_V1 = 'codehost-reply-target-v1'
 
+/** This daemon admits a `session-call` into the exact existing session `targetSessionId` names, under its own session-participation rule (send-message-guide.md §9.2). */
+export const RD_AGENT_SESSION_CALL_V1 = 'agent-session-call-v1'
+
 /**
  * `agent-implicit-routing-v1`: this daemon understands {@link RdMsgIm.trustedRouteVia}
  * and applies its `!stop` thread mute to an implicitly-selected per-target delivery.
@@ -865,14 +868,35 @@ export type RdAck = z.infer<typeof RdAck>
  *    delegated outcomes from the humans watching that thread whenever the child had
  *    answered elsewhere or nowhere.
  *
+ *  - `session-call` — a `callAgent` with `sessionId` into the target's existing session
+ *    `targetSessionId` names (send-message-guide.md §9.2): never a coordinate-keyed wake and never a
+ *    replacement session. An older relay cannot decode this value, so it fails closed; a newer one
+ *    forwards it only to a daemon that advertised {@link RD_AGENT_SESSION_CALL_V1}.
+ *
  * A relay still MUST NOT forward `session-reply` to a daemon that has not advertised
  * {@link RD_HEADLESS_AGENT_DELIVERY_V1}, and returns `unsupported` (§8.4). That gate is
  * now a LEGACY fence, kept because such a daemon predates the delivery kind entirely;
  * it no longer guards a silence requirement. Absent ⇒ `wake`, which is what every older
  * daemon means.
  */
-export const RdAgentMsgDeliveryKind = z.enum(['wake', 'session-reply'])
+export const RdAgentMsgDeliveryKind = z.enum(['wake', 'session-reply', 'session-call'])
 export type RdAgentMsgDeliveryKind = z.infer<typeof RdAgentMsgDeliveryKind>
+
+/** One person a calling turn speaks for, as the read rule names them (assistant-mode.md §5.5). */
+export const AgentCallAsker = z.union([
+  z.object({
+    kind: z.literal('member'),
+    platform: z.string().min(1).max(64),
+    integrationId: z.string().min(1).max(256),
+    userId: z.string().min(1).max(256)
+  }),
+  z.object({ kind: z.literal('console'), userId: z.string().min(1).max(256) })
+])
+export type AgentCallAsker = z.infer<typeof AgentCallAsker>
+
+/** Who is asking on the calling turn, which a `session-call` target judges participation by. */
+export const AgentCallAskers = z.object({ people: z.array(AgentCallAsker).max(32), nobody: z.boolean() })
+export type AgentCallAskers = z.infer<typeof AgentCallAskers>
 
 /**
  * D→R REQ → `rd/agentmsg/ack`. A cross-daemon `messageAgent` (agent-collaboration
@@ -959,7 +983,11 @@ export const RdAgentMsg = z.object({
   // send-message-routing-rework.md §8.3. Absent ⇒ `wake` (what every older daemon
   // means). `session-reply` dispatches into `lineageReplyTo` — see
   // {@link RdAgentMsgDeliveryKind}.
-  deliveryKind: RdAgentMsgDeliveryKind.optional()
+  deliveryKind: RdAgentMsgDeliveryKind.optional(),
+  // send-message-guide.md §9.2, `session-call` only: the target's existing session by its key or outward id.
+  targetSessionId: z.string().min(1).max(1024).optional(),
+  // `session-call` only: the calling turn's people, asserted by the authenticated source daemon like its lineage.
+  callerAskers: AgentCallAskers.optional()
 })
 export type RdAgentMsg = z.infer<typeof RdAgentMsg>
 
@@ -1063,7 +1091,10 @@ export const RdAgentMsgFwd = z.object({
   // through: for `session-reply` it first checks the TARGET daemon advertised
   // `headless-agent-delivery-v1` at hello, and refuses with `unsupported` when it did not
   // — a legacy fence against a daemon that predates this delivery kind altogether.
-  deliveryKind: RdAgentMsgDeliveryKind.optional()
+  deliveryKind: RdAgentMsgDeliveryKind.optional(),
+  // Forwarded verbatim from RdAgentMsg for `session-call`; the target resolves and admits it itself.
+  targetSessionId: z.string().min(1).max(1024).optional(),
+  callerAskers: AgentCallAskers.optional()
 })
 export type RdAgentMsgFwd = z.infer<typeof RdAgentMsgFwd>
 

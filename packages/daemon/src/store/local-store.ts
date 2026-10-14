@@ -10,6 +10,7 @@ import { ASSISTANT_PATROL_SCHEMA, AssistantPatrolLedger } from './assistant-patr
 import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
+import { SESSION_REPLY_SOURCE_SCHEMA, SessionReplySources } from './session-reply-sources.js'
 import {
   APPEND_COORDINATE_PREFIX,
   appendCoordinate,
@@ -2126,6 +2127,8 @@ export class LocalStore {
   readonly assistantReminders: AssistantReminderLedger
   /** The time zone last seen from a person in each place, for every agent (product-conventions.md "Local time"). */
   readonly placeTimeZones: PlaceTimeZones
+  /** The sessions each session may reply to, and its callers' open requests (send-message-guide.md §9.3). */
+  readonly sessionSources: SessionReplySources
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -2161,6 +2164,7 @@ export class LocalStore {
     this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
+    this.sessionSources = new SessionReplySources({ query: (sql, params) => this.db.query(sql, params) })
   }
 
   /**
@@ -2227,6 +2231,7 @@ export class LocalStore {
       ${ASSISTANT_PATROL_SCHEMA}
       ${ASSISTANT_REMINDER_SCHEMA}
       ${PLACE_TIME_ZONE_SCHEMA}
+      ${SESSION_REPLY_SOURCE_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
@@ -3337,6 +3342,19 @@ export class LocalStore {
   /** Resolve a slot from the id the OUTSIDE world addresses it by (session-concept.md §1.1).
    *  Falls back to the ACP id so a caller still holding the runtime's name — and a control
    *  plane that recorded one before the outward column existed — still lands on the session. */
+  /** An agent's session by its outward id alone, never an ACP id, which names a session only inside its runtime. */
+  async getSessionByOutwardIdOnly(sessionId: string, agentId: string): Promise<SessionRecord | undefined> {
+    const row = (await this.db
+      .prepare('SELECT * FROM sessions WHERE sessionId = ? AND agentId = ?')
+      .get(sessionId, agentId)) as SessionRecord | undefined
+    if (row) return row
+    const minted = (await this.db
+      .prepare('SELECT key FROM session_outward_ids WHERE sessionId = ? AND agentId = ?')
+      .get(sessionId, agentId)) as { key: string } | undefined
+    const rec = minted ? await this.getSession(minted.key) : undefined
+    return rec?.agentId === agentId ? rec : undefined
+  }
+
   async getSessionByOutwardId(sessionId: string, agentId?: string): Promise<SessionRecord | undefined> {
     const scope = agentId === undefined ? '' : ' AND agentId = @agentId'
     const params = { sessionId, ...(agentId === undefined ? {} : { agentId }) }
@@ -4735,6 +4753,9 @@ export class LocalStore {
           .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')
           .run(rec.agentId, key)
       }
+      // A purged session can no longer reply anywhere (send-message-guide.md §9.3).
+      await tx.prepare('DELETE FROM session_reply_obligation WHERE sessionKey = ?').run(key)
+      await tx.prepare('DELETE FROM session_reply_source WHERE sessionKey = ?').run(key)
       await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
         // Once the local session content is gone, creating a new CP metadata row

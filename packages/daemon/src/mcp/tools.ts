@@ -24,15 +24,15 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
   return {
     name: 'sendMessage',
     description:
-      'Send outside your current conversation. Required action: callAgent asks an agent to work (add channel to ' +
-      'start visible work there; your own id with channel works as yourself in that channel); messageSubsession ' +
-      'starts a background sub-session of your own for long work (omit sessionId), or sends more work to one you ' +
-      'started (sessionId: its childSessionId), even after it finished; replyToSession sends to your origin by ' +
-      'sessionId (a sub-session’s origin is its parent, which it can message any time); postMessage reaches a ' +
+      'Send outside your current conversation. Required action: callAgent asks an agent to work (sessionId ' +
+      'continues its existing session from a childSessionId; channel starts visible work there; your own id with ' +
+      'channel works as yourself there); messageSubsession starts a background sub-session of your own for long ' +
+      'work (omit sessionId), or sends more work to one you started (sessionId: its childSessionId), even after it ' +
+      'finished; replyToSession answers one session that called you, by sessionId; several may, and replies are ' +
+      'never broadcast (a sub-session’s origin is its parent, which it can message any time); postMessage reaches a ' +
       'person, a channel, or another existing thread. Background work reports each round’s completion or failure ' +
-      'automatically. For your current ' +
-      'conversation, write your ordinary reply. When requesting a peer’s result or completion notice, use ' +
-      'toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
+      'automatically. For your current conversation, write your ordinary reply. When requesting a peer’s result, ' +
+      'use toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
       'examples. Calls without action fail without sending anything.',
     inputSchema: obj(
       {
@@ -70,7 +70,8 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
           type: 'string',
           minLength: 1,
           description:
-            'replyToSession: your origin’s outward session id. messageSubsession: a childSessionId to continue.'
+            'callAgent: that agent’s existing session (a childSessionId), instead of channel. replyToSession: the ' +
+            'session id of one session that called you. messageSubsession: a childSessionId to continue.'
         },
         attachment: { type: 'string', minLength: 1, description: 'Received image name from an [attached: …] marker.' },
         platform: {

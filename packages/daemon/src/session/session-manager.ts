@@ -1,6 +1,6 @@
 import { agentWithRuntime } from '../decisions/model-selection.js'
 import { isAppendCoordinate } from './append-coordinate.js'
-import { isPatrolCoordinate, isSubsessionCoordinate } from './subsession-coordinate.js'
+import { isDelegationCoordinate, isPatrolCoordinate, isSubsessionCoordinate } from './subsession-coordinate.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../runtime-defs/claude-runtime.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
@@ -36,7 +36,10 @@ import {
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
 import {
   AGENT_META_OPENING,
+  buildParentReplyAppend,
+  buildReplySourcesBlock,
   buildStandingContext,
+  MAX_LISTED_REPLY_SOURCES,
   standingRefreshBlock,
   type StandingContext
 } from './turn/standing-context.js'
@@ -329,6 +332,31 @@ export class SessionManager {
   // Sessions whose runtime may not hold the current standing context, until a delivered prompt carries it (see standingDelivered).
   private readonly standingRefreshDue = new Set<string>()
 
+  /** The session's recorded reply sources and open requests (send-message-guide.md §9.3); an unreadable store lists none. */
+  private async replySources(key: string): Promise<
+    | {
+        listed: Awaited<ReturnType<LocalStore['sessionSources']['list']>>
+        count: number
+        open: Awaited<ReturnType<LocalStore['sessionSources']['open']>>
+        tracked: boolean
+      }
+    | undefined
+  > {
+    const sources = this.deps.store.sessionSources
+    if (!sources) return undefined
+    try {
+      const [listed, count, open, tracked] = await Promise.all([
+        sources.list(key, MAX_LISTED_REPLY_SOURCES + 1),
+        sources.count(key),
+        sources.open(key),
+        sources.tracked(key)
+      ])
+      return { listed, count, open, tracked }
+    } catch {
+      return undefined
+    }
+  }
+
   /**
    * Every agent that is ALREADY part of this thread — open sessions first, then ones
    * TTL-closed after idle (a dormant participant is still a participant).
@@ -544,24 +572,23 @@ export class SessionManager {
     // link, which is what the authorizer also falls back to. The DURABLE link itself stays
     // first-wins — the store COALESCEs it — so this only changes who the current turn addresses.
     const effectiveOriginSessionId = originSessionId ?? rec?.originSessionId
-    // The report-back directive is sticky the same way: once a parent asked for a reply the
-    // session keeps the obligation, so later (human-triggered) turns and resumes re-assert it
-    // instead of quietly dropping it. Only meaningful with a parent to report to.
+    // The report-back flag is sticky the same way: once a parent asked for a reply the session keeps it.
     const needsReplyToParent =
       effectiveOriginSessionId !== undefined && (rec?.needsParentReply === 1 || needsParentReply === true)
-    // When an already-open session's STANDING context does not (or no longer) states the right
-    // obligation, this turn has to carry it as a turn-scoped block instead. Two causes:
-    //   • the obligation was just added — the session opened without it; or
-    //   • a DIFFERENT parent woke the session than the one its standing context named. That
-    //     context is fixed for the ACP session's life (Claude sets it at session/new, other
-    //     runtimes inline it once), so a second parent's wake would otherwise leave the agent
-    //     addressing the first parent — which `replyToSession` refuses on this turn.
+    // send-message-guide.md §9.3: standing context names the durable origin, one of possibly several reply addresses.
+    const standingOrigin = rec?.originSessionId ?? originSessionId
+    const sources = isDelegationCoordinate(thread) ? undefined : await this.replySources(key)
+    // §9.4: once calls are tracked one by one, the standing directive stands for the durable origin's own open request.
+    const standingReply =
+      standingOrigin != null &&
+      (sources?.tracked
+        ? sources.open.some((request) => request.sourceSessionId === standingOrigin)
+        : needsReplyToParent)
+    // A call asking for a reply that the standing context does not name gets its own turn block, naming its own source.
     const restateParentReply =
-      needsReplyToParent &&
-      (rec?.needsParentReply !== 1 ||
-        (originSessionId !== undefined &&
-          rec?.originSessionId !== undefined &&
-          originSessionId !== rec.originSessionId))
+      needsParentReply === true &&
+      originSessionId !== undefined &&
+      (rec?.needsParentReply !== 1 || (standingOrigin != null && originSessionId !== standingOrigin))
     // Names a session's branch by whoever opened it, so a shared thread keeps its owner when someone else replies.
     const initiatedBy = await sessionInitiatedBy((ids) => this.deps.store.getDisplayNames(ids), rec?.triggeredBy, msg)
     const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy }
@@ -666,14 +693,14 @@ export class SessionManager {
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
           sessionId: rec?.sessionId,
-          parentSessionId: effectiveOriginSessionId,
+          parentSessionId: standingOrigin,
           envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
           fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
           // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
           // accessor, so the prompt names exactly the directories the session got.
           workspaceRoots: await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
           onDemandClones: await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
-          needsReplyToParent,
+          needsReplyToParent: standingReply,
           memoryIndex,
           usesMeta,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
@@ -1015,8 +1042,11 @@ export class SessionManager {
         promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
       }
     } else if (restateParentReply && preludeStanding) {
-      // An open session's standing context lacks this obligation or names another parent, so state it as a turn block.
-      promptPrelude.push({ type: 'text', text: preludeStanding.parentReplyAppend })
+      // An open session's standing context lacks this call's request or names another origin, so this turn states it.
+      promptPrelude.push({
+        type: 'text',
+        text: buildParentReplyAppend(true, originSessionId, isDelegationCoordinate(thread))
+      })
     } else if (await this.shouldRemind(key)) {
       // A long-running or just-compacted session gets the no-response rule again; a new one already carries it.
       promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
@@ -1039,6 +1069,32 @@ export class SessionManager {
       ).catch(() => undefined)
       if (running) this.runningSubsessionsShown.set(key, running.shown)
       if (running?.text) promptPrelude.push({ type: 'text', text: running.text })
+    }
+    // send-message-guide.md §9.3: which session sent this input, and every session this one may answer.
+    if (sources && (sources.count > 1 || (originSessionId !== undefined && originSessionId !== standingOrigin))) {
+      const awaiting = (id: string) => sources.open.filter((request) => request.sourceSessionId === id).length
+      const from = originSessionId
+        ? {
+            sessionId: originSessionId,
+            ...(() => {
+              const agent = sources.listed.find((source) => source.sourceSessionId === originSessionId)?.sourceAgentId
+              return agent ? { agentId: agent } : {}
+            })()
+          }
+        : undefined
+      const listed = sources.listed.slice(0, MAX_LISTED_REPLY_SOURCES)
+      promptPrelude.push({
+        type: 'text',
+        text: buildReplySourcesBlock({
+          ...(from ? { from } : {}),
+          sources: listed.map((source) => ({
+            sessionId: source.sourceSessionId,
+            agentId: source.sourceAgentId,
+            awaiting: awaiting(source.sourceSessionId)
+          })),
+          more: Math.max(0, sources.count - listed.length)
+        })
+      })
     }
     // Every turn of every agent is told the people's local time, current now (product-conventions.md "Local time").
     promptPrelude.push({

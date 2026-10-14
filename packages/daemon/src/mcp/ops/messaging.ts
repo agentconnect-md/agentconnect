@@ -202,6 +202,8 @@ export interface MessageAgentReq {
   agentCallDeliveryId?: string
   /** send-message-routing-rework.md §3.1: the postless `toAgent` form, whose child runs headless; set only by `sendMessage`'s agent target. */
   postless?: boolean
+  /** send-message-guide.md §9.2: `callAgent.sessionId`, the target's existing session by key or outward id; never a new one. */
+  targetSessionId?: string
 }
 
 /** A parent's message into its own existing sub-session (send-message-guide.md §8.1): only `sessionId` and `text` come from the model. */
@@ -232,7 +234,7 @@ export interface MessageAgentResult {
   subsession?: true
 }
 
-/** A trusted SessionTarget reply (session-concept §5.2): only `sessionId` and `text` come from the model, and `sessionId` must be the caller's origin. */
+/** A trusted SessionTarget reply (session-concept §5.2): only `sessionId` and `text` come from the model, and `sessionId` must be one of the caller's origins. */
 export interface ReplyToSessionReq {
   /** Trusted caller identity (== `ctx.agentId`). Never a tool input. */
   callerAgentId: string
@@ -241,8 +243,7 @@ export interface ReplyToSessionReq {
   callerTransportScope?: string
   callerChannel: string
   callerThread: string
-  /** The ONLY untrusted field: the target session's stable id (the child's `Parent session`).
-   *  The daemon authorizes it against the caller's active-turn origin. */
+  /** The only untrusted field: one origin's outward id, authorized against the caller's recorded origins (send-message-guide.md §9.3). */
   sessionId: string
   text: string
 }
@@ -304,7 +305,7 @@ export interface MessagingDeps extends GatewayDeps {
   messageAgent: (req: MessageAgentReq) => Promise<MessageAgentResult>
   /** Side-effect-free: the reason {@link MessagingDeps.messageAgent} would refuse this wake locally, else null, so no post precedes it; absent ⇒ not gated. */
   preflightWake?: (req: MessageAgentReq) => string | null
-  /** Backs `sendMessage`'s SessionTarget (session-concept §5.2): origin-only, fail-closed reply into the caller's origin session. */
+  /** Backs `replyToSession`: a fail-closed reply into one of the caller's recorded origins (send-message-guide.md §9.3). */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
   /** Backs `messageSubsession` with `sessionId` (send-message-guide.md §8): the caller's own direct child only; absent ⇒ unavailable. */
   continueSubsession?: (req: ContinueSubsessionReq) => Promise<MessageAgentResult>

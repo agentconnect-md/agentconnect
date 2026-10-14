@@ -9,6 +9,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import {
   MAX_AGENT_CALL_HOPS,
+  RD_AGENT_SESSION_CALL_V1,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_CODEHOST_REPLY_TARGET_V1
 } from '@agentconnect.md/protocol'
@@ -206,6 +207,46 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     const ack = await route(D1, baseMsg({ deliveryKind: 'session-reply' }))
     expect(ack.delivered).toBe(true)
     expect(forwards[0]!.deliveryKind).toBe('session-reply')
+  })
+
+  it('forwards an existing-session call with its session and people only to a daemon that admits it there', async () => {
+    // send-message-guide.md §9.2: an older target would key the call by coordinates and open a replacement session.
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const call = baseMsg({
+      deliveryKind: 'session-call',
+      targetSessionId: 'slack:C1:100.1:b',
+      callerAskers: { people: [{ kind: 'console', userId: 'owner-1' }], nobody: false }
+    })
+    const older: RdAgentMsgFwd[] = []
+    const refused = await createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, older),
+      log: noopLog
+    })(D1, call)
+    expect(refused).toMatchObject({ delivered: false, reason: 'unsupported' })
+    expect(older).toHaveLength(0)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () =>
+        fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards, [
+          RD_HEADLESS_AGENT_DELIVERY_V1,
+          RD_CODEHOST_REPLY_TARGET_V1,
+          RD_AGENT_SESSION_CALL_V1
+        ]),
+      log: noopLog
+    })
+    expect((await route(D1, { ...call, deliveryId: 'd-2' })).delivered).toBe(true)
+    expect(forwards[0]).toMatchObject({
+      deliveryKind: 'session-call',
+      targetSessionId: 'slack:C1:100.1:b',
+      callerAskers: { people: [{ kind: 'console', userId: 'owner-1' }], nobody: false }
+    })
+    // A session call that names no session reaches nobody.
+    const { targetSessionId: _named, ...unnamed } = call
+    expect(await route(D1, { ...unnamed, deliveryId: 'd-3' })).toMatchObject({ delivered: false, reason: 'not_found' })
+    expect(forwards).toHaveLength(1)
   })
 
   it('REFUSES a session reply to a daemon that does not understand the kind', async () => {

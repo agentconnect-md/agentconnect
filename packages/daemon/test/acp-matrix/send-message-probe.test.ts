@@ -9,7 +9,6 @@ import {
   probeTools,
   SCENARIOS,
   sendMessageFixture,
-  sessionRejection,
   toolShape,
   validateSendMessage,
   type SendMessageRun
@@ -105,15 +104,53 @@ describe('runtime matrix sendMessage probe', () => {
     expect(await validateSendMessage({ ...continued, sessionId: '' }, probeTools())).toMatch(
       /takes `sessionId` only as the nonempty `childSessionId`/
     )
-    expect(sessionRejection(classifySendMessage(continued, IDS.self), {})).toBeUndefined()
-    // Explicit peer sessions (§9) stay refused by the daemon, whatever the scope.
+    // Explicit peer sessions (§9): the daemon admits the shape; only its own rules on the combination refuse it.
     const peerSession = { action: 'callAgent', toAgent: IDS.peer, sessionId: IDS.child, message: 'm' }
-    expect(await validateSendMessage(peerSession, probeTools(), { child: IDS.child })).toMatch(
-      /does not accept `sessionId`/
+    expect(await validateSendMessage(peerSession, probeTools())).toBeUndefined()
+    expect(await validateSendMessage({ ...peerSession, channel: IDS.workChannel }, probeTools())).toMatch(
+      /takes `channel` or `sessionId`, not both/
     )
-    expect(sessionRejection(classifySendMessage(peerSession, IDS.self), { child: IDS.child })).toMatch(
-      /not an existing session/
+    expect(await validateSendMessage({ ...peerSession, sessionId: '' }, probeTools())).toMatch(
+      /takes `sessionId` only as the nonempty id of an existing session/
     )
+    expect(await validateSendMessage({ ...peerSession, toAgent: IDS.self }, probeTools())).toMatch(
+      /"action":"messageSubsession"/
+    )
+  })
+
+  it('answers a peer-session call with the daemon’s receipt in scope, and its refusal outside it', async () => {
+    const tools = probeTools()
+    const fixture = await sendMessageFixture(tools)
+    try {
+      const call = async (key: string, sessionId: string) =>
+        (await (
+          await fetch((fixture.descriptor(key, { peerSession: IDS.child }) as { url: string }).url, {
+            method: 'POST',
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'tools/call',
+              params: {
+                name: 'sendMessage',
+                arguments: {
+                  action: 'callAgent',
+                  toAgent: { agentId: IDS.peer, needsReply: true },
+                  sessionId,
+                  message: 'm'
+                }
+              }
+            })
+          })
+        ).json()) as { result: any }
+      const joined = JSON.parse((await call('join', IDS.child)).result.content[0].text)
+      expect(joined).toMatchObject({ ok: true, wake: { delivered: true }, childSessionId: IDS.child })
+      expect(fixture.calls('join')[0]!.error).toBeUndefined()
+      const other = JSON.parse((await call('other', IDS.origin)).result.content[0].text)
+      expect(other.wake).toMatchObject({ delivered: false, reason: 'session_not_found' })
+      expect(fixture.calls('other')[0]!.error).toBeDefined()
+    } finally {
+      fixture.server.close()
+    }
   })
 
   it('answers a continuation with the daemon’s receipt, and an unowned id with its refusal', async () => {

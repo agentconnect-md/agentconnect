@@ -110,7 +110,7 @@ describe('sendMessage requires an explicit action', () => {
     expect(await rejection({ action: 'callAgent', channel: 'C1', message: 'm' })).toContain(
       'action `callAgent` requires `toAgent`'
     )
-    for (const extra of ['platform', 'integrationId', 'thread', 'attachment', 'sessionId', 'needsReply']) {
+    for (const extra of ['platform', 'integrationId', 'thread', 'attachment', 'needsReply']) {
       expect(await rejection({ action: 'callAgent', toAgent: 'peer-1', [extra]: 'x', message: 'm' })).toContain(
         `does not accept \`${extra}\``
       )
@@ -118,6 +118,20 @@ describe('sendMessage requires an explicit action', () => {
     expect(await rejection({ action: 'callAgent', toAgent: 'peer-1' })).toContain(
       'missing required string argument: message'
     )
+  })
+
+  it('takes an existing peer session only as a nonempty id, without channel, and never one of your own', async () => {
+    for (const sessionId of ['', '  ', null, 3]) {
+      expect(await rejection({ action: 'callAgent', toAgent: 'peer-1', sessionId, message: 'm' })).toContain(
+        'takes `sessionId` only as the nonempty id of an existing session of the agent in `toAgent`'
+      )
+    }
+    expect(
+      await rejection({ action: 'callAgent', toAgent: 'peer-1', sessionId: 's-1', channel: 'C1', message: 'm' })
+    ).toContain('takes `channel` or `sessionId`, not both')
+    const own = await rejection({ action: 'callAgent', toAgent: 'agent-self', sessionId: 's-1', message: 'm' })
+    expect(own).toContain('never one of yours')
+    expect(own).toContain('getToolGuide {"tool":"sendMessage","action":"messageSubsession"}')
   })
 
   it('keeps the existing combination rules inside an action', async () => {
@@ -276,7 +290,7 @@ describe('getToolGuide', () => {
     expect(callAgent[0]).toMatchObject({ toAgent: { needsReply: true } })
   })
 
-  it('advertises sub-session continuation, but not explicit peer sessions', () => {
+  it('advertises sub-session continuation and explicit peer sessions', () => {
     const subsession = examples(sendMessageGuide(ctx, 'messageSubsession')).map((example) => example.arguments)
     expect(subsession[0]).not.toHaveProperty('sessionId')
     expect(subsession).toContainEqual(
@@ -285,8 +299,12 @@ describe('getToolGuide', () => {
     expect(JSON.stringify(sendMessageGuide(ctx, 'replyToSession'))).toContain('a reply does not end its work')
     const send = toolsForIntegrations([slack as Integration]).find((tool) => tool.name === 'sendMessage')!
     expect(send.description).toContain('sends more work to one you started (sessionId: its childSessionId)')
-    for (const example of examples(sendMessageGuide(ctx, 'callAgent')))
-      expect(example.arguments).not.toHaveProperty('sessionId')
+    expect(send.description).toContain('sessionId continues its existing session from a childSessionId')
+    expect(send.description).toContain('replies are never broadcast')
+    const calls = examples(sendMessageGuide(ctx, 'callAgent')).map((example) => example.arguments)
+    expect(calls[0]).not.toHaveProperty('sessionId')
+    expect(calls).toContainEqual(expect.objectContaining({ sessionId: expect.any(String) }))
+    for (const call of calls) expect('sessionId' in call && 'channel' in call).toBe(false)
   })
 
   it('tailors availability notes from trusted session context', () => {

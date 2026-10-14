@@ -355,8 +355,9 @@ describe('toolsForIntegrations', () => {
     expect(tool.description).toContain('Call getToolGuide {"tool":"sendMessage"} for arguments and examples.')
     expect(tool.description).toContain('Calls without action fail without sending anything.')
     expect(tool.description).toContain('toAgent: {agentId: "...", needsReply: true}')
-    // Continuation and explicit peer sessions are not advertised before the daemon implements them.
-    expect(tool.description).not.toMatch(/continue|existing peer session/i)
+    // Continuation and explicit peer sessions are advertised now that the daemon implements both (§8, §9).
+    expect(tool.description).toContain('sessionId continues its existing session from a childSessionId')
+    expect(tool.description).toContain('sends more work to one you started')
   })
 
   it('states what a channel-root post costs, and points a relayed answer at the origin session', () => {

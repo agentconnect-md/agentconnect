@@ -499,6 +499,25 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(RdAgentMsg.safeParse(base).success).toBe(true)
     expect(RdAgentMsg.safeParse({ ...base, deliveryKind: 'reply' }).success).toBe(false)
 
+    // send-message-guide.md §9.2: an existing-session call names its session and the calling turn's people.
+    const call = RdAgentMsg.safeParse({
+      ...base,
+      deliveryKind: 'session-call',
+      targetSessionId: 'slack:C123:1.1:target',
+      callerAskers: {
+        people: [{ kind: 'member', platform: 'slack', integrationId: 'int-1', userId: 'U1' }],
+        nobody: false
+      }
+    })
+    expect(call.success && call.data.targetSessionId).toBe('slack:C123:1.1:target')
+    expect(
+      RdAgentMsg.safeParse({
+        ...base,
+        deliveryKind: 'session-call',
+        callerAskers: { people: [{ kind: 'x' }], nobody: false }
+      }).success
+    ).toBe(false)
+
     // The §8.4 refusal is its own verdict: the target is reachable but too old, which a
     // caller must be able to distinguish from `offline`.
     expect(RdAgentMsgAck.safeParse({ deliveryId: 'd-1', delivered: false, reason: 'unsupported' }).success).toBe(true)
