@@ -17,15 +17,15 @@ The first contribution focuses on QQ adaptation through existing contracts.
 Shared group-history and chat-approval behavior require upstream-owned designs;
 QQ adopts those contracts once agreed and available.
 
-| Capability            | Initial scope and boundary                                                                                                                          |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Groups and DMs        | Explicit bot mentions in groups; ordinary messages in DMs. Shared group context contains addressed tasks, not ambient discussion.                   |
-| Replies and Markdown  | Native quoted replies and supported Markdown, with readable formatting fallbacks.                                                                   |
-| Streaming             | Native DM streaming. Groups receive limited progress and final replies; QQ does not provide group streaming.                                        |
-| Attachments           | Receive images/files and send images. Non-image sending is conditional on the small common extension in section 4.                                  |
-| Interactive questions | A numbered text card through `ElicitCardFacet`, answered by quoting it. Single-choice and yes/no questions; other shapes keep the decline notice.   |
-| Tool approvals        | Existing Console approval; QQ-side approval awaits a common interface.                                                                              |
-| Feedback and results  | DM typing hints or brief group acknowledgement; retained results remain available in the Console if delivery fails. No native read-receipt promise. |
+| Capability            | Initial scope and boundary                                                                                                                                                                                                     |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Groups and DMs        | Explicit bot mentions plus, when the group enables it, full-mode ambient messages (`GROUP_MESSAGE_CREATE`). Ambient traffic lands in the transcript and reaches agents only through `any` triggers and the semantic wake gate. |
+| Replies and Markdown  | Native quoted replies and supported Markdown, with readable formatting fallbacks.                                                                                                                                              |
+| Streaming             | Native DM streaming. Groups receive limited progress and final replies; QQ does not provide group streaming.                                                                                                                   |
+| Attachments           | Receive images/files and send images. Non-image sending is conditional on the small common extension in section 4.                                                                                                             |
+| Interactive questions | A numbered text card through `ElicitCardFacet`, answered by quoting it. Single-choice and yes/no questions; other shapes keep the decline notice.                                                                              |
+| Tool approvals        | Existing Console approval; QQ-side approval awaits a common interface.                                                                                                                                                         |
+| Feedback and results  | DM typing hints or brief group acknowledgement, recalled when the turn ends without an answer; retained results remain available in the Console if delivery fails. No native read-receipt promise.                             |
 
 QQ channels/guilds, dedicated audio/video support, multi-agent bot sharing,
 Webhook ingress, and new result-retrieval commands are outside this scope.
@@ -53,7 +53,7 @@ it either way.
 ```mermaid
 flowchart LR
     Q[QQ group or DM] -->|Official events| X[QQ adapter]
-    X -->|Group mention or DM| R[Existing routing and session]
+    X -->|Group mention, ambient message, or DM| R[Existing routing and session]
     R --> A[Agent execution]
     X -->|Read attachments on demand| F[Existing attachment and workspace APIs]
     F --> A
@@ -83,10 +83,15 @@ event never replaces a cached name. Derive the avatar URL from AppID plus OpenID
 inside the QQ module; do not call an external profile service.
 
 After admission checks, match pending answers before treating a message as a
-prompt. QQ group tasks require an explicit mention: the whole-group session key
-must not make ambient messages activate through thread affinity or execute
-commands. Existing platforms retain their thread behavior; admitted QQ
-follow-ups reuse normal steering and queuing.
+prompt. When the group owner enables "receive all messages", QQ pushes every
+group message as `GROUP_MESSAGE_CREATE`; those ambient events normalize with an
+empty mention list so they never count as addressed, but they are recorded to
+the transcript and may still reach an agent through a `trigger:'any'` channel
+rule and the semantic wake gate. A mention sent while full mode is on arrives
+under the same event type, so normalization recovers it from the payload's
+`is_you` mention flag (or the `<@appId>` content marker) and it keeps explicit
+addressing semantics. Existing platforms retain their thread behavior; admitted
+QQ follow-ups reuse normal steering and queuing.
 
 Keep session identity, passive-reply IDs, and native quote indices separate.
 Deduplicate received tasks across reconnects. Normalize only required fields;
@@ -216,7 +221,7 @@ retrieval likewise require separate agreement.
 Use sanitized event fixtures and a mock service for deterministic behavior,
 then a real official bot for provider/client behavior:
 
-- Shared group tasks, isolated groups/DMs, and no ambient task or command execution.
+- Shared group tasks and isolated groups/DMs. Ambient events never count as addressed and only activate through `any` triggers gated by the wake judgment; a silent turn retracts its 👀 acknowledgement.
 - Correct question correlation, validation, expiry, and duplicate handling for
   quoted replies, including a quote of a card sent while a DM stream is open.
 - DM streaming, quotes, Markdown, image exchange, inbound files, size limits,
