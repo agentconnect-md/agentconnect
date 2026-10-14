@@ -503,6 +503,7 @@ describe.skipIf(!minio)('Source Cache sweep and lifecycle on MinIO (§9, §10)',
       expect(evaluateSourceCacheLifecycle((read as { xml: string }).xml, PREFIX)).toEqual({
         pending: true,
         unreferenced: true,
+        pendingShortestDays: 2,
         warnings: []
       })
       expect(await sweeper.checkLifecycle()).toBe('present')

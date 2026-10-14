@@ -27,6 +27,12 @@ const TRANSFER_KEY_RE =
 const CHECKSUM_RE = /^[A-Za-z0-9+/]{43}=$/
 /** A cached download is reused only while it is well inside the 2-day `pending` lifecycle rule. */
 const CACHED_DOWNLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000
+const DAY_SECONDS = 86_400
+
+/** The shortest `pending` window, in days, that outlives a reused download plus the GET signed for it. */
+export function transferPendingMinimumDays(urlSeconds: number): number {
+  return Math.ceil((CACHED_DOWNLOAD_MAX_AGE_MS / 1000 + urlSeconds + SOURCE_CACHE_GRACE_SECONDS) / DAY_SECONDS)
+}
 
 function assertOrg(org: string): void {
   if (!ORG_RE.test(org)) throw new Error('org must be 1-64 characters of [A-Za-z0-9_-]')
@@ -75,7 +81,7 @@ export interface FileTransferDeps {
   config: FileTransferConfig
   credentials: CredentialsProvider
   objects: Pick<SourceCacheObjectClient<TransferObjectKey>, 'head'>
-  /** False while the bucket lacks its lifecycle rules: nothing would ever collect a transfer. */
+  /** False while the bucket's pending rule is missing (nothing collects a transfer) or too short (live links break). */
   enabled: () => boolean
   now?: () => number
   /** Test seam: endpoints the config schema would refuse (plain-http fixtures). */
@@ -197,7 +203,8 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
     })
 
   const assertEnabled = (): void => {
-    if (!deps.enabled()) throw new FileTransferError('transfer-unavailable', 'the bucket lacks its lifecycle rules')
+    if (!deps.enabled())
+      throw new FileTransferError('transfer-unavailable', 'the bucket lacks a long enough pending lifecycle rule')
   }
 
   return {

@@ -233,7 +233,7 @@ import { loadFileTransferConfig } from './file-transfer/config.js'
 import { createLifecycleGate } from './file-transfer/lifecycle-gate.js'
 import { createFileTransferService } from './file-transfer/service.js'
 import { createSharedImageService } from './file-transfer/shared-image.js'
-import { createFileTransfer, isTransferObjectKey } from './file-transfer/transfer.js'
+import { createFileTransfer, isTransferObjectKey, transferPendingMinimumDays } from './file-transfer/transfer.js'
 import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
 
@@ -883,13 +883,14 @@ export function buildContainer(
         const gate = createLifecycleGate({
           objects,
           prefix: fileTransferConfig.prefix,
+          minimumPendingDays: transferPendingMinimumDays(fileTransferConfig.limits.urlSeconds),
           log: { info: (m) => http.log.info(m), warn: (m) => http.log.warn(m) }
         })
         const transfer = createFileTransfer({
           config: fileTransferConfig,
           credentials,
           objects,
-          enabled: () => gate.status() !== 'missing'
+          enabled: () => gate.enabled()
         })
         return {
           gate,

@@ -949,7 +949,11 @@ Daemon implementation (P1, CP1.7):
 
   The check warns on a rule that also covers `snapshots/`, on one that keeps
   objects longer than the defaults, and on an untagged rule that would expire
-  live bundles.
+  live bundles. It also reports the shortest expiration any enabled rule can give
+  a `pending` object under `src/`, counting narrower, size-filtered and untagged
+  rules too. Console file transfers need that window to be at least 2 days and
+  turn off below it ([source-cache-file-transfer.md](source-cache-file-transfer.md)
+  §2); write-back commits within the 1-hour reservation, so it ignores the length.
 
 - Each member runs the check at start and every 6 hours. When the bucket
   affirmatively lacks either rule, the member warns at every check and turns
