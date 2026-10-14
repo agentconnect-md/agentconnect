@@ -10,7 +10,8 @@ import type {
   WorkspaceUploadOk,
   WorkspaceUploadReq
 } from '@agentconnect.md/protocol'
-import { FileTransferError, transferDownloadKey, type FileTransfer, type TransferObjectKey } from './transfer.js'
+import type { UploadTicketRepo } from '../persistence/ports.js'
+import { FileTransferError, isTransferObjectKey, transferDownloadKey, type FileTransfer } from './transfer.js'
 
 // The control plane's half of console file transfer (source-cache-file-transfer.md §5): stat, cache check, ticketed upload, sign.
 
@@ -66,13 +67,6 @@ export interface FileTransferService {
   uploadedFile(orgId: string, req: TransferGetReq): Promise<TransferGetOk>
 }
 
-interface Ticket {
-  daemonId: string
-  key: TransferObjectKey
-  size: number
-  expiresAt: number
-}
-
 function refusal(err: unknown): unknown {
   if (!(err instanceof FileTransferError)) return err
   if (err.reason === 'stale') return new FileTransferRefusal(409, 'WORKSPACE_STALE', err.message)
@@ -83,14 +77,10 @@ function refusal(err: unknown): unknown {
 export function createFileTransferService(deps: {
   transfer: FileTransfer
   control: FileTransferControl
-  now?: () => number
+  /** Shared across replicas: the daemon's `transfer/sign` may reach a CP other than the one that sent `workspace/upload`. */
+  tickets: UploadTicketRepo
 }): FileTransferService {
-  const { transfer, control } = deps
-  const now = deps.now ?? Date.now
-  const tickets = new Map<string, Ticket>()
-  const sweep = () => {
-    for (const [id, ticket] of tickets) if (ticket.expiresAt <= now()) tickets.delete(id)
-  }
+  const { transfer, control, tickets } = deps
 
   return {
     maxBytes: transfer.maxBytes,
@@ -123,9 +113,8 @@ export function createFileTransferService(deps: {
         let sha256 = await transfer.cachedDownload({ key, size })
         const cached = sha256 !== undefined
         if (sha256 === undefined) {
-          sweep()
           const ticket = randomUUID()
-          tickets.set(ticket, { daemonId: input.daemonId, key, size, expiresAt: now() + TICKET_TTL_MS })
+          await tickets.open(ticket, { daemonId: input.daemonId, objectKey: key, size }, TICKET_TTL_MS)
           try {
             const sent = await control.workspaceUpload(input.daemonId, {
               ...scope,
@@ -137,7 +126,8 @@ export function createFileTransferService(deps: {
             if (sent.bytes !== size) throw new FileTransferError('stale', 'the file changed while it was uploaded')
             sha256 = sent.sha256
           } finally {
-            tickets.delete(ticket)
+            // A failed close leaves the row to expire; it must not replace the upload's own outcome.
+            await tickets.close(ticket).catch(() => undefined)
           }
         }
         const get = await transfer.signDownload({ key, name: posix.basename(input.path) })
@@ -148,15 +138,15 @@ export function createFileTransferService(deps: {
     },
 
     async signUpload(daemonId, req) {
-      const ticket = tickets.get(req.ticket)
       // A ticket is bound to the daemon it was sent to and the revision the key names.
-      if (!ticket || ticket.daemonId !== daemonId || ticket.expiresAt <= now()) {
+      const ticket = await tickets.find(req.ticket, daemonId)
+      if (!ticket || !isTransferObjectKey(ticket.objectKey)) {
         throw new FileTransferRefusal(409, 'WORKSPACE_TRANSFER_UNAVAILABLE', 'no open upload for this ticket')
       }
       if (req.bytes !== ticket.size) throw new FileTransferRefusal(409, 'WORKSPACE_STALE', 'the file changed size')
       try {
         const put = await transfer.signPut({
-          key: ticket.key,
+          key: ticket.objectKey,
           bytes: req.bytes,
           sha256: req.sha256,
           network: req.network

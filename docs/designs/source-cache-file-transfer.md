@@ -77,10 +77,13 @@ cannot prove its bytes, so it is uploaded again.
   the CP minted for one `workspace/upload` to that daemon. The ticket is bound to:
   - the object key;
   - the revision's size, so a PUT for any other length is refused as `stale`;
-  - the daemon's connection;
-  - a 16-minute expiry.
+  - the daemon;
+  - a 16-minute expiry, set and checked with database time.
 
-  The CP deletes the ticket once the upload answers.
+  Tickets live in PostgreSQL (`transfer_upload_ticket`), so any CP replica can answer
+  `transfer/sign`, including the daemon's socket owner when the HTTP request reached another
+  replica ([high-availability.md](high-availability.md#connection-ownership-and-forwarding)).
+  The CP deletes the ticket once the upload answers; the next mint sweeps expired ones.
 
 - **`transfer/get`** answers only for an agent the requesting daemon may act for, and only
   under that agent's organization's key prefix.
@@ -234,6 +237,3 @@ the `x-amz-checksum-sha256` and `x-amz-tagging` headers (chart README).
   that).
 - **Browser memory.** The browser hashes the file in memory before upload, so the cap is
   also bounded by what a browser tab holds comfortably.
-- **Tickets live in memory.** Upload tickets are process memory on the single CP replica
-  ([high-availability.md](high-availability.md)). A CP restart mid-upload fails that
-  transfer, and the retry starts a new one.
