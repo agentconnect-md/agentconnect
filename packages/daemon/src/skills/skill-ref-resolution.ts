@@ -1,8 +1,10 @@
 // Which resolver plans a tracking Git skill ref (source-cache.md §5): credentialed per agent, anonymous shared.
 import { skillSourceCredential, type AgentSkillEntry } from '@agentconnect.md/protocol'
+import type { CodeHostSpecHosts } from '../codehost/credentials.js'
 import type { CodeHostRefResolver } from '../codehost/ref-resolver.js'
 import { normalizeSkillRef, type CodeHostRepositoryRef, type ResolveRefResult } from '../codehost/repository.js'
 import type { GitSkillRefTracker } from './git-skill-ref-tracker.js'
+import { gitlabSkillRepository, type GitlabSkillRepository } from './gitlab-skill-source.js'
 import { gitSkillRepositoryPath, isPinnedGitSkillRef, resolveBoundedGitSkillSource } from './skill-git-source.js'
 
 /** A Source read with a CP-minted credential: its `credential`, or the legacy `private` flag an older CP sends alone. */
@@ -10,15 +12,30 @@ export function isCredentialedSkillSource(entry: { credential?: unknown; private
   return skillSourceCredential(entry) !== undefined
 }
 
-/** The credentialed repository a skill entry names, or undefined when the entry is not a bounded GitHub source. */
-export function skillSourceRepository(entry: AgentSkillEntry): CodeHostRepositoryRef | undefined {
+/** The credentialed repository a skill entry names, with the host fields it is read on: a GitHub source by id, a GitLab project on its instance. */
+export function skillSourceRepository(
+  entry: AgentSkillEntry,
+  gitlabHost?: string
+): { repository: CodeHostRepositoryRef; hosts: CodeHostSpecHosts } | undefined {
+  if (skillSourceCredential(entry)?.provider === 'gitlab') {
+    let repository: GitlabSkillRepository | undefined
+    try {
+      repository = gitlabSkillRepository(entry, resolveBoundedGitSkillSource(entry).cloneUrl, gitlabHost)
+    } catch {
+      return undefined
+    }
+    return repository && { repository, hosts: { gitlabHost: repository.baseUrl } }
+  }
   const path = gitSkillRepositoryPath(entry)
   if (path === undefined || entry.githubRepoId === undefined) return undefined
   return {
-    provider: 'github',
-    externalId: entry.githubRepoId,
-    cloneUrl: resolveBoundedGitSkillSource(entry).cloneUrl,
-    path
+    repository: {
+      provider: 'github',
+      externalId: entry.githubRepoId,
+      cloneUrl: resolveBoundedGitSkillSource(entry).cloneUrl,
+      path
+    },
+    hosts: {}
   }
 }
 
@@ -26,14 +43,16 @@ export function skillSourceRepository(entry: AgentSkillEntry): CodeHostRepositor
 export async function resolveCredentialedSkillRef(
   resolver: Pick<CodeHostRefResolver, 'resolveRef'>,
   entry: AgentSkillEntry,
-  agentId: string
+  agentId: string,
+  gitlabHost?: string
 ): Promise<ResolveRefResult> {
-  const repository = skillSourceRepository(entry)
-  if (!repository) return { ok: false, reason: 'unavailable', detail: 'invalid_source', checkedAt: Date.now() }
+  const named = skillSourceRepository(entry, gitlabHost)
+  if (!named) return { ok: false, reason: 'unavailable', detail: 'invalid_source', checkedAt: Date.now() }
+  const { repository, hosts } = named
   const candidates = normalizeSkillRef(resolveBoundedGitSkillSource(entry).ref)
   let result: ResolveRefResult | undefined
   for (const ref of candidates) {
-    result = await resolver.resolveRef({ agentId, repository, ref, hosts: {}, tokenScope: 'repository' })
+    result = await resolver.resolveRef({ agentId, repository, ref, hosts, tokenScope: 'repository' })
     // Only a missing ref falls through: a bare name that is no branch may still be a tag.
     if (result.ok || result.reason !== 'ref_not_found') return result
   }
@@ -43,6 +62,8 @@ export async function resolveCredentialedSkillRef(
 export interface SkillRefResolutionDeps {
   anonymous: Pick<GitSkillRefTracker, 'resolve' | 'resolveTracked'>
   credentialed: Pick<CodeHostRefResolver, 'resolveRef'>
+  /** The GitLab instance the agent's replicated spec names, if any. */
+  gitlabHostOf?: (agentId: string) => string | undefined
 }
 
 /** A Git skill Source's resolution as the in-pod plan uses it: the daemon's planned commit, the full ref it followed, and who vouched. */
@@ -83,7 +104,7 @@ export function createSkillRefPlanResolution(
       const { commit, ref } = tracked
       return { ok: true, commit, ...(ref ? { ref } : {}), pinned, credentialed: false }
     }
-    const result = await resolveCredentialedSkillRef(deps.credentialed, entry, agentId)
+    const result = await resolveCredentialedSkillRef(deps.credentialed, entry, agentId, deps.gitlabHostOf?.(agentId))
     if (!result.ok) return { ok: false }
     return { ok: true, commit: result.commit, ...(result.ref ? { ref: result.ref } : {}), pinned, credentialed: true }
   }

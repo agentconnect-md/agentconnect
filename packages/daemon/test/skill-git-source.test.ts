@@ -203,8 +203,7 @@ describe('Git skill source policy boundary', () => {
     expect(parseGitSkillSource(entry('https://git.example.test/acme/skills.git')).cloneUrl).toBe(
       'https://git.example.test/acme/skills.git'
     )
-    // The wildcard default admits any origin — skill sources may name gitlab.com
-    // without operator opt-in (credentialed acquisition stays GitHub-only).
+    // The wildcard default admits any origin: skill sources may name gitlab.com without operator opt-in.
     configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
     expect(parseGitSkillSource(entry('https://gitlab.com/acme/skills.git')).cloneUrl).toBe(
       'https://gitlab.com/acme/skills.git'
@@ -224,15 +223,15 @@ describe('Git skill source policy boundary', () => {
         })
       ).rejects.toThrow(/is not allowed by this daemon/i)
       expect(existsSync(destination)).toBe(false)
-      // A default-allowed gitlab origin still refuses the CREDENTIALED path,
-      // which remains canonical-GitHub-only, before any directory or Git work.
+      // An allowed origin off GitHub is acquired over https only, refused before any directory or Git work.
+      configureWorkspaceGitOrigins(['https://github.com', 'ssh://git.example.test'])
       await expect(
-        acquireGitSkillSource(entry('https://gitlab.com/acme/skills.git'), {
+        acquireGitSkillSource(entry('ssh://git@git.example.test/acme/skills.git'), {
           destination,
           agentId: 'agent-1',
           useGitCredential: true
         })
-      ).rejects.toThrow(/canonical GitHub/i)
+      ).rejects.toThrow(/must be an https address/i)
       expect(existsSync(destination)).toBe(false)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -244,9 +243,13 @@ describe('Git skill source policy boundary', () => {
       cloneUrl: 'https://github.com/acme/skills.git'
     })
 
+    // Any other host is a plain https address (source-cache.md §11); its GitHub shapes stay GitHub-only.
     configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS, 'https://gitlab.com'])
-    expect(() => resolveBoundedGitSkillSource(entry('https://gitlab.com/acme/skills.git'))).toThrow(
-      /only canonical GitHub HTTPS/i
+    expect(resolveBoundedGitSkillSource(entry('https://gitlab.com/acme/skills.git'))).toEqual({
+      cloneUrl: 'https://gitlab.com/acme/skills.git'
+    })
+    expect(() => resolveBoundedGitSkillSource(entry('ssh://git@gitlab.com/acme/skills.git'))).toThrow(
+      /must be an https address/i
     )
 
     configureWorkspaceGitOrigins(['ssh://github.com'])
@@ -259,10 +262,10 @@ describe('Git skill source policy boundary', () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-unsupported-'))
     const destination = join(root, 'acquired')
     let fetchCalled = false
-    configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS, 'https://gitlab.com'])
+    configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS, 'ssh://git.example.test'])
     try {
       await expect(
-        acquireGitSkillSource(entry('https://gitlab.com/acme/skills.git'), {
+        acquireGitSkillSource(entry('ssh://git@git.example.test/acme/skills.git'), {
           destination,
           agentId: 'agent-1',
           useGitCredential: false,
@@ -271,7 +274,7 @@ describe('Git skill source policy boundary', () => {
             throw new Error('must not fetch')
           }
         })
-      ).rejects.toThrow(/only canonical GitHub HTTPS/i)
+      ).rejects.toThrow(/must be an https address/i)
       expect(fetchCalled).toBe(false)
       expect(existsSync(destination)).toBe(false)
     } finally {

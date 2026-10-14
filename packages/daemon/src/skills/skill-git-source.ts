@@ -4,7 +4,12 @@ import { join, posix } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip } from 'node:zlib'
-import { workspaceGitOriginOf, type AgentSkillEntry } from '@agentconnect.md/protocol'
+import {
+  isGitHubSkillSource,
+  skillSourceCredential,
+  workspaceGitOriginOf,
+  type AgentSkillEntry
+} from '@agentconnect.md/protocol'
 import { extract as extractTar, list as listTar, type ReadEntry } from 'tar'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { daemonLocalGitEnv, openDaemonSkillCredentialWindow, workspaceGitEnvBase } from '../workspace/git-injection.js'
@@ -13,6 +18,8 @@ import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 import { MAX_SKILL_FILE_BYTES } from './skill-limits.js'
 import { discardResponse, fetchWithRedirectPolicy, readBoundedBody, retryAfterMs } from '../codehost/rest-read.js'
 import { GITHUB_API_BASE, githubApiHeaders, parseGithubRepositoryIdentity } from '../github/rest.js'
+import { gitlabSkillReads, gitlabSkillRepository, type GitlabSkillRepository } from './gitlab-skill-source.js'
+import { acquireAnonymousGitSkillSource, type HostedGitSkillTransport } from './skill-git-hosted.js'
 
 const GITHUB_SHORTHAND = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/
 const GITHUB_TREE = /^\/([^/]+)\/([^/]+)\/tree\/([^/]+)(?:\/(.*))?$/
@@ -236,15 +243,33 @@ function githubRepoIdOf(entry: AgentSkillEntry): string {
   return entry.githubRepoId
 }
 
-/** Admission contract for the bounded acquisition implementation. Accepted
- * inputs may use GitHub shorthand/tree/HTTPS or standard GitHub SSH/scp, but
- * the final network authority must re-authorize as exact GitHub HTTPS and the
- * path must be exactly owner/repository. Other operator-authorized Git origins
- * deliberately fail closed until they have an equivalently bounded transport. */
+/** A clone address off GitHub: plain https with a path, nothing Git could read as credentials, a query or an option. */
+function hostedGitSkillUrl(cloneUrl: string): void {
+  let url: URL
+  try {
+    url = new URL(cloneUrl)
+  } catch {
+    throw new Error('skill Git source outside GitHub must be an https address')
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.pathname.replace(/\/+$/, '') === '' ||
+    cloneUrl.startsWith('-')
+  ) {
+    throw new Error('skill Git source outside GitHub must be an https address')
+  }
+}
+
+/** Bounded-acquisition admission: GitHub as exact HTTPS owner/repository, any other host as plain https, both origin-policed. */
 export function resolveBoundedGitSkillSource(entry: AgentSkillEntry): ParsedGitSkillSource {
   const parsed = parseGitSkillSource(entry)
   const source = { ...parsed, cloneUrl: resolveAuthorizedGitSkillCloneUrl(parsed.cloneUrl) }
-  githubRepository(source.cloneUrl)
+  if (isGitHubSkillSource(entry.source)) githubRepository(source.cloneUrl)
+  else hostedGitSkillUrl(source.cloneUrl)
   return source
 }
 
@@ -942,7 +967,7 @@ export async function resolveGitSkillCommit(
   }
 }
 
-export interface AcquireGitSkillOptions {
+export interface AcquireGitSkillOptions extends HostedGitSkillTransport {
   destination: string
   agentId: string
   useGitCredential: boolean
@@ -963,6 +988,11 @@ export async function verifyGitSkillSourceAccess(
   opts: Omit<AcquireGitSkillOptions, 'destination' | 'archiveLimits'> & { privateHome: string }
 ): Promise<void> {
   const source = resolveBoundedGitSkillSource(entry)
+  if (!isGitHubSkillSource(entry.source)) {
+    // An anonymous Source elsewhere is trusted by URL and has nothing to re-prove; a GitLab one re-proves the project.
+    if (skillSourceCredential(entry)?.provider === 'gitlab') await resolveGitlabSkillCommit(entry, source, opts.agentId)
+    return
+  }
   const github = githubRepository(source.cloneUrl)
   await fsp.mkdir(join(opts.privateHome, 'tmp'), { recursive: true, mode: 0o700 })
   const controller = new AbortController()
@@ -998,6 +1028,12 @@ export async function acquireGitSkillSource(
   // This final daemon boundary applies both the operator-owned exact-origin
   // policy and the narrower transport contract required for bounded archives.
   const source = resolveBoundedGitSkillSource(entry)
+  if (!isGitHubSkillSource(entry.source)) {
+    const credential = skillSourceCredential(entry)
+    if (credential?.provider === 'gitlab') return await acquireGitlabSkillSource(entry, source, opts)
+    if (credential) throw new Error('skill Git source outside GitHub carries a credential this daemon cannot use')
+    return await acquireAnonymousGitSkillSource(source, opts)
+  }
   const github = githubRepository(source.cloneUrl)
   const limits = mergedArchiveLimits(opts.archiveLimits)
   const repository = join(opts.destination, 'repository')
@@ -1109,6 +1145,79 @@ export async function acquireGitSkillSource(
     return {
       sourceDir: source.subDir ? join(repository, ...source.subDir.split('/')) : repository,
       resolvedCommit,
+      source
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** The project and the agent's verified commit for a credentialed GitLab Source: identity by project id, then its ref. */
+async function resolveGitlabSkillCommit(
+  entry: AgentSkillEntry,
+  source: ParsedGitSkillSource,
+  agentId: string
+): Promise<{ repository: GitlabSkillRepository; commit: string }> {
+  const reads = gitlabSkillReads()
+  const repository = gitlabSkillRepository(entry, source.cloneUrl, reads.host(agentId))
+  if (!repository) throw new Error("skill GitLab source does not name a project on this deployment's GitLab instance")
+  const resolved = await reads.resolve(entry, agentId)
+  if (!resolved.ok) throw new Error(`skill GitLab source resolution failed (${resolved.reason})`)
+  return { repository, commit: resolved.commit.toLowerCase() }
+}
+
+/** A credentialed GitLab Source by project id: the archive endpoint cannot be captured by a replacement at the old path. */
+async function acquireGitlabSkillSource(
+  entry: AgentSkillEntry,
+  source: ParsedGitSkillSource,
+  opts: AcquireGitSkillOptions
+): Promise<{ sourceDir: string; resolvedCommit: string; source: ParsedGitSkillSource }> {
+  const limits = mergedArchiveLimits(opts.archiveLimits)
+  const { repository, commit } = await resolveGitlabSkillCommit(entry, source, opts.agentId)
+  if (source.ref !== undefined && COMMIT_SHA.test(source.ref) && source.ref.toLowerCase() !== commit) {
+    throw new Error('skill GitLab source did not resolve to its pinned commit')
+  }
+  const token = await gitlabSkillReads().token(opts.agentId, repository.externalId)
+  const repositoryDir = join(opts.destination, 'repository')
+  await fsp.mkdir(repositoryDir, { recursive: true, mode: 0o700 })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 20_000)
+  try {
+    // Concatenated onto the API root, never URL-resolved, so an instance path prefix survives.
+    const archiveUrl = new URL(
+      `${repository.apiBaseUrl}/projects/${repository.externalId}/repository/archive.tar.gz?sha=${commit}`
+    )
+    const response = await fetchWithRedirectPolicy(
+      opts.fetch ?? globalThis.fetch,
+      archiveUrl,
+      {
+        method: 'GET',
+        signal: controller.signal,
+        headers: {
+          accept: 'application/x-gzip',
+          'accept-encoding': 'identity',
+          'user-agent': 'agentconnect-daemon',
+          'private-token': token
+        }
+      },
+      'error',
+      'skill GitLab archive'
+    )
+    if (response.status !== 200) {
+      const status = response.status
+      await discardResponse(response)
+      throw new Error(`skill GitLab archive download failed with status ${status}`)
+    }
+    const tarBody = await downloadAndGunzipBounded(
+      response,
+      limits.maxCompressedBytes,
+      limits.maxTarBytes,
+      controller.signal
+    )
+    await validateAndExtractArchive(tarBody, repositoryDir, limits, controller.signal)
+    return {
+      sourceDir: source.subDir ? join(repositoryDir, ...source.subDir.split('/')) : repositoryDir,
+      resolvedCommit: commit,
       source
     }
   } finally {

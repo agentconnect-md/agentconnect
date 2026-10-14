@@ -12,7 +12,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants as fsConstants, promises as fsp, type Stats } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { AgentSkillEntry } from '@agentconnect.md/protocol'
+import { AgentSkillEntry, skillSourceCredential } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import { containedTarget } from '../fs/contained-path.js'
 import { skillsAgentIdForRuntime } from '../runtimes/skills-capability.js'
@@ -193,10 +193,6 @@ async function installSkillsLocked(
     const parsed = AgentSkillEntry.safeParse(entry)
     if (!parsed.success) {
       opts.warn?.(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
-      continue
-    }
-    if (parsed.data.githubRepoId === undefined) {
-      opts.warn?.(`skills: skipped Git source ${index + 1}; this daemon installs GitHub sources only`)
       continue
     }
     if (sourceNames.has(parsed.data.name)) {
@@ -843,7 +839,14 @@ export function gitSourceKeyScope(sourceKey: string): string | undefined {
 
 export function gitResolutionDigest(entry: AgentSkillEntry): string {
   const source = resolveBoundedGitSkillSource(entry)
-  return fingerprint({ githubRepoId: entry.githubRepoId, cloneUrl: source.cloneUrl, ref: source.ref ?? 'HEAD' })
+  const credential = skillSourceCredential(entry)
+  // A GitLab project id joins only that Source's identity, so every GitHub and anonymous digest is unchanged.
+  return fingerprint({
+    githubRepoId: entry.githubRepoId,
+    ...(credential?.provider === 'gitlab' ? { gitlabProjectId: credential.projectId } : {}),
+    cloneUrl: source.cloneUrl,
+    ref: source.ref ?? 'HEAD'
+  })
 }
 
 function fingerprint(value: unknown): string {

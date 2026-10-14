@@ -1,11 +1,12 @@
-// The anonymous github.com commit check for a public tracking skill ref, shared across agents (source-cache.md §5).
+// The anonymous commit check for a public tracking skill ref, shared across agents (source-cache.md §5): github.com REST, else one scoped ls-remote.
 import fsp from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentSkillEntry } from '@agentconnect.md/protocol'
+import { isGitHubSkillSource, type AgentSkillEntry } from '@agentconnect.md/protocol'
 import { MAX_RETRY_AFTER_MS } from '../codehost/rest-read.js'
 import { parseResolvableRef } from '../codehost/ref-spec.js'
 import { isCredentialedSkillSource } from './skill-ref-resolution.js'
 import { nameGitSkillRef, type GitSkillRefNaming, type NameGitSkillRefInput } from './git-skill-ref-name.js'
+import { nameHostedGitSkillRef, type NameHostedGitSkillRefInput } from './skill-git-hosted.js'
 import {
   GitSkillCommitResolutionError,
   isPinnedGitSkillRef,
@@ -56,6 +57,8 @@ export interface GitSkillRefTrackerOptions {
   resolve?: (entry: AgentSkillEntry, opts: ResolveGitSkillCommitOptions) => Promise<GitSkillCommitResolution>
   /** Names the full ref behind a short or absent entry ref; defaults to a scoped anonymous `git ls-remote`. */
   nameRef?: (input: NameGitSkillRefInput) => Promise<GitSkillRefNaming>
+  /** A Source off github.com: its commit and full ref from one hardened anonymous `git ls-remote`. */
+  nameHostedRef?: (input: NameHostedGitSkillRefInput) => Promise<GitSkillRefNaming>
   warn?: (message: string) => void
 }
 
@@ -72,6 +75,7 @@ export class GitSkillRefTracker {
   private readonly now: () => number
   private readonly resolveCommit: NonNullable<GitSkillRefTrackerOptions['resolve']>
   private readonly nameRef: NonNullable<GitSkillRefTrackerOptions['nameRef']>
+  private readonly nameHostedRef: NonNullable<GitSkillRefTrackerOptions['nameHostedRef']>
   private homeReady?: Promise<string>
 
   constructor(private readonly opts: GitSkillRefTrackerOptions) {
@@ -81,6 +85,7 @@ export class GitSkillRefTracker {
     this.now = opts.now ?? Date.now
     this.resolveCommit = opts.resolve ?? resolveGitSkillCommit
     this.nameRef = opts.nameRef ?? nameGitSkillRef
+    this.nameHostedRef = opts.nameHostedRef ?? nameHostedGitSkillRef
   }
 
   /** The commit a public tracking ref points at, or null when unknown, pinned, or the Source is credentialed. */
@@ -143,6 +148,11 @@ export class GitSkillRefTracker {
   ): Promise<TrackedSkillRef | null> {
     let next: TrackedRef
     try {
+      if (!isGitHubSkillSource(entry.source)) {
+        next = await this.refreshHosted(entry)
+        this.cache.set(key, next)
+        return this.served(next)
+      }
       const answer = await this.resolveCommit(entry, {
         agentId: ANONYMOUS_ASKER,
         useGitCredential: false,
@@ -184,6 +194,18 @@ export class GitSkillRefTracker {
     }
     this.cache.set(key, next)
     return this.served(next)
+  }
+
+  /** A Source off github.com is resolved and named in one listing, so its answer always carries the full ref. */
+  private async refreshHosted(entry: AgentSkillEntry): Promise<TrackedRef> {
+    const source = resolveBoundedGitSkillSource(entry)
+    const naming = await this.nameHostedRef({
+      url: source.cloneUrl,
+      ...(source.ref !== undefined ? { name: source.ref } : {}),
+      privateHome: await this.privateHome()
+    })
+    if (naming.kind !== 'named') throw new Error(`the ref is ${naming.reason} on its host`)
+    return { commit: naming.commit, ref: naming.ref, namedFor: naming.commit, checkedAt: this.now(), failures: 0 }
   }
 
   /** The full ref behind `commit`; unnamed when the listing disagrees with the commit, fails, or the name is ambiguous. */

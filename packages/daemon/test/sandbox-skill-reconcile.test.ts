@@ -428,15 +428,17 @@ describe('sandbox skill reconcile: routing', () => {
     })
   }, 120_000)
 
-  it('reads a credential without the legacy flag as private, and skips a Source on another host', async () => {
+  it('reads a credential without the legacy flag as private, and acquires a Source on another host on the daemon', async () => {
     await withWorld(async (w) => {
       const pod = await sandbox(w, 'pod')
       const opened: string[][] = []
       const logs: string[] = []
+      const acquired: string[] = []
       const { private: _legacy, ...credentialOnly } = PRIVATE
       const elsewhere = AgentSkillEntry.parse({ name: 'elsewhere', source: 'https://git.example.test/team/skills' })
       await run(w, pod, 'pod', {
         logs,
+        acquired,
         skills: [PUBLIC, { ...credentialOnly, credential: { provider: 'github' } }, elsewhere],
         inPod: {
           openWindow: (repos) => {
@@ -446,9 +448,9 @@ describe('sandbox skill reconcile: routing', () => {
         }
       })
       expect(opened).toEqual([['acme/private']])
-      expect(logs).toContainEqual(
-        expect.stringContaining('skipped Git source 3; this daemon installs GitHub sources only')
-      )
+      // Off GitHub the daemon acquires (this fixture has no such origin, so it is logged unavailable); the pod plans only GitHub.
+      expect(acquired).toEqual(['elsewhere'])
+      expect(logs).toContainEqual(expect.stringContaining('Git source elsewhere unavailable'))
       expect(pod.gitPlans()[0]!.map((plan) => plan.sourceId.split(':')[1])).toEqual(['0', '1'])
     })
   }, 120_000)

@@ -498,8 +498,11 @@ import {
   createSkillRefPlanResolution,
   createSkillRefResolution,
   isCredentialedSkillSource,
+  resolveCredentialedSkillRef,
   type SkillRefPlan
 } from './skills/skill-ref-resolution.js'
+import { configureGitlabSkillReads } from './skills/gitlab-skill-source.js'
+import { gitlabRepository } from './gitlab/repository.js'
 import { reconcileSandboxSkillSources, type InPodSkillDeps } from './skills/sandbox-skill-reconcile.js'
 import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
 import { ClusterSkillCoordinator, clusterSkillSupportRequired } from './skills/cluster-skill-coordinator.js'
@@ -3457,10 +3460,23 @@ export class Daemon {
         stateRoot: join(root, 'skill-installs'),
         warn: (message: string) => this.log.warn(message)
       }),
-      credentialed: this.codeHostRefs
+      credentialed: this.codeHostRefs,
+      gitlabHostOf: (agentId: string) => this.agents.get(agentId)?.gitlabHost
     }
     this.gitSkillRefs = createSkillRefResolution(skillRefDeps)
     this.gitSkillRefPlans = createSkillRefPlanResolution(skillRefDeps)
+    // A credentialed GitLab Source reads with the agent's own CP-minted read token, resolved like a workspace (source-cache.md §5).
+    const skillTokens = gitCredReadTokens({
+      get: (...args) => this.gitCreds.get(...args),
+      invalidate: (...args) => this.gitCreds.invalidate(...args)
+    })
+    configureGitlabSkillReads({
+      host: (agentId) => this.agents.get(agentId)?.gitlabHost,
+      resolve: (entry, agentId) =>
+        resolveCredentialedSkillRef(this.codeHostRefs, entry, agentId, this.agents.get(agentId)?.gitlabHost),
+      token: async (agentId, projectId) =>
+        (await skillTokens.get(agentId, gitlabRepository.readTokenAsk({ externalId: projectId }))).token
+    })
   }
 
   /** Phase 13 — resolve host candidates and the image's separate executable catalog. */

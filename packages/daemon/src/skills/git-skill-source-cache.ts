@@ -23,8 +23,13 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
-import type { AgentSkillEntry } from '@agentconnect.md/protocol'
-import { acquireGitSkillSource, resolveBoundedGitSkillSource, verifyGitSkillSourceAccess } from './skill-git-source.js'
+import { isGitHubSkillSource, skillSourceCredential, type AgentSkillEntry } from '@agentconnect.md/protocol'
+import {
+  acquireGitSkillSource,
+  resolveBoundedGitSkillSource,
+  verifyGitSkillSourceAccess,
+  type ParsedGitSkillSource
+} from './skill-git-source.js'
 
 const COMMIT_SHA = /^[a-f0-9]{40}$/
 const REPOSITORY_DIR = 'repository'
@@ -48,6 +53,7 @@ export interface GitSkillSourceCacheOptions {
 interface EntryMetadata {
   version: 1
   agentId: string
+  /** The repository key ({@link cacheRepositoryKey}); the field keeps its first name so existing GitHub entries still hit. */
   githubRepoId: string
   commit: string
   bytes: number
@@ -86,25 +92,25 @@ export class GitSkillSourceCache {
     plannedCommit: string | undefined,
     opts: Omit<AcquireOptions, 'destination'>
   ): Promise<{ sourceDir: string; resolvedCommit: string; cached: boolean }> {
-    const githubRepoId = entry.githubRepoId
-    if (!githubRepoId) throw new Error('a cached Git skill source needs its repository id')
     // The same parse the acquisition applies: a GitHub /tree/<ref>/<path> source names its folder in the URL.
-    const subDir = resolveBoundedGitSkillSource(entry).subDir
+    const source = resolveBoundedGitSkillSource(entry)
+    const subDir = source.subDir
+    const repoKey = cacheRepositoryKey(entry, source)
     const planned = plannedCommit?.toLowerCase()
     if (!planned || !COMMIT_SHA.test(planned)) {
       // No commit to key on until the ref is resolved: acquire, then cache under what it resolved to.
-      const { entryDir, commit } = await this.download(entry, undefined, opts, githubRepoId)
+      const { entryDir, commit } = await this.download(entry, undefined, opts, repoKey)
       return { sourceDir: sourceDirIn(entryDir, subDir), resolvedCommit: commit, cached: false }
     }
     // Claimed before the first await, so two sources of this agent that share a repository and
     // commit — two folders of one collection — look it up and download it once, not twice.
-    const key = this.entryDir(opts.agentId, githubRepoId, planned)
+    const key = this.entryDir(opts.agentId, repoKey, planned)
     const pending = this.inflight.get(key)
     if (pending) {
       const claimed = await pending
       return { sourceDir: sourceDirIn(claimed.entryDir, subDir), resolvedCommit: planned, cached: claimed.cached }
     }
-    const claim = this.claimEntry(entry, planned, opts, githubRepoId)
+    const claim = this.claimEntry(entry, planned, opts, repoKey)
     this.inflight.set(key, claim)
     try {
       const claimed = await claim
@@ -119,9 +125,9 @@ export class GitSkillSourceCache {
     entry: AgentSkillEntry,
     planned: string,
     opts: Omit<AcquireOptions, 'destination'>,
-    githubRepoId: string
+    repoKey: string
   ): Promise<{ entryDir: string; cached: boolean }> {
-    const hit = await this.lookup(opts.agentId, githubRepoId, planned)
+    const hit = await this.lookup(opts.agentId, repoKey, planned)
     if (hit) {
       const staging = await this.newStaging()
       try {
@@ -132,7 +138,7 @@ export class GitSkillSourceCache {
       }
       return { entryDir: hit, cached: true }
     }
-    const { entryDir, commit } = await this.download(entry, planned, opts, githubRepoId)
+    const { entryDir, commit } = await this.download(entry, planned, opts, repoKey)
     if (commit !== planned) throw new Error('skill Git source did not resolve to its planned commit')
     return { entryDir, cached: false }
   }
@@ -141,7 +147,7 @@ export class GitSkillSourceCache {
     entry: AgentSkillEntry,
     planned: string | undefined,
     opts: Omit<AcquireOptions, 'destination'>,
-    githubRepoId: string
+    repoKey: string
   ): Promise<{ entryDir: string; commit: string }> {
     const staging = await this.newStaging()
     try {
@@ -151,7 +157,7 @@ export class GitSkillSourceCache {
       })
       const commit = acquired.resolvedCommit.toLowerCase()
       if (!COMMIT_SHA.test(commit)) throw new Error('skill Git source resolved to an invalid commit')
-      const entryDir = await this.publish(opts.agentId, githubRepoId, commit, join(staging, REPOSITORY_DIR))
+      const entryDir = await this.publish(opts.agentId, repoKey, commit, join(staging, REPOSITORY_DIR))
       await this.prune()
       return { entryDir, commit }
     } finally {
@@ -185,19 +191,19 @@ export class GitSkillSourceCache {
     return join(this.root, '.staging')
   }
 
-  private entryDir(agentId: string, githubRepoId: string, commit: string): string {
-    const key = createHash('sha256').update(`${agentId}\0${githubRepoId}\0${commit}`).digest('hex')
+  private entryDir(agentId: string, repoKey: string, commit: string): string {
+    const key = createHash('sha256').update(`${agentId}\0${repoKey}\0${commit}`).digest('hex')
     return join(this.root, key)
   }
 
-  private async lookup(agentId: string, githubRepoId: string, commit: string): Promise<string | undefined> {
-    const dir = this.entryDir(agentId, githubRepoId, commit)
+  private async lookup(agentId: string, repoKey: string, commit: string): Promise<string | undefined> {
+    const dir = this.entryDir(agentId, repoKey, commit)
     try {
       const metadata = JSON.parse(await fsp.readFile(join(dir, METADATA_FILE), 'utf8')) as EntryMetadata
       if (
         metadata.version !== 1 ||
         metadata.agentId !== agentId ||
-        metadata.githubRepoId !== githubRepoId ||
+        metadata.githubRepoId !== repoKey ||
         metadata.commit !== commit
       ) {
         return undefined
@@ -213,13 +219,19 @@ export class GitSkillSourceCache {
     }
   }
 
-  private async publish(agentId: string, githubRepoId: string, commit: string, repository: string): Promise<string> {
-    const dir = this.entryDir(agentId, githubRepoId, commit)
+  private async publish(agentId: string, repoKey: string, commit: string, repository: string): Promise<string> {
+    const dir = this.entryDir(agentId, repoKey, commit)
     const temp = `${dir}.${randomUUID()}`
     try {
       await fsp.mkdir(temp, { mode: 0o700 })
       await fsp.rename(repository, join(temp, REPOSITORY_DIR))
-      const metadata: EntryMetadata = { version: 1, agentId, githubRepoId, commit, bytes: await treeBytes(temp) }
+      const metadata: EntryMetadata = {
+        version: 1,
+        agentId,
+        githubRepoId: repoKey,
+        commit,
+        bytes: await treeBytes(temp)
+      }
       await fsp.writeFile(join(temp, METADATA_FILE), `${JSON.stringify(metadata)}\n`, { mode: 0o600 })
       try {
         await fsp.rename(temp, dir)
@@ -227,7 +239,7 @@ export class GitSkillSourceCache {
         // A concurrent preparation published the same commit first; its tree is the same tree.
         const code = (error as NodeJS.ErrnoException).code
         if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
-        if (!(await this.lookup(agentId, githubRepoId, commit))) throw error
+        if (!(await this.lookup(agentId, repoKey, commit))) throw error
       }
       const at = new Date(this.now())
       await fsp.utimes(dir, at, at)
@@ -257,6 +269,19 @@ export class GitSkillSourceCache {
     }
     return out
   }
+}
+
+/** What an entry is cached under: the GitHub id, a GitLab project, or an anonymous URL with the only subdirectory its tree holds. */
+function cacheRepositoryKey(entry: AgentSkillEntry, source: ParsedGitSkillSource): string {
+  if (isGitHubSkillSource(entry.source)) {
+    if (!entry.githubRepoId) throw new Error('a cached Git skill source needs its repository id')
+    return entry.githubRepoId
+  }
+  const credential = skillSourceCredential(entry)
+  if (credential?.provider === 'gitlab') return `gitlab:${credential.projectId}`
+  return `anon:${createHash('sha256')
+    .update(`${source.cloneUrl}\0${source.subDir ?? ''}`)
+    .digest('hex')}`
 }
 
 function sourceDirIn(entryDir: string, subDir: string | undefined): string {
