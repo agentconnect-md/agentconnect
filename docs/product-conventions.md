@@ -696,12 +696,12 @@ tool calls, memory recall or capture, turn evaluation, or token usage.
 When the post instead carries `toAgent`, it is an explicit activation even when the
 target is the posting agent itself. The visible root and internal wake remain one paired
 delivery, so the new child runs exactly once; the platform's echo is only the second
-observation of that delivery. A postless self-call opens a background sub-session instead, one
-level deep and under a cap (see "Sub-sessions").
+observation of that delivery. A postless `messageSubsession` call opens a background sub-session
+instead, one level deep and under a cap (see "Sub-sessions").
 
 ## A parent-session reply is injected, and the parent answers normally
 
-`sendMessage({"sessionId":"<parent>", …})` injects an answer into the session that woke
+`sendMessage({"action":"replyToSession","sessionId":"<parent>", …})` injects an answer into the session that woke
 the caller. What is invisible is the **report itself**: no component publishes the
 injected body to a platform, so relaying an answer upward is a hand-off rather than a
 broadcast.
@@ -1259,7 +1259,7 @@ answer there when asked. An agent outside assistant mode is offered no item tool
 ## Sub-sessions
 
 Every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
-background sub-session of its own: `sendMessage` with its own agent id and no `channel`.
+background sub-session of its own: `sendMessage` with action `messageSubsession` and no `sessionId`.
 Ordinary conversation stays in the main conversation. The main conversation says the work
 has started; the sub-session runs in a session of its own, never the conversation's long
 session; none of its replies is posted anywhere, and it reports back into the conversation
@@ -1271,6 +1271,10 @@ making the main conversation private still makes it private. A sub-session canno
 sub-sessions of its own. At most three run at once, or the limit set in the assistant mode panel for
 an agent in assistant mode; one more is refused, and the agent is told so. Every agent is told
 about this form, and a self-call in any other form than this or the channel-root one is refused.
+The sub-session can message the conversation that opened it at any time, and a message does not end its
+work; the daemon reports the end of each round of work. A later `messageSubsession` with the
+`childSessionId` it returned gives the same sub-session new work in its retained context. An approved
+task or a patrol runs once and is settled by its one report.
 
 Reports follow the language of the people in the conversation they report to. The conversation
 tells a sub-session which language they use; a patrol or an approved task, which sees none of

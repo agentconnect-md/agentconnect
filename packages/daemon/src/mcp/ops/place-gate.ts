@@ -12,6 +12,7 @@ import {
   NOT_SHARED_UNLINKED,
   placeReadMetrics,
   privateSourceNote,
+  readRefusal,
   samePlace,
   type PlaceKind,
   type PlaceReadMetrics,
@@ -26,6 +27,7 @@ import {
 import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
 import { tellsWorkspaceMembers } from '../../platforms/read-ports.js'
 import type { SessionRecord, TranscriptRow, TranscriptSessionScope } from '../../store/local-store.js'
+import { isSyntheticA2aChannel } from '../../cp/cp-collab-routes.js'
 import type { SessionContext } from './context.js'
 import { knownIntegrations, type GatewayDeps } from './gateway.js'
 
@@ -211,10 +213,7 @@ export async function assertPlaceRead(
   return verdict.privateSource
 }
 
-/**
- * send-message-guide.md §9.2: whether the people on a calling turn may take part in an existing session, judged on the
- * session's owning daemon as a read of its conversation from the caller's place; a nobody turn is never admitted.
- */
+/** send-message-guide.md §9.2: whether a calling turn's people may join an existing session, judged as a read of its conversation. */
 export async function judgeSessionParticipation(input: {
   /** The caller's current conversation, which the read rule always lets read itself. */
   callerPlace: PlaceRef
@@ -237,12 +236,19 @@ export async function judgeSessionParticipation(input: {
     input.deps
   )
   const source: SourcePlace = { ...described, sessions: target.sessionId ? [target.sessionId] : [] }
+  const mayRead = (asker: ReadAsker) => askerMayRead(asker, source, bot, lookups)
+  // Every peer one agent woke without a channel shares its `a2a:` coordinate, so that is never the caller's own place.
+  if (isSyntheticA2aChannel(input.callerPlace.channel) || isSyntheticA2aChannel(target.channel)) {
+    const refusal = await readRefusal(source, input.askers, mayRead, false)
+    if (refusal) (input.recorder ?? placeReadMetrics).refused('callAgent', refusal)
+    return refusal === undefined
+  }
   const refusal = await checkPlaceRead(
     'callAgent',
     input.callerPlace,
     source,
     input.askers,
-    (asker) => askerMayRead(asker, source, bot, lookups),
+    mayRead,
     false,
     input.recorder
   )

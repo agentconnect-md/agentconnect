@@ -570,6 +570,7 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
         calls.push({
           tool: 'sendMessage',
           args: {
+            action: 'callAgent',
             toAgent: this.seatByAlias.get(seer)!.agentId,
             message: `Inspection result: ${night.inspect} is ${night.inspectResult === 'werewolf' ? 'a werewolf' : 'not a werewolf'}. Keep it private until you can use it.`
           }
@@ -655,7 +656,10 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
     const row: NeedsReplyLogRow = { round, purpose, to: seat.agentId, delivered: false, answered: false }
     this.needsReplyLog.push(row)
     if (purpose !== 'role') this.awaiting.set(purpose, row)
-    return { tool: 'sendMessage', args: { toAgent: { agentId: seat.agentId, needsReply: true }, message } }
+    return {
+      tool: 'sendMessage',
+      args: { action: 'callAgent', toAgent: { agentId: seat.agentId, needsReply: true }, message }
+    }
   }
 
   private settleAwaiting(purpose: NeedsReplyLogRow['purpose']): void {
@@ -744,7 +748,7 @@ export function scriptedWebchatPlayer(deps: ScriptedPlayerDeps) {
   ): Promise<string> => {
     const sessionId = deps.parentSessionIdOf(text) ?? parents.get(sessionKey)
     if (!binding || !sessionId) return `cannot report: binding=${Boolean(binding)} parent=${sessionId}`
-    const result = await deps.callTool(binding, 'sendMessage', { sessionId, message })
+    const result = await deps.callTool(binding, 'sendMessage', { action: 'replyToSession', sessionId, message })
     return result.ok ? 'reported.' : `report failed: ${result.error ?? 'unknown'}`
   }
   const listAfter = (text: string, label: string): string[] => {

@@ -142,6 +142,25 @@ describe('sendMessage requires an explicit action', () => {
       await rejection({ action: 'postMessage', toUser: 'U1', channel: 'C1', thread: '1.1', message: 'm' })
     ).toMatch(/action `postMessage` with `toUser` allows only .*unexpected `thread`/)
   })
+
+  it('names the tool once, ends each sentence once, and points every recognized action at its guide', async () => {
+    const stray = await rejection({ action: 'postMessage', toUser: 'U1', thread: 'x', message: 'hi' })
+    expect(stray).toMatch(/^sendMessage: invalid arguments — action `postMessage`/)
+    expect(stray).not.toContain('..')
+    const pointer = (action: string) => `getToolGuide {"tool":"sendMessage","action":"${action}"}`
+    const array = await rejection({ action: 'postMessage', toUser: ['U1', 'U2'], message: 'hi' })
+    expect(array).toContain('Nothing was sent')
+    expect(array).toContain(pointer('postMessage'))
+    for (const [args, action] of [
+      [{ action: 'callAgent', toAgent: 'peer-1', sessionId: 's-1', channel: 'C1', message: 'm' }, 'callAgent'],
+      [{ action: 'callAgent', toAgent: 'peer-1', sessionId: '', message: 'm' }, 'callAgent'],
+      [{ action: 'messageSubsession', sessionId: '', message: 'm' }, 'messageSubsession']
+    ] as const) {
+      const text = await rejection(args)
+      expect(text).toContain(pointer(action))
+      expect(text).not.toContain('..')
+    }
+  })
 })
 
 describe('messageSubsession', () => {
@@ -297,6 +316,12 @@ describe('getToolGuide', () => {
       expect.objectContaining({ sessionId: '<childSessionId returned by messageSubsession>' })
     )
     expect(JSON.stringify(sendMessageGuide(ctx, 'replyToSession'))).toContain('a reply does not end its work')
+    // An approved task or a patrol is settled by its one reply, so its guide says so.
+    for (const thread of ['subsession:task-d-1', 'subsession:patrol-d-1'])
+      expect(sendMessageGuide({ ...ctx, thread }, 'replyToSession')).toMatchObject({
+        availability: expect.stringContaining('send your parent one reply, at the end')
+      })
+    expect(sendMessageGuide({ ...ctx, thread: 'subsession:d-1' }, 'replyToSession')).not.toHaveProperty('availability')
     const send = toolsForIntegrations([slack as Integration]).find((tool) => tool.name === 'sendMessage')!
     expect(send.description).toContain('sends more work to one you started (sessionId: its childSessionId)')
     expect(send.description).toContain('sessionId continues its existing session from a childSessionId')

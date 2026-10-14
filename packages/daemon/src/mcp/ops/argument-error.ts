@@ -104,7 +104,10 @@ export interface ToolArgumentFailure {
 
 /** The model-facing rejection: tool, every issue, accepted shape, received keys, and the sibling that owns strays. */
 export function describeToolArgumentFailure(failure: ToolArgumentFailure): string {
-  const lines = [`${failure.tool}: invalid arguments — ${failure.issues.join('; ')}.`]
+  // An issue that already names the tool or ends its sentence is not prefixed or punctuated twice.
+  const prefix = `${failure.tool}: `
+  const issues = failure.issues.map((issue) => (issue.startsWith(prefix) ? issue.slice(prefix.length) : issue))
+  const lines = [`${failure.tool}: invalid arguments — ${issues.join('; ').replace(/\.$/, '')}.`]
   const accepted = renderAccepted(failure.advertised, failure.validator)
   if (accepted) lines.push(`Accepted arguments: ${accepted}`)
   const received = failure.receivedKeys.length > 0 ? failure.receivedKeys.join(', ') : '(none)'

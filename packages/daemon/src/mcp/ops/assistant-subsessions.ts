@@ -3,7 +3,11 @@ import { z } from 'zod'
 import { originKindOf } from '@agentconnect.md/protocol'
 import { stopIndexedSubsession } from '../../cp/assistant-activity.js'
 import { isSyntheticA2aChannel } from '../../cp/cp-collab-routes.js'
-import { isSubsessionCoordinate } from '../../session/subsession-coordinate.js'
+import {
+  isDelegationCoordinate,
+  isSubsessionCoordinate,
+  SUBSESSION_COORDINATE_PREFIX
+} from '../../session/subsession-coordinate.js'
 import type { AssistantSubsession } from '../../store/assistant-subsessions.js'
 import { sessionKey } from '../../store/local-store.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
@@ -92,13 +96,17 @@ export const stopSubsession: ToolHandler<AssistantSubsessionDeps> = async (ctx, 
   const id = row.childSessionKey
   if (row.state !== 'open') return { result: 'not_running', sessionId: id, note: `It has already ended. ${NOTHING}` }
   if ((await stopIndexedSubsession(row, port.stopSession, stopper.actor)) === 'stopped') {
+    // Only a delegated sub-session takes new work; an approved task or a patrol runs once.
+    const at = id.indexOf(`:${SUBSESSION_COORDINATE_PREFIX}`)
+    const continuable = row.kind !== 'patrol' && at >= 0 && isDelegationCoordinate(id.slice(at + 1))
     return {
       result: 'stopped',
       sessionId: id,
       note:
         'Its current turn was interrupted, messages still waiting for it were dropped, and it reports back here that ' +
         'it ended. Nothing it already did is undone, and a process its runtime started in the background (a build, a ' +
-        'dev server) may keep running. To give it new work later, message it with messageSubsession and this sessionId.'
+        'dev server) may keep running.' +
+        (continuable ? ' To give it new work later, message it with messageSubsession and this sessionId.' : '')
     }
   }
   return {

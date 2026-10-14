@@ -39,6 +39,7 @@ describe('case 1 — sendMessage {toAgent, channel}: one visible root post, one 
           const wake = /WAKE ([0-9a-f-]{36})/.exec(ctx.text)
           if (wake) {
             const result = await ctx.callTool('sendMessage', {
+              action: 'callAgent',
               toAgent: { agentId: wake[1]!, needsReply: true },
               channel: fixture!.room.channel,
               message: 'please handle task T-1'
@@ -116,6 +117,7 @@ describe('case 1b — sendMessage {sessionId: parent}: the report is injected, t
         const wake = /WAKE ([0-9a-f-]{36})/.exec(ctx.text)
         if (wake) {
           const result = await ctx.callTool('sendMessage', {
+            action: 'callAgent',
             toAgent: { agentId: wake[1]!, needsReply: true },
             channel: fixture!.room.channel,
             message: 'please handle task T-1'
@@ -133,6 +135,7 @@ describe('case 1b — sendMessage {sessionId: parent}: the report is injected, t
         const parent = /Parent session: (\S+)/.exec(ctx.text)
         if (parent && /task T-1/.test(ctx.text)) {
           const result = await ctx.callTool('sendMessage', {
+            action: 'replyToSession',
             sessionId: parent[1]!,
             message: 'RESULT R-42: task complete'
           })
@@ -205,6 +208,7 @@ describe('case 1b — sendMessage {sessionId: parent}: the report is injected, t
       agents: ['agent1', 'agent2'],
       scripts: case1bScripts(async (ctx) => {
         const result = await ctx.callTool('sendMessage', {
+          action: 'postMessage',
           channel: fixture!.room.channel,
           message: 'ESCALATION E-9: needs human review'
         })
@@ -233,6 +237,7 @@ describe('case 2 — sendMessage {channel}: bare root post, no activation; autho
         agent1: async (ctx) => {
           if (/POST UPDATE/.test(ctx.text)) {
             const result = await ctx.callTool('sendMessage', {
+              action: 'postMessage',
               channel: fixture!.room.channel,
               message: 'FYI update U-7: rollout at 80%'
             })

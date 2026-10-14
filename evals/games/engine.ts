@@ -585,6 +585,7 @@ export function scriptedCrossRoomHostFactory(): (
             return { stopReason: 'end_turn' }
           }
           const result = await callDaemonTool(binding, 'sendMessage', {
+            action: 'postMessage',
             platform: order[2]!,
             integrationId: order[3]!,
             channel: order[4]!,

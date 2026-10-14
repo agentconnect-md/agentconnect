@@ -71,7 +71,11 @@ async function startNightRun(options: { refereeGate?: (promptText: string) => Pr
       if (text.includes(`\`${marker}\``)) {
         const sessionId = parentSessionIdOf(text)
         if (!binding || !sessionId) return `cannot report: binding=${Boolean(binding)} parent=${sessionId}`
-        const result = await callDaemonTool(binding, 'sendMessage', { sessionId, message: `${marker} ${body}` })
+        const result = await callDaemonTool(binding, 'sendMessage', {
+          action: 'replyToSession',
+          sessionId,
+          message: `${marker} ${body}`
+        })
         return result.ok ? 'reported.' : `report failed: ${result.error ?? 'unknown'}`
       }
       if (text.includes('NIGHT 1 begins')) return 'Waiting.'

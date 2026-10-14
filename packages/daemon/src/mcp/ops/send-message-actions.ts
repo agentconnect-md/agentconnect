@@ -78,17 +78,30 @@ const MISSING_ACTION =
 const UNKNOWN_ACTION =
   `\`action\` must be one of ${SEND_MESSAGE_ACTIONS.join(', ')}. Nothing was sent and no agent was woken. Call ` +
   `getToolGuide ${OVERVIEW} for the arguments and examples, then retry with a valid action`
-const BAD_CHILD_ID =
+const present = (value: unknown): boolean => value !== undefined && value !== null
+const quoted = (keys: readonly string[]) => keys.map((key) => `\`${key}\``).join(', ')
+const strip = (pointer: string) => pointer.replace(/\.$/, '')
+/** A recognized action's argument error, closed with that action's guide (send-message-guide.md §3.5). */
+const guided = (text: string, action: SendMessageAction) =>
+  `${text}. Call getToolGuide {"tool":"sendMessage","action":"${action}"} for the required arguments, then retry`
+
+const BAD_CHILD_ID = guided(
   'action `messageSubsession` takes `sessionId` only as the nonempty `childSessionId` string of a sub-session this ' +
-  'conversation started. Nothing was sent. Omit `sessionId` to start a new sub-session; a null or empty id never ' +
-  'starts one'
-const BAD_PEER_SESSION =
+    'conversation started. Nothing was sent. Omit `sessionId` to start a new sub-session; a null or empty id never ' +
+    'starts one',
+  'messageSubsession'
+)
+const BAD_PEER_SESSION = guided(
   'action `callAgent` takes `sessionId` only as the nonempty id of an existing session of the agent in `toAgent`, ' +
-  'such as the `childSessionId` an earlier callAgent returned. Nothing was sent and no agent was woken. Omit ' +
-  '`sessionId` to call the agent without naming a session; a null or empty id never starts one'
-const PEER_SESSION_WITH_CHANNEL =
+    'such as the `childSessionId` an earlier callAgent returned. Nothing was sent and no agent was woken. Omit ' +
+    '`sessionId` to call the agent without naming a session; a null or empty id never starts one',
+  'callAgent'
+)
+const PEER_SESSION_WITH_CHANNEL = guided(
   'action `callAgent` takes `channel` or `sessionId`, not both: `sessionId` delivers into that existing session ' +
-  'and posts nothing. Nothing was sent and no agent was woken'
+    'and posts nothing. Nothing was sent and no agent was woken',
+  'callAgent'
+)
 const SELF_SESSION =
   'action `callAgent` with `sessionId` reaches another agent’s session, never one of yours. Nothing was sent and no ' +
   'agent was woken. To message your own background sub-session, call getToolGuide ' +
@@ -97,10 +110,6 @@ const SELF_CALL =
   'action `callAgent` without `channel` cannot target yourself. Nothing was sent and no agent was woken. For ' +
   'background work of your own, call getToolGuide {"tool":"sendMessage","action":"messageSubsession"} and retry ' +
   'with action `messageSubsession` and `message` only'
-
-const present = (value: unknown): boolean => value !== undefined && value !== null
-const quoted = (keys: readonly string[]) => keys.map((key) => `\`${key}\``).join(', ')
-const strip = (pointer: string) => pointer.replace(/\.$/, '')
 
 /** The validated action and the target-shaped arguments its existing delivery path takes. */
 export interface ValidatedSendMessage {
@@ -149,7 +158,8 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
   if (named === 'postMessage') {
     // The existing branch rules, up front: `thread` only on a bare channel, and a `toUser` array only with one.
     parseArgs(present(args.toUser) ? SEND_MESSAGE_BRANCHES.toUser : SEND_MESSAGE_BRANCHES.channel, rest)
-    if (Array.isArray(args.toUser) && !present(args.channel)) throw new ToolArgumentError([USER_ARRAY_NEEDS_CHANNEL])
+    if (Array.isArray(args.toUser) && !present(args.channel))
+      throw new ToolArgumentError([`${USER_ARRAY_NEEDS_CHANNEL}. ${strip(sendMessageGuidePointer('postMessage'))}`])
   }
   if (named === 'messageSubsession') {
     return {

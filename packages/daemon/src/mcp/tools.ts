@@ -29,7 +29,7 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'channel works as yourself there); messageSubsession starts a background sub-session of your own for long ' +
       'work (omit sessionId), or sends more work to one you started (sessionId: its childSessionId), even after it ' +
       'finished; replyToSession answers one session that called you, by sessionId; several may, and replies are ' +
-      'never broadcast (a sub-session’s origin is its parent, which it can message any time); postMessage reaches a ' +
+      'never broadcast (a sub-session’s origin is its parent); postMessage reaches a ' +
       'person, a channel, or another existing thread. Background work reports each round’s completion or failure ' +
       'automatically. For your current conversation, write your ordinary reply. When requesting a peer’s result, ' +
       'use toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +

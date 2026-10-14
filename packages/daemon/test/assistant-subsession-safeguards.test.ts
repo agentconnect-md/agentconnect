@@ -462,6 +462,9 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     expect(next).not.toBe(caller.coordinate)
     expect(reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: next })
     expect(reports()[0]!.msg.text).toContain(`Sub-session ${res.targetSession} stopped before finishing (stop)`)
+    // The new session cannot continue the child, so the report does not tell it to.
+    expect(reports()[0]!.msg.text).not.toContain(continueHint(res.targetSession))
+    expect(reports()[0]!.msg.text).toContain('belongs to an earlier session of this conversation')
     expect(await rowOf(d, res.targetSession)).toMatchObject({ state: 'failed', parentSessionId: 'sid-parent-1' })
     await daemon.stop()
   })

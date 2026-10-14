@@ -257,6 +257,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
         const wake = /WAKE ([0-9a-f-]{36})/.exec(ctx.text)
         if (wake) {
           const result = await ctx.callTool('sendMessage', {
+            action: 'callAgent',
             toAgent: { agentId: wake[1]!, needsReply: true },
             channel: fixture!.room.channel,
             message: 'please handle task T-1'
@@ -270,6 +271,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
         const parent = /Parent session: (\S+)/.exec(ctx.text)
         if (parent && /task T-1/.test(ctx.text)) {
           const result = await ctx.callTool('sendMessage', {
+            action: 'replyToSession',
             sessionId: parent[1]!,
             message: 'RESULT R-42: task complete'
           })

@@ -568,3 +568,34 @@ describe('who is offered stopSubsession', () => {
     }
   })
 })
+
+describe('the stop note offers continuation only where it exists', () => {
+  const ctx = {
+    agentId: AGENT,
+    platform: 'slack',
+    integrationId: INT,
+    isDm: true,
+    channel: DM,
+    thread: '100.1',
+    tools: []
+  } as unknown as SessionContext
+  const parent = sessionKey('slack', DM, '100.1', AGENT)
+  const noteFor = async (thread: string, kind?: 'patrol') => {
+    const childSessionKey = sessionKey('slack', DM, thread, AGENT)
+    const row = { agentId: AGENT, childSessionKey, parentSessionKey: parent, state: 'open', ...(kind ? { kind } : {}) }
+    const deps = {
+      assistantSubsessions: {
+        stopper: async () => ({ ok: true as const, actor: { userId: 'u-1' } }),
+        find: async () => row as never,
+        stopSession: async () => true
+      }
+    }
+    return ((await executeTool(ctx, 'stopSubsession', { sessionId: childSessionKey }, deps as never)) as any).note
+  }
+
+  it('names messageSubsession for a delegated sub-session, never for an approved task or a patrol', async () => {
+    expect(await noteFor('subsession:d-1')).toContain('message it with messageSubsession')
+    expect(await noteFor('subsession:task-d-1')).not.toContain('messageSubsession')
+    expect(await noteFor('subsession:patrol-d-1', 'patrol')).not.toContain('messageSubsession')
+  })
+})

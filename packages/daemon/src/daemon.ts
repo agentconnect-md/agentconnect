@@ -8901,6 +8901,9 @@ export class Daemon {
       const now = this.clock.now()
       // A session is never its own source.
       if ((await this.store.getSession(key))?.sessionId === source) return
+      // A report from the agent's own sub-session grants no standing reply path into it; continuing it is messageSubsession's.
+      const origin = await this.store.getSessionByOutwardId(source)
+      if (origin && origin.agentId === agentId && isSubsessionCoordinate(origin.thread)) return
       const coords = callMeta.originCoords
       await this.store.sessionSources.record({
         sessionKey: key,

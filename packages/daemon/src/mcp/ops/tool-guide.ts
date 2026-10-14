@@ -1,6 +1,6 @@
 // `getToolGuide`: on-demand usage rules and runnable examples, so `sendMessage` keeps a short description (send-message-guide.md §3.4).
 import { z } from 'zod'
-import { isSubsessionCoordinate } from '../../session/subsession-coordinate.js'
+import { isPatrolCoordinate, isSubsessionCoordinate, isTaskCoordinate } from '../../session/subsession-coordinate.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { offersThreadUpdates } from '../../platforms/thread-keys.js'
 import { offersDirectMessages, platformLabel } from '../../platforms/read-ports.js'
@@ -185,8 +185,9 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
         'The message is injected into that session; nothing is posted on a platform, and that session’s own ' +
           'reply keeps its visible route. Never post the answer at the origin conversation’s channel root instead: ' +
           'that starts a separate conversation.',
-        'A background sub-session can reply to its parent any time — progress, a question, or its result — and a ' +
-          'reply does not end its work; the daemon reports the end of each round of work itself.',
+        'A sub-session started with messageSubsession can reply to its parent any time — progress, a question, or ' +
+          'its result — and a reply does not end its work; the daemon reports the end of each round of work itself. ' +
+          'An approved task or a patrol replies once, at the end, and that reply settles it.',
         'Only `action`, `sessionId`, and `message` are accepted.',
         'The result is {delivered, targetSession?, reason?} with no `ok` wrapper. A session that never called you ' +
           'returns {delivered: false, reason: "not_authorized"}; other reasons report admission or routing ' +
@@ -285,6 +286,10 @@ function availability(ctx: SessionContext): Partial<Record<SendMessageAction, st
     notes.messageSubsession =
       'Unavailable here: this session is itself a background sub-session. Do the work here, or report back with ' +
       'replyToSession and let your parent delegate.'
+  }
+  if (isTaskCoordinate(ctx.thread) || isPatrolCoordinate(ctx.thread)) {
+    notes.replyToSession =
+      'This session is an approved task or a patrol: send your parent one reply, at the end; it settles this work.'
   }
   if (platforms.length === 0) {
     notes.postMessage = 'Unavailable here: this agent has no platform integration to post with.'

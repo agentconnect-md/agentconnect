@@ -177,6 +177,40 @@ describe('inferred parent reply (#800 mechanism fix)', () => {
     }
   })
 
+  it('a child whose explicit report was refused is not followed by an inferred copy', async () => {
+    const run = await boot(async (text) => {
+      const sessionId = [...text.matchAll(/"sessionId":"([^"]+)"/g)].map((m) => m[1]).find((v) => !v!.startsWith('<'))
+      const binding = [...run.bindings.entries()].find(([sid]) => sid.includes(CHILD))?.[1]
+      if (!binding || !sessionId) return `cannot report: ${Boolean(binding)}/${sessionId}`
+      // The parent's queue refuses this one report; the turn-end path keeps the real dispatch.
+      const host = (run.daemon as any).collab.host
+      const dispatch = host.dispatch
+      host.dispatch = (...args: any[]) => {
+        args[5]?.onAdmission?.({ accepted: false, reason: 'queue_full' })
+        return Promise.resolve()
+      }
+      try {
+        const result = await callDaemonTool(binding, 'sendMessage', {
+          action: 'replyToSession',
+          sessionId,
+          message: 'REFUSED-REPORT: 42.'
+        })
+        return result.ok ? 'reported.' : `report failed: ${result.error}`
+      } finally {
+        host.dispatch = dispatch
+      }
+    })
+    try {
+      expect((await run.call(callReq())).delivered).toBe(true)
+      await vi.waitFor(() => expect(run.prompts.get(CHILD)!.length).toBeGreaterThanOrEqual(1), WAIT)
+      await settle()
+      await settle()
+      expect(run.parentPrompts().join('\n')).not.toContain('[inferred reply]')
+    } finally {
+      await run.daemon.stop()
+    }
+  })
+
   it('a plain call without needsReply never infers', async () => {
     const run = await boot(() => 'Some ordinary answer.')
     try {

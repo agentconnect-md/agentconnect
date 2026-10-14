@@ -1,4 +1,4 @@
-# `sendMessage` Actions and On-Demand Tool Guide — Proposal
+# `sendMessage` Actions and On-Demand Tool Guide
 
 **Status:** Implemented: the adapter (§3–§7), persistent sub-session messaging (§8), and shared peer sessions with multiple origins (§9)
 
@@ -10,7 +10,7 @@ existing direct child and requires ownership validation. Calls without `action` 
 before any delivery, with instructions to read the guide and retry. This is an
 intentional input-contract change, not transparent backward compatibility.
 
-The proposal also includes an explicit capability extension (§8): parents can
+The design also includes an explicit capability extension (§8): parents can
 message their own persistent sub-sessions, and sub-sessions can message their
 parent throughout their lifetime. That extension is new runtime work, separate
 from the behavior-preserving action adapter audited in §7. Section 9 adds explicit
@@ -574,8 +574,8 @@ path is not a guarantee that every target state or admission gate accepts it.
 ### 7.6 Baseline verification and refactor acceptance
 
 The following existing suites passed during this source audit: **10 files,
-586 tests**. They establish the current baseline; they do not test the proposed
-action adapter, which has not been implemented.
+586 tests**. They established the baseline before the action adapter existed; the
+adapter's own cases were then ported onto them (§7.8).
 
 ```bash
 pnpm --filter @agentconnect.md/daemon exec vitest run \
@@ -623,11 +623,13 @@ persistent sub-session messaging and multi-origin peer calls are specified in
 The behavior-preserving adapter (§3–§7) is implemented, and §8 (§8.8) and §9 (§9.6) since.
 Decisions the sections above left open:
 
-- **Descriptor.** The §3.2 draft ships without its continuation and peer-session clauses
-  (`sessionId` continuing a peer session or a child, multiple origins), because §3.2 publishes
-  each capability only once its runtime exists. Measured for a Slack + Telegram agent: the
-  description is 784 characters, the flat schema 1668, and `getToolGuide` description plus
-  schema 480. `sessionId` is described for `replyToSession` only.
+- **Descriptor.** At the adapter stage the §3.2 draft shipped without its continuation and
+  peer-session clauses, because §3.2 publishes each capability only once its runtime exists:
+  784 characters of description, a 1668-character flat schema, and `sessionId` described for
+  `replyToSession` only. With §8 and §9 in place, measured for a Slack + Telegram agent, the
+  description is 983 characters, the flat schema 1811, and `getToolGuide` description plus
+  schema 480; `sessionId` is described for `callAgent`, `replyToSession` and
+  `messageSubsession`.
 - **Not-yet-available targets.** The adapter stage refused `callAgent.sessionId` and
   `messageSubsession` with any `sessionId`; §8 and §9 lifted those for a nonempty string, and a
   null, empty or mistyped id still fails as an argument error (§8.8, §9.6).
@@ -640,8 +642,9 @@ Decisions the sections above left open:
   delivery path.
 - **Error text.** Every rejection is a `ToolArgumentError` through the #2084 path, so §3.5's
   sentences appear after `sendMessage: invalid arguments — ` and are followed by the
-  accepted-arguments and received-keys lines. An unknown action is named by argument, not
-  by its supplied value.
+  accepted-arguments and received-keys lines. That path drops an issue's own leading tool name
+  and a doubled final period. Every recognized action's argument error names its action guide.
+  An unknown action is named by argument, not by its supplied value.
 - **Classification.** `isPlatformPost` is true only for `action: "postMessage"` (still
   excluding `toAgent` and `sessionId`), so `callAgent` with `channel` and both sub-session
   and origin-reply actions keep their non-post write and join handling.
@@ -889,9 +892,13 @@ does not provide this contract.
   admitted, or background wake remains. A clean end is `[sub-session finished]` with the
   round's last final output, which replaces the separate `[inferred reply]` for delegations; a
   failure or stop is `[sub-session ended]`. Both name the `messageSubsession` call that
-  continues the child. Each round's report has its own delivery identity. A joined input whose
-  admission fails after the round's last turn ended leaves the round to the existing idle
-  sweep.
+  continues the child, unless the report lands in a later session of the place (after `!new`),
+  which cannot continue it and is told so instead. Each round's report has its own delivery
+  identity. A joined input whose admission fails after the round's last turn ended leaves the
+  round to the existing idle sweep. A clean turn end does not settle the round while the child
+  still waits for a reply it asked another agent for; that reply's turn continues the round,
+  and the idle sweep bounds the wait. A reopened round whose opening input is refused goes back
+  to its previous state only if no other input joined it.
 - **Reciprocal path.** A parent's `replyToSession` into its own delegated child keeps the
   origin authorization and is then admitted exactly like `messageSubsession`. It maps refusals
   to the existing reply reasons (`not_authorized`, `busy`, `hop_limit`, `queue_full`), so the
@@ -910,7 +917,11 @@ id>), a new message for this background sub-session: …` and always carries the
   collaboration text and the stop note advertise continuation.
 - **Stop.** The interrupt `stopSubsession` already uses drains the child's queued inputs, so
   they cannot restart it. The round settles stopped, and only a later explicit message opens
-  another.
+  another. The stop note names `messageSubsession` only for a delegated sub-session.
+- **Tasks and patrols.** The guide and descriptor say that only a sub-session started with
+  `messageSubsession` may reply any time; a task's or patrol's guide notes that its one reply,
+  at the end, settles it. A report from an agent's own sub-session records no reply source in
+  the session it reaches, so it opens no standing path back into that sub-session.
 
 ## 9. Shared peer sessions with multiple origins — explicit capability extension
 
@@ -1122,8 +1133,9 @@ reviewable capability. A new optional field plus an array replacing
   (`dispatch`), so local and remote wakes, session calls, paired channel calls and origin
   replies all add one: the table `session_reply_source` keeps the replying session's key and
   agent, the source's outward id and agent, its landing coordinates and its code-host reply
-  snapshot. A sub-session records none (§8.2), a duplicate admission adds nothing, and a session
-  is never its own source. Purging a session or removing an agent drops its relations.
+  snapshot. A sub-session records none (§8.2), no session records its own agent's sub-session, a
+  duplicate admission adds nothing, and a session is never its own source. Purging a session or
+  removing an agent drops its relations.
 - **Reply authority.** `replyToSession` is authorized for this turn's origin, the session's
   durable origin, or any recorded source, and refused for the caller's own id and for anything
   else. A remote destination is reached by its recorded coordinates and agent, so a later turn
@@ -1141,8 +1153,16 @@ reviewable capability. A new optional field plus an array replacing
   call asking for a reply from another source gets a turn block naming that source. A turn of a
   session with several sources, or whose input came from another source, carries a "Sessions
   you can reply to" block: the input's source, and up to eight sources (newest first, with
-  their open requests), the rest counted and still valid. The descriptor (1014 characters for a
-  Slack + Telegram agent), the guide and the collaboration text advertise the form.
+  their open requests), the rest counted and still valid. The descriptor (983 characters for a
+  Slack + Telegram agent, §7.8), the guide and the collaboration text advertise the form.
+- **Participation.** A session call is judged as a read of the target's conversation from the
+  caller's place. The synthetic `a2a:<agent>` coordinate is shared by every peer one agent woke
+  without a channel, so it never counts as the caller's own conversation: such a call is judged
+  by who is asking, and a turn no person is behind is refused.
+- **Failures and inference.** An admitted session call whose turn then fails is reported to its
+  own source and settles its request, as an ordinary local wake's failure is; a remote source
+  gets no report, as for a remote wake. Inference is suppressed after a failed explicit reply to
+  the same source, so the child is never reported as having made no reply.
 - **Probe.** The fabricated peer-session rejection is removed. A peer-session call now passes the
   daemon's validation and gets its own receipt, or its `session_not_found` refusal for an id
   outside the scenario's scope.
@@ -1180,8 +1200,10 @@ too noisy to compare designs, so it gates "loads and is used correctly" only.
 
 ## 11. Open questions
 
-These points came out of a review of an earlier, compatibility-first revision of this
-proposal and are unresolved against the current design.
+**Status:** Resolved in favour of the document as written: a hard break with no transition
+period (§4); nested field unions kept, with no top-level `needsReply` alias (§3.2); the names
+`action`, `getToolGuide` and `replyToSession`; receipt shapes unchanged (§7.5). The list below
+records the questions as they were raised against an earlier, compatibility-first revision.
 
 1. **Required `action` versus an unchanged contract.** The earlier revision kept every
    existing call valid; a survey of one production deployment found the old forms in

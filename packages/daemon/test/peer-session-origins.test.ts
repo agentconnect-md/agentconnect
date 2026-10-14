@@ -189,6 +189,24 @@ describe('callAgent into an existing peer session (send-message-guide.md §9)', 
     }
   })
 
+  it('reports an admitted call’s failed turn to its own source and settles that call’s request', async () => {
+    const run = await boot(scaffold([A, B, C, D]), (agent, text) => {
+      if (agent === B && text.includes('FAIL-ME')) throw new Error('the runtime exited')
+      return 'ok.'
+    })
+    try {
+      const b1 = await openB1(run)
+      const joined = await run.call(C, { targetSessionId: b1.key, text: 'FAIL-ME', needsReply: true })
+      expect(joined).toEqual({ delivered: true, targetSession: b1.key })
+      await vi.waitFor(() => expect(run.prompts.get(C)!.join('\n')).toContain('the runtime exited'), WAIT)
+      await settle()
+      expect(run.prompts.get(A)!.join('\n')).not.toContain('the runtime exited')
+      expect(await run.d.store.sessionSources.openFor(b1.key, `sid-${C}`)).toEqual([])
+    } finally {
+      await run.daemon.stop()
+    }
+  })
+
   it('a later caller never removes an earlier origin, and no other session is reachable by id', async () => {
     const run = await boot()
     try {
@@ -542,5 +560,14 @@ describe('the session-participation rule is the cross-conversation read rule (se
     ).toBe(false)
     // Every person on the turn must be allowed, and a part of it no one is behind closes it.
     expect(await judge({ askers: { people: [member], nobody: true } })).toBe(false)
+  })
+
+  it('never treats a shared `a2a:` coordinate as the caller’s own conversation', async () => {
+    // Two sibling peers one agent woke without a channel land on the same synthetic coordinate.
+    const sibling = { ...target, channel: 'a2a:agent-y' }
+    const callerPlace = { platform: 'slack', channel: 'a2a:agent-y' }
+    expect(await judge({ callerPlace, target: sibling, askers: { people: [], nobody: true } })).toBe(false)
+    expect(await judge({ callerPlace, target: sibling, lookups: lookups(false) })).toBe(false)
+    expect(await judge({ callerPlace, target: sibling })).toBe(true)
   })
 })

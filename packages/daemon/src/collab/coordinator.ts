@@ -130,6 +130,8 @@ export interface DaemonReport {
   reportId: string
   /** The hop depth the report continues; 0 when it starts a chain. */
   hopCount?: number | undefined
+  /** The session the sub-session belongs to; a report landing in another one loses its continuation hint. */
+  ownerSessionKey?: string | undefined
 }
 
 /** What a `reporting` row holds to send its round-end report again after a refusal or a restart. */
@@ -163,6 +165,15 @@ export const REPORT_ANSWER_LANGUAGE =
 /** How the parent continues a sub-session, closing every round-end report. */
 const continueHint = (key: string): string =>
   `To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${key}","message":"..."}.`
+
+/** What replaces the hint where the report lands in a later session of the place, which cannot continue the child. */
+const ELSEWHERE_HINT =
+  'It belongs to an earlier session of this conversation, so it cannot be given more work from here; start a new sub-session if more is needed.'
+const withoutContinueHint = (text: string): string =>
+  text.replace(
+    /To give it more work in the same context, call sendMessage with \{"action":"messageSubsession"[^\n]*?\}\./,
+    ELSEWHERE_HINT
+  )
 
 /** The one report a delegated sub-session's work round ends with (send-message-guide.md §8.5). */
 function subsessionRoundReport(
@@ -388,6 +399,8 @@ export class CollabCoordinator {
   private readonly subsessionReportSends = new Map<string, Promise<void>>()
   // Parent messages decided into a sub-session's open round and not yet admitted, so the round does not settle under them.
   private readonly subsessionAdmitting = new Map<string, number>()
+  // The latest round a parent message joined (not opened) and the child accepted, per sub-session.
+  private readonly subsessionJoinedRound = new Map<string, number>()
   // A delegated sub-session's latest final output, which its round-end report carries (send-message-guide.md §8.5).
   private readonly subsessionFinalOutputs = new Map<string, { round?: number | undefined; text: string }>()
   // Submissions being admitted right now, so a concurrent replay of one waits for its receipt instead.
@@ -533,6 +546,8 @@ export class CollabCoordinator {
         if (continues && ((this.host.serialQueue().get(key)?.length ?? 0) > 0 || this.subsessionAdmitting.has(key)))
           return false
         if (end.outcome === 'completed' && (await this.awaitsBackgroundWake(agentId, key))) return false
+        // A reply the child asked another agent for is still due; its wake continues this round, the idle sweep bounds it.
+        if (end.outcome === 'completed' && (await this.awaitsPeerReply(agentId, key))) return false
         const stashed = this.subsessionFinalOutputs.get(key)
         this.subsessionFinalOutputs.delete(key)
         const output = stashed && (stashed.round === undefined || stashed.round === round) ? stashed.text : undefined
@@ -554,6 +569,15 @@ export class CollabCoordinator {
     } catch (err) {
       this.host.log().warn(`sub-session ${key}: could not settle its round: ${formatErr(err)}`)
     }
+  }
+
+  /** The session asked another agent for a reply that has neither arrived nor failed. */
+  private async awaitsPeerReply(agentId: string, key: string): Promise<boolean> {
+    const own = await this.host.store().ensureOutwardSessionId(key, agentId, this.host.clock().now())
+    for (const [target, link] of this.childSessionLinks)
+      if (target !== key && link.parentSessionId === own && link.replyRequested && link.replyState === 'awaiting')
+        return true
+    return false
   }
 
   /** A background task the sub-session started is still live, or its completion wake is armed. */
@@ -597,7 +621,8 @@ export class CollabCoordinator {
         text: report.text,
         // Each round's report is its own, so a later round's is not mistaken for an earlier one already admitted.
         reportId: (report.round ?? 1) > 1 ? `subsession-end:${key}:${report.round}` : `subsession-end:${key}`,
-        hopCount: report.hopCount
+        hopCount: report.hopCount,
+        ownerSessionKey: row.parentSessionKey
       })
       if (result.admitted) {
         if (await index.settleReport(agentId, key, report.settles ?? 'failed'))
@@ -794,6 +819,7 @@ export class CollabCoordinator {
     const botUserId = route.integrationId
       ? this.host.botUserIds()[route.integrationId]
       : this.host.resolveCpAgent(agentId, parent.platform)?.botUserId
+    const elsewhere = report.ownerSessionKey !== undefined && parent.key !== report.ownerSessionKey
     const msg: NormalizedMessage = {
       msgId: `agentcall:${parent.channel}:${deliveryId}`,
       traceId: deliveryId,
@@ -809,7 +835,7 @@ export class CollabCoordinator {
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      text: `${text}\n\n${REPORT_ANSWER_LANGUAGE}`,
+      text: `${elsewhere ? withoutContinueHint(text) : text}\n\n${REPORT_ANSWER_LANGUAGE}`,
       // Session-only, never a live conversation post (#966).
       parentReport: true,
       mentionedBots: botUserId ? [botUserId] : [],
@@ -1494,10 +1520,7 @@ export class CollabCoordinator {
     })
   }
 
-  /**
-   * send-message-guide.md §9.2, the owning daemon's side for local and remote calls alike: resolve the exact session the
-   * call names, refuse a sub-session or a session the calling people may not read, and admit into it or nothing.
-   */
+  /** send-message-guide.md §9.2, local and remote alike: admit into the exact named session the calling people may read, or nothing. */
   async admitSessionCall(
     call: SessionCallAdmission
   ): Promise<{ accepted: true; key: string } | { accepted: false; reason: string }> {
@@ -1546,6 +1569,7 @@ export class CollabCoordinator {
     }
     let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
     const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => (settleAdmission = resolve))
+    let ran = false
     void this.host
       .dispatch(
         call.toAgentId,
@@ -1553,12 +1577,23 @@ export class CollabCoordinator {
         route.integrationId,
         this.host.webchatTransport().webchatWakeContext(target.platform, target.channel),
         call.callMeta,
-        { requireDurable: true, onAdmission: (result) => settleAdmission(result) },
+        {
+          requireDurable: true,
+          onAdmission: (result) => {
+            ran = result.accepted
+            settleAdmission(result)
+          }
+        },
         route.codeHostReply
       )
-      .catch((err) => {
+      .catch(async (err) => {
         this.host.log().error(`callAgent dispatch into ${target.key} failed: ${formatErr(err)}`)
         settleAdmission({ accepted: false, reason: 'error' })
+        // An admitted call whose turn then failed is reported to its own source, like any other wake.
+        if (ran)
+          await this.failAgentDispatch(target.key, msg, call.callMeta, err, false).catch((reportErr) =>
+            this.host.log().error(`callAgent failure report failed for "${target.key}": ${formatErr(reportErr)}`)
+          )
       })
     const admission = await admitted
     if (!admission.accepted)
@@ -1733,6 +1768,8 @@ export class CollabCoordinator {
       .catch(() => undefined)
     if (obligation && obligation.state !== 'open') return
     const link = this.childSessionLinks.get(childKey)
+    // An explicit reply to this source that failed already told the child why, so inferring one would misreport it.
+    if (link && link.parentSessionId === callMeta.originSessionId && link.replyState === 'failed') return
     if (!obligation && link && (link.parentSessionId !== callMeta.originSessionId || link.replyState !== 'awaiting'))
       return
     // Another call folded into this turn: one undifferentiated output answers no single source, so every request stays open.
@@ -1771,7 +1808,7 @@ export class CollabCoordinator {
       platform: msg.platform,
       ...(msg.transportScope !== undefined ? { callerTransportScope: msg.transportScope } : {}),
       callerChannel: msg.channel,
-      callerThread: msg.thread ?? msg.msgId,
+      callerThread: sessionThreadOf(msg),
       sessionId: callMeta.originSessionId,
       text
     })
@@ -1883,10 +1920,7 @@ export class CollabCoordinator {
     return { row, caller }
   }
 
-  /**
-   * send-message-guide.md §8: deliver a parent's message into its existing direct child — the open round when one runs, else
-   * a new round under the per-agent cap — through the child's serial input path; never creates or retargets a session.
-   */
+  /** send-message-guide.md §8: deliver a parent's message into its own direct child's open or next round; never creates or retargets one. */
   async continueSubsession(req: ContinueSubsessionReq): Promise<MessageAgentResult> {
     const agentId = req.callerAgentId
     const callerKey = sessionKey(req.platform, req.callerChannel, req.callerThread, agentId, req.callerTransportScope)
@@ -2023,12 +2057,17 @@ export class CollabCoordinator {
       else this.subsessionAdmitting.delete(key)
     }
     if (accepted.accepted) {
+      if (!reopenedFrom) this.subsessionJoinedRound.set(key, round)
       this.host.noteSubsessionOpened?.(key, callerKey)
       this.host.log().info(`messageSubsession: ${agentId} → ${key} round=${round} delivery=${at.deliveryId}`)
       return { round, receipt: { delivered: true, targetSession: key, subsession: true } }
     }
-    // A round this message opened never started, so it goes back to how it was; the parent hears the refusal now.
-    if (reopenedFrom) await index.finish(agentId, key, reopenedFrom, round)
+    // A round this message opened and nothing else joined never started, so it goes back to how it was.
+    if (reopenedFrom)
+      await this.withSubsessionReportLock(key, async () => {
+        if (this.subsessionAdmitting.has(key) || this.subsessionJoinedRound.get(key) === round) return
+        await index.finish(agentId, key, reopenedFrom, round)
+      })
     const reason = accepted.reason ?? 'busy'
     return {
       round,
@@ -2125,10 +2164,7 @@ export class CollabCoordinator {
     return await admitted
   }
 
-  /**
-   * send-message-guide.md §9.3: the one destination a reply may go to, with how to reach it — this turn's origin, the
-   * session's durable origin, or a source recorded at admission; undefined for any other id, including the caller's own.
-   */
+  /** send-message-guide.md §9.3: where a reply may go — this turn's origin, the durable origin, or a recorded source; else undefined. */
   private async replyDestination(
     sessionId: string,
     callerKey: string,

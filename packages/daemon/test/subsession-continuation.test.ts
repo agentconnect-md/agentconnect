@@ -64,10 +64,17 @@ type PromptBehavior = 'answer' | 'throw' | 'hang' | ((sessionId: string) => Prom
 
 /** A runtime per agent whose sub-session prompts follow `sub`, and every other prompt (the parent's) answers. */
 function runtimes() {
-  const behavior: { sub: PromptBehavior; plain: PromptBehavior; subQueue: PromptBehavior[] } = {
+  const behavior: {
+    sub: PromptBehavior
+    plain: PromptBehavior
+    subQueue: PromptBehavior[]
+    /** A prompt whose text matches takes this behavior before any other. */
+    byText: [RegExp, PromptBehavior][]
+  } = {
     sub: 'answer',
     plain: 'answer',
-    subQueue: []
+    subQueue: [],
+    byText: []
   }
   const subPrompts: string[] = []
   const hosts: any[] = []
@@ -79,9 +86,11 @@ function runtimes() {
       newSession: vi.fn(async () => `acp-${randomUUID()}`),
       prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
         // A sub-session's own input names it; the parent's standing summary of its sub-sessions does not count.
-        const sub = /as a background sub-session|for this background sub-session/.test(JSON.stringify(blocks))
+        const text = JSON.stringify(blocks)
+        const sub = /as a background sub-session|for this background sub-session/.test(text)
         if (sub) subPrompts.push(sessionId)
-        const act = sub ? (behavior.subQueue.shift() ?? behavior.sub) : behavior.plain
+        const matched = behavior.byText.find(([pattern]) => pattern.test(text))?.[1]
+        const act = matched ?? (sub ? (behavior.subQueue.shift() ?? behavior.sub) : behavior.plain)
         if (act === 'throw') throw new Error('the runtime exited')
         if (act === 'hang') return await new Promise((resolve) => (cancelled = () => resolve('cancelled')))
         if (typeof act === 'function') return await act(sessionId)
@@ -452,6 +461,39 @@ describe('a work round, its slot and its outcome', () => {
     await h.daemon.stop()
   })
 
+  it('keeps a reopened round that another message joined when the message that opened it is refused', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    const child = await startAndFinish(h, caller)
+    let refuseFirst!: () => void
+    const refusal = new Promise<void>((resolve) => (refuseFirst = resolve))
+    let finishSecond!: () => void
+    h.rt.behavior.subQueue.push(
+      async () => (await new Promise<void>((resolve) => (finishSecond = resolve)), 'end_turn')
+    )
+    const inner = h.d.dispatch
+    h.d.dispatch = (agentId: string, msg: NormalizedMessage, ...rest: any[]) => {
+      if (!msg.text.includes('FIRST-INPUT')) return inner(agentId, msg, ...rest)
+      return (async () => {
+        await refusal
+        rest[3]?.onAdmission?.({ accepted: false, reason: 'queue_full' })
+        return undefined
+      })()
+    }
+    const first = h.d.collab.continueSubsession(continuation(caller, child, 'FIRST-INPUT'))
+    await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'open', round: 2 }), WAIT)
+    expect((await h.d.collab.continueSubsession(continuation(caller, child, 'SECOND-INPUT'))).delivered).toBe(true)
+    await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(2), WAIT)
+    refuseFirst()
+    expect(await first).toMatchObject({ delivered: false, reason: 'queue_full' })
+    expect(await rowOf(h.d, child)).toMatchObject({ state: 'open', round: 2 })
+    finishSecond()
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
+    await h.settled()
+    expect(await rowOf(h.d, child)).toMatchObject({ state: 'done', round: 2 })
+    await h.daemon.stop()
+  })
+
   it('reacquires a slot per round, and a retained idle child holds none', async () => {
     const policy = { ...ON, limits: { maxConcurrentSubsessions: 1 } }
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: policy }]))
@@ -503,6 +545,55 @@ describe('a work round, its slot and its outcome', () => {
     await h.d.interruptTurn('bot-a', child, 'stop')
     await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
     await h.settled()
+    await h.daemon.stop()
+  })
+
+  it('keeps a round open while the child waits for a reply it asked a peer for', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }, { id: 'bot-b' }]))
+    const caller = await seedCaller(h.d)
+    let releasePeer!: () => void
+    const peerTurn = new Promise<void>((resolve) => (releasePeer = resolve))
+    let reportedFromWake: unknown
+    h.rt.behavior.byText.push(
+      [/PEER-TASK/, async () => (await peerTurn, 'end_turn')],
+      [
+        /\[inferred reply\]/,
+        async () => {
+          reportedFromWake = await childReply(h.d, caller, subInputs(h.dispatched)[0]!.msg.thread!, 'PEER-RESULT')
+          return 'end_turn'
+        }
+      ]
+    )
+    h.rt.behavior.subQueue.push(async () => {
+      const thread = subInputs(h.dispatched)[0]!.msg.thread!
+      const deps = { ...h.d.mcp.deps, canRun: () => true }
+      const call = (await executeTool(
+        { ...toolContext(caller), thread },
+        'sendMessage',
+        {
+          action: 'callAgent',
+          toAgent: { agentId: 'bot-b', needsReply: true },
+          message: 'PEER-TASK: check the schema'
+        },
+        deps
+      )) as any
+      expect(call.wake).toMatchObject({ delivered: true })
+      return 'end_turn'
+    })
+    const created = await send(h.d, caller, { action: 'messageSubsession', message: 'ask bot-b about the schema' })
+    const child: string = created.childSessionId
+    await vi.waitFor(() => expect(told(h.rt.hosts, 'PEER-TASK')).toBeGreaterThanOrEqual(1), WAIT)
+    // The child's turn ended while the peer still works: its round stays open and nothing is reported.
+    await subInputs(h.dispatched)[0]!.turn
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(await rowOf(h.d, child)).toMatchObject({ state: 'open' })
+    expect(h.reports()).toHaveLength(0)
+    releasePeer()
+    await vi.waitFor(() => expect(reportedFromWake).toMatchObject({ delivered: true }), WAIT)
+    await vi.waitFor(() => expect(h.reports().map((c) => c.msg.text)).toContain('PEER-RESULT'), WAIT)
+    await vi.waitFor(() => expect(h.reports().some((c) => c.msg.text.includes(finished(child)))).toBe(true), WAIT)
+    await h.settled()
+    await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
     await h.daemon.stop()
   })
 
@@ -620,6 +711,16 @@ describe('the parent stays the child’s origin', () => {
     await h.d.store.upsertSession({ ...otherRec, originSessionId: outward })
     expect(await reply(other, 'C2')).toEqual({ delivered: false, reason: 'not_authorized' })
     expect(subInputs(h.dispatched)).toHaveLength(2)
+    await h.daemon.stop()
+  })
+
+  it('records no standing reply path from the parent into a sub-session that reported to it', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    const child = await startAndFinish(h, caller)
+    expect(h.reports()).toHaveLength(1)
+    const outward = await h.d.store.ensureOutwardSessionId(child, 'bot-a', Date.now())
+    expect(await h.d.store.sessionSources.get(caller.key, outward)).toBeUndefined()
     await h.daemon.stop()
   })
 
