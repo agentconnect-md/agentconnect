@@ -1231,9 +1231,7 @@ export const UpdateSkillSourceBody = z
   .strict()
   .refine((b) => Object.keys(b).length > 0, { message: 'no fields to update' })
 
-/** `POST /skill-sources/preview` — best-effort GitHub scan for the import dialog.
- *  Takes an installation + repo (same shape as the branches picker) and returns the
- *  ref choices + the SKILL.md manifest. Scan failure ⇒ empty skills (install all). */
+/** `POST /skill-sources/preview` — best-effort scan for the import dialog: a GitHub installation + repo, or a `source` address (GitLab is scanned, any other host is never contacted). */
 export const PreviewSkillSourceBody = z.union([
   z
     .object({
@@ -1243,11 +1241,13 @@ export const PreviewSkillSourceBody = z.union([
       ref: z.string().optional()
     })
     .strict(),
-  // A project address on the deployment's GitLab instance (source-cache.md §11), scanned through the GitLab API.
+  // An HTTPS address (source-cache.md §11): scanned through the GitLab API on the deployment's instance, never read elsewhere.
   z.object({ source: SkillSourceArg, ref: SkillSourceRef.optional(), subDir: SkillSourceSubDir.optional() }).strict()
 ])
 
 export const SkillSourcePreviewDto = z.object({
+  // False when the CP did not read the repository (another host, or a failed GitLab scan): the lists are then empty and the client offers whole-source enablement or a typed skill filter.
+  resolvable: z.boolean(),
   branches: z.array(z.string()),
   tags: z.array(z.string()),
   skills: z.array(z.object({ name: z.string(), dirPath: z.string() }))

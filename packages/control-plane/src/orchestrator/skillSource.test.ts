@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { AgentSpec, RegisterOk } from '@agentconnect.md/protocol'
 import {
+  otherHostSkillSource,
   parseSkillRef,
   redactSourceCredentials,
   resolveAgentSkillEntries,
@@ -54,6 +55,37 @@ describe('parseSkillRef', () => {
   it('treats <source>/* and bare <source> as whole-source', () => {
     expect(parseSkillRef('platform/*')).toEqual({ source: 'platform', skill: null })
     expect(parseSkillRef('platform')).toEqual({ source: 'platform', skill: null })
+  })
+})
+
+describe('otherHostSkillSource (source-cache.md §11)', () => {
+  it('admits an HTTPS address on any host other than github.com, normalized', () => {
+    expect(otherHostSkillSource('https://git.example.test/team/skills.git/')).toBe(
+      'https://git.example.test/team/skills.git'
+    )
+    expect(otherHostSkillSource('https://git.example.test:8443/team/skills')).toBe(
+      'https://git.example.test:8443/team/skills'
+    )
+    expect(otherHostSkillSource('git.example.test/team/skills')).toBe('https://git.example.test/team/skills')
+  })
+
+  it('leaves github.com to GitHub admission', () => {
+    expect(otherHostSkillSource('example-org/example-repo')).toBeNull()
+    expect(otherHostSkillSource('https://github.com/example-org/example-repo')).toBeNull()
+  })
+
+  it('refuses what is not a plain credential-free HTTPS address', () => {
+    for (const bad of [
+      'ssh://git@git.example.test/team/skills',
+      'git@git.example.test:team/skills',
+      'https://user:pw@git.example.test/team/skills',
+      'https://git.example.test/team/../skills',
+      'https://git.example.test/team/skills?x=1',
+      'http://git.example.test/team/skills',
+      'file:///srv/skills'
+    ]) {
+      expect(otherHostSkillSource(bad), bad).toBeNull()
+    }
   })
 })
 

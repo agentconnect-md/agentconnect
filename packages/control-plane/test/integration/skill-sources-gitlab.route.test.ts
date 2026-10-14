@@ -214,10 +214,24 @@ describe('GitLab skill-source admission (CP3.2)', () => {
     expect(await refused({ source: 'https://gitlab.com/example-group/unmanaged' })).toMatch(/managed project/)
     expect(await refused({ source: `${PUBLIC_URL}/-/tree/main/skills` })).toMatch(/ref and subdirectory separately/)
     expect(await refused({ source: PRIVATE_URL, githubRepoId: '42' })).toMatch(/only to a GitHub source/)
-    expect(await refused({ source: 'https://git.example.test/team/skills' })).toMatch(/GitLab instance/)
     expect(await refused({ source: 'https://git.example.test/team/skills', githubRepoId: '42' })).toMatch(
-      /GitLab instance/
+      /only to a GitHub source/
     )
+  })
+
+  it('admits a source on another host anonymously without asking GitLab (CP3.3)', async () => {
+    const h = await harness()
+    const before = h.fake.requests.length
+    const res = await create(h, { name: 'other', source: 'https://git.example.test/team/skills' })
+    expect(res.statusCode).toBe(201)
+    expect(res.json()).toMatchObject({ source: 'https://git.example.test/team/skills', credential: null })
+    const preview = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources/preview`,
+      payload: { source: 'https://git.example.test/team/skills' }
+    })
+    expect(preview.json()).toEqual({ resolvable: false, branches: [], tags: [], skills: [] })
+    expect(h.fake.requests.length).toBe(before)
   })
 
   it('re-resolves on edit: a source moved to a public project drops its credential', async () => {
@@ -243,6 +257,7 @@ describe('GitLab skill-source preview (CP3.2)', () => {
     })
     expect(pub.statusCode).toBe(200)
     expect(pub.json()).toEqual({
+      resolvable: true,
       branches: ['main'],
       tags: ['v1'],
       skills: [{ name: 'review', dirPath: 'skills/review' }]
