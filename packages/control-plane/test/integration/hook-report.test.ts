@@ -1,18 +1,4 @@
-/**
- * HookRun two-stage bookkeeping, end to end on the CP side
- * (webhook-triggers-and-github-events.md decision 12):
- *
- *  - the relay's `rc/run-report` (`recordDelivery`) opens the row — `accepted`
- *    running, `failed` a delivery failure — and advances `lastFiredAt`;
- *  - the daemon's `hook/report` completion (`handleHookReport`) closes it,
- *    scoped to the owning daemon and last-writer-wins, keyed on
- *    (hookId, deliveryKey) so redeliveries and reconnect re-asserts never
- *    duplicate or regress;
- *  - a completion with no prior delivery row (CP down at fire time) still
- *    creates the run;
- *  - the reaper ages a stuck `running` row to `failed(orphaned)`, which a late
- *    completion can still overwrite.
- */
+// Hook delivery, completion, and reconnect recovery against the real Control Plane store.
 import { describe, it, expect, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
@@ -1314,16 +1300,18 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]!.status).toBe('success')
   })
 
-  it('a completion with no prior delivery row (CP down at fire) still creates the run', async () => {
+  it('a completion with no prior delivery row preserves a duration beyond 32-bit milliseconds', async () => {
     const { agentId, hookId } = await placedHook()
-    await report(DAEMON, hookId, agentId, 'd-late', {
+    const durationMs = 30 * 24 * 60 * 60 * 1000 + 1
+    const completion = await report(DAEMON, hookId, agentId, 'd-late', {
       status: 'failed',
-      durationMs: 800,
+      durationMs,
       reason: 'turn failed'
     })
+    expect(completion.conn.replyTo).toHaveBeenCalledWith(completion.frame, 'ack', { ok: true })
     const runs = await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId))
     expect(runs).toHaveLength(1)
-    expect(runs[0]).toMatchObject({ deliveryKey: 'd-late', status: 'failed', reason: 'turn failed' })
+    expect(runs[0]).toMatchObject({ deliveryKey: 'd-late', status: 'failed', durationMs, reason: 'turn failed' })
   })
 
   it('an unknown hookId completion is refused permanently — absent in the org the frame acts in', async () => {
@@ -1338,8 +1326,9 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     expect(rejected.conn.replyTo).not.toHaveBeenCalled()
   })
 
-  it('the reaper ages a stuck running row to failed(orphaned); a late completion still overwrites it', async () => {
+  it('a completion after 30 days overwrites an orphaned run and is acknowledged', async () => {
     const { agentId, hookId } = await placedHook()
+    const durationMs = 30 * 24 * 60 * 60 * 1000 + 1
     await repo().recordDelivery(HookId(hookId), {
       deliveryKey: 'd-slow',
       firedAt: new Date('2026-07-03T09:00:00.000Z'),
@@ -1353,9 +1342,16 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     expect(reapedRun.reason).toMatch(/no completion report/)
 
     // The daemon's report finally lands — last-writer-wins overwrites the reap.
-    await report(DAEMON, hookId, agentId, 'd-slow', { status: 'success', sessionId: 'ses_late' })
+    const completion = await report(DAEMON, hookId, agentId, 'd-slow', {
+      status: 'success',
+      durationMs,
+      sessionId: 'ses_late'
+    })
+    expect(completion.conn.replyTo).toHaveBeenCalledWith(completion.frame, 'ack', { ok: true })
+    expect(completion.conn.sendError).not.toHaveBeenCalled()
     expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]).toMatchObject({
       status: 'success',
+      durationMs,
       sessionId: 'ses_late'
     })
   })
