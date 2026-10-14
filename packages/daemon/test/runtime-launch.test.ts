@@ -1472,26 +1472,29 @@ describe('composeRuntimeLaunch', () => {
     expect(childEnv.SAFE_VALUE).toBe('kept')
   })
 
-  it('keeps a Claude launcher symlink under the host HOME readable', () => {
-    const testRoot = mkdtempSync(join(tmpdir(), 'ac-claude-launch-roots-'))
+  it.each([
+    { adapter: 'claude-acp', command: 'claude', hint: 'CLAUDE_CODE_EXECUTABLE' },
+    { adapter: 'muse-acp', command: 'muse', hint: 'MUSE_CLI' }
+  ])('keeps a $command launcher symlink under the host HOME readable', ({ adapter, command, hint }) => {
+    const testRoot = mkdtempSync(join(tmpdir(), 'ac-launch-roots-'))
     const hostHome = join(testRoot, 'home')
     const bin = join(hostHome, '.local', 'bin')
-    const versions = join(hostHome, '.local', 'share', 'claude', 'versions')
+    const versions = join(hostHome, '.local', 'share', command, 'versions')
     const executable = join(versions, '2.1.220')
     mkdirSync(bin, { recursive: true })
     mkdirSync(versions, { recursive: true })
     writeFileSync(executable, '#!/bin/sh\n')
     chmodSync(executable, 0o755)
-    symlinkSync(executable, join(bin, 'claude'))
+    symlinkSync(executable, join(bin, command))
 
     try {
-      const sandboxAccess = runtimeSandboxReadRoots(runtime(process.execPath, ['claude-acp']), {
+      const sandboxAccess = runtimeSandboxReadRoots(runtime(process.execPath, [adapter]), {
         HOME: hostHome,
         PATH: `${bin}${delimiter}${dirname(process.execPath)}`
       })
 
-      expect(sandboxAccess.hintExecutables.CLAUDE_CODE_EXECUTABLE).toBe(realpathSync(executable))
-      expect(coveredBy(sandboxAccess.readRoots, join(bin, 'claude'))).toBe(true)
+      expect(sandboxAccess.hintExecutables[hint]).toBe(realpathSync(executable))
+      expect(coveredBy(sandboxAccess.readRoots, join(bin, command))).toBe(true)
     } finally {
       rmSync(testRoot, { recursive: true, force: true })
     }
