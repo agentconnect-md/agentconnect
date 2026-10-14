@@ -318,6 +318,9 @@ export function AgentSkillsCard({
               const failure = failures.find((f) => f.name === s.name)
               const selectedText = sel.all ? '' : [...sel.skills].join(', ')
               const draft = manualDraft[s.id] ?? selectedText
+              // The source's own filter bounds what a selection can install, so a name outside it would install nothing.
+              const outsideFilter =
+                s.skills.length > 0 ? parseSkillNames(draft).filter((sk) => !s.skills.includes(sk)) : []
               return (
                 <AttachedRow
                   key={s.id}
@@ -382,6 +385,14 @@ export function AgentSkillsCard({
                           <span className="font-sans text-[12px] leading-[1.5] text-(--text-tertiary)">
                             {t('manualSkillsHint')}
                           </span>
+                          {s.skills.length > 0 && (
+                            <span
+                              data-source-filter
+                              className={`font-sans text-[12px] leading-[1.5] ${outsideFilter.length > 0 ? 'text-(--status-error)' : 'text-(--text-tertiary)'}`}
+                            >
+                              {t('manualSkillsLimited', { skills: s.skills.join(', ') })}
+                            </span>
+                          )}
                           <div className="flex items-center gap-2">
                             <input
                               className="inp mn min-w-0 flex-1"
@@ -394,7 +405,7 @@ export function AgentSkillsCard({
                             <Button
                               variant="secondary"
                               size="xs"
-                              disabled={!interactive || draft.trim() === selectedText}
+                              disabled={!interactive || draft.trim() === selectedText || outsideFilter.length > 0}
                               onClick={() => applyManual(s.id, s.name, draft)}
                             >
                               {t('applySkills')}

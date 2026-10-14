@@ -2923,6 +2923,7 @@
         "trustedByUrl": "trusted by URL",
         "trustedByUrlHint": "Anonymous source on another host: installed from this address as given, with no repository identity check",
         "manualSkillsHint": "The console can’t list this source’s skills. Name the ones to install, or leave blank for the whole source.",
+        "manualSkillsLimited": "This source installs only: {skills}.",
         "manualSkillsPlaceholder": "review-pr, safe-deploy",
         "applySkills": "Apply",
         "installFailed": "Last install failed",

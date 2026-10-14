@@ -7,13 +7,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   // The org registry the caller can see.
   skillSources: [
-    { id: 's1', name: 'example-ai-kit', source: 'github.com/acme/ai-kit', subDir: null, visibility: 'org' },
-    { id: 's2', name: 'internal-runbooks', source: 'github.com/acme/runbooks', subDir: null, visibility: 'org' },
+    { id: 's1', name: 'example-ai-kit', source: 'github.com/acme/ai-kit', subDir: null, skills: [], visibility: 'org' },
+    {
+      id: 's2',
+      name: 'internal-runbooks',
+      source: 'github.com/acme/runbooks',
+      subDir: null,
+      skills: [],
+      visibility: 'org'
+    },
     {
       id: 's3',
       name: 'ops-kit',
       source: 'https://git.example.test/ops/kit',
       subDir: null,
+      skills: [],
       visibility: 'org',
       credential: null
     },
@@ -22,6 +30,7 @@ const mocks = vi.hoisted(() => ({
       name: 'team-kit',
       source: 'https://gitlab.example.test/team/kit',
       subDir: null,
+      skills: [],
       visibility: 'org',
       credential: { provider: 'gitlab', repoId: '42' }
     }
@@ -185,5 +194,31 @@ describe('AgentSkillsCard', () => {
     const apply = [...host!.querySelectorAll('button')].find((b) => b.textContent === 'Apply')
     await act(async () => apply!.click())
     expect(mocks.updateAgent).toHaveBeenCalledWith('a1', { skills: ['ops-kit/deploy', 'ops-kit/rollback'] })
+  })
+
+  it('refuses typed names that the source filter would never install', async () => {
+    mocks.skillSources = mocks.skillSources.map((src) =>
+      (src as { id: string }).id === 's3' ? { ...(src as object), skills: ['deploy'] } : src
+    )
+    mocks.savedSkills = ['ops-kit/*']
+    mocks.manifest = { resolvable: false, skills: [] }
+    try {
+      await render()
+      await act(async () => {
+        host!.querySelector<HTMLButtonElement>('button[aria-label="Choose individual skills"]')!.click()
+      })
+      expect(host!.querySelector('[data-source-filter]')?.textContent).toContain('installs only: deploy')
+      const input = host!.querySelector<HTMLInputElement>('input[aria-label="Choose individual skills"]')
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'rollback')
+        input!.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      const apply = [...host!.querySelectorAll('button')].find((b) => b.textContent === 'Apply')
+      expect(apply!.disabled).toBe(true)
+    } finally {
+      mocks.skillSources = mocks.skillSources.map((src) =>
+        (src as { id: string }).id === 's3' ? { ...(src as object), skills: [] } : src
+      )
+    }
   })
 })

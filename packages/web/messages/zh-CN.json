@@ -2923,6 +2923,7 @@
         "trustedByUrl": "按地址信任",
         "trustedByUrlHint": "其他主机上的匿名来源：按此地址原样安装，不校验仓库身份",
         "manualSkillsHint": "控制台无法列出此来源的技能。填写要安装的技能，留空则启用整个来源。",
+        "manualSkillsLimited": "此来源只安装：{skills}。",
         "manualSkillsPlaceholder": "review-pr, safe-deploy",
         "applySkills": "应用",
         "installFailed": "上次安装失败",
