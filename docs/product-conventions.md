@@ -417,7 +417,9 @@ wakes, code-host events, and agent-to-agent calls always run as their own turns.
 When the runtime cannot steer — it lacks the capability, it declined because the
 turn was ending as the message arrived, the per-turn steering budget is spent, or
 the operator turned the `sessionSteering` feature off — the message waits behind
-the turn exactly as before. `!cancel` remains the way to abandon the work in
+the turn exactly as before. A console message with uploaded files is never steered
+or folded into the running turn: it waits and runs as its own turn, so the agent
+receives the files and not just their names. `!cancel` remains the way to abandon the work in
 progress rather than redirect it.
 
 ## Slack message attribution footer

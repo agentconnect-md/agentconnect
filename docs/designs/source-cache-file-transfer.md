@@ -223,7 +223,10 @@ the `x-amz-checksum-sha256` and `x-amz-tagging` headers (chart README).
 
 - **No steering with files.** A steered turn carries only the attachment marker, so the
   console never steers a turn that has files, and the daemon refuses to: a message with an
-  upload queues behind the live turn, and a steer-only one is refused `busy`.
+  upload queues behind the live turn, and a steer-only one is refused `busy`. The live
+  turn's context fences do not fold that message in either, so it always runs as its own
+  turn with its download links
+  ([turn-final-context-refresh.md](turn-final-context-refresh.md) §5.4).
 - **Peers see the marker only.** In a multi-agent conversation the relay gives the
   participants a turn does not address the `[attached: …]` marker in their context copy,
   never the upload itself.
