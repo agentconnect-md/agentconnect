@@ -192,6 +192,7 @@ import {
   AgentPermissionRequestPageDto,
   toPermissionRequestDto,
   AgentSkillSourceListDto,
+  AgentSkillSourceStatusDto,
   AgentPermissionDecisionBody,
   AgentCreatedDto,
   AgentListDto,
@@ -2518,6 +2519,33 @@ export function agentRoutes(deps: HttpDeps) {
               ]
             : []
         )
+      }
+    )
+
+    r.get(
+      '/agents/:id/skill-source-status',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Get an agent’s skill source install status',
+          description:
+            'The latest install failure of each skill source the agent enables, as the daemon serving it reported after its last skill reconcile: the source name, an enumerated reason code (resolution_failed, access_denied, ref_moved, commit_unavailable, sha_fetch_refused, fetch_failed, limits_exceeded or cli_failed) and when the control plane received it. A source that installed, or has not been tried since it was enabled, is not listed. Raw Git or CLI output is never stored; detail stays in the daemon log. Gated on viewing the agent.',
+          operationId: 'getAgentSkillSourceStatus',
+          params: IdParam,
+          response: { 200: AgentSkillSourceStatusDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const rows = (await deps.repos.agentSkillSourceStatus?.list(AgentId(agent.id))) ?? []
+        // A row for a Source the agent no longer enables is stale until its next report.
+        const enabled = new Set(agent.skills.map((ref) => parseSkillRef(ref).source))
+        return {
+          sources: rows
+            .filter((row) => enabled.has(row.sourceName))
+            .map((row) => ({ name: row.sourceName, code: row.code, reportedAt: row.reportedAt.toISOString() }))
+        }
       }
     )
 

@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
+  SkillSourceFailureCode,
   AgentModelProvider,
   AgentDecisionIds,
   ChatActions,
@@ -1330,6 +1331,17 @@ export const AgentSkillSourceDto = z.object({
   private: z.boolean()
 })
 export const AgentSkillSourceListDto = z.array(AgentSkillSourceDto)
+
+/** `GET /agents/:id/skill-source-status` — each enabled Source's latest install failure as its daemon reported it (source-cache.md §11). */
+export const AgentSkillSourceStatusDto = z.object({
+  sources: z.array(
+    z.object({
+      name: z.string(),
+      code: SkillSourceFailureCode,
+      reportedAt: z.string() // ISO-8601, the Control Plane's receipt time
+    })
+  )
+})
 
 // ── organization environment: variables & secrets ──────────────────────────
 // docs/designs/organization-secrets-and-variables.md §6. Owner-only registry.

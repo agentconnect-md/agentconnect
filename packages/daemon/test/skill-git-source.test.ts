@@ -221,7 +221,10 @@ describe('Git skill source policy boundary', () => {
           agentId: 'agent-1',
           useGitCredential: true
         })
-      ).rejects.toThrow(/is not allowed by this daemon/i)
+      ).rejects.toMatchObject({
+        message: expect.stringMatching(/is not allowed by this daemon/i),
+        code: 'resolution_failed'
+      })
       expect(existsSync(destination)).toBe(false)
       // An allowed origin off GitHub is acquired over https only, refused before any directory or Git work.
       configureWorkspaceGitOrigins(['https://github.com', 'ssh://git.example.test'])
@@ -342,7 +345,10 @@ describe('Git skill source policy boundary', () => {
           fetch: replaced.fetch,
           privateHome: join(root, 'home-2')
         })
-      ).rejects.toThrow(/does not match the configured source/)
+      ).rejects.toMatchObject({
+        message: expect.stringMatching(/does not match the configured source/),
+        code: 'resolution_failed'
+      })
       const gone = offlineGitHubFetch({ archive: tarGzip([]), identities: [{ status: 404 }] })
       await expect(
         verifyGitSkillSourceAccess(entry('acme/skills'), {
@@ -351,7 +357,7 @@ describe('Git skill source policy boundary', () => {
           fetch: gone.fetch,
           privateHome: join(root, 'home-3')
         })
-      ).rejects.toThrow(/status 404/)
+      ).rejects.toMatchObject({ message: expect.stringMatching(/status 404/), code: 'access_denied' })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -530,7 +536,10 @@ describe('Git skill source policy boundary', () => {
           useGitCredential: false,
           fetch: offline.fetch
         })
-      ).rejects.toThrow(/link or special entry inside a skill directory/i)
+      ).rejects.toMatchObject({
+        message: expect.stringMatching(/link or special entry inside a skill directory/i),
+        code: 'limits_exceeded'
+      })
       expect(existsSync(join(root, 'acquired/repository/skills/grill-me/SKILL.md'))).toBe(false)
     } finally {
       await rm(root, { recursive: true, force: true })

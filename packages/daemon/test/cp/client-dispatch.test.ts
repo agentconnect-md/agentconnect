@@ -3,6 +3,7 @@ import {
   buildEnvelope,
   decodeEnvelope,
   MAX_FRAME_BYTES,
+  AGENT_SKILL_STATUS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   DECISION_PROVIDER_PROFILES,
   DECISION_RAW_JSON_MAX_CHARS,
@@ -382,6 +383,21 @@ describe('CpClient dispatch', () => {
 
     const legacy = await readyClient({}, [])
     legacy.client.emitSessionActivity(activity)
+    expect(legacy.t.sent).toHaveLength(0)
+  })
+
+  it('sends agent/skill-status only to a CP that stores it', async () => {
+    const status = {
+      agentId: CRON_AGENT_ID,
+      failed: [{ name: 'other-host', code: 'sha_fetch_refused' as const }],
+      ts: '2026-07-27T00:00:00.000Z'
+    }
+    const current = await readyClient({}, [AGENT_SKILL_STATUS_V1_FEATURE])
+    current.client.emitAgentSkillStatus(status)
+    expect(JSON.parse(current.t.sent[0]!)).toMatchObject({ type: 'agent/skill-status', payload: status })
+
+    const legacy = await readyClient({}, [])
+    legacy.client.emitAgentSkillStatus(status)
     expect(legacy.t.sent).toHaveLength(0)
   })
 

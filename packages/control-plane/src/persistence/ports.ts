@@ -11,6 +11,7 @@
  */
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
+  SkillSourceFailureCode,
   AgentModelProvider,
   AgentApiGates,
   ChatActions,
@@ -6668,6 +6669,24 @@ export interface SkillSourceRepo {
    *  Org-fenced: a cross-org id is 'deleted' — the same answer as an unknown id,
    *  and (unlike 'referenced') one that discloses nothing about the foreign row. */
   delete(orgId: OrgId, id: string): Promise<'deleted' | 'referenced'>
+}
+
+/** One enabled skill Source's latest install failure for an agent (source-cache.md §11). */
+export interface AgentSkillSourceStatusRecord {
+  sourceName: string
+  code: SkillSourceFailureCode
+  reportedAt: Date
+}
+
+/** Daemon-reported skill Source failures, keyed by agent and Source name; callers fence the agent's org. */
+export interface AgentSkillSourceStatusRepo {
+  /** Make `failed` the agent's whole status: a Source not named installed, so its row goes. */
+  replace(
+    agentId: AgentId,
+    failed: Array<{ sourceName: string; code: SkillSourceFailureCode }>,
+    reportedAt: Date
+  ): Promise<void>
+  list(agentId: AgentId): Promise<AgentSkillSourceStatusRecord[]>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

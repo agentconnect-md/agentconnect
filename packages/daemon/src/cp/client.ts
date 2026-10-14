@@ -32,6 +32,7 @@ import type {
   EventSession,
   SessionActivity,
   AgentActivity,
+  AgentSkillStatus,
   SessionPurged,
   IntegrationChannels,
   IntegrationRevoked,
@@ -128,6 +129,7 @@ import {
   decodeCpEnvelope,
   encode,
   MAX_FRAME_BYTES,
+  AGENT_SKILL_STATUS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   CRON_REPORT_ACK_FEATURE,
@@ -903,6 +905,13 @@ export class CpClient {
   emitAgentActivity(activity: AgentActivity): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
     this.transport?.send(encode(this.scopedFrame('agent/activity', activity)))
+  }
+
+  /** D→C `agent/skill-status` EVT, fire-and-forget and only to a CP that stores it (source-cache.md §11). */
+  emitAgentSkillStatus(status: AgentSkillStatus): void {
+    if (this.state !== 'READY' && this.state !== 'DRAINING') return
+    if (!this.supportsServerFeature(AGENT_SKILL_STATUS_V1_FEATURE)) return
+    this.transport?.send(encode(this.scopedFrame('agent/skill-status', status)))
   }
 
   /** Signal a durable transcript mutation without putting message content on the control WS. */

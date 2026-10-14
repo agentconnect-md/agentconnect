@@ -250,6 +250,8 @@ export interface HttpDeps {
     codeHostDecisionRouting: import('../persistence/ports.js').CodeHostDecisionRoutingRepo
     /** Org-level shared-skills sources (metadata only; content stays daemon-side). */
     skillSource: SkillSourceRepo
+    /** Daemon-reported skill Source failure codes per agent (source-cache.md §11); absent ⇒ none are stored. */
+    agentSkillSourceStatus?: import('../persistence/ports.js').AgentSkillSourceStatusRepo
     /** Accepted organization Knowledge, managed-skill revisions, and pending suggestion metadata. */
     organizationKnowledge?: OrganizationKnowledgeRepo
     /** Organization-owned variables/secrets + their per-agent bindings (metadata and

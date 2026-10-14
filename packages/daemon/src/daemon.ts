@@ -509,6 +509,7 @@ import { resolveSkillRefInPod } from './skills/pod-skill-ref.js'
 import { GITLAB_SKILL_WINDOW_PREFIX } from './cp/skill-credential-window.js'
 import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
 import { ClusterSkillCoordinator, clusterSkillSupportRequired } from './skills/cluster-skill-coordinator.js'
+import type { SkillSourceFailureEntry } from './skills/skill-source-failure.js'
 import {
   OutputConverger,
   renderStatusBar,
@@ -6605,7 +6606,9 @@ export class Daemon {
       ],
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null,
-      resolveGitSkillRef: (entry: AgentSkillEntrySchema, value: Agent) => this.trackedGitSkillCommit(entry, value)
+      resolveGitSkillRef: (entry: AgentSkillEntrySchema, value: Agent) => this.trackedGitSkillCommit(entry, value),
+      reportSkillSourceFailures: (value: Agent, failures: SkillSourceFailureEntry[]) =>
+        this.reportSkillSourceFailures(value.id, failures)
     }
     // §11: the session a per-session host serves gets its own clones, never a worktree of the primary.
     return request
@@ -6627,6 +6630,15 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (!agent) return []
     return this.workspaces.needsGitcredTunnel(agent) ? ['mcp', 'gitcred'] : ['mcp']
+  }
+
+  /** D→C `agent/skill-status` after a completed skill reconcile: names and codes only, best-effort (source-cache.md §11). */
+  private reportSkillSourceFailures(agentId: string, failed: SkillSourceFailureEntry[]): void {
+    try {
+      this.cpClient?.emitAgentSkillStatus?.({ agentId, failed, ts: new Date(this.clock.now()).toISOString() })
+    } catch (err) {
+      this.log.warn(`skills: source status for "${agentId}" not reported: ${formatErr(err)}`)
+    }
   }
 
   /** The commit a tracking Git skill ref points at now, or null when unknown (the installed commit then stands). */
@@ -6869,7 +6881,8 @@ export class Daemon {
                 ...acquireOptions,
                 destination
               }),
-        ...(client.gitInPod && peer.pod ? { inPod: this.inPodSkillDeps(agent, peer.pod) } : {})
+        ...(client.gitInPod && peer.pod ? { inPod: this.inPodSkillDeps(agent, peer.pod) } : {}),
+        reportSourceFailures: (failures) => this.reportSkillSourceFailures(agent.id, failures)
       },
       {
         agentId: agent.id,

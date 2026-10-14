@@ -33,7 +33,8 @@ import type {
   BotRecord,
   AgentMemoryHistoryRepo,
   ProviderKeyStore,
-  DecisionRepo
+  DecisionRepo,
+  AgentSkillSourceStatusRepo
 } from '../persistence/ports.js'
 import type { AgentMemoryStoreService } from '../agent-memory/store.service.js'
 import type { UsageWriter } from '../usage/writer.js'
@@ -195,6 +196,8 @@ export interface DaemonWsDeps {
   agentMemoryStore?: Pick<AgentMemoryStoreService, 'apply' | 'applyOnce' | 'deduplicatesOperations'>
   /** The change-log table behind `memory/history/append` and `memory/history/read`; absent ⇒ INTERNAL. */
   agentMemoryHistory?: Pick<AgentMemoryHistoryRepo, 'append' | 'page'>
+  /** Stores `agent/skill-status` reports; absent ⇒ the frame is ignored and `agent-skill-status-v1` not advertised. */
+  agentSkillSourceStatus?: Pick<AgentSkillSourceStatusRepo, 'replace'>
   /** github-app workspaces façade; absent ⇒ gitcred/request answers SCOPE_DENIED. */
   github?: GithubService
   /** The selector's installation rosters; absent ⇒ `repo-candidates/request` answers SCOPE_DENIED and is not advertised. */

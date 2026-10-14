@@ -37,6 +37,7 @@ import { createSourceCacheWriter, type SourceCacheWriteOutcome } from '../src/so
 import type { ClusterSkillLedger } from '../src/store/cluster-skill-ledger.js'
 import { LocalStore, type SourceCacheObjectRow } from '../src/store/local-store.js'
 import { memoryStoreDatabase } from './store-support.js'
+import { SkillSourceFailure } from '../src/skills/skill-source-failure.js'
 
 // The S5b golden parity: one agent spec through the daemon-acquisition path and the in-pod path, over the real handler and file:// repos.
 
@@ -263,6 +264,10 @@ interface Run {
   inPod?: Partial<InPodSkillDeps>
   logs?: string[]
   acquired?: string[]
+  /** Every Source failure report, one per committed reconcile. */
+  reported?: Array<Array<{ name: string; code: string }>>
+  /** Fails the daemon acquisition of a Source by name. */
+  failAcquire?: (entry: AgentSkillEntry) => Error | undefined
   /** The bound image takes GitLab plan entries (`skills-git-gitlab`). */
   gitlabPlans?: boolean
 }
@@ -285,8 +290,11 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
       const resolved = resolve(entry)
       return resolved.ok ? resolved.commit : null
     },
+    reportSourceFailures: (failures) => options.reported?.push(failures),
     acquire: async (entry, plannedCommit, destination) => {
       options.acquired?.push(entry.name)
+      const failure = options.failAcquire?.(entry)
+      if (failure) throw failure
       await mkdir(destination, { recursive: true })
       ok(destination, ['clone', '-q', join(w.root, `${repoName(entry.source)}.git`), 'repo'])
       const checkout = join(destination, 'repo')
@@ -673,7 +681,10 @@ describe('sandbox skill reconcile: routing', () => {
       })
       const logs: string[] = []
       const acquired: string[] = []
-      const result = await run(w, pod, 'pod', { logs, acquired })
+      const reported: NonNullable<Run['reported']> = []
+      const result = await run(w, pod, 'pod', { logs, acquired, reported })
+      // Only the committed fallback reports, and it installed every Source.
+      expect(reported).toEqual([[]])
       // The shim published the plan before the reply was refused; the fallback resumes that operation.
       expect(pod.gitPlans()[0]).toHaveLength(2)
       expect(logs.join('\n')).toContain('in-pod Git skill install failed for a; acquiring through the daemon')
@@ -702,8 +713,10 @@ describe('sandbox skill reconcile: routing', () => {
           )
         }
       })
-      const result = await run(w, pod, 'pod')
+      const reported: NonNullable<Run['reported']> = []
+      const result = await run(w, pod, 'pod', { reported })
       expect(result.skipped).toEqual([expect.objectContaining({ sourceId: expect.stringMatching(/^agent:0:/) })])
+      expect(reported).toEqual([[{ name: 'public', code: 'commit_unavailable' }]])
       const resolutions = (await pod.store.ledger()).gitResolutions ?? []
       expect(resolutions.map((r) => r.definitionDigest)).toEqual([gitResolutionDigest(PRIVATE)])
       expect(resolutions.some((r) => r.resolvedCommit === forged)).toBe(false)
@@ -715,9 +728,11 @@ describe('sandbox skill reconcile: routing', () => {
       const pod = await sandbox(w, 'pod')
       const logs: string[] = []
       const acquired: string[] = []
+      const reported: NonNullable<Run['reported']> = []
       await run(w, pod, 'pod', {
         logs,
         acquired,
+        reported,
         resolve: (entry) =>
           entry.name === 'private'
             ? { ok: false }
@@ -726,6 +741,21 @@ describe('sandbox skill reconcile: routing', () => {
       expect(pod.gitPlans()[0]!.map((plan) => plan.sourceId.split(':')[1])).toEqual(['0'])
       expect(acquired).toEqual([])
       expect(logs.join('\n')).toContain('Git source private unresolved and not installed')
+      expect(reported).toEqual([[{ name: 'private', code: 'resolution_failed' }]])
+    })
+  }, 120_000)
+
+  it('reports a daemon-path acquisition failure by its code, and clears it once the Source installs', async () => {
+    await withWorld(async (w) => {
+      const box = await sandbox(w, 'daemon')
+      const reported: NonNullable<Run['reported']> = []
+      let failing = true
+      const failAcquire = (entry: AgentSkillEntry) =>
+        failing && entry.name === 'private' ? new SkillSourceFailure('access_denied', 'raw host output') : undefined
+      await run(w, box, 'daemon', { reported, failAcquire })
+      failing = false
+      await run(w, box, 'daemon', { reported, failAcquire })
+      expect(reported).toEqual([[{ name: 'private', code: 'access_denied' }], []])
     })
   }, 120_000)
 })
