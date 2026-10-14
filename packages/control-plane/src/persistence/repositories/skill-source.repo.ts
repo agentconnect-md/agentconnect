@@ -15,6 +15,7 @@ import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   SkillSourceRepo,
   SkillSourceRecord,
+  SkillSourceCredentialRef,
   CreateSkillSourceInput,
   UpdateSkillSourceInput,
   ResourceVisibility,
@@ -44,7 +45,26 @@ async function skillSourceNameReferenced(tx: Prisma.TransactionClient, orgId: st
   })
 }
 
+// A row an older replica wrote carries only the legacy `private` flag, which always meant a GitHub credential.
+function credentialOf(s: SkillSource): SkillSourceCredentialRef | null {
+  const provider = s.credentialProvider
+  if ((provider === 'github' || provider === 'gitlab') && s.credentialRepoId !== null) {
+    return { provider, repoId: s.credentialRepoId }
+  }
+  return s.private && s.githubRepoId !== null ? { provider: 'github', repoId: s.githubRepoId } : null
+}
+
+// The legacy `private` column is written beside the reference so older replicas keep reading the same answer.
+function credentialColumns(credential: SkillSourceCredentialRef | null) {
+  return {
+    credentialProvider: credential?.provider ?? null,
+    credentialRepoId: credential?.repoId ?? null,
+    private: credential?.provider === 'github'
+  }
+}
+
 function toRecord(s: SkillSource): SkillSourceRecord {
+  const credential = credentialOf(s)
   return {
     id: s.id,
     orgId: OrgId(s.orgId),
@@ -54,7 +74,8 @@ function toRecord(s: SkillSource): SkillSourceRecord {
     ref: s.ref,
     subDir: s.subDir,
     skills: s.skills,
-    private: s.private,
+    private: credential?.provider === 'github',
+    credential,
     visibility: s.visibility as ResourceVisibility,
     sharedWith: s.sharedWith,
     createdByUserId: s.createdByUserId,
@@ -93,7 +114,7 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
           ...(input.ref !== undefined ? { ref: input.ref } : {}),
           ...(input.subDir !== undefined ? { subDir: input.subDir } : {}),
           ...(input.skills ? { skills: input.skills } : {}),
-          ...(input.private !== undefined ? { private: input.private } : {}),
+          ...(input.credential !== undefined ? credentialColumns(input.credential) : {}),
           ...(input.visibility ? { visibility: input.visibility } : {}),
           ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
           ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
@@ -173,7 +194,7 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
           ...(patch.ref !== undefined ? { ref: patch.ref } : {}),
           ...(patch.subDir !== undefined ? { subDir: patch.subDir } : {}),
           ...(patch.skills !== undefined ? { skills: patch.skills } : {}),
-          ...(patch.private !== undefined ? { private: patch.private } : {})
+          ...(patch.credential !== undefined ? credentialColumns(patch.credential) : {})
         }
       })
       // `AgentSpec.skills` is RESOLVED from this row, so an edit here changes the

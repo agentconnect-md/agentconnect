@@ -195,6 +195,10 @@ async function installSkillsLocked(
       opts.warn?.(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
       continue
     }
+    if (parsed.data.githubRepoId === undefined) {
+      opts.warn?.(`skills: skipped Git source ${index + 1}; this daemon installs GitHub sources only`)
+      continue
+    }
     if (sourceNames.has(parsed.data.name)) {
       opts.warn?.(`skills: omitted duplicate historical Git source name "${parsed.data.name}"`)
       continue

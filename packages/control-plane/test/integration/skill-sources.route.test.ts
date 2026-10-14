@@ -814,9 +814,20 @@ describe('POST/PATCH /skill-sources — githubRepoId binding', () => {
         ref: 'main',
         subDir: 'plugins/review',
         skills: [],
+        credential: { provider: 'github' },
         private: true
       }
     ])
+    // The credential is a CodeHostRepository reference, and binding converges that catalog row.
+    expect(await prisma.skillSource.findUniqueOrThrow({ where: { id: created.json().id } })).toMatchObject({
+      credentialProvider: 'github',
+      credentialRepoId: 8080n,
+      private: true
+    })
+    expect(await app.deps.repos.codeHostRepository.byExternalId(DEFAULT_ORG_ID, 'github', 8080n)).toMatchObject({
+      displayPath: 'anthropics/skills',
+      cloneUrl: 'https://github.com/anthropics/skills'
+    })
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/skill-sources` })).json()).toEqual([
       expect.objectContaining({ name: 'kit', private: true })
     ])
@@ -835,6 +846,22 @@ describe('POST/PATCH /skill-sources — githubRepoId binding', () => {
     })
     expect(patched.statusCode).toBe(200)
     expect(patched.json()).toMatchObject({ private: false, skills: ['review'] })
+    expect(await prisma.skillSource.findUniqueOrThrow({ where: { id: created.json().id } })).toMatchObject({
+      credentialProvider: null,
+      credentialRepoId: null,
+      private: false
+    })
+  })
+
+  it('reads a row an older replica wrote with only the private flag as a GitHub credential', async () => {
+    const app = appResolving(publicRepo)
+    const row = await prisma.skillSource.create({
+      data: { orgId: DEFAULT_ORG_ID, name: 'older', source: 'acme/older', githubRepoId: 77n, private: true }
+    })
+    expect(await app.deps.repos.skillSource.get(OrgId(DEFAULT_ORG_ID), row.id)).toMatchObject({
+      private: true,
+      credential: { provider: 'github', repoId: 77n }
+    })
   })
 
   it('back-fills a historical unbound row on the next edit — the repair PATCH could not do', async () => {

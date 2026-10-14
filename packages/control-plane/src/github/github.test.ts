@@ -1255,6 +1255,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       subDir: null,
       skills: [],
       private: true,
+      credential: over.private === false ? null : { provider: 'github', repoId: over.githubRepoId ?? 555n },
       visibility: 'org',
       sharedWith: [],
       createdByUserId: null,

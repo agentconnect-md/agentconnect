@@ -10,7 +10,7 @@
  * source simply drops out rather than failing the whole spec.
  */
 import { AgentSkillEntry, normalizeGitHubSkillSource, redactGitUrlSecrets } from '@agentconnect.md/protocol'
-import type { AgentRecord, SkillSourceRepo } from '../persistence/ports.js'
+import type { AgentRecord, SkillSourceRecord, SkillSourceRepo } from '../persistence/ports.js'
 
 const MAX_PROJECTED_SKILL_SOURCES = 64
 
@@ -120,9 +120,7 @@ export async function resolveAgentSkillEntries(
       ...(row.ref ? { ref: row.ref } : {}),
       ...(row.subDir ? { subDir: row.subDir } : {}),
       skills,
-      // Only a private source carries the flag: it tells the daemon to acquire
-      // through the org GitHub App credential rather than anonymously.
-      ...(row.private ? { private: true } : {})
+      ...credentialFields(row)
     }
     const parsed = AgentSkillEntry.safeParse(candidate)
     if (!parsed.success) {
@@ -146,6 +144,14 @@ export async function resolveAgentSkillEntries(
   return entries
 }
 
+/** The wire credential of a row, plus the legacy `private` flag a daemon that predates `credential` reads instead. */
+function credentialFields(row: SkillSourceRecord): Pick<AgentSkillEntry, 'credential' | 'private'> {
+  const credential = row.credential
+  if (!credential) return {}
+  if (credential.provider === 'github') return { credential: { provider: 'github' }, private: true }
+  return { credential: { provider: 'gitlab', projectId: credential.repoId.toString() } }
+}
+
 /**
  * The private skill-source repositories an agent's enable-list references — the
  * gitcred broker's grant set (shared-skills.md §3): enabling a private source IS
@@ -163,10 +169,10 @@ export async function resolvePrivateSkillSourceRepos(
   const out: Array<{ repoId: bigint; repoFullName: string }> = []
   for (const name of names) {
     const row = await repo.getByName(agent.orgId, name)
-    if (!row || !row.private || row.githubRepoId === null) continue
+    if (row?.credential?.provider !== 'github') continue
     const parsed = parseGithubSkillRepo(row.source)
     if (!parsed) continue
-    out.push({ repoId: row.githubRepoId, repoFullName: `${parsed.owner}/${parsed.repo}` })
+    out.push({ repoId: row.credential.repoId, repoFullName: `${parsed.owner}/${parsed.repo}` })
   }
   return out
 }

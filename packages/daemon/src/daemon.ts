@@ -497,6 +497,7 @@ import { GitSkillRefTracker } from './skills/git-skill-ref-tracker.js'
 import {
   createSkillRefPlanResolution,
   createSkillRefResolution,
+  isCredentialedSkillSource,
   type SkillRefPlan
 } from './skills/skill-ref-resolution.js'
 import { reconcileSandboxSkillSources, type InPodSkillDeps } from './skills/sandbox-skill-reconcile.js'
@@ -3249,7 +3250,7 @@ export class Daemon {
       privateGithubSkillRepoOf: (agentId: string, repoFullName: string) => {
         const wanted = repoFullName.toLowerCase()
         return (this.agents.get(agentId)?.skills ?? []).some(
-          (entry) => entry.private === true && gitSkillRepositoryPath(entry)?.toLowerCase() === wanted
+          (entry) => isCredentialedSkillSource(entry) && gitSkillRepositoryPath(entry)?.toLowerCase() === wanted
         )
       }
     })
@@ -6875,7 +6876,7 @@ export class Daemon {
         : {}),
       // A public entry naming a repository the agent capability grants keeps that grant on the daemon path.
       daemonOnly: (entry) => {
-        if (entry.private === true) return false
+        if (isCredentialedSkillSource(entry)) return false
         const repo = gitSkillRepositoryPath(entry)?.toLowerCase()
         return repo !== undefined && (repo === workspaceRepo || additional.has(repo))
       }

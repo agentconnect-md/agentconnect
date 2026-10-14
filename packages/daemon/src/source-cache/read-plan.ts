@@ -313,7 +313,7 @@ export function createSkillReadPlanner(
     let repo: string
     if (isCredentialedSkillSource(entry)) {
       found.repoClass = 'cred'
-      if (!resolution.credentialed) return miss('unauthorized', 'no_resolve_ref')
+      if (!resolution.credentialed || entry.githubRepoId === undefined) return miss('unauthorized', 'no_resolve_ref')
       repo = credRepoId('github', entry.githubRepoId)
     } else {
       // An anonymous declaration reads only the URL's own anon entry, whatever the repository's visibility.

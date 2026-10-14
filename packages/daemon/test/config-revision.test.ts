@@ -68,6 +68,22 @@ describe('agentSpecDigest', () => {
     expect(agentSpecDigest(selected)).not.toBe(agentSpecDigest(spec({})))
   })
 
+  it('digests a GitHub credential beside private as a restatement, and any other credential as content', () => {
+    const entry = { name: 'kit', source: 'example-org/example-repo', githubRepoId: '7', skills: [], private: true }
+    const legacy = spec({ skills: [entry] })
+    expect(agentSpecDigest(spec({ skills: [{ ...entry, credential: { provider: 'github' } }] }))).toBe(
+      agentSpecDigest(legacy)
+    )
+    const { private: _private, ...anonymous } = entry
+    expect(agentSpecDigest(spec({ skills: [{ ...anonymous, credential: { provider: 'github' } }] }))).not.toBe(
+      agentSpecDigest(spec({ skills: [anonymous] }))
+    )
+    const gitlab = { name: 'kit', source: 'https://gitlab.example.test/group/project', skills: [] }
+    expect(
+      agentSpecDigest(spec({ skills: [{ ...gitlab, credential: { provider: 'gitlab', projectId: '5' } }] }))
+    ).not.toBe(agentSpecDigest(spec({ skills: [gitlab] })))
+  })
+
   it('digests a cleared assistant mode as the absent field, and a policy as content', () => {
     expect(agentSpecDigest(spec({ assistantMode: null }))).toBe(agentSpecDigest(spec({})))
     const enabled = spec({ assistantMode: { enabled: true } })
