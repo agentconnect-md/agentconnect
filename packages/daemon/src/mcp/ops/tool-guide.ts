@@ -139,7 +139,8 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
         'Use it for long work ("fix this bug and open a PR"). A sub-session inherits this conversation’s context, ' +
           'posts nothing, and reports back into this conversation each time a round of its work finishes or fails — ' +
           'no needsReply needed. It can also send you progress or a question meanwhile; answer with messageSubsession ' +
-          'and its id. Say it has started, end your turn, and do not do the work here too.',
+          'and its id. Start it before exploring the request yourself, say it has started, end your turn, and do not ' +
+          'do the work here too.',
         'A message to a sub-session that is still working waits for its next turn; it does not interrupt it. One ' +
           'that already finished starts a new round of work in the same context.',
         'Say in its task which language the people here use, so it reports in that language.',

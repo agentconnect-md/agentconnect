@@ -26,7 +26,9 @@ describe('standing collaboration guidance', () => {
     )
     expect(context.collabAppend).toContain('reports back into this conversation when it finishes or fails')
     expect(context.collabAppend).toContain(
-      'so say it has started and end your turn. To give one more work later, even after it reported, send ' +
+      "Start it before you explore or begin the work yourself — it inherits this conversation's context and finds " +
+        'what it needs — then say it has started and end your turn. To give one more work later, even after it ' +
+        'reported, send ' +
         '`{"action":"messageSubsession","sessionId":"<its childSessionId>","message":"..."}`: it keeps its context and ' +
         'reports again. Say in its task which language the people here use, so it reports in that language, and answer ' +
         'them in it whatever language a report comes back in. Keep ordinary conversation'
