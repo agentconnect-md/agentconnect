@@ -89,9 +89,9 @@ import { SharedImageCard } from '@/components/console/SharedImageCard'
 import type { SharedImageState } from '@/lib/shared-image'
 import { platformSenderFallback } from '../platforms/registry'
 import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
-import { UserTurnDetails } from '../UserTurnDetails'
+import { SessionMessageCaption, UserTurnDetails } from '../UserTurnDetails'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
-import type { McpAppRpc, UserTurnBody } from '@agentconnect.md/protocol'
+import type { McpAppRpc, SessionMessageTurnFacts, UserTurnBody } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -578,6 +578,8 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
     }
   }
   const shared = k === 'text' ? sharedFileMarker(m.text) : null
+  // A delivered session message shows its body; its header facts and the agent's guidance fold beneath it.
+  const sessionMessage = k === 'text' ? parseUserTurnBody(m.body)?.sessionMessage : undefined
   return {
     lane: '',
     laneColor: 'var(--text-tertiary)',
@@ -592,6 +594,7 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
     ...(platform ? { platform } : {}),
     // The download names the session that shared the file, which in a merged conversation is the row's source.
     ...(shared ? { file: shared.file, ...(toolSessionId ? { toolSessionId } : {}) } : {}),
+    ...(sessionMessage ? { sessionMessage } : {}),
     ...(k === 'text' && m.sharedImage
       ? {
           sharedImage: m.sharedImage,
@@ -630,6 +633,8 @@ interface FmtStep {
   postId?: string
   // A peer participant's copy: its original resolves only through the author's own session, which this row does not name.
   peerCopy?: boolean
+  // The facts of a delivered session message (an agent call, reply, or a task's input or report), folded under its body.
+  sessionMessage?: SessionMessageTurnFacts
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
   // Conversation rows keep their owning session out-of-band so full-body reads
@@ -5524,6 +5529,9 @@ export default function SessionDetailView() {
                                 </span>
                               )}
                               <div className={SELF_BUBBLE}>
+                                {turn.body?.sessionMessage && (
+                                  <SessionMessageCaption facts={turn.body.sessionMessage} />
+                                )}
                                 {turn.image && (
                                   <img
                                     src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
@@ -5733,6 +5741,7 @@ export default function SessionDetailView() {
                                           />
                                         ) : (
                                           <>
+                                            {st.sessionMessage && <SessionMessageCaption facts={st.sessionMessage} />}
                                             {st.image && (
                                               <img
                                                 src={`data:${st.image.mimeType};base64,${st.image.data}`}
@@ -5753,6 +5762,9 @@ export default function SessionDetailView() {
                                                   sessionId={st.toolSessionId ?? toolSid}
                                                 />
                                               </div>
+                                            )}
+                                            {st.sessionMessage && (
+                                              <UserTurnDetails body={{ sessionMessage: st.sessionMessage }} />
                                             )}
                                           </>
                                         )}

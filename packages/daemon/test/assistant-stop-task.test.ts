@@ -15,6 +15,9 @@ import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
+/** What the model received for a delivered message: its prompt when the console shows less (§9.5), else its text. */
+const modelText = (msg: { text: string; turnBody?: { prompt?: string } }): string => msg.turnBody?.prompt ?? msg.text
+
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const AGENT = 'bot-a'
 const INT = 'int-bot-a'
@@ -122,7 +125,9 @@ async function boot(opts: { assistantMode?: boolean } = {}) {
     deps,
     // Each report's body, without the session-message header it reaches the owning session under (send-message-guide.md §9.5).
     reports: () =>
-      dispatched.filter((c) => c.msg.parentReport === true).map((c) => c.msg.text.replace(SESSION_MESSAGE_HEADER, '')),
+      dispatched
+        .filter((c) => c.msg.parentReport === true)
+        .map((c) => modelText(c.msg).replace(SESSION_MESSAGE_HEADER, '')),
     async close() {
       // Every live turn ends as answered, and so does whatever was queued behind it.
       rt.behavior.sub = rt.behavior.plain = 'answer'

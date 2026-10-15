@@ -229,6 +229,41 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
+  it('shows a call’s body alone, but keeps a wake paired with a visible post on that post’s own text', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    await (daemon as any).store.upsertSession({
+      key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-parent-1',
+      sessionId: 'sid-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    expect((await call(baseReq({ needsReply: true }))).delivered).toBe(true)
+    const { msg, callMeta } = calls[0]!
+    expect(msg.text).toBe('do the thing')
+    expect(msg.turnBody.prompt).toMatch(
+      /^\[Message msg-[^\]]+\] From bot-a \(agent bot-a, session sid-parent-1\):\ndo the thing\n/
+    )
+    expect(msg.turnBody.sessionMessage).toMatchObject({
+      messageId: callMeta.messageId,
+      kind: 'call',
+      source: { agentId: 'bot-a', sessionId: 'sid-parent-1' },
+      replyRequested: true
+    })
+
+    // The paired wake lands on the visible post's row, so it carries no second display of its own.
+    expect((await call(baseReq({ thread: '300.3', transcriptTs: '300.3' }))).delivered).toBe(true)
+    expect(calls[1]!.msg.turnBody).toBeUndefined()
+    expect(calls[1]!.msg.text).toMatch(/^\[Message msg-[^\]]+\] From bot-a/)
+    await daemon.stop()
+  })
+
   it('inherits the caller session’s immutable Slack source binding', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
@@ -2531,9 +2566,17 @@ describe('replyToSession: answers a recorded message by its id', () => {
     expect(msg.source).toBe('agent')
     expect(msg.sender).toEqual({ id: 'bot-b', isBot: true })
     expect(msg.channel).toBe('C1')
-    expect(msg.text).toBe(
+    // §9.5: the model reads the framed message; the console shows its body, the header folded beside it.
+    expect(msg.turnBody?.prompt).toBe(
       `[Message ${callMeta.messageId}] Reply from bot-b (agent bot-b, session sid-child-1) to your message ${answered}:\nresult: done`
     )
+    expect(msg.text).toBe('result: done')
+    expect(msg.turnBody?.sessionMessage).toEqual({
+      messageId: callMeta.messageId,
+      kind: 'reply',
+      source: { agentId: 'bot-b', label: 'bot-b', sessionId: 'sid-child-1' },
+      inReplyTo: answered
+    })
     // One hop past the answered message, a reply of its own naming it.
     expect(callMeta).toMatchObject({ callFrom: 'bot-b', hopCount: 2, messageKind: 'reply', inReplyTo: answered })
     expect(callMeta.messageId).not.toBe(answered)

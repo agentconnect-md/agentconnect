@@ -18,7 +18,8 @@ import {
   type ExternalSessionAudience,
   type AgentCallAskers,
   type ChildSessionStatusProbe,
-  type RdAgentMsgDeliveryKind
+  type RdAgentMsgDeliveryKind,
+  type UserTurnBody
 } from '@agentconnect.md/protocol'
 import type { Logger } from '../log.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -38,7 +39,14 @@ import { threadKeyForPost } from '../platforms/thread-keys.js'
 import { sessionThreadOf, type NormalizedMessage } from '../messages/normalized.js'
 import type { AssistantSubsession } from '../store/assistant-subsessions.js'
 import { newSessionMessageId, type ReceivedSessionMessage, type SessionMessageKind } from '../store/session-messages.js'
-import { renderSessionMessage, submissionMessageId, type SessionMessageView } from './session-message.js'
+import {
+  renderedSessionMessageInput,
+  renderSessionMessage,
+  sessionMessageInput,
+  submissionMessageId,
+  type SessionMessageView,
+  type ShownInput
+} from './session-message.js'
 import { NOBODY, type TurnAskers } from '../assistant/place-access.js'
 import type { WebchatTransport } from '../webchat/transport.js'
 import type { WebchatTurnContext } from '../webchat/types.js'
@@ -134,6 +142,8 @@ export interface DaemonReport {
   /** The recorded parent, which hears it when the place has no current session. */
   parentSessionId: string
   text: string
+  /** What the console shows of `text`; absent shows it whole. */
+  shown?: ShownInput | undefined
   /** Stable per report: its delivery id and inbox receipt derive from it, so a re-send is deduplicated. */
   reportId: string
   /** The hop depth the report continues; 0 when it starts a chain. */
@@ -147,6 +157,8 @@ export interface DaemonReport {
 /** What a `reporting` row holds to send its round-end report again after a refusal or a restart. */
 interface SubsessionEndReport {
   text: string
+  /** What the console shows of `text`; absent on rows written before it existed. */
+  shown?: ShownInput
   hopCount: number
   caller: DaemonReportCaller
   /** The round it ends; absent means the first. */
@@ -193,17 +205,21 @@ const answers = (link: { messageId?: string }, inReplyTo: string | undefined): b
   link.messageId === undefined || inReplyTo === undefined || link.messageId === inReplyTo
 
 /** The one report a task's work round ends with (send-message-guide.md §8.5). */
-function subsessionRoundReport(
+export function subsessionRoundReport(
   key: string,
   end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>,
   output?: string
-): string {
-  if (end.outcome === 'completed') {
-    return output
-      ? `[task finished] Task ${key} finished this round of work. Its final output, delivered on its behalf:\n\n${output}\n\n${continueHint(key)}`
-      : `[task finished] Task ${key} finished this round of work without a final output; any reply it sent before this is its result. ${continueHint(key)}`
+): { text: string; shown: ShownInput } {
+  const hint = continueHint(key)
+  if (end.outcome === 'completed' && output) {
+    const frame = `[task finished] Task ${key} finished this round of work. Its final output, delivered on its behalf:`
+    return { text: `${frame}\n\n${output}\n\n${hint}`, shown: { text: output, notes: [frame, hint] } }
   }
-  return `[task ended] Task ${key} stopped before finishing (${endReason(end)}). Anything it sent before this is all it reported. ${continueHint(key)}`
+  const status =
+    end.outcome === 'completed'
+      ? `[task finished] Task ${key} finished this round of work without a final output; any reply it sent before this is its result.`
+      : `[task ended] Task ${key} stopped before finishing (${endReason(end)}). Anything it sent before this is all it reported.`
+  return { text: `${status} ${hint}`, shown: { text: status, notes: [hint] } }
 }
 
 /** Why a round stopped, as its report names it. */
@@ -447,20 +463,42 @@ export class CollabCoordinator {
   }
 
   /** send-message-guide.md §9.5: an input's text as the receiving daemon shows it, from its trusted metadata; the body alone when it is no session message. */
-  renderInput(callMeta: CallMeta, body: string, opts: { startsTask?: boolean } = {}): string {
-    if (callMeta.messageId === undefined || callMeta.originSessionId === undefined) return body
-    const kind = callMeta.messageKind ?? 'call'
+  /** A delivery's model input and what the console shows of it: the body, with the header and guidance folded (§9.5). */
+  sessionInput(
+    callMeta: CallMeta,
+    body: string,
+    opts: { startsTask?: boolean; shown?: ShownInput; visiblePost?: boolean } = {}
+  ): { text: string; turnBody?: UserTurnBody } {
+    const label = this.agentDisplayLabel(callMeta.callFrom)
+    if (callMeta.messageId === undefined || callMeta.originSessionId === undefined) {
+      if (!opts.shown) return { text: body }
+      // A daemon report that lands where it is no session message still shows only its readable part.
+      return sessionMessageInput(
+        {
+          kind: callMeta.messageKind ?? 'report',
+          source: {
+            agentId: callMeta.callFrom,
+            label,
+            ...(callMeta.originSessionId !== undefined ? { sessionId: callMeta.originSessionId } : {})
+          }
+        },
+        body,
+        opts.shown
+      )
+    }
     const view: SessionMessageView = {
       messageId: callMeta.messageId,
-      kind,
+      kind: callMeta.messageKind ?? 'call',
       sourceAgentId: callMeta.callFrom,
-      sourceLabel: this.agentDisplayLabel(callMeta.callFrom),
+      sourceLabel: label,
       sourceSessionId: callMeta.originSessionId,
       ...(callMeta.inReplyTo !== undefined ? { inReplyTo: callMeta.inReplyTo } : {}),
       replyRequested: callMeta.needsReply === true,
       ...(opts.startsTask ? { startsTask: true } : {})
     }
-    return renderSessionMessage(view, body)
+    // A wake paired with a visible post lands on that post's row, whose text and replay stay the post's own.
+    if (opts.visiblePost) return { text: renderSessionMessage(view, body) }
+    return renderedSessionMessageInput(view, body, opts.shown)
   }
 
   /** A call from no session is no session message, so it is framed by its sender only, never with an id. */
@@ -647,7 +685,7 @@ export class CollabCoordinator {
         this.subsessionFinalOutputs.delete(key)
         const output = stashed && (stashed.round === undefined || stashed.round === round) ? stashed.text : undefined
         const report: SubsessionEndReport = {
-          text: subsessionRoundReport(key, end, end.outcome === 'completed' ? output : undefined),
+          ...subsessionRoundReport(key, end, end.outcome === 'completed' ? output : undefined),
           hopCount: end.hopCount ?? 0,
           caller: {
             platform: end.msg.platform,
@@ -715,6 +753,7 @@ export class CollabCoordinator {
           : report.caller,
         parentSessionId: row.parentSessionId,
         text: report.text,
+        ...(report.shown !== undefined ? { shown: report.shown } : {}),
         // Each round's report is its own, so a later round's is not mistaken for an earlier one already admitted.
         reportId: (report.round ?? 1) > 1 ? `subsession-end:${key}:${report.round}` : `subsession-end:${key}`,
         hopCount: report.hopCount,
@@ -829,7 +868,7 @@ export class CollabCoordinator {
           return await index.claimReport(agentId, key, JSON.stringify({ text, hopCount: 0, caller }))
         }
         const report: SubsessionEndReport = {
-          text: subsessionRoundReport(key, ended),
+          ...subsessionRoundReport(key, ended),
           hopCount: 0,
           caller,
           ...(round > 1 ? { round } : {}),
@@ -868,7 +907,7 @@ export class CollabCoordinator {
 
   /** One daemon-authored report (patrol, task, sub-session failure) into the place's current session, else the recorded parent, injected as `replyToSession` would; at most once per `reportId`, and no tool reaches it. */
   async deliverDaemonReport(report: DaemonReport): Promise<{ admitted: boolean; reason?: string }> {
-    const { agentId, caller, text } = report
+    const { agentId, caller, text, shown } = report
     const store = this.host.store()
     // An interrupt refuses fresh deliveries until its turns have unwound, and this report is one.
     await this.host.safetyDrained(agentId)
@@ -952,7 +991,15 @@ export class CollabCoordinator {
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      text: this.renderInput(callMeta, `${elsewhere ? withoutContinueHint(text) : text}\n\n${REPORT_ANSWER_LANGUAGE}`),
+      ...this.sessionInput(callMeta, `${elsewhere ? withoutContinueHint(text) : text}\n\n${REPORT_ANSWER_LANGUAGE}`, {
+        shown: {
+          text: shown?.text ?? text,
+          notes: [
+            ...(shown?.notes ?? []).map((note) => (elsewhere ? withoutContinueHint(note) : note)),
+            REPORT_ANSWER_LANGUAGE
+          ]
+        }
+      }),
       // Session-only, never a live conversation post (#966).
       parentReport: true,
       mentionedBots: botUserId ? [botUserId] : [],
@@ -1394,10 +1441,12 @@ export class CollabCoordinator {
       ...(targetCoordinate !== undefined ? { sessionThread: targetCoordinate } : {}),
       ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
       sender: { id: req.callerAgentId, isBot: true },
-      text:
-        messageId !== undefined
-          ? this.renderInput(callMeta, event.text, { startsTask: selfDelegation })
-          : this.framedBySender(req),
+      ...(messageId !== undefined
+        ? this.sessionInput(callMeta, event.text, {
+            startsTask: selfDelegation,
+            visiblePost: req.transcriptTs !== undefined
+          })
+        : { text: this.framedBySender(req) }),
       // §5.6: a sub-session is born titled by its task, never the message header, as its cards name it.
       ...(subsessionTitle ? { initialSessionTitle: subsessionTitle } : {}),
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
@@ -1768,7 +1817,7 @@ export class CollabCoordinator {
       ...(target.transportScope ? { transportScope: target.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: call.callerAgentId, isBot: true },
-      text: this.renderInput(call.callMeta, call.text),
+      ...this.sessionInput(call.callMeta, call.text),
       mentionedBots: botUserId ? [botUserId] : [],
       isDm: false
     }
@@ -2360,7 +2409,7 @@ export class CollabCoordinator {
       ...(caller.transportScope !== undefined ? { transportScope: caller.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      text: this.renderInput(callMeta, req.text),
+      ...this.sessionInput(callMeta, req.text),
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
       isDm: false,
       headless: true
@@ -2507,7 +2556,7 @@ export class CollabCoordinator {
         // Ordered as new content in the source session; a UUID-derived ts would be mis-ordered and dropped.
         transcriptTs: monotonicTs(),
         sender: { id: req.callerAgentId, isBot: true },
-        text: this.renderInput(callMeta, req.text),
+        ...this.sessionInput(callMeta, req.text),
         // #966: a reply resumes the source session-only, never as a live conversation post.
         parentReport: true,
         mentionedBots: integrationId

@@ -1403,6 +1403,17 @@ the session may still need to answer, open obligations first, bounded to a few e
 rest counted and still valid; dropping an entry from the prompt never drops its record. The
 singular `Parent session` reply address is gone.
 
+That framing is the model's, not the reader's. A delivered session message's transcript row keeps
+the readable part as its `text` — the body of a call, reply, or task input, and of a task report
+the task's final output or its one-line status — and carries the rendered message as
+`UserTurnBody.prompt`, which every model-facing read (first delivery, replay, context refresh)
+takes before `text`. Beside it, `UserTurnBody.sessionMessage` holds the header's facts (id, kind,
+source agent and session, the message answered, whether a reply is owed) and, as `notes`, the
+guidance the model received around the body verbatim: the reply call, a report's framing and
+`messageTask` call, and the language note. The console shows the body under a one-line caption
+naming the sender and folds those facts and notes beneath it. A wake paired with a visible post
+lands on that post's row and is left as it is.
+
 ### 9.6 The origin records creation only
 
 A session's origin records who created it: the creating agent, its session, the kind of message

@@ -18,6 +18,9 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 import { z } from 'zod'
 
+/** What the model received for a delivered message: its prompt when the console shows less (§9.5), else its text. */
+const modelText = (msg: { text: string; turnBody?: { prompt?: string } }): string => msg.turnBody?.prompt ?? msg.text
+
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const INT_A = '11111111-1111-4111-8111-1111111111a1'
 const INT_B = '11111111-1111-4111-8111-1111111111b1'
@@ -438,11 +441,11 @@ describe('an approved proposal runs once', () => {
     const started = (await h.d.store.assistantDrafts.get(record.id)) as AssistantDraft
     expect(started).toMatchObject({ status: 'executing', subsessionKey: key, decidedByName: 'Grace' })
     expect(task!.msg).toMatchObject({ channel: 'C1', source: 'agent', headless: true })
-    expect(task!.msg.text).toContain(TASK_OPENING)
-    expect(task!.msg.text).toContain(`Work: ${TASK}`)
+    expect(modelText(task!.msg)).toContain(TASK_OPENING)
+    expect(modelText(task!.msg)).toContain(`Work: ${TASK}`)
     expect(task!.msg.initialSessionTitle).toMatch(/^Approved work: /)
-    expect(task!.msg.text).toContain(`Item ${item.id}`)
-    expect(task!.msg.text).toContain(`Do exactly this work, nothing more. ${TASK_LANGUAGE}`)
+    expect(modelText(task!.msg)).toContain(`Item ${item.id}`)
+    expect(modelText(task!.msg)).toContain(`Do exactly this work, nothing more. ${TASK_LANGUAGE}`)
     expect(task!.callMeta).toMatchObject({
       callFrom: 'bot-a',
       hopCount: 0,
@@ -464,7 +467,7 @@ describe('an approved proposal runs once', () => {
     expect(taskCtx.tools.map((t) => t.name)).not.toContain('propose')
 
     // §9.5: the reply reaches the place under its header, answering the message that started the work.
-    expect(h.reports().map((c) => c.msg.text)).toEqual([
+    expect(h.reports().map((c) => modelText(c.msg))).toEqual([
       expect.stringMatching(
         /^\[Message msg-[^\]]+\] Reply from bot-a .* to your message msg-[^:]+:\nRebased and pushed\.$/
       )
@@ -515,10 +518,10 @@ describe('an approved proposal runs once', () => {
     await h.decide(record.id)
     await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
     await h.settled()
-    expect(h.reports()[0]!.msg.text).toMatch(
+    expect(modelText(h.reports()[0]!.msg)).toMatch(
       /^\[approved work ended\] Approved work .* stopped before finishing \(error\)/
     )
-    expect(h.reports()[0]!.msg.text).toContain(`start a task if the work is still needed.\n\n${ANSWER_LANGUAGE}`)
+    expect(modelText(h.reports()[0]!.msg)).toContain(`start a task if the work is still needed.\n\n${ANSWER_LANGUAGE}`)
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'failed', failure: 'it failed' })
     expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain('ended without reporting back')
     await h.daemon.stop()
@@ -950,11 +953,11 @@ describe('a task cut short by a restart or handover', () => {
 
     expect(h.tasks()).toHaveLength(1)
     expect(h.reports()).toHaveLength(1)
-    expect(h.reports()[0]!.msg.text).toContain(
+    expect(modelText(h.reports()[0]!.msg)).toContain(
       '[approved work cut short] Not sure this went through, please check: the approved work'
     )
-    expect(h.reports()[0]!.msg.text).toContain(`item ${item.id}`)
-    expect(h.reports()[0]!.msg.text).toContain(`Tell the people here to check.\n\n${ANSWER_LANGUAGE}`)
+    expect(modelText(h.reports()[0]!.msg)).toContain(`item ${item.id}`)
+    expect(modelText(h.reports()[0]!.msg)).toContain(`Tell the people here to check.\n\n${ANSWER_LANGUAGE}`)
     expect(h.reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: place.coordinate })
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'outcome_unknown' })
     expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: 'failed' })
@@ -983,7 +986,7 @@ describe('a task cut short by a restart or handover', () => {
     await h.settled()
 
     expect(h.tasks()).toHaveLength(0)
-    expect(h.reports()[0]!.msg.text).toContain(
+    expect(modelText(h.reports()[0]!.msg)).toContain(
       '[approved work cut short] Not sure this went through, please check: the approved work'
     )
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'outcome_unknown' })
@@ -1126,7 +1129,7 @@ describe('a task cut short by a restart or handover', () => {
 
     expect(next).not.toBe(place.coordinate)
     expect(h.reports()).toHaveLength(1)
-    expect(h.reports()[0]!.msg.text).toContain(
+    expect(modelText(h.reports()[0]!.msg)).toContain(
       '[approved work cut short] Not sure this went through, please check: the approved work'
     )
     expect(h.reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: next })
@@ -1161,7 +1164,7 @@ describe('the patrol’s standing rules', () => {
     await h.d.patrols.sweep()
     await vi.waitFor(() => expect(h.patrols()).toHaveLength(1), WAIT)
     await h.settled()
-    const text = h.patrols()[0]!.msg.text
+    const text = modelText(h.patrols()[0]!.msg)
     expect(text).toContain('one of three outcomes')
     expect(text).toContain('call `propose` once')
     expect(text).toContain('The item gets its observation either way.')

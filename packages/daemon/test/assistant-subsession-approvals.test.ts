@@ -31,6 +31,9 @@ import { slackApprovalCards } from '../src/platforms/slack/approval-card.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
+/** What the model received for a delivered message: its prompt when the console shows less (§9.5), else its text. */
+const modelText = (msg: { text: string; turnBody?: { prompt?: string } }): string => msg.turnBody?.prompt ?? msg.text
+
 const AGENT = 'bot-a'
 const OWNER = agentHostKey(AGENT)
 const ACP = 'acp-sub-1'
@@ -988,7 +991,7 @@ describe('through the daemon', () => {
       clock.advance(1)
       await vi.waitFor(() => expect(reports).toHaveLength(1), WAIT)
       expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }])
-      expect(reports[0]!.text.replace(SESSION_MESSAGE_HEADER, '')).toBe(
+      expect(modelText(reports[0]!).replace(SESSION_MESSAGE_HEADER, '')).toBe(
         `[task ended] Task ${res.targetSession} stopped before finishing (approval wait expired). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${res.targetSession}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
       )
       expect((await d.store.listPermissionRequests(agentId))[0]).toMatchObject({

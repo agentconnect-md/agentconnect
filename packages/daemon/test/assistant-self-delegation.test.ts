@@ -191,10 +191,14 @@ describe('self-delegation: every agent opens a sub-session', () => {
         transportScope: caller.scope,
         headless: true,
         sender: { id: 'bot-a', isBot: true },
-        // §9.5: a session message from the owning session, with its id and the reply call.
-        text: expect.stringMatching(
-          /^\[Message msg-[^\]]+\] From your own session \(session sid-parent-1\), as a background task:\nfix the flaky test and open a PR\n\n\[Send progress, a question, or your result for it with sendMessage \{"action":"replyToSession","messageId":"msg-/
-        ),
+        // §9.5: the console shows the task's instruction; the model reads it as a session message with its id and reply call.
+        text: 'fix the flaky test and open a PR',
+        turnBody: {
+          prompt: expect.stringMatching(
+            /^\[Message msg-[^\]]+\] From your own session \(session sid-parent-1\), as a background task:\nfix the flaky test and open a PR\n\n\[Send progress, a question, or your result for it with sendMessage \{"action":"replyToSession","messageId":"msg-/
+          ),
+          sessionMessage: expect.objectContaining({ kind: 'taskInput', startsTask: true, replyRequested: true })
+        },
         // Born titled by its task, as its cards name it, never by the wrapper it reads.
         initialSessionTitle: 'fix the flaky test and open a PR'
       })

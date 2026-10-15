@@ -1,5 +1,5 @@
 import type { UserTurnBody } from '@agentconnect.md/protocol'
-import { CodehostTurnFacts, LinearTurnFacts } from '@agentconnect.md/protocol/user-turn-body'
+import { CodehostTurnFacts, LinearTurnFacts, SessionMessageTurnFacts } from '@agentconnect.md/protocol/user-turn-body'
 
 /**
  * The `UserTurnBody` behind a text row (transcript-full-tool-body.md §9), decoded fail-closed
@@ -16,13 +16,19 @@ export function parseUserTurnBody(body: string | undefined): UserTurnBody | unde
     return undefined
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-  const { linear, codehost } = parsed as { linear?: unknown; codehost?: unknown }
+  const { linear, codehost, sessionMessage } = parsed as {
+    linear?: unknown
+    codehost?: unknown
+    sessionMessage?: unknown
+  }
   const facts: UserTurnBody = {}
   const linearFacts = LinearTurnFacts.safeParse(linear)
   if (linearFacts.success) facts.linear = linearFacts.data
   const codehostFacts = CodehostTurnFacts.safeParse(codehost)
   if (codehostFacts.success) facts.codehost = codehostFacts.data
-  return facts.linear || facts.codehost ? facts : undefined
+  const messageFacts = SessionMessageTurnFacts.safeParse(sessionMessage)
+  if (messageFacts.success) facts.sessionMessage = messageFacts.data
+  return facts.linear || facts.codehost || facts.sessionMessage ? facts : undefined
 }
 
 /** `7830b10` — the seven characters a person quotes a commit by. */
