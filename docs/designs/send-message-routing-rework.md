@@ -516,6 +516,11 @@ Agent-authored text cannot issue in-conversation control commands such as
 
 ## 7. Parent-session replies
 
+> **Update:** [`send-message-guide.md`](send-message-guide.md) replaces this contract. Every call
+> takes an `action`, and `replyToSession` answers a received message by its `messageId`,
+> authorized and routed by that message's record alone (§9.4); the origin no longer authorizes
+> replies (§9.6). Background self-work is `startTask` (§8). This section records the earlier rule.
+
 `sendMessage({"sessionId":"<parent>","message":"..."})` remains authorized
 only against the caller session's active or persisted origin.
 
