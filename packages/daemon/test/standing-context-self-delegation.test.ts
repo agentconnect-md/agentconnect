@@ -10,7 +10,6 @@ const BASE = {
   thread: '100.1',
   envSecretNames: [],
   fileSecrets: [],
-  needsReplyToParent: false,
   memoryIndex: '',
   usesMeta: true
 }
@@ -42,5 +41,19 @@ describe('standing collaboration guidance', () => {
     )
     for (const text of [context.resumeSystemContext, context.sessionContext, context.metaContext!])
       expect(text).toContain(context.collabAppend)
+  })
+
+  it('teaches answering a message by its id, never a parent session (send-message-guide.md §9.5–§9.6)', () => {
+    const context = buildStandingContext({ ...BASE, sessionId: 'sid-self', originSessionId: 'sid-creator' })
+    expect(context.collabAppend).toContain(
+      'A message another session sends you starts with its id (`[Message <id>] From …`); answer it with ' +
+        '`{"action":"replyToSession","messageId":"<that id>","message":"..."}`: the reply reaches only the session ' +
+        'that sent that message, and you may answer a message more than once.'
+    )
+    expect(context.collabAppend).not.toContain('"sessionId":"<Parent session>"')
+    // The origin is a record of who created the session, not a reply address, and a non-task gets no reporting block.
+    expect(context.agentMeta).toContain('- Created by session: sid-creator')
+    expect(context.agentMeta).not.toContain('Parent session')
+    expect(context.taskReportingAppend).toBe('')
   })
 })

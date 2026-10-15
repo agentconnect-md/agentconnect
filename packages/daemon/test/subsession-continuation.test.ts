@@ -246,15 +246,25 @@ const continuation = (caller: { scope: string; coordinate: string }, sessionId: 
   text
 })
 
-/** The child's own `replyToSession` to its parent. */
-const childReply = (d: any, caller: { scope: string }, thread: string, text: string) =>
+/** The newest message `key` received, which its `replyToSession` answers (send-message-guide.md §9.4). */
+const lastReceived = async (d: any, key: string, kind?: string) => {
+  const messages = (await d.store.sessionMessages.listFor(key, 50)) as {
+    messageId: string
+    kind: string
+    createdAt: number
+  }[]
+  return messages.filter((m) => kind === undefined || m.kind === kind).sort((a, b) => b.createdAt - a.createdAt)[0]!
+}
+
+/** The child's own `replyToSession`, answering the newest message its owning session sent it. */
+const childReply = async (d: any, caller: { scope: string }, thread: string, text: string) =>
   d.collab.replyToSession({
     callerAgentId: 'bot-a',
     platform: 'slack',
     callerTransportScope: caller.scope,
     callerChannel: 'C1',
     callerThread: thread,
-    sessionId: 'sid-parent-1',
+    messageId: (await lastReceived(d, sessionKey('slack', 'C1', thread, 'bot-a', caller.scope))).messageId,
     text
   })
 
@@ -296,10 +306,20 @@ describe('messageTask continues an existing task of this session', () => {
     const inputs = subInputs(h.dispatched)
     expect(inputs).toHaveLength(2)
     expect(sessionKey('slack', 'C1', inputs[1]!.msg.thread!, 'bot-a', inputs[1]!.msg.transportScope)).toBe(child)
+    // §9.5: the input shows its message id, its source, and the reply call.
+    const messageId = inputs[1]!.callMeta.messageId as string
     expect(inputs[1]!.msg.text).toBe(
-      'From the session that started this task (session sid-parent-1), a new message for this background task: also Windows'
+      `[Message ${messageId}] From the session that started this task (session sid-parent-1), a new message for this ` +
+        `background task:\nalso Windows\n\n[Send progress, a question, or your result for it with sendMessage ` +
+        `{"action":"replyToSession","messageId":"${messageId}","message":"..."}; a reply does not end your work.]`
     )
-    expect(inputs[1]!.callMeta).toMatchObject({ originSessionId: 'sid-parent-1', needsReply: true, subsessionRound: 2 })
+    expect(inputs[1]!.callMeta).toMatchObject({
+      originSessionId: 'sid-parent-1',
+      needsReply: true,
+      subsessionRound: 2,
+      messageKind: 'taskInput'
+    })
+    expect(inputs[0]!.msg.text).toContain(`From your own session (session sid-parent-1), as a background task:`)
     expect((await h.d.store.getSession(child))?.acpSessionId).toBe(firstSession)
     expect(await h.d.store.assistantSubsessions.list('bot-a', 10)).toHaveLength(1)
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'done', round: 2 })
@@ -408,9 +428,12 @@ describe('a work round, its slot and its outcome', () => {
     finish()
     await vi.waitFor(() => expect(h.reports()).toHaveLength(3), WAIT)
     await h.settled()
+    // §9.5: each reply reaches the owning session under its own header, answering the owner's message.
     expect(h.reports().map((c) => c.msg.text)).toEqual([
-      'Halfway: the failure is isolated.',
-      'Should I keep the old format?',
+      expect.stringMatching(
+        /^\[Message msg-[^\]]+\] Reply from bot-a .* to your message msg-[^:]+:\nHalfway: the failure is isolated\.$/
+      ),
+      expect.stringMatching(/\nShould I keep the old format\?$/),
       expect.stringContaining(finished(child))
     ])
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
@@ -589,7 +612,7 @@ describe('a work round, its slot and its outcome', () => {
     expect(h.reports()).toHaveLength(0)
     releasePeer()
     await vi.waitFor(() => expect(reportedFromWake).toMatchObject({ delivered: true }), WAIT)
-    await vi.waitFor(() => expect(h.reports().map((c) => c.msg.text)).toContain('PEER-RESULT'), WAIT)
+    await vi.waitFor(() => expect(h.reports().some((c) => c.msg.text.endsWith('\nPEER-RESULT'))).toBe(true), WAIT)
     await vi.waitFor(() => expect(h.reports().some((c) => c.msg.text.includes(finished(child)))).toBe(true), WAIT)
     await h.settled()
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
@@ -608,13 +631,15 @@ describe('a work round, its slot and its outcome', () => {
     await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
     await h.settled()
     expect(h.rt.subPrompts).toHaveLength(1)
-    expect(h.reports()[0]!.msg.text).toBe(
-      `[task ended] Task ${child} stopped before finishing (stop). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${child}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
+    expect(h.reports()[0]!.msg.text).toMatch(/^\[Message msg-[^\]]+\] Report from your task \(session [^)]+\):\n/)
+    expect(h.reports()[0]!.msg.text).toContain(
+      `\n[task ended] Task ${child} stopped before finishing (stop). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${child}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'failed' }), WAIT)
     // The child refuses replies of the stopped round, and runs again only when asked.
     expect(await childReply(h.d, caller, subInputs(h.dispatched)[0]!.msg.thread!, 'late')).toEqual({
       delivered: false,
+      inReplyTo: expect.any(String),
       reason: 'task_ended'
     })
     expect((await h.d.collab.continueSubsession(continuation(caller, child, 'try again'))).delivered).toBe(true)
@@ -679,15 +704,14 @@ describe('admission that cannot be decided yet', () => {
   })
 })
 
-describe('the parent stays the child’s origin', () => {
-  it('routes the parent’s reciprocal reply through the round accounting, and refuses another session of the agent', async () => {
+describe('the owning session and its task answer each other’s messages', () => {
+  it('routes the owning session’s reply to a task’s report through the round accounting, and no other session can', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     const child = await startAndFinish(h, caller)
-    const outward = await h.d.store.ensureOutwardSessionId(child, 'bot-a', Date.now())
-    // The parent session's durable origin names the child, as the turn its report woke would.
-    const parent = await h.d.store.getSession(caller.key)
-    await h.d.store.upsertSession({ ...parent, originSessionId: outward })
+    // §9.3: the round's report reached its owning session as a message from the task.
+    const report = await lastReceived(h.d, caller.key, 'report')
+    expect(h.reports()[0]!.msg.text).toContain(`[Message ${report.messageId}] Report from your task`)
     const reply = (from: { scope: string; coordinate: string }, channel = 'C1') =>
       h.d.collab.replyToSession({
         callerAgentId: 'bot-a',
@@ -695,35 +719,59 @@ describe('the parent stays the child’s origin', () => {
         callerTransportScope: from.scope,
         callerChannel: channel,
         callerThread: from.coordinate,
-        sessionId: outward,
+        messageId: report.messageId,
         text: 'Yes, keep the old format.'
       })
-    expect(await reply(caller)).toEqual({ delivered: true, targetSession: child })
+    expect(await reply(caller)).toEqual({ delivered: true, targetSession: child, inReplyTo: report.messageId })
     await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
     await h.settled()
-    expect(subInputs(h.dispatched)[1]!.callMeta).toMatchObject({ originSessionId: 'sid-parent-1', subsessionRound: 2 })
+    expect(subInputs(h.dispatched)[1]!.callMeta).toMatchObject({
+      originSessionId: 'sid-parent-1',
+      subsessionRound: 2,
+      messageKind: 'taskInput'
+    })
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'done', round: 2 })
     expect((await h.d.store.getSession(child))?.originSessionId).toBe('sid-parent-1')
-    // Another session of the agent whose origin also names the child cannot message it.
+    // Another session of the agent cannot answer a message it never received.
     const other = await seedCaller(h.d, 'bot-a', 'C2')
-    const otherRec = await h.d.store.getSession(other.key)
-    await h.d.store.upsertSession({ ...otherRec, originSessionId: outward })
-    expect(await reply(other, 'C2')).toEqual({ delivered: false, reason: 'not_authorized' })
+    expect(await reply(other, 'C2')).toEqual({
+      delivered: false,
+      inReplyTo: report.messageId,
+      reason: 'message_not_found'
+    })
     expect(subInputs(h.dispatched)).toHaveLength(2)
     await h.daemon.stop()
   })
 
-  it('records no standing reply path from the owning session into a task that reported to it', async () => {
+  it('settles the owner’s messages to a task with its round report, never with the task’s own replies', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
-    const child = await startAndFinish(h, caller)
-    expect(h.reports()).toHaveLength(1)
-    const outward = await h.d.store.ensureOutwardSessionId(child, 'bot-a', Date.now())
-    expect(await h.d.store.sessionSources.get(caller.key, outward)).toBeUndefined()
+    let settleRound!: () => void
+    h.rt.behavior.subQueue.push(async () => {
+      const thread = subInputs(h.dispatched)[0]!.msg.thread!
+      expect(await childReply(h.d, caller, thread, 'progress')).toMatchObject({ delivered: true })
+      await new Promise<void>((resolve) => (settleRound = resolve))
+      return 'end_turn'
+    })
+    const created = await send(h.d, caller, { action: 'startTask', message: 'long work' })
+    const child: string = created.taskId
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
+    const input = await lastReceived(h.d, child, 'taskInput')
+    expect(await h.d.store.sessionMessages.received(input.messageId)).toMatchObject({
+      recipientKey: child,
+      sourceSessionId: 'sid-parent-1',
+      replyState: 'open'
+    })
+    settleRound()
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
+    await h.settled()
+    expect((await h.d.store.sessionMessages.received(input.messageId))?.replyState).toBe('replied')
     await h.daemon.stop()
   })
+})
 
-  it('tells a task that its owning session is its origin and that a reply does not end its work', () => {
+describe('a task’s standing context', () => {
+  it('tells a task to answer its owning session’s messages by id, and that a reply does not end its work', () => {
     const standing = buildStandingContext({
       agentName: 'bot-a',
       agentId: 'bot-a',
@@ -731,19 +779,18 @@ describe('the parent stays the child’s origin', () => {
       channel: 'C1',
       thread: 'subsession:1',
       sessionId: 'sid-child-1',
-      parentSessionId: 'sid-parent-1',
+      originSessionId: 'sid-parent-1',
       envSecretNames: [],
       fileSecrets: [],
-      needsReplyToParent: true,
       memoryIndex: '',
       usesMeta: true
     })
-    expect(standing.agentMeta).toContain('- Parent session: sid-parent-1')
-    expect(standing.parentReplyAppend).toContain(
-      '`{"action":"replyToSession","sessionId":"sid-parent-1","message":"..."}`; a reply does not end your work.'
+    expect(standing.agentMeta).toContain('- Created by session: sid-parent-1')
+    expect(standing.taskReportingAppend).toContain(
+      '`{"action":"replyToSession","messageId":"<id of its message>","message":"..."}`; a reply does not end your work.'
     )
-    expect(standing.parentReplyAppend).toContain('You are a background task of your own session sid-parent-1')
-    expect(standing.parentReplyAppend).toContain('the daemon tells that session automatically')
-    expect(standing.parentReplyAppend).not.toContain('Send it exactly once')
+    expect(standing.taskReportingAppend).toContain('You are a background task of your own session sid-parent-1')
+    expect(standing.taskReportingAppend).toContain('the daemon tells that session automatically')
+    expect(standing.taskReportingAppend).not.toContain('Send it exactly once')
   })
 })

@@ -23,7 +23,7 @@ function deps(over: Partial<OpsDeps> = {}): OpsDeps {
     gatewayFor: () => undefined,
     channelAgents: async () => ({ platform: 'slack', agents: [] }),
     messageAgent: async () => ({ delivered: true, targetSession: 'stub' }),
-    replyToSession: async () => ({ delivered: true, targetSession: 'stub' }),
+    replyToSession: async () => ({ delivered: true, targetSession: 'stub', inReplyTo: 'msg-stub' }),
     memory: {
       read: vi.fn(async (_scope: unknown, path: string) => ({ path, content: '# index\n' })),
       write: vi.fn(async () => ({ ok: true }))

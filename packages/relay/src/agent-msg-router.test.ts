@@ -10,6 +10,7 @@ import type {
 import {
   MAX_AGENT_CALL_HOPS,
   RD_AGENT_SESSION_CALL_V1,
+  RD_SESSION_MESSAGE_V1,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_CODEHOST_REPLY_TARGET_V1
 } from '@agentconnect.md/protocol'
@@ -247,6 +248,46 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     const { targetSessionId: _named, ...unnamed } = call
     expect(await route(D1, { ...unnamed, deliveryId: 'd-3' })).toMatchObject({ delivered: false, reason: 'not_found' })
     expect(forwards).toHaveLength(1)
+  })
+
+  it('forwards a session message id and its answered message only to a daemon that records them', async () => {
+    // send-message-guide.md §9.3–§9.4: an older target would drop the id, so the call fails closed instead.
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const reply = baseMsg({
+      deliveryKind: 'session-reply',
+      lineageReplyTo: 'sid-source',
+      messageId: 'msg-reply-1',
+      messageKind: 'reply',
+      inReplyTo: 'msg-call-1'
+    })
+    const older: RdAgentMsgFwd[] = []
+    const refused = await createAgentMsgRouter({
+      router,
+      daemons: () =>
+        fakeDaemons({ deliveryId: 'd-1', delivered: true }, older, [
+          RD_HEADLESS_AGENT_DELIVERY_V1,
+          RD_CODEHOST_REPLY_TARGET_V1
+        ]),
+      log: noopLog
+    })(D1, reply)
+    expect(refused).toMatchObject({ delivered: false, reason: 'unsupported' })
+    expect(older).toHaveLength(0)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () =>
+        fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards, [
+          RD_HEADLESS_AGENT_DELIVERY_V1,
+          RD_CODEHOST_REPLY_TARGET_V1,
+          RD_SESSION_MESSAGE_V1
+        ]),
+      log: noopLog
+    })
+    expect((await route(D1, { ...reply, deliveryId: 'd-2' })).delivered).toBe(true)
+    expect(forwards[0]).toMatchObject({ messageId: 'msg-reply-1', messageKind: 'reply', inReplyTo: 'msg-call-1' })
+    // A wake without an id still reaches an older daemon, as before.
+    expect((await route(D1, baseMsg({ deliveryId: 'd-3' }))).delivered).toBe(true)
   })
 
   it('REFUSES a session reply to a daemon that does not understand the kind', async () => {

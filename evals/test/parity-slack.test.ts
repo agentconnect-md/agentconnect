@@ -268,11 +268,12 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
         if (/RESULT R-42/.test(ctx.text)) ctx.reply('thanks, result noted')
       },
       agent2: async (ctx) => {
-        const parent = /Parent session: (\S+)/.exec(ctx.text)
+        // send-message-guide.md §9.5: the delegation shows the exact call that answers it, by its message id.
+        const parent = /"messageId":"(msg-[^"]+)"/.exec(ctx.text)
         if (parent && /task T-1/.test(ctx.text)) {
           const result = await ctx.callTool('sendMessage', {
             action: 'replyToSession',
-            sessionId: parent[1]!,
+            messageId: parent[1]!,
             message: 'RESULT R-42: task complete'
           })
           ctx.reply(result.ok ? 'reported to parent' : `report failed: ${result.error ?? 'unknown'}`)

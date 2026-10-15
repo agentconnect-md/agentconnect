@@ -24,7 +24,7 @@ import {
 import { WebchatArena, mintSeats, prepareScriptedWebchatRoot, type WebchatSeat } from '../games/webchat-fixture.js'
 import {
   executeBrainTurn,
-  parentSessionIdOf,
+  replyMessageIdOf,
   scriptedWebchatHostFactory,
   type PromptLogEntry,
   type ScriptedSessionHandler
@@ -69,11 +69,11 @@ async function startNightRun(options: { refereeGate?: (promptText: string) => Pr
   const childReply = (marker: string, body: string): ScriptedSessionHandler => {
     return async ({ text, binding }) => {
       if (text.includes(`\`${marker}\``)) {
-        const sessionId = parentSessionIdOf(text)
-        if (!binding || !sessionId) return `cannot report: binding=${Boolean(binding)} parent=${sessionId}`
+        const messageId = replyMessageIdOf(text)
+        if (!binding || !messageId) return `cannot report: binding=${Boolean(binding)} message=${messageId}`
         const result = await callDaemonTool(binding, 'sendMessage', {
           action: 'replyToSession',
-          sessionId,
+          messageId,
           message: `${marker} ${body}`
         })
         return result.ok ? 'reported.' : `report failed: ${result.error ?? 'unknown'}`

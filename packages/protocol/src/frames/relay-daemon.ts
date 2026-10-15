@@ -89,6 +89,9 @@ export const RD_CODEHOST_REPLY_TARGET_V1 = 'codehost-reply-target-v1'
 /** This daemon admits a `session-call` into the exact existing session `targetSessionId` names, under its own session-participation rule (send-message-guide.md §9.2). */
 export const RD_AGENT_SESSION_CALL_V1 = 'agent-session-call-v1'
 
+/** This daemon records `messageId` on what it admits and accepts an `inReplyTo` reply only into the session that sent that message (send-message-guide.md §9.3–§9.4). */
+export const RD_SESSION_MESSAGE_V1 = 'session-message-v1'
+
 /**
  * `agent-implicit-routing-v1`: this daemon understands {@link RdMsgIm.trustedRouteVia}
  * and applies its `!stop` thread mute to an implicitly-selected per-target delivery.
@@ -882,6 +885,10 @@ export type RdAck = z.infer<typeof RdAck>
 export const RdAgentMsgDeliveryKind = z.enum(['wake', 'session-reply', 'session-call'])
 export type RdAgentMsgDeliveryKind = z.infer<typeof RdAgentMsgDeliveryKind>
 
+/** What a session message is (send-message-guide.md §9.3); its receiver records it with the message. */
+export const RdSessionMessageKind = z.enum(['call', 'taskInput', 'reply', 'report'])
+export type RdSessionMessageKind = z.infer<typeof RdSessionMessageKind>
+
 /** One person a calling turn speaks for, as the read rule names them (assistant-mode.md §5.5). */
 export const AgentCallAsker = z.union([
   z.object({
@@ -987,7 +994,12 @@ export const RdAgentMsg = z.object({
   // send-message-guide.md §9.2, `session-call` only: the target's existing session by its key or outward id.
   targetSessionId: z.string().min(1).max(1024).optional(),
   // `session-call` only: the calling turn's people, asserted by the authenticated source daemon like its lineage.
-  callerAskers: AgentCallAskers.optional()
+  callerAskers: AgentCallAskers.optional(),
+  // send-message-guide.md §9.3: the session message's id, minted by the sending daemon; forwarded only to a session-message-v1 target.
+  messageId: z.string().min(1).max(256).optional(),
+  messageKind: RdSessionMessageKind.optional(),
+  // §9.4: the message a reply answers, which the receiving daemon checks against its own sent-message record.
+  inReplyTo: z.string().min(1).max(256).optional()
 })
 export type RdAgentMsg = z.infer<typeof RdAgentMsg>
 
@@ -1094,7 +1106,11 @@ export const RdAgentMsgFwd = z.object({
   deliveryKind: RdAgentMsgDeliveryKind.optional(),
   // Forwarded verbatim from RdAgentMsg for `session-call`; the target resolves and admits it itself.
   targetSessionId: z.string().min(1).max(1024).optional(),
-  callerAskers: AgentCallAskers.optional()
+  callerAskers: AgentCallAskers.optional(),
+  // Forwarded verbatim from RdAgentMsg (send-message-guide.md §9.3–§9.4), only to a target that advertised session-message-v1.
+  messageId: z.string().min(1).max(256).optional(),
+  messageKind: RdSessionMessageKind.optional(),
+  inReplyTo: z.string().min(1).max(256).optional()
 })
 export type RdAgentMsgFwd = z.infer<typeof RdAgentMsgFwd>
 

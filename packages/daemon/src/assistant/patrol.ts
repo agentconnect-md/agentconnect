@@ -1,4 +1,6 @@
 // Assistant-mode patrols, the minimal form (assistant-mode.md §5.9): a due next check wakes one read-only sub-session that records what it saw, and proposes an action or reports only a change.
+import { renderSessionMessage } from '../collab/session-message.js'
+import { newSessionMessageId } from '../store/session-messages.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { CallMeta } from '../daemon/turn-types.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
@@ -291,6 +293,8 @@ export class AssistantPatrols {
       observationVersion: item.observationVersion,
       now
     })
+    // send-message-guide.md §9.3: its input is a session message from the session that started it, answerable by id.
+    const messageId = newSessionMessageId()
     const msg: NormalizedMessage = {
       msgId: `patrol:${parent.channel}:${deliveryId}`,
       traceId: deliveryId,
@@ -301,7 +305,16 @@ export class AssistantPatrols {
       thread,
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       sender: { id: agentId, isBot: true },
-      text: patrolPrompt(item, due),
+      text: renderSessionMessage(
+        {
+          messageId,
+          kind: 'call',
+          sourceAgentId: agentId,
+          sourceSessionId: parent.sessionId,
+          replyRequested: false
+        },
+        patrolPrompt(item, due)
+      ),
       mentionedBots: [],
       isDm: false,
       headless: true,
@@ -312,6 +325,8 @@ export class AssistantPatrols {
       hopCount: 0,
       deliveryId,
       originSessionId: parent.sessionId,
+      messageId,
+      messageKind: 'call',
       originCoords: {
         platform: parent.platform as NonNullable<CallMeta['originCoords']>['platform'],
         channel: parent.channel,

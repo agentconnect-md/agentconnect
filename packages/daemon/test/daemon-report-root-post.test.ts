@@ -144,14 +144,28 @@ async function seedParent(d: any, scope: string, channel: string, thread?: strin
   return { key, coordinate }
 }
 
-/** A child session in `channel` whose current turn the parent woke, so it may report into it. */
+/** A child session in `channel` the parent's message woke, so it answers that message into it (send-message-guide.md §9.4). */
 async function replyFromChild(d: any, scope: string, channel: string) {
   const callerThread = '1700000000.000100'
-  d.activeTurnCallMeta.set(sessionKey('slack', channel, callerThread, 'bot-a', scope), {
+  const childKey = sessionKey('slack', channel, callerThread, 'bot-a', scope)
+  const messageId = `msg-from-${channel}`
+  d.activeTurnCallMeta.set(childKey, {
     callFrom: 'bot-a',
     hopCount: 1,
     deliveryId: `d-${channel}`,
-    originSessionId: `sid-${channel}`
+    originSessionId: `sid-${channel}`,
+    messageId
+  })
+  await d.store.sessionMessages.recordReceived({
+    messageId,
+    recipientKey: childKey,
+    recipientAgentId: 'bot-a',
+    sourceSessionId: `sid-${channel}`,
+    sourceAgentId: 'bot-a',
+    kind: 'call',
+    replyState: 'open',
+    hopCount: 1,
+    now: Date.now()
   })
   return await d.collab.replyToSession({
     callerAgentId: 'bot-a',
@@ -159,7 +173,7 @@ async function replyFromChild(d: any, scope: string, channel: string) {
     callerChannel: channel,
     callerThread,
     callerTransportScope: scope,
-    sessionId: `sid-${channel}`,
+    messageId,
     text: 'result: done'
   })
 }

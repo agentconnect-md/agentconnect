@@ -11,10 +11,21 @@ import { PATROL_SWEEP_INTERVAL_MS } from '../src/assistant/patrol.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
+import { SESSION_MESSAGE_HEADER } from '../src/collab/session-message.js'
 import { isSubsessionCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import { sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
+
+/** A report's or reply's body, without the session-message header the parent sees it under (send-message-guide.md §9.5). */
+const body = (text: string): string => text.replace(SESSION_MESSAGE_HEADER, '')
+
+/** The newest message the task at `thread` received from its owning session, which its reply answers (§9.4). */
+async function ownerMessage(d: any, scope: string, thread: string): Promise<string> {
+  const key = sessionKey('slack', 'C1', thread, 'bot-a', scope)
+  const messages = (await d.store.sessionMessages.listFor(key, 50)) as { messageId: string; createdAt: number }[]
+  return messages.sort((a, b) => b.createdAt - a.createdAt)[0]!.messageId
+}
 
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const ON = { enabled: true }
@@ -261,7 +272,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     const [report] = reports()
     expect(report!.agentId).toBe('bot-a')
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
-    expect(report!.msg.text).toBe(stoppedReport(res.targetSession, reason))
+    expect(body(report!.msg.text)).toBe(stoppedReport(res.targetSession, reason))
     // It continues the delegation's hop chain and comes from the sub-session, under a delivery id of its own.
     expect(report!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
     expect(report!.callMeta.deliveryId).toMatch(/^assistant-report:[0-9a-f]{32}$/)
@@ -284,11 +295,8 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
 
-    expect(reports()[0]!.msg).toMatchObject({
-      channel: 'C1',
-      sessionThread: caller.coordinate,
-      text: stoppedReport(res.targetSession, 'error')
-    })
+    expect(reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
+    expect(body(reports()[0]!.msg.text)).toBe(stoppedReport(res.targetSession, 'error'))
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await daemon.stop()
   })
@@ -298,13 +306,14 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     const caller = await seedCaller(d)
     // The runtime reports through `sendMessage {sessionId}` mid-turn, then dies.
     rt.behavior.sub = async () => {
+      const thread = dispatched.find((c) => isSubsessionCoordinate(c.msg.thread))!.msg.thread!
       const reply = await d.collab.replyToSession({
         callerAgentId: 'bot-a',
         platform: 'slack',
         callerTransportScope: caller.scope,
         callerChannel: 'C1',
-        callerThread: dispatched.find((c) => isSubsessionCoordinate(c.msg.thread))!.msg.thread!,
-        sessionId: 'sid-parent-1',
+        callerThread: thread,
+        messageId: await ownerMessage(d, caller.scope, thread),
         text: 'PR opened'
       })
       expect(reply).toMatchObject({ delivered: true })
@@ -316,7 +325,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await settled()
 
     // send-message-guide.md §8.3: the reply is a message, not the round's outcome.
-    expect(reports().map((c) => c.msg.text)).toEqual(['PR opened', stoppedReport(res.targetSession, 'error')])
+    expect(reports().map((c) => body(c.msg.text))).toEqual(['PR opened', stoppedReport(res.targetSession, 'error')])
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await daemon.stop()
   })
@@ -329,7 +338,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
 
-    expect(reports()[0]!.msg.text).toMatch(/^\[task finished\]/)
+    expect(body(reports()[0]!.msg.text)).toMatch(/^\[task finished\]/)
     expect(reports()).toHaveLength(1)
     expect(await stateOf(d, res.targetSession)).toBe('done')
     await daemon.stop()
@@ -353,7 +362,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
     expect(rt.subPrompts).toHaveLength(2)
-    expect(reports()[0]!.msg.text).toMatch(/^\[task finished\]/)
+    expect(body(reports()[0]!.msg.text)).toMatch(/^\[task finished\]/)
     expect(await stateOf(d, res.targetSession)).toBe('done')
     await daemon.stop()
   })
@@ -374,7 +383,9 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await settled()
     await vi.waitFor(async () => expect(await stateOf(d, res.targetSession)).toBe('failed'), WAIT)
 
-    expect(reports()[0]!.msg.text).toContain(`Task ${res.targetSession} stopped before finishing (not started: busy)`)
+    expect(body(reports()[0]!.msg.text)).toContain(
+      `Task ${res.targetSession} stopped before finishing (not started: busy)`
+    )
     expect(rt.subPrompts).toHaveLength(0)
     await daemon.stop()
   })
@@ -396,7 +407,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     expect(await reports()[1]!.turn).not.toBeNull()
     // One report, sent twice under the one delivery id.
     expect(reports()[1]!.callMeta.deliveryId).toBe(reports()[0]!.callMeta.deliveryId)
-    expect(reports()[1]!.msg.text).toContain(`Task ${res.targetSession} stopped before finishing (pause)`)
+    expect(body(reports()[1]!.msg.text)).toContain(`Task ${res.targetSession} stopped before finishing (pause)`)
     expect(await rowOf(d, res.targetSession)).toMatchObject({ state: 'failed', reportAttempts: 1 })
     await d.collab.resendSubsessionReports(['bot-a'])
     expect(reports()).toHaveLength(2)
@@ -459,10 +470,10 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
 
     expect(next).not.toBe(caller.coordinate)
     expect(reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: next })
-    expect(reports()[0]!.msg.text).toContain(`Task ${res.targetSession} stopped before finishing (stop)`)
+    expect(body(reports()[0]!.msg.text)).toContain(`Task ${res.targetSession} stopped before finishing (stop)`)
     // The new session cannot continue the child, so the report does not tell it to.
-    expect(reports()[0]!.msg.text).not.toContain(continueHint(res.targetSession))
-    expect(reports()[0]!.msg.text).toContain('belongs to an earlier session of this conversation')
+    expect(body(reports()[0]!.msg.text)).not.toContain(continueHint(res.targetSession))
+    expect(body(reports()[0]!.msg.text)).toContain('belongs to an earlier session of this conversation')
     expect(await rowOf(d, res.targetSession)).toMatchObject({ state: 'failed', parentSessionId: 'sid-parent-1' })
     await daemon.stop()
   })
@@ -523,7 +534,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     )
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
-    expect(reports()[0]!.msg.text).toContain(`Task ${child} finished this round of work`)
+    expect(body(reports()[0]!.msg.text)).toContain(`Task ${child} finished this round of work`)
     await vi.waitFor(async () => expect(await stateOf(d, child)).toBe('done'), WAIT)
     await daemon.stop()
   })
@@ -553,7 +564,7 @@ describe('a failure report survives a drain or a crash', () => {
     await settled()
 
     expect(reports()).toHaveLength(1)
-    expect(reports()[0]!.msg.text).toContain(`Task ${res.targetSession} stopped before finishing (stop)`)
+    expect(body(reports()[0]!.msg.text)).toContain(`Task ${res.targetSession} stopped before finishing (stop)`)
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await daemon.stop()
   })
@@ -591,14 +602,14 @@ describe('a failure report survives a drain or a crash', () => {
 })
 
 describe('a sub-session’s own report and the daemon’s end report never both reach the parent', () => {
-  const ownReport = (d: any, caller: { scope: string }, thread: string) =>
+  const ownReport = async (d: any, caller: { scope: string }, thread: string) =>
     d.collab.replyToSession({
       callerAgentId: 'bot-a',
       platform: 'slack',
       callerTransportScope: caller.scope,
       callerChannel: 'C1',
       callerThread: thread,
-      sessionId: 'sid-parent-1',
+      messageId: await ownerMessage(d, caller.scope, thread),
       text: 'PR opened'
     })
 
@@ -634,7 +645,7 @@ describe('a sub-session’s own report and the daemon’s end report never both 
     await settled()
 
     await vi.waitFor(async () => expect(await stateOf(d, res.targetSession)).toBe('failed'), WAIT)
-    expect(reports().map((c) => c.msg.text)).toEqual(['PR opened', stoppedReport(res.targetSession, 'stop')])
+    expect(reports().map((c) => body(c.msg.text))).toEqual(['PR opened', stoppedReport(res.targetSession, 'stop')])
     await daemon.stop()
   })
 
@@ -646,11 +657,14 @@ describe('a sub-session’s own report and the daemon’s end report never both 
     expect(await stateOf(d, res.targetSession)).toBe('reporting')
     expect(await ownReport(d, caller, dispatched[0]!.msg.thread!)).toEqual({
       delivered: false,
+      inReplyTo: expect.any(String),
       reason: 'task_ended'
     })
     await settled()
 
-    expect(reports().map((c) => c.msg.text)).toEqual([expect.stringContaining('stopped before finishing (pause)')])
+    expect(reports().map((c) => body(c.msg.text))).toEqual([
+      expect.stringContaining('stopped before finishing (pause)')
+    ])
     expect(await stateOf(d, res.targetSession)).toBe('reporting')
     await daemon.stop()
   })
@@ -667,12 +681,13 @@ describe('a sub-session’s own report and the daemon’s end report never both 
     await settled()
     expect(await ownReport(d, caller, dispatched[0]!.msg.thread!)).toEqual({
       delivered: false,
+      inReplyTo: expect.any(String),
       reason: 'task_ended'
     })
     await settled()
 
     expect(reports()).toHaveLength(1)
-    expect(reports()[0]!.msg.text).toContain('stopped before finishing (stop)')
+    expect(body(reports()[0]!.msg.text)).toContain('stopped before finishing (stop)')
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await daemon.stop()
   })
@@ -817,7 +832,7 @@ describe('an open sub-session nothing runs for any more', () => {
 
     const [report] = reports()
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
-    expect(report!.msg.text).toBe(stoppedReport(res.targetSession, 'no longer running'))
+    expect(body(report!.msg.text)).toBe(stoppedReport(res.targetSession, 'no longer running'))
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await sweepAcrossTheWait(d, clock)
     expect(reports()).toHaveLength(1)
@@ -836,7 +851,9 @@ describe('an open sub-session nothing runs for any more', () => {
 
     expect(reports()).toHaveLength(1)
     expect(reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: caller.coordinate })
-    expect(reports()[0]!.msg.text).toContain(`Task ${res.targetSession} stopped before finishing (no longer running)`)
+    expect(body(reports()[0]!.msg.text)).toContain(
+      `Task ${res.targetSession} stopped before finishing (no longer running)`
+    )
     expect(await stateOf(d, res.targetSession)).toBe('failed')
     await daemon.stop()
   })
@@ -876,7 +893,7 @@ describe('an open sub-session nothing runs for any more', () => {
     d.agents.get('bot-a').pause = false
     await sweepAcrossTheWait(d, clock)
     await settled()
-    expect(reports().map((c) => c.msg.text)).toEqual([
+    expect(reports().map((c) => body(c.msg.text))).toEqual([
       expect.stringContaining(`Task ${running.targetSession} stopped before finishing (no longer running)`)
     ])
     expect(await stateOf(d, task)).toBe('open')

@@ -51,7 +51,7 @@ describe('runtime matrix sendMessage probe', () => {
     )
     expect(op({ action: 'startTask', message: 'm' })).toBe('task-start')
     expect(op({ action: 'messageTask', taskId: IDS.task, message: 'm' })).toBe(`task-message(${IDS.task})`)
-    expect(op({ action: 'replyToSession', sessionId: IDS.origin, message: 'm' })).toBe(`origin-reply(${IDS.origin})`)
+    expect(op({ action: 'replyToSession', messageId: IDS.message, message: 'm' })).toBe(`origin-reply(${IDS.message})`)
     expect(op({ action: 'postMessage', toUser: IDS.human, message: 'm' })).toBe(`post-dm(${IDS.human})`)
   })
 
@@ -93,9 +93,32 @@ describe('runtime matrix sendMessage probe', () => {
     ).toBeUndefined()
   })
 
+  it('shows the origin-reply request under the daemon’s own message header and judges a reply by its id', () => {
+    const origin = scenario('origin-reply')
+    expect(origin.prompt).toBe(
+      `[Message ${IDS.message}] From agent ${IDS.peer} (session ${IDS.origin}):\n` +
+        'Please check whether the release checklist is complete and report the result back to me. ' +
+        '(You already checked: all 12 checklist items are done, so the checklist is complete.)\n\n' +
+        '[This message waits on your reply. When you finish, or cannot, answer it with sendMessage ' +
+        `{"action":"replyToSession","messageId":"${IDS.message}","message":"..."}, saying whether you succeeded and ` +
+        'what the result was. Your ordinary response here does not reach it; after the reply is delivered, end your ' +
+        'turn without repeating it.]'
+    )
+    const byId = { tool: 'sendMessage', args: { action: 'replyToSession', messageId: IDS.message, message: 'm' } }
+    expect(judge(origin, [byId]).verdict).toBe('PASS')
+    // The baseline's session-addressed reply to the same sender stays comparable.
+    expect(judge(origin, [{ tool: 'sendMessage', args: { sessionId: IDS.origin, message: 'm' } }]).verdict).toBe('PASS')
+    const wrong = { tool: 'sendMessage', args: { action: 'replyToSession', messageId: 'msg-other', message: 'm' } }
+    expect(judge(origin, [wrong]).verdict).toBe('FAIL')
+  })
+
   it('refuses session ids outside the scenario scope', async () => {
-    const reply = { action: 'replyToSession', sessionId: IDS.origin, message: 'm' }
-    expect(await validateSendMessage(reply, probeTools(), { origin: IDS.origin })).toBeUndefined()
+    const reply = { action: 'replyToSession', messageId: IDS.message, message: 'm' }
+    expect(await validateSendMessage(reply, probeTools(), { message: IDS.message })).toBeUndefined()
+    // §3.5: a session-addressed reply is the daemon's argument error naming messageId.
+    expect(
+      await validateSendMessage({ action: 'replyToSession', sessionId: IDS.origin, message: 'm' }, probeTools())
+    ).toMatch(/action `replyToSession` requires `messageId` and does not accept `sessionId`/)
     // The daemon admits the messageTask shape; its ownership check answers with a receipt, not an error.
     const continued = { action: 'messageTask', taskId: IDS.task, message: 'm' }
     expect(await validateSendMessage(continued, probeTools(), { task: IDS.task })).toBeUndefined()
@@ -215,7 +238,7 @@ describe('runtime matrix sendMessage probe', () => {
     const tools = probeTools()
     const fixture = await sendMessageFixture(tools)
     try {
-      const descriptor = fixture.descriptor('k', { origin: IDS.origin }) as { url: string }
+      const descriptor = fixture.descriptor('k', { message: IDS.message }) as { url: string }
       const rpc = async (method: string, params?: unknown) =>
         (await (
           await fetch(descriptor.url, {
@@ -224,7 +247,7 @@ describe('runtime matrix sendMessage probe', () => {
           })
         ).json()) as { result: any }
       expect((await rpc('tools/list')).result.tools).toEqual(tools)
-      const reply = { action: 'replyToSession', sessionId: IDS.origin, message: 'm' }
+      const reply = { action: 'replyToSession', messageId: IDS.message, message: 'm' }
       const call = await rpc('tools/call', { name: 'sendMessage', arguments: reply })
       expect(call.result.isError).toBeUndefined()
       expect(fixture.calls('k')).toEqual([{ tool: 'sendMessage', args: reply }])
@@ -240,12 +263,16 @@ describe('runtime matrix sendMessage probe', () => {
             method: 'tools/call',
             params: {
               name: 'sendMessage',
-              arguments: { action: 'replyToSession', sessionId: IDS.origin, message: 'm' }
+              arguments: { action: 'replyToSession', messageId: IDS.message, message: 'm' }
             }
           })
         })
       ).json()) as { result: any }
-      expect(JSON.parse(refused.result.content[0].text)).toEqual({ delivered: false, reason: 'not_authorized' })
+      expect(JSON.parse(refused.result.content[0].text)).toEqual({
+        delivered: false,
+        inReplyTo: IDS.message,
+        reason: 'message_not_found'
+      })
       expect(fixture.calls('other')[0]!.error).toBeDefined()
     } finally {
       fixture.server.close()

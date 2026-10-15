@@ -6,11 +6,13 @@ import type { McpServer } from '@agentclientprotocol/sdk'
 import { IntegrationSchema } from '../../src/agents/agent-schema.js'
 import type { AcpHost } from '../../src/acp/acp-host.js'
 import {
+  MESSAGE_NOT_FOUND,
   PEER_SESSION_NOT_FOUND,
   PEER_SESSION_NOT_FOUND_MESSAGE,
   TASK_NOT_FOUND,
   TASK_NOT_FOUND_MESSAGE
 } from '../../src/collab/coordinator.js'
+import { renderSessionMessage } from '../../src/collab/session-message.js'
 import { executeTool, type OpsDeps } from '../../src/mcp/ops.js'
 import { ToolArgumentError } from '../../src/mcp/ops/args.js'
 import { describeToolArgumentFailure } from '../../src/mcp/ops/argument-error.js'
@@ -36,6 +38,10 @@ export const IDS = {
   updateChannel: 'C0EXAMPLE3',
   updateThread: '1700000000.000200',
   origin: '5f0c2a9e-0000-4000-8000-00000000a001',
+  /** The peer session that sent it, by its key, as the daemon's reply receipt names it. */
+  peerSessionKey: 'slack:C0EXAMPLE4:1700000000.000400:peer-agent',
+  /** The id of the peer's message the origin-reply scenario answers. */
+  message: 'msg-5f0c2a9e00004000800000000000a004',
   child: '5f0c2a9e-0000-4000-8000-00000000a002',
   task: 'slack:C0EXAMPLE1:subsession:5f0c2a9e-0000-4000-8000-00000000a003:matrix-agent'
 } as const
@@ -66,7 +72,7 @@ export type SemanticOp =
   | { kind: 'agent-call'; agent: string; needsReply: boolean; channel?: string; sessionId?: string }
   | { kind: 'task-start' }
   | { kind: 'task-message'; taskId: string }
-  | { kind: 'origin-reply'; sessionId: string }
+  | { kind: 'origin-reply'; messageId?: string; sessionId?: string }
   | { kind: 'post-dm'; user: string }
   | { kind: 'post-channel'; channel: string; users?: string[] }
   | { kind: 'post-thread'; channel: string; thread: string }
@@ -127,8 +133,12 @@ export function classifySendMessage(args: Record<string, unknown>, selfId: strin
         const taskId = str(args.taskId)
         return taskId ? { kind: 'task-message', taskId } : { kind: 'unknown', reason: 'messageTask without taskId' }
       }
-      case 'replyToSession':
-        return sessionId ? { kind: 'origin-reply', sessionId } : { kind: 'unknown', reason: 'reply without sessionId' }
+      case 'replyToSession': {
+        // A reply names the message it answers; a session-addressed one is the baseline's spelling.
+        const messageId = str(args.messageId)
+        if (messageId) return { kind: 'origin-reply', messageId }
+        return sessionId ? { kind: 'origin-reply', sessionId } : { kind: 'unknown', reason: 'reply without messageId' }
+      }
       case 'postMessage':
         return postOp(args)
       default:
@@ -156,7 +166,7 @@ export function describeOp(op: SemanticOp): string {
     case 'task-message':
       return `task-message(${op.taskId})`
     case 'origin-reply':
-      return `origin-reply(${op.sessionId})`
+      return `origin-reply(${op.messageId ?? op.sessionId})`
     case 'post-dm':
       return `post-dm(${op.user})`
     case 'post-channel':
@@ -168,9 +178,9 @@ export function describeOp(op: SemanticOp): string {
   }
 }
 
-/** What a scenario's caller may address by id: its origin, the task it already started, and a peer's session it may join. */
+/** What a scenario's caller may address by id: the message it may answer, the task it already started, and a peer's session it may join. */
 export interface ProbeScope {
-  origin?: string
+  message?: string
   task?: string
   peerSession?: string
 }
@@ -229,10 +239,10 @@ function receipt(op: SemanticOp, scope: ProbeScope): unknown {
   const taskId = IDS.task
   switch (op.kind) {
     case 'origin-reply':
-      // The real origin reply refuses an id that is not the caller's origin with a result, not an error.
-      return op.sessionId === scope.origin
-        ? { delivered: true, targetSession: op.sessionId }
-        : { delivered: false, reason: 'not_authorized' }
+      // The daemon's reply receipt, or its refusal of an id that names no message this session received.
+      return op.messageId !== undefined && op.messageId === scope.message
+        ? { delivered: true, targetSession: IDS.peerSessionKey, inReplyTo: op.messageId }
+        : { delivered: false, inReplyTo: op.messageId ?? '', reason: MESSAGE_NOT_FOUND }
     case 'task-start':
       return {
         ok: true,
@@ -374,8 +384,8 @@ async function callTool(
     if (error !== undefined) return { result: text(error, true), error }
     const op = classifySendMessage(args, IDS.self)
     const result = receipt(op, scope)
-    if (op.kind === 'origin-reply' && op.sessionId !== scope.origin)
-      return { result: text(result), error: 'origin reply not authorized' }
+    if (op.kind === 'origin-reply' && (op.messageId === undefined || op.messageId !== scope.message))
+      return { result: text(result), error: 'message not found' }
     if (op.kind === 'task-message' && op.taskId !== scope.task) return { result: text(result), error: 'task not found' }
     if (op.kind === 'agent-call' && op.sessionId !== undefined && op.sessionId !== scope.peerSession)
       return { result: text(result), error: 'peer session not found' }
@@ -484,7 +494,7 @@ export interface SendMessageScenario {
   /** The expected operation; absent ⇒ no `sendMessage` call is correct. */
   expect?: (op: SemanticOp) => boolean
   expected: string
-  /** Woken by a parent session that waits on the result. */
+  /** Woken by a peer's message, `IDS.message`, that waits on the result. */
   origin?: boolean
   /** Already owns the background task `IDS.task`. */
   task?: boolean
@@ -547,12 +557,23 @@ export const SCENARIOS: SendMessageScenario[] = [
   {
     id: 'origin-reply',
     origin: true,
-    prompt:
-      `[Message from agent ${IDS.peer}, delivered from session ${IDS.origin}]\n` +
+    // The daemon's own rendering of a peer's message that waits on a reply; the request text is the baseline's.
+    prompt: renderSessionMessage(
+      {
+        messageId: IDS.message,
+        kind: 'call',
+        sourceAgentId: IDS.peer,
+        sourceSessionId: IDS.origin,
+        replyRequested: true
+      },
       'Please check whether the release checklist is complete and report the result back to me. ' +
-      '(You already checked: all 12 checklist items are done, so the checklist is complete.)',
-    expect: (op) => op.kind === 'origin-reply' && op.sessionId === IDS.origin,
-    expected: `origin-reply(${IDS.origin})`
+        '(You already checked: all 12 checklist items are done, so the checklist is complete.)'
+    ),
+    // Answering that message by id; the baseline's session-addressed reply to the same sender still counts.
+    expect: (op) =>
+      op.kind === 'origin-reply' &&
+      (op.messageId === IDS.message || (op.messageId === undefined && op.sessionId === IDS.origin)),
+    expected: `origin-reply(${IDS.message})`
   },
   {
     id: 'negative-current-thread',
@@ -590,10 +611,9 @@ export function standingContext(scenario: SendMessageScenario, usesMeta: boolean
     slackSelfId: IDS.slackBot,
     thread: IDS.thread,
     sessionId: IDS.session,
-    parentSessionId: scenario.origin ? IDS.origin : null,
+    originSessionId: scenario.origin ? IDS.origin : null,
     envSecretNames: [],
     fileSecrets: [],
-    needsReplyToParent: scenario.origin === true,
     memoryIndex: '',
     usesMeta,
     platformStanding:
@@ -696,7 +716,7 @@ export async function runSendMessageScenarios(input: {
       }
       const key = `${runtime}/${scenario.id}/${rep}`
       const scope: ProbeScope = {
-        ...(scenario.origin ? { origin: IDS.origin } : {}),
+        ...(scenario.origin ? { message: IDS.message } : {}),
         ...(scenario.task ? { task: IDS.task } : {})
       }
       const standing = standingContext(scenario, usesMeta)

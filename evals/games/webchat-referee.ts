@@ -4,7 +4,7 @@
  *
  * The point of the webchat leg (night-collection + webchat Werewolf) is that
  * the referee is an ordinary subject agent — its calls are `sendMessage`
- * (`toAgent`+`needsReply`, `sessionId` replies) through the daemon's MCP
+ * (`toAgent`+`needsReply`, `messageId` replies) through the daemon's MCP
  * control socket, never the trusted `deliverRefereeEvent` control path the
  * Slack-shaped games use. Eval composition == live composition, except the
  * referee's brain is deterministic.
@@ -80,18 +80,10 @@ export async function executeBrainTurn(
   return { reply: turn.reply, outcomes }
 }
 
-/** Parse the parent-session reply target out of a needsReply child's prompt
- *  (the standing report-back directive carries the exact JSON to send). */
-export function parentSessionIdOf(text: string): string | undefined {
-  const meta = /^- Parent session: (\S+)$/m.exec(text)
-  if (meta) return meta[1]
-  // The standing collaboration guidance carries a PLACEHOLDER example
-  // (`{"sessionId":"<Parent session>", …}`); only the report-back directive
-  // carries the real id. Skip placeholder-shaped values.
-  for (const match of text.matchAll(/"sessionId":"([^"]+)"/g)) {
-    if (!match[1]!.startsWith('<')) return match[1]
-  }
-  return undefined
+/** The id of the newest message a prompt shows a reply call for (send-message-guide.md §9.5); placeholders are skipped. */
+export function replyMessageIdOf(text: string): string | undefined {
+  const ids = [...text.matchAll(/"messageId":"([^"]+)"/g)].map((match) => match[1]!).filter((id) => !id.startsWith('<'))
+  return ids.at(-1)
 }
 
 /** Prompt log entry recorded by the in-process hosts: which agent, which ACP

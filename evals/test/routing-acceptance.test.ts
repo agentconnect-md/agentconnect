@@ -110,7 +110,7 @@ describe('case 1 — sendMessage {toAgent, channel}: one visible root post, one 
   }, 120_000)
 })
 
-describe('case 1b — sendMessage {sessionId: parent}: the report is injected, the parent answers', () => {
+describe('case 1b — replyToSession {messageId}: the report is injected, the parent answers', () => {
   function case1bScripts(resume: (ctx: RoutingScriptContext) => Promise<void> | void) {
     return {
       agent1: async (ctx: RoutingScriptContext) => {
@@ -132,11 +132,12 @@ describe('case 1b — sendMessage {sessionId: parent}: the report is injected, t
         ctx.reply('noted')
       },
       agent2: async (ctx: RoutingScriptContext) => {
-        const parent = /Parent session: (\S+)/.exec(ctx.text)
+        // send-message-guide.md §9.5: the delegation shows the exact call that answers it, by its message id.
+        const parent = /"messageId":"(msg-[^"]+)"/.exec(ctx.text)
         if (parent && /task T-1/.test(ctx.text)) {
           const result = await ctx.callTool('sendMessage', {
             action: 'replyToSession',
-            sessionId: parent[1]!,
+            messageId: parent[1]!,
             message: 'RESULT R-42: task complete'
           })
           ctx.reply(result.ok ? 'reported to parent' : `report failed: ${result.error ?? 'unknown'}`)

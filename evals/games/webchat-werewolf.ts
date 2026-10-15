@@ -699,7 +699,7 @@ export interface ScriptedPlayerDeps {
     tool: string,
     args: Record<string, unknown>
   ) => Promise<{ ok: boolean; error?: string }>
-  parentSessionIdOf: (text: string) => string | undefined
+  replyMessageIdOf: (text: string) => string | undefined
   /** CI cell for the re-prompt lever: this player ignores the public VOTE
    *  call (model vote-reticence, scripted) and answers only the referee's
    *  private re-prompt. */
@@ -746,9 +746,9 @@ export function scriptedWebchatPlayer(deps: ScriptedPlayerDeps) {
     text: string,
     message: string
   ): Promise<string> => {
-    const sessionId = deps.parentSessionIdOf(text) ?? parents.get(sessionKey)
-    if (!binding || !sessionId) return `cannot report: binding=${Boolean(binding)} parent=${sessionId}`
-    const result = await deps.callTool(binding, 'sendMessage', { action: 'replyToSession', sessionId, message })
+    const messageId = deps.replyMessageIdOf(text) ?? parents.get(sessionKey)
+    if (!binding || !messageId) return `cannot report: binding=${Boolean(binding)} message=${messageId}`
+    const result = await deps.callTool(binding, 'sendMessage', { action: 'replyToSession', messageId, message })
     return result.ok ? 'reported.' : `report failed: ${result.error ?? 'unknown'}`
   }
   const listAfter = (text: string, label: string): string[] => {
@@ -767,8 +767,8 @@ export function scriptedWebchatPlayer(deps: ScriptedPlayerDeps) {
     binding: { endpoint: string; token: string } | undefined
   }): Promise<string | undefined> => {
     const { sessionId, text, binding } = input
-    const parsedParent = deps.parentSessionIdOf(text)
-    if (parsedParent) parents.set(sessionId, parsedParent)
+    const parsedMessage = deps.replyMessageIdOf(text)
+    if (parsedMessage) parents.set(sessionId, parsedMessage)
     // ── the private pairwise session with the referee ──
     // Every pairwise session of ONE caller shares the same synthetic
     // `a2a:<caller>` transcript thread, so a child's context refresh shows the

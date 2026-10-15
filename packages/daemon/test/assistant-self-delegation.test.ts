@@ -191,7 +191,10 @@ describe('self-delegation: every agent opens a sub-session', () => {
         transportScope: caller.scope,
         headless: true,
         sender: { id: 'bot-a', isBot: true },
-        text: 'From your own session, as a background task: fix the flaky test and open a PR',
+        // §9.5: a session message from the owning session, with its id and the reply call.
+        text: expect.stringMatching(
+          /^\[Message msg-[^\]]+\] From your own session \(session sid-parent-1\), as a background task:\nfix the flaky test and open a PR\n\n\[Send progress, a question, or your result for it with sendMessage \{"action":"replyToSession","messageId":"msg-/
+        ),
         // Born titled by its task, as its cards name it, never by the wrapper it reads.
         initialSessionTitle: 'fix the flaky test and open a PR'
       })
@@ -443,12 +446,17 @@ describe('self-delegation: through the turn engine', () => {
       await vi.waitFor(() => expect(dispatched.some((c) => c.msg.parentReport === true)).toBe(true), WAIT)
 
       const child = await d.store.getSession(res.targetSession)
+      // §9.5: the request rides the owner's message, not the session.
+      expect(child.needsParentReply ?? null).toBeNull()
+      expect((await d.store.sessionMessages.listFor(res.targetSession, 5))[0]).toMatchObject({
+        kind: 'taskInput',
+        sourceSessionId: 'sid-parent-1'
+      })
       expect(child).toMatchObject({
         agentId: 'bot-a',
         channel: 'C1',
         thread: dispatched[0]!.msg.thread,
         originSessionId: 'sid-parent-1',
-        needsParentReply: 1,
         title: 'fix the flaky test and open a PR'
       })
       // The metadata the console stores for it, which Activity, the Sub-sessions panel and its page show.

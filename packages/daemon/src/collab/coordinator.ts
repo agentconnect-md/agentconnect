@@ -6,8 +6,7 @@ import {
   isDelegationCoordinate,
   isSubsessionCoordinate,
   isTaskCoordinate,
-  subsessionCoordinate,
-  TASK_START_WRAPPER
+  subsessionCoordinate
 } from '../session/subsession-coordinate.js'
 import type { HostKey } from '../acp/host-key.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -37,7 +36,8 @@ import { isPlatformMemberId } from '../platforms/member-id.js'
 import { threadKeyForPost } from '../platforms/thread-keys.js'
 import { sessionThreadOf, type NormalizedMessage } from '../messages/normalized.js'
 import type { AssistantSubsession } from '../store/assistant-subsessions.js'
-import type { SessionReplySource } from '../store/session-reply-sources.js'
+import { newSessionMessageId, type ReceivedSessionMessage, type SessionMessageKind } from '../store/session-messages.js'
+import { renderSessionMessage, submissionMessageId, type SessionMessageView } from './session-message.js'
 import { NOBODY, type TurnAskers } from '../assistant/place-access.js'
 import type { WebchatTransport } from '../webchat/transport.js'
 import type { WebchatTurnContext } from '../webchat/types.js'
@@ -83,6 +83,10 @@ export const TASK_REPORTING = 'task_reporting'
 export const TASK_ENDED = 'task_ended'
 /** The same submission of an owner message is still being admitted; it is not sent twice. */
 export const SUBMISSION_IN_FLIGHT = 'submission_in_flight'
+/** send-message-guide.md §9.4: one refusal for an unknown, foreign, dropped or forged message id, so it names nothing. */
+export const MESSAGE_NOT_FOUND = 'message_not_found'
+/** send-message-guide.md §9.3: an id already recorded for another recipient names that message, so this delivery is refused. */
+export const MESSAGE_ID_IN_USE = 'message_id_in_use'
 /** send-message-guide.md §9.2: one refusal for an unknown, foreign, private or closed session, so it names nothing. */
 export const PEER_SESSION_NOT_FOUND = 'session_not_found'
 export const PEER_SESSION_NOT_FOUND_MESSAGE =
@@ -135,6 +139,8 @@ export interface DaemonReport {
   hopCount?: number | undefined
   /** The session the sub-session belongs to; a report landing in another one loses its continuation hint. */
   ownerSessionKey?: string | undefined
+  /** A task's round report is a session message (send-message-guide.md §9.3) under this id, when it lands in its owner. */
+  messageId?: string | undefined
 }
 
 /** What a `reporting` row holds to send its round-end report again after a refusal or a restart. */
@@ -146,6 +152,8 @@ interface SubsessionEndReport {
   round?: number
   /** How the round settles once the report is admitted; absent means `failed`. */
   settles?: 'done' | 'failed'
+  /** The report's session-message id, minted at the claim so a re-send keeps it. */
+  messageId?: string
 }
 
 function subsessionEndReportOf(json: string | undefined): SubsessionEndReport | undefined {
@@ -225,40 +233,35 @@ export interface SessionCallAdmission {
   /** The caller's current conversation, which the read rule always lets read itself. */
   callerPlace: { platform: string; channel: string }
   askers: TurnAskers
-  /** The caller-framed text, `From <caller>: …`. */
+  /** The call's body, which the owning daemon renders with its message header. */
   text: string
-  /** The call's trusted metadata; its `originSessionId` is the source the target may reply to. */
+  /** The call's trusted metadata: its source session and its message id. */
   callMeta: CallMeta
 }
 
-/** How a recorded source is reached: its agent, its landing coordinates, and its code-host reply snapshot. */
-function replySourceDestination(source: SessionReplySource): {
-  agentId: string
+/** How a received message's source is reached from here: its landing coordinates and code-host reply snapshot. */
+function messageSourceRoute(message: ReceivedSessionMessage): {
   coords?: CallMeta['originCoords']
   codeHostReplyTarget?: CodeHostReplyTarget | null
 } {
   const coords =
-    source.sourcePlatform !== undefined && source.sourceChannel !== undefined
+    message.sourcePlatform !== undefined && message.sourceChannel !== undefined
       ? {
-          platform: source.sourcePlatform as NonNullable<CallMeta['originCoords']>['platform'],
-          channel: source.sourceChannel,
-          ...(source.sourceThread !== undefined ? { thread: source.sourceThread } : {})
+          platform: message.sourcePlatform as NonNullable<CallMeta['originCoords']>['platform'],
+          channel: message.sourceChannel,
+          ...(message.sourceThread !== undefined ? { thread: message.sourceThread } : {})
         }
       : undefined
   let codeHostReplyTarget: CodeHostReplyTarget | null | undefined
   try {
     codeHostReplyTarget =
-      source.codeHostReplyTarget !== undefined
-        ? (JSON.parse(source.codeHostReplyTarget) as CodeHostReplyTarget | null)
+      message.codeHostReplyTarget !== undefined
+        ? (JSON.parse(message.codeHostReplyTarget) as CodeHostReplyTarget | null)
         : undefined
   } catch {
     codeHostReplyTarget = undefined
   }
-  return {
-    agentId: source.sourceAgentId,
-    ...(coords ? { coords } : {}),
-    ...(codeHostReplyTarget !== undefined ? { codeHostReplyTarget } : {})
-  }
+  return { ...(coords ? { coords } : {}), ...(codeHostReplyTarget !== undefined ? { codeHostReplyTarget } : {}) }
 }
 
 /** Process-wide daemon state the collaboration path reads. */
@@ -428,6 +431,76 @@ export class CollabCoordinator {
     return cached?.displayName?.trim() || cached?.name || agentId
   }
 
+  /** send-message-guide.md §9.5: an input's text as the receiving daemon shows it, from its trusted metadata; the body alone when it is no session message. */
+  renderInput(callMeta: CallMeta, body: string, opts: { startsTask?: boolean } = {}): string {
+    if (callMeta.messageId === undefined || callMeta.originSessionId === undefined) return body
+    const kind = callMeta.messageKind ?? 'call'
+    const view: SessionMessageView = {
+      messageId: callMeta.messageId,
+      kind,
+      sourceAgentId: callMeta.callFrom,
+      sourceLabel: this.agentDisplayLabel(callMeta.callFrom),
+      sourceSessionId: callMeta.originSessionId,
+      ...(callMeta.inReplyTo !== undefined ? { inReplyTo: callMeta.inReplyTo } : {}),
+      replyRequested: callMeta.needsReply === true,
+      ...(opts.startsTask ? { startsTask: true } : {})
+    }
+    return renderSessionMessage(view, body)
+  }
+
+  /** A call from no session is no session message, so it is framed by its sender only, never with an id. */
+  private framedBySender(req: MessageAgentReq): string {
+    return `From ${this.agentDisplayLabel(req.callerAgentId)}: ${req.text}`
+  }
+
+  /** send-message-guide.md §9.3: a message's id, from its submission so a replay keeps it, else a fresh one. */
+  messageIdFor(agentId: string, senderKey: string, submissionId: string | undefined): string {
+    return submissionId === undefined ? newSessionMessageId() : submissionMessageId(agentId, senderKey, submissionId)
+  }
+
+  /** The sending daemon's record of one message (send-message-guide.md §9.3): a reply to it lands only in its sender. */
+  private async noteSent(message: {
+    messageId: string
+    senderKey: string
+    senderAgentId: string
+    senderSessionId: string
+    recipientAgentId: string
+    kind: SessionMessageKind
+  }): Promise<void> {
+    await this.host
+      .store()
+      .sessionMessages.recordSent({ ...message, now: this.host.clock().now() })
+      .catch((err) => this.host.log().warn(`sent message ${message.messageId} not recorded: ${formatErr(err)}`))
+  }
+
+  /** A send that was refused reached no one, so nothing answers it. */
+  private async forgetSent(messageId: string | undefined): Promise<void> {
+    if (messageId === undefined) return
+    await this.host
+      .store()
+      .sessionMessages.forgetSent(messageId)
+      .catch(() => undefined)
+  }
+
+  /** Whether this message already reached `key`, so a replay of its submission delivers nothing new. */
+  async alreadyReceived(messageId: string | undefined, key: string): Promise<boolean> {
+    if (messageId === undefined) return false
+    const recorded = await this.host
+      .store()
+      .sessionMessages.received(messageId)
+      .catch(() => undefined)
+    return recorded?.recipientKey === key
+  }
+
+  /** Whether `messageId` already names a message to another recipient, so this delivery must not land (§9.3). */
+  private async messageIdInUse(messageId: string | undefined, key: string, agentId: string): Promise<boolean> {
+    if (messageId === undefined) return false
+    return await this.host
+      .store()
+      .sessionMessages.conflicts(messageId, key, agentId)
+      .catch(() => false)
+  }
+
   /** assistant-mode.md §5.6, the one gate of self-delegation, for every agent: itself as target, the postless form. */
   selfDelegation(req: MessageAgentReq): boolean {
     return req.toAgentId === req.callerAgentId && req.postless === true
@@ -466,7 +539,10 @@ export class CollabCoordinator {
   }
 
   /** §5.7: a sub-session's own report; once the daemon has reported it ended, a late one is refused, never a second report. */
-  private async reportFromSubsession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
+  private async reportFromSubsession(
+    req: ReplyToSessionReq,
+    answered: ReceivedSessionMessage
+  ): Promise<ReplyToSessionResult> {
     const key = sessionKey(
       req.platform,
       req.callerChannel,
@@ -482,9 +558,9 @@ export class CollabCoordinator {
       const ended = rounds && row?.kind !== 'patrol' ? row !== undefined && row.state !== 'open' : undefined
       if (ended ?? (row?.state === 'failed' || row?.state === 'reporting')) {
         this.host.log().info(`sub-session ${key}: a report after its end was already reported is not delivered`)
-        return { delivered: false, reason: TASK_ENDED }
+        return { delivered: false, inReplyTo: answered.messageId, reason: TASK_ENDED }
       }
-      const result = await this.deliverReply(req)
+      const result = await this.deliverReply(req, answered, key)
       if (result.delivered && ended === undefined) await this.markSubsessionReported(req.callerAgentId, key)
       return result
     })
@@ -565,7 +641,8 @@ export class CollabCoordinator {
             ...(end.msg.transportScope !== undefined ? { transportScope: end.msg.transportScope } : {})
           },
           ...(round > 1 ? { round } : {}),
-          settles: end.outcome === 'completed' ? 'done' : 'failed'
+          settles: end.outcome === 'completed' ? 'done' : 'failed',
+          messageId: newSessionMessageId()
         }
         return await index.claimReport(agentId, key, JSON.stringify(report), round)
       })
@@ -626,9 +703,15 @@ export class CollabCoordinator {
         // Each round's report is its own, so a later round's is not mistaken for an earlier one already admitted.
         reportId: (report.round ?? 1) > 1 ? `subsession-end:${key}:${report.round}` : `subsession-end:${key}`,
         hopCount: report.hopCount,
-        ownerSessionKey: row.parentSessionKey
+        ownerSessionKey: row.parentSessionKey,
+        ...(report.messageId !== undefined ? { messageId: report.messageId } : {})
       })
       if (result.admitted) {
+        // send-message-guide.md §9.5: the round's report, not the task's own replies, answers what its owner sent it.
+        await this.host
+          .store()
+          .sessionMessages.settleOpenFor(key, this.host.clock().now())
+          .catch(() => undefined)
         if (await index.settleReport(agentId, key, report.settles ?? 'failed'))
           await this.markChildParentReply(key, row.parentSessionId, 'queued-for-parent')
         return
@@ -734,7 +817,8 @@ export class CollabCoordinator {
           text: subsessionRoundReport(key, ended),
           hopCount: 0,
           caller,
-          ...(round > 1 ? { round } : {})
+          ...(round > 1 ? { round } : {}),
+          messageId: newSessionMessageId()
         }
         return await index.claimReport(agentId, key, JSON.stringify(report), round)
       })
@@ -824,6 +908,20 @@ export class CollabCoordinator {
       ? this.host.botUserIds()[route.integrationId]
       : this.host.resolveCpAgent(agentId, parent.platform)?.botUserId
     const elsewhere = report.ownerSessionKey !== undefined && parent.key !== report.ownerSessionKey
+    // §9.3: a task's report into its owner is a session message; a later session of the place cannot answer the task.
+    const messageId = !elsewhere && replierSessionId !== undefined ? report.messageId : undefined
+    if (messageId !== undefined) {
+      callMeta.messageId = messageId
+      callMeta.messageKind = 'report'
+      await this.noteSent({
+        messageId,
+        senderKey: callerKey,
+        senderAgentId: agentId,
+        senderSessionId: replierSessionId!,
+        recipientAgentId: agentId,
+        kind: 'report'
+      })
+    }
     const msg: NormalizedMessage = {
       msgId: `agentcall:${parent.channel}:${deliveryId}`,
       traceId: deliveryId,
@@ -839,7 +937,7 @@ export class CollabCoordinator {
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      text: `${elsewhere ? withoutContinueHint(text) : text}\n\n${REPORT_ANSWER_LANGUAGE}`,
+      text: this.renderInput(callMeta, `${elsewhere ? withoutContinueHint(text) : text}\n\n${REPORT_ANSWER_LANGUAGE}`),
       // Session-only, never a live conversation post (#966).
       parentReport: true,
       mentionedBots: botUserId ? [botUserId] : [],
@@ -872,23 +970,11 @@ export class CollabCoordinator {
     return { admitted: true }
   }
 
-  /** An agent→agent delivery's caller-framed text, delivery id and thread: delivered DIRECTLY, never posted or put in the shared transcript. */
-  prepareAgentDelivery(req: MessageAgentReq): {
-    deliveryId: string
-    thread: string
-    /** The text DELIVERED to the target's turn. Names the caller so an isolated
-     *  callee (§6.6), whose only view of the request is this handed text, knows
-     *  who to reply to. */
-    text: string
-  } {
-    const callerLabel = this.agentDisplayLabel(req.callerAgentId)
-    // `@Caller:` reads like an instruction addressed TO the caller and can make
-    // the callee's no-response rule suppress a legitimate direct call. Use an
-    // explicit sender label instead; trusted CallMeta remains the authority.
-    const deliverText = `From ${callerLabel}: ${req.text}`
+  /** An agent→agent delivery's body, delivery id and thread; the receiving daemon frames the body with its message header (§9.5). */
+  prepareAgentDelivery(req: MessageAgentReq): { deliveryId: string; thread: string; text: string } {
     const deliveryId = monotonicTs()
     const thread = req.thread ?? deliveryId
-    return { deliveryId, thread, text: deliverText }
+    return { deliveryId, thread, text: req.text }
   }
 
   /**
@@ -1077,11 +1163,7 @@ export class CollabCoordinator {
     // Trusted source-turn metadata, independent of the delivered message; local and relay paths inherit it identically.
     const inbound = this.host.activeTurnCallMeta().get(callerKey)
     const sourceHopCount = inbound?.hopCount ?? 0
-    // session-concept §5.3: capture the CALLER's own session as the woken child's origin, so
-    // the child can reply into it via `sendMessage`'s SessionTarget (across thread/platform/
-    // daemon). The lineage id is the caller's OUTWARD one (§1.1) — an ACP id names a session
-    // only inside its own runtime, and this one travels to another agent, another daemon and
-    // the CP. originCoords are its landing coords for cross-daemon reply routing.
+    // The caller's own session, by its outward id, is the message's source; originCoords route a reply from another daemon.
     const callerSession = await this.host.store().getSession(callerKey)
     const originCodeHostReplyTarget = codeHostReplySnapshot(
       callerSession,
@@ -1097,6 +1179,10 @@ export class CollabCoordinator {
       channel: req.callerChannel,
       ...(req.callerThread ? { thread: req.callerThread } : {})
     }
+    // send-message-guide.md §9.3: a call from a session, or a task's start, is a session message under this id.
+    const messageId =
+      originSessionId !== undefined ? this.messageIdFor(req.callerAgentId, callerKey, req.submissionId) : undefined
+    const messageKind: SessionMessageKind = selfDelegation ? 'taskInput' : 'call'
     if (inbound !== undefined && hasReachedAgentCallHopLimit(sourceHopCount + 1)) {
       const fallbackThread = req.thread ?? `agentcall:${req.channel}:hop-limit`
       return observe('collaboration.delivery.rejected', {
@@ -1135,13 +1221,7 @@ export class CollabCoordinator {
     // the default — a `sendMessage` with `toAgent` never posts, regardless of `channel`.
     const prepared = this.prepareAgentDelivery(req)
     // §5.6: a sub-session opens on a coordinate of its own, never the caller's thread, and is told what it is.
-    const event = selfDelegation
-      ? {
-          ...prepared,
-          thread: subsessionCoordinate(prepared.deliveryId),
-          text: `${TASK_START_WRAPPER} ${req.text}`
-        }
-      : prepared
+    const event = selfDelegation ? { ...prepared, thread: subsessionCoordinate(prepared.deliveryId) } : prepared
     const subsessionTitle = selfDelegation ? deriveTitle(req.text) : undefined
     const { deliveryId } = event
     const msgId = `agentcall:${coordChannel}:${deliveryId}`
@@ -1176,13 +1256,23 @@ export class CollabCoordinator {
       this.host.log().info(`messageAgent: ${req.callerAgentId} not allowed to call ${req.toAgentId} in ${req.channel}`)
       return record({ delivered: false, targetSession, reason: 'not_allowed' })
     }
+    if (messageId !== undefined && originSessionId !== undefined)
+      await this.noteSent({
+        messageId,
+        senderKey: callerKey,
+        senderAgentId: req.callerAgentId,
+        senderSessionId: originSessionId,
+        recipientAgentId: req.toAgentId,
+        kind: messageKind
+      })
 
     // Local presence: if absent, route the delivery over the relay. The relay
     // decides whether the target is allowed to be woken by this caller.
     if (!target) {
       const coordPlatform = platform
       const remote = await this.routeAgentMsgCrossDaemon(
-        { ...req, text: event.text, thread: event.thread },
+        // A session message's body travels raw and its receiver frames it; a sessionless caller's is framed here, as before.
+        { ...req, text: messageId !== undefined ? event.text : this.framedBySender(req), thread: event.thread },
         {
           platform: coordPlatform,
           // The ASSERTED coordinate, not `coordChannel`: the relay validates what the caller
@@ -1197,9 +1287,11 @@ export class CollabCoordinator {
           originSessionKey: callerKey,
           originCodeHostReplyTarget,
           originCoords,
-          ...(externalOrigin ? { externalOrigin } : {})
+          ...(externalOrigin ? { externalOrigin } : {}),
+          ...(messageId !== undefined ? { messageId, messageKind } : {})
         }
       )
+      if (!remote.delivered) await this.forgetSent(messageId)
       // §5.4: an ADMITTED remote wake is still a child this session may follow — its row lives on
       // the owning daemon, so mark the link remote and let viewSessionStatus route through the CP.
       if (remote.delivered && originSessionId !== undefined) {
@@ -1236,6 +1328,7 @@ export class CollabCoordinator {
       // Meaningless without an origin to reply into, so it rides the same condition.
       ...(needsReply && originSessionId !== undefined ? { needsReply: true } : {}),
       ...(selfDelegation ? { subsessionRound: 1 } : {}),
+      ...(messageId !== undefined ? { messageId, messageKind } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
       ...(originSessionId !== undefined && (await this.host.store().isCaptureExcluded(req.callerAgentId, callerKey))
@@ -1255,8 +1348,11 @@ export class CollabCoordinator {
       ...(targetCoordinate !== undefined ? { sessionThread: targetCoordinate } : {}),
       ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
       sender: { id: req.callerAgentId, isBot: true },
-      text: event.text,
-      // §5.6: a sub-session is born titled by its task, never the wrapper above, as its cards name it.
+      text:
+        messageId !== undefined
+          ? this.renderInput(callMeta, event.text, { startsTask: selfDelegation })
+          : this.framedBySender(req),
+      // §5.6: a sub-session is born titled by its task, never the message header, as its cards name it.
       ...(subsessionTitle ? { initialSessionTitle: subsessionTitle } : {}),
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
       isDm: false,
@@ -1269,6 +1365,9 @@ export class CollabCoordinator {
       ...(inbound?.deliverHeadless || req.postless ? { headless: true } : {})
     }
 
+    // §9.3: an id already recorded for another recipient is that message's, so this delivery is refused.
+    if (await this.messageIdInUse(messageId, targetSession, req.toAgentId))
+      return record({ delivered: false, targetSession, reason: MESSAGE_ID_IN_USE })
     // §5.6: at most `maxConcurrentSubsessions` running; the index row is the claim, so a refusal opens nothing.
     if (selfDelegation && originSessionId !== undefined) {
       const limit = this.subsessionLimit(req.callerAgentId)
@@ -1284,6 +1383,7 @@ export class CollabCoordinator {
         { limit, startedSince: now - SUBSESSION_START_GRACE_MS }
       )
       if (!opened) {
+        await this.forgetSent(messageId)
         return record({
           delivered: false,
           targetSession,
@@ -1437,6 +1537,16 @@ export class CollabCoordinator {
     const { deliveryId, text } = this.prepareAgentDelivery(req)
     const callerPlace = { platform: req.platform, channel: req.callerChannel }
     const needsReply = req.needsReply === true
+    // send-message-guide.md §9.2: each call into the session is a new message with its own id and obligation.
+    const messageId = this.messageIdFor(req.callerAgentId, callerKey, req.submissionId)
+    await this.noteSent({
+      messageId,
+      senderKey: callerKey,
+      senderAgentId: req.callerAgentId,
+      senderSessionId: originSessionId,
+      recipientAgentId: req.toAgentId,
+      kind: 'call'
+    })
     if (this.host.agents().get(req.toAgentId)) {
       const admitted = await this.admitSessionCall({
         toAgentId: req.toAgentId,
@@ -1454,10 +1564,13 @@ export class CollabCoordinator {
           originCoords,
           ...(externalOrigin ? { externalOrigin } : {}),
           ...(needsReply ? { needsReply: true } : {}),
-          ...(parentPrivate ? { parentPrivate: true } : {})
+          ...(parentPrivate ? { parentPrivate: true } : {}),
+          messageId,
+          messageKind: 'call'
         }
       })
       if (!admitted.accepted) {
+        await this.forgetSent(messageId)
         return admitted.reason === 'not_found'
           ? await refuse(PEER_SESSION_NOT_FOUND, PEER_SESSION_NOT_FOUND_MESSAGE)
           : await refuse(admitted.reason)
@@ -1491,10 +1604,13 @@ export class CollabCoordinator {
         ...(externalOrigin ? { externalOrigin } : {}),
         deliveryKind: 'session-call',
         targetSessionId: req.targetSessionId,
-        callerAskers: { people: askers.people.slice(0, 32), nobody: askers.nobody || askers.people.length > 32 }
+        callerAskers: { people: askers.people.slice(0, 32), nobody: askers.nobody || askers.people.length > 32 },
+        messageId,
+        messageKind: 'call'
       }
     )
     if (!remote.delivered) {
+      await this.forgetSent(messageId)
       return remote.reason === 'not_found'
         ? await refuse(PEER_SESSION_NOT_FOUND, PEER_SESSION_NOT_FOUND_MESSAGE)
         : await refuse(remote.reason ?? 'offline')
@@ -1548,6 +1664,9 @@ export class CollabCoordinator {
     }
     const route = sessionReplyRoute(target, (...args) => this.host.integrationIdForSessionTransport(...args))
     if (!route) return notFound
+    if (await this.messageIdInUse(call.callMeta.messageId, target.key, target.agentId)) return notFound
+    // A replay of one submission lands once (§8.6): its message is already recorded on this session.
+    if (await this.alreadyReceived(call.callMeta.messageId, target.key)) return { accepted: true, key: target.key }
     const deliveryId = call.callMeta.deliveryId
     const botUserId = route.integrationId
       ? this.host.botUserIds()[route.integrationId]
@@ -1567,7 +1686,7 @@ export class CollabCoordinator {
       ...(target.transportScope ? { transportScope: target.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: call.callerAgentId, isBot: true },
-      text: call.text,
+      text: this.renderInput(call.callMeta, call.text),
       mentionedBots: botUserId ? [botUserId] : [],
       isDm: false
     }
@@ -1605,6 +1724,19 @@ export class CollabCoordinator {
     return { accepted: true, key: target.key }
   }
 
+  /** The recorded message a turn's call metadata names, when it was received by `key` and asked for a reply. */
+  private async messageObligation(
+    key: string,
+    callMeta: CallMeta | undefined
+  ): Promise<ReceivedSessionMessage | undefined> {
+    if (callMeta?.needsReply !== true || callMeta.messageId === undefined) return undefined
+    const message = await this.host
+      .store()
+      .sessionMessages.received(callMeta.messageId)
+      .catch(() => undefined)
+    return message?.recipientKey === key && message.replyState !== 'none' ? message : undefined
+  }
+
   /** Admission is asynchronous: a failed start must end the parent's wait even without a child row. */
   private async failAgentDispatch(
     key: string,
@@ -1615,19 +1747,13 @@ export class CollabCoordinator {
   ): Promise<void> {
     const link = this.childSessionLinks.get(key)
     const owned = link !== undefined && link.deliveryId === callMeta.deliveryId
-    // send-message-guide.md §9.4: a call whose own request is still open reports its failure, whoever called since.
-    const obligation =
-      !selfDelegation && callMeta.needsReply === true && callMeta.originSessionId !== undefined
-        ? await this.host
-            .store()
-            .sessionSources.obligation(key, callMeta.deliveryId)
-            .catch(() => undefined)
-        : undefined
+    // send-message-guide.md §9.5: a call whose own message still waits on a reply reports its failure, whoever called since.
+    const obligation = await this.messageObligation(key, selfDelegation ? undefined : callMeta)
     // A newer wake owns this slot now. An old rejection must not poison its status or report.
-    if (!owned && obligation?.state !== 'open') return
+    if (!owned && obligation?.replyState !== 'open') return
     // dispatch() covers the whole turn, including work after a successful parent reply.
     // That reply still arrives; the turn engine records its later failure separately.
-    if ((owned && link.replyState === 'queued-for-parent') || (obligation && obligation.state !== 'open')) return
+    if ((owned && link.replyState === 'queued-for-parent') || (obligation && obligation.replyState !== 'open')) return
     const error = formatErr(err)
     if (owned) this.childSessionLinks.set(key, { ...link, replyState: 'failed', dispatchError: error })
     await this.host.store().setSessionTurnOutcome(key, 'failed', this.host.clock().now())
@@ -1645,17 +1771,17 @@ export class CollabCoordinator {
       })
       return
     }
-    const childAgentId = owned ? link.agentId : (obligation?.agentId ?? '')
+    const childAgentId = owned ? link.agentId : (obligation?.recipientAgentId ?? '')
     // A failed no-reply wake still gets visible status, but does not create an unsolicited parent turn.
     if (!(obligation ? true : owned && link.replyRequested) || !callMeta.originSessionId) return
     const parent = await this.host.store().getSessionByOutwardId(callMeta.originSessionId)
     if (!parent || (!obligation && this.childSessionLinks.get(key)?.deliveryId !== callMeta.deliveryId)) return
-    // Answered once: the failure settles this call's request, so a later reply to its source answers another.
+    // Answered once: the failure settles this message's obligation, and only this one.
     if (
       obligation &&
       !(await this.host
         .store()
-        .sessionSources.settle(key, callMeta.deliveryId, 'failed', this.host.clock().now())
+        .sessionMessages.settle(obligation.messageId, 'failed', this.host.clock().now())
         .catch(() => false))
     )
       return
@@ -1685,7 +1811,9 @@ export class CollabCoordinator {
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: childAgentId, isBot: true },
-      text: `Agent "${childAgentId}" failed to process the message for session "${key}": ${error}\nNo reply will arrive for this delivery. Report the failure; do not retry automatically.`,
+      text:
+        `Agent "${childAgentId}" failed to process ${callMeta.messageId ? `your message ${callMeta.messageId}` : 'the message'} ` +
+        `for session "${key}": ${error}\nNo reply will arrive for this delivery. Report the failure; do not retry automatically.`,
       parentReport: true,
       mentionedBots: [],
       isDm: false
@@ -1717,36 +1845,7 @@ export class CollabCoordinator {
       )
   }
 
-  /**
-   * The #800 inferred reply — the mechanism half the parked directive fix (#905) could not
-   * substitute for, measured on the webchat night-collection cell: a COLD needsReply child
-   * mostly answers its delegation as its ordinary assistant response (a correct answer,
-   * delivered to nobody) and never reaches for any messaging tool. The pi-intercom pattern:
-   * when a delegation turn ends cleanly without the child having sent its
-   * `sendMessage {sessionId}` report, deliver the child's final ordinary output TO the parent
-   * as the report, explicitly marked inferred — a headless child's answer is never silently
-   * dropped.
-   *
-   * Exactly-one-obligation scoping (the niche boundary):
-   *  - only turns whose OWN trusted CallMeta carries `needsReply` + an origin — i.e. the
-   *    delegation wake itself (and a re-delegation into the same child). Human follow-ups,
-   *    plain calls, continuations, and unrelated turns of the child session never infer;
-   *  - only when the obligation is still open (`replyState === 'awaiting'`) — a report the
-   *    child actually sent this turn, or one that terminally failed, is respected;
-   *  - only clean completions: failed/suppressed turns keep their own semantics
-   *    (`viewSessionStatus` reports those);
-   *  - deferred when the session still has live background tasks — the bg-task wake exists
-   *    precisely to let the child report AFTER its task settles, and that wake turn (which
-   *    carries no CallMeta) will not re-infer; the obligation then resolves through the
-   *    child's own report or stays visibly `awaiting`.
-   *
-   * A child whose final output is empty or the no-response sentinel produced NOTHING to
-   * infer — the parent gets an explicit "finished without reporting" wake instead of
-   * silence. Delivery reuses `replyToSession` verbatim (origin authorization, hop charge,
-   * queue/coalesce semantics, `markChildParentReply`), so an inferred report is
-   * indistinguishable from a real one on every axis EXCEPT the marker the parent (and the
-   * artifacts) see. Runs while the turn's activeTurnCallMeta is still installed.
-   */
+  /** #800: a clean turn started by one message that waits on a reply, which it did not send, gets its final output forwarded as that reply (send-message-guide.md §9.5). */
   async maybeInferParentReply(
     childKey: string,
     agentId: string,
@@ -1763,23 +1862,14 @@ export class CollabCoordinator {
       return
     }
     if (this.host.draining()) return
-    if (!callMeta?.needsReply || callMeta.originSessionId === undefined) return
     if (p.outputSuppressed) return
-    // send-message-guide.md §9.4: this call's own request decides, so a newer caller's link never cancels it.
-    const obligation = await this.host
-      .store()
-      .sessionSources.obligation(childKey, callMeta.deliveryId)
-      .catch(() => undefined)
-    if (obligation && obligation.state !== 'open') return
-    const link = this.childSessionLinks.get(childKey)
-    // An explicit reply to this source that failed already told the child why, so inferring one would misreport it.
-    if (link && link.parentSessionId === callMeta.originSessionId && link.replyState === 'failed') return
-    if (!obligation && link && (link.parentSessionId !== callMeta.originSessionId || link.replyState !== 'awaiting'))
-      return
-    // Another call folded into this turn: one undifferentiated output answers no single source, so every request stays open.
+    // send-message-guide.md §9.5: the message that started this turn decides, so a newer caller never cancels it.
+    const obligation = await this.messageObligation(childKey, callMeta)
+    if (obligation?.replyState !== 'open' || obligation.replyFailed === true) return
+    // Another message folded into this turn: one undifferentiated output answers no single message, so all stay open.
     const folded = this.host.activeGateEntries().get(childKey)?.foldedCalls ?? []
-    if (folded.some((call) => call.deliveryId !== callMeta.deliveryId)) {
-      this.host.log().info(`inferred parent reply skipped for ${childKey}: the turn answered more than one call`)
+    if (folded.some((call) => call.deliveryId !== callMeta!.deliveryId)) {
+      this.host.log().info(`inferred parent reply skipped for ${childKey}: the turn answered more than one message`)
       return
     }
     // Live background tasks: the child may legitimately be waiting to report until its
@@ -1804,7 +1894,7 @@ export class CollabCoordinator {
     this.host
       .log()
       .info(
-        `inferred parent reply: ${agentId} (${childKey}) → session ${callMeta.originSessionId} ` +
+        `inferred parent reply: ${agentId} (${childKey}) → message ${obligation.messageId} of session ${obligation.sourceSessionId} ` +
           `(turn ended with obligation open; output ${finalOutput ? `${finalOutput.length} chars` : 'empty'})`
       )
     const delivery = this.replyToSession({
@@ -1813,7 +1903,7 @@ export class CollabCoordinator {
       ...(msg.transportScope !== undefined ? { callerTransportScope: msg.transportScope } : {}),
       callerChannel: msg.channel,
       callerThread: sessionThreadOf(msg),
-      sessionId: callMeta.originSessionId,
+      messageId: obligation.messageId,
       text
     })
       .then((result) => {
@@ -1865,20 +1955,8 @@ export class CollabCoordinator {
     this.childSessionLinks.set(child.key, { ...link, replyState: 'failed' })
   }
 
-  /** Inject a reply into one session the caller may answer (send-message-guide.md §9.3): no post, no new session, never broadcast. */
+  /** send-message-guide.md §9.4: answer one message this session received, decided by that message's record alone. */
   async replyToSession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
-    if (isSubsessionCoordinate(req.callerThread)) return await this.reportFromSubsession(req)
-    // send-message-guide.md §8.2: a reply into a delegated sub-session is parent input, so it takes the round accounting.
-    const target = await this.host.store().getSessionByOutwardId(req.sessionId)
-    if (target && target.agentId === req.callerAgentId && isDelegationCoordinate(target.thread)) {
-      const row = await this.host.store().assistantSubsessions.get(target.agentId, target.key)
-      if (row && row.kind !== 'patrol') return await this.replyIntoSubsession(req, target.key)
-    }
-    return await this.deliverReply(req)
-  }
-
-  /** The reciprocal reply from an owning session into its own task: origin-authorized as before, then admitted like `messageTask`. */
-  private async replyIntoSubsession(req: ReplyToSessionReq, childKey: string): Promise<ReplyToSessionResult> {
     const callerKey = sessionKey(
       req.platform,
       req.callerChannel,
@@ -1886,19 +1964,37 @@ export class CollabCoordinator {
       req.callerAgentId,
       req.callerTransportScope
     )
-    const inbound = this.host.activeTurnCallMeta().get(callerKey)
-    const callerRec = await this.host.store().getSession(callerKey)
-    if (!(await this.replyDestination(req.sessionId, callerKey, inbound, callerRec)))
-      return { delivered: false, reason: 'not_authorized' }
-    const result = await this.continueSubsession({ ...req, sessionId: childKey })
-    if (result.delivered) return { delivered: true, targetSession: childKey }
+    const answered = await this.host
+      .store()
+      .sessionMessages.received(req.messageId)
+      .catch(() => undefined)
+    // Unknown, another session's or agent's, dropped, or forged: one refusal that reveals nothing.
+    if (!answered || answered.recipientKey !== callerKey || answered.recipientAgentId !== req.callerAgentId)
+      return { delivered: false, inReplyTo: req.messageId, reason: MESSAGE_NOT_FOUND }
+    if (isSubsessionCoordinate(req.callerThread)) return await this.reportFromSubsession(req, answered)
+    return await this.deliverReply(req, answered, callerKey)
+  }
+
+  /** §8.2: an owning session's reply into its own task is admitted exactly like `messageTask`. */
+  private async replyIntoTask(
+    req: ReplyToSessionReq,
+    answered: ReceivedSessionMessage,
+    taskKey: string
+  ): Promise<ReplyToSessionResult> {
+    const result = await this.continueSubsession({ ...req, sessionId: taskKey })
+    if (result.delivered) return { delivered: true, targetSession: taskKey, inReplyTo: answered.messageId }
     const reason: ReplyToSessionResult['reason'] =
       result.reason === TASK_NOT_FOUND
         ? 'not_authorized'
         : result.reason === 'hop_limit' || result.reason === 'queue_full'
           ? result.reason
           : 'busy'
-    return { delivered: false, ...(reason === 'not_authorized' ? {} : { targetSession: childKey }), reason }
+    return {
+      delivered: false,
+      ...(reason === 'not_authorized' ? {} : { targetSession: taskKey }),
+      inReplyTo: answered.messageId,
+      reason
+    }
   }
 
   /** The direct child this caller session opened, by its key or outward id; anything else is undefined, which names nothing. */
@@ -1946,6 +2042,8 @@ export class CollabCoordinator {
     const id = createHash('sha256').update(`${agentId}\n${callerKey}\n${submissionId}`).digest('hex').slice(0, 32)
     const deliveryId = `subsession-input:${id}`
     const receiptId = `subsession-input-receipt:${id}`
+    // §9.3: the input is a session message, its id from the same submission so a replay keeps it.
+    const messageId = submissionMessageId(agentId, callerKey, submissionId)
     // §8.6: a replayed submission gets its first receipt back, and never a second input, slot or round.
     const replayed = async (): Promise<MessageAgentResult | undefined> => {
       const prior = await index.getInput(agentId, id)
@@ -1966,7 +2064,15 @@ export class CollabCoordinator {
     }
     this.subsessionSubmissions.add(id)
     try {
-      const result = await this.admitSubsessionInput(req, { key, caller, callerKey, deliveryId, receiptId, refuse })
+      const result = await this.admitSubsessionInput(req, {
+        key,
+        caller,
+        callerKey,
+        deliveryId,
+        receiptId,
+        messageId,
+        refuse
+      })
       await index.settleInput(agentId, id, result.round, JSON.stringify(result.receipt))
       return result.receipt
     } finally {
@@ -1983,6 +2089,7 @@ export class CollabCoordinator {
       callerKey: string
       deliveryId: string
       receiptId: string
+      messageId: string
       refuse: (reason: string, message: string, targetSession?: string) => MessageAgentResult
     }
   ): Promise<{ round: number; receipt: MessageAgentResult }> {
@@ -2090,12 +2197,13 @@ export class CollabCoordinator {
       callerKey: string
       deliveryId: string
       receiptId: string
+      messageId: string
       round: number
       inbound: CallMeta | undefined
     }
   ): Promise<{ accepted: boolean; reason?: string }> {
     const agentId = req.callerAgentId
-    const { key, caller, callerKey, deliveryId, round, inbound } = at
+    const { key, caller, callerKey, deliveryId, messageId, round, inbound } = at
     const store = this.host.store()
     const parentSessionId = (await store.assistantSubsessions.get(agentId, key))?.parentSessionId
     if (parentSessionId === undefined) return { accepted: false, reason: 'not_found' }
@@ -2119,8 +2227,18 @@ export class CollabCoordinator {
       ...(externalOrigin ? { externalOrigin } : {}),
       needsReply: true,
       subsessionRound: round,
+      messageId,
+      messageKind: 'taskInput',
       ...((await store.isCaptureExcluded(agentId, callerKey)) ? { parentPrivate: true } : {})
     }
+    await this.noteSent({
+      messageId,
+      senderKey: callerKey,
+      senderAgentId: agentId,
+      senderSessionId: parentSessionId,
+      recipientAgentId: agentId,
+      kind: 'taskInput'
+    })
     const resolved = this.host.resolveCpAgent(agentId, caller.platform)
     const msg: NormalizedMessage = {
       msgId: `agentcall:${caller.channel}:${deliveryId}`,
@@ -2132,7 +2250,7 @@ export class CollabCoordinator {
       ...(caller.transportScope !== undefined ? { transportScope: caller.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      text: `From the session that started this task (session ${parentSessionId}), a new message for this background task: ${req.text}`,
+      text: this.renderInput(callMeta, req.text),
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
       isDm: false,
       headless: true
@@ -2166,110 +2284,54 @@ export class CollabCoordinator {
     return await admitted
   }
 
-  /** send-message-guide.md §9.3: where a reply may go — this turn's origin, the durable origin, or a recorded source; else undefined. */
-  private async replyDestination(
-    sessionId: string,
-    callerKey: string,
-    inbound: CallMeta | undefined,
-    callerRec: SessionRecord | undefined
-  ): Promise<
-    | {
-        agentId?: string
-        coords?: CallMeta['originCoords']
-        codeHostReplyTarget?: CodeHostReplyTarget | null
-      }
-    | undefined
-  > {
-    if (callerRec?.sessionId != null && callerRec.sessionId === sessionId) return undefined
-    if (inbound?.originSessionId === sessionId) {
-      return {
-        agentId: inbound.callFrom,
-        ...(inbound.originCoords ? { coords: inbound.originCoords } : {}),
-        ...(inbound.originCodeHostReplyTarget !== undefined
-          ? { codeHostReplyTarget: inbound.originCodeHostReplyTarget }
-          : {})
-      }
-    }
-    const source = await this.host
-      .store()
-      .sessionSources.get(callerKey, sessionId)
-      .catch(() => undefined)
-    const recorded = source ? replySourceDestination(source) : undefined
-    // The durable origin answers where its delegating turn bound, as before; a recorded source supplies only its route.
-    if (callerRec?.originSessionId != null && callerRec.originSessionId === sessionId) {
-      const { codeHostReplyTarget: _latest, ...route } = recorded ?? {}
-      return callerRec.originCodeHostReplyTarget
-        ? {
-            ...route,
-            codeHostReplyTarget: JSON.parse(callerRec.originCodeHostReplyTarget) as CodeHostReplyTarget | null
-          }
-        : route
-    }
-    return recorded
-  }
-
-  /** send-message-guide.md §9.4: a delivered reply answers one of that source's open requests, this turn's own first. */
-  private async settleReplyObligation(
-    callerKey: string,
-    sessionId: string,
-    inbound: CallMeta | undefined
-  ): Promise<void> {
-    const live = this.host.activeGateEntries().get(callerKey)
-    const preferred = [
-      ...(inbound?.deliveryId ? [inbound.deliveryId] : []),
-      ...(live?.foldedCalls ?? []).map((call) => call.deliveryId)
-    ]
-    await this.host
-      .store()
-      .sessionSources.settleOneFor(callerKey, sessionId, preferred, this.host.clock().now())
-      .catch((err) => this.host.log().warn(`reply obligation for ${callerKey} not settled: ${formatErr(err)}`))
-  }
-
-  private async deliverReply(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
-    const platform = req.platform
-    const callerKey = sessionKey(
-      platform,
-      req.callerChannel,
-      req.callerThread,
-      req.callerAgentId,
-      req.callerTransportScope
-    )
+  /** send-message-guide.md §9.4: deliver one reply to the answered message's source by its recorded route; never anywhere else. */
+  private async deliverReply(
+    req: ReplyToSessionReq,
+    answered: ReceivedSessionMessage,
+    callerKey: string
+  ): Promise<ReplyToSessionResult> {
+    const store = this.host.store()
+    const inReplyTo = answered.messageId
     const inbound = this.host.activeTurnCallMeta().get(callerKey)
-    const callerRec = await this.host.store().getSession(callerKey)
-    // send-message-guide.md §9.3: any recorded source of this session, this turn's origin, or the durable one; never another.
-    const destination = await this.replyDestination(req.sessionId, callerKey, inbound, callerRec)
-    if (!destination) return { delivered: false, reason: 'not_authorized' }
-    const replyTarget = destination.codeHostReplyTarget
-    const originCodeHostReplyTarget = codeHostReplySnapshot(
-      callerRec,
-      this.host.activeGateEntries().get(callerKey)?.githubReply
-    )
+    const callerRec = await store.getSession(callerKey)
+    const route = messageSourceRoute(answered)
+    const replyTarget = route.codeHostReplyTarget
+    // A task's explicit reply settles nothing; its round's report does (§9.5).
+    const settles = !isDelegationCoordinate(req.callerThread)
     const failed = async (
       reason: NonNullable<ReplyToSessionResult['reason']>,
       targetSession?: string
     ): Promise<ReplyToSessionResult> => {
-      await this.markChildParentReply(callerKey, req.sessionId, 'failed')
-      return { delivered: false, reason, ...(targetSession ? { targetSession } : {}) }
+      await this.markChildParentReply(callerKey, answered.sourceSessionId, 'failed')
+      await store.sessionMessages.noteReplyFailed(inReplyTo).catch(() => undefined)
+      return { delivered: false, ...(targetSession ? { targetSession } : {}), inReplyTo, reason }
     }
-    // A reply is an agent-call — bound it by the same hop cap so a reply ping-pong can't run away.
-    // A human-triggered turn has no inbound depth, so it starts the chain at 0.
-    const sourceHopCount = inbound?.hopCount ?? 0
-    if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) {
-      return failed('hop_limit')
+    // A reply is an agent-call: one hop past the deeper of this turn and the answered message, so an exchange stops.
+    const sourceHopCount = Math.max(inbound?.hopCount ?? 0, answered.hopCount)
+    if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) return failed('hop_limit')
+    const local = await store.getSessionByOutwardId(answered.sourceSessionId, answered.sourceAgentId || undefined)
+    // §8.2: answering one's own task is messaging it, under the ownership record.
+    if (local && local.agentId === req.callerAgentId && isDelegationCoordinate(local.thread)) {
+      const row = await store.assistantSubsessions.get(local.agentId, local.key)
+      if (row && row.kind !== 'patrol') return await this.replyIntoTask(req, answered, local.key)
     }
-    const deliveryId = randomUUID()
-    // Hand the origin owner a turn whose origin points back at the REPLIER's session, so the
-    // origin could reply again (symmetric lineage). callFrom = the replier.
-    const replyCoordPlatform = platform
     const replierSessionId = callerRec
-      ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId, this.host.clock().now())
+      ? await store.ensureOutwardSessionId(callerKey, req.callerAgentId, this.host.clock().now())
       : undefined
     const externalOrigin = await this.host.externalOriginForSession(req.callerAgentId, callerKey)
     const replyOriginCoords: CallMeta['originCoords'] = {
-      platform: replyCoordPlatform,
+      platform: req.platform as NonNullable<CallMeta['originCoords']>['platform'],
       channel: req.callerChannel,
       ...(req.callerThread ? { thread: req.callerThread } : {})
     }
+    const originCodeHostReplyTarget = codeHostReplySnapshot(
+      callerRec,
+      this.host.activeGateEntries().get(callerKey)?.githubReply
+    )
+    // §9.3: the reply is itself a message, under an id its submission decides, naming the one it answers.
+    const messageId =
+      replierSessionId !== undefined ? this.messageIdFor(req.callerAgentId, callerKey, req.submissionId) : undefined
+    const deliveryId = randomUUID()
     const callMeta: CallMeta = {
       callFrom: req.callerAgentId,
       hopCount: sourceHopCount + 1,
@@ -2278,67 +2340,62 @@ export class CollabCoordinator {
       originCodeHostReplyTarget,
       originCoords: replyOriginCoords,
       ...(externalOrigin ? { externalOrigin } : {}),
-      // §5.1: seal the child's capture gate when the waking session is private.
-      // Tighten-only — see CallMeta.parentPrivate.
-      ...(replierSessionId !== undefined && (await this.host.store().isCaptureExcluded(req.callerAgentId, callerKey))
+      ...(messageId !== undefined ? { messageId, messageKind: 'reply' as const, inReplyTo } : {}),
+      // §5.1: seal the recipient's capture gate when the replying session is private; tighten-only.
+      ...(replierSessionId !== undefined && (await store.isCaptureExcluded(req.callerAgentId, callerKey))
         ? { parentPrivate: true }
         : {})
     }
+    if (messageId !== undefined && replierSessionId !== undefined)
+      await this.noteSent({
+        messageId,
+        senderKey: callerKey,
+        senderAgentId: req.callerAgentId,
+        senderSessionId: replierSessionId,
+        recipientAgentId: answered.sourceAgentId,
+        kind: 'reply'
+      })
+    const delivered = async (targetSession: string): Promise<ReplyToSessionResult> => {
+      await this.markChildParentReply(callerKey, answered.sourceSessionId, 'queued-for-parent')
+      // §9.5: the first delivered reply settles the message's obligation; later ones are still delivered.
+      if (settles)
+        await store.sessionMessages.settle(inReplyTo, 'replied', this.host.clock().now()).catch(() => undefined)
+      return { delivered: true, targetSession, inReplyTo }
+    }
 
-    // Resolve where the origin session lives. Local ⇒ dispatch straight into it through the
-    // per-session serial gate (satisfies §5.3 concurrency vs. a running origin turn). Not
-    // local ⇒ the origin is on another daemon; route over the relay using the origin coords
-    // carried on the inbound turn (the relay has no sessionId→daemon registry).
-    const local = await this.host.store().getSessionByOutwardId(req.sessionId)
     if (local) {
-      const originOwner = local.agentId
-      const originPlatform = local.platform
-      // Local and remote replies resolve the parent's own sink while preserving its identity scope.
-      const route = sessionReplyRoute(
+      const replyRoute = sessionReplyRoute(
         local,
         (...args) => this.host.integrationIdForSessionTransport(...args),
         replyTarget
       )
-      if (!route) return failed('not_found', local.key)
-      const { integrationId, codeHostReply } = route
-      const resolved = this.host.resolveCpAgent(originOwner, originPlatform)
-      // §7: what stays invisible is the REPORT ITSELF — the child's body is injected into the
-      // parent session's transcript and is never published to the platform (this function
-      // makes no gateway call at all). That is structural, not a flag: nothing in the daemon
-      // publishes inbound delivery content.
-      //
-      // So the message below carries NO `headless` stamp and the resumed parent runs an
-      // ORDINARY turn, keeping its reply connection. Stamping it used to silence that turn,
-      // which only ever cost visibility: the humans watching the parent's own thread saw
-      // nothing at all — not even that the delegated work had come back — whenever the child
-      // had answered somewhere else (its own channel-root thread) or nowhere (a postless
-      // child). The original worry, a second copy of an answer the child already delivered
-      // into the SAME conversation, is editorial: the standing "don't restate" guidance owns
-      // it, and it is not worth muting every report-back to prevent.
+      if (!replyRoute) {
+        await this.forgetSent(messageId)
+        return failed('not_found', local.key)
+      }
+      const { integrationId, codeHostReply } = replyRoute
+      // A replay of one submission lands once (§8.6): its reply is already recorded on the source.
+      if (await this.alreadyReceived(messageId, local.key)) return await delivered(local.key)
+      const resolved = this.host.resolveCpAgent(local.agentId, local.platform)
+      // The reply is injected into the source's transcript only, never posted; its ordinary turn keeps its reply route.
       const normalized: NormalizedMessage = {
         msgId: `agentcall:${local.channel}:${deliveryId}`,
         traceId: deliveryId,
         source: 'agent',
-        platform: originPlatform,
+        platform: local.platform,
         channel: local.channel,
-        // The stored row's thread is the SESSION's. Where it is synthetic it carries the
-        // session, never the reply target — the resumed parent posts at the channel root
-        // rather than at a thread no platform has (channel-session-mode.md §3.1).
+        // A synthetic stored thread is the session's, never a reply target, so the source posts at the root.
         ...(isAppendCoordinate(local.thread)
           ? { sessionThread: local.thread }
           : local.thread
             ? { thread: local.thread }
             : {}),
         ...(local.transportScope ? { transportScope: local.transportScope } : {}),
-        // A monotonic "now" ts so the reply is ordered as a NEW message in the origin session.
-        // Without it, transcriptCoords derives the ts from the msgId's random UUID, which the
-        // origin's dedup mis-orders — the parent turn then runs with no new content and the reply
-        // never actually lands. (deliveryId stays a UUID for CallMeta/agent-call dedup.)
+        // Ordered as new content in the source session; a UUID-derived ts would be mis-ordered and dropped.
         transcriptTs: monotonicTs(),
         sender: { id: req.callerAgentId, isBot: true },
-        text: req.text,
-        // #966: a report resumes the parent session-only — never a live
-        // conversation post (postAgentWakeInbound skips report deliveries).
+        text: this.renderInput(callMeta, req.text),
+        // #966: a reply resumes the source session-only, never as a live conversation post.
         parentReport: true,
         mentionedBots: integrationId
           ? this.host.botUserIds()[integrationId]
@@ -2354,44 +2411,46 @@ export class CollabCoordinator {
         settleAdmission = resolve
       })
       const turn = this.host.dispatch(
-        originOwner,
+        local.agentId,
         normalized,
         integrationId,
-        this.host.webchatTransport().webchatWakeContext(originPlatform, local.channel),
+        this.host.webchatTransport().webchatWakeContext(local.platform, local.channel),
         callMeta,
         { requireDurable: true, onAdmission: (result) => settleAdmission(result) },
         codeHostReply
       )
       void turn.catch((err) => {
-        this.host.log().error(`replyToSession dispatch failed for session "${req.sessionId}": ${formatErr(err)}`)
-        // A dispatch that rejected before admission settled must still release this barrier.
+        this.host.log().error(`replyToSession dispatch failed for message "${inReplyTo}": ${formatErr(err)}`)
         settleAdmission({ accepted: false, reason: 'error' })
       })
-      // Await the admission barrier, never the model. Do not promise that the reply is
-      // queued when pause/drain, loop protection, or backpressure rejected it.
+      // Await the admission barrier, never the model.
       const admission = await admitted
       if (!admission.accepted) {
+        await this.forgetSent(messageId)
         return failed(admission.reason === 'queue_full' ? 'queue_full' : 'busy', local.key)
       }
-      await this.markChildParentReply(callerKey, req.sessionId, 'queued-for-parent')
-      await this.settleReplyObligation(callerKey, req.sessionId, inbound)
       this.host
         .log()
-        .info(`replyToSession: ${req.callerAgentId} → ${originOwner} (${local.key}) delivery=${deliveryId}`)
-      return { delivered: true, targetSession: local.key }
+        .info(
+          `replyToSession: ${req.callerAgentId} → ${local.agentId} (${local.key}) in reply to ${inReplyTo} delivery=${deliveryId}`
+        )
+      return await delivered(local.key)
     }
 
-    // Cross-daemon: route by the chosen destination's recorded coords and owner; one without them cannot be reached.
-    const coords = destination.coords
-    if (!coords || destination.agentId === undefined) return failed('not_found')
-    const targetSession = sessionKey(coords.platform, coords.channel, coords.thread ?? '', destination.agentId)
+    // Cross-daemon: by the recorded coordinates and agent; a source without them cannot be reached.
+    const coords = route.coords
+    if (!coords || !answered.sourceAgentId) {
+      await this.forgetSent(messageId)
+      return failed('not_found')
+    }
+    const targetSession = sessionKey(coords.platform, coords.channel, coords.thread ?? '', answered.sourceAgentId)
     const res = await this.routeAgentMsgCrossDaemon(
       {
         callerAgentId: req.callerAgentId,
         platform: coords.platform,
         callerChannel: req.callerChannel,
         callerThread: req.callerThread,
-        toAgentId: destination.agentId,
+        toAgentId: answered.sourceAgentId,
         text: req.text,
         channel: coords.channel,
         ...(coords.thread !== undefined ? { thread: coords.thread } : {})
@@ -2409,25 +2468,18 @@ export class CollabCoordinator {
         codeHostReplyTarget: replyTarget,
         originCoords: replyOriginCoords,
         ...(externalOrigin ? { externalOrigin } : {}),
-        // §5.3: this is a REPLY into the validated origin session, not a wake — the
-        // target dispatches into that exact session (a channel-free origin's
-        // coordinate would otherwise be substituted and the reply would mint a
-        // different synthetic session).
-        lineageReplyTo: req.sessionId,
-        // send-message-routing-rework.md §7/§8.4: mark the delivery kind so the target
-        // dispatches into `lineageReplyTo`, and so a relay refuses to hand it to a daemon
-        // too old to understand it. Failing the reply is correct there: such a daemon would
-        // key it by coordinates and mint a different session instead.
-        deliveryKind: 'session-reply'
+        // Into the source session, never a coordinate-keyed wake that could mint another.
+        lineageReplyTo: answered.sourceSessionId,
+        deliveryKind: 'session-reply',
+        // §9.4: the source's daemon admits it only into the session that sent the answered message; a pre-id message takes the old route.
+        ...(messageId !== undefined && !answered.legacy ? { messageId, messageKind: 'reply' as const, inReplyTo } : {})
       }
     )
-    await this.markChildParentReply(callerKey, req.sessionId, res.delivered ? 'queued-for-parent' : 'failed')
-    if (res.delivered) await this.settleReplyObligation(callerKey, req.sessionId, inbound)
-    return {
-      delivered: res.delivered,
-      targetSession: res.targetSession,
-      ...(res.reason !== undefined ? { reason: res.reason as ReplyToSessionResult['reason'] } : {})
+    if (!res.delivered) {
+      await this.forgetSent(messageId)
+      return await failed((res.reason ?? 'offline') as NonNullable<ReplyToSessionResult['reason']>, res.targetSession)
     }
+    return await delivered(res.targetSession)
   }
 
   /**
@@ -2698,27 +2750,7 @@ export class CollabCoordinator {
     return this.childSessionLinks.get(child.key)?.parentSessionId === parentSessionId
   }
 
-  /**
-   * Whether a channel-ROOT post just made by `caller` FORKED a conversation that session is
-   * ALREADY part of — its parent's, its own, or neither. Backs `sendMessage`'s root-post notice.
-   *
-   * Forking, not merely landing on: a post whose thread key IS the conversation's own thread
-   * joined it, which is what a root post does on Discord and in Telegram / Feishu DMs (see
-   * {@link threadKeyForPost}). Warning there would tell an agent its message went nowhere when
-   * the reader has it, and talk it into sending a second copy.
-   *
-   * Conversation identity is the daemon's to decide, which is why this lives here and not in ops:
-   * a channel id is only unique within one physical bot, so two integrations can name the same id
-   * and mean different conversations. The comparison therefore includes the transport scope on
-   * both sides, and the caller's session key uses its platform string verbatim.
-   *
-   * The parent link is read from the CURRENT turn's trusted call metadata when present, else from
-   * the DURABLE origin on the session row (§5.3) — the load-bearing half, since relaying an answer
-   * happens on a later human-triggered turn with no metadata. Coords come from the parent's own
-   * row wherever one exists, because only a row records a transport scope; the cross-daemon case
-   * and its deliberate imprecision are spelled out at the branch below. This widens nothing — it
-   * answers about coordinates the caller itself just named.
-   */
+  /** Whether a channel-root post just made forked the conversation of a session this one owes an answer, or its own; backs the wrong-root notice (send-message-guide.md §7.5). */
   async rootPostRelation(req: {
     callerAgentId: string
     platform: string
@@ -2729,20 +2761,16 @@ export class CollabCoordinator {
     targetChannel: string
     targetThread: string
     targetIntegrationId?: string
-  }): Promise<{ kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined> {
+  }): Promise<{ kind: 'source'; messageId: string } | { kind: 'self' } | undefined> {
     const targetScope = this.host.transportScopeForIntegrationIds(
       req.targetIntegrationId !== undefined ? [req.targetIntegrationId] : undefined
     )
-    // Same conversation AND a different thread: only then did the post FORK it. Discord guild
-    // roots are materialized as native threads before reaching this comparison. In continuous
-    // DMs whose post key IS the conversation ({@link threadKeyForPost}), the message simply
-    // landed in it and there is nothing to warn about.
+    // Same conversation and a different thread: only then did the post fork it; a continuous DM's post landed in it.
     const isForkOf = (platform: string, channel: string, thread: string, scope?: string | null): boolean =>
       platform === req.targetPlatform &&
       channel === req.targetChannel &&
       thread !== req.targetThread &&
       (scope ?? undefined) === (targetScope ?? undefined)
-
     const key = sessionKey(
       req.platform,
       req.callerChannel,
@@ -2750,34 +2778,31 @@ export class CollabCoordinator {
       req.callerAgentId,
       req.callerTransportScope
     )
+    const store = this.host.store()
+    // The message this turn answers, else the oldest one still waiting on a reply; never the session's origin (§9.6).
     const inbound = this.host.activeTurnCallMeta().get(key)
-    const parentSessionId =
-      inbound?.originSessionId ?? (await this.host.store().getSession(key))?.originSessionId ?? undefined
-    const parent = parentSessionId ? await this.host.store().getSessionByOutwardId(parentSessionId) : undefined
-    // A LOCAL parent's row records its transport scope, so its identity is exact.
-    if (parentSessionId && parent && isForkOf(parent.platform, parent.channel, parent.thread, parent.transportScope)) {
-      return { kind: 'parent', sessionId: parentSessionId }
+    const current = inbound?.messageId
+      ? await store.sessionMessages.received(inbound.messageId).catch(() => undefined)
+      : undefined
+    const oldestOpen = async () => {
+      const first = (await store.sessionMessages.listFor(key, 1).catch(() => []))[0]
+      return first?.replyState === 'open' ? first : undefined
     }
-    // A CROSS-DAEMON parent has no row here, and its scope cannot be obtained: the value is
-    // derived from the owning daemon's live credential and deliberately never crosses the wire
-    // (see the note on the durable scope in protocol telemetry) — it would also rotate with that
-    // daemon's tokens, so a forwarded copy could not be compared reliably anyway. Identity here is
-    // therefore COORDINATES ONLY, which can over-match where one channel id is reachable through
-    // two bots. That trade is deliberate: the cost of over-matching is a hint naming the caller's
-    // real parent — where a relayed answer belongs regardless — while staying silent would drop
-    // the hint for precisely the escalation shape the relay exists to serve.
-    if (parentSessionId && !parent && inbound?.originCoords) {
-      const { platform, channel, thread } = inbound.originCoords
-      // An origin without a thread (a legacy peer omits it) cannot be shown to have been forked,
-      // and the notice's whole claim is that it was — stay silent rather than guess.
-      if (thread !== undefined && platform === req.targetPlatform && channel === req.targetChannel) {
-        if (thread !== req.targetThread) return { kind: 'parent', sessionId: parentSessionId }
-        return undefined
+    const answered = current?.recipientKey === key ? current : await oldestOpen()
+    if (answered) {
+      const source = await store.getSessionByOutwardId(answered.sourceSessionId, answered.sourceAgentId || undefined)
+      // A local source's row records its transport scope, so its identity is exact.
+      if (source && isForkOf(source.platform, source.channel, source.thread, source.transportScope))
+        return { kind: 'source', messageId: answered.messageId }
+      // A remote source has only its recorded coordinates, which can over-match where one channel id serves two bots.
+      if (!source && answered.sourceThread !== undefined) {
+        if (answered.sourcePlatform === req.targetPlatform && answered.sourceChannel === req.targetChannel)
+          return answered.sourceThread !== req.targetThread
+            ? { kind: 'source', messageId: answered.messageId }
+            : undefined
       }
     }
-    if (isForkOf(req.platform, req.callerChannel, req.callerThread, req.callerTransportScope)) {
-      return { kind: 'self' }
-    }
+    if (isForkOf(req.platform, req.callerChannel, req.callerThread, req.callerTransportScope)) return { kind: 'self' }
     return undefined
   }
 
@@ -2785,7 +2810,7 @@ export class CollabCoordinator {
    * session-concept case 2a: an agent's channel-ROOT post seeds a NEW session owned by the same
    * agent. The post already happened (ops.ts); here the daemon initializes the new-thread session
    * (keyed by the post's ts) so the top-level message starts its own context,
-   * with `Parent session` = the origin session. This is initialization only: the root is recorded
+   * with the posting session recorded as its creator. This is initialization only: the root is recorded
    * for replay with the first real reply, but no model turn runs. `headless` remains a transport
    * backstop, and the hop count remains a defense for replay from an older durable inbox row.
    *
@@ -2944,6 +2969,10 @@ export class CollabCoordinator {
       /** send-message-guide.md §9.2: a `session-call`'s target session and the calling turn's people. */
       targetSessionId?: string
       callerAskers?: AgentCallAskers
+      /** send-message-guide.md §9.3–§9.4: the session message's id and kind, and for a reply the message it answers. */
+      messageId?: string
+      messageKind?: SessionMessageKind
+      inReplyTo?: string
     }
   ): Promise<MessageAgentResult> {
     const relays = this.host.relays()
@@ -2990,7 +3019,10 @@ export class CollabCoordinator {
           ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {}),
           ...(ctx.deliveryKind !== undefined ? { deliveryKind: ctx.deliveryKind } : {}),
           ...(ctx.targetSessionId !== undefined ? { targetSessionId: ctx.targetSessionId } : {}),
-          ...(ctx.callerAskers !== undefined ? { callerAskers: ctx.callerAskers } : {})
+          ...(ctx.callerAskers !== undefined ? { callerAskers: ctx.callerAskers } : {}),
+          ...(ctx.messageId !== undefined ? { messageId: ctx.messageId } : {}),
+          ...(ctx.messageKind !== undefined ? { messageKind: ctx.messageKind } : {}),
+          ...(ctx.inReplyTo !== undefined ? { inReplyTo: ctx.inReplyTo } : {})
         },
         {
           send: (payload) => relays.sendAgentMsg(payload),

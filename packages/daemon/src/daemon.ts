@@ -823,6 +823,7 @@ import {
   type SubsessionApprovalRoute
 } from './permissions/subsession-approval.js'
 import { CollabCoordinator, type CollabHost } from './collab/coordinator.js'
+import { legacySessionMessageId } from './collab/session-message.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
   agentRemovalTombstones,
@@ -8893,22 +8894,29 @@ export class Daemon {
     return this.activeGateEntries.get(this.sessionKeyOf(ctx))
   }
 
-  /** send-message-guide.md §9.3–§9.4: record an admitted delivery's source on the session it reached, and its request for a reply. */
-  private async noteReplySource(agentId: string, key: string, thread: string, callMeta: CallMeta): Promise<void> {
+  /** send-message-guide.md §9.3: record an admitted session message on the session it reached, with its reply obligation. */
+  private async noteSessionMessage(agentId: string, key: string, callMeta: CallMeta): Promise<void> {
     const source = callMeta.originSessionId
-    // A sub-session keeps its one parent (§8.2), and a root seed was never called.
-    if (source === undefined || callMeta.initializeOnly === true || isSubsessionCoordinate(thread)) return
+    // A root seed was never sent, and a delivery with no source session is no session message.
+    if (source === undefined || callMeta.initializeOnly === true) return
     try {
-      const now = this.clock.now()
-      // A session is never its own source.
+      // A session never receives a message from itself.
       if ((await this.store.getSession(key))?.sessionId === source) return
-      // A report from the agent's own sub-session grants no standing reply path into it; messaging it is messageTask's.
-      const origin = await this.store.getSessionByOutwardId(source)
-      if (origin && origin.agentId === agentId && isSubsessionCoordinate(origin.thread)) return
+      let messageId = callMeta.messageId
+      if (messageId === undefined) {
+        // A report from the agent's own sub-session without an id names nothing to answer.
+        const origin = await this.store.getSessionByOutwardId(source)
+        if (origin && origin.agentId === agentId && isSubsessionCoordinate(origin.thread)) return
+        // A delivery from a peer or an inbox row that predates ids: one stable id, answered by the pre-id route.
+        messageId = legacySessionMessageId(callMeta.callFrom, callMeta.deliveryId)
+        callMeta.messageId = messageId
+        callMeta.legacyMessage = true
+      }
       const coords = callMeta.originCoords
-      await this.store.sessionSources.record({
-        sessionKey: key,
-        agentId,
+      const recorded = await this.store.sessionMessages.recordReceived({
+        messageId,
+        recipientKey: key,
+        recipientAgentId: agentId,
         sourceSessionId: source,
         sourceAgentId: callMeta.callFrom,
         ...(coords
@@ -8921,18 +8929,17 @@ export class Daemon {
         ...(callMeta.originCodeHostReplyTarget !== undefined
           ? { codeHostReplyTarget: JSON.stringify(callMeta.originCodeHostReplyTarget) }
           : {}),
-        now
+        kind: callMeta.messageKind ?? 'call',
+        ...(callMeta.inReplyTo !== undefined ? { inReplyTo: callMeta.inReplyTo } : {}),
+        replyState: callMeta.needsReply === true ? 'open' : 'none',
+        hopCount: callMeta.hopCount,
+        ...(callMeta.legacyMessage ? { legacy: true } : {}),
+        now: this.clock.now()
       })
-      if (callMeta.needsReply === true)
-        await this.store.sessionSources.openObligation({
-          sessionKey: key,
-          agentId,
-          deliveryId: callMeta.deliveryId,
-          sourceSessionId: source,
-          now
-        })
+      if (recorded === 'conflict')
+        this.log.warn(`session message ${messageId} is already another session's; not recorded`)
     } catch (err) {
-      this.log.warn(`reply source for ${key} not recorded: ${formatErr(err)}`)
+      this.log.warn(`session message for ${key} not recorded: ${formatErr(err)}`)
     }
   }
 
@@ -8988,10 +8995,13 @@ export class Daemon {
     const live = this.activeGateEntries.get(key)
     if (!live || live === entry) return
     ;(live.foldedMessages ??= []).push(this.turnMessageOf(entry))
-    // send-message-guide.md §9.4: a call folded into this turn makes its final output no one call's answer.
+    // send-message-guide.md §9.5: a message folded into this turn makes its final output no one message's answer.
     const call = entry.callMeta
     if (call?.originSessionId !== undefined)
-      (live.foldedCalls ??= []).push({ deliveryId: call.deliveryId, originSessionId: call.originSessionId })
+      (live.foldedCalls ??= []).push({
+        deliveryId: call.deliveryId,
+        ...(call.messageId !== undefined ? { messageId: call.messageId } : {})
+      })
   }
 
   /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */
@@ -12393,6 +12403,13 @@ export class Daemon {
       // and only the CP may open it.
       ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
     }
+    // send-message-guide.md §9.3: the message's id as its sender minted it; a delivery from a pre-id peer gets a stable one here.
+    if (msg.originSessionId !== undefined) {
+      callMeta.messageId = msg.messageId ?? legacySessionMessageId(msg.trustedFromAgentId, msg.deliveryId)
+      callMeta.messageKind = msg.messageKind ?? (msg.deliveryKind === 'session-reply' ? 'reply' : 'call')
+      if (msg.inReplyTo !== undefined) callMeta.inReplyTo = msg.inReplyTo
+      if (msg.messageId === undefined) callMeta.legacyMessage = true
+    }
 
     // send-message-guide.md §9.2: an existing-session call is admitted here, the owning daemon, into that session or nowhere.
     if (msg.deliveryKind === 'session-call') {
@@ -12415,10 +12432,18 @@ export class Daemon {
       )
       return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId: admitted.key })
     }
-    // The source daemon checks origin authority; an agent-scoped lookup here prevents session aliasing.
+    // A reply: one naming a message lands only in the session that sent it to the replier (send-message-guide.md §9.4); a pre-id one in its named session.
     if (msg.lineageReplyTo !== undefined) {
-      const origin = await this.store.getSessionByOutwardId(msg.lineageReplyTo, msg.toAgentId)
+      const origin = await this.replyRecipient(msg)
       if (!origin) return record(nak('not_found'))
+      if (
+        callMeta.messageId !== undefined &&
+        (await this.store.sessionMessages.conflicts(callMeta.messageId, origin.key, origin.agentId))
+      )
+        return record(nak('not_allowed'))
+      // A replay of one submission lands once (§8.6): its message is already recorded on that session.
+      if (await this.collab.alreadyReceived(msg.messageId, origin.key))
+        return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId: origin.key })
       const route = sessionReplyRoute(
         origin,
         (...args) => this.integrationIdForSessionTransport(...args),
@@ -12448,7 +12473,7 @@ export class Daemon {
         // Ordered as NEW content in the origin session (see replyToSession's local branch).
         transcriptTs: monotonicTs(),
         sender: { id: msg.trustedFromAgentId, isBot: true },
-        text: msg.text,
+        text: this.collab.renderInput(callMeta, msg.text),
         mentionedBots:
           replyIntegrationId && this.botUserIds[replyIntegrationId] ? [this.botUserIds[replyIntegrationId]!] : [],
         isDm: false,
@@ -12471,7 +12496,10 @@ export class Daemon {
         replyIntegrationId,
         this.webchatTransport.webchatWakeContext(origin.platform, origin.channel),
         callMeta,
-        { requireDurable: true, onAdmission: (result) => settleAdmission(result) },
+        {
+          requireDurable: true,
+          onAdmission: (result) => settleAdmission(result)
+        },
         codeHostReply
       ).catch((err) => {
         this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
@@ -12560,11 +12588,8 @@ export class Daemon {
       ...(thread !== undefined ? { thread } : {}),
       ...(childCoordinate !== undefined ? { sessionThread: childCoordinate } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
-      // The forwarded text already names the caller (`From <caller>: …`, built on the caller's
-      // daemon in prepareAgentDelivery) — deliver it as-is. Re-wrapping it here would
-      // double-frame it AND leak the caller's raw agentId, which the caller can't resolve
-      // for a remote peer anyway.
-      text: msg.text,
+      // §9.5: the body under this daemon's message header, from the trusted lineage; a pre-id peer's text arrives already framed.
+      text: this.collab.renderInput(callMeta, msg.text),
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
       isDm: false,
       // A `toAgent`+`channel` wake was preceded by a visible post the SOURCE daemon made; carry
@@ -12573,6 +12598,12 @@ export class Daemon {
       ...(msg.transcriptTs !== undefined ? { transcriptTs: msg.transcriptTs } : {})
     }
 
+    // §9.3: an id already recorded for another session is that message's, so this delivery is refused.
+    if (
+      callMeta.messageId !== undefined &&
+      (await this.store.sessionMessages.conflicts(callMeta.messageId, childSessionId, msg.toAgentId))
+    )
+      return record(nak('not_allowed'))
     // send-message-routing-rework.md §3.2: the target daemon owns the rendezvous for a
     // cross-daemon paired call too — BOTH the forwarded wake and the routed IM event
     // converge here, so this is the only place that can see both halves. The relay
@@ -12617,6 +12648,21 @@ export class Daemon {
     })
     this.log.info(`relay: rd/agentmsg/fwd ${msg.trustedFromAgentId} → ${msg.toAgentId} delivery=${msg.deliveryId}`)
     return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId })
+  }
+
+  /** The session a remote reply may land in: the sender of the message it answers, by this daemon's own sent record, else a pre-id reply's named session. */
+  private async replyRecipient(msg: RdAgentMsgFwd): Promise<SessionRecord | undefined> {
+    if (msg.inReplyTo === undefined)
+      return msg.lineageReplyTo !== undefined
+        ? await this.store.getSessionByOutwardId(msg.lineageReplyTo, msg.toAgentId)
+        : undefined
+    const sent = await this.store.sessionMessages.sent(msg.inReplyTo).catch(() => undefined)
+    // Only a message this daemon sent from the named agent's session to the replying agent can be answered.
+    if (!sent || sent.senderAgentId !== msg.toAgentId || sent.recipientAgentId !== msg.trustedFromAgentId)
+      return undefined
+    if (msg.lineageReplyTo !== undefined && sent.senderSessionId !== msg.lineageReplyTo) return undefined
+    const sender = await this.store.getSession(sent.senderKey)
+    return sender?.agentId === msg.toAgentId ? sender : undefined
   }
 
   /** Whether this member serves the agent's ingress edges and sweeps: the duty holder, or any local daemon. */
@@ -15055,9 +15101,9 @@ export class Daemon {
               await this.store.releaseActivation(activationKey)
             }
           }
-          // send-message-guide.md §9.3: an admitted call or reply makes its source one this session may reply to.
+          // send-message-guide.md §9.3: an admitted session message is recorded before the model sees it.
           if (result.accepted && !result.duplicate && callMeta !== undefined)
-            await this.noteReplySource(agentId, key, sessionThreadOf(msg), callMeta)
+            await this.noteSessionMessage(agentId, key, callMeta)
           await opts?.onAdmission?.(result)
           const surface = this.turnSurfaces.exact(msg.platform)
           if (
@@ -16315,8 +16361,7 @@ export class Daemon {
           this.log.warn(`remote MCP descriptor attachment failed (${formatErr(error)})`)
         }
       }
-      // §2.3/§5.3: hand the origin session id to prompt assembly so a child woken by another
-      // session's `sendMessage` gets its `Parent session` line (the SessionTarget to reply into).
+      // send-message-guide.md §9.5–§9.6: the sending session is recorded as a new session's creator; the input shows its own message id.
       handled = await this.sessions.handle(
         agentId,
         msg,
@@ -16324,10 +16369,9 @@ export class Daemon {
         integrationId,
         callMeta?.originSessionId,
         chatSettingsAllowed(agent) ? webchat?.runtime?.effort : undefined,
-        // §5.3: the parent asked to be told how this session ends — prompt assembly turns it into
-        // a standing directive naming the origin as the reply target.
         callMeta?.needsReply,
         {
+          ...(callMeta?.messageId !== undefined ? { messageId: callMeta.messageId } : {}),
           initializeOnly: plan.initializeOnly,
           retryAdmittedTurn: entry.fromInboxReplay,
           runtimeTarget: this.sessionRuntimes.get(key),

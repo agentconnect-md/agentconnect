@@ -29,7 +29,8 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'startTask starts a background task of this session for long work you do yourself: for "fix this bug and ' +
       'open a PR", call it before exploring, say it started, and end your turn. messageTask sends a task you ' +
       'started more (taskId). A task reports each round’s outcome automatically, and stopTask stops it. ' +
-      'replyToSession answers a session that called you, by its sessionId; replies are not broadcast. postMessage ' +
+      'replyToSession answers a message another session sent you, by its messageId, as often as needed; replies ' +
+      'are not broadcast. postMessage ' +
       'reaches a person, channel, or another existing thread and starts no work. For your current conversation, ' +
       'write your ordinary reply. To get a peer’s result, use toAgent: {agentId: "...", needsReply: true}. Call ' +
       'getToolGuide {"tool":"sendMessage"} for arguments and examples. Calls without action fail without sending ' +
@@ -69,11 +70,14 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
         sessionId: {
           type: 'string',
           minLength: 1,
-          description:
-            'callAgent: that agent’s existing session (a childSessionId), instead of channel. replyToSession: the ' +
-            'session id of one session that called you.'
+          description: 'callAgent only: that agent’s existing session (a childSessionId), instead of channel.'
         },
         taskId: { type: 'string', minLength: 1, description: 'messageTask only: the taskId startTask returned.' },
+        messageId: {
+          type: 'string',
+          minLength: 1,
+          description: 'replyToSession only: the id of the message you answer, shown with that message.'
+        },
         attachment: { type: 'string', minLength: 1, description: 'Received image name from an [attached: …] marker.' },
         platform: {
           type: 'string',

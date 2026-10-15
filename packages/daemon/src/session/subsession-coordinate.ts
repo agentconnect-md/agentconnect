@@ -3,7 +3,7 @@ import { SUBSESSION_COORDINATE_PREFIX, isSubsessionCoordinate } from '@agentconn
 
 export { SUBSESSION_COORDINATE_PREFIX, isSubsessionCoordinate }
 
-/** How a task's first input opens (send-message-guide.md §2.1); its cards strip it, with the pre-rename wrapper. */
+/** How a task's first input opened before message headers (send-message-guide.md §9.5); its cards still strip it, with the pre-rename wrapper. */
 export const TASK_START_WRAPPER = 'From your own session, as a background task:'
 export const LEGACY_TASK_START_WRAPPER = 'From your own main conversation, as a background sub-session:'
 

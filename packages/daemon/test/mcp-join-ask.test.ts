@@ -81,7 +81,7 @@ function makeDeps(gw: MessageGateway, over: { nobody?: boolean; unreachable?: bo
     gatewayFor: () => gw,
     channelAgents: async () => ({ platform: 'slack', agents: [] }),
     messageAgent: async (req) => ({ delivered: true, targetSession: `stub:${req.toAgentId}` }),
-    replyToSession: async () => ({ delivered: true, targetSession: 'stub' }),
+    replyToSession: async () => ({ delivered: true, targetSession: 'stub', inReplyTo: 'msg-stub' }),
     memory: {} as unknown as MemoryProvider,
     recordOutbound: async () => {},
     now: () => 1000,

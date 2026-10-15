@@ -337,6 +337,7 @@ describe('toolsForIntegrations', () => {
       'thread',
       'sessionId',
       'taskId',
+      'messageId',
       'attachment',
       'platform',
       'integrationId'
@@ -366,13 +367,17 @@ describe('toolsForIntegrations', () => {
     expect(tool.description).toContain('sessionId continues an existing peer session')
     expect(tool.description).toContain('startTask starts a background task of this session')
     expect(tool.description).toContain('messageTask sends a task you started more (taskId)')
+    // §9.4: a reply names the message it answers.
+    expect(tool.description).toContain('replyToSession answers a message another session sent you, by its messageId')
+    expect(schema.properties.sessionId!.description).toContain('callAgent only')
+    expect(schema.properties.messageId!.description).toContain('replyToSession only')
   })
 
-  it('states what a channel-root post costs, and points a relayed answer at the origin session', () => {
+  it('states what a channel-root post costs, and points a relayed answer at the message it answers', () => {
     const description = sendTool([slackInt])!.description
     expect(description).toContain('For your current conversation, write your ordinary reply.')
     expect(guideRules([slackInt], 'replyToSession')).toContain(
-      'Never post the answer at the origin conversation’s channel root instead: that starts a separate conversation.'
+      'Never post the answer at that conversation’s channel root instead: that starts a separate conversation.'
     )
     expect(guideRules([slackInt], 'postMessage')).toContain(
       'posts one message at the channel root that @-mentions all of them'

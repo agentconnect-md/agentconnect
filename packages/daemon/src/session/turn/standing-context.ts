@@ -4,6 +4,7 @@ import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
 import { NO_RESPONSE_RULE } from '../no-response.js'
 import { isDelegationCoordinate } from '../subsession-coordinate.js'
+import type { ReceivedSessionMessage } from '../../store/session-messages.js'
 
 // Opening lines of the inlined agent-meta block (`# Agent\n- Name: …`). The standing
 // context that handle() inlines as a non-meta runtime's first prompt block always
@@ -72,8 +73,8 @@ export type StandingContextInput = {
   thread: string
   /** This session's OUTWARD id (session-concept.md §1.1), absent on the turn that opens it. */
   sessionId?: string | null
-  /** The parent session to reply into, when this session was woken by another. */
-  parentSessionId?: string | null
+  /** The session that created this one (send-message-guide.md §9.6): a record only, never a reply address. */
+  originSessionId?: string | null
   /** Key NAMES (never values) of the agent's write-only env secrets. */
   envSecretNames: readonly string[]
   /** Secrets materialized to a private file instead of reaching the child env. */
@@ -82,7 +83,6 @@ export type StandingContextInput = {
   workspaceRoots?: readonly { path: string; repoFullName: string; branch: string }[]
   /** The directory it clones the authorized repositories it was not handed into, and which those are (decision 20). */
   onDemandClones?: OnDemandCloneContext
-  needsReplyToParent: boolean
   /** The agent memory INDEX, already read and trimmed; '' for native/absent memory. */
   memoryIndex: string
   /** Whether the host carries standing context on the system-prompt meta channel. */
@@ -100,7 +100,8 @@ export type StandingContext = {
   /** The platform module's standing block; '' when the delivery carried none. */
   platformAppend: string
   collabAppend: string
-  parentReplyAppend: string
+  /** A task's standing block on reporting to the session that started it; '' for every other session. */
+  taskReportingAppend: string
   /** Durable standing rules re-asserted on session/load — no memory index. */
   resumeSystemContext: string
   /** The fresh-session form: the durable rules plus the memory index. */
@@ -162,13 +163,10 @@ function buildAgentMeta(input: StandingContextInput): string {
     // Best-effort and async, so it can be absent for a brand-new channel until resolution
     // catches up — then the id line alone stands.
     ...(input.channelName ? [`- Channel name: ${input.channelName}`] : []),
-    // session-concept §2.3: standing locator lines. `Thread` is this session's thread segment;
-    // `Session` is its own OUTWARD id (§1.1), minted when the slot resolves, so it is there from
-    // the first turn; `Parent session` appears ONLY when this session has a parent (woken by
-    // another session's `sendMessage`) and is the SessionTarget to reply into.
+    // Standing locators: this session's thread and outward id, and the session that created it, a record only (send-message-guide.md §9.6).
     `- Thread: ${input.thread}`,
     ...(input.sessionId ? [`- Session: ${input.sessionId}`] : []),
-    ...(input.parentSessionId ? [`- Parent session: ${input.parentSessionId}`] : []),
+    ...(input.originSessionId ? [`- Created by session: ${input.originSessionId}`] : []),
     ...(input.agentDescription ? ['', input.agentDescription] : []),
     // Key NAMES (never values) of the agent's write-only secrets. The values are merged into
     // the child process env (agents/agent-env.ts) so the agent's commands can USE them; this
@@ -311,9 +309,9 @@ const COLLAB_AFTER_SELF =
   `\`{"action":"postMessage","toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
   `@-mention at the channel root. In that channel form, pass ` +
   `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
-  `message; arrays are never DMs. If you were woken by another ` +
-  `session, reply with \`{"action":"replyToSession","sessionId":"<Parent session>","message":"..."}\`; when several ` +
-  `sessions called you, each message names its session, and you answer each one by its own id. To leave a ` +
+  `message; arrays are never DMs. A message another session sends you starts with its id ` +
+  `(\`[Message <id>] From …\`); answer it with \`{"action":"replyToSession","messageId":"<that id>","message":"..."}\`: ` +
+  `the reply reaches only the session that sent that message, and you may answer a message more than once. To leave a ` +
   `visible note others catch up on later without waking anyone, use ` +
   `\`{"action":"postMessage","channel":"<channel id>","message":"..."}\`. Every visible \`sendMessage\` except a ` +
   `\`thread\` update lands at a channel root and opens a new conversation there.\n` +
@@ -331,39 +329,15 @@ const COLLAB_AFTER_SELF =
 /** The collaboration guidance, the same for every agent. */
 export const COLLAB_APPEND = COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLAB_AFTER_SELF
 
-// The parent asked to be told how this session ends (`toAgent.needsReply`). Standing, not a
-// user turn — the obligation outlives the waking turn, so it belongs beside the collaboration
-// guidance rather than in the delivered text (which the model may summarize away). Deliberately
-// scoped to a terminal report: nothing here asks for progress narration, which would turn every
-// delegated task into channel chatter.
-export function buildParentReplyAppend(
-  needsReplyToParent: boolean,
-  parentSessionId: string | null | undefined,
-  subsession = false
-): string {
-  if (!needsReplyToParent) return ''
-  if (subsession) return buildSubsessionParentAppend(parentSessionId)
-  return (
-    `# Reporting back to your parent session\n` +
-    `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
-    `cannot finish — reply to it with ` +
-    `\`sendMessage\` \`{"action":"replyToSession","sessionId":"${parentSessionId}","message":"..."}\`, saying whether you ` +
-    `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
-    `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful. ` +
-    `Your ordinary assistant response in this child session is not delivered to the parent. Do not write the ` +
-    `result before or after the tool call; after the tool reports successful delivery, end your turn immediately ` +
-    `without repeating the message.`
-  )
-}
-
 // send-message-guide.md §8.3: a task messages its owning session any time, and the daemon reports each round's end.
-function buildSubsessionParentAppend(parentSessionId: string | null | undefined): string {
+export function buildTaskReportingAppend(ownerSessionId: string | null | undefined): string {
+  if (!ownerSessionId) return ''
   return (
     `# Reporting back to the session that started this task\n` +
-    `You are a background task of your own session ${parentSessionId}, working in a context of your own. It may ` +
-    `send you more messages later; they arrive here, in this same context. To send it progress worth knowing, a ` +
-    `question you need answered, or your result, call \`sendMessage\` ` +
-    `\`{"action":"replyToSession","sessionId":"${parentSessionId}","message":"..."}\`; a reply does not end your ` +
+    `You are a background task of your own session ${ownerSessionId}, working in a context of your own. It may ` +
+    `send you more messages later; they arrive here, in this same context, each with its id. To send it progress ` +
+    `worth knowing, a question you need answered, or your result, answer one of its messages with \`sendMessage\` ` +
+    `\`{"action":"replyToSession","messageId":"<id of its message>","message":"..."}\`; a reply does not end your ` +
     `work. Send your result that way before you finish, saying whether you succeeded and what the result was (on ` +
     `failure, what went wrong). When this round of work ends, the daemon tells that session automatically and ` +
     `forwards your final response, so end with one short line rather than repeating the result. If you asked a ` +
@@ -371,37 +345,31 @@ function buildSubsessionParentAppend(parentSessionId: string | null | undefined)
   )
 }
 
-/** The most reply addresses one turn lists; the rest stay valid and are counted (send-message-guide.md §9.3). */
-export const MAX_LISTED_REPLY_SOURCES = 8
+/** The most answerable messages one turn lists; the rest stay valid and are counted (send-message-guide.md §9.5). */
+export const MAX_LISTED_SESSION_MESSAGES = 8
 
-/** One session this session may reply to, as a turn lists it. */
-export type ReplySourceLine = { sessionId: string; agentId: string; awaiting: number }
-
-// send-message-guide.md §9.3: which session sent this input, and every session this one may answer, one call each.
-export function buildReplySourcesBlock(input: {
-  from?: { sessionId: string; agentId?: string }
-  sources: readonly ReplySourceLine[]
+// send-message-guide.md §9.5: the messages this session may still answer, open obligations first, one line each.
+export function buildSessionMessagesBlock(input: {
+  messages: readonly Pick<
+    ReceivedSessionMessage,
+    'messageId' | 'kind' | 'sourceAgentId' | 'sourceSessionId' | 'inReplyTo' | 'replyState'
+  >[]
   more: number
 }): string {
-  const lines = input.sources.map(
-    (source) =>
-      `- ${source.sessionId} (agent ${source.agentId})` +
-      (source.awaiting > 0
-        ? ` — waiting on your reply to ${source.awaiting === 1 ? 'one request' : `${source.awaiting} requests`}`
-        : '')
+  const lines = input.messages.map(
+    (message) =>
+      `- ${message.messageId}: ${message.kind === 'reply' ? 'a reply' : message.kind === 'report' ? 'a report' : 'a message'} ` +
+      `from agent ${message.sourceAgentId}, session ${message.sourceSessionId}` +
+      (message.inReplyTo ? `, to your message ${message.inReplyTo}` : '') +
+      (message.replyState === 'open' && message.kind !== 'taskInput' ? ' — waiting on your reply' : '')
   )
   return [
-    '# Sessions you can reply to',
-    ...(input.from
-      ? [
-          `This message comes from session ${input.from.sessionId}${input.from.agentId ? ` (agent ${input.from.agentId})` : ''}.`
-        ]
-      : []),
-    'More than one session can call this conversation. Answer each one separately with `sendMessage` ' +
-      '`{"action":"replyToSession","sessionId":"<session>","message":"..."}`; a reply reaches only the session it ' +
-      'names, never the others, so send one call per session that needs an answer:',
+    '# Messages you may answer',
+    'Other sessions sent this session these messages. Answer one with `sendMessage` ' +
+      '`{"action":"replyToSession","messageId":"<id>","message":"..."}`; a reply reaches only the session that sent ' +
+      'that message, never the others, so send one call per message that needs an answer:',
     ...lines,
-    ...(input.more > 0 ? [`- and ${input.more} more earlier sessions, which you can still answer.`] : [])
+    ...(input.more > 0 ? [`- and ${input.more} more earlier messages, which you can still answer.`] : [])
   ].join('\n')
 }
 
@@ -412,13 +380,11 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
-  const parentReplyAppend = buildParentReplyAppend(
-    input.needsReplyToParent,
-    input.parentSessionId,
-    isDelegationCoordinate(input.thread)
-  )
+  const taskReportingAppend = isDelegationCoordinate(input.thread)
+    ? buildTaskReportingAppend(input.originSessionId)
+    : ''
   const assemble = (meta: string) => {
-    const resume = [meta, workspaceRootsAppend, platformAppend, COLLAB_APPEND, parentReplyAppend, NO_RESPONSE_RULE]
+    const resume = [meta, workspaceRootsAppend, platformAppend, COLLAB_APPEND, taskReportingAppend, NO_RESPONSE_RULE]
       .filter(Boolean)
       .join('\n\n')
     return { resume, session: [resume, memoryAppend].filter(Boolean).join('\n\n') }
@@ -432,7 +398,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     workspaceRootsAppend,
     platformAppend,
     collabAppend: COLLAB_APPEND,
-    parentReplyAppend,
+    taskReportingAppend,
     resumeSystemContext,
     sessionContext,
     metaContext: input.usesMeta ? sessionContext || undefined : undefined,

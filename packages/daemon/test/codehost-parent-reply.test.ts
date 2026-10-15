@@ -309,12 +309,13 @@ async function roundTrip(provider: 'github' | 'gitlab' | 'gitea', explicit: bool
       } else {
         await childCanFinish
         if (explicit) {
-          const parentId = [...text.matchAll(/"sessionId":"([^"]+)"/g)]
+          // §9.5: the delegation shows the exact call that answers it, by its message id.
+          const messageId = [...text.matchAll(/"messageId":"([^"]+)"/g)]
             .map((m) => m[1])
             .find((v) => !v!.startsWith('<'))
           childResult = await callDaemonTool(bindings.get(sid)!, 'sendMessage', {
             action: 'replyToSession',
-            sessionId: parentId,
+            messageId,
             message: 'Private child findings.'
           })
         }

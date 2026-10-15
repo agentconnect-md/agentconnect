@@ -31,7 +31,7 @@ const ACTION_KEYS: Record<SendMessageAction, { requires: readonly string[]; acce
   callAgent: { requires: ['toAgent'], accepts: ['toAgent', 'channel', 'sessionId'] },
   startTask: { requires: [], accepts: [] },
   messageTask: { requires: ['taskId'], accepts: ['taskId'] },
-  replyToSession: { requires: ['sessionId'], accepts: ['sessionId'] },
+  replyToSession: { requires: ['messageId'], accepts: ['messageId'] },
   postMessage: {
     requires: ['toUser|channel'],
     accepts: ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'attachment']
@@ -57,7 +57,7 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
   }),
   replyToSession: z.strictObject({
     action: action('replyToSession'),
-    sessionId: requiredString('sessionId'),
+    messageId: requiredString('messageId'),
     message: messageField
   }),
   postMessage: z.strictObject({
@@ -97,6 +97,13 @@ const TASK_ID_NEEDED = (unexpected: readonly string[]) =>
   (unexpected.length > 0 ? `, and does not accept ${quoted(unexpected)}` : '') +
   '. Nothing was sent, and a missing, null or empty `taskId` never starts a task. To start a new background task, ' +
   START_TASK_INSTEAD
+/** §3.5: a reply names the message it answers, never a session; a missing, empty or session-addressed one is an argument error. */
+const MESSAGE_ID_NEEDED = (unexpected: readonly string[]) =>
+  'action `replyToSession` requires `messageId`' +
+  (unexpected.length > 0 ? ` and does not accept ${quoted(unexpected)}` : '') +
+  '. Nothing was sent. Reply with the id of the message you are answering, shown with that message. Call ' +
+  'getToolGuide {"tool":"sendMessage","action":"replyToSession"} for the required arguments, then retry with a valid ' +
+  'action and target'
 const BAD_PEER_SESSION = guided(
   'action `callAgent` takes `sessionId` only as the nonempty id of an existing session of the agent in `toAgent`, ' +
     'such as the `childSessionId` an earlier callAgent returned. Nothing was sent and no agent was woken. Omit ' +
@@ -138,6 +145,12 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
   // §8.1: a missing, null or empty task id is an argument error that names startTask, never a start.
   if (named === 'messageTask' && (typeof args.taskId !== 'string' || args.taskId.trim() === ''))
     throw new ToolArgumentError([TASK_ID_NEEDED(unexpected)])
+  // §9.4: a reply without a nonempty `messageId`, or addressed by `sessionId`, names nothing to answer.
+  if (
+    named === 'replyToSession' &&
+    (typeof args.messageId !== 'string' || args.messageId.trim() === '' || keys.includes('sessionId'))
+  )
+    throw new ToolArgumentError([MESSAGE_ID_NEEDED(unexpected)])
   // §9.2: a supplied peer-session id is nonempty, never a null or empty stand-in for creation.
   if (named === 'callAgent' && keys.includes('sessionId')) {
     const id = args.sessionId

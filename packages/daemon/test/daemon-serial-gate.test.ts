@@ -600,17 +600,19 @@ describe('P4 serial gate', () => {
         callFrom: 'bot-a',
         hopCount: 1,
         deliveryId: 'd1',
-        originSessionId: parentSid
+        originSessionId: parentSid,
+        messageId: 'msg-d1'
       })
+      await receiveCall(d, childKey, parentSid)
       const reply = await d.collab.replyToSession({
         callerAgentId: 'bot-b',
         platform: 'slack',
         callerChannel: 'C2',
         callerThread: '200.1',
-        sessionId: parentSid,
+        messageId: 'msg-d1',
         text: 'report'
       })
-      expect(reply).toEqual({ delivered: true, targetSession: key })
+      expect(reply).toEqual({ delivered: true, targetSession: key, inReplyTo: 'msg-d1' })
       expect(d.serialQueue.get(key).map((entry: any) => entry.msg.parentReport)).toEqual([true])
       expect(await reportRows()).toHaveLength(1)
       expect(d.collab.childSessionLinks.get(childKey)?.replyState).toBe('queued-for-parent')
@@ -639,6 +641,21 @@ describe('P4 serial gate', () => {
     }
   )
 
+  /** The parent's call the child answers (send-message-guide.md §9.3), as the child's daemon recorded it. */
+  async function receiveCall(d: any, childKey: string, parentSid: string): Promise<void> {
+    await d.store.sessionMessages.recordReceived({
+      messageId: 'msg-d1',
+      recipientKey: childKey,
+      recipientAgentId: 'bot-b',
+      sourceSessionId: parentSid,
+      sourceAgentId: 'bot-a',
+      kind: 'call',
+      replyState: 'open',
+      hopCount: 1,
+      now: Date.now()
+    })
+  }
+
   // A child's parent report, queued behind the parent's running turn.
   async function queueParentReport() {
     const g = gatedHost()
@@ -662,16 +679,23 @@ describe('P4 serial gate', () => {
       originSessionId: parentSid,
       needsParentReply: 1
     })
-    d.activeTurnCallMeta.set(childKey, { callFrom: 'bot-a', hopCount: 1, deliveryId: 'd1', originSessionId: parentSid })
+    d.activeTurnCallMeta.set(childKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: parentSid,
+      messageId: 'msg-d1'
+    })
+    await receiveCall(d, childKey, parentSid)
     const reply = await d.collab.replyToSession({
       callerAgentId: 'bot-b',
       platform: 'slack',
       callerChannel: 'C2',
       callerThread: '200.1',
-      sessionId: parentSid,
+      messageId: 'msg-d1',
       text: 'report'
     })
-    expect(reply).toEqual({ delivered: true, targetSession: key })
+    expect(reply).toEqual({ delivered: true, targetSession: key, inReplyTo: 'msg-d1' })
     expect(d.collab.childSessionLinks.get(childKey)?.replyState).toBe('queued-for-parent')
     return {
       daemon,

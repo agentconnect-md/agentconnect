@@ -518,6 +518,26 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       }).success
     ).toBe(false)
 
+    // send-message-guide.md §9.3: a session message carries its id and kind, and a reply the message it answers.
+    const message = RdAgentMsgFwd.safeParse({
+      trustedFromAgentId: base.claimedFromAgentId,
+      orgId: 'org-1',
+      toAgentId: base.toAgentId,
+      text: base.text,
+      coords: base.coords,
+      hopCount: 1,
+      deliveryId: base.deliveryId,
+      messageId: 'msg-1',
+      messageKind: 'reply',
+      inReplyTo: 'msg-0'
+    })
+    expect(message.success && [message.data.messageId, message.data.messageKind, message.data.inReplyTo]).toEqual([
+      'msg-1',
+      'reply',
+      'msg-0'
+    ])
+    expect(RdAgentMsg.safeParse({ ...base, messageKind: 'post' }).success).toBe(false)
+
     // The §8.4 refusal is its own verdict: the target is reachable but too old, which a
     // caller must be able to distinguish from `offline`.
     expect(RdAgentMsgAck.safeParse({ deliveryId: 'd-1', delivered: false, reason: 'unsupported' }).success).toBe(true)

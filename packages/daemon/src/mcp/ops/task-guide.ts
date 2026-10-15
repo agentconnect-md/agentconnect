@@ -38,8 +38,8 @@ export const START_TASK_GUIDE: TaskActionGuide = {
     'A task cannot start tasks of its own, and only a few run at once. Refusals arrive as `wake.delivered: false` ' +
       'with a `wake.reason` and `wake.message`: `task_nesting` (this session is itself a task) and `task_limit` ' +
       '(too many running at once; a finished one holds no slot).',
-    'The result carries `taskId`, the handle messageTask, viewSessionStatus and stopTask take. It is not a session ' +
-      'id for replyToSession or callAgent.',
+    'The result carries `taskId`, the handle messageTask, viewSessionStatus and stopTask take. It is not a message ' +
+      'id for replyToSession or a session id for callAgent.',
     'To work visibly as yourself in a channel instead, use callAgent with your own id and `channel`: that is a ' +
       'conversation, not a task.'
   ],
@@ -66,7 +66,7 @@ export const MESSAGE_TASK_GUIDE: TaskActionGuide = {
       'message to a task that is still working waits for its next turn and does not interrupt it; one that already ' +
       'finished starts a new round of work in the same context, which reports back again.',
     'Only the session that started a task can message it. Not accepted: `toAgent`, `channel`, `thread`, ' +
-      '`platform`, `integrationId`, `attachment`, `sessionId`, `needsReply`.',
+      '`platform`, `integrationId`, `attachment`, `sessionId`, `messageId`, `needsReply`.',
     'Refusals arrive as `wake.delivered: false` with a `wake.reason` and `wake.message`: `task_not_found` (this ' +
       'session started no task with that id), `task_reporting` (its previous report is still on its way; message ' +
       'it again after it arrives), and `task_limit`.',

@@ -151,7 +151,7 @@ function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
       throw new Error('channelAgents not stubbed in this test')
     },
     messageAgent: async (req) => ({ delivered: true, targetSession: `stub:${req.toAgentId}` }),
-    replyToSession: async () => ({ delivered: true, targetSession: 'stub' }),
+    replyToSession: async (req) => ({ delivered: true, targetSession: 'stub', inReplyTo: req.messageId }),
     memory: noMemory,
     recordOutbound: async () => {},
     now: () => 1000,
@@ -927,22 +927,21 @@ describe('executeTool: sendMessage (channel post)', () => {
         notice?: string
       }>
 
-    // Which conversation a post landed on is the DAEMON's verdict (it owns transport-scope
-    // identity and the durable parent link); ops only formats what it is told.
-    const parentRelation = { kind: 'parent', sessionId: 'sess-parent' } as const
+    // Which conversation a post landed on is the daemon's verdict (it owns transport-scope identity and the message records); ops only formats it.
+    const parentRelation = { kind: 'source', messageId: 'msg-owed' } as const
     const dualCtx: SessionContext = {
       ...ctx,
       integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }]
     }
 
-    it('names the parent session to reply into when the post lands on the parent’s conversation', async () => {
+    it('names the message to answer when the post lands on the conversation of the session that sent it', async () => {
       const d = rootPostDeps({ rootPostRelation: async () => parentRelation })
       const res = await send(d, { platform: 'telegram', channel: '-100123' }, dualCtx)
       // The claim is about what a ROOT post does — a separate context, not an answer. The seed
       // itself is dispatched fire-and-forget, so the notice never states a session as fact.
       expect(res.notice).toContain('starts a separate context there instead of answering')
       expect(res.notice).not.toMatch(/opened a (NEW )?session/)
-      expect(res.notice).toContain('{"action":"replyToSession","sessionId":"sess-parent","message":"..."}')
+      expect(res.notice).toContain('{"action":"replyToSession","messageId":"msg-owed","message":"..."}')
     })
 
     it('points a post into its own conversation back at the turn’s ordinary reply', async () => {
@@ -2520,7 +2519,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
   })
 
   it.each([
-    { args: { action: 'replyToSession', sessionId: 'sess-1', channel: 'C1' }, label: 'session + channel' },
+    { args: { action: 'replyToSession', messageId: 'msg-1', channel: 'C1' }, label: 'reply + channel' },
     { args: { action: 'postMessage', toUser: 'U1', correlationId: 'o1.0' }, label: 'user + correlation' },
     { args: { action: 'callAgent', toAgent: 'peer-1', platform: 'telegram' }, label: 'agent + platform' },
     { args: { action: 'postMessage', channel: 'C1', correlationId: 'o1.0' }, label: 'channel + correlation' }
@@ -2529,7 +2528,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     await expect(executeTool(ctx, 'sendMessage', { ...args, message: 'x' }, d)).rejects.toThrow(/does not accept/)
   })
 
-  it('sessionId is a SessionTarget reply routed to deps.replyToSession', async () => {
+  it('messageId is a reply routed to deps.replyToSession', async () => {
     const replyCalls: ReplyToSessionReq[] = []
     const d = makeDeps({
       gatewayFor: () => {
@@ -2540,25 +2539,41 @@ describe('executeTool: sendMessage (wake / reply)', () => {
       },
       replyToSession: async (req) => {
         replyCalls.push(req)
-        return { delivered: true, targetSession: 'origin-key' }
+        return { delivered: true, targetSession: 'origin-key', inReplyTo: req.messageId }
       }
     })
     const res = await executeTool(
       ctx,
       'sendMessage',
-      { action: 'replyToSession', sessionId: 'sess-1', message: 'done' },
+      { action: 'replyToSession', messageId: 'msg-1', message: 'done' },
       d
     )
     // The ReplyToSessionResult is returned verbatim (NOT wrapped in { ok, wake, post }).
-    expect(res).toEqual({ delivered: true, targetSession: 'origin-key' })
+    expect(res).toEqual({ delivered: true, targetSession: 'origin-key', inReplyTo: 'msg-1' })
     expect(replyCalls[0]).toEqual({
       callerAgentId: 'bot-a',
       platform: 'slack',
       callerChannel: 'C_CURRENT',
       callerThread: '111.1',
-      sessionId: 'sess-1',
+      messageId: 'msg-1',
       text: 'done'
     })
+  })
+
+  it('refuses a reply addressed by sessionId, or without messageId, before any delivery', async () => {
+    const replyToSession = vi.fn()
+    const d = makeDeps({ replyToSession })
+    for (const args of [{ sessionId: 'sess-1' }, {}, { messageId: '' }, { messageId: null }]) {
+      await expect(
+        executeTool(ctx, 'sendMessage', { action: 'replyToSession', ...args, message: 'done' }, d)
+      ).rejects.toThrow(
+        /requires `messageId`.*Reply with the id of the message you are answering, shown with that message/s
+      )
+    }
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'replyToSession', sessionId: 'sess-1', message: 'done' }, d)
+    ).rejects.toThrow(/does not accept `sessionId`/)
+    expect(replyToSession).not.toHaveBeenCalled()
   })
 
   it('rejects a correlationId on a SessionTarget reply as an unknown argument', async () => {
@@ -2568,7 +2583,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
       executeTool(
         ctx,
         'sendMessage',
-        { action: 'replyToSession', sessionId: 'sess-1', correlationId: 'o1.0', message: 'done' },
+        { action: 'replyToSession', messageId: 'msg-1', correlationId: 'o1.0', message: 'done' },
         d
       )
     ).rejects.toThrow(/action `replyToSession` does not accept `correlationId`/)

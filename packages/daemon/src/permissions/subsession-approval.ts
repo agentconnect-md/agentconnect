@@ -1,5 +1,6 @@
 // A background sub-session's runtime permission request, routed to the conversation it belongs to (assistant-mode.md §5.6).
 import type { ApprovalRouteTarget } from '@agentconnect.md/protocol'
+import { SESSION_MESSAGE_HEADER } from '../collab/session-message.js'
 import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { deriveTitle } from '../session/derive-title.js'
 import {
@@ -37,6 +38,9 @@ const DELEGATION_WRAPPERS = [TASK_START_WRAPPER, LEGACY_TASK_START_WRAPPER]
 
 const unwrapped = (text: string | null | undefined): string | undefined => {
   const trimmed = text?.trimStart()
+  // send-message-guide.md §9.5: a task's first message opens with its session-message header line.
+  const header = trimmed !== undefined ? SESSION_MESSAGE_HEADER.exec(trimmed) : null
+  if (header) return trimmed!.slice(header[0].length)
   const wrapper = DELEGATION_WRAPPERS.find((prefix) => trimmed?.startsWith(prefix))
   return wrapper !== undefined ? trimmed!.slice(wrapper.length) : undefined
 }

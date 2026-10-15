@@ -1,4 +1,6 @@
 // Approved proposals (assistant-mode.md §5.10): each runs once in a normal-permission sub-session of its item's place, and a cut one is never re-run (§5.7 step 1).
+import { renderSessionMessage } from '../collab/session-message.js'
+import { newSessionMessageId } from '../store/session-messages.js'
 import type { Agent } from '../agents/agent-schema.js'
 import {
   DEFAULT_MAX_CONCURRENT_SUBSESSIONS,
@@ -148,6 +150,8 @@ export class AssistantTasks {
           'Approve again once one finishes; this proposal is still waiting.'
       }
     }
+    // send-message-guide.md §9.3: its input is a session message from the session that started it, answerable by id.
+    const messageId = newSessionMessageId()
     const msg: NormalizedMessage = {
       msgId: `task:${parent.channel}:${deliveryId}`,
       traceId: deliveryId,
@@ -158,7 +162,16 @@ export class AssistantTasks {
       thread,
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       sender: { id: draft.agentId, isBot: true },
-      text: taskPrompt(draft, item, by),
+      text: renderSessionMessage(
+        {
+          messageId,
+          kind: 'call',
+          sourceAgentId: draft.agentId,
+          sourceSessionId: parent.sessionId,
+          replyRequested: true
+        },
+        taskPrompt(draft, item, by)
+      ),
       mentionedBots: [],
       isDm: false,
       headless: true,
@@ -170,6 +183,8 @@ export class AssistantTasks {
       hopCount: 0,
       deliveryId,
       originSessionId: parent.sessionId,
+      messageId,
+      messageKind: 'call',
       originCoords: {
         platform: parent.platform as NonNullable<CallMeta['originCoords']>['platform'],
         channel: parent.channel,

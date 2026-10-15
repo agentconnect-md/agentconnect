@@ -1,4 +1,5 @@
 // An owning session stops its own task on any of its turns (send-message-guide.md §8.7), through the console's own Stop.
+import { SESSION_MESSAGE_HEADER } from '../src/collab/session-message.js'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,7 +11,6 @@ import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
 import { ASSISTANT_ITEM_TOOLS } from '../src/mcp/ops/assistant-items.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
-import { TASK_START_WRAPPER } from '../src/session/subsession-coordinate.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -21,8 +21,8 @@ const INT = 'int-bot-a'
 const DM = 'D0ALICE'
 const OTHER_DM = 'D0BOB'
 const ON = { enabled: true }
-// Only a task's prompt carries this; its owning session's never does.
-const DELEGATED = TASK_START_WRAPPER
+// Only a task's first input carries this in its message header (send-message-guide.md §9.5); its owning session's never does.
+const DELEGATED = '), as a background task:'
 
 function scaffold(assistantMode: boolean): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-stopsub-'))
@@ -120,7 +120,9 @@ async function boot(opts: { assistantMode?: boolean } = {}) {
     root,
     scope,
     deps,
-    reports: () => dispatched.filter((c) => c.msg.parentReport === true).map((c) => c.msg.text),
+    // Each report's body, without the session-message header it reaches the owning session under (send-message-guide.md §9.5).
+    reports: () =>
+      dispatched.filter((c) => c.msg.parentReport === true).map((c) => c.msg.text.replace(SESSION_MESSAGE_HEADER, '')),
     async close() {
       // Every live turn ends as answered, and so does whatever was queued behind it.
       rt.behavior.sub = rt.behavior.plain = 'answer'

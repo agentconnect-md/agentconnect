@@ -220,7 +220,7 @@ function harness(
     gatewayFor: (id) => bots[id],
     channelAgents: async () => ({ platform: 'slack', agents: [] }),
     messageAgent: vi.fn(async (req) => ({ delivered: true, targetSession: `stub:${req.toAgentId}` })),
-    replyToSession: vi.fn(async () => ({ delivered: true, targetSession: 'stub' })),
+    replyToSession: vi.fn(async () => ({ delivered: true, targetSession: 'stub', inReplyTo: 'msg-stub' })),
     memory: {} as OpsDeps['memory'],
     recordOutbound: async () => {},
     now: () => 1000,
@@ -431,7 +431,7 @@ describe('every agent posts wherever the people asking could post', () => {
       await executeTool(
         inDmOfP,
         'sendMessage',
-        { action: 'replyToSession', sessionId: 'parent-1', message: 'done' },
+        { action: 'replyToSession', messageId: 'msg-parent-1', message: 'done' },
         deps
       )
       expect(deps.messageAgent).toHaveBeenCalledTimes(1)

@@ -116,8 +116,8 @@ export const SEND_MESSAGE_BRANCHES = {
     attachment: attachmentField,
     message: messageField
   }),
-  sessionId: targetBranch('action `replyToSession`', 'replyToSession', {
-    sessionId: requiredString('sessionId'),
+  messageId: targetBranch('action `replyToSession`', 'replyToSession', {
+    messageId: requiredString('messageId'),
     message: messageField
   })
 }
@@ -204,6 +204,8 @@ export interface MessageAgentReq {
   postless?: boolean
   /** send-message-guide.md §9.2: `callAgent.sessionId`, the target's existing session by key or outward id; never a new one. */
   targetSessionId?: string
+  /** The transport's stable id of this call, so a replay of it keeps its message id (send-message-guide.md §9.3). */
+  submissionId?: string
 }
 
 /** The guidance a started task's receipt hands back (send-message-guide.md §8.6). */
@@ -239,7 +241,7 @@ export interface MessageAgentResult {
   subsession?: true
 }
 
-/** A trusted SessionTarget reply (session-concept §5.2): only `sessionId` and `text` come from the model, and `sessionId` must be one of the caller's origins. */
+/** A reply to one message the caller received (send-message-guide.md §9.4): only `messageId` and `text` come from the model. */
 export interface ReplyToSessionReq {
   /** Trusted caller identity (== `ctx.agentId`). Never a tool input. */
   callerAgentId: string
@@ -248,21 +250,21 @@ export interface ReplyToSessionReq {
   callerTransportScope?: string
   callerChannel: string
   callerThread: string
-  /** The only untrusted field: one origin's outward id, authorized against the caller's recorded origins (send-message-guide.md §9.3). */
-  sessionId: string
+  /** The only untrusted field: the answered message's id, resolved against what this session received. */
+  messageId: string
   text: string
+  /** The transport's stable id of this call, so a replay of it is one reply. */
+  submissionId?: string
 }
 
-/** The result of a SessionTarget reply. `delivered:false` carries a typed reason
- *  ('not_authorized' when the sessionId isn't the caller's origin; 'unsupported' when a
- *  cross-daemon reply reached a target too old to advertise `headless-agent-delivery-v1`,
- *  which is REFUSED rather than delivered — a legacy fence from when this delivery kind
- *  muted the parent turn, send-message-routing-rework.md §7/§8.4; the rest mirror the
- *  cross-daemon agent-msg verdicts for a reply that had to route over the relay). */
+/** A reply's receipt (send-message-guide.md §9.4): `message_not_found` names nothing, and the rest mirror delivery verdicts. */
 export interface ReplyToSessionResult {
   delivered: boolean
   targetSession?: string
+  /** The message this reply answers. */
+  inReplyTo: string
   reason?:
+    | 'message_not_found'
     | 'not_authorized'
     | 'not_found'
     | 'hop_limit'
@@ -310,20 +312,13 @@ export interface MessagingDeps extends GatewayDeps {
   messageAgent: (req: MessageAgentReq) => Promise<MessageAgentResult>
   /** Side-effect-free: the reason {@link MessagingDeps.messageAgent} would refuse this wake locally, else null, so no post precedes it; absent ⇒ not gated. */
   preflightWake?: (req: MessageAgentReq) => string | null
-  /** Backs `replyToSession`: a fail-closed reply into one of the caller's recorded origins (send-message-guide.md §9.3). */
+  /** Backs `replyToSession`: a reply to one message the caller received, routed by that message's record (send-message-guide.md §9.4). */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
   /** Backs `messageTask` (send-message-guide.md §8): the caller's own task only; absent ⇒ unavailable. */
   continueSubsession?: (req: ContinueSubsessionReq) => Promise<MessageAgentResult>
   /** The transport's stable id of this tool call, when it has one, so a resent call is one submission. */
   callId?: string
-  /** How a channel-ROOT post this session just made relates to the conversations the session is
-   *  ALREADY part of: `parent` = the origin session waiting on an answer (named, so the caller can
-   *  address it), `self` = this session's own conversation, undefined = an unrelated destination,
-   *  i.e. the ordinary new-topic post. The daemon answers because it owns the identity rules —
-   *  a channel id means a different conversation under a different transport scope, and the
-   *  parent link may only exist as the durable origin on the session row (a relayed answer runs
-   *  on a human-triggered turn with no call metadata at all). Absent in the chat CLI / tests with
-   *  no daemon ⇒ no notice. */
+  /** How a channel-root post relates to conversations this session is in: `source` = that of a message it owes an answer (by id), `self` = its own; absent without a daemon. */
   rootPostRelation?: (req: {
     callerAgentId: string
     platform: string
@@ -338,7 +333,7 @@ export interface MessagingDeps extends GatewayDeps {
      *  continuous conversation, so they fork nothing and the reader did receive the post. */
     targetThread: string
     targetIntegrationId?: string
-  }) => Promise<{ kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined>
+  }) => Promise<{ kind: 'source'; messageId: string } | { kind: 'self' } | undefined>
   /** session-concept case 2a: an agent's channel-ROOT post seeds a NEW session owned by the same
    *  agent (origin = the current session), so a deliberate top-level post starts its own context.
    *  Only called for a root post (no thread) with no toAgent. Fire-and-forget; the daemon creates
@@ -511,19 +506,20 @@ export async function deliverSendMessage(
 ): Promise<unknown> {
   const message = parseArgs(messageField, args.message)
 
-  // Discriminant (§3.3): a `sessionId` ⇒ SessionTarget — reply into that existing session.
-  const sessionId = parseArgs(optionalString('sessionId'), args.sessionId)
-  if (sessionId !== undefined) {
+  // send-message-guide.md §9.4: a `messageId` answers that message, decided by its record alone.
+  const messageId = parseArgs(optionalString('messageId'), args.messageId)
+  if (messageId !== undefined) {
     // Validation only: the strict branch rejects any key this form does not accept.
-    parseArgs(SEND_MESSAGE_BRANCHES.sessionId, args)
+    parseArgs(SEND_MESSAGE_BRANCHES.messageId, args)
     return await deps.replyToSession({
       callerAgentId: ctx.agentId,
       platform: ctx.platform,
       ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
       callerChannel: ctx.channel,
       callerThread: ctx.thread,
-      sessionId,
-      text: message
+      messageId,
+      text: message,
+      ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
     })
   }
 
@@ -582,7 +578,8 @@ export async function deliverSendMessage(
           channel: channel ?? ctx.channel,
           ...(needsReply ? { needsReply: true } : {}),
           // §3.1: no `channel` ⇒ the postless form, whose child is headless.
-          ...(channel === undefined ? { postless: true } : {})
+          ...(channel === undefined ? { postless: true } : {}),
+          ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
         }
       : undefined
   // No visible post for a wake messageAgent would refuse locally; a remote target's call policy can still leave one (accepted).
@@ -855,7 +852,7 @@ export async function deliverSendMessage(
       ts
     }
     if (settled.seeded) {
-      // A root post that forked a conversation the agent is already in (parent or its own) names the address that would have answered.
+      // A root post that forked a conversation the agent is already in (a source's or its own) names the call that would have answered.
       const relation =
         postedThread !== undefined && updateThread === undefined
           ? await deps.rootPostRelation?.({
@@ -870,11 +867,12 @@ export async function deliverSendMessage(
               ...(targetId ? { targetIntegrationId: targetId } : {})
             })
           : undefined
-      if (relation?.kind === 'parent') {
+      if (relation?.kind === 'source') {
         notices.push(
-          `This posted at the ROOT of the conversation your parent session occupies, so it starts a separate ` +
-            `context there instead of answering — the conversation waiting on you did not receive it. To answer ` +
-            `it, call sendMessage with {"action":"replyToSession","sessionId":"${relation.sessionId}","message":"..."}.`
+          `This posted at the ROOT of the conversation of the session that sent you message ${relation.messageId}, ` +
+            `so it starts a separate context there instead of answering — the session waiting on you did not ` +
+            `receive it. To answer it, call sendMessage with ` +
+            `{"action":"replyToSession","messageId":"${relation.messageId}","message":"..."}.`
         )
       } else if (relation?.kind === 'self') {
         notices.push(

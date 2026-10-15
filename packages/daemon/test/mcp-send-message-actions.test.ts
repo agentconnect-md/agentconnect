@@ -98,8 +98,9 @@ describe('sendMessage requires an explicit action', () => {
 
   it('names the conflicting and missing fields of a recognized action and points to its guide', async () => {
     expect(await rejection({ action: 'replyToSession', toAgent: 'peer-1', message: 'm' })).toContain(
-      'action `replyToSession` requires `sessionId` and does not accept `toAgent`. Nothing was sent. Call getToolGuide ' +
-        '{"tool":"sendMessage","action":"replyToSession"} for the required arguments'
+      'action `replyToSession` requires `messageId` and does not accept `toAgent`. Nothing was sent. Reply with the id ' +
+        'of the message you are answering, shown with that message. Call getToolGuide ' +
+        '{"tool":"sendMessage","action":"replyToSession"} for the required arguments, then retry with a valid action and target.'
     )
     expect(await rejection({ action: 'postMessage', toAgent: 'peer-1', message: 'm' })).toContain(
       'action `postMessage` requires `toUser` or `channel` and does not accept `toAgent`'
@@ -326,7 +327,7 @@ describe('write and join classification', () => {
     expect(isPlatformPost({ action: 'callAgent', toAgent: 'peer-1', channel: 'C1' })).toBe(false)
     expect(isPlatformPost({ action: 'startTask' })).toBe(false)
     expect(isPlatformPost({ action: 'messageTask', taskId: 't' })).toBe(false)
-    expect(isPlatformPost({ action: 'replyToSession', sessionId: 's' })).toBe(false)
+    expect(isPlatformPost({ action: 'replyToSession', messageId: 'msg-1' })).toBe(false)
     expect(isPlatformPost({ channel: 'C1' })).toBe(false)
   })
 })
@@ -373,7 +374,7 @@ describe('getToolGuide', () => {
     // An approved proposal or a patrol is settled by its one reply, so its guide says so.
     for (const thread of ['subsession:task-d-1', 'subsession:patrol-d-1'])
       expect(sendMessageGuide({ ...ctx, thread }, 'replyToSession')).toMatchObject({
-        availability: expect.stringContaining('send the session that started it one reply, at the end')
+        availability: expect.stringContaining('answer the message that started it once, at the end')
       })
     expect(sendMessageGuide({ ...ctx, thread: 'subsession:d-1' }, 'replyToSession')).not.toHaveProperty('availability')
     const send = toolsForIntegrations([slack as Integration]).find((tool) => tool.name === 'sendMessage')!
@@ -381,6 +382,15 @@ describe('getToolGuide', () => {
     expect(send.description).toContain('and stopTask stops it')
     expect(send.description).toContain('sessionId continues an existing peer session')
     expect(send.description).toContain('replies are not broadcast')
+    expect(send.description).toContain('by its messageId, as often as needed')
+    // §3.4: the reply guide teaches finding the id in the input, answering more than once, and needing no session id.
+    const reply = JSON.stringify(sendMessageGuide(ctx, 'replyToSession'))
+    expect(reply).toContain('[Message <id>] From …')
+    expect(reply).toContain('You may answer one message more than once')
+    expect(reply).toContain('A reply needs no session id')
+    expect(examples(sendMessageGuide(ctx, 'replyToSession')).every((example) => 'messageId' in example.arguments)).toBe(
+      true
+    )
     expect(send.description).not.toMatch(/sub-session|childSessionId/)
     const calls = examples(sendMessageGuide(ctx, 'callAgent')).map((example) => example.arguments)
     expect(calls[0]).not.toHaveProperty('sessionId')

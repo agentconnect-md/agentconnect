@@ -66,8 +66,9 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           'conversation, not to you: it is not a task, so messageTask and stopTask do not reach it.',
         'The target may continue in context it already has; a call does not promise a fresh session.',
         '`sessionId` names an existing session of that agent — the `childSessionId` an earlier callAgent returned, ' +
-          'yours or one someone shared with you — and delivers into exactly that session: nothing is posted, it keeps ' +
-          'its context and its other callers, and you become one more session it can reply to. It cannot be combined ' +
+          'yours or one someone shared with you — and delivers into exactly that session: nothing is posted, and it keeps ' +
+          'its context and its other callers. Every call, even a repeat into the same session, is a new message it ' +
+          'answers by that message’s id. It cannot be combined ' +
           'with `channel`, never names your own sessions (use messageTask for your task), and never ' +
           'falls back to another session: an unknown id, another agent’s id, a background task, or a ' +
           'conversation the people asking you may not read returns `wake.delivered: false` with `wake.reason: ' +
@@ -126,34 +127,36 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
     messageTask: MESSAGE_TASK_GUIDE,
     replyToSession: {
       action: 'replyToSession',
-      purpose: 'Reply directly into one session that called you (an origin).',
-      required: ['action', 'sessionId', 'message'],
+      purpose: 'Answer a message another session sent you, by its message id.',
+      required: ['action', 'messageId', 'message'],
       optional: [],
       rules: [
-        '`sessionId` is one origin’s session id: the `Parent session` line of your # Agent block, the session your ' +
-          'instructions tell you to report to, or one listed under "Sessions you can reply to". A background ' +
-          'task’s origin is the session that started it. Never pass a `taskId` or `childSessionId` handle here.',
-        'Several sessions can call one conversation, and each stays one you can answer, whichever called last. A ' +
-          'reply reaches only the session it names — it is never broadcast and never redirected — so answer each ' +
-          'session that needs it with its own call.',
-        'The message is injected into that session; nothing is posted on a platform, and that session’s own ' +
-          'reply keeps its visible route. Never post the answer at the origin conversation’s channel root instead: ' +
-          'that starts a separate conversation.',
-        'A task started with startTask can reply to the session that started it any time — progress, a question, ' +
-          'or its result — and a reply does not end its work; the daemon reports the end of each round of work ' +
-          'itself. ' +
-          'An approved proposal’s work or a patrol replies once, at the end, and that reply settles it.',
-        'Only `action`, `sessionId`, and `message` are accepted.',
-        'The result is {delivered, targetSession?, reason?} with no `ok` wrapper. A session that never called you ' +
-          'returns {delivered: false, reason: "not_authorized"}; other reasons report admission or routing ' +
-          'refusals. After a delivered result, end your turn without repeating the message.'
+        'Every message another session sends you starts with a header like `[Message <id>] From …` that names its ' +
+          'id, its agent and its session; one that waits on your reply ends with the exact call. Pass that id as ' +
+          '`messageId`. Messages you may still answer are also listed under "Messages you may answer".',
+        'The reply goes only to the session that sent that message — never broadcast, never redirected — whichever ' +
+          'message woke you last. Answer each message that needs it with its own call. A reply needs no session id: ' +
+          'the message already names its sender.',
+        'You may answer one message more than once, for example progress and then a result; the first delivered ' +
+          'reply settles its request. A reply is itself a message, which its recipient can answer in turn.',
+        'The message is injected into that session; nothing is posted on a platform, and that session’s own reply ' +
+          'keeps its visible route. Never post the answer at that conversation’s channel root instead: that starts ' +
+          'a separate conversation.',
+        'A task started with startTask answers the messages of the session that started it any time — progress, a ' +
+          'question, or its result — and a reply does not end its work; the daemon reports the end of each round of ' +
+          'work itself. An approved proposal’s work or a patrol replies once, at the end, and that reply settles it.',
+        'Only `action`, `messageId`, and `message` are accepted; `sessionId`, `taskId` and `childSessionId` are not ' +
+          'message ids.',
+        'The result is {delivered, targetSession?, inReplyTo, reason?} with no `ok` wrapper. An id that names no ' +
+          'message you received returns {delivered: false, reason: "message_not_found"}; other reasons report ' +
+          'admission or routing refusals. After a delivered result, end your turn without repeating the message.'
       ],
       examples: [
         {
-          use: 'Return a result to your origin',
+          use: 'Return the result a request asked for',
           arguments: {
             action: 'replyToSession',
-            sessionId: '<Parent session id from your # Agent block>',
+            messageId: '<id of the request message>',
             message: 'Review complete: two issues found.'
           }
         },
@@ -161,7 +164,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           use: 'A task’s question to the session that started it',
           arguments: {
             action: 'replyToSession',
-            sessionId: '<Parent session id from your # Agent block>',
+            messageId: '<id of the instruction message>',
             message: 'The failure is isolated. Should the repair preserve the old configuration format?'
           }
         }
@@ -191,7 +194,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
         'A post reaches only where the people asking you could post themselves; on Slack the person asking confirms ' +
           'before the bot joins a channel it is not in. A post into a conversation shared with another ' +
           'organization comes back as a draft awaiting an internal member’s approval: say so and do not send it again.',
-        'Not accepted: `toAgent`, `sessionId`, `needsReply`. If a result says a send MAY have been delivered, do ' +
+        'Not accepted: `toAgent`, `sessionId`, `messageId`, `needsReply`. If a result says a send MAY have been delivered, do ' +
           'not retry it.'
       ],
       examples: [
@@ -248,8 +251,8 @@ function availability(ctx: SessionContext): Partial<Record<SendMessageAction, st
   }
   if (isTaskCoordinate(ctx.thread) || isPatrolCoordinate(ctx.thread)) {
     notes.replyToSession =
-      'This session runs an approved proposal or a patrol: send the session that started it one reply, at the end; ' +
-      'it settles this work.'
+      'This session runs an approved proposal or a patrol: answer the message that started it once, at the end; ' +
+      'that reply settles this work.'
   }
   if (platforms.length === 0) {
     notes.postMessage = 'Unavailable here: this agent has no platform integration to post with.'

@@ -155,12 +155,13 @@ describe('inferred parent reply (#800 mechanism fix)', () => {
 
   it('a child that sends its real report is NOT doubled by an inferred copy', async () => {
     const run = await boot(async (text) => {
-      const sessionId = [...text.matchAll(/"sessionId":"([^"]+)"/g)].map((m) => m[1]).find((v) => !v!.startsWith('<'))
+      // §9.5: the input shows the exact call that answers it, by its message id.
+      const messageId = [...text.matchAll(/"messageId":"([^"]+)"/g)].map((m) => m[1]).find((v) => !v!.startsWith('<'))
       const binding = [...run.bindings.entries()].find(([sid]) => sid.includes(CHILD))?.[1]
-      if (!binding || !sessionId) return `cannot report: ${Boolean(binding)}/${sessionId}`
+      if (!binding || !messageId) return `cannot report: ${Boolean(binding)}/${messageId}`
       const result = await callDaemonTool(binding, 'sendMessage', {
         action: 'replyToSession',
-        sessionId,
+        messageId,
         message: 'REAL-REPORT: 42.'
       })
       return result.ok ? 'reported.' : `report failed: ${result.error}`
@@ -179,9 +180,10 @@ describe('inferred parent reply (#800 mechanism fix)', () => {
 
   it('a child whose explicit report was refused is not followed by an inferred copy', async () => {
     const run = await boot(async (text) => {
-      const sessionId = [...text.matchAll(/"sessionId":"([^"]+)"/g)].map((m) => m[1]).find((v) => !v!.startsWith('<'))
+      // §9.5: the input shows the exact call that answers it, by its message id.
+      const messageId = [...text.matchAll(/"messageId":"([^"]+)"/g)].map((m) => m[1]).find((v) => !v!.startsWith('<'))
       const binding = [...run.bindings.entries()].find(([sid]) => sid.includes(CHILD))?.[1]
-      if (!binding || !sessionId) return `cannot report: ${Boolean(binding)}/${sessionId}`
+      if (!binding || !messageId) return `cannot report: ${Boolean(binding)}/${messageId}`
       // The parent's queue refuses this one report; the turn-end path keeps the real dispatch.
       const host = (run.daemon as any).collab.host
       const dispatch = host.dispatch
@@ -192,7 +194,7 @@ describe('inferred parent reply (#800 mechanism fix)', () => {
       try {
         const result = await callDaemonTool(binding, 'sendMessage', {
           action: 'replyToSession',
-          sessionId,
+          messageId,
           message: 'REFUSED-REPORT: 42.'
         })
         return result.ok ? 'reported.' : `report failed: ${result.error}`

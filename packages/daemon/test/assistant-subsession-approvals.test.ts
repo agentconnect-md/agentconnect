@@ -1,4 +1,5 @@
 // A background sub-session's runtime permission request reaches the conversation it belongs to (assistant-mode.md §5.6).
+import { SESSION_MESSAGE_HEADER } from '../src/collab/session-message.js'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -986,7 +987,7 @@ describe('through the daemon', () => {
       clock.advance(1)
       await vi.waitFor(() => expect(reports).toHaveLength(1), WAIT)
       expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }])
-      expect(reports[0]!.text).toBe(
+      expect(reports[0]!.text.replace(SESSION_MESSAGE_HEADER, '')).toBe(
         `[task ended] Task ${res.targetSession} stopped before finishing (approval wait expired). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${res.targetSession}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
       )
       expect((await d.store.listPermissionRequests(agentId))[0]).toMatchObject({
