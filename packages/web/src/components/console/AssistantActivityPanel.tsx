@@ -1,6 +1,6 @@
 'use client'
 
-// An agent's Activity view (assistant-mode.md §1.7, §5.11): its background work and what waits for approval, and in assistant mode its items.
+// An agent's Activity view (assistant-mode.md §1.7, §5.11, §5.12): its tasks and what waits for approval, and in assistant mode its items until its daemon serves follow-ups.
 import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -15,10 +15,12 @@ import {
   fetchAssistantItems,
   fetchAssistantSubsessions,
   memberDisplayName,
+  stopAssistantSubsession,
   type AgentPermissionOptionDto,
   type AssistantDraftDecision,
   type AssistantDraftDto,
   type AssistantDraftOutcomeDto,
+  type AssistantFollowUpStatus,
   type AssistantItemDto,
   type AssistantItemStatus,
   type AssistantPermissionRequestDto,
@@ -30,6 +32,7 @@ import { chatPlatformName, chatRoomSigil } from '@/lib/platform-labels'
 import { consoleKeys } from '@/lib/swr-keys'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
+import { FollowUpChecks, FollowUpChecksToggle, followUpOf } from '@/components/console/follow-up'
 
 const REFRESH_MS = 30_000
 
@@ -44,6 +47,14 @@ const SUBSESSION_STATE_CLASS: Record<AssistantSubsessionDto['state'], string> = 
   open: 'bg-(--status-info-soft) text-(--status-info)',
   done: 'bg-(--status-online-soft) text-(--status-online-text)',
   failed: 'bg-(--status-error-soft) text-(--status-error)'
+}
+
+const FOLLOW_UP_STATUS_CLASS: Record<AssistantFollowUpStatus, string> = {
+  waiting: 'bg-(--status-info-soft) text-(--status-info)',
+  checking: 'bg-(--status-info-soft) text-(--status-info)',
+  paused: 'bg-(--status-paused-soft) text-(--status-paused)',
+  done: 'bg-(--status-online-soft) text-(--status-online-text)',
+  stopped: 'bg-(--surface-active) text-(--text-tertiary)'
 }
 
 type Translate = ReturnType<typeof useTranslations<'Agents.detail.activity'>>
@@ -135,20 +146,25 @@ export function AssistantActivityPanel({
   const orgId = activeOrg?.id
   const [closedOpen, setClosedOpen] = useState(false)
 
-  const open = useSWR(
-    assistant ? consoleKeys.assistantItems(orgId, agentId, 'open') : null,
-    ([, , , id]) => fetchAssistantItems(id as string, 'open'),
-    { refreshInterval: REFRESH_MS, shouldRetryOnError: false }
-  )
-  const closed = useSWR(
-    assistant && closedOpen ? consoleKeys.assistantItems(orgId, agentId, 'closed') : null,
-    ([, , , id]) => fetchAssistantItems(id as string, 'closed'),
-    { shouldRetryOnError: false }
-  )
   const subsessions = useSWR(
     consoleKeys.assistantSubsessions(orgId, agentId),
     ([, , , id]) => fetchAssistantSubsessions(id as string),
     { refreshInterval: REFRESH_MS, shouldRetryOnError: false }
+  )
+  // Items are read once the task list says its daemon has no follow-ups, or could not say.
+  const items =
+    assistant &&
+    (subsessions.data !== undefined || subsessions.error !== undefined) &&
+    subsessions.data?.followUps !== true
+  const open = useSWR(
+    items ? consoleKeys.assistantItems(orgId, agentId, 'open') : null,
+    ([, , , id]) => fetchAssistantItems(id as string, 'open'),
+    { refreshInterval: REFRESH_MS, shouldRetryOnError: false }
+  )
+  const closed = useSWR(
+    items && closedOpen ? consoleKeys.assistantItems(orgId, agentId, 'closed') : null,
+    ([, , , id]) => fetchAssistantItems(id as string, 'closed'),
+    { shouldRetryOnError: false }
   )
   const drafts = useSWR(
     canEdit ? consoleKeys.assistantDrafts(orgId, agentId) : null,
@@ -161,6 +177,12 @@ export function AssistantActivityPanel({
     const drop = (page?: { items: AssistantItemDto[]; truncated: boolean }) =>
       page && { ...page, items: page.items.filter((item) => item.id !== itemId) }
     await Promise.all([open.mutate(drop, { revalidate: false }), closed.mutate(drop, { revalidate: false })])
+  }
+
+  const endFollowUp = async (sessionId: string) => {
+    const { result } = await stopAssistantSubsession(agentId, sessionId)
+    void subsessions.mutate()
+    return result
   }
 
   // A decided or unconfirmed draft keeps its row and what happened, even after a refresh stops listing it.
@@ -236,7 +258,7 @@ export function AssistantActivityPanel({
 
   return (
     <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0" data-assistant-activity>
-      {assistant ? (
+      {items ? (
         <Section title={t('items.title')} count={open.data?.items.length} kind="items">
           <Listing
             state={open}
@@ -294,7 +316,12 @@ export function AssistantActivityPanel({
           empty={t('subsessions.empty')}
         >
           {subsessions.data?.subsessions.map((s, i) => (
-            <SubsessionRow key={`${s.sessionId ?? 'hidden'}:${s.startedAt}:${i}`} subsession={s} first={i === 0} />
+            <SubsessionRow
+              key={`${s.sessionId ?? 'hidden'}:${s.startedAt}:${i}`}
+              subsession={s}
+              first={i === 0}
+              onEnd={endFollowUp}
+            />
           ))}
         </Listing>
       </Section>
@@ -506,29 +533,64 @@ function ItemRow({
   )
 }
 
-function SubsessionRow({ subsession, first }: { subsession: AssistantSubsessionDto; first: boolean }) {
+/** How ending a follow-up from here went. */
+type EndState = 'busy' | 'ended' | 'alreadyEnded' | 'endFailed'
+
+function SubsessionRow({
+  subsession,
+  first,
+  onEnd
+}: {
+  subsession: AssistantSubsessionDto
+  first: boolean
+  onEnd: (sessionId: string) => Promise<'stopped' | 'not_running'>
+}) {
   const t = useTranslations('Agents.detail.activity')
+  const tf = useTranslations('Common.followUp')
   const format = useFormatter()
   const { orgPath } = useOrgs()
+  const [expanded, setExpanded] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [ending, setEnding] = useState<EndState | null>(null)
+  const followUp = followUpOf(subsession)
+  // An item's editor delete becomes ending its follow-up, under the task's own stop rule.
+  const endable =
+    followUp !== null && subsession.state === 'open' && subsession.canStop && subsession.sessionId !== null
   const parent = subsession.parent
   const parentName = parent
     ? parent.channelName
       ? `${chatRoomSigil(parent.platform ?? undefined)}${parent.channelName}`
       : (parent.title ?? t('subsessions.conversation'))
     : null
+
+  const end = async () => {
+    setEnding('busy')
+    try {
+      setEnding((await onEnd(subsession.sessionId!)) === 'stopped' ? 'ended' : 'alreadyEnded')
+    } catch {
+      setEnding('endFailed')
+    }
+    setConfirming(false)
+  }
+
   return (
     <div
-      className={`flex flex-col gap-1 px-4 py-3 desktop:flex-row desktop:items-center desktop:gap-3 ${first ? '' : 'border-t border-(--border-subtle)'}`}
+      className={`flex flex-col gap-1 px-4 py-3 desktop:flex-row desktop:items-center desktop:gap-3 ${followUp ? 'desktop:flex-wrap' : ''} ${first ? '' : 'border-t border-(--border-subtle)'}`}
       data-assistant-subsession={subsession.sessionId ?? 'hidden'}
+      data-follow-up={followUp?.status}
     >
-      <span className={`badge w-fit flex-none ${SUBSESSION_STATE_CLASS[subsession.state]}`}>
-        {t(`subsessions.state.${subsession.state}`)}
+      <span
+        className={`badge w-fit flex-none ${followUp ? FOLLOW_UP_STATUS_CLASS[followUp.status] : SUBSESSION_STATE_CLASS[subsession.state]}`}
+      >
+        {followUp ? tf(`status.${followUp.status}`) : t(`subsessions.state.${subsession.state}`)}
       </span>
       <div className="min-w-0 flex-1 font-sans text-[13px] font-medium leading-normal">
         {subsession.sessionId ? (
           <Link className="lnk break-words" href={orgPath(`/sessions/${encodeURIComponent(subsession.sessionId)}`)}>
             {subsession.title ?? t('subsessions.untitled')}
           </Link>
+        ) : subsession.visible && followUp ? (
+          <span className="break-words">{subsession.title ?? t('subsessions.untitled')}</span>
         ) : subsession.visible ? (
           <span className="text-(--text-secondary)">{t('subsessions.starting')}</span>
         ) : (
@@ -539,17 +601,70 @@ function SubsessionRow({ subsession, first }: { subsession: AssistantSubsessionD
         )}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+        {followUp ? <span>{tf('kind')}</span> : null}
+        {followUp?.status === 'waiting' && followUp.nextCheck ? (
+          <span>
+            {tf('nextCheck', {
+              time: format.dateTime(new Date(followUp.nextCheck), { dateStyle: 'medium', timeStyle: 'short' })
+            })}
+          </span>
+        ) : null}
         {parent && parentName ? (
           <Link className="lnk text-[12px]" href={orgPath(`/sessions/${encodeURIComponent(parent.sessionId)}`)}>
             {t('subsessions.from', { name: parentName })}
           </Link>
         ) : null}
-        <span>
-          {t('subsessions.started', {
-            time: format.dateTime(new Date(subsession.startedAt), { dateStyle: 'medium', timeStyle: 'short' })
-          })}
-        </span>
+        {followUp ? null : (
+          <span>
+            {t('subsessions.started', {
+              time: format.dateTime(new Date(subsession.startedAt), { dateStyle: 'medium', timeStyle: 'short' })
+            })}
+          </span>
+        )}
+        {followUp && subsession.visible ? (
+          <FollowUpChecksToggle expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
+        ) : null}
       </div>
+      {endable ? (
+        <Button
+          variant="secondary"
+          size="xs"
+          className="w-fit flex-none"
+          disabled={ending === 'busy' || confirming}
+          onClick={() => setConfirming(true)}
+        >
+          <Icon name="square" size={11} />
+          {tf('end')}
+        </Button>
+      ) : null}
+      {followUp && expanded ? (
+        <div className="w-full desktop:basis-full">
+          <FollowUpChecks followUp={followUp} />
+        </div>
+      ) : null}
+      {confirming && endable ? (
+        <div className="w-full desktop:basis-full">
+          <ConfirmStrip
+            prompt={tf('endConfirm')}
+            confirm={tf('end')}
+            keep={tf('keep')}
+            busy={ending === 'busy'}
+            onConfirm={() => void end()}
+            onKeep={() => setConfirming(false)}
+          />
+        </div>
+      ) : null}
+      {ending && ending !== 'busy' ? (
+        <div
+          role="status"
+          data-follow-up-end={ending}
+          className={`w-full font-sans text-[12px] font-normal leading-normal desktop:basis-full ${
+            ending === 'endFailed' ? 'text-(--status-error)' : 'text-(--text-secondary)'
+          }`}
+        >
+          {tf(ending)}
+        </div>
+      ) : null}
     </div>
   )
 }
